@@ -9,6 +9,11 @@ import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 
+// NOTE: `provider` is intentionally left as plain `text` (NOT $type-narrowed to the shared
+// OAuthProvider union). The OAuthIdentityStore seam queries/links by a `string` provider (the
+// OAuthService passes its PROVIDER_* string constants), so narrowing the column would force a cast at
+// every call site for no real safety gain. The values are still mirrored + drift-tested via
+// OAUTH_PROVIDER_VALUES in db/schema/types.ts.
 export const oauthIdentities = pgTable(
   "oauth_identities",
   {

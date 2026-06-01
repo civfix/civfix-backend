@@ -132,5 +132,30 @@ export const NOTIFICATION_TYPE_VALUES = [
   "system",
 ] as const
 
-/** push_tokens.platform. Mirrors the shared RegisterPushToken platform enum. */
+/** push_tokens.platform. Mirrors the shared PushPlatformSchema. */
 export const PUSH_PLATFORM_VALUES = ["ios", "android", "web"] as const
+
+/** oauth_identities.provider. Mirrors shared OAuthProviderSchema. */
+export const OAUTH_PROVIDER_VALUES = ["apple", "google", "email"] as const
+
+/** cleanup_members.role. Mirrors shared CleanupMemberRoleSchema. */
+export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "member"] as const
+
+/** abuse_flags.subject_type. Mirrors shared AbuseSubjectTypeSchema. */
+export const ABUSE_SUBJECT_TYPE_VALUES = ["report", "media", "user", "anon_token"] as const
+
+/** abuse_flags.reason. Mirrors shared AbuseReasonSchema. */
+export const ABUSE_REASON_VALUES = [
+  "nsfw",
+  "phash_dup",
+  "honeypot",
+  "gps",
+  "manual",
+  "other",
+] as const
+
+/** abuse_flags.source. Mirrors shared AbuseSourceSchema. */
+export const ABUSE_SOURCE_VALUES = ["worker", "api", "user_report"] as const
+
+/** jurisdiction_discovery_tasks.status. Mirrors shared DiscoveryStatusSchema. */
+export const DISCOVERY_STATUS_VALUES = ["open", "in_progress", "done"] as const

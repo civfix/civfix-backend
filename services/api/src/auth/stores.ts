@@ -100,6 +100,8 @@ export interface UserRecord {
   role: Role
   displayName: string
   handle: string | null
+  email: string | null
+  emailVerified: boolean
   createdAt: Date
   deletedAt: Date | null
 }
@@ -107,26 +109,28 @@ export interface UserRecord {
 export interface CreateUserInput {
   displayName: string
   role?: Role
+  /** Whether the associated email is proven (verified OTP / verified-email OAuth). Defaults to false. */
+  emailVerified?: boolean
 }
 
 export interface UserStore {
   findById(id: string): Promise<UserRecord | null>
-  /** Look up a user by the email recorded against their account, case-insensitively. */
+  /** Look up a user by their `users.email`, case-insensitively (the column is CITEXT). */
   findByEmail(email: string): Promise<UserRecord | null>
   /**
-   * Create a user. When `email` is non-null it is associated with the account so a later sign-in
-   * with the same address (OTP or OAuth) converges on this user.
+   * Create a user. When `email` is non-null it is stored on `users.email` so a later sign-in with the
+   * same address (OTP or OAuth) converges on this user. `input.emailVerified` sets `email_verified`.
    */
   create(email: string | null, input: CreateUserInput): Promise<UserRecord>
 }
 
 /**
- * In-memory UserStore. Email is matched case-insensitively to mirror the CITEXT column. An internal
- * email index models the account/email association without needing a separate table for tests.
+ * In-memory UserStore. Email lives directly on the user record and is matched case-insensitively to
+ * mirror the CITEXT `users.email` column (no separate index/table, just like the Pg store now reads
+ * the column directly).
  */
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()
-  private readonly idByEmail = new Map<string, string>()
 
   findById(id: string): Promise<UserRecord | null> {
     const row = this.byId.get(id)
@@ -134,10 +138,13 @@ export class InMemoryUserStore implements UserStore {
   }
 
   findByEmail(email: string): Promise<UserRecord | null> {
-    const id = this.idByEmail.get(email.toLowerCase())
-    if (!id) return Promise.resolve(null)
-    const row = this.byId.get(id)
-    return Promise.resolve(row ? { ...row } : null)
+    const normalized = email.toLowerCase()
+    for (const row of this.byId.values()) {
+      if (row.email !== null && row.email.toLowerCase() === normalized) {
+        return Promise.resolve({ ...row })
+      }
+    }
+    return Promise.resolve(null)
   }
 
   create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
@@ -146,18 +153,18 @@ export class InMemoryUserStore implements UserStore {
       role: input.role ?? "citizen",
       displayName: input.displayName,
       handle: null,
+      email: email === null ? null : email.toLowerCase(),
+      emailVerified: email !== null && (input.emailVerified ?? false),
       createdAt: new Date(),
       deletedAt: null,
     }
     this.byId.set(row.id, row)
-    if (email !== null) this.idByEmail.set(email.toLowerCase(), row.id)
     return Promise.resolve({ ...row })
   }
 
   /** Test helper: seed a user directly (e.g. to test an existing-account sign-in). */
-  seed(email: string | null, row: UserRecord): void {
+  seed(_email: string | null, row: UserRecord): void {
     this.byId.set(row.id, { ...row })
-    if (email !== null) this.idByEmail.set(email.toLowerCase(), row.id)
   }
 }
 

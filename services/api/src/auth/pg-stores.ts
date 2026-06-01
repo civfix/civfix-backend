@@ -97,14 +97,10 @@ export class PgSessionStore implements SessionStore {
 // ---------------------------------------------------------------------------
 
 /**
- * The canonical schema does not (yet) carry an email column on users; email sign-in associates an
- * address via the `email_otps` history. To resolve "user for this email" deterministically we record
- * the verified email on the user's handle-independent identity through oauth_identities with a
- * synthetic "email" provider. This keeps find-or-create stable without a schema change and is noted
- * as a @civfix/shared / schema gap in the report.
+ * Reads/writes the real `users.email` column (CITEXT, partial-unique when non-null). find-or-create
+ * by email resolves directly off that column, so `oauth_identities` is now ONLY for apple/google
+ * provider links and no longer carries a synthetic "email" pseudo-provider row.
  */
-const EMAIL_PROVIDER = "email"
-
 export class PgUserStore implements UserStore {
   constructor(private readonly db: Db) {}
 
@@ -115,24 +111,11 @@ export class PgUserStore implements UserStore {
   }
 
   async findByEmail(email: string): Promise<UserRecord | null> {
-    const normalized = email.toLowerCase()
+    // CITEXT makes equality case-insensitive in the database; lower-case for tidy comparison.
     const rows = await this.db
-      .select({
-        id: users.id,
-        role: users.role,
-        displayName: users.displayName,
-        handle: users.handle,
-        createdAt: users.createdAt,
-        deletedAt: users.deletedAt,
-      })
-      .from(oauthIdentities)
-      .innerJoin(users, eq(users.id, oauthIdentities.userId))
-      .where(
-        and(
-          eq(oauthIdentities.provider, EMAIL_PROVIDER),
-          eq(oauthIdentities.providerUserId, normalized),
-        ),
-      )
+      .select()
+      .from(users)
+      .where(eq(users.email, email.toLowerCase()))
       .limit(1)
     const r = rows[0]
     return r ? toUserRecord(r) : null
@@ -141,17 +124,15 @@ export class PgUserStore implements UserStore {
   async create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
     const inserted = await this.db
       .insert(users)
-      .values({ displayName: input.displayName, role: input.role ?? "citizen" })
+      .values({
+        displayName: input.displayName,
+        role: input.role ?? "citizen",
+        email: email === null ? null : email.toLowerCase(),
+        emailVerified: email !== null && (input.emailVerified ?? false),
+      })
       .returning()
     const row = inserted[0]
     if (!row) throw new Error("PgUserStore.create: insert returned no row")
-    if (email !== null) {
-      // Associate the verified email via the synthetic email identity (idempotent on the unique key).
-      await this.db
-        .insert(oauthIdentities)
-        .values({ userId: row.id, provider: EMAIL_PROVIDER, providerUserId: email.toLowerCase() })
-        .onConflictDoNothing()
-    }
     return toUserRecord(row)
   }
 }
@@ -276,6 +257,8 @@ interface UserRowLike {
   role: Role
   displayName: string
   handle: string | null
+  email: string | null
+  emailVerified: boolean
   createdAt: Date
   deletedAt: Date | null
 }
@@ -286,6 +269,8 @@ function toUserRecord(r: UserRowLike): UserRecord {
     role: r.role,
     displayName: r.displayName,
     handle: r.handle,
+    email: r.email,
+    emailVerified: r.emailVerified,
     createdAt: r.createdAt,
     deletedAt: r.deletedAt,
   }

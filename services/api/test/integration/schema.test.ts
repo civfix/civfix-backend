@@ -81,6 +81,25 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
     ).rejects.toThrow()
   })
 
+  it("enforces a PARTIAL UNIQUE on users.email but allows multiple NULLs", async () => {
+    // The partial unique index must exist on users.
+    const idx = await h.sql<{ indexname: string }[]>`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'users' AND indexname = 'users_email_key'
+    `
+    expect(idx.length).toBe(1)
+
+    // Two rows with NULL email are allowed (partial index excludes NULLs).
+    await h.sql`INSERT INTO users (display_name) VALUES ('No Email A')`
+    await h.sql`INSERT INTO users (display_name) VALUES ('No Email B')`
+
+    // The same email cannot be inserted twice (case-insensitively, since email is citext).
+    await h.sql`INSERT INTO users (display_name, email) VALUES ('Dup A', 'dup@example.com')`
+    await expect(
+      h.sql`INSERT INTO users (display_name, email) VALUES ('Dup B', 'DUP@example.com')`,
+    ).rejects.toThrow()
+  })
+
   it("creates GiST indexes on all geometry columns", async () => {
     const rows = await h.sql<{ indexname: string; indexdef: string }[]>`
       SELECT indexname, indexdef FROM pg_indexes
@@ -123,6 +142,11 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
   it("recorded every migration file in the bookkeeping table", async () => {
     const rows = await h.sql<{ name: string }[]>`SELECT name FROM _civfix_migrations ORDER BY name`
     const names = rows.map((r) => r.name)
-    expect(names).toEqual(["0000_extensions.sql", "0001_core.sql", "0002_chat_partitioning.sql"])
+    expect(names).toEqual([
+      "0000_extensions.sql",
+      "0001_core.sql",
+      "0002_chat_partitioning.sql",
+      "0003_users_email.sql",
+    ])
   })
 })

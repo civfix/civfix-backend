@@ -7,14 +7,20 @@
 
 import { describe, expect, it } from "vitest"
 import {
+  AbuseReasonSchema,
+  AbuseSourceSchema,
+  AbuseSubjectTypeSchema,
   ChatMessageKindSchema,
+  CleanupMemberRoleSchema,
   CleanupStatusSchema,
   CleanupTypeSchema,
+  DiscoveryStatusSchema,
   GeomSourceSchema,
   JurisdictionLayerSchema,
   MediaKindSchema,
   MediaStatusSchema,
   NotificationTypeSchema,
+  OAuthProviderSchema,
   RegisterPushTokenRequestSchema,
   ReportCategorySchema,
   ReportStatusSchema,
@@ -22,14 +28,20 @@ import {
   RoleSchema,
 } from "@civfix/shared"
 import {
+  ABUSE_REASON_VALUES,
+  ABUSE_SOURCE_VALUES,
+  ABUSE_SUBJECT_TYPE_VALUES,
   CHAT_MESSAGE_KIND_VALUES,
+  CLEANUP_MEMBER_ROLE_VALUES,
   CLEANUP_STATUS_VALUES,
   CLEANUP_TYPE_VALUES,
+  DISCOVERY_STATUS_VALUES,
   GEOM_SOURCE_VALUES,
   JURISDICTION_LAYER_VALUES,
   MEDIA_KIND_VALUES,
   MEDIA_STATUS_VALUES,
   NOTIFICATION_TYPE_VALUES,
+  OAUTH_PROVIDER_VALUES,
   PUSH_PLATFORM_VALUES,
   REPORT_CATEGORY_VALUES,
   REPORT_STATUS_VALUES,
@@ -51,6 +63,12 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["CleanupStatus", CLEANUP_STATUS_VALUES, CleanupStatusSchema.options],
     ["ChatMessageKind", CHAT_MESSAGE_KIND_VALUES, ChatMessageKindSchema.options],
     ["NotificationType", NOTIFICATION_TYPE_VALUES, NotificationTypeSchema.options],
+    ["OAuthProvider", OAUTH_PROVIDER_VALUES, OAuthProviderSchema.options],
+    ["CleanupMemberRole", CLEANUP_MEMBER_ROLE_VALUES, CleanupMemberRoleSchema.options],
+    ["AbuseSubjectType", ABUSE_SUBJECT_TYPE_VALUES, AbuseSubjectTypeSchema.options],
+    ["AbuseReason", ABUSE_REASON_VALUES, AbuseReasonSchema.options],
+    ["AbuseSource", ABUSE_SOURCE_VALUES, AbuseSourceSchema.options],
+    ["DiscoveryStatus", DISCOVERY_STATUS_VALUES, DiscoveryStatusSchema.options],
   ])("%s matches the shared enum exactly", (_name, mirrored, shared) => {
     expect([...mirrored]).toEqual([...shared])
   })

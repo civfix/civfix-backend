@@ -9,6 +9,9 @@ import { pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { index } from "drizzle-orm/pg-core"
 import { cleanups } from "./cleanups.js"
 import { users } from "./users.js"
+import type { CLEANUP_MEMBER_ROLE_VALUES } from "./types.js"
+
+type CleanupMemberRole = (typeof CLEANUP_MEMBER_ROLE_VALUES)[number]
 
 export const cleanupMembers = pgTable(
   "cleanup_members",
@@ -19,7 +22,7 @@ export const cleanupMembers = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id),
-    role: text("role").notNull(),
+    role: text("role").$type<CleanupMemberRole>().notNull(),
     joinedAt: timestamp("joined_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [

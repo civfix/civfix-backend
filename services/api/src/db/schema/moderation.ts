@@ -7,6 +7,15 @@
 
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
+import type {
+  ABUSE_REASON_VALUES,
+  ABUSE_SOURCE_VALUES,
+  ABUSE_SUBJECT_TYPE_VALUES,
+} from "./types.js"
+
+type AbuseSubjectType = (typeof ABUSE_SUBJECT_TYPE_VALUES)[number]
+type AbuseReason = (typeof ABUSE_REASON_VALUES)[number]
+type AbuseSource = (typeof ABUSE_SOURCE_VALUES)[number]
 
 export const abuseFlags = pgTable(
   "abuse_flags",
@@ -14,10 +23,10 @@ export const abuseFlags = pgTable(
     id: uuid("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    subjectType: text("subject_type").notNull(),
+    subjectType: text("subject_type").$type<AbuseSubjectType>().notNull(),
     subjectId: text("subject_id").notNull(),
-    reason: text("reason").notNull(),
-    source: text("source").notNull(),
+    reason: text("reason").$type<AbuseReason>().notNull(),
+    source: text("source").$type<AbuseSource>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   },

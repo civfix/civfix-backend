@@ -8,7 +8,7 @@
  */
 
 import type { Container } from "../di.js"
-import type { UserDTO } from "@civfix/shared"
+import type { OAuthProvider, UserDTO } from "@civfix/shared"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService } from "./session-service.js"
 import { OtpService } from "./otp.js"
@@ -22,6 +22,24 @@ export interface AuthServices {
   otp: OtpService
   oauth: OAuthService
   users: UserStore
+  /**
+   * Sign-in providers the server has configured, surfaced on /auth/session so the web can show only
+   * the buttons that will work. Derived best-effort from the OAuth config (apple/google) plus email,
+   * which is always available (OTP). Order is stable: apple, google, email.
+   */
+  enabledProviders: OAuthProvider[]
+}
+
+/**
+ * Derive the enabled sign-in providers from the OAuth config. `email` (OTP) is always available;
+ * `apple`/`google` are included only when their credentials are present. Best-effort and non-breaking.
+ */
+export function enabledProvidersFromConfig(config: OAuthConfig): OAuthProvider[] {
+  const providers: OAuthProvider[] = []
+  if (config.apple) providers.push("apple")
+  if (config.google) providers.push("google")
+  providers.push("email")
+  return providers
 }
 
 export interface BuildAuthServicesOptions {
@@ -56,7 +74,13 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
     users: opts.stores.users,
     ...(opts.verifier ? { verifier: opts.verifier } : {}),
   })
-  return { sessions, otp, oauth, users: opts.stores.users }
+  return {
+    sessions,
+    otp,
+    oauth,
+    users: opts.stores.users,
+    enabledProviders: enabledProvidersFromConfig(opts.oauthConfig),
+  }
 }
 
 /**
@@ -109,6 +133,7 @@ export function toUserDTO(user: UserRecord): UserDTO {
     id: user.id,
     displayName: user.displayName,
     handle: user.handle,
+    email: user.email,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
   }

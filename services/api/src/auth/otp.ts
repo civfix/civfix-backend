@@ -144,13 +144,15 @@ export class OtpService {
       throw AppError.unauthorized("Invalid or expired code.")
     }
 
-    // Success: single-use consume, then find-or-create the account.
+    // Success: single-use consume, then find-or-create the account. A verified OTP proves the email,
+    // so a newly created account is marked email_verified.
     await this.store.markConsumed(record.id, now)
     const existing = await this.users.findByEmail(normalized)
     if (existing) return existing.id
     const created = await this.users.create(normalized, {
       displayName: defaultDisplayName(normalized),
       role: "citizen",
+      emailVerified: true,
     })
     return created.id
   }

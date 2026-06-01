@@ -207,16 +207,22 @@ async function buildSessionCheck(
   services: AuthServices,
   request: FastifyRequest,
 ): Promise<SessionCheckResponse> {
+  // Best-effort: tell the web which sign-in buttons to show. Omitted when none are configured.
+  const enabledProviders =
+    services.enabledProviders.length > 0
+      ? { enabledProviders: services.enabledProviders }
+      : {}
+
   const { auth } = request
   if (!auth.userId) {
-    return { authenticated: false, roles: [] }
+    return { authenticated: false, roles: [], ...enabledProviders }
   }
   const user = await services.users.findById(auth.userId)
   if (!user) {
     // The session resolved but the user row is gone; treat as unauthenticated.
-    return { authenticated: false, roles: [] }
+    return { authenticated: false, roles: [], ...enabledProviders }
   }
-  return { authenticated: true, user: toUserDTO(user), roles: auth.roles }
+  return { authenticated: true, user: toUserDTO(user), roles: auth.roles, ...enabledProviders }
 }
 
 interface OAuthStash {

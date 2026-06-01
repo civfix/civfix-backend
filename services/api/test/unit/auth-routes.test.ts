@@ -58,6 +58,8 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(typeof session.token).toBe("string")
     expect(session.token.length).toBeGreaterThan(20)
     expect(session.user.role).toBe("citizen")
+    // The real users.email column now backs the account, so the DTO carries the verified email.
+    expect(session.user.email).toBe(email)
     expect(session.csrfToken).toBeUndefined()
     // Mobile transport sets no session cookie.
     expect(verifyRes.headers["set-cookie"]).toBeUndefined()
@@ -74,14 +76,19 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     const check = checkRes.json()
     expect(check.authenticated).toBe(true)
     expect(check.user.id).toBe(session.user.id)
+    expect(check.user.email).toBe(email)
     expect(check.roles).toEqual(["citizen"])
   })
 
-  it("an unauthenticated /auth/session reports authenticated:false", async () => {
+  it("an unauthenticated /auth/session reports authenticated:false with enabledProviders", async () => {
     harness = await makeAuthHarness()
     const res = await harness.app.inject({ method: "GET", url: "/auth/session" })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ authenticated: false, roles: [] })
+    const body = res.json()
+    expect(body.authenticated).toBe(false)
+    expect(body.roles).toEqual([])
+    // The default harness configures both OAuth providers, so all three buttons are advertised.
+    expect(body.enabledProviders).toEqual(["apple", "google", "email"])
   })
 
   it("a wrong OTP code is rejected with 401", async () => {

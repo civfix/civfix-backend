@@ -183,10 +183,12 @@ export class OAuthService {
       }
     }
 
-    // 3) Brand-new user + identity.
+    // 3) Brand-new user + identity. Mark the email verified only when the provider asserted a
+    // verified email; an unverified or absent email leaves email_verified false.
     const created = await this.users.create(claims.email ?? null, {
       displayName: fullName ?? deriveDisplayName(claims, provider),
       role: "citizen",
+      emailVerified: claims.email !== null && claims.emailVerified,
     })
     await this.oauthStore.linkIdentity(created.id, provider, claims.sub)
     return created
