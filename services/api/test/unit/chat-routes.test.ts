@@ -9,7 +9,7 @@ import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { SessionService } from "../../src/auth/session-service.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
-import { resolveWsUser } from "../../src/ws/gateway.js"
+import { resolveWsUser, isAllowedWsOrigin, checkWsHandshake } from "../../src/ws/gateway.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { SESSION_COOKIE } from "../../src/auth/transport.js"
 
@@ -185,5 +185,118 @@ describe("resolveWsUser (dual handshake auth)", () => {
     const { sessions } = await withSession()
     const req = fakeReq({ query: { token: "not-a-real-token" } })
     expect(await resolveWsUser(req, sessions)).toBeNull()
+  })
+})
+
+describe("isAllowedWsOrigin (anti-CSWSH origin allowlist)", () => {
+  const ALLOW = ["https://app.civfix.org", "https://www.civfix.org"]
+
+  it("allows a request with NO Origin header (native mobile / server-to-server)", () => {
+    expect(isAllowedWsOrigin(undefined, ALLOW)).toBe(true)
+    expect(isAllowedWsOrigin("", ALLOW)).toBe(true)
+  })
+
+  it("allows an Origin that is in the allowlist", () => {
+    expect(isAllowedWsOrigin("https://app.civfix.org", ALLOW)).toBe(true)
+    expect(isAllowedWsOrigin("https://www.civfix.org", ALLOW)).toBe(true)
+  })
+
+  it("rejects a cross-site Origin not in the allowlist", () => {
+    expect(isAllowedWsOrigin("https://evil.example.com", ALLOW)).toBe(false)
+    // A near-miss (different scheme/port/subdomain) is still rejected: exact match only.
+    expect(isAllowedWsOrigin("http://app.civfix.org", ALLOW)).toBe(false)
+    expect(isAllowedWsOrigin("https://app.civfix.org:8443", ALLOW)).toBe(false)
+    expect(isAllowedWsOrigin("https://app.civfix.org.evil.com", ALLOW)).toBe(false)
+  })
+
+  it("allows ALL origins when the allowlist is empty (dev convenience)", () => {
+    expect(isAllowedWsOrigin("https://anything.example.com", [])).toBe(true)
+    expect(isAllowedWsOrigin(undefined, [])).toBe(true)
+  })
+})
+
+describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
+  const ALLOW = ["https://app.civfix.org"]
+
+  /** Build a real in-memory SessionService and mint a session token. */
+  async function withSession(): Promise<{ sessions: SessionService; token: string }> {
+    const stores = makeInMemoryStores()
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const sessions = new SessionService({ store: stores.sessions, cache, now: () => Date.now() })
+    const token = await sessions.createSession(ME, [])
+    return { sessions, token }
+  }
+
+  /** A minimal FastifyRequest-like object for checkWsHandshake (reads .auth, .query, .headers, .cookies). */
+  function fakeReq(over: Partial<FastifyRequest>): FastifyRequest {
+    return {
+      auth: { userId: null, roles: [], anon: true },
+      query: {},
+      headers: {},
+      cookies: {},
+      ...over,
+    } as unknown as FastifyRequest
+  }
+
+  it("rejects a cross-site Origin with FORBIDDEN, BEFORE consulting the session cookie", async () => {
+    const { sessions, token } = await withSession()
+    // A cross-site page can attach the cookie automatically; even WITH a valid cookie session, the bad
+    // Origin must be rejected first (this is the whole point of the anti-CSWSH check).
+    const req = fakeReq({
+      headers: { origin: "https://evil.example.com" },
+      cookies: { [SESSION_COOKIE]: token },
+      // Simulate the auth hook having resolved the cookie to a user (it runs before the upgrade handler).
+      auth: { userId: ME, roles: [], anon: false },
+    })
+    const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe("FORBIDDEN")
+      expect(result.reason).toBe("origin not allowed")
+    }
+  })
+
+  it("accepts an allowlisted Origin with a resolved cookie session (web same-origin)", async () => {
+    const { sessions } = await withSession()
+    const req = fakeReq({
+      headers: { origin: "https://app.civfix.org" },
+      auth: { userId: ME, roles: [], anon: false },
+    })
+    const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
+    expect(result).toEqual({ ok: true, userId: ME })
+  })
+
+  it("accepts a NO-Origin handshake with a ?token (native mobile, not CSWSH-exposed)", async () => {
+    const { sessions, token } = await withSession()
+    const req = fakeReq({ query: { token } }) // no Origin header at all
+    const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
+    expect(result).toEqual({ ok: true, userId: ME })
+  })
+
+  it("passes the Origin gate but rejects UNAUTHORIZED when no credential is presented", async () => {
+    const { sessions } = await withSession()
+    const req = fakeReq({ headers: { origin: "https://app.civfix.org" } })
+    const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      // Proves the ORIGIN gate passed and the AUTH gate is what rejected it.
+      expect(result.code).toBe("UNAUTHORIZED")
+      expect(result.reason).toBe("unauthenticated")
+    }
+  })
+
+  it("allows any Origin when the allowlist is empty (dev), still requiring auth", async () => {
+    const { sessions, token } = await withSession()
+    const ok = await checkWsHandshake(
+      fakeReq({ headers: { origin: "https://anything.example.com" }, query: { token } }),
+      { sessions, webOrigins: [] },
+    )
+    expect(ok).toEqual({ ok: true, userId: ME })
+
+    const unauth = await checkWsHandshake(
+      fakeReq({ headers: { origin: "https://anything.example.com" } }),
+      { sessions, webOrigins: [] },
+    )
+    expect(unauth.ok).toBe(false)
   })
 })

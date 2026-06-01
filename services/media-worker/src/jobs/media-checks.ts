@@ -387,7 +387,16 @@ export async function runMediaChecksJob(
   // Process (never throws).
   const result = await processMedia({ bytes, kind: asset.kind }, deps)
 
-  // Persist outputs + final status. Storage writes first so a row never points at a missing object.
+  // PHASE-1 EXIF GPS DEFERRAL (privacy decision): processMedia reads result.exifGps from the ORIGINAL
+  // bytes purely to STRIP it (the published image is metadata-free). We deliberately do NOT persist that
+  // raw fix: storing a user's original device coordinates - even just to power the anon hold-release
+  // cross-check - would reintroduce exactly the location data the strip removes. The submit-time IP-geo
+  // GPS sanity (AbuseChecks.gpsPlausible) already runs for anon submits, so the hold-release EXIF
+  // cross-check is a documented Phase-1 deferral (it reads exifGeo as null and treats "no signal" as
+  // passing; see anon-hold-release.ts + anon-hold-release-repo.drizzle.findMedia). If a future phase
+  // wants it, the privacy-preserving shape is a single boolean column (e.g. exif_gps_far) computed HERE
+  // by comparing result.exifGps to the report geom, never the coordinates themselves. We log the read so
+  // it is observable, but it leaves the worker only as a yes/no in logs, not as stored data.
   const patch: MediaResultPatch = {
     status: result.status,
     codec: result.codec,

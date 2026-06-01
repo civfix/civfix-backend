@@ -12,8 +12,10 @@
  * authed report-service does not), and asserted by `h3CellCapExempt`.
  *
  * RESOLUTION: a SINGLE config constant ABUSE_H3_RES controls the cell size so the policy can flip from
- * r10 (~65 m edge) to r9 (~175 m edge) by changing one number. r10 matches reports.h3_cell so an
- * operator reasons about one granularity.
+ * r10 to r9 by changing one number. H3 res 10 cells are ~130 m across (vertex to vertex; ~65 m average
+ * edge, ~0.015 km^2 area); r9 is ~3x coarser. r10 matches reports.h3_cell so an operator reasons about
+ * one granularity. This cell is used ONLY for the anon abuse cap below; the MAP CLUSTER cell sizing is a
+ * SEPARATE, zoom-derived degree grid (see report-service.clusterCellSizeDeg) and is unrelated to H3.
  *
  * Pure vs seam: `abuseH3Cell` is the pure cell computation (wraps h3-js); `enforceH3CellCap` is the
  * thin CounterStore integration, so both are unit-testable with an in-memory CounterStore and no Redis.
@@ -24,9 +26,10 @@ import { AppError } from "@civfix/shared"
 import type { CounterStore } from "./counter-store.js"
 
 /**
- * H3 resolution for the per-cell abuse cap. SINGLE source of truth for this control's granularity:
- * flip to 9 to coarsen the cell (one number changes the whole policy). r10 (~65 m edge) matches
- * reports.h3_cell.
+ * H3 resolution for the per-cell ANON abuse cap. SINGLE source of truth for this control's granularity:
+ * flip to 9 to coarsen the cell (one number changes the whole policy). H3 res 10 cells are ~130 m across
+ * (~65 m edge, ~0.015 km^2); this matches reports.h3_cell. NOT related to map clustering (that uses a
+ * separate zoom-derived degree grid, not H3).
  */
 export const ABUSE_H3_RES = 10
 

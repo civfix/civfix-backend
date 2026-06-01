@@ -62,7 +62,12 @@ import type {
 /** Idempotency scope namespacing report-create keys in idempotency_keys.scope. */
 export const REPORT_CREATE_SCOPE = "report_create"
 
-/** H3 resolution used for reports.h3_cell. r10 (~65 m edge) suits per-cell clustering + rate limiting. */
+/**
+ * H3 resolution used for reports.h3_cell (the per-report H3 index stored on each row). H3 res 10 cells
+ * are ~130 m across (~65 m edge, ~0.015 km^2). This is the SAME granularity the anon abuse cap keys on
+ * (abuse/h3-cap.ABUSE_H3_RES), so one operator-facing granularity covers both. It is distinct from the
+ * MAP CLUSTER grid below (clusterCellSizeDeg), which is a zoom-derived degree grid, not H3.
+ */
 export const REPORT_H3_RESOLUTION = 10
 
 /**
@@ -234,9 +239,11 @@ export function reportH3Cell(lat: number, lng: number): string {
 }
 
 /**
- * Grid cell size (in degrees) used to snap points into clusters at a given zoom. Halves with each zoom
- * step so the world stays partitioned into ~constant screen-space tiles. Tuned so that below the
- * threshold a wide view yields a handful of clusters rather than hundreds of pins.
+ * Map CLUSTER grid cell size (in DEGREES) used to snap points into clusters at a given zoom. This is the
+ * separate clustering granularity, SEPARATE from the H3 reports.h3_cell above (which is for the abuse cap
+ * / a coarse spatial key, not the map). Halves with each zoom step so the world stays partitioned into
+ * ~constant screen-space tiles. Tuned so that below the threshold a wide view yields a handful of
+ * clusters rather than hundreds of pins.
  */
 export function clusterCellSizeDeg(zoom: number): number {
   // 360 degrees split into 2^(zoom+1) columns. At zoom 0 that is 180deg; at zoom 13 ~ 0.022deg.

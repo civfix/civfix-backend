@@ -120,11 +120,18 @@ export class WsChatService implements ChatService {
     return this.repo.history(cleanupId, before, limit)
   }
 
-  /** Tear down all room subscriptions (used at shutdown). */
+  /**
+   * Tear down all room subscriptions AND the pub/sub layer (used at shutdown). Unsubscribing each room
+   * leaves the underlying Redis subscriber connection open; the pub/sub owns that DEDICATED duplicated
+   * connection (see RedisChatPubSub), so we must close it here. The DI container's `redis.disconnect()`
+   * only closes the SHARED client, not the duplicate - so without this the subscriber connection would
+   * leak and keep the event loop alive, preventing a clean process exit on SIGTERM.
+   */
   async close(): Promise<void> {
     const unsubs = [...this.rooms.values()].map((r) => r.unsubscribe())
     this.rooms.clear()
     await Promise.all(unsubs)
+    await this.pubsub.close()
   }
 
   /** Test/diagnostic helper: number of local connections in a room. */

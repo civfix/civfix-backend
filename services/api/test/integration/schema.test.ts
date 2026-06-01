@@ -8,7 +8,7 @@
  *   - reports.idempotency_key has a UNIQUE constraint/index;
  *   - the GiST spatial indexes exist on jurisdictions/reports/cleanups;
  *   - chat_messages is a declaratively partitioned (range) table;
- *   - the migration bookkeeping recorded all three files.
+ *   - the migration bookkeeping recorded ALL current migration files (0000..0004), in order.
  */
 
 import { afterAll, describe, expect, it } from "vitest"

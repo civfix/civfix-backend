@@ -22,6 +22,7 @@
     "build": "tsup",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
+    "start:migrate": "node dist/db/migrate.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

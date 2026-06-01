@@ -222,10 +222,15 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     shuttingDown = true
     app.log.info({ signal }, "shutdown: draining")
     try {
-      // Stop accepting connections and finish in-flight requests first.
+      // 1) Stop accepting new connections, finish in-flight HTTP, and close every open WebSocket: the
+      //    @fastify/websocket preClose hook iterates server.clients and closes each one, then closes the
+      //    WS server. Our per-socket close handler leaves rooms and clears the heartbeat timer.
       await app.close()
-      // Then tear down seams + infra handles held by the container.
+      // 2) Tear down seams + infra handles held by the container, in order: pg-boss (stop intake/drain),
+      //    the chat pub/sub subscriber (the dedicated duplicated Redis connection), the shared Redis
+      //    client, then the Postgres pool. See di.ts Container.close().
       await app.container.close()
+      // 3) Flush any buffered error reports.
       await flushErrorReporting()
       app.log.info("shutdown: complete")
       process.exit(0)

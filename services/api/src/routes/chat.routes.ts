@@ -80,6 +80,8 @@ export async function registerChatRoutes(
     isMember,
     sessions: app.authServices?.sessions,
     markRead: (cleanupId, userId, _upToId) => readState.markRead(cleanupId, userId, new Date()),
+    // Anti-CSWSH: the gateway rejects a cross-site upgrade Origin not in the WEB_ORIGINS allowlist.
+    webOrigins: container.env.WEB_ORIGINS,
   })
 
   // -------------------------------------------------------------------------

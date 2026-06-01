@@ -1,11 +1,37 @@
-# civfix production-ish compose. Do NOT run this from the scaffold step; it is a reference for
-# deployment. Postgres (with PostGIS) and Redis MAY be external managed services: in that case set
-# DATABASE_URL / REDIS_URL in the env_file and remove the local redis service below.
+# civfix production-ish compose. Reference for deployment (not run from the scaffold step).
 #
-# Resource limits follow the capacity plan: api ~1.5G/2cpu, media-worker ~2.5G/1.5cpu, redis ~1G.
+# POSTGRES is EXTERNAL (a managed PostGIS-enabled Postgres): set DATABASE_URL in the env files. REDIS is
+# provided here as a local service by default; to use a managed Redis instead, set REDIS_URL in the env
+# files and delete the `redis` service + its `depends_on` references. For a fully local stack (Postgres
+# too), run infra/compose/docker-compose.dev.yml alongside this file.
+#
+# BUILD: every image's build context is the REPO ROOT (../.. from infra/compose) because the services are
+# pnpm-workspace packages that need the root manifests + lockfile + shared/ submodule in the context (see
+# each service's Dockerfile header). `docker compose build` works from this file unchanged.
+#
+# DEPLOY SEQUENCE (enforced by depends_on conditions):
+#   1) `migrate` runs once (node dist/db/migrate.js): applies drizzle/0000..0004 in order, idempotently,
+#      then exits 0. It reuses the API image (which carries the runner + the drizzle SQL).
+#   2) `api` and `media-worker` start only AFTER migrate completes successfully AND redis is healthy.
+# Re-running `docker compose up` re-runs migrate; it is a no-op when the schema is current.
+#
+# Resource limits follow the capacity plan: api 1.5G / 2 cpu, media-worker 2.5G / 1.5 cpu, redis 1G.
 # mem_limit/cpus are Compose v2 (non-swarm) keys.
 
 services:
+  # One-shot schema migration. Gate for api + worker. Exits 0 on success (restart: "no").
+  migrate:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    image: civfix/api:latest
+    restart: "no"
+    env_file:
+      - ../secrets/api.env
+    # Override the API server CMD: run the migration runner from the built dist (no tsx in the prod image).
+    command: ["node", "dist/db/migrate.js"]
+    # Migrations target the EXTERNAL Postgres (DATABASE_URL); they do not need redis.
+
   api:
     build:
       context: ../..
@@ -18,14 +44,25 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - redis
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     mem_limit: 1536m
     cpus: 2.0
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      # GET /healthz is pure (no DB/Redis). Node 22 global fetch -> no curl needed in the slim image.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 20s
 
   media-worker:
     build:
@@ -36,7 +73,10 @@ services:
     env_file:
       - ../secrets/media-worker.env
     depends_on:
-      - redis
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     mem_limit: 2560m
     cpus: 1.5
 
@@ -48,6 +88,11 @@ services:
     cpus: 1.0
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   caddy:
     image: caddy:2

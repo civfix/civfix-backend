@@ -5,10 +5,14 @@
  * proven clean. This module flips a held anon report to "published" once ALL of these hold:
  *   - every attached media asset is status "ready" (none rejected/held, and at least... see note),
  *   - there are NO open abuse_flags for the report (or its media), and
- *   - the report's point is GPS/EXIF-plausible (the submit-time IP-geo check passed; the EXIF GPS read
- *     by the worker is cross-checked here, the part deferred from submit).
- * If any media is rejected/held, or any abuse_flag is open, or the EXIF cross-check fails, the report
- * STAYS held - we never publish.
+ *   - the report's point is GPS-plausible. The submit-time IP-geo sanity (AbuseChecks.gpsPlausible)
+ *     already ran at submit; the per-media EXIF GPS cross-check here is a DOCUMENTED PHASE-1 DEFERRAL
+ *     because the worker strips and does NOT persist the original EXIF fix (privacy - see media-checks.ts
+ *     and anon-hold-release-repo.drizzle.findMedia). With exifGeo absent the cross-check passes (no signal
+ *     cannot contradict the point); the structure below is retained so a future privacy-preserving signal
+ *     (a boolean exif_gps_far, never raw coordinates) drops in without reshaping the gate.
+ * If any media is rejected/held, or any abuse_flag is open, or the EXIF cross-check (when a signal exists)
+ * fails, the report STAYS held - we never publish.
  *
  * MEDIA-LESS REPORTS: an anon report with no media has nothing to validate in the worker, so the "all
  * media ready" condition is vacuously true and (absent flags / GPS issues) it is publishable. The
@@ -134,8 +138,11 @@ export async function releaseAnonHoldIfReady(
     return { outcome: "flagged", published: false }
   }
 
-  // GPS/EXIF plausibility: cross-check the point against any EXIF GPS the worker recorded (the part
-  // deferred from submit). With no EXIF signal this passes (no signal cannot contradict the point).
+  // GPS/EXIF plausibility cross-check. PHASE-1 DEFERRAL: the worker strips EXIF and does not persist the
+  // raw GPS (privacy), so m.exifGeo is absent in production and this loop is effectively a no-op; the
+  // submit-time IP-geo sanity already covered the point. The loop is kept (and unit-tested with an in-
+  // memory exifGeo) so a future privacy-preserving signal activates the gate with no structural change.
+  // With no EXIF signal this passes (no signal cannot contradict the point).
   const point: LatLng = { lat: report.lat, lng: report.lng }
   for (const m of media) {
     if (m.exifGeo) {

@@ -1,8 +1,14 @@
 # civfix-backend
 
-Backend monorepo for civfix: a Fastify 5 API, a media worker, and deployment infra. This is the
-STEP 1 scaffold: a rock-solid skeleton, infrastructure config, full env, complete dependency-
-injection wiring, and CI. Domain logic (auth, reports, cleanups, chat, etc.) lands in later steps.
+Backend monorepo for civfix: a Fastify 5 API, a media worker, and deployment infra. All Phase-1
+domains are implemented: auth (Apple/Google/email-OTP), jurisdiction/map, media intake + the sandboxed
+media worker, reports, anonymous submit + abuse controls + claim, cleanups, real-time chat over
+WebSocket, social (people/follow/profile), and notifications/push. Every external dependency sits
+behind one of the 9 `@civfix/shared/interfaces`, selected real-vs-fake in the DI container, so the
+whole stack boots offline with no credentials for development and tests.
+
+Deployment is via Docker Compose (per-service multi-stage Dockerfiles) given external Postgres/Redis
+in env files. See "Deploy with Docker Compose" below.
 
 Part of four repos that all publish under the SAME GitHub owner:
 
@@ -163,9 +169,92 @@ its seams from `container` (or `app.container`). Health routes are already regis
 
 ## Migrations
 
-Drizzle schema lives in `services/api/src/db/schema/` (empty barrel for now). Generate and apply:
+The canonical, hand-authored DDL lives in `services/api/drizzle/0000..0004.sql` (PostGIS geometry,
+GiST indexes, and declarative partitioning that drizzle-kit cannot express). The Drizzle schema under
+`services/api/src/db/schema/` mirrors it for type-safe queries. The runner applies every `.sql` file in
+lexical order, each in its own transaction, recording applied files in `_civfix_migrations` so re-runs
+are a no-op.
 
 ```
-pnpm --filter @civfix/api db:generate   # writes SQL to services/api/drizzle
-pnpm --filter @civfix/api db:migrate    # applies against DATABASE_URL (needs a live Postgres)
+# Dev (tsx, against a live DATABASE_URL):
+pnpm --filter @civfix/api db:migrate
+
+# Production image (no tsx; runs the built runner):
+node dist/db/migrate.js        # == pnpm --filter @civfix/api start:migrate
 ```
+
+Migration files in play: `0000_extensions` (PostGIS/citext), `0001_core` (all Phase-1 tables +
+indexes), `0002_chat_partitioning` (range-partitioned `chat_messages`), `0003_users_email`
+(partial-unique citext email), `0004_cleanup_address`. The ordering + the canonical file set are
+guarded by `test/unit/migrate-files.test.ts` (locally), and the resulting schema shape by
+`test/integration/schema.test.ts` (Docker-gated).
+
+## Deploy with Docker Compose
+
+The reference deployment is `infra/compose/docker-compose.yml`. Postgres is EXTERNAL (a managed
+PostGIS-enabled instance via `DATABASE_URL`); Redis is provided as a local service by default (or set
+`REDIS_URL` and remove the `redis` service to use a managed one). Caddy terminates TLS in front of the
+API.
+
+Build contexts are the REPO ROOT (the services are pnpm-workspace packages that need the root
+manifests + lockfile + the `shared/` submodule); each service's `Dockerfile` header documents this.
+
+```
+# 1) Provide config (gitignored, SOPS-decrypted at deploy):
+#      infra/secrets/api.env           (DATABASE_URL, REDIS_URL, SESSION_SIGNING_KEY, ... see .env.example)
+#      infra/secrets/media-worker.env
+# 2) From infra/compose/:
+docker compose build
+docker compose up -d
+```
+
+DEPLOY SEQUENCE (enforced by `depends_on` in the compose file):
+
+1. The `migrate` one-shot service runs `node dist/db/migrate.js` (it reuses the API image, which carries
+   the runner + the `drizzle/*.sql`), applies `0000..0004`, then exits 0.
+2. `api` and `media-worker` start only after `migrate` completes successfully AND `redis` is healthy.
+
+The API exposes `GET /healthz` (liveness, pure) and `GET /readyz` (readiness: pings DB + Redis when
+wired). Both processes install SIGTERM/SIGINT graceful shutdown: the API drains in-flight HTTP, closes
+all WebSocket connections, then tears down pg-boss, the chat pub/sub subscriber, Redis, and the Postgres
+pool; the worker drains the queue then closes its DB pool.
+
+Resource budget (compose `mem_limit`/`cpus`): api 1.5G / 2 cpu, media-worker 2.5G / 1.5 cpu, redis 1G.
+
+### Building / running a single image by hand
+
+```
+# from the repo root (NOT services/api):
+docker build -f services/api/Dockerfile -t civfix/api:latest .
+docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
+```
+
+ffmpeg/sharp in-container: the worker image relies on `ffmpeg-static` + `ffprobe-static` (self-contained
+statically-linked linux-x64 binaries downloaded on install - no system ffmpeg needed) and `sharp`'s
+prebuilt linux-x64 binaries (glibc, which the Debian bookworm base provides). These are installed INSIDE
+the linux image (never copied from the host) so the platform is correct. See the Dockerfile headers.
+
+## Dev flags: USE_FAKE_*
+
+Outside production, the env loader supplies insecure dev defaults for the signing keys and defaults
+every `USE_FAKE_*` flag to ON, so the server + worker boot with no database, Redis, or cloud
+credentials. In production every flag defaults to OFF and the corresponding [BOOT] credentials are
+required (a missing one fails boot with an aggregated error).
+
+| Flag                  | When ON (dev default)             | When OFF (prod default) needs                          |
+| --------------------- | --------------------------------- | ------------------------------------------------------ |
+| `USE_FAKE_STORAGE`    | in-memory object storage          | `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` |
+| `USE_FAKE_MAILER`     | captures emails in memory         | `OCI_EMAIL_SMTP_*`                                      |
+| `USE_FAKE_PUSH`       | no-op push sender                 | APNs / FCM / VAPID keys (per platform; optional)       |
+| `USE_FAKE_ABUSE_NSFW` | benign NSFW/dedupe scores         | the real abuse adapter (Turnstile secret optional)     |
+| `USE_FAKE_CHAT`       | in-process chat fan-out           | `DATABASE_URL` + `REDIS_URL` (Drizzle repo + Redis pub/sub) |
+| `USE_FAKE_JOBS`       | in-memory job queue               | `DATABASE_URL` (pg-boss)                               |
+
+To exercise a real seam locally, run the dev infra (`infra/compose/docker-compose.dev.yml` brings up
+PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn the relevant flag off (e.g.
+`USE_FAKE_CHAT=0`).
+
+## Phase-1 acceptance
+
+`services/api/PHASE1-ACCEPTANCE.md` maps each Phase-1 done-criterion to the endpoint(s)/code that
+satisfy it and the test(s) that prove it, and marks which are proven locally vs Docker-gated/CI.

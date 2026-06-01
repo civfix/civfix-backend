@@ -1,0 +1,38 @@
+# Docker build context is the repo ROOT (see infra/compose/docker-compose.yml build.context: ../..).
+# Keep the context small + reproducible: never ship host node_modules / build outputs / secrets into
+# the build. The Dockerfiles install + build fresh INSIDE the linux image so native binaries (sharp,
+# ffmpeg-static, ffprobe-static) are fetched for the target platform, not copied from the host.
+
+# Dependencies + build outputs (re-created in the image)
+**/node_modules
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+**/coverage
+
+# VCS + CI + editor cruft
+.git
+.gitignore
+.github
+**/.DS_Store
+**/*.log
+
+# Local env / secrets (the container gets config via env_file at run time, NOT baked into the image)
+**/.env
+**/.env.*
+!**/.env.example
+infra/secrets/*.env
+
+# Docker + compose meta (not needed inside the build)
+**/Dockerfile
+**/.dockerignore
+infra/compose
+
+# Tests + fixtures are not needed for a production image build (build stage only runs tsup, not tests)
+**/test
+**/__tests__
+**/*.test.ts
+**/vitest.config.ts
+
+# Drizzle generated inspection output (the canonical hand SQL in services/api/drizzle/*.sql is kept)
+**/drizzle/_generated

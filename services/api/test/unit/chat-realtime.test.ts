@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, vi } from "vitest"
 import {
   handleClientFrame,
   type GatewaySession,
@@ -208,6 +208,25 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     await handleClientFrame(aSession, JSON.stringify({ type: "leave", cleanupId: ROOM }))
     expect(chat.roomSize(ROOM)).toBe(0)
     expect(pubsub.channelCount).toBe(0)
+  })
+
+  it("close() tears down the pub/sub layer (subscriber connection) even with rooms still open", async () => {
+    // Spy on the pub/sub close so we prove the chat service propagates shutdown to it (in production this
+    // is what disconnects the DEDICATED Redis subscriber connection the container's redis.disconnect()
+    // does NOT own). Without this propagation the subscriber connection leaks and the process hangs.
+    const closeSpy = vi.spyOn(pubsub, "close")
+
+    const aConn = new MockConnection("A")
+    const aSession = sessionFor(ALICE, aConn)
+    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    expect(chat.roomSize(ROOM)).toBe(1)
+
+    await chat.close()
+
+    // Rooms are dropped AND the pub/sub was closed exactly once.
+    expect(chat.roomSize(ROOM)).toBe(0)
+    expect(pubsub.channelCount).toBe(0)
+    expect(closeSpy).toHaveBeenCalledTimes(1)
   })
 })
 

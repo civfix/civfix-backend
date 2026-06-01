@@ -1,9 +1,20 @@
 /**
  * WebSocket chat gateway, mounted at GET /ws via @fastify/websocket.
  *
+ * ORIGIN ALLOWLIST (anti-CSWSH): the cookie handshake path (a) is vulnerable to Cross-Site WebSocket
+ * Hijacking because the browser attaches the httpOnly session cookie to a cross-origin ws() connection
+ * automatically (the CORS preflight does NOT apply to WebSocket upgrades). So BEFORE resolving auth we
+ * check the upgrade request's Origin header against the configured WEB_ORIGINS allowlist (same policy
+ * as the CORS plugin): an Origin that is present is allowed; a cross-site Origin is REJECTED with a
+ * policy-violation close. A handshake with NO Origin header (native mobile RN socket, server-to-server,
+ * tests) is allowed: those carry no ambient cookie, so they are not CSWSH-exposed, and the bearer/token
+ * path (b) still validates the credential. An empty allowlist (dev-only) allows all origins, mirroring
+ * the CORS plugin's documented dev convenience.
+ *
  * DUAL HANDSHAKE AUTH (the web and mobile clients differ):
  *   (a) COOKIE (web, same-origin SPA): the httpOnly session cookie is sent automatically on the upgrade
- *       request, so the auth onRequest hook already resolved req.auth from it. We accept that.
+ *       request, so the auth onRequest hook already resolved req.auth from it. We accept that (after the
+ *       Origin allowlist check above has cleared the cross-site-hijack risk).
  *   (b) ?token=<bearer> QUERY PARAM (mobile): a React Native WebSocket cannot set an Authorization
  *       header, so the native client passes its bearer token as a query parameter. We resolve it via
  *       session-service.resolveSession during the handshake.
@@ -37,6 +48,30 @@ export const WS_HEARTBEAT_MS = 30_000
 
 /** Close code used when a handshake is unauthenticated (RFC 6455 policy violation). */
 export const WS_CLOSE_POLICY_VIOLATION = 1008
+
+/**
+ * Decide whether a WebSocket upgrade Origin is allowed (anti-CSWSH). Pure so it is unit-testable with no
+ * socket. Policy (mirrors the CORS plugin):
+ *   - no Origin header (undefined/empty) -> ALLOW. Native mobile sockets, server-to-server, and tests
+ *     send no Origin; they also carry no ambient browser cookie, so they are not hijack-exposed and the
+ *     bearer/token path still validates the credential.
+ *   - empty allowlist -> ALLOW all (dev-only convenience; the CORS plugin logs this same condition).
+ *   - Origin present in the allowlist -> ALLOW (exact string match, as browsers send a normalized
+ *     scheme://host[:port] with no trailing slash).
+ *   - any other Origin -> REJECT (a cross-site page trying to ride the session cookie).
+ */
+export function isAllowedWsOrigin(origin: string | undefined, webOrigins: readonly string[]): boolean {
+  if (origin === undefined || origin === "") return true
+  if (webOrigins.length === 0) return true
+  return webOrigins.includes(origin)
+}
+
+/** Read the (single) Origin header from an upgrade request, or undefined when absent. */
+function originHeader(request: FastifyRequest): string | undefined {
+  const raw = request.headers.origin
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return value === undefined || value === "" ? undefined : value
+}
 
 /** Membership probe: is `userId` a member of `cleanupId`? (cleanup membership == chat membership). */
 export type IsMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
@@ -223,6 +258,46 @@ export async function resolveWsUser(
   return null
 }
 
+/**
+ * The outcome of validating a WS upgrade handshake: either an accepted user, or a rejection carrying
+ * the error-frame code + a close reason. Split out (like resolveWsUser) so BOTH gates - the anti-CSWSH
+ * Origin allowlist and the dual auth - are unit-testable with a synthetic request, no live socket.
+ */
+export type WsHandshakeResult =
+  | { ok: true; userId: string }
+  | { ok: false; code: "FORBIDDEN" | "UNAUTHORIZED"; message: string; reason: string }
+
+/**
+ * Validate a WS upgrade handshake. Order matters:
+ *   1) Origin allowlist (anti-CSWSH): a cross-site Origin is rejected BEFORE the cookie is consulted, so
+ *      a hijacking page can never ride the ambient session cookie.
+ *   2) Auth: resolve the user from the already-resolved cookie/bearer session or the ?token query.
+ * Returns a structured result; the Fastify adapter turns a rejection into an error frame + close.
+ */
+export async function checkWsHandshake(
+  request: FastifyRequest,
+  opts: { sessions: SessionService | undefined; webOrigins: readonly string[] },
+): Promise<WsHandshakeResult> {
+  if (!isAllowedWsOrigin(originHeader(request), opts.webOrigins)) {
+    return {
+      ok: false,
+      code: "FORBIDDEN",
+      message: "Origin not allowed.",
+      reason: "origin not allowed",
+    }
+  }
+  const userId = await resolveWsUser(request, opts.sessions)
+  if (userId === null) {
+    return {
+      ok: false,
+      code: "UNAUTHORIZED",
+      message: "Authentication required.",
+      reason: "unauthenticated",
+    }
+  }
+  return { ok: true, userId }
+}
+
 export interface RegisterGatewayOptions {
   /** The chat service (real WsChatService in production, or the fake). */
   chat: ChatService
@@ -232,6 +307,8 @@ export interface RegisterGatewayOptions {
   sessions: SessionService | undefined
   /** Optional read-state updater for the `ack` frame. */
   markRead?: MarkReadFn | undefined
+  /** CORS/WS Origin allowlist (env.WEB_ORIGINS). Empty allows all (dev). See isAllowedWsOrigin. */
+  webOrigins: readonly string[]
 }
 
 /**
@@ -241,19 +318,25 @@ export interface RegisterGatewayOptions {
 export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayOptions): void {
   app.get("/ws", { websocket: true }, (socket: WebSocket, request: FastifyRequest) => {
     void (async () => {
-      const userId = await resolveWsUser(request, opts.sessions)
-      if (userId === null) {
-        // Reject the unauthenticated handshake: one error frame, then close with policy-violation.
+      // Validate the handshake: Origin allowlist (anti-CSWSH) THEN dual auth. A rejection is closed with
+      // one error frame + policy-violation; nothing past this point runs for a disallowed/unauthed socket.
+      const handshake = await checkWsHandshake(request, {
+        sessions: opts.sessions,
+        webOrigins: opts.webOrigins,
+      })
+      if (!handshake.ok) {
+        if (handshake.code === "FORBIDDEN") {
+          request.log.warn({ origin: originHeader(request) }, "ws: rejected cross-site Origin")
+        }
         try {
-          socket.send(
-            serverFrame({ type: "error", code: "UNAUTHORIZED", message: "Authentication required." }),
-          )
+          socket.send(serverFrame({ type: "error", code: handshake.code, message: handshake.message }))
         } catch {
           // Ignore a send failure on an already-closing socket.
         }
-        socket.close(WS_CLOSE_POLICY_VIOLATION, "unauthenticated")
+        socket.close(WS_CLOSE_POLICY_VIOLATION, handshake.reason)
         return
       }
+      const userId = handshake.userId
 
       const session: GatewaySession = {
         userId,

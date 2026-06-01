@@ -5,8 +5,14 @@
  * readdir ordering.
  */
 
+import { readdirSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import { orderMigrationFiles } from "../../src/db/migrate-files.js"
+
+/** Absolute path to services/api/drizzle, resolved from this test file (cwd-independent). */
+const DRIZZLE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle")
 
 describe("orderMigrationFiles", () => {
   it("sorts .sql files lexically ascending regardless of input order", () => {
@@ -55,6 +61,20 @@ describe("orderMigrationFiles", () => {
       "0002_b.sql",
       "0009_i.sql",
       "0010_j.sql",
+    ])
+  })
+
+  // Guards the deploy contract WITHOUT Docker: the migration runner applies exactly these files, in this
+  // order. If a new migration lands (or one is renamed/removed) this fails until the canonical list (and
+  // the Docker-gated schema bookkeeping assertion) is updated to match. The same list the runner reads.
+  it("the REAL services/api/drizzle directory holds exactly 0000..0004 in order", () => {
+    const ordered = orderMigrationFiles(readdirSync(DRIZZLE_DIR))
+    expect(ordered).toEqual([
+      "0000_extensions.sql",
+      "0001_core.sql",
+      "0002_chat_partitioning.sql",
+      "0003_users_email.sql",
+      "0004_cleanup_address.sql",
     ])
   })
 })
