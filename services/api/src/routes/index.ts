@@ -14,6 +14,7 @@ import type { Container } from "../di.js"
 import { registerHealthRoutes } from "./health.routes.js"
 import { registerAuthRoutes } from "./auth.routes.js"
 import { registerMapRoutes } from "./map.routes.js"
+import { registerMediaRoutes } from "./media.routes.js"
 
 export interface RegisterRoutesOptions {
   /** Whether an auth service bundle is available; gates mounting the auth routes. */
@@ -35,6 +36,12 @@ export async function registerRoutes(
   // mount unconditionally. The DB-backed handlers (resolve-jurisdiction, cleanups) reach the database
   // lazily via container.getDb() only when hit; tileinfo + reverse-label need no DB.
   await registerMapRoutes(app, container)
+
+  // Media: presigned-upload intake (create/finalize) + media fetch. All anon-ok, so they mount
+  // unconditionally. The handlers reach the database lazily via container.getDb() only when hit; the
+  // expensive untrusted-byte processing happens in the separate media-worker via the "media.checks"
+  // job this enqueues on finalize.
+  await registerMediaRoutes(app, container)
 
   // <-- later domain steps append their route registrations below, e.g.:
   // await registerReportRoutes(app, container)

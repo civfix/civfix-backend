@@ -26,6 +26,7 @@ import {
   buildAuthServicesFromContainer,
   type AuthServices,
 } from "./auth/auth-services.js"
+import type { MediaRepository } from "./services/media-intake-service.js"
 import { registerRoutes } from "./routes/index.js"
 import { SERVICE_VERSION } from "./version.js"
 
@@ -47,6 +48,12 @@ export interface BuildServerOptions {
    * what lets the full auth flow be exercised offline via app.inject.
    */
   authServices?: AuthServices
+  /**
+   * Inject an in-memory media repository (tests). When present the media routes use it instead of the
+   * Drizzle-backed repo, so the create/finalize/getMedia HTTP flow runs offline (no Docker). Omitted in
+   * production: the routes reach the database lazily via container.getDb().
+   */
+  mediaRepo?: MediaRepository
 }
 
 /**
@@ -85,6 +92,12 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   const authServices = resolveAuthServices(opts, env, container)
   if (authServices) {
     app.decorate("authServices", authServices)
+  }
+
+  // Optional injected media repository (tests). Left unset in production so the media routes build the
+  // Drizzle-backed repo from the lazily-created DB handle.
+  if (opts.mediaRepo) {
+    app.decorate("mediaRepo", opts.mediaRepo)
   }
 
   // Auth context hook (resolves req.auth from the session, or anonymous).
