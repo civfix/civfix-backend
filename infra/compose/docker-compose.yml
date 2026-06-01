@@ -10,10 +10,16 @@
 # each service's Dockerfile header). `docker compose build` works from this file unchanged.
 #
 # DEPLOY SEQUENCE (enforced by depends_on conditions):
-#   1) `migrate` runs once (node dist/db/migrate.js): applies drizzle/0000..0004 in order, idempotently,
+#   1) `migrate` runs once (node dist/db/migrate.js): applies drizzle/0000..0005 in order, idempotently,
 #      then exits 0. It reuses the API image (which carries the runner + the drizzle SQL).
 #   2) `api` and `media-worker` start only AFTER migrate completes successfully AND redis is healthy.
 # Re-running `docker compose up` re-runs migrate; it is a no-op when the schema is current.
+#
+# EXPOSURE: ONLY `caddy` is host-published (80/443). `api` and `media-worker` are reachable solely on the
+# internal compose network; Caddy proxies to the API by service name (api:8080). This keeps every API
+# request flowing through Caddy, which strips client-supplied forwarding headers (X-Forwarded-* / CF-*),
+# so the trust-proxy default (trust only internal hops) holds and a forged X-Forwarded-For can never reach
+# the API from a direct public hit. For a local-dev direct port on the API, use docker-compose.dev.yml.
 #
 # Resource limits follow the capacity plan: api 1.5G / 2 cpu, media-worker 2.5G / 1.5 cpu, redis 1G.
 # mem_limit/cpus are Compose v2 (non-swarm) keys.
@@ -41,8 +47,11 @@ services:
     env_file:
       # Prefer a SOPS-decrypted file mounted at deploy time; fall back to a local .env.
       - ../secrets/api.env
-    ports:
-      - "8080:8080"
+    # NOT host-published: the API is reachable only on the internal compose network. Caddy proxies to it
+    # by service name (api:8080), so every request passes the edge header-strip. For a local-dev direct
+    # port, use docker-compose.dev.yml (dev-only). Containers on this network reach it via `api:8080`.
+    expose:
+      - "8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -65,6 +74,8 @@ services:
       start_period: 20s
 
   media-worker:
+    # NOT host-published either: a background job worker with no inbound HTTP, reachable only on the
+    # internal compose network. No `ports:`/`expose:` mapping (nothing to serve to the host).
     build:
       context: ../..
       dockerfile: services/media-worker/Dockerfile

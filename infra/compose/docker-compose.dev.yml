@@ -5,8 +5,24 @@
 #   docker compose -f infra/compose/docker-compose.dev.yml up -d
 #   export DATABASE_URL=postgres://civfix:civfix@localhost:5432/civfix
 #   export REDIS_URL=redis://localhost:6379
+#
+# DEV-ONLY API PORT OVERRIDE: the production compose (docker-compose.yml) does NOT host-publish the API
+# (only Caddy is public; the API is internal-only). When this override is layered ON TOP of it for a fully
+# local stack, e.g.
+#   docker compose -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.dev.yml up
+# the `api` stanza below merges in a loopback-only host port (127.0.0.1:8080) so you can curl the API
+# directly without going through Caddy. This binding is DEV-ONLY: it bypasses Caddy's forwarding-header
+# strip, so it must never appear in the production compose. Bound to 127.0.0.1 (not 0.0.0.0) so it is not
+# reachable off the dev box. Harmless when this file is run standalone (the `api` service is not defined
+# there, so the extra keys simply have nothing to attach to).
 
 services:
+  # Merges into the production `api` service ONLY when both files are passed to `docker compose`.
+  # Adds a loopback-only host port for local debugging. See the DEV-ONLY note in the header above.
+  api:
+    ports:
+      - "127.0.0.1:8080:8080"
+
   postgres:
     image: postgis/postgis:16-3.4
     restart: unless-stopped

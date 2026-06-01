@@ -169,7 +169,7 @@ its seams from `container` (or `app.container`). Health routes are already regis
 
 ## Migrations
 
-The canonical, hand-authored DDL lives in `services/api/drizzle/0000..0004.sql` (PostGIS geometry,
+The canonical, hand-authored DDL lives in `services/api/drizzle/0000..0005.sql` (PostGIS geometry,
 GiST indexes, and declarative partitioning that drizzle-kit cannot express). The Drizzle schema under
 `services/api/src/db/schema/` mirrors it for type-safe queries. The runner applies every `.sql` file in
 lexical order, each in its own transaction, recording applied files in `_civfix_migrations` so re-runs
@@ -211,7 +211,7 @@ docker compose up -d
 DEPLOY SEQUENCE (enforced by `depends_on` in the compose file):
 
 1. The `migrate` one-shot service runs `node dist/db/migrate.js` (it reuses the API image, which carries
-   the runner + the `drizzle/*.sql`), applies `0000..0004`, then exits 0.
+   the runner + the `drizzle/*.sql`), applies `0000..0005`, then exits 0.
 2. `api` and `media-worker` start only after `migrate` completes successfully AND `redis` is healthy.
 
 The API exposes `GET /healthz` (liveness, pure) and `GET /readyz` (readiness: pings DB + Redis when

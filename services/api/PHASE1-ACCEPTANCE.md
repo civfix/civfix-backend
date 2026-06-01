@@ -246,5 +246,5 @@ The backend supports it via:
 | ffmpeg/ffprobe via static linux binaries; sharp prebuilt linux binaries | worker Dockerfile header + `src/sandbox/*` | reviewable |
 | `.dockerignore` at repo root (node_modules, dist, .turbo, .git, tests, secrets) | `.dockerignore` | reviewable |
 | Compose builds + migrate init service gating api/worker; mem/cpu budget | `infra/compose/docker-compose.yml` | YAML-validated |
-| Migrate runner applies 0000..0004 in order, invokable as a script | `src/db/migrate.ts` (dev: `pnpm db:migrate`; prod: `node dist/db/migrate.js`) | LOCAL (ordering: `test/unit/migrate-files.test.ts`) / DOCKER (shape: `test/integration/schema.test.ts`) |
+| Migrate runner applies 0000..0005 in order, invokable as a script | `src/db/migrate.ts` (dev: `pnpm db:migrate`; prod: `node dist/db/migrate.js`) | LOCAL (ordering: `test/unit/migrate-files.test.ts`) / DOCKER (shape: `test/integration/schema.test.ts`) |
 | Graceful shutdown closes WS + chat pub/sub subscriber + Redis + DB pool + pg-boss | `src/server.ts` shutdown, `di.ts` Container.close, `adapters/chat-service.ws.ts` close | LOCAL (`test/unit/chat-realtime.test.ts` close() case; `test/unit/di.test.ts`) |

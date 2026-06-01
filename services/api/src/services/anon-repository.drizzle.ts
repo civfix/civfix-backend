@@ -4,7 +4,9 @@
  * Three repositories share this file because they all touch the same tables (reports, media_assets,
  * report_timeline, anon_tokens, abuse_flags, idempotency_keys) and the same PostGIS geometry handling:
  *
- *   makeDrizzleAnonReportRepository  -> AnonReportRepository (held-create tx + status + anon_tokens store)
+ *   makeDrizzleAnonReportRepository  -> AnonReportRepository (held-create tx + status + the anon_tokens
+ *                                       resolve/issue store; the claim code is per-report on
+ *                                       reports.claim_code (0005), NOT on the anon_tokens row)
  *   makeDrizzleAnonHoldReleaseRepo   -> AnonHoldReleaseRepo  (the worker's release gate)
  *   makeDrizzleClaimRepository       -> ClaimRepository      (claim-by-code linking + nudge lookup)
  *

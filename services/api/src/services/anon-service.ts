@@ -119,13 +119,14 @@ export interface AnonReportRepository extends AnonTokenStore {
   /** Look up a stored AnonReportResponse snapshot for (key, scope); null on a first submit. */
   findIdempotentSnapshot(key: string, scope: string): Promise<AnonReportResponse | null>
   /**
-   * Run the held-create transaction: insert the report (held), attach media, insert the submitted+held
-   * timeline rows, bump anon_tokens.report_count, stamp the claim code, and persist the snapshot - all
-   * atomically. Catches a UNIQUE(idempotency_key) race and returns the stored snapshot as a "replayed"
-   * result so the caller still sees the original response.
+   * Run the held-create transaction: insert the report (held) with its own single-use claim code on the
+   * report row (reports.claim_code, 0005), attach media, insert the submitted+held timeline rows, bump
+   * anon_tokens.report_count, and persist the snapshot - all atomically. Catches a UNIQUE(idempotency_key)
+   * race and returns the stored snapshot as a "replayed" result so the caller still sees the original
+   * response.
    */
   createAnonReportTx(args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult>
-  /** Load the status + claim code for an anon report by id (claim code via its anon_tokens row). */
+  /** Load the status + claim code for an anon report by id (the per-report reports.claim_code, 0005). */
   findAnonReportStatus(reportId: string): Promise<AnonReportStatusRow | null>
 }
 
