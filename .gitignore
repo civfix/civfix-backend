@@ -10,3 +10,7 @@ coverage
 .env
 .env.*
 !.env.example
+
+# drizzle-kit diff-inspection output (db:generate). The canonical hand SQL in
+# services/api/drizzle/*.sql IS tracked; only the throwaway generated copy is ignored.
+**/drizzle/_generated/
