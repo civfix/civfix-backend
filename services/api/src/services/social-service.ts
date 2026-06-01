@@ -23,7 +23,7 @@
  * projection as the cleanups domain so the shapes never drift.
  */
 
-import { AppError } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   CleanupDTO,
   ListPeopleRequest,
@@ -44,57 +44,14 @@ export const PEOPLE_DEFAULT_LIMIT = 20
 export const PROFILE_PAST_EVENTS_LIMIT = 20
 
 // ---------------------------------------------------------------------------
-// Pure helper: avatar gradient (brand palette)
+// Avatar gradient
 // ---------------------------------------------------------------------------
-
-/**
- * The brand palette colors the avatar gradient draws from, one representative hex per brand scale
- * (bloom/moss/sun/sky/lilac). Copied as literals (the shared design tokens are the source of truth; these
- * MUST stay in sync with tokens.color.brand). A unit test asserts every produced color is a member of this
- * set, so a typo is caught at CI time. Ordered + frozen so the index math below is stable.
- */
-export const AVATAR_PALETTE = [
-  "#FF7A6B", // bloom
-  "#6FB36F", // moss
-  "#FFCB47", // sun
-  "#6FB1DC", // sky
-  "#9C82DE", // lilac
-] as const
-
-export type AvatarColor = (typeof AVATAR_PALETTE)[number]
-
-/**
- * Deterministic FNV-1a-style 32-bit hash of a string. Pure + stable across runs/platforms (no Math.random,
- * no Date). Used to pick the avatar gradient colors from a user id/handle.
- */
-export function stableHash(seed: string): number {
-  let h = 0x811c9dc5
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i)
-    // 32-bit FNV prime multiply via shifts to stay in the unsigned 32-bit range.
-    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0
-  }
-  return h >>> 0
-}
-
-/**
- * Pick two DISTINCT colors from the brand palette for `seed`, deterministically. The first color is the
- * hash modulo the palette size; the second is offset by a co-prime stride (so it never collides with the
- * first across the 5-color palette) derived from a second hash round. Returns a [from, to] hex pair that
- * drives an initials-avatar gradient on the client, matching PersonDTO.avatar / UserProfileDTO.avatar.
- *
- * Pure: same seed -> same pair, always. Unit-tested for determinism + palette membership + distinctness.
- */
-export function avatarGradient(seed: string): [AvatarColor, AvatarColor] {
-  const n = AVATAR_PALETTE.length
-  const h = stableHash(seed)
-  const first = h % n
-  // Stride in 1..n-1 so (first + stride) % n != first; with a 5-color (prime) palette any stride works,
-  // but deriving it from a rehash spreads the second color rather than always being "the next one".
-  const stride = 1 + (stableHash(`${seed}:2`) % (n - 1))
-  const second = (first + stride) % n
-  return [AVATAR_PALETTE[first]!, AVATAR_PALETTE[second]!]
-}
+// The deterministic initials-avatar gradient (AVATAR_PALETTE / stableHash / avatarGradient) now lives in
+// @civfix/shared as the single source of truth (palette derived from tokens.color.brand). The shared
+// algorithm is byte-identical to the one that previously lived here, so PersonDTO.avatar /
+// UserProfileDTO.avatar are unchanged; the organizer and chat avatars now derive from this SAME function,
+// so a person renders one consistent gradient across the people list, their profile, a CleanupDTO
+// organizer, and the chat. avatarGradient is imported above.
 
 // ---------------------------------------------------------------------------
 // Repository seam (structural views; faked in tests)

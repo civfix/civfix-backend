@@ -25,7 +25,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   CleanupDTO,
   CleanupStatus,
@@ -166,50 +166,16 @@ export interface CleanupRepository {
 // ---------------------------------------------------------------------------
 // Pure helpers (no DB, no IO)
 // ---------------------------------------------------------------------------
-
-/**
- * Deterministic initials-avatar gradient for a user id: two hex colors derived from a cheap hash of the
- * id. Pure so the DTO is stable across reads and unit-testable. Mirrors how PersonDTO.avatar is meant to
- * drive an initials gradient on the client.
- */
-export function avatarGradient(userId: string): [string, string] {
-  let h = 0
-  for (let i = 0; i < userId.length; i++) {
-    h = (h * 31 + userId.charCodeAt(i)) >>> 0
-  }
-  const hue = (deg: number): string => {
-    // Map a hash-derived hue to a fixed-saturation/lightness hex color (HSL -> RGB), kept simple.
-    const c = hslToHex(deg % 360, 0.6, 0.5)
-    return c
-  }
-  return [hue(h), hue(h + 40)]
-}
-
-/** Minimal HSL->hex (s,l in 0..1). Pure helper for avatarGradient. */
-function hslToHex(hDeg: number, s: number, l: number): string {
-  const c = (1 - Math.abs(2 * l - 1)) * s
-  const x = c * (1 - Math.abs(((hDeg / 60) % 2) - 1))
-  const m = l - c / 2
-  let r = 0
-  let g = 0
-  let b = 0
-  if (hDeg < 60) [r, g, b] = [c, x, 0]
-  else if (hDeg < 120) [r, g, b] = [x, c, 0]
-  else if (hDeg < 180) [r, g, b] = [0, c, x]
-  else if (hDeg < 240) [r, g, b] = [0, x, c]
-  else if (hDeg < 300) [r, g, b] = [x, 0, c]
-  else [r, g, b] = [c, 0, x]
-  const to2 = (v: number): string =>
-    Math.round((v + m) * 255)
-      .toString(16)
-      .padStart(2, "0")
-  return `#${to2(r)}${to2(g)}${to2(b)}`
-}
+// The avatar gradient is the shared deterministic helper (imported from @civfix/shared above). It
+// previously had a DIVERGENT local HSL implementation here, which made the organizer/chat avatar differ
+// from the people-list/profile avatar for the SAME user (the same person looked different across screens).
+// Converging on the shared brand-palette avatarGradient fixes that: organizer + profile + chat now derive
+// the identical [from, to] gradient from a user id.
 
 /**
  * Build the organizer PersonDTO from the joined person view. followers/following are 0 and isFollowing
  * false in the cleanup context (the cleanups domain does not load social graph counts; the social step
- * owns those). avatar is the derived gradient so the client can render an initials chip.
+ * owns those). avatar is the shared derived gradient so the client can render an initials chip.
  */
 export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
   return {

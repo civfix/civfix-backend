@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
+import { relativeAgo } from "@civfix/shared"
 import {
   makeThreadsService,
   InMemoryChatReadState,
-  relativeAgo,
 } from "../../src/services/threads-service.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 
@@ -17,12 +17,16 @@ const OTHER = "22222222-2222-2222-2222-222222222222"
 
 const NOW = new Date("2026-06-01T12:00:00.000Z")
 
-describe("relativeAgo", () => {
-  it("buckets durations into just now / Nm / Nh / Nd", () => {
-    expect(relativeAgo(new Date("2026-06-01T11:59:30.000Z"), NOW)).toBe("just now")
+describe("relativeAgo (shared)", () => {
+  it("buckets durations into now / Nm / Nh / Nd (shared default text)", () => {
+    // The shared relativeAgo renders the near bucket as "now" (the reconciled default; the backend's
+    // former "just now" is available via opts.justNow, but we adopt the shared default for consistency).
+    expect(relativeAgo(new Date("2026-06-01T11:59:30.000Z"), NOW)).toBe("now")
     expect(relativeAgo(new Date("2026-06-01T11:55:00.000Z"), NOW)).toBe("5m")
     expect(relativeAgo(new Date("2026-06-01T09:00:00.000Z"), NOW)).toBe("3h")
     expect(relativeAgo(new Date("2026-05-29T12:00:00.000Z"), NOW)).toBe("3d")
+    // Week-plus now buckets to "Nw" (was previously "Nd" past 7 days in the old backend impl).
+    expect(relativeAgo(new Date("2026-05-18T12:00:00.000Z"), NOW)).toBe("2w")
   })
 })
 

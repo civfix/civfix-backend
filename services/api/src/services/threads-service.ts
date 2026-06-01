@@ -4,7 +4,8 @@
  * A thread is one cleanup the viewer is a member of. For each, the service projects:
  *   - title      the cleanup title;
  *   - last       the most-recent message's body preview (null when the room has no messages yet);
- *   - ago        a short relative-time string for that last message ("just now", "5m", "2h", "3d");
+ *   - ago        a short relative-time string for that last message (shared relativeAgo: "now", "5m",
+ *                "2h", "3d", "2w");
  *   - lastFromMe whether the most-recent message was sent by the viewer (drives the "You:" prefix);
  *   - members    the cleanup member count;
  *   - unread     count of messages from OTHERS newer than the viewer's read watermark.
@@ -19,6 +20,7 @@
  * service is unit-testable with no database.
  */
 
+import { relativeAgo } from "@civfix/shared"
 import type { MessageThreadDTO } from "@civfix/shared"
 
 // ---------------------------------------------------------------------------
@@ -86,23 +88,13 @@ export interface ThreadsRepository {
 }
 
 // ---------------------------------------------------------------------------
-// Pure helpers
+// Relative-time label
 // ---------------------------------------------------------------------------
-
-/**
- * Short relative-time label for the messages list. Pure (clock injected) so it is deterministic in
- * tests. Buckets: <60s "just now", <60m "Nm", <24h "Nh", else "Nd".
- */
-export function relativeAgo(from: Date, now: Date): string {
-  const secs = Math.max(0, Math.floor((now.getTime() - from.getTime()) / 1000))
-  if (secs < 60) return "just now"
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h`
-  const days = Math.floor(hours / 24)
-  return `${days}d`
-}
+// The compact "ago" label now comes from the shared relativeAgo (imported from @civfix/shared above), the
+// single source reconciled across the backend + web + mobile. The shared default renders "now" for the
+// near case (< 60s or future) and "Nw" for week-plus; the <60m "Nm", <24h "Nh", and <7d "Nd" buckets are
+// unchanged. We adopt the shared default verbatim (no opts) so the server and both clients emit identical
+// text for the same timestamp.
 
 // ---------------------------------------------------------------------------
 // Service
@@ -150,6 +142,10 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
           return {
             id: agg.cleanupId,
             kind: "cleanup",
+            // refId is the room/cleanup id this thread maps to. It equals id today, but populating it
+            // explicitly (additive, the contract field is nullable+optional) lets clients stop assuming
+            // thread.id === cleanupId.
+            refId: agg.cleanupId,
             title: agg.title,
             // last/ago are null when the room has no messages yet.
             last: agg.last !== null ? (agg.last.body ?? "") : null,

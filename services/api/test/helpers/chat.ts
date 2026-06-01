@@ -12,9 +12,9 @@
  */
 
 import { randomUUID } from "node:crypto"
+import { avatarGradient } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 import type { ChatMessageDTO } from "@civfix/shared"
-import { avatarGradient } from "../../src/services/cleanup-service.js"
 import type { ChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 

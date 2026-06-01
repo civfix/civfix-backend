@@ -19,9 +19,9 @@
  */
 
 import type { Queryable, Sql } from "../db/client.js"
+import { avatarGradient } from "@civfix/shared"
 import type { ChatMessageDTO, ChatMessageKind } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import { avatarGradient } from "./cleanup-service.js"
 
 /**
  * Persistence seam for chat: insert a message + page history. The production impl runs Drizzle/PostGIS;

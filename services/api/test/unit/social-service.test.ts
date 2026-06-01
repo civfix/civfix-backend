@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest"
+// avatarGradient / stableHash / AVATAR_PALETTE now live in @civfix/shared (the single source of truth);
+// the social service re-uses them, so the avatar assertions below point at the shared symbols.
+import { avatarGradient, stableHash, AVATAR_PALETTE } from "@civfix/shared"
 import {
   makeSocialService,
-  avatarGradient,
-  stableHash,
   toPersonDTO,
-  AVATAR_PALETTE,
   type SocialNotifier,
   type SocialService,
   type PersonView,
