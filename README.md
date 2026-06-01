@@ -102,6 +102,52 @@ The application code never imports a vendor SDK directly; vendor SDKs are confin
 under `services/api/src/adapters/`. The DI container (`services/api/src/di.ts`) is the single place
 that chooses a REAL adapter or an in-memory FAKE per `USE_FAKE_*` flag.
 
+## Media worker (`services/media-worker`)
+
+The worker consumes the `media.checks` job the API enqueues on finalize and runs the sandboxed,
+untrusted-byte pipeline: decode-guard, EXIF/GPS read + strip, ~400px thumbnail, perceptual hash
+(dHash), NSFW + near-duplicate seams for images; ffprobe validate + stream-copy metadata-strip remux +
+frame-grab thumbnail for video. It also runs two pg-boss crons: `orphan.sweep` (reap never-attached
+media, section 11) and `chat.partition.maintenance` (pre-create next month's chat partition,
+sections 7/12).
+
+Data layer (single source, no duplication): the worker does NOT re-declare the Drizzle schema, the
+postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@civfix/api`
+(`workspace:*`) and imports them through SOURCE-pointing package exports added to
+`services/api/package.json`:
+
+- `@civfix/api/db` - the schema barrel + `makeDb` + `Db`/`Sql` types.
+- `@civfix/api/media-repo` - the richer media-worker persistence seam (`MediaWorkerRepo`:
+  find / applyResult / insertAbuseFlag / findOrphans / deleteById), its Drizzle impl, the
+  `MEDIA_CHECKS_JOB` name, and `ensureNextMonthChatPartition` (so partition bounds/naming have one
+  source shared with the migrations).
+- `@civfix/api/adapters/storage`, `@civfix/api/adapters/abuse-checks`, `@civfix/api/errors`,
+  `@civfix/api/migrate` - the R2 adapter, the real AbuseChecks adapter, the GlitchTip helper, and the
+  migration runner (the last reused only by the Docker-gated worker integration harness).
+
+The worker's `tsup` build inlines `@civfix/api` + `@civfix/shared` source into a self-contained
+`dist`, keeping only native/heavy deps external (`sharp`, `ffmpeg-static`, `ffprobe-static`, `execa`,
+`exifr`, `pg-boss`, `postgres`, `drizzle-orm`, `@aws-sdk/*`, `@sentry/node`).
+
+Safe failure (Phase-1 done-criterion): `runMediaChecksJob` and the pure `processMedia` core NEVER
+throw. Any malformed/oversize/undecodable/unsupported input results in `media_assets.status =
+"rejected"` (or `held` for an NSFW/near-duplicate policy hold) plus an abuse_flag/log/GlitchTip event,
+and the job COMPLETES - a crafted upload can never crash the worker or poison the queue. This is proven
+by `services/media-worker/test/unit/media-checks.test.ts` running REAL sharp + REAL ffmpeg/ffprobe
+against crafted fixtures.
+
+Sandboxing + limits (`services/media-worker/src/config.ts`, overridable by env): ffprobe/ffmpeg run
+via `execa` with an ARGS ARRAY (no shell, no injection), a hard per-tool timeout, `killSignal`
+SIGKILL, and a `maxBuffer` output cap; sharp uses `limitInputPixels` + a wrapped wall-clock timeout.
+`media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-job budget 60s
+(`MEDIA_JOB_TIMEOUT_MS`), download capped at `MAX_VIDEO_BYTES`. The infra compose additionally caps
+container CPU.
+
+NSFW seam: `AbuseChecks.nsfwScore` stays behind the seam and defaults to `FakeAbuseChecks` (benign)
+under `USE_FAKE_ABUSE_NSFW=1`. The flag-and-hold FLOW is fully implemented and tested against the
+fake; wiring a real ONNX/NSFW model is a flag-gated pre-launch follow-up (plan sections 3/20) that
+swaps only the adapter behind the seam.
+
 ## Adding routes (extension point for later steps)
 
 Register a route plugin in `services/api/src/routes/index.ts` - one line in `registerRoutes`:

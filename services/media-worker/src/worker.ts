@@ -1,63 +1,155 @@
 /**
  * civfix media worker.
  *
- * SCAFFOLD: constructs the Jobs seam and exposes a lifecycle (start/stop) with graceful shutdown,
- * but registers NO real handlers yet. The media-checks job (decode, EXIF strip, pHash, NSFW, video
- * transcode) lands in a later step, which will call `jobs.work("media-checks", handler)` inside
- * `registerHandlers` below.
+ * Wires the Jobs seam (pg-boss, or FakeJobs offline) to the sandboxed media pipeline and the two
+ * maintenance crons, then exposes a start/stop lifecycle with graceful shutdown.
  *
- * Kept dependency-light on purpose: sharp / exifr / ffmpeg are NOT pulled in here yet.
+ * Registered work + schedules:
+ *   work("media.checks", ...)                 the untrusted-byte pipeline (concurrency-capped).
+ *   schedule("orphan.sweep", cron)            reap never-attached media (section 11).
+ *   schedule("chat.partition.maintenance")    create next month's chat partition (section 7/12).
+ *
+ * The media.checks handler NEVER throws (see media-checks.ts), so a crafted upload can never crash the
+ * worker or poison the queue: it records a terminal media_assets status + abuse_flag/log/GlitchTip and
+ * the job completes. Concurrency on media.checks is capped (default 2) so CPU/memory stay bounded; the
+ * container additionally caps CPU per the infra compose. Per-job wall-clock and per-tool timeouts are
+ * enforced inside the sandbox wrappers (see config.ts).
+ *
+ * Seam selection mirrors the API's USE_FAKE_* flags, so the worker boots fully offline with fakes.
  */
 
-import type { Jobs } from "@civfix/shared/interfaces"
-import { buildJobs, type JobsHandle } from "./jobs.js"
+import type { JobHandler } from "@civfix/shared/interfaces"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import { buildJobs, type JobsHandle, type WorkerJobs } from "./jobs.js"
+import { buildSeams, type WorkerSeams } from "./seams.js"
+import { CHAT_PARTITION_CRON, ORPHAN_SWEEP_CRON, type WorkerLimits } from "./config.js"
+import { runMediaChecksJob, parsePayload } from "./jobs/media-checks.js"
+import { runOrphanSweep } from "./jobs/orphan-sweep.js"
+import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
+
+/** Queue/cron names. media.checks MUST equal the name the API enqueues (MEDIA_CHECKS_JOB). */
+export const ORPHAN_SWEEP_JOB = "orphan.sweep"
+export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
 
 export interface Worker {
-  jobs: Jobs
-  /** Start the queue and register handlers. */
+  jobs: WorkerJobs
+  seams: WorkerSeams
   start(): Promise<void>
-  /** Graceful shutdown: stop the queue. */
   stop(): Promise<void>
 }
 
 /**
- * Register job handlers. EXTENSION POINT for later steps: add `await jobs.work(name, handler)`
- * lines here. No-op in the scaffold.
+ * Build the media.checks JobHandler bound to the given seams. Requires a repo (a real DB): without one
+ * there is nowhere to persist results, so the handler logs and no-ops (this only happens in all-fake
+ * offline boot, where nothing enqueues real media anyway).
  */
-async function registerHandlers(_jobs: Jobs): Promise<void> {
-  // <-- later: await _jobs.work("media-checks", mediaChecksHandler)
-  return
+function makeMediaChecksHandler(seams: WorkerSeams): JobHandler {
+  return async (job) => {
+    const payload = parsePayload(job.data)
+    if (!payload) {
+      console.warn("media.checks: malformed payload, skipping", { id: job.id })
+      return
+    }
+    if (!seams.repo) {
+      console.warn("media.checks: no DB repo configured (offline mode); skipping", {
+        uploadId: payload.uploadId,
+      })
+      return
+    }
+    await runMediaChecksJob(payload, {
+      repo: seams.repo,
+      storage: seams.storage,
+      abuseChecks: seams.abuseChecks,
+      limits: seams.limits,
+      download: seams.download,
+      report: seams.report,
+    })
+  }
 }
 
-/** Build the worker over a Jobs handle (defaults to one selected by USE_FAKE_JOBS). */
-export function buildWorker(handle: JobsHandle = buildJobs()): Worker {
+/** Build the orphan.sweep JobHandler. */
+function makeOrphanSweepHandler(seams: WorkerSeams): JobHandler {
+  return async () => {
+    if (!seams.repo) {
+      console.warn("orphan.sweep: no DB repo configured (offline mode); skipping")
+      return
+    }
+    await runOrphanSweep({
+      repo: seams.repo,
+      storage: seams.storage,
+      limits: seams.limits,
+      report: seams.report,
+    })
+  }
+}
+
+/** Build the chat.partition.maintenance JobHandler. */
+function makePartitionHandler(seams: WorkerSeams): JobHandler {
+  return async () => {
+    if (!seams.dbHandle) {
+      console.warn("chat.partition.maintenance: no DB configured (offline mode); skipping")
+      return
+    }
+    await runPartitionMaintenance({ sql: seams.dbHandle.sql, report: seams.report })
+  }
+}
+
+/**
+ * Register all queues, work handlers, and cron schedules. EXTENSION POINT for later steps: add more
+ * work()/schedule() lines here.
+ */
+async function registerHandlers(
+  jobs: WorkerJobs,
+  seams: WorkerSeams,
+  limits: WorkerLimits,
+): Promise<void> {
+  // Ensure queues exist before work/schedule (pg-boss v10 requirement; no-op on the fake).
+  await jobs.createQueue(MEDIA_CHECKS_JOB)
+  await jobs.createQueue(ORPHAN_SWEEP_JOB)
+  await jobs.createQueue(CHAT_PARTITION_JOB)
+
+  // media.checks: concurrency-capped untrusted-byte pipeline.
+  await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(seams), {
+    batchSize: limits.mediaChecksConcurrency,
+  })
+
+  // Maintenance crons.
+  await jobs.work(ORPHAN_SWEEP_JOB, makeOrphanSweepHandler(seams))
+  await jobs.work(CHAT_PARTITION_JOB, makePartitionHandler(seams))
+  await jobs.schedule(ORPHAN_SWEEP_JOB, ORPHAN_SWEEP_CRON)
+  await jobs.schedule(CHAT_PARTITION_JOB, CHAT_PARTITION_CRON)
+}
+
+/** Build the worker over freshly-wired seams + a Jobs handle (defaults selected by env flags). */
+export async function buildWorker(
+  handle: JobsHandle = buildJobs(),
+  seams?: WorkerSeams,
+): Promise<Worker> {
+  const resolvedSeams = seams ?? (await buildSeams())
   let started = false
 
   async function start(): Promise<void> {
     if (started) return
     await handle.start()
-    await registerHandlers(handle.jobs)
+    await registerHandlers(handle.jobs, resolvedSeams, resolvedSeams.limits)
     started = true
   }
 
   async function stop(): Promise<void> {
-    if (!started) {
-      // Still attempt to stop the queue in case start() partially ran.
-      await handle.stop()
-      return
-    }
+    // Stop the queue first (drain in-flight), then tear down seams (DB pool, telemetry flush).
     await handle.stop()
+    await resolvedSeams.close()
     started = false
   }
 
-  return { jobs: handle.jobs, start, stop }
+  return { jobs: handle.jobs, seams: resolvedSeams, start, stop }
 }
 
 let shuttingDown = false
 
 /** Start the worker and install SIGTERM/SIGINT graceful shutdown. */
 export async function start(): Promise<Worker> {
-  const worker = buildWorker()
+  const worker = await buildWorker()
   await worker.start()
   console.log("civfix media-worker started")
 

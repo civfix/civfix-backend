@@ -8,7 +8,13 @@
   "main": "./dist/server.js",
   "exports": {
     ".": "./dist/server.js",
-    "./server": "./dist/server.js"
+    "./server": "./dist/server.js",
+    "./db": "./src/db/worker-db.ts",
+    "./media-repo": "./src/services/media-worker-repo.ts",
+    "./adapters/storage": "./src/adapters/storage.r2.ts",
+    "./adapters/abuse-checks": "./src/adapters/abuse-checks.ts",
+    "./errors": "./src/errors/glitchtip.ts",
+    "./migrate": "./src/db/migrate.ts"
   },
   "scripts": {
     "build": "tsup",
