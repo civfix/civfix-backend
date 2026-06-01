@@ -132,8 +132,12 @@ export function buildContainer(env: Env): Container {
       })
 
   // ----- geocoder (no flag; fake outside production) -----
+  // REAL TigerGeocoder reads the jurisdictions PostGIS table; it takes a lazy `getSql` thunk so simply
+  // constructing it here does NOT open a DB connection (the driver connects on first query).
   const geocoder: Geocoder =
-    env.NODE_ENV === "production" ? new TigerGeocoder() : new FakeGeocoder()
+    env.NODE_ENV === "production"
+      ? new TigerGeocoder({ getSql: () => getDb().sql })
+      : new FakeGeocoder()
 
   // ----- inbound mail (no flag; fake outside production) -----
   const inboundMail: InboundMail =

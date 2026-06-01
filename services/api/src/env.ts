@@ -34,11 +34,45 @@ function parseCsv(raw: string | undefined): string[] {
 }
 
 /**
+ * Parse a non-negative integer from an env string, falling back when blank/invalid. Used for the
+ * optional tile zoom levels; an unparseable value silently uses the default rather than blocking boot
+ * (these are [OPT], not [BOOT]).
+ */
+function parseIntOr(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback
+  const n = Number.parseInt(raw.trim(), 10)
+  return Number.isFinite(n) ? n : fallback
+}
+
+/**
+ * Parse a "west,south,east,north" bounds string into a 4-tuple. Falls back to `fallback` unless the
+ * input is exactly four finite numbers. [OPT], so a malformed value degrades to the default.
+ */
+function parseBounds(
+  raw: string | undefined,
+  fallback: [number, number, number, number],
+): [number, number, number, number] {
+  if (raw === undefined || raw.trim() === "") return fallback
+  const parts = raw.split(",").map((s) => Number.parseFloat(s.trim()))
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return fallback
+  return [parts[0]!, parts[1]!, parts[2]!, parts[3]!]
+}
+
+/**
  * Insecure development defaults. NEVER used when NODE_ENV === "production": the production branch
  * requires the real values and throws if they are missing.
  */
 const DEV_SESSION_SIGNING_KEY = "dev-insecure-session-signing-key-do-not-use-in-prod"
 const DEV_ANON_TOKEN_SIGNING_KEY = "dev-insecure-anon-token-signing-key-do-not-use-in-prod"
+
+/**
+ * Map-tile defaults. Used by GET /map/tileinfo when the corresponding TILES_* vars are unset so the
+ * route never 500s on missing config. Bounds are the continental-US-ish envelope [west, south, east,
+ * north]; zoom range covers a typical web slippy map.
+ */
+const TILES_MIN_ZOOM_DEFAULT = 1
+const TILES_MAX_ZOOM_DEFAULT = 19
+const TILES_BOUNDS_DEFAULT: [number, number, number, number] = [-125, 24, -66, 50]
 
 const NodeEnvSchema = z.enum(["development", "test", "production"]).default("development")
 
@@ -64,7 +98,20 @@ export interface Env {
   R2_SECRET_ACCESS_KEY: string
   R2_BUCKET: string
   R2_PUBLIC_BASE?: string
+
+  // ----- map tiles (all [OPT]; the /map/tileinfo route degrades to a documented default) -----
+  /** PMTiles archive URL (vector basemap). Absent -> tileinfo returns "" and a raster/style fallback. */
   TILES_PMTILES_URL?: string
+  /** Raster XYZ tile template (e.g. https://.../{z}/{x}/{y}.png). Fallback when PMTiles is absent. */
+  TILES_RASTER_URL?: string
+  /** Full MapLibre style JSON URL. Optional alternative the client may prefer over pmtiles/raster. */
+  TILES_STYLE_URL?: string
+  /** Min zoom advertised by tileinfo. Defaults to TILES_MIN_ZOOM_DEFAULT. */
+  TILES_MIN_ZOOM: number
+  /** Max zoom advertised by tileinfo. Defaults to TILES_MAX_ZOOM_DEFAULT. */
+  TILES_MAX_ZOOM: number
+  /** Map bounds [west, south, east, north] advertised by tileinfo. Defaults to TILES_BOUNDS_DEFAULT. */
+  TILES_BOUNDS: [number, number, number, number]
 
   // ----- mailer (OCI SMTP): [BOOT] unless USE_FAKE_MAILER -----
   OCI_EMAIL_SMTP_HOST: string
@@ -237,6 +284,15 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...(optStr.parse(source.TILES_PMTILES_URL) !== undefined
       ? { TILES_PMTILES_URL: source.TILES_PMTILES_URL!.trim() }
       : {}),
+    ...(optStr.parse(source.TILES_RASTER_URL) !== undefined
+      ? { TILES_RASTER_URL: source.TILES_RASTER_URL!.trim() }
+      : {}),
+    ...(optStr.parse(source.TILES_STYLE_URL) !== undefined
+      ? { TILES_STYLE_URL: source.TILES_STYLE_URL!.trim() }
+      : {}),
+    TILES_MIN_ZOOM: parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT),
+    TILES_MAX_ZOOM: parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT),
+    TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),
 
     OCI_EMAIL_SMTP_HOST,
     OCI_EMAIL_SMTP_PORT,

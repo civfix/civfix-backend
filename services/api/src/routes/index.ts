@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { registerHealthRoutes } from "./health.routes.js"
 import { registerAuthRoutes } from "./auth.routes.js"
+import { registerMapRoutes } from "./map.routes.js"
 
 export interface RegisterRoutesOptions {
   /** Whether an auth service bundle is available; gates mounting the auth routes. */
@@ -29,6 +30,11 @@ export async function registerRoutes(
   if (opts.authMounted) {
     await registerAuthRoutes(app, container)
   }
+
+  // Map: tile metadata + jurisdiction/reverse-geocode resolution + cleanup pins. All anon-ok, so they
+  // mount unconditionally. The DB-backed handlers (resolve-jurisdiction, cleanups) reach the database
+  // lazily via container.getDb() only when hit; tileinfo + reverse-label need no DB.
+  await registerMapRoutes(app, container)
 
   // <-- later domain steps append their route registrations below, e.g.:
   // await registerReportRoutes(app, container)
