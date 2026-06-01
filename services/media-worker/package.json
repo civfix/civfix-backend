@@ -1,0 +1,36 @@
+{
+  "name": "@civfix/media-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "civfix media worker. Consumes the Jobs seam (pg-boss) to process media checks. Scaffold only: no real handlers yet.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/worker.js",
+  "exports": {
+    ".": "./dist/worker.js",
+    "./worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "clean": "rimraf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@civfix/shared": "workspace:*",
+    "pg-boss": "^10.1.5"
+  },
+  "devDependencies": {
+    "@civfix/config": "workspace:*",
+    "@types/node": "^22.10.2",
+    "eslint": "^9.16.0",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

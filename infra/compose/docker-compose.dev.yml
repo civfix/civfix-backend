@@ -1,0 +1,35 @@
+# Local dev infrastructure ONLY: a PostGIS-enabled Postgres and a Redis, for running migrations and
+# integration tests against real services on your machine. Do NOT run this from the scaffold step.
+#
+# Usage (later, once Docker is available):
+#   docker compose -f infra/compose/docker-compose.dev.yml up -d
+#   export DATABASE_URL=postgres://civfix:civfix@localhost:5432/civfix
+#   export REDIS_URL=redis://localhost:6379
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: civfix
+      POSTGRES_PASSWORD: civfix
+      POSTGRES_DB: civfix
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U civfix -d civfix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+
+volumes:
+  pg-dev-data:

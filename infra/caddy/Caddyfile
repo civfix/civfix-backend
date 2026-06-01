@@ -1,0 +1,24 @@
+# Caddy reverse proxy for civfix. Terminates HTTP on :80 and proxies to the api container.
+# Replace the site address with your real domain (and Caddy will auto-provision TLS) in production.
+
+:80 {
+	# Liveness passthrough so the LB / uptime checks can hit the API directly.
+	handle /healthz {
+		reverse_proxy api:8080
+	}
+
+	handle /readyz {
+		reverse_proxy api:8080
+	}
+
+	# Everything else proxies to the API as well.
+	handle {
+		reverse_proxy api:8080
+	}
+
+	encode gzip zstd
+	log {
+		output stdout
+		format console
+	}
+}

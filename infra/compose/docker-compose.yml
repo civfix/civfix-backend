@@ -1,0 +1,68 @@
+# civfix production-ish compose. Do NOT run this from the scaffold step; it is a reference for
+# deployment. Postgres (with PostGIS) and Redis MAY be external managed services: in that case set
+# DATABASE_URL / REDIS_URL in the env_file and remove the local redis service below.
+#
+# Resource limits follow the capacity plan: api ~1.5G/2cpu, media-worker ~2.5G/1.5cpu, redis ~1G.
+# mem_limit/cpus are Compose v2 (non-swarm) keys.
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    image: civfix/api:latest
+    restart: unless-stopped
+    env_file:
+      # Prefer a SOPS-decrypted file mounted at deploy time; fall back to a local .env.
+      - ../secrets/api.env
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+    mem_limit: 1536m
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  media-worker:
+    build:
+      context: ../..
+      dockerfile: services/media-worker/Dockerfile
+    image: civfix/media-worker:latest
+    restart: unless-stopped
+    env_file:
+      - ../secrets/media-worker.env
+    depends_on:
+      - redis
+    mem_limit: 2560m
+    cpus: 1.5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "768mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    mem_limit: 1024m
+    cpus: 1.0
+    volumes:
+      - redis-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  redis-data:
+  caddy-data:
+  caddy-config:
