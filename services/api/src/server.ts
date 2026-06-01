@@ -32,6 +32,8 @@ import type { AnonServiceOverride } from "./routes/anon.routes.js"
 import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
+import type { SocialServiceOverrides } from "./routes/social.routes.js"
+import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
 import { registerRoutes } from "./routes/index.js"
 import { SERVICE_VERSION } from "./version.js"
 
@@ -86,6 +88,18 @@ export interface BuildServerOptions {
    * shared ChatReadState) so the WS gateway and GET /threads run offline. Left unset in production.
    */
   chatOverrides?: ChatGatewayOverrides
+  /**
+   * Inject social-service overrides (tests): an in-memory SocialRepository + an optional new_follower
+   * notifier (spy) so the people/follow/profile HTTP flow runs offline. Left unset in production, where
+   * the social routes build the Drizzle-backed repo + the notification service as the notifier lazily.
+   */
+  socialOverrides?: SocialServiceOverrides
+  /**
+   * Inject notification-service overrides (tests): an in-memory NotificationRepository so the
+   * list/read/prefs/push-register HTTP flow runs offline (the push seam stays the container's FakePushSender).
+   * Left unset in production, where the notification routes build the Drizzle-backed repo lazily.
+   */
+  notificationOverrides?: NotificationServiceOverrides
 }
 
 /**
@@ -154,6 +168,15 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   }
   if (opts.chatOverrides) {
     app.decorate("chatOverrides", opts.chatOverrides)
+  }
+
+  // Optional injected social/notification overrides (tests). Left unset in production so those routes
+  // build their Drizzle-backed repos from the lazily-created DB handle (+ the container push seam).
+  if (opts.socialOverrides) {
+    app.decorate("socialOverrides", opts.socialOverrides)
+  }
+  if (opts.notificationOverrides) {
+    app.decorate("notificationOverrides", opts.notificationOverrides)
   }
 
   // Auth context hook (resolves req.auth from the session, or anonymous).

@@ -20,6 +20,8 @@ import { registerAnonRoutes } from "./anon.routes.js"
 import { registerClaimRoutes } from "./claim.routes.js"
 import { registerCleanupRoutes } from "./cleanups.routes.js"
 import { registerChatRoutes } from "./chat.routes.js"
+import { registerSocialRoutes } from "./social.routes.js"
+import { registerNotificationRoutes } from "./notifications.routes.js"
 
 export interface RegisterRoutesOptions {
   /** Whether an auth service bundle is available; gates mounting the auth routes. */
@@ -72,4 +74,15 @@ export async function registerRoutes(
   // (auth). Registers @fastify/websocket. Mount unconditionally; the gateway authenticates each
   // handshake and GET /threads 401s with no session.
   await registerChatRoutes(app, container)
+
+  // Social: people directory/search (anon-ok) + follow/unfollow (auth + CSRF) + public profile (anon-ok)
+  // + own profile (auth). Mount unconditionally; DB-backed handlers reach the database lazily via
+  // container.getDb(), and a NEW follow fires a new_follower notification (which inline-pushes when the
+  // followed user's prefs allow). The auth-gated routes 401 cleanly with no infra.
+  await registerSocialRoutes(app, container)
+
+  // Notifications: the in-app feed + mark-read (auth + CSRF) + prefs get/update (auth + CSRF) + push-token
+  // registration (auth + CSRF). Mount unconditionally; DB-backed handlers reach the database lazily via
+  // container.getDb(), and push registration also delegates to the container push seam.
+  await registerNotificationRoutes(app, container)
 }
