@@ -17,6 +17,7 @@
  */
 
 import { z } from "zod"
+import { parseTrustProxy, type TrustProxyValue } from "./plugins/trust-proxy.js"
 
 /** Parse "1"/"true"/"yes"/"on" (case-insensitive) as true; everything else false. */
 function parseBool(raw: string | undefined, fallback: boolean): boolean {
@@ -91,6 +92,12 @@ export interface Env {
   REDIS_URL: string
   SESSION_SIGNING_KEY: string
   ANON_TOKEN_SIGNING_KEY: string
+  /**
+   * Which upstream hops Fastify trusts for X-Forwarded-* (drives request.ip). Parsed from TRUST_PROXY:
+   * a hop count, a CIDR/IP comma list, or true/false. Defaults to the internal loopback+private ranges
+   * so a client-supplied X-Forwarded-For from the public internet is never honored. See plugins/trust-proxy.
+   */
+  TRUST_PROXY: TrustProxyValue
 
   // ----- storage (R2): [BOOT] unless USE_FAKE_STORAGE -----
   R2_ACCOUNT_ID: string
@@ -255,6 +262,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     if (ANON_TOKEN_SIGNING_KEY.length === 0) ANON_TOKEN_SIGNING_KEY = DEV_ANON_TOKEN_SIGNING_KEY
   }
 
+  // Trusted-proxy setting for Fastify's request.ip resolution. Defaults to internal-only ranges so a
+  // forged X-Forwarded-For from a public client is never trusted (see plugins/trust-proxy).
+  const TRUST_PROXY = parseTrustProxy(source.TRUST_PROXY)
+
   // ----- storage (R2) -----
   const R2_ACCOUNT_ID = reqStr("R2_ACCOUNT_ID", { gatedOff: useFakeStorage })
   const R2_ACCESS_KEY_ID = reqStr("R2_ACCESS_KEY_ID", { gatedOff: useFakeStorage })
@@ -283,6 +294,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     REDIS_URL,
     SESSION_SIGNING_KEY,
     ANON_TOKEN_SIGNING_KEY,
+    TRUST_PROXY,
 
     R2_ACCOUNT_ID,
     R2_ACCESS_KEY_ID,

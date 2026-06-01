@@ -55,4 +55,16 @@ describe("health routes", () => {
     expect(body.code).toBe("NOT_FOUND")
     expect(typeof body.requestId).toBe("string")
   })
+
+  it("P2-6: sets a lock-down CSP and keeps nosniff on responses", async () => {
+    app = await buildServer({ env: loadEnv() })
+    const res = await app.inject({ method: "GET", url: "/healthz" })
+    const csp = res.headers["content-security-policy"]
+    expect(typeof csp).toBe("string")
+    // Pure-JSON API: deny every subresource and disallow framing.
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain("frame-ancestors 'none'")
+    // helmet's nosniff default must survive the CSP config.
+    expect(res.headers["x-content-type-options"]).toBe("nosniff")
+  })
 })

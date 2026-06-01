@@ -1,19 +1,48 @@
 # Caddy reverse proxy for civfix. Terminates HTTP on :80 and proxies to the api container.
 # Replace the site address with your real domain (and Caddy will auto-provision TLS) in production.
+#
+# SECURITY (trusted-proxy hardening): the API derives request.ip from X-Forwarded-For ONLY for trusted
+# upstream hops (see services/api env TRUST_PROXY, default = internal loopback+private ranges). For that
+# to be safe, the edge must NOT let a client pre-seed the forwarding headers. Caddy APPENDS to an
+# inbound X-Forwarded-For by default, so a request arriving with a forged "X-Forwarded-For: 9.9.9.9"
+# would reach the API as "9.9.9.9, <real-client>". We therefore STRIP any inbound X-Forwarded-* on each
+# proxied request (header_up -X-Forwarded-*), so Caddy sets X-Forwarded-For FRESH to the real client
+# remote address and the client cannot inject its own value. The api+caddy pair together guarantee
+# request.ip is the genuine client.
 
 :80 {
+	# Strip any client-supplied forwarding headers so they cannot be spoofed; Caddy then sets
+	# X-Forwarded-For / -Proto / -Host fresh from the real connection on each reverse_proxy below.
+	request_header -X-Forwarded-For
+	request_header -X-Forwarded-Proto
+	request_header -X-Forwarded-Host
+
 	# Liveness passthrough so the LB / uptime checks can hit the API directly.
 	handle /healthz {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Proto
+			header_up -X-Forwarded-Host
+		}
 	}
 
 	handle /readyz {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Proto
+			header_up -X-Forwarded-Host
+		}
 	}
 
 	# Everything else proxies to the API as well.
 	handle {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			# Defense in depth: clear the inbound XFF on the upstream request so Caddy re-sets it to the
+			# real client remote (Caddy does NOT append when the header was removed first).
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Proto
+			header_up -X-Forwarded-Host
+		}
 	}
 
 	encode gzip zstd

@@ -190,24 +190,48 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(cleared.quietEnd).toBeNull()
   })
 
-  it("push tokens: upsert keyed on (platform, token) re-activates a revoked token", async () => {
+  it("push tokens: owner re-register re-activates; foreign user CANNOT hijack; same device handoff allowed (P1-3)", async () => {
     const repo = makeDrizzleNotificationRepository(h.sql)
     const userA = await newUser("Token Owner A")
     const userB = await newUser("Token Owner B")
 
-    await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })
-    // Revoke it directly.
+    // userA owns tok-int on device d1.
+    expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
+      "stored",
+    )
+    // Revoke it directly (e.g. provider pruned it).
     await h.sql`UPDATE push_tokens SET revoked_at = now() WHERE token = ${"tok-int"}`
 
-    // Re-register under userB -> re-point + re-activate; still ONE row.
-    await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d2" })
-    const rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
+    // userB (a DIFFERENT user) tries to re-point it with a different device -> REFUSED, row untouched.
+    expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d2" })).toBe(
+      "conflict",
+    )
+    let rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
       SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
     `
     expect(rows).toHaveLength(1)
-    expect(rows[0]!.user_id).toBe(userB)
-    expect(rows[0]!.device_id).toBe("d2")
+    expect(rows[0]!.user_id).toBe(userA) // still A
+    expect(rows[0]!.device_id).toBe("d1") // unchanged
+    expect(rows[0]!.revoked_at).not.toBeNull() // not reactivated by the foreign attempt
+
+    // The OWNER re-registering reactivates it.
+    expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
+      "stored",
+    )
+    rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
+      SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
+    `
+    expect(rows[0]!.user_id).toBe(userA)
     expect(rows[0]!.revoked_at).toBeNull()
+
+    // A genuine device handoff: userB presents the SAME device_id (d1) -> allowed to take ownership.
+    expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
+      "stored",
+    )
+    rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
+      SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
+    `
+    expect(rows[0]!.user_id).toBe(userB)
   })
 
   it("new_follower hook end to end: a NEW follow records a notification for the followee", async () => {

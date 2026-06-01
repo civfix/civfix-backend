@@ -15,7 +15,7 @@ import {
   ABUSE_H3_RES,
   H3_CELL_LIMIT_PER_HOUR,
 } from "../../src/abuse/h3-cap.js"
-import { parseCfGeo, gpsSanityCheck } from "../../src/abuse/gps-sanity.js"
+import { parseCfGeo, gpsSanityCheck, cfGeoFromTrustedEdge } from "../../src/abuse/gps-sanity.js"
 import {
   signAnonToken,
   verifyAnonTokenSignature,
@@ -215,6 +215,22 @@ describe("parseCfGeo", () => {
   it("rejects out-of-range or non-numeric values", () => {
     expect(parseCfGeo({ "cf-iplatitude": "999", "cf-iplongitude": "0" })).toBeNull()
     expect(parseCfGeo({ "cf-iplatitude": "abc", "cf-iplongitude": "0" })).toBeNull()
+  })
+})
+
+describe("cfGeoFromTrustedEdge (P1-2)", () => {
+  it("is TRUE only when Fastify trusted a forwarding hop (request.ips length > 1)", () => {
+    // A trusted proxy forwarded a real client: [proxyPeer, client].
+    expect(cfGeoFromTrustedEdge({ ips: ["127.0.0.1", "203.0.113.7"] })).toBe(true)
+    expect(cfGeoFromTrustedEdge({ ips: ["10.0.0.5", "8.8.8.8", "1.2.3.4"] })).toBe(true)
+  })
+
+  it("is FALSE for an untrusted/direct client (single entry) or no ips", () => {
+    // An untrusted public peer's spoofed XFF is not trusted, so ips collapses to the peer alone.
+    expect(cfGeoFromTrustedEdge({ ips: ["8.8.8.8"] })).toBe(false)
+    expect(cfGeoFromTrustedEdge({ ips: [] })).toBe(false)
+    expect(cfGeoFromTrustedEdge({})).toBe(false)
+    expect(cfGeoFromTrustedEdge({ ips: undefined })).toBe(false)
   })
 })
 

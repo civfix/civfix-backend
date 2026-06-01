@@ -256,20 +256,43 @@ describe("registerPushToken", () => {
     expect(push.tokens[0]).toMatchObject({ userId: U, token: "tok-1", platform: "ios" })
   })
 
-  it("re-registering the same (platform, token) re-points the user and re-activates a revoked token", async () => {
+  it("the SAME user re-registering re-activates a revoked token (owner update)", async () => {
     const { repo, service } = makeHarness()
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
     // Simulate a prior revoke (e.g. provider pruned it).
     repo.pushTokens[0]!.revokedAt = new Date()
 
-    // Re-register under a different user/device.
-    await service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "d2" })
-    expect(repo.pushTokens).toHaveLength(1) // upsert, not a duplicate
-    expect(repo.pushTokens[0]).toMatchObject({
-      userId: V,
-      deviceId: "d2",
-      revokedAt: null, // re-activated
-    })
+    // Same user re-registers -> reactivated.
+    await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
+    expect(repo.pushTokens).toHaveLength(1)
+    expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "d1", revokedAt: null })
+  })
+
+  it("P1-3: a DIFFERENT user with a different/absent device_id CANNOT hijack the token", async () => {
+    const { repo, push, service } = makeHarness()
+    // User U owns tok-x on device d1, registered with the PushSender.
+    await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
+    expect(push.tokens).toHaveLength(1)
+
+    // Attacker V knows the raw token and tries to re-point it to themselves with a different device.
+    const res = await service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "d2" })
+    expect(res).toEqual({ ok: true }) // not an enumeration oracle: still 200/ok
+
+    // The row is UNTOUCHED: U still owns it, device unchanged, not revoked.
+    expect(repo.pushTokens).toHaveLength(1)
+    expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "d1", revokedAt: null })
+    // And V's hijack was NOT registered with the PushSender (no new token routed to V's device).
+    expect(push.tokens.some((t) => t.userId === V)).toBe(false)
+    expect(push.tokens).toHaveLength(1)
+  })
+
+  it("P1-3: a different user presenting the SAME non-null device_id IS allowed (genuine handoff)", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "shared-device" })
+    // V re-provisions the SAME physical device (same device_id) -> ownership transfer is allowed.
+    await service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "shared-device" })
+    expect(repo.pushTokens).toHaveLength(1)
+    expect(repo.pushTokens[0]).toMatchObject({ userId: V, deviceId: "shared-device", revokedAt: null })
   })
 })
 

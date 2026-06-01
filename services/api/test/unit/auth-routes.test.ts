@@ -379,3 +379,84 @@ describe("auth routes: Google web start", () => {
     expect(lines.some((l) => l.startsWith("civfix_oauth="))).toBe(true)
   })
 })
+
+describe("auth routes: OAuth redirect allowlist (P2-2 open-redirect guard)", () => {
+  it("accepts a relative internal path and an allowlisted absolute origin", async () => {
+    harness = await makeAuthHarness({ webOrigins: ["https://app.civfix.org"] })
+    const rel = await harness.app.inject({
+      method: "GET",
+      url: "/auth/google/start?redirect=%2Fdashboard",
+    })
+    expect(rel.statusCode).toBe(302)
+
+    const abs = await harness.app.inject({
+      method: "GET",
+      url: "/auth/google/start?redirect=" + encodeURIComponent("https://app.civfix.org/back"),
+    })
+    expect(abs.statusCode).toBe(302)
+  })
+
+  it("REJECTS a foreign-origin redirect and a protocol-relative // redirect with 422", async () => {
+    harness = await makeAuthHarness({ webOrigins: ["https://app.civfix.org"] })
+    const evil = await harness.app.inject({
+      method: "GET",
+      url: "/auth/google/start?redirect=" + encodeURIComponent("https://evil.example.com/phish"),
+    })
+    expect(evil.statusCode).toBe(422)
+
+    const protoRel = await harness.app.inject({
+      method: "GET",
+      url: "/auth/google/start?redirect=" + encodeURIComponent("//evil.example.com"),
+    })
+    expect(protoRel.statusCode).toBe(422)
+  })
+})
+
+describe("auth routes: Apple nonce binding (P2-3)", () => {
+  it("binds the nonce through the route: matching nonce signs in, mismatched nonce is rejected", async () => {
+    harness = await makeAuthHarness()
+    // Register a token bound to nonce "abc123" (the verifier enforces params.expectedNonce against it).
+    harness.verifier.register(
+      "apple-nonce-token",
+      { sub: "apple-nonce-sub", email: "nonce@example.com", emailVerified: true, name: null },
+      "abc123",
+    )
+
+    // Correct nonce -> the route threads body.nonce -> service -> verifier; sign-in succeeds.
+    const ok = await harness.app.inject({
+      method: "POST",
+      url: "/auth/apple",
+      headers: { "x-client": "mobile" },
+      payload: { identityToken: "apple-nonce-token", nonce: "abc123", fullName: "Nonce User" },
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json().user.displayName).toBe("Nonce User")
+
+    // WRONG nonce -> the bind fails -> no session is issued (error envelope, no token leaked).
+    const bad = await harness.app.inject({
+      method: "POST",
+      url: "/auth/apple",
+      headers: { "x-client": "mobile" },
+      payload: { identityToken: "apple-nonce-token", nonce: "WRONG", fullName: "Nonce User" },
+    })
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400)
+    expect(bad.json().token).toBeUndefined()
+  })
+
+  it("a no-nonce Apple sign-in still works (backward compatible)", async () => {
+    harness = await makeAuthHarness()
+    harness.verifier.register("apple-plain", {
+      sub: "apple-plain-sub",
+      email: "plain@example.com",
+      emailVerified: true,
+      name: null,
+    })
+    const res = await harness.app.inject({
+      method: "POST",
+      url: "/auth/apple",
+      headers: { "x-client": "mobile" },
+      payload: { identityToken: "apple-plain", fullName: "Plain User" },
+    })
+    expect(res.statusCode).toBe(200)
+  })
+})

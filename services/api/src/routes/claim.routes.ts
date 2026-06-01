@@ -49,6 +49,15 @@ declare module "fastify" {
 /** Query schema for GET /claim/nudge: an optional anonToken (mobile sends it when it has no cookie). */
 const ClaimNudgeQuerySchema = z.object({ anonToken: z.string().optional() }).strict()
 
+/**
+ * Dedicated, tighter per-IP rate limit for the claim-code endpoints (P2-7). The claim code is a 256-bit
+ * unguessable secret so these are not brute-forcible, but the global 300/min limiter is broad; a small
+ * dedicated cap on the public claim/nudge surface is cheap defense-in-depth (and keeps the per-IP key
+ * meaningful now that request.ip is the real client). 20 requests / minute / IP is ample for a real
+ * client (one nudge poll + one claim) while bounding automated probing.
+ */
+export const CLAIM_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
 export async function registerClaimRoutes(
   app: FastifyInstance,
   container: Container,
@@ -77,9 +86,9 @@ export async function registerClaimRoutes(
   }
 
   // -------------------------------------------------------------------------
-  // GET /claim/nudge  [anon-ok]
+  // GET /claim/nudge  [anon-ok]  (dedicated tighter per-IP limit, P2-7)
   // -------------------------------------------------------------------------
-  app.get("/claim/nudge", async (request, reply) => {
+  app.get("/claim/nudge", { config: { rateLimit: CLAIM_RATE_LIMIT } }, async (request, reply) => {
     const q = parse(ClaimNudgeQuerySchema, request.query)
     // Prefer the query param (mobile) and fall back to the readable anon cookie (web).
     const anonToken = q.anonToken ?? request.cookies[ANON_COOKIE]
@@ -92,14 +101,18 @@ export async function registerClaimRoutes(
   })
 
   // -------------------------------------------------------------------------
-  // POST /claim/report  [auth][csrf]
+  // POST /claim/report  [auth][csrf]  (dedicated tighter per-IP limit, P2-7)
   // -------------------------------------------------------------------------
-  app.post("/claim/report", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const body = parse(ClaimReportRequestSchema, request.body)
-    const payload: ClaimReportResponse = await service().claimReport(body.claimCode, userId)
-    reply.status(200).send(payload)
-  })
+  app.post(
+    "/claim/report",
+    { preHandler: csrfProtect, config: { rateLimit: CLAIM_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(ClaimReportRequestSchema, request.body)
+      const payload: ClaimReportResponse = await service().claimReport(body.claimCode, userId)
+      reply.status(200).send(payload)
+    },
+  )
 }
 
 /**

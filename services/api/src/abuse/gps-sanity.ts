@@ -7,10 +7,20 @@
  *       media-worker decodes, so the EXIF cross-check is DEFERRED to the worker's release gate (see
  *       releaseAnonHoldIfReady). This module does the IP-geo check at submit time.
  *
+ * TRUSTED-EDGE GATE (P1-2): CF-IPLatitude/CF-IPLongitude are authentic ONLY when Cloudflare set them.
+ * A client that can reach the API by any path OTHER than the CF/trusted-proxy edge can forge those
+ * headers to equal its submitted point, defeating the check. So we honor the CF geo headers ONLY when
+ * the request demonstrably arrived through a trusted upstream (see `cfGeoFromTrustedEdge`, which keys
+ * off Fastify's own trusted-proxy determination). From an UNTRUSTED source the headers are IGNORED, and
+ * the check then has no contradicting signal -> it PASSES ("no_signal"). That fail-open is an explicit,
+ * logged decision: GPS sanity is one of several anon controls and held reports stay hidden, so a missing
+ * coarse signal must not block a legitimate report. It is documented here so a re-reviewer sees the
+ * trade is intentional, not an oversight.
+ *
  * The actual distance decision is delegated to AbuseChecks.gpsPlausible (threshold ~50 km, shared with
  * the worker so "plausible" means the same thing everywhere). This module's job is to (1) parse the
- * coarse IP geo out of the Cloudflare headers, and (2) when NO geo source is available, PASS with a
- * logged note rather than blocking a legitimate report on missing data (fail-open on absent signal).
+ * coarse IP geo out of the (trusted) Cloudflare headers, and (2) when NO geo source is available, PASS
+ * with a logged note rather than blocking a legitimate report on missing data (fail-open on absent signal).
  *
  * `parseCfGeo` is pure (header bag -> LatLng | null); `gpsSanityCheck` is the thin async wrapper over
  * the AbuseChecks seam, so both are unit-testable with a plain object + FakeAbuseChecks.
@@ -58,6 +68,24 @@ export function parseCfGeo(headers: HeaderBag): LatLng | null {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null
   return { lat, lng }
+}
+
+/**
+ * Whether a request demonstrably arrived through a TRUSTED upstream proxy/edge, so its forwarded CF geo
+ * headers can be believed (P1-2). PURE.
+ *
+ * We key off Fastify's own trusted-proxy determination: `request.ips` is the X-Forwarded-For chain
+ * Fastify TRUSTED (leftmost original client first, the direct peer last) - it is only longer than one
+ * entry when Fastify trusted at least one forwarding hop for this request. With our env trustProxy
+ * configured to trust ONLY the internal proxy ranges (see plugins/trust-proxy), `ips.length > 1` means
+ * a trusted proxy forwarded the request; a direct/untrusted client yields a single entry (its own
+ * address), so its CF-* headers are NOT believed. When trustProxy is off entirely, `ips` is undefined
+ * and we treat the edge as untrusted.
+ *
+ * Accepts a minimal shape so it is unit-testable with a plain object (no live Fastify request).
+ */
+export function cfGeoFromTrustedEdge(req: { ips?: readonly string[] | undefined }): boolean {
+  return Array.isArray(req.ips) && req.ips.length > 1
 }
 
 export interface GpsSanityInput {

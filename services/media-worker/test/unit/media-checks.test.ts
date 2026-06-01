@@ -309,6 +309,37 @@ describe("media.checks orchestration robustness", () => {
     expect(env.reports.length).toBeGreaterThan(0)
   })
 
+  it("P2-1: the per-job wall-clock budget rejects a wedged download/process (no hang)", async () => {
+    // A download that never settles within the budget would otherwise hang the job indefinitely. With a
+    // tiny jobTimeoutMs the overall guard fires, the asset is marked rejected, the job completes, and a
+    // report is emitted. The test itself must finish quickly (proving the budget is enforced).
+    const tightLimits: WorkerLimits = { ...limits, jobTimeoutMs: 50 }
+    let downloadResolved = false
+    const env = makeDeps({
+      limits: tightLimits,
+      download: () =>
+        new Promise<Uint8Array>((resolve) => {
+          // Settle far AFTER the budget; the wall-clock guard should win first.
+          setTimeout(() => {
+            downloadResolved = true
+            resolve(new Uint8Array([1, 2, 3]))
+          }, 5_000).unref?.()
+        }),
+    })
+    const input = await fx.makeValidPng()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+
+    const start = Date.now()
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    const elapsed = Date.now() - start
+
+    expect(status).toBe("rejected")
+    expect(elapsed).toBeLessThan(2_000) // the budget fired well before the 5s download would settle
+    expect(downloadResolved).toBe(false)
+    expect(env.repo.get(id)?.status).toBe("rejected")
+    expect(env.reports.length).toBeGreaterThan(0) // the timeout was reported
+  })
+
   it("parsePayload rejects malformed payloads", () => {
     expect(parsePayload(null)).toBeNull()
     expect(parsePayload({ mediaId: "a", uploadId: "b", r2Key: "c", kind: "audio" })).toBeNull()

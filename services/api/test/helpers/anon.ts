@@ -13,6 +13,7 @@
  * same seams.
  */
 
+import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import type { LatLng } from "@civfix/shared"
 import type { AnonTokenRecord } from "../../src/abuse/anon-token.js"
@@ -168,6 +169,23 @@ export class InMemoryAnonStore {
         const prior = this.idempotency.get(idemKey)
         if (prior) return Promise.resolve({ kind: "replayed", snapshot: prior })
 
+        // ATOMIC per-token cap (bugs P0-1), mirroring the Drizzle tx: bump report_count + stamp the
+        // claim code ONLY while the token is under the cap, and abort (throw, no writes) otherwise. The
+        // whole body runs synchronously here, so two interleaved calls cannot both pass the cap check -
+        // exactly the atomic check-and-consume the real UPDATE ... WHERE report_count < cap provides.
+        const token = this.tokens.get(args.anonSessionId)
+        if (token && token.reportCount >= args.reportCap) {
+          return Promise.reject(
+            AppError.rateLimited(
+              "This anonymous session has reached its report limit. Sign in to continue.",
+            ),
+          )
+        }
+        if (token) {
+          token.reportCount += 1
+          token.claimCode = args.claimCode
+        }
+
         this.seedReport({
           id: args.reportId,
           reporterUserId: null,
@@ -202,12 +220,7 @@ export class InMemoryAnonStore {
           note: "Awaiting automated review",
           createdAt: this.nextDate(),
         })
-        // Bump token report_count + stamp claim code.
-        const token = this.tokens.get(args.anonSessionId)
-        if (token) {
-          token.reportCount += 1
-          token.claimCode = args.claimCode
-        }
+        // report_count + claim_code were already bumped atomically above (cap-gated).
         this.idempotency.set(idemKey, args.responseSnapshot)
         return Promise.resolve({ kind: "created", snapshot: args.responseSnapshot })
       },

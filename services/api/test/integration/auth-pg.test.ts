@@ -92,7 +92,7 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     const code = mailer.lastOtpFor(email)!
     expect(code).toMatch(/^\d{6}$/)
 
-    const userId = await otp.verifyOtp(email, code)
+    const userId = await otp.verifyOtp(email, code, "203.0.113.6")
     const user = await users.findById(userId)
     expect(user?.role).toBe("citizen")
 
@@ -101,7 +101,7 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     const otp2 = new OtpService({ store, users, cache: cache2, mailer })
     await otp2.issueOtp(email, "203.0.113.6")
     const code2 = mailer.lastOtpFor(email)!
-    const again = await otp2.verifyOtp(email, code2)
+    const again = await otp2.verifyOtp(email, code2, "203.0.113.6")
     expect(again).toBe(userId)
   })
 

@@ -38,6 +38,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { ANON_COOKIE } from "../auth/transport.js"
 import { ANON_TOKEN_TTL_SECONDS } from "../abuse/anon-token.js"
+import { cfGeoFromTrustedEdge } from "../abuse/gps-sanity.js"
 import { RedisCounterStore } from "../abuse/counter-store.js"
 import { makeAnonService, type AnonService } from "../services/anon-service.js"
 import { makeDrizzleAnonReportRepository } from "../services/anon-repository.drizzle.js"
@@ -111,10 +112,13 @@ export async function registerAnonRoutes(
       presentedAnonToken !== undefined ? { ...body, anonToken: presentedAnonToken } : body
 
     // The presented anon token travels in the body (effectiveBody.anonToken); the context carries only
-    // the transport signals the abuse stack reads (IP + CF geo headers + UA).
+    // the transport signals the abuse stack reads (IP + CF geo headers + UA). cfGeoTrusted gates the
+    // CF-* geo headers on the request actually arriving through a trusted proxy/edge (P1-2): request.ips
+    // has more than one entry only when Fastify trusted a forwarding hop (see cfGeoFromTrustedEdge).
     const result = await service().submitAnonReport(effectiveBody, {
       ip: request.ip || null,
       cfGeo: request.headers,
+      cfGeoTrusted: cfGeoFromTrustedEdge(request),
       ...(request.headers["user-agent"] !== undefined
         ? { userAgent: String(request.headers["user-agent"]) }
         : {}),
@@ -133,22 +137,34 @@ export async function registerAnonRoutes(
   })
 
   // -------------------------------------------------------------------------
-  // GET /anon/reports/:id/status  [public, claimCode-gated]
+  // GET /anon/reports/:id/status  [public, claimCode-gated]  (dedicated tighter per-IP limit, P2-7)
   // -------------------------------------------------------------------------
-  app.get("/anon/reports/:id/status", async (request, reply) => {
-    const { id } = parse(AnonReportIdParamsSchema, request.params)
-    // The claim code arrives as a query param; validate the (reportId, claimCode) pair against the
-    // shared request schema so the contract is the single source of truth.
-    const q = parse(AnonReportStatusQuerySchema, request.query)
-    parse(AnonReportStatusRequestSchema, { reportId: id, claimCode: q.claimCode })
+  app.get(
+    "/anon/reports/:id/status",
+    { config: { rateLimit: ANON_STATUS_RATE_LIMIT } },
+    async (request, reply) => {
+      const { id } = parse(AnonReportIdParamsSchema, request.params)
+      // The claim code arrives as a query param; validate the (reportId, claimCode) pair against the
+      // shared request schema so the contract is the single source of truth.
+      const q = parse(AnonReportStatusQuerySchema, request.query)
+      parse(AnonReportStatusRequestSchema, { reportId: id, claimCode: q.claimCode })
 
-    const payload: AnonReportStatusResponse = await service().anonReportStatus(id, q.claimCode)
-    reply.status(200).send(payload)
-  })
+      const payload: AnonReportStatusResponse = await service().anonReportStatus(id, q.claimCode)
+      reply.status(200).send(payload)
+    },
+  )
 }
 
 /** Query schema for the status route: the claim code echoed by the client. */
 const AnonReportStatusQuerySchema = z.object({ claimCode: z.string().min(1) }).strict()
+
+/**
+ * Dedicated tighter per-IP limit for the public claim-code status surface (P2-7). The 256-bit claim
+ * code is not brute-forcible and a wrong code already 404s with a constant-time compare, so this is
+ * defense-in-depth on top of the global limiter. 30/min/IP comfortably covers a client polling its own
+ * held report's status while bounding automated probing.
+ */
+const ANON_STATUS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 /**
  * Read the anon token from the readable civfix_anon cookie (web transport). Returns undefined when the

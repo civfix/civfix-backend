@@ -212,6 +212,20 @@ describe("isAllowedWsOrigin (anti-CSWSH origin allowlist)", () => {
   it("allows ALL origins when the allowlist is empty (dev convenience)", () => {
     expect(isAllowedWsOrigin("https://anything.example.com", [])).toBe(true)
     expect(isAllowedWsOrigin(undefined, [])).toBe(true)
+    // Even with a cookie, the empty (dev) allowlist disables the gate.
+    expect(isAllowedWsOrigin(undefined, [], true)).toBe(true)
+  })
+
+  it("P1-4: a NO-Origin handshake is allowed WITHOUT a cookie but REJECTED WITH a cookie", () => {
+    // Cookie-less (bearer/native) path: missing Origin is fine (not CSWSH-exposed).
+    expect(isAllowedWsOrigin(undefined, ALLOW, false)).toBe(true)
+    expect(isAllowedWsOrigin("", ALLOW, false)).toBe(true)
+    // Ambient-cookie path: a missing Origin is rejected (a real browser always sends one; a missing one
+    // means a non-browser client replaying a stolen cookie).
+    expect(isAllowedWsOrigin(undefined, ALLOW, true)).toBe(false)
+    expect(isAllowedWsOrigin("", ALLOW, true)).toBe(false)
+    // A present, allowlisted Origin is still accepted on the cookie path.
+    expect(isAllowedWsOrigin("https://app.civfix.org", ALLOW, true)).toBe(true)
   })
 })
 
@@ -269,6 +283,34 @@ describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
   it("accepts a NO-Origin handshake with a ?token (native mobile, not CSWSH-exposed)", async () => {
     const { sessions, token } = await withSession()
     const req = fakeReq({ query: { token } }) // no Origin header at all
+    const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
+    expect(result).toEqual({ ok: true, userId: ME })
+  })
+
+  it("P1-4: REJECTS a NO-Origin handshake that presents a session COOKIE (CSWSH second factor)", async () => {
+    const { sessions, token } = await withSession()
+    // A non-browser client replaying a stolen cookie with no Origin: the cookie path now requires an
+    // allowlisted Origin, so this is rejected with FORBIDDEN before any room work.
+    const req = fakeReq({
+      cookies: { [SESSION_COOKIE]: token },
+      auth: { userId: ME, roles: [], anon: false }, // the auth hook resolved the cookie
+      // NOTE: no Origin header.
+    })
+    const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe("FORBIDDEN")
+      expect(result.reason).toBe("origin not allowed")
+    }
+  })
+
+  it("P1-4: ACCEPTS the cookie path WITH an allowlisted Origin (normal browser SPA)", async () => {
+    const { sessions, token } = await withSession()
+    const req = fakeReq({
+      headers: { origin: "https://app.civfix.org" },
+      cookies: { [SESSION_COOKIE]: token },
+      auth: { userId: ME, roles: [], anon: false },
+    })
     const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
     expect(result).toEqual({ ok: true, userId: ME })
   })

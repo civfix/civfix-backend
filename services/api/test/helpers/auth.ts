@@ -20,16 +20,29 @@ import type { OAuthConfig } from "../../src/auth/oauth.js"
 /** A JWKS verifier stub: maps a fixed set of opaque "tokens" to canned verified claims. */
 export class StubJwksVerifier implements JwksVerifier {
   private readonly tokens = new Map<string, VerifiedIdToken>()
+  /** Optional per-token bound nonce: when set, verify enforces params.expectedNonce against it (P2-3). */
+  private readonly nonces = new Map<string, string>()
 
-  /** Register a token string that should verify to the given claims. */
-  register(token: string, claims: VerifiedIdToken): void {
+  /** Register a token string that should verify to the given claims (optionally bound to a nonce). */
+  register(token: string, claims: VerifiedIdToken, boundNonce?: string): void {
     this.tokens.set(token, claims)
+    if (boundNonce !== undefined) this.nonces.set(token, boundNonce)
   }
 
-  verify(idToken: string, _params: VerifyParams): Promise<VerifiedIdToken> {
+  verify(idToken: string, params: VerifyParams): Promise<VerifiedIdToken> {
     const claims = this.tokens.get(idToken)
     if (!claims) {
       return Promise.reject(new Error("stub verifier: unknown token"))
+    }
+    // Mirror the real verifier's nonce binding (P2-3): when the caller expects a nonce, it must match the
+    // token's bound nonce, else reject. A token with no bound nonce but an expectedNonce is a mismatch.
+    if (params.expectedNonce !== undefined) {
+      const bound = this.nonces.get(idToken)
+      if (bound !== params.expectedNonce) {
+        return Promise.reject(
+          new (class extends Error {})("stub verifier: nonce mismatch"),
+        )
+      }
     }
     return Promise.resolve(claims)
   }
@@ -52,6 +65,8 @@ export interface MakeAuthHarnessOptions {
   oauthConfig?: OAuthConfig
   /** Starting epoch ms for the injectable clock. */
   startMs?: number
+  /** WEB_ORIGINS allowlist to load into env (e.g. to test the OAuth redirect allowlist). */
+  webOrigins?: string[]
 }
 
 const DEFAULT_OAUTH_CONFIG: OAuthConfig = {
@@ -88,7 +103,12 @@ export async function makeAuthHarness(opts: MakeAuthHarnessOptions = {}): Promis
     now,
   })
 
-  const app = await buildServer({ env: loadEnv(), authServices: services })
+  const env = loadEnv(
+    opts.webOrigins !== undefined
+      ? { NODE_ENV: "test", WEB_ORIGINS: opts.webOrigins.join(",") }
+      : undefined,
+  )
+  const app = await buildServer({ env, authServices: services })
 
   return {
     app,

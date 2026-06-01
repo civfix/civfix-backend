@@ -9,8 +9,9 @@
  *   - markRead sets readAt for ONLY the user's own, still-unread ids;
  *   - findPrefs/createDefaultPrefs/upsertPrefs manage the 1:1 prefs row (defaults all-true, no quiet hours);
  *     a partial patch leaves untouched columns intact; quietHours null clears both bounds;
- *   - upsertPushToken keys on (platform, token): re-registering re-points the user/device and re-activates
- *     (clears revokedAt).
+ *   - upsertPushToken keys on (platform, token): ownership-scoped re-registration (P1-3) re-points/reactivates
+ *     only for the owner or a caller presenting the same non-null device_id; a foreign-owned token is left
+ *     untouched ("conflict").
  *
  * The Drizzle-backed repository is covered by the Docker-gated integration test; this fake exercises the
  * same NotificationRepository seam locally.
@@ -23,6 +24,7 @@ import type {
   NotificationPrefsRecord,
   NotificationRecord,
   NotificationRepository,
+  PushTokenUpsertOutcome,
 } from "../../src/services/notification-service.js"
 import { DEFAULT_PREFS } from "../../src/services/notification-service.js"
 import type { PushPlatform } from "@civfix/shared"
@@ -151,25 +153,32 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     platform: PushPlatform
     token: string
     deviceId: string | null
-  }): Promise<void> {
+  }): Promise<PushTokenUpsertOutcome> {
     const existing = this.pushTokens.find(
       (t) => t.platform === args.platform && t.token === args.token,
     )
     if (existing) {
-      // Re-register: re-point user/device, re-activate.
+      // OWNERSHIP-SCOPED re-registration (P1-3), mirroring the Drizzle ON CONFLICT ... WHERE: only the
+      // owner, or a caller presenting the SAME non-null device_id, may re-point/reactivate the row.
+      const owner = existing.userId === args.userId
+      const sameDevice = args.deviceId !== null && existing.deviceId === args.deviceId
+      if (!owner && !sameDevice) {
+        // Foreign-owned with no device proof: leave the row untouched (no silent transfer).
+        return Promise.resolve("conflict")
+      }
       existing.userId = args.userId
       existing.deviceId = args.deviceId
       existing.revokedAt = null
-    } else {
-      this.pushTokens.push({
-        userId: args.userId,
-        platform: args.platform,
-        token: args.token,
-        deviceId: args.deviceId,
-        revokedAt: null,
-      })
+      return Promise.resolve("stored")
     }
-    return Promise.resolve()
+    this.pushTokens.push({
+      userId: args.userId,
+      platform: args.platform,
+      token: args.token,
+      deviceId: args.deviceId,
+      revokedAt: null,
+    })
+    return Promise.resolve("stored")
   }
 }
 

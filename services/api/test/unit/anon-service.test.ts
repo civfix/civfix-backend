@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import { FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { AnonReportRequest } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
+import { abuseH3Cell } from "../../src/abuse/h3-cap.js"
 import { ANON_TOKEN_REPORT_CAP, signAnonToken } from "../../src/abuse/anon-token.js"
 import {
   makeAnonService,
@@ -206,26 +207,62 @@ describe("submitAnonReport: per-H3-cell cap", () => {
 })
 
 describe("submitAnonReport: GPS sanity", () => {
-  it("rejects a point implausibly far from the coarse IP geo (GPS_IMPLAUSIBLE)", async () => {
+  it("rejects a point implausibly far from the coarse IP geo (GPS_IMPLAUSIBLE), TRUSTED edge", async () => {
     const { store, service } = makeHarness()
-    // CF geo near LA; point far north (> 50 km).
+    // CF geo near LA; point far north (> 50 km). Headers are trusted (came through the edge).
     const cfGeo = { "cf-iplatitude": "34.1", "cf-iplongitude": "-118.35" }
     await expect(
-      service.submitAnonReport(req({ lat: 35.0, lng: -118.35 }), { ip: "203.0.113.10", cfGeo }),
+      service.submitAnonReport(req({ lat: 35.0, lng: -118.35 }), {
+        ip: "203.0.113.10",
+        cfGeo,
+        cfGeoTrusted: true,
+      }),
     ).rejects.toMatchObject({ code: "GPS_IMPLAUSIBLE" })
     expect(store.reports.size).toBe(0)
   })
 
-  it("passes when the point is near the coarse IP geo", async () => {
+  it("passes when the point is near the coarse IP geo (TRUSTED edge)", async () => {
     const { store, service } = makeHarness()
     const cfGeo = { "cf-iplatitude": "34.1", "cf-iplongitude": "-118.35" }
-    await service.submitAnonReport(req({ lat: 34.2, lng: -118.35 }), { ip: "203.0.113.10", cfGeo })
+    await service.submitAnonReport(req({ lat: 34.2, lng: -118.35 }), {
+      ip: "203.0.113.10",
+      cfGeo,
+      cfGeoTrusted: true,
+    })
     expect(store.reports.size).toBe(1)
   })
 
   it("passes when no coarse IP geo is available (fail-open)", async () => {
     const { store, service } = makeHarness()
     await service.submitAnonReport(req(), { ip: "203.0.113.10", cfGeo: {} })
+    expect(store.reports.size).toBe(1)
+  })
+
+  it("P1-2: IGNORES spoofed CF geo headers from an UNTRUSTED source (does NOT reject)", async () => {
+    const { store, service } = makeHarness()
+    // An attacker submits a point far from where the (forged) CF headers claim, but the request did NOT
+    // come through the trusted edge, so the headers are ignored and the check fails open: the report is
+    // created (held) rather than blocked. The point being: the spoofed headers cannot be used to PASS a
+    // bogus location check either - they simply are not trusted as a signal at all.
+    const cfGeo = { "cf-iplatitude": "34.1", "cf-iplongitude": "-118.35" }
+    await service.submitAnonReport(req({ lat: 35.0, lng: -118.35 }), {
+      ip: "203.0.113.10",
+      cfGeo,
+      cfGeoTrusted: false, // untrusted source (the default)
+    })
+    // No GPS_IMPLAUSIBLE rejection happened (headers ignored) -> the report exists.
+    expect(store.reports.size).toBe(1)
+  })
+
+  it("P1-2: an implausible point that WOULD reject if trusted is ignored when the source is untrusted", async () => {
+    const { store, service } = makeHarness()
+    const cfGeo = { "cf-iplatitude": "10.0", "cf-iplongitude": "10.0" } // far from the submitted point
+    // Untrusted: ignored -> passes. (Same input WITH cfGeoTrusted:true would be GPS_IMPLAUSIBLE.)
+    await service.submitAnonReport(req({ lat: 34.2, lng: -118.35 }), {
+      ip: "203.0.113.10",
+      cfGeo,
+      cfGeoTrusted: false,
+    })
     expect(store.reports.size).toBe(1)
   })
 })
@@ -261,6 +298,84 @@ describe("submitAnonReport: idempotency replay", () => {
       ctx,
     )
     expect(store.reports.size).toBe(2)
+  })
+
+  it("bugs P1-1: an idempotent replay does NOT burn per-IP or per-H3-cell budget", async () => {
+    const { store, service, counters } = makeHarness()
+    const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A, lat: 34.1, lng: -118.35 }), ctx)
+    expect(store.reports.size).toBe(1)
+
+    // Snapshot the counters AFTER the genuine first submit (it consumed exactly one IP + one cell slot).
+    const ipKey = "abuse:ip:203.0.113.10"
+    const h3Key = `abuse:h3:${abuseH3Cell(34.1, -118.35)}`
+    const ipAfterFirst = counters.peek(ipKey)
+    const h3AfterFirst = counters.peek(h3Key)
+    expect(ipAfterFirst).toBe(1)
+    expect(h3AfterFirst).toBe(1)
+
+    // Replay the SAME key several times. Each must short-circuit on the idempotency snapshot BEFORE the
+    // counter increments, so the budgets do not move (the replay is free, per the documented contract).
+    for (let i = 0; i < 4; i++) {
+      const replay = await service.submitAnonReport(
+        req({ idempotencyKey: KEY_A, lat: 34.1, lng: -118.35, anonToken: signAnonToken("anontok-1", SIGNING_KEY) }),
+        ctx,
+      )
+      expect(replay.response).toEqual(first.response)
+    }
+    expect(counters.peek(ipKey)).toBe(ipAfterFirst) // unchanged
+    expect(counters.peek(h3Key)).toBe(h3AfterFirst) // unchanged
+    expect(store.reports.size).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Concurrency: per-token cap is atomic (bugs P0-1)
+// ---------------------------------------------------------------------------
+
+describe("submitAnonReport: per-token cap is atomic under concurrency (bugs P0-1)", () => {
+  it("fires N concurrent submits on a token with ONE slot left; at most one is created", async () => {
+    const { store, service } = makeHarness()
+    // Token at cap-1 (one report allowed). Distinct IPs per request so the per-IP cap never trips and
+    // only the per-token cap can bound the outcome.
+    const signed = signAnonToken(
+      store.seedToken({ id: "anontok-1", reportCount: ANON_TOKEN_REPORT_CAP - 1 }).id,
+      SIGNING_KEY,
+    )
+    const N = 6
+    const results = await Promise.allSettled(
+      Array.from({ length: N }, (_unused, i) =>
+        service.submitAnonReport(
+          req({ idempotencyKey: uuid(i), anonToken: signed }),
+          { ip: `10.1.0.${i}`, cfGeo: {} },
+        ),
+      ),
+    )
+
+    const created = results.filter((r) => r.status === "fulfilled").length
+    const rejected = results.filter(
+      (r) => r.status === "rejected" && (r.reason as { code?: string }).code === "RATE_LIMITED",
+    ).length
+
+    // Exactly the one remaining slot is consumed; every other concurrent submit is rate-limited.
+    expect(created).toBe(1)
+    expect(rejected).toBe(N - 1)
+    expect(store.reports.size).toBe(1)
+    // The token never overshoots the cap.
+    expect(store.tokens.get("anontok-1")!.reportCount).toBe(ANON_TOKEN_REPORT_CAP)
+  })
+
+  it("the atomic cap is enforced in the create tx, not just the pre-check (cap reached -> rollback)", async () => {
+    const { store, service } = makeHarness()
+    // Token already AT the cap: the tx-level UPDATE ... WHERE report_count < cap matches 0 rows.
+    const signed = signAnonToken(
+      store.seedToken({ id: "anontok-1", reportCount: ANON_TOKEN_REPORT_CAP }).id,
+      SIGNING_KEY,
+    )
+    await expect(
+      service.submitAnonReport(req({ idempotencyKey: uuid(1), anonToken: signed }), ctx),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    expect(store.reports.size).toBe(0)
+    expect(store.tokens.get("anontok-1")!.reportCount).toBe(ANON_TOKEN_REPORT_CAP)
   })
 })
 

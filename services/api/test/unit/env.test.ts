@@ -39,6 +39,15 @@ describe("loadEnv", () => {
     // Optional defaults applied.
     expect(env.MAIL_FROM_NOREPLY).toBe("no-reply@civfix.org")
     expect(env.MAIL_FROM_OUTREACH).toBe("outreach@civfix.org")
+    // TRUST_PROXY defaults to the safe internal CIDR set, NEVER trust-all, even in production.
+    expect(env.TRUST_PROXY).not.toBe(true)
+    expect(Array.isArray(env.TRUST_PROXY)).toBe(true)
+  })
+
+  it("honors an explicit TRUST_PROXY hop count", () => {
+    const source = validProdEnv()
+    source.TRUST_PROXY = "1"
+    expect(loadEnv(source).TRUST_PROXY).toBe(1)
   })
 
   it("throws an aggregated error listing every missing BOOT var in production", () => {

@@ -111,7 +111,10 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
 
   const app = Fastify({
     genReqId,
-    trustProxy: true,
+    // Trust ONLY the configured upstream hops for X-Forwarded-* so request.ip is the real client and a
+    // client-supplied X-Forwarded-For cannot spoof the per-IP abuse/rate-limit key. Defaults to the
+    // internal loopback+private ranges (see env.TRUST_PROXY / plugins/trust-proxy).
+    trustProxy: env.TRUST_PROXY,
     disableRequestLogging: false,
     logger: {
       level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",

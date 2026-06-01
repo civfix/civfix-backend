@@ -6,10 +6,20 @@
  * automatically (the CORS preflight does NOT apply to WebSocket upgrades). So BEFORE resolving auth we
  * check the upgrade request's Origin header against the configured WEB_ORIGINS allowlist (same policy
  * as the CORS plugin): an Origin that is present is allowed; a cross-site Origin is REJECTED with a
- * policy-violation close. A handshake with NO Origin header (native mobile RN socket, server-to-server,
- * tests) is allowed: those carry no ambient cookie, so they are not CSWSH-exposed, and the bearer/token
- * path (b) still validates the credential. An empty allowlist (dev-only) allows all origins, mirroring
- * the CORS plugin's documented dev convenience.
+ * policy-violation close. An empty allowlist (dev-only) allows all origins, mirroring the CORS plugin's
+ * documented dev convenience.
+ *
+ * NO-ORIGIN HANDLING (P1-4): a handshake with NO Origin header is treated differently per credential:
+ *   - When a SESSION COOKIE is present on the upgrade (the ambient-cookie / browser path), we REQUIRE a
+ *     present, allowlisted Origin and REJECT a missing one. A real browser ALWAYS sends an Origin on a
+ *     ws() upgrade, so the only way to reach the cookie path with no Origin is a non-browser client
+ *     replaying a stolen cookie - exactly the CSWSH-adjacent case we want to deny. This makes the Origin
+ *     gate a genuine second factor for the cookie path.
+ *   - When NO session cookie is present (native mobile RN socket carrying its bearer in ?token,
+ *     server-to-server, tests), a missing Origin is ALLOWED: those carry no ambient cookie so they are
+ *     not CSWSH-exposed, and the bearer/?token path (b) still validates the credential.
+ * Documented clearly so a re-reviewer sees the no-Origin allowance is deliberately scoped to the
+ * cookie-less bearer path, not a blanket bypass.
  *
  * DUAL HANDSHAKE AUTH (the web and mobile clients differ):
  *   (a) COOKIE (web, same-origin SPA): the httpOnly session cookie is sent automatically on the upgrade
@@ -40,7 +50,7 @@ import type { WebSocket } from "@fastify/websocket"
 import { WsClientMessageSchema, type WsServerMessage } from "@civfix/shared"
 import type { ChatService, ChatConnection } from "@civfix/shared/interfaces"
 import type { SessionService } from "../auth/session-service.js"
-import { presentedSessionToken } from "../auth/transport.js"
+import { presentedSessionToken, SESSION_COOKIE } from "../auth/transport.js"
 import { randomUUID } from "node:crypto"
 
 /** Heartbeat interval (ms): ping idle sockets so dead connections are detected and reaped. */
@@ -51,18 +61,31 @@ export const WS_CLOSE_POLICY_VIOLATION = 1008
 
 /**
  * Decide whether a WebSocket upgrade Origin is allowed (anti-CSWSH). Pure so it is unit-testable with no
- * socket. Policy (mirrors the CORS plugin):
- *   - no Origin header (undefined/empty) -> ALLOW. Native mobile sockets, server-to-server, and tests
- *     send no Origin; they also carry no ambient browser cookie, so they are not hijack-exposed and the
- *     bearer/token path still validates the credential.
+ * socket. `hasSessionCookie` is whether the upgrade presented an ambient session cookie. Policy (mirrors
+ * the CORS plugin, with the P1-4 cookie-path tightening):
  *   - empty allowlist -> ALLOW all (dev-only convenience; the CORS plugin logs this same condition).
+ *   - no Origin header (undefined/empty):
+ *       * WITH a session cookie -> REJECT. The ambient-cookie path must carry a present, allowlisted
+ *         Origin; a real browser always sends one, so a missing Origin here is a non-browser client
+ *         replaying a stolen cookie. This is the CSWSH second factor.
+ *       * WITHOUT a session cookie -> ALLOW. Native mobile / server-to-server / tests send no Origin and
+ *         carry no ambient cookie, so they are not hijack-exposed; the bearer/?token path still validates.
  *   - Origin present in the allowlist -> ALLOW (exact string match, as browsers send a normalized
  *     scheme://host[:port] with no trailing slash).
  *   - any other Origin -> REJECT (a cross-site page trying to ride the session cookie).
  */
-export function isAllowedWsOrigin(origin: string | undefined, webOrigins: readonly string[]): boolean {
-  if (origin === undefined || origin === "") return true
+export function isAllowedWsOrigin(
+  origin: string | undefined,
+  webOrigins: readonly string[],
+  hasSessionCookie = false,
+): boolean {
+  // Dev-only: an empty allowlist disables the gate entirely (mirrors CORS).
   if (webOrigins.length === 0) return true
+  if (origin === undefined || origin === "") {
+    // Allow a missing Origin ONLY for the cookie-less (bearer/native) path; the cookie path must carry
+    // an allowlisted Origin so the gate is a real second factor against CSWSH.
+    return !hasSessionCookie
+  }
   return webOrigins.includes(origin)
 }
 
@@ -71,6 +94,12 @@ function originHeader(request: FastifyRequest): string | undefined {
   const raw = request.headers.origin
   const value = Array.isArray(raw) ? raw[0] : raw
   return value === undefined || value === "" ? undefined : value
+}
+
+/** Whether the upgrade request presents an ambient session cookie (the CSWSH-exposed path). */
+function wsHasSessionCookie(request: FastifyRequest): boolean {
+  const cookie = request.cookies?.[SESSION_COOKIE]
+  return typeof cookie === "string" && cookie.length > 0
 }
 
 /** Membership probe: is `userId` a member of `cleanupId`? (cleanup membership == chat membership). */
@@ -278,7 +307,11 @@ export async function checkWsHandshake(
   request: FastifyRequest,
   opts: { sessions: SessionService | undefined; webOrigins: readonly string[] },
 ): Promise<WsHandshakeResult> {
-  if (!isAllowedWsOrigin(originHeader(request), opts.webOrigins)) {
+  // The Origin gate is stricter when an ambient session cookie is present (P1-4): a cookie handshake
+  // MUST carry an allowlisted Origin (a real browser always does), so a missing Origin on the cookie
+  // path is rejected; the bearer/?token (cookie-less) path stays Origin-optional.
+  const hasSessionCookie = wsHasSessionCookie(request)
+  if (!isAllowedWsOrigin(originHeader(request), opts.webOrigins, hasSessionCookie)) {
     return {
       ok: false,
       code: "FORBIDDEN",

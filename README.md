@@ -221,6 +221,27 @@ pool; the worker drains the queue then closes its DB pool.
 
 Resource budget (compose `mem_limit`/`cpus`): api 1.5G / 2 cpu, media-worker 2.5G / 1.5 cpu, redis 1G.
 
+### Trusted proxy / client IP (`TRUST_PROXY`)
+
+Every per-IP control (the global rate limiter, the anon per-IP submit cap, the OTP request + verify
+caps, and the abuse logs) keys on `request.ip`. Fastify derives `request.ip` from `X-Forwarded-For`,
+but ONLY for upstream hops it is told to trust - so it must NOT trust an arbitrary client-supplied
+header. `TRUST_PROXY` configures that trust:
+
+- unset (default): the internal loopback + RFC1918 private + IPv6 unique-local ranges. In the deployed
+  topology the API only receives connections from Caddy on the internal network, so a forged
+  `X-Forwarded-For` from a public client is never honored, while the value Caddy sets for the real
+  client IS. Safe in production and convenient in dev (loopback trusted) with no config.
+- a hop count (e.g. `TRUST_PROXY=1`): trust exactly N hops (use `1` when only Caddy fronts the API).
+- a CIDR/IP comma list (e.g. `TRUST_PROXY=10.0.0.0/8,127.0.0.1`): trust `X-Forwarded-*` only from those
+  source addresses.
+- `true` / `false`: trust all (UNSAFE; private networks only) / trust none (read the raw socket peer).
+
+This pairs with `infra/caddy/Caddyfile`, which STRIPS any inbound `X-Forwarded-*` and sets it fresh to
+the real client remote, so a client cannot pre-seed the header even for the trusted hop. The two must
+ship together: trusting a hop count helps only if Caddy reliably sets the value, and stripping at Caddy
+helps only if Fastify is told which hops to trust.
+
 ### Building / running a single image by hand
 
 ```

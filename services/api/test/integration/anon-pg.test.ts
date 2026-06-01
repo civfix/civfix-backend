@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto"
 import { FakeAbuseChecks } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
+import { signAnonToken, ANON_TOKEN_REPORT_CAP } from "../../src/abuse/anon-token.js"
 import { makeAnonService, type AnonService } from "../../src/services/anon-service.js"
 import { makeClaimService, type ClaimService } from "../../src/services/claim-service.js"
 import {
@@ -208,5 +209,40 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
       SELECT COUNT(*)::int AS n FROM reports WHERE idempotency_key = ${key}
     `
     expect(countRows[0]!.n).toBe(1)
+  })
+
+  it("bugs P0-1: concurrent submits on one token never exceed the per-token cap (atomic UPDATE)", async () => {
+    // Seed an anon token directly with exactly ONE slot left, then fire many concurrent submits (distinct
+    // idempotency keys, distinct IPs so only the per-token cap can bound). The tx-level
+    // UPDATE ... WHERE report_count < cap RETURNING makes the check-and-consume atomic, so exactly one
+    // submit wins and report_count lands on the cap, never above.
+    const tokenId = randomUUID()
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    await h.sql`
+      INSERT INTO anon_tokens (id, expires_at, report_count, flagged)
+      VALUES (${tokenId}, ${expiresAt}, ${ANON_TOKEN_REPORT_CAP - 1}, ${false})
+    `
+    const signed = signAnonToken(tokenId, SIGNING_KEY)
+
+    const N = 8
+    const results = await Promise.allSettled(
+      Array.from({ length: N }, (_unused, i) =>
+        anon.submitAnonReport(req({ idempotencyKey: randomUUID(), anonToken: signed }), {
+          ip: `10.2.0.${i}`,
+          cfGeo: {},
+        }),
+      ),
+    )
+    const created = results.filter((r) => r.status === "fulfilled").length
+    expect(created).toBe(1)
+
+    const [tok] = await h.sql<{ report_count: number }[]>`
+      SELECT report_count FROM anon_tokens WHERE id = ${tokenId}
+    `
+    expect(tok!.report_count).toBe(ANON_TOKEN_REPORT_CAP) // never overshoots
+    const [rep] = await h.sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM reports WHERE anon_session_id = ${tokenId}
+    `
+    expect(rep!.n).toBe(1)
   })
 })

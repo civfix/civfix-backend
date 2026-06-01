@@ -126,13 +126,21 @@ export class OAuthService {
     })
   }
 
-  /** Verify an Apple ID token's signature + claims and return the verified subject/email. */
-  async verifyAppleIdToken(identityToken: string): Promise<VerifiedIdToken> {
+  /**
+   * Verify an Apple ID token's signature + claims and return the verified subject/email. When
+   * `expectedNonce` is supplied (the client issued one) it is bound: the token's nonce claim must match
+   * it (raw or its SHA-256 hex), closing ID-token replay (P2-3).
+   */
+  async verifyAppleIdToken(
+    identityToken: string,
+    expectedNonce?: string,
+  ): Promise<VerifiedIdToken> {
     const apple = this.requireAppleConfig()
     return this.verifier.verify(identityToken, {
       jwksUrl: APPLE_JWKS_URL,
       issuers: [APPLE_ISSUER],
       audience: apple.clientId,
+      ...(expectedNonce !== undefined ? { expectedNonce } : {}),
     })
   }
 
@@ -142,12 +150,16 @@ export class OAuthService {
     return this.upsertFromClaims(PROVIDER_GOOGLE, claims)
   }
 
-  /** Apple sign-in (POST flow): verify the identity token and upsert the user. */
+  /**
+   * Apple sign-in (POST flow): verify the identity token and upsert the user. When the client sent a
+   * `nonce`, it is bound during verification (P2-3) so a captured token cannot be replayed.
+   */
   async signInWithAppleIdToken(
     identityToken: string,
     fullName: string | undefined,
+    expectedNonce?: string,
   ): Promise<UserRecord> {
-    const claims = await this.verifyAppleIdToken(identityToken)
+    const claims = await this.verifyAppleIdToken(identityToken, expectedNonce)
     return this.upsertFromClaims(PROVIDER_APPLE, claims, fullName)
   }
 

@@ -36,6 +36,7 @@ import type {
 import { ANON_REPORT_CREATE_SCOPE } from "./anon-service.js"
 import type { AnonTokenRecord } from "../abuse/anon-token.js"
 import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
+import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 
 /** Postgres unique-violation SQLSTATE; surfaced on the idempotency-key race. */
@@ -119,7 +120,23 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
     ): Promise<CreateAnonReportTxResult> {
       try {
         const snapshot = await sql.begin(async (tx) => {
-          // 1) Insert the report HELD (anon: reporter_user_id NULL, anon_session_id = token id).
+          // 1) ATOMIC per-token cap (bugs P0-1): bump report_count and stamp the claim code ONLY while
+          // the token is still under the cap. Folding the cap into the WHERE makes the check-and-consume
+          // a single statement, so N concurrent submits on one token cannot all pass a stale read and
+          // overshoot. 0 rows updated means the cap is reached: throw, which rolls the whole tx back.
+          const bumped = await tx<{ report_count: number }[]>`
+            UPDATE anon_tokens
+            SET report_count = report_count + 1, claim_code = ${args.claimCode}
+            WHERE id = ${args.anonSessionId} AND report_count < ${args.reportCap}
+            RETURNING report_count
+          `
+          if (bumped.length === 0) {
+            throw AppError.rateLimited(
+              "This anonymous session has reached its report limit. Sign in to continue.",
+            )
+          }
+
+          // 2) Insert the report HELD (anon: reporter_user_id NULL, anon_session_id = token id).
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, anon_session_id, idempotency_key, geom, geom_source,
@@ -141,7 +158,7 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
             )
           `
 
-          // 2) Attach media (set report_id only when unattached or already ours; never steal a foreign).
+          // 3) Attach media (set report_id only when unattached or already ours; never steal a foreign).
           for (const uploadId of args.mediaUploadIds) {
             await tx`
               UPDATE media_assets
@@ -151,19 +168,12 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
             `
           }
 
-          // 3) Initial timeline: submitted, then held (the anon flow records both transitions).
+          // 4) Initial timeline: submitted, then held (the anon flow records both transitions).
           await tx`
             INSERT INTO report_timeline (report_id, status, note, actor_id)
             VALUES
               (${args.reportId}, ${"submitted"}, ${null}, ${null}),
               (${args.reportId}, ${"held"}, ${"Awaiting automated review"}, ${null})
-          `
-
-          // 4) Bump the anon token's report_count and stamp the single-use claim code for this report.
-          await tx`
-            UPDATE anon_tokens
-            SET report_count = report_count + 1, claim_code = ${args.claimCode}
-            WHERE id = ${args.anonSessionId}
           `
 
           // 5) Persist the AnonReportResponse snapshot under the idempotency key (same tx).
@@ -184,6 +194,8 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
           const stored = await readSnapshot(args.idempotencyKey, ANON_REPORT_CREATE_SCOPE)
           if (stored) return { kind: "replayed", snapshot: stored }
         }
+        // A cap-reached AppError (or any other) propagates unchanged: the tx already rolled back, so no
+        // report row, timeline, media-attach, or quota bump persisted.
         throw err
       }
     },

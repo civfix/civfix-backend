@@ -366,6 +366,28 @@ describe("held anon report stays hidden", () => {
     const status = await h.app.inject({ method: "GET", url: `/anon/reports/${reportId}/status` })
     expect(status.statusCode).toBe(422)
   })
+
+  it("P2-7: the status endpoint has a dedicated tighter per-IP limit (429 past 30/min)", async () => {
+    const h = await makeHarness()
+    const submit = await h.app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const { reportId } = submit.json()
+    // Hammer the status endpoint from one IP; the dedicated 30/min cap (well under the 300/min global)
+    // must produce a 429 before 40 requests. A wrong code keeps the handler outcome stable (404) so the
+    // signal is purely the rate limiter.
+    let saw429 = false
+    for (let i = 0; i < 40; i++) {
+      const res = await h.app.inject({
+        method: "GET",
+        url: `/anon/reports/${reportId}/status?claimCode=wrong`,
+        remoteAddress: "203.0.113.77",
+      })
+      if (res.statusCode === 429) {
+        saw429 = true
+        break
+      }
+    }
+    expect(saw429).toBe(true)
+  })
 })
 
 describe("claim flow", () => {

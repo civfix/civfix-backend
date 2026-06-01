@@ -60,9 +60,10 @@ const OAUTH_STATE_TTL_SECONDS = 10 * 60
  */
 export async function registerAuthRoutes(
   app: FastifyInstance,
-  _container: Container,
+  container: Container,
 ): Promise<void> {
   const services = app.authServices
+  const webOrigins = container.env.WEB_ORIGINS
 
   // -------------------------------------------------------------------------
   // Email OTP
@@ -77,7 +78,9 @@ export async function registerAuthRoutes(
 
   app.post("/auth/otp/verify", async (request, reply) => {
     const body = parse(EmailOtpVerifyRequestSchema, request.body)
-    const userId = await services.otp.verifyOtp(body.email, body.code)
+    // request.ip is the real client (trusted-proxy enforced; see server.ts) so the per-IP verify
+    // throttle keys on the genuine network, not a spoofable X-Forwarded-For.
+    const userId = await services.otp.verifyOtp(body.email, body.code, request.ip || null)
     await issueSession(services, request, reply, userId)
   })
 
@@ -87,7 +90,12 @@ export async function registerAuthRoutes(
 
   app.post("/auth/apple", async (request, reply) => {
     const body = parse(AppleSignInRequestSchema, request.body)
-    const user = await services.oauth.signInWithAppleIdToken(body.identityToken, body.fullName)
+    // P2-3: bind the nonce when the client supplied one (closes ID-token replay within the expiry).
+    const user = await services.oauth.signInWithAppleIdToken(
+      body.identityToken,
+      body.fullName,
+      body.nonce,
+    )
     await issueSessionForUser(services, request, reply, user)
   })
 
@@ -102,7 +110,13 @@ export async function registerAuthRoutes(
   // -------------------------------------------------------------------------
 
   app.get("/auth/google/start", async (request, reply) => {
-    parse(OAuthStartQuerySchema, request.query)
+    const startQuery = parse(OAuthStartQuerySchema, request.query)
+    // P2-2 (open-redirect prevention): the `redirect` param is parsed but not yet wired into the flow.
+    // Validate it NOW against the WEB_ORIGINS allowlist (or accept a safe relative internal path), so a
+    // future change that does honor it cannot become an open redirect. A disallowed value is a 422.
+    if (startQuery.redirect !== undefined && !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)) {
+      throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
+    }
     const auth = services.oauth.createGoogleAuthUrl()
     // Stash state + verifier in a signed, httpOnly, short-lived cookie for the callback to validate.
     reply.setCookie(
@@ -292,6 +306,31 @@ function readOAuthStash(request: FastifyRequest): OAuthStash | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Whether a post-login `redirect` target is safe (P2-2 open-redirect guard). Allowed:
+ *   - a RELATIVE internal path: starts with a single "/" but NOT "//" or "/\" (those are
+ *     protocol-relative / backslash tricks that browsers treat as absolute -> open redirect), and
+ *   - an ABSOLUTE URL whose ORIGIN exactly matches an entry in the WEB_ORIGINS allowlist.
+ * Everything else (other hosts, javascript:, data:, malformed) is rejected. PURE.
+ */
+function isAllowedPostLoginRedirect(redirect: string, webOrigins: readonly string[]): boolean {
+  const value = redirect.trim()
+  if (value === "") return false
+  // Relative internal path: exactly one leading slash, and not a backslash trick.
+  if (value.startsWith("/")) {
+    return !value.startsWith("//") && !value.startsWith("/\\")
+  }
+  // Absolute URL: its origin must be allowlisted.
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false
+  return webOrigins.includes(url.origin)
 }
 
 /**

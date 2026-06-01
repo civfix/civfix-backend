@@ -126,17 +126,29 @@ export interface NotificationRepository {
   upsertPrefs(userId: string, patch: NotificationPrefsPatch): Promise<NotificationPrefsRecord>
 
   /**
-   * Upsert a push token (unique(platform, token)). Re-registering an existing (platform, token) updates
-   * the owning user + device id and CLEARS revoked_at (re-activates a previously revoked token). Returns
-   * nothing; the PushSender keeps its own copy via registerToken.
+   * Upsert a push token (unique(platform, token)) with OWNERSHIP-SCOPED re-registration (P1-3).
+   *
+   * A push token is a device secret. Re-registering is allowed to (re-)point the row + clear revoked_at
+   * ONLY when the caller already owns the row, OR presents the SAME non-null device_id as the existing
+   * row (a genuine device handoff/re-provision). A token currently owned by a DIFFERENT user that the
+   * caller cannot prove device ownership of is NOT silently transferred - the existing owner keeps it and
+   * the attempt is reported as a conflict (the caller logs it). This closes the silent notification
+   * hijack / denial-of-delivery where knowing another user's raw token let you re-point it to yourself.
+   *
+   * Returns the outcome so the caller can log a conflict:
+   *   - "stored"   the token was inserted, or re-pointed/reactivated for an owner/same-device caller.
+   *   - "conflict" a different user owns the token and ownership was NOT transferred (left untouched).
    */
   upsertPushToken(args: {
     userId: string
     platform: PushPlatform
     token: string
     deviceId: string | null
-  }): Promise<void>
+  }): Promise<PushTokenUpsertOutcome>
 }
+
+/** Outcome of upsertPushToken: stored (insert/owner-update) vs conflict (foreign-owned, untouched). */
+export type PushTokenUpsertOutcome = "stored" | "conflict"
 
 // ---------------------------------------------------------------------------
 // Pure helpers (no DB, no IO)
@@ -386,15 +398,24 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       userId: string,
       req: RegisterPushTokenRequest,
     ): Promise<{ ok: true }> {
-      // Persist via the repo (the canonical push_tokens store the real PushSender.send() reads), AND tell
-      // the PushSender so the real adapter can keep its own provider-side registration. The repo write is
-      // the source of truth; the PushSender call is best-effort and must not break registration.
-      await deps.repo.upsertPushToken({
+      // Persist via the repo (the canonical push_tokens store the real PushSender.send() reads). The repo
+      // enforces ownership-scoped re-registration (P1-3): a token owned by a DIFFERENT user is not
+      // silently transferred. On such a conflict we DO NOT register the token with the PushSender either
+      // (that would route the foreign device's pushes to this user), and we log it. The endpoint still
+      // returns ok so the conflict is not an enumeration oracle for which raw tokens exist.
+      const outcome = await deps.repo.upsertPushToken({
         userId,
         platform: req.platform,
         token: req.token,
         deviceId: req.deviceId ?? null,
       })
+      if (outcome === "conflict") {
+        deps.logger?.warn(
+          { userId, platform: req.platform, hasDeviceId: req.deviceId !== undefined },
+          "push token re-registration refused: token owned by another user (no device-ownership proof)",
+        )
+        return { ok: true }
+      }
       try {
         await deps.pushSender.registerToken(userId, req.token, req.platform, req.deviceId)
       } catch (err) {

@@ -12,8 +12,9 @@
  * The media.checks handler NEVER throws (see media-checks.ts), so a crafted upload can never crash the
  * worker or poison the queue: it records a terminal media_assets status + abuse_flag/log/GlitchTip and
  * the job completes. Concurrency on media.checks is capped (default 2) so CPU/memory stay bounded; the
- * container additionally caps CPU per the infra compose. Per-job wall-clock and per-tool timeouts are
- * enforced inside the sandbox wrappers (see config.ts).
+ * container additionally caps CPU per the infra compose. The per-tool timeouts are enforced inside the
+ * sandbox wrappers, and the OVERALL per-job wall-clock budget (limits.jobTimeoutMs) is enforced by
+ * runMediaChecksJob via withJobTimeout (see jobs/media-checks.ts), so a single job cannot run unbounded.
  *
  * Seam selection mirrors the API's USE_FAKE_* flags, so the worker boots fully offline with fakes.
  */

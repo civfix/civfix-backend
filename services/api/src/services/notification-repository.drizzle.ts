@@ -18,9 +18,10 @@
  * the columns present in the patch, so a partial update leaves the rest intact. quietHours null clears both
  * time columns; an object sets both.
  *
- * PUSH TOKENS (upsertPushToken): ON CONFLICT (platform, token) DO UPDATE re-points the row at the current
- * user + device id and CLEARS revoked_at (re-activates a previously revoked token), matching the unique
- * (platform, token) contract.
+ * PUSH TOKENS (upsertPushToken): OWNERSHIP-SCOPED re-registration (P1-3). ON CONFLICT (platform, token)
+ * DO UPDATE re-points the row + clears revoked_at ONLY when the caller already owns the row OR presents
+ * the same non-null device_id; a token owned by a different user with no device proof is left untouched
+ * (returned as "conflict"), so a known raw token cannot be used to hijack another user's device.
  */
 
 import type { Sql } from "../db/client.js"
@@ -30,6 +31,7 @@ import type {
   NotificationPrefsRecord,
   NotificationRecord,
   NotificationRepository,
+  PushTokenUpsertOutcome,
 } from "./notification-service.js"
 import { DEFAULT_PREFS } from "./notification-service.js"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
@@ -225,17 +227,26 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       platform: PushPlatform
       token: string
       deviceId: string | null
-    }): Promise<void> {
-      // ON CONFLICT (platform, token): re-point at the current user + device, and re-activate (revoked_at
-      // -> NULL). This is the "re-register" semantics: the same physical token registered again is live.
-      await sql`
+    }): Promise<PushTokenUpsertOutcome> {
+      // OWNERSHIP-SCOPED re-registration (P1-3). ON CONFLICT (platform, token) DO UPDATE ... WHERE:
+      //   - re-point/reactivate only when the conflicting row ALREADY belongs to this user, OR
+      //   - the caller presents the SAME non-null device_id as the stored row (a genuine device handoff).
+      // Otherwise (a token owned by a DIFFERENT user with no device-ownership proof) the WHERE fails, the
+      // UPDATE is skipped, no row is returned, and the existing owner KEEPS the token (no silent steal).
+      // A fresh (platform, token) inserts normally. RETURNING tells us which happened.
+      const rows = await sql<{ id: string }[]>`
         INSERT INTO push_tokens (user_id, platform, token, device_id)
         VALUES (${args.userId}, ${args.platform}, ${args.token}, ${args.deviceId})
         ON CONFLICT (platform, token) DO UPDATE SET
           user_id = EXCLUDED.user_id,
           device_id = EXCLUDED.device_id,
           revoked_at = NULL
+        WHERE push_tokens.user_id = EXCLUDED.user_id
+           OR (EXCLUDED.device_id IS NOT NULL AND push_tokens.device_id = EXCLUDED.device_id)
+        RETURNING id
       `
+      // 1 row -> inserted or owner/same-device update. 0 rows -> a foreign-owned conflict left untouched.
+      return rows.length > 0 ? "stored" : "conflict"
     },
   }
 }

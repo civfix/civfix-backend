@@ -18,6 +18,9 @@
  *     writes the stripped/remuxed object + thumbnail to NEW storage keys, applies the result to the
  *     media_assets row, raises any abuse_flag, and reports rejections to GlitchTip. It also never
  *     throws: a failure to even load/download still results in status "rejected" and a completed job.
+ *     The download+process span is bounded by an OVERALL per-job wall-clock budget (limits.jobTimeoutMs)
+ *     via withJobTimeout, so the documented per-job budget is actually enforced (P2-1) on top of the
+ *     individual per-tool timeouts - a wall-clock overrun is a safe "rejected".
  *
  * Status mapping:
  *   ready     - decoded/validated clean, below NSFW threshold, not a near-duplicate.
@@ -299,6 +302,40 @@ export async function processMedia(
 /** Capped downloader: returns the source bytes for an r2Key, or throws if it exceeds maxBytes. */
 export type DownloadFn = (r2Key: string, maxBytes: number) => Promise<Uint8Array>
 
+/** Sentinel thrown when the overall per-job wall-clock budget (limits.jobTimeoutMs) is exceeded. */
+export class JobTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`media.checks exceeded the per-job wall-clock budget of ${ms}ms`)
+    this.name = "JobTimeoutError"
+    Object.setPrototypeOf(this, JobTimeoutError.prototype)
+  }
+}
+
+/**
+ * Race a promise against the per-job wall-clock budget (P2-1). The per-tool timeouts (ffprobe/ffmpeg/
+ * image) bound each step; this bounds the SUM, so a crafted asset that chains many near-budget steps
+ * cannot exceed the documented jobTimeoutMs. On expiry it rejects with JobTimeoutError; the orchestrator
+ * maps that to a safe "rejected" terminal status. The timer is unref'd + cleared so it never keeps the
+ * worker alive. Note: the underlying child processes are independently SIGKILL-bounded by their own
+ * per-tool timeouts, so this wall-clock guard is a belt over those suspenders.
+ */
+export function withJobTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new JobTimeoutError(ms)), ms)
+    if (typeof timer.unref === "function") timer.unref()
+    p.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      },
+    )
+  })
+}
+
 export interface MediaChecksDeps {
   repo: MediaWorkerRepo
   storage: Storage
@@ -375,17 +412,26 @@ export async function runMediaChecksJob(
     return "rejected"
   }
 
-  // Download source bytes under the hard size cap. An oversize/missing object is a safe rejection.
-  let bytes: Uint8Array
+  // Download + process under the OVERALL per-job wall-clock budget (P2-1). The download is capped by
+  // size and the per-tool steps inside processMedia have their own timeouts; this bounds their SUM so a
+  // crafted asset cannot chain near-budget steps past the documented jobTimeoutMs. A download failure or
+  // a wall-clock timeout is a safe "rejected" terminal status (the job still completes; never throws out).
+  let result: MediaProcessResult
   try {
-    bytes = await deps.download(asset.r2Key, deps.limits.maxDownloadBytes)
+    result = await withJobTimeout(
+      (async () => {
+        const bytes = await deps.download(asset.r2Key, deps.limits.maxDownloadBytes)
+        return processMedia({ bytes, kind: asset.kind }, deps)
+      })(),
+      deps.limits.jobTimeoutMs,
+    )
   } catch (err) {
-    await persistRejection(asset, deps, errNote("download failed", err), report)
+    if (err instanceof JobTimeoutError) {
+      report(err, { job: "media.checks", phase: "timeout", mediaId: asset.id })
+    }
+    await persistRejection(asset, deps, errNote("download/process failed", err), report)
     return "rejected"
   }
-
-  // Process (never throws).
-  const result = await processMedia({ bytes, kind: asset.kind }, deps)
 
   // PHASE-1 EXIF GPS DEFERRAL (privacy decision): processMedia reads result.exifGps from the ORIGINAL
   // bytes purely to STRIP it (the published image is metadata-free). We deliberately do NOT persist that

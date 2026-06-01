@@ -37,6 +37,7 @@ import type {
   AnonReportResponse,
   AnonReportStatusResponse,
   GeomSource,
+  LatLng,
   ReportCategory,
   ReportStatus,
 } from "@civfix/shared"
@@ -50,6 +51,7 @@ import { parseCfGeo, gpsSanityCheck, type HeaderBag } from "../abuse/gps-sanity.
 import {
   resolveOrIssueAnonToken,
   verifyAnonTokenSignature,
+  ANON_TOKEN_REPORT_CAP,
   type AnonTokenDeps,
   type AnonTokenStore,
 } from "../abuse/anon-token.js"
@@ -81,6 +83,13 @@ export interface CreateAnonReportTxArgs {
   mediaUploadIds: string[]
   /** The single-use claim code to stamp on the anon_tokens row for this submission. */
   claimCode: string
+  /**
+   * The per-token report cap. The held-create tx folds this into the SAME atomic statement that
+   * consumes the quota (UPDATE ... WHERE report_count < cap), so concurrent submits on one token cannot
+   * exceed it (bugs P0-1). 0 rows updated -> the cap is reached -> the tx rolls back and the caller sees
+   * a rate-limited error.
+   */
+  reportCap: number
   /** The AnonReportResponse snapshot to persist under the idempotency key (built by the caller). */
   responseSnapshot: AnonReportResponse
 }
@@ -131,6 +140,13 @@ export interface AnonSubmitContext {
   ip: string | null
   /** Request headers (or any case-insensitive bag) carrying the Cloudflare geo headers. */
   cfGeo?: HeaderBag | undefined
+  /**
+   * Whether the request arrived through a TRUSTED proxy/edge (P1-2). The CF-* geo headers are only
+   * believed when this is true; from an untrusted source they are ignored (the route computes this from
+   * Fastify's trusted-proxy determination via cfGeoFromTrustedEdge). Defaults to false (untrusted) when
+   * omitted, so a caller that forgets to set it fails CLOSED to "ignore the spoofable headers".
+   */
+  cfGeoTrusted?: boolean | undefined
   userAgent?: string | undefined
 }
 
@@ -215,37 +231,40 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         throw AppError.validation({ honeypot: "invalid" })
       }
 
-      // (3) Anon token: resolve the presented token (from the request body) or issue a fresh one,
-      // enforcing the per-token cap.
-      const { record: tokenRow, issuedToken } = await resolveOrIssueAnonToken(
-        input.anonToken,
-        tokenDeps,
-      )
-
-      // (4) Per-IP hourly cap (full IPv4 / IPv6 /64).
-      await enforceIpRateLimit(ctx.ip, { counters: deps.counters })
-
-      // (5) Per-H3-cell hourly cap (ANON-ONLY; this is the anon path so it always applies).
-      await enforceH3CellCap(input.lat, input.lng, { counters: deps.counters })
-
-      // (6) GPS sanity vs the coarse IP geo (CF headers). EXIF is deferred to the worker.
-      const ipGeo = ctx.cfGeo ? parseCfGeo(ctx.cfGeo) : null
-      const gps = await gpsSanityCheck(
-        { point: { lat: input.lat, lng: input.lng }, ipGeo },
-        { abuseChecks: deps.abuseChecks, log },
-      )
-      if (!gps.ok) {
-        throw AppError.gpsImplausible()
-      }
-
-      // (7) Idempotency fast path: a stored snapshot for this key means a prior submit already created
-      // the report. Replay the ORIGINAL AnonReportResponse verbatim (no new row, no quota spent).
+      // (3) Idempotency fast path FIRST (bugs P1-1): a stored snapshot for this key means a prior submit
+      // already created the report. Replay the ORIGINAL AnonReportResponse verbatim with NO quota spent.
+      // This MUST run before the per-IP / per-H3 counter increments below, otherwise an idempotent replay
+      // (a client retry on a flaky network) would burn IP + cell budget and could lock a user out of
+      // their own retries. Turnstile + honeypot stay first (a human/bot gate is cheap and not quota).
       const existing = await deps.repo.findIdempotentSnapshot(
         input.idempotencyKey,
         ANON_REPORT_CREATE_SCOPE,
       )
       if (existing) {
         return { response: existing }
+      }
+
+      // (4) Anon token: resolve the presented token (from the request body) or issue a fresh one,
+      // enforcing the per-token cap.
+      const { record: tokenRow, issuedToken } = await resolveOrIssueAnonToken(
+        input.anonToken,
+        tokenDeps,
+      )
+
+      // (5) Per-IP hourly cap (full IPv4 / IPv6 /64). Only reached for a genuinely NEW submission.
+      await enforceIpRateLimit(ctx.ip, { counters: deps.counters })
+
+      // (6) Per-H3-cell hourly cap (ANON-ONLY; this is the anon path so it always applies).
+      await enforceH3CellCap(input.lat, input.lng, { counters: deps.counters })
+
+      // (7) GPS sanity vs the coarse IP geo (CF headers). EXIF is deferred to the worker.
+      const ipGeo = resolveTrustedCfGeo(ctx, log)
+      const gps = await gpsSanityCheck(
+        { point: { lat: input.lat, lng: input.lng }, ipGeo },
+        { abuseChecks: deps.abuseChecks, log },
+      )
+      if (!gps.ok) {
+        throw AppError.gpsImplausible()
       }
 
       // First submit. Resolve jurisdiction + compute h3 + mint ids, then run the single held-create tx.
@@ -273,6 +292,9 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         h3Cell,
         mediaUploadIds: input.mediaUploadIds,
         claimCode,
+        // Authoritative per-token cap enforced atomically inside the tx (bugs P0-1). The pre-tx
+        // assertUnderReportCap above is a cheap fast-fail; THIS is the race-safe bound.
+        reportCap: ANON_TOKEN_REPORT_CAP,
         responseSnapshot,
       })
 
@@ -313,6 +335,31 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       }
     },
   }
+}
+
+/**
+ * Resolve the coarse IP geo for the submit-time GPS check, honoring the CF-* headers ONLY when the
+ * request arrived through a trusted edge (P1-2). From an untrusted source the headers are spoofable, so
+ * we IGNORE them and return null (the GPS check then fails open with "no_signal" - an explicit, logged
+ * decision documented on gps-sanity). When there are simply no CF headers, this is null regardless.
+ */
+function resolveTrustedCfGeo(
+  ctx: AnonSubmitContext,
+  log: (line: string, extra?: Record<string, unknown>) => void,
+): LatLng | null {
+  if (!ctx.cfGeo) return null
+  if (!ctx.cfGeoTrusted) {
+    const parsed = parseCfGeo(ctx.cfGeo)
+    if (parsed !== null) {
+      // Headers were present but the source is untrusted: do NOT believe them. Log so the (intentional)
+      // fail-open is observable rather than silent.
+      log("gps-sanity: ignoring CF geo headers from an untrusted source (fail-open to no_signal)", {
+        ip: ctx.ip,
+      })
+    }
+    return null
+  }
+  return parseCfGeo(ctx.cfGeo)
 }
 
 /** Constant-time compare of two claim codes (length is not secret; contents are). */

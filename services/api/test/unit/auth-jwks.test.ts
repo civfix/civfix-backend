@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { generateKeyPairSync, createSign, type KeyObject } from "node:crypto"
+import { generateKeyPairSync, createSign, createHash, type KeyObject } from "node:crypto"
 import { RemoteJwksVerifier, type FetchLike } from "../../src/auth/jwks.js"
 import { AppError, ErrorCode } from "@civfix/shared"
 
@@ -104,5 +104,64 @@ describe("RemoteJwksVerifier", () => {
   it("rejects a malformed token", async () => {
     const verifier = makeVerifier(publicKey, NOW)
     await expectUnauthorized(verifier.verify("not-a-jwt", params(NOW)))
+  })
+
+  // P2-3: nonce binding (closes ID-token replay when the client issued a nonce).
+  describe("nonce binding (P2-3)", () => {
+    it("accepts a token whose nonce claim equals the expected RAW nonce", async () => {
+      const token = signJwt(privateKey, {
+        iss: ISS,
+        aud: AUD,
+        sub: "s",
+        exp: NOW + 600,
+        nonce: "client-nonce-abc",
+      })
+      const verifier = makeVerifier(publicKey, NOW)
+      const result = await verifier.verify(token, {
+        ...params(NOW),
+        expectedNonce: "client-nonce-abc",
+      })
+      expect(result.sub).toBe("s")
+    })
+
+    it("accepts a token whose nonce claim is the SHA-256 hex of the nonce (Apple native)", async () => {
+      const raw = "client-nonce-xyz"
+      const hashed = createHash("sha256").update(raw).digest("hex")
+      const token = signJwt(privateKey, { iss: ISS, aud: AUD, sub: "s", exp: NOW + 600, nonce: hashed })
+      const verifier = makeVerifier(publicKey, NOW)
+      const result = await verifier.verify(token, { ...params(NOW), expectedNonce: raw })
+      expect(result.sub).toBe("s")
+    })
+
+    it("REJECTS a token with a mismatched nonce when one is expected (replay)", async () => {
+      const token = signJwt(privateKey, {
+        iss: ISS,
+        aud: AUD,
+        sub: "s",
+        exp: NOW + 600,
+        nonce: "some-other-nonce",
+      })
+      const verifier = makeVerifier(publicKey, NOW)
+      await expectUnauthorized(verifier.verify(token, { ...params(NOW), expectedNonce: "expected" }))
+    })
+
+    it("REJECTS a token with NO nonce claim when one is expected", async () => {
+      const token = signJwt(privateKey, { iss: ISS, aud: AUD, sub: "s", exp: NOW + 600 })
+      const verifier = makeVerifier(publicKey, NOW)
+      await expectUnauthorized(verifier.verify(token, { ...params(NOW), expectedNonce: "expected" }))
+    })
+
+    it("ignores the nonce claim when NO nonce is expected (backward compatible)", async () => {
+      const token = signJwt(privateKey, {
+        iss: ISS,
+        aud: AUD,
+        sub: "s",
+        exp: NOW + 600,
+        nonce: "whatever",
+      })
+      const verifier = makeVerifier(publicKey, NOW)
+      const result = await verifier.verify(token, params(NOW)) // no expectedNonce
+      expect(result.sub).toBe("s")
+    })
   })
 })

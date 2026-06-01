@@ -11,6 +11,7 @@
  * directly, so there is no third-party JWT library in the dependency graph.
  */
 
+import { createHash, timingSafeEqual } from "node:crypto"
 import { AppError } from "@civfix/shared"
 
 /** The verified, trusted claims a caller may rely on after a successful verify. */
@@ -32,6 +33,12 @@ export interface VerifyParams {
   issuers: string[]
   /** Expected `aud` (our OAuth client id). */
   audience: string
+  /**
+   * Optional expected `nonce` (P2-3 replay binding). When set, the token's `nonce` claim MUST match
+   * either this raw value OR its SHA-256 hex (Apple's native Sign in with Apple stores SHA256(nonce) in
+   * the claim). When unset, no nonce check is performed (the caller did not issue one).
+   */
+  expectedNonce?: string
   /** Override "now" (epoch seconds) for deterministic expiry tests. */
   nowSeconds?: number
 }
@@ -63,6 +70,7 @@ interface JwtClaims {
   sub?: string
   exp?: number
   nbf?: number
+  nonce?: string
   email?: string
   email_verified?: boolean | string
   name?: string
@@ -176,6 +184,25 @@ function decodeJsonSegment<T>(segment: string): T | null {
   }
 }
 
+/**
+ * Whether a token's `nonce` claim matches the expected nonce. Accepts EITHER the raw expected value OR
+ * its SHA-256 hex (Sign in with Apple hashes the client nonce into the claim). Constant-time on the
+ * compared bytes. A missing claim never matches.
+ */
+function nonceMatches(claimNonce: string | undefined, expected: string): boolean {
+  if (typeof claimNonce !== "string" || claimNonce.length === 0) return false
+  const expectedHash = createHash("sha256").update(expected).digest("hex")
+  return constantTimeEqual(claimNonce, expected) || constantTimeEqual(claimNonce, expectedHash)
+}
+
+/** Constant-time string compare (equal length required; a length mismatch is a definite non-match). */
+function constantTimeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a)
+  const bb = Buffer.from(b)
+  if (ab.length !== bb.length) return false
+  return timingSafeEqual(ab, bb)
+}
+
 /** Verify an RS256 signature over `signingInput` using an RSA JWK via WebCrypto. */
 async function verifyRs256(jwk: Jwk, signingInput: string, signatureB64: string): Promise<boolean> {
   if (jwk.kty !== "RSA" || !jwk.n || !jwk.e) return false
@@ -214,6 +241,13 @@ function validateClaims(
   }
   if (!claims.sub) {
     throw AppError.unauthorized("Identity token is missing a subject.")
+  }
+  // P2-3 nonce binding: when the caller issued a nonce, the token MUST carry a matching one (raw or its
+  // SHA-256 hex, since Apple native stores the hash). A missing/mismatched nonce is a replay -> reject.
+  if (params.expectedNonce !== undefined) {
+    if (!nonceMatches(claims.nonce, params.expectedNonce)) {
+      throw AppError.unauthorized("Identity token nonce mismatch.")
+    }
   }
 
   return {
