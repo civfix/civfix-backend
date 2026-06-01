@@ -363,4 +363,21 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     const res = await app.inject({ method: "GET", url: `/cleanups/${id}/messages` })
     expect(res.statusCode).toBe(401)
   })
+
+  it("P2: tolerates an extra `cleanupId` query key (the shared client's redundant path-param echo)", async () => {
+    const { app, token, userId, chat } = await makeHarness()
+    const id = await createCleanup(app, token)
+    await chat.persist({ cleanupId: id, userId, body: "hello" })
+
+    // The shared typed client serializes a GET's input as BOTH path params and query, so it sends
+    // ?cleanupId=<id> on top of the URL path. A strict schema would 400; we accept + ignore it and the
+    // request still parses + returns history. (We send cleanupId AND before to prove both keys are fine.)
+    const res = await app.inject({
+      method: "GET",
+      url: `/cleanups/${id}/messages?cleanupId=${id}&limit=10`,
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().items.map((m: { body: string }) => m.body)).toEqual(["hello"])
+  })
 })

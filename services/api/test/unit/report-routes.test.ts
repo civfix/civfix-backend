@@ -399,6 +399,47 @@ describe("GET /map/reports", () => {
     expect(res.json().code).toBe("VALIDATION")
   })
 
+  it("P2: 422s an INVERTED bbox (west >= east or south >= north) instead of silently empty", async () => {
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+      },
+    })
+    // west > east (transposed longitude). Before the guard this built an empty envelope -> 200 with no
+    // pins (a silent failure); now it is a clear 422.
+    const transposed = await app.inject({
+      method: "GET",
+      url: `/map/reports${clientQuery({ bbox: { west: -118.2, south: 34.0, east: -118.5, north: 34.2 }, zoom: 16 })}`,
+    })
+    expect(transposed.statusCode).toBe(422)
+    expect(transposed.json().code).toBe("VALIDATION")
+
+    // south >= north (degenerate latitude) is likewise rejected.
+    const flat = await app.inject({
+      method: "GET",
+      url: `/map/reports${clientQuery({ bbox: { west: -118.5, south: 34.2, east: -118.2, north: 34.2 }, zoom: 16 })}`,
+    })
+    expect(flat.statusCode).toBe(422)
+  })
+
+  it("P2: 422s a NaN / out-of-range zoom (clustering NaN guard)", async () => {
+    const { app } = await makeHarness()
+    // zoom=NaN (non-numeric) would coerce to NaN and produce a NaN-coord cluster; now a 422.
+    const nan = await app.inject({
+      method: "GET",
+      url: `/map/reports?bbox=${encodeURIComponent(JSON.stringify(BBOX))}&zoom=notanumber`,
+    })
+    expect(nan.statusCode).toBe(422)
+    expect(nan.json().code).toBe("VALIDATION")
+
+    // An absurd out-of-range zoom is rejected too.
+    const huge = await app.inject({
+      method: "GET",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 99 })}`,
+    })
+    expect(huge.statusCode).toBe(422)
+  })
+
   it("is anon-ok (no auth required)", async () => {
     const { app } = await makeHarness()
     const res = await app.inject({

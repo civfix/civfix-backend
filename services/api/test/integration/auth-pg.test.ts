@@ -150,4 +150,25 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     const u2 = await svcApple.signInWithAppleIdToken("tok2", undefined)
     expect(u2.id).toBe(u1.id)
   })
+
+  it("P1-4: concurrent create for the same brand-new email resolves to ONE user (no unique-violation 500)", async () => {
+    const users = new PgUserStore(h.db)
+    const email = "concurrent.signup@example.com"
+    // Fire several creates at once for the SAME new email. Before the fix the losers tripped
+    // users_email_key and threw a 23505 that surfaced as a 500; now ON CONFLICT (email) DO NOTHING +
+    // re-select makes every caller resolve to the single winning row.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_unused, i) =>
+        users.create(email, { displayName: `Racer ${i}`, emailVerified: true }),
+      ),
+    )
+    const ids = new Set(results.map((r) => r.id))
+    expect(ids.size).toBe(1) // all converged on one user
+
+    // Exactly one row exists in the table for that email.
+    const rows = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM users WHERE email = ${email}
+    `
+    expect(rows[0]!.n).toBe(1)
+  })
 })

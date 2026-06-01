@@ -32,8 +32,20 @@ export type PerceptualHashFn = (buffer: Uint8Array) => Promise<string>
 /** An injected NSFW scorer (a real model). Returns a 0..1 score. */
 export type NsfwScoreFn = (buffer: Uint8Array) => Promise<number>
 
+/**
+ * Options for a near-duplicate lookup. `excludeAssetId` is the id of the asset CURRENTLY being processed
+ * so the query never matches the asset against its OWN persisted row (a job re-delivery recomputes the
+ * same phash, and without this exclusion the asset would be flagged a near-duplicate of itself - P0-2).
+ */
+export interface FindPhashDuplicateOpts {
+  excludeAssetId?: string
+}
+
 /** An injected near-duplicate lookup over an existing phash index (e.g. a media_assets query). */
-export type FindPhashDuplicateFn = (hash: string) => Promise<NearDuplicateResult>
+export type FindPhashDuplicateFn = (
+  hash: string,
+  opts?: FindPhashDuplicateOpts,
+) => Promise<NearDuplicateResult>
 
 export interface AbuseChecksConfig {
   turnstileSecret?: string

@@ -24,9 +24,15 @@ import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
 import { buildJobs, type JobsHandle, type WorkerJobs } from "./jobs.js"
 import { buildSeams, type WorkerSeams } from "./seams.js"
-import { CHAT_PARTITION_CRON, ORPHAN_SWEEP_CRON, type WorkerLimits } from "./config.js"
+import {
+  CHAT_PARTITION_CRON,
+  HOLD_RELEASE_SWEEP_CRON,
+  ORPHAN_SWEEP_CRON,
+  type WorkerLimits,
+} from "./config.js"
 import { runMediaChecksJob, parsePayload } from "./jobs/media-checks.js"
 import { runOrphanSweep } from "./jobs/orphan-sweep.js"
+import { runHoldReleaseSweep } from "./jobs/hold-release-sweep.js"
 import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
 
 /** Queue/cron names. media.checks MUST equal the name the API enqueues (MEDIA_CHECKS_JOB). */
@@ -34,6 +40,8 @@ export const ORPHAN_SWEEP_JOB = "orphan.sweep"
 export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
 /** Hold-release queue: enqueued by the media.checks post-success hook for an anon report's media. */
 export const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
+/** Self-healing hold-release sweep cron (P2-8): reconciles held anon reports if an inline enqueue was lost. */
+export const ANON_HOLD_RELEASE_SWEEP_JOB = "anon.hold.release.sweep"
 
 export interface Worker {
   jobs: WorkerJobs
@@ -73,6 +81,9 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       abuseChecks: seams.abuseChecks,
       limits: seams.limits,
       download: seams.download,
+      // Self-aware dedupe lookup (excludes the processing asset's own row, P0-2). Undefined in all-fake
+      // offline mode, where the pipeline falls back to AbuseChecks.isNearDuplicate.
+      ...(seams.findPhashDuplicate ? { findPhashDuplicate: seams.findPhashDuplicate } : {}),
       report: seams.report,
     })
 
@@ -155,6 +166,26 @@ function makeOrphanSweepHandler(seams: WorkerSeams): JobHandler {
   }
 }
 
+/**
+ * Build the anon.hold.release.sweep JobHandler (P2-8 self-healing backstop). Re-checks held anon reports
+ * and publishes any that are now releasable, so a release whose inline enqueue was lost (e.g. a shutdown
+ * race) is reconciled. Requires the anonHoldRepo (a real DB); no-ops in all-fake offline boot.
+ */
+function makeHoldReleaseSweepHandler(seams: WorkerSeams): JobHandler {
+  return async () => {
+    if (!seams.anonHoldRepo) {
+      console.warn("anon.hold.release.sweep: no DB repo configured (offline mode); skipping")
+      return
+    }
+    await runHoldReleaseSweep({
+      repo: seams.anonHoldRepo,
+      abuseChecks: seams.abuseChecks,
+      batchSize: seams.limits.holdReleaseSweepBatch,
+      report: seams.report,
+    })
+  }
+}
+
 /** Build the chat.partition.maintenance JobHandler. */
 function makePartitionHandler(seams: WorkerSeams): JobHandler {
   return async () => {
@@ -180,6 +211,7 @@ async function registerHandlers(
   await jobs.createQueue(ORPHAN_SWEEP_JOB)
   await jobs.createQueue(CHAT_PARTITION_JOB)
   await jobs.createQueue(ANON_HOLD_RELEASE_JOB)
+  await jobs.createQueue(ANON_HOLD_RELEASE_SWEEP_JOB)
 
   // media.checks: concurrency-capped untrusted-byte pipeline. Its post-success hook enqueues
   // anon.hold.release, so it needs the jobs handle.
@@ -193,8 +225,12 @@ async function registerHandlers(
   // Maintenance crons.
   await jobs.work(ORPHAN_SWEEP_JOB, makeOrphanSweepHandler(seams))
   await jobs.work(CHAT_PARTITION_JOB, makePartitionHandler(seams))
+  // anon.hold.release.sweep (P2-8): self-healing backstop so a held anon report whose release enqueue was
+  // lost (shutdown race) is still reconciled. Idempotent re-check; safe to race the inline hook.
+  await jobs.work(ANON_HOLD_RELEASE_SWEEP_JOB, makeHoldReleaseSweepHandler(seams))
   await jobs.schedule(ORPHAN_SWEEP_JOB, ORPHAN_SWEEP_CRON)
   await jobs.schedule(CHAT_PARTITION_JOB, CHAT_PARTITION_CRON)
+  await jobs.schedule(ANON_HOLD_RELEASE_SWEEP_JOB, HOLD_RELEASE_SWEEP_CRON)
 }
 
 /** Build the worker over freshly-wired seams + a Jobs handle (defaults selected by env flags). */

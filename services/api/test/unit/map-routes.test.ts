@@ -86,3 +86,28 @@ describe("POST /map/reverse-label", () => {
     expect(res.json().code).toBe("VALIDATION")
   })
 })
+
+describe("GET /map/cleanups bbox validation (P2)", () => {
+  // The bbox ordering check runs at query-parse time, BEFORE any DB access, so an inverted bbox is a
+  // clean 422 even with no database wired (the valid-bbox happy path needs Postgres -> integration test).
+  it("422s an inverted bbox (west >= east) without a silent empty result", async () => {
+    app = await buildServer({ env: loadEnv() })
+    const bbox = JSON.stringify({ west: -118.2, south: 34.0, east: -118.5, north: 34.2 })
+    const res = await app.inject({
+      method: "GET",
+      url: `/map/cleanups?bbox=${encodeURIComponent(bbox)}`,
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+
+  it("422s a degenerate bbox (south >= north)", async () => {
+    app = await buildServer({ env: loadEnv() })
+    const bbox = JSON.stringify({ west: -118.5, south: 34.2, east: -118.2, north: 34.0 })
+    const res = await app.inject({
+      method: "GET",
+      url: `/map/cleanups?bbox=${encodeURIComponent(bbox)}`,
+    })
+    expect(res.statusCode).toBe(422)
+  })
+})

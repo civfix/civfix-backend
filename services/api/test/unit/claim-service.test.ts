@@ -46,17 +46,21 @@ function harness(): { store: InMemoryAnonStore; service: ClaimService } {
   return { store, service }
 }
 
-/** Seed a token + its held anon report with a stamped claim code, returning the signed token + ids. */
+/**
+ * Seed a token + its held anon report carrying a per-report claim code (0005), returning the signed
+ * token + ids. The code lives on the REPORT row now (not the token), which is the claim source of truth.
+ */
 function seedPending(
   store: InMemoryAnonStore,
   claimCode = "claim-xyz",
 ): { tokenId: string; signed: string; reportId: string } {
-  const token = store.seedToken({ id: "tok-1", claimCode })
+  const token = store.seedToken({ id: "tok-1" })
   const report = store.seedReport({
     id: "rep-1",
     anonSessionId: token.id,
     reporterUserId: null,
     status: "held",
+    claimCode,
   })
   return { tokenId: token.id, signed: signAnonToken(token.id, SIGNING_KEY), reportId: report.id }
 }
@@ -119,5 +123,43 @@ describe("claimReport", () => {
     const { reportId, tokenId } = seedPending(store, "claim-xyz")
     await service.claimReport("claim-xyz", "user-1")
     expect(store.reports.get(reportId)!.anonSessionId).toBe(tokenId)
+  })
+
+  it("P2-5: two reports under ONE token are each independently claimable by their own code", async () => {
+    const { store, service } = harness()
+    // One token, two held reports, each with its OWN per-report claim code (0005). Before the fix the
+    // single anon_tokens.claim_code column held only the LATEST code, so the first report was unclaimable.
+    const token = store.seedToken({ id: "tok-multi" })
+    const r1 = store.seedReport({
+      id: "rep-a",
+      anonSessionId: token.id,
+      reporterUserId: null,
+      status: "held",
+      claimCode: "code-a",
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+    })
+    const r2 = store.seedReport({
+      id: "rep-b",
+      anonSessionId: token.id,
+      reporterUserId: null,
+      status: "held",
+      claimCode: "code-b",
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 1, 0)),
+    })
+
+    // The OLDER report (rep-a) is claimable by its own code - the whole point of the fix.
+    const claimedA = await service.claimReport("code-a", "user-1")
+    expect(claimedA.report.id).toBe(r1.id)
+    expect(store.reports.get(r1.id)!.reporterUserId).toBe("user-1")
+    // rep-b is untouched and still claimable independently by ITS code.
+    expect(store.reports.get(r2.id)!.reporterUserId).toBeNull()
+
+    const claimedB = await service.claimReport("code-b", "user-2")
+    expect(claimedB.report.id).toBe(r2.id)
+    expect(store.reports.get(r2.id)!.reporterUserId).toBe("user-2")
+
+    // Each code is single-use afterward.
+    await expect(service.claimReport("code-a", "user-3")).rejects.toMatchObject({ code: "NOT_FOUND" })
+    await expect(service.claimReport("code-b", "user-3")).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 })

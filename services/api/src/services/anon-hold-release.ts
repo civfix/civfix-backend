@@ -71,6 +71,15 @@ export interface AnonHoldReleaseRepo {
    * longer held, e.g. a concurrent release won). Idempotent: a no-longer-held report yields false.
    */
   publishHeldReport(reportId: string, publishedAt: Date): Promise<boolean>
+  /**
+   * Find up to `limit` ANON held reports (reporter_user_id IS NULL, status 'held', not deleted) that are
+   * candidates for a release re-check. Backs the self-healing sweep (P2-8): if an inline
+   * anon.hold.release enqueue is ever lost (e.g. a SIGTERM lands between the media.checks persist and the
+   * hook's enqueue during shutdown), the sweep re-discovers the report and releases it via the SAME
+   * idempotent gate. Ordered oldest-first so the longest-held reports are reconciled first; a bounded
+   * batch drains a backlog over several runs.
+   */
+  findHeldAnonReportIds(limit: number): Promise<string[]>
 }
 
 export interface AnonHoldReleaseDeps {

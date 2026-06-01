@@ -106,7 +106,12 @@ export class SessionService {
       ip: meta.ip ?? null,
     })
 
-    await this.writeCache(hash, { userId, roles: [...roles], expiresAtMs: expiresAt.getTime() })
+    // Derive the cache TTL from the SAME nowMs used for expiresAt (P1-6), not a second clock read.
+    await this.writeCache(
+      hash,
+      { userId, roles: [...roles], expiresAtMs: expiresAt.getTime() },
+      nowMs,
+    )
     return token
   }
 
@@ -141,12 +146,16 @@ export class SessionService {
       return null
     }
 
-    // Re-warm Redis from the durable row, then apply sliding expiry.
-    await this.writeCache(hash, {
-      userId: row.userId,
-      roles: row.roles,
-      expiresAtMs: row.expiresAt.getTime(),
-    })
+    // Re-warm Redis from the durable row, then apply sliding expiry. The TTL uses the SAME nowMs (P1-6).
+    await this.writeCache(
+      hash,
+      {
+        userId: row.userId,
+        roles: row.roles,
+        expiresAtMs: row.expiresAt.getTime(),
+      },
+      nowMs,
+    )
     await this.maybeSlide(hash, row.expiresAt.getTime(), nowMs)
     return { userId: row.userId, roles: row.roles, source: "store" }
   }
@@ -180,17 +189,24 @@ export class SessionService {
     await this.store.updateExpiry(hash, newExpiresAt, new Date(nowMs))
 
     // Refresh the cache value + TTL to match the new expiry. We need the identity to rewrite the
-    // value; read it back from cache (cheap) and only rewrite when present.
+    // value; read it back from cache (cheap) and only rewrite when present. The TTL uses the SAME nowMs
+    // captured by resolveSession (P1-6), so it cannot undershoot the just-written expiry.
     const raw = await this.cache.get(sessionKey(hash))
     const cached = raw ? this.parseCache(raw) : null
     if (cached) {
-      await this.writeCache(hash, { ...cached, expiresAtMs: newExpiresAt.getTime() })
+      await this.writeCache(hash, { ...cached, expiresAtMs: newExpiresAt.getTime() }, nowMs)
     }
   }
 
-  /** Write the session projection to Redis with a TTL clamped to the remaining lifetime. */
-  private async writeCache(hash: string, value: CachedSession): Promise<void> {
-    const ttl = Math.max(1, Math.ceil((value.expiresAtMs - this.now()) / 1000))
+  /**
+   * Write the session projection to Redis with a TTL clamped to the remaining lifetime. `nowMs` is the
+   * SAME clock reading the caller used to compute `value.expiresAtMs`, so the TTL and the stored expiry
+   * agree exactly (P1-6): without this the method read the clock a SECOND time, and with an advancing
+   * clock (a GC pause in prod, or a striped clock in tests) the TTL could undershoot the expiry, evicting
+   * the Redis key slightly before the Postgres row and forcing an unnecessary cache miss + re-warm.
+   */
+  private async writeCache(hash: string, value: CachedSession, nowMs: number): Promise<void> {
+    const ttl = Math.max(1, Math.ceil((value.expiresAtMs - nowMs) / 1000))
     await this.cache.set(sessionKey(hash), JSON.stringify(value), ttl)
   }
 

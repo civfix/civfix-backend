@@ -100,10 +100,12 @@ describe("submitAnonReport: held create", () => {
     expect(stored.anonSessionId).toBe("anontok-1")
     expect(stored.jurisdictionGeoid).toBe("0644000")
 
-    // The token got report_count = 1 and the claim code stamped.
+    // The token got report_count = 1 (the cap is a token property). The claim code is stored PER REPORT
+    // now (0005), so it is on the report row, NOT the token row.
     const token = store.tokens.get("anontok-1")!
     expect(token.reportCount).toBe(1)
-    expect(token.claimCode).toBe("claim-1")
+    expect(token.claimCode).toBeNull()
+    expect(store.reports.get("report-1")!.claimCode).toBe("claim-1")
 
     // Timeline: submitted + held.
     const tl = store.timeline.filter((t) => t.reportId === "report-1")
@@ -417,6 +419,35 @@ describe("anonReportStatus", () => {
     const status = await service.anonReportStatus(created.response.reportId, created.response.claimCode)
     expect(status.status).toBe("published")
     expect(status.publishedAt).toBe("2026-02-01T00:00:00.000Z")
+  })
+
+  it("P2-5: two reports under ONE token are each status-queryable by their OWN claim code", async () => {
+    const { service } = makeHarness()
+    // First submit (issues anontok-1, report-1/claim-1). Second submit on the SAME token presents it.
+    const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A }), ctx)
+    const second = await service.submitAnonReport(
+      req({ idempotencyKey: KEY_B, anonToken: signAnonToken("anontok-1", SIGNING_KEY) }),
+      ctx,
+    )
+    expect(first.response.reportId).toBe("report-1")
+    expect(first.response.claimCode).toBe("claim-1")
+    expect(second.response.reportId).toBe("report-2")
+    expect(second.response.claimCode).toBe("claim-2")
+
+    // The FIRST report's status is still queryable with the FIRST report's code (the bug was that the
+    // second submit overwrote the shared token code, 404ing the first). Both resolve independently.
+    const s1 = await service.anonReportStatus("report-1", "claim-1")
+    expect(s1.status).toBe("held")
+    const s2 = await service.anonReportStatus("report-2", "claim-2")
+    expect(s2.status).toBe("held")
+
+    // A report cannot be queried with the OTHER report's code.
+    await expect(service.anonReportStatus("report-1", "claim-2")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(service.anonReportStatus("report-2", "claim-1")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
   })
 })
 

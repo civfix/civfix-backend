@@ -19,6 +19,7 @@ import { buildJobs } from "../../src/jobs.js"
 import { loadLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import type { WorkerSeams } from "../../src/seams.js"
+import { runHoldReleaseSweep } from "../../src/jobs/hold-release-sweep.js"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import type {
   AnonHoldReleaseRepo,
@@ -64,6 +65,11 @@ class MemHoldRepo implements AnonHoldReleaseRepo {
     this.published = true
     return Promise.resolve(true)
   }
+  findHeldAnonReportIds(limit: number): Promise<string[]> {
+    const held =
+      this.report.reporterUserId === null && this.report.status === "held" ? [this.report.id] : []
+    return Promise.resolve(held.slice(0, limit))
+  }
 }
 
 /** Build offline worker seams with a custom media repo + hold repo + abuse checks. */
@@ -82,6 +88,7 @@ function makeSeams(opts: {
     dbHandle: undefined,
     repo: opts.repo,
     anonHoldRepo: opts.anonHoldRepo,
+    findPhashDuplicate: undefined, // offline: falls back to FakeAbuseChecks.isNearDuplicate
     report: () => {},
     close: () => Promise.resolve(),
   }
@@ -167,5 +174,60 @@ describe("media-worker hold-release wiring", () => {
     expect(holdRepo.report.status).toBe("held")
 
     await worker.stop()
+  })
+})
+
+describe("hold-release self-healing sweep (P2-8)", () => {
+  it("publishes a held anon report whose media are ready even if NO inline enqueue ever fired", async () => {
+    // Simulate the shutdown race: media.checks ran and the media is READY, but the post-success hook's
+    // anon.hold.release enqueue was LOST (boss stopping), so the report is still held with no pending
+    // re-trigger. The periodic sweep must discover and release it.
+    const repo = new InMemoryWorkerRepo()
+    const reportId = "anon-report-stuck"
+    repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key: "k1", reportId, status: "ready" })
+    const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
+    const abuse = new FakeAbuseChecks()
+
+    // No media event re-triggers it; the sweep is the only path. Run it directly.
+    const result = await runHoldReleaseSweep({
+      repo: holdRepo,
+      abuseChecks: abuse,
+      batchSize: 50,
+      log: () => {},
+      report: () => {},
+    })
+
+    expect(result.scanned).toBe(1)
+    expect(result.published).toBe(1)
+    expect(holdRepo.published).toBe(true)
+    expect(holdRepo.report.status).toBe("published")
+
+    // Idempotent: a SECOND sweep finds nothing to publish (the report is no longer held).
+    const again = await runHoldReleaseSweep({
+      repo: holdRepo,
+      abuseChecks: abuse,
+      batchSize: 50,
+      log: () => {},
+      report: () => {},
+    })
+    expect(again.published).toBe(0)
+  })
+
+  it("leaves a held report held when its media are NOT yet ready (re-checked next run)", async () => {
+    const repo = new InMemoryWorkerRepo()
+    const reportId = "anon-report-pending"
+    repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key: "k1", reportId, status: "validating" })
+    const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
+
+    const result = await runHoldReleaseSweep({
+      repo: holdRepo,
+      abuseChecks: new FakeAbuseChecks(),
+      batchSize: 50,
+      log: () => {},
+      report: () => {},
+    })
+    expect(result.scanned).toBe(1)
+    expect(result.published).toBe(0)
+    expect(holdRepo.report.status).toBe("held")
   })
 })

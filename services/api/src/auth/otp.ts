@@ -2,12 +2,14 @@
  * Email one-time-passcode sign-in (plan section 8).
  *
  * issueOtp(email, ip):
- *   - rate limits FIRST: at most 1 request per 60s per email, and 10 per hour per IP (Redis counters
- *     via the CacheClient seam, so the windows are testable with an injectable clock);
+ *   - rate limits FIRST: 10 per hour per IP, THEN at most 1 request per 60s per email (Redis counters via
+ *     the CacheClient seam, so the windows are testable with an injectable clock). The per-IP check comes
+ *     first so an IP-cap rejection does not burn the per-email window (P1-7);
  *   - mints a 6-digit code with a cryptographically uniform, modulo-bias-free draw;
  *   - stores ONLY the argon2id hash of the code in email_otps (expires in 5 min, attempts 0);
  *   - invalidates any prior unconsumed codes for that email (resend supersedes);
- *   - sends the code through the Mailer seam (FakeMailer captures it in dev/test).
+ *   - sends the code through the Mailer seam (FakeMailer captures it in dev/test). If storing/mailing
+ *     fails, the per-email cooldown this call set is rolled back so the user is not locked out (P1-7).
  *
  * verifyOtp(email, code, ip):
  *   - THROTTLE (per-account + per-IP): before touching the code it checks a per-email AND a per-IP
@@ -103,18 +105,17 @@ export class OtpService {
   /**
    * Issue (or resend) a code to `email`. `ip` drives the per-IP hourly cap; pass null when unknown
    * (the per-IP limit is then skipped, e.g. trusted internal callers).
+   *
+   * ORDERING (P1-7): the per-IP cap is checked FIRST, so an IP-cap rejection never burns the per-email
+   * window (a legitimate user behind a busy shared IP is not additionally penalized on their own email).
+   * The per-email cooldown is then claimed atomically (incr), but if ANY downstream step fails (invalidate
+   * / insert / mailer), the cooldown this call anchored is ROLLED BACK so the user is not locked out for
+   * 60s with no code in their inbox - an immediate legitimate retry is allowed.
    */
   async issueOtp(email: string, ip: string | null): Promise<IssueResult> {
     const normalized = email.trim().toLowerCase()
 
-    // Per-email cooldown: the counter key carries the window TTL; a second hit inside 60s trips it.
-    const emailKey = `otp:rl:email:${normalized}`
-    const emailHits = await this.cache.incr(emailKey, OTP_EMAIL_WINDOW_SECONDS)
-    if (emailHits > 1) {
-      throw AppError.rateLimited("Please wait before requesting another code.")
-    }
-
-    // Per-IP hourly cap.
+    // Per-IP hourly cap FIRST (so an IP rejection does not consume the per-email window).
     if (ip) {
       const ipKey = `otp:rl:ip:${ip}`
       const ipHits = await this.cache.incr(ipKey, OTP_IP_WINDOW_SECONDS)
@@ -123,17 +124,36 @@ export class OtpService {
       }
     }
 
-    // Supersede any prior unconsumed codes, then store the new one (hash only).
-    await this.store.invalidateActiveForEmail(normalized)
-    const code = generateNumericCode(OTP_CODE_LENGTH)
-    const codeHash = await argonHash(code, ARGON_OPTS)
-    await this.store.insert({
-      email: normalized,
-      codeHash,
-      expiresAt: new Date(this.now() + OTP_TTL_SECONDS * 1000),
-    })
+    // Per-email cooldown: the counter key carries the window TTL; a second hit inside 60s trips it. incr
+    // is atomic so concurrent requests cannot both pass. emailHits === 1 means THIS call anchored the
+    // window (so it is the one allowed to roll it back on a downstream failure).
+    const emailKey = `otp:rl:email:${normalized}`
+    const emailHits = await this.cache.incr(emailKey, OTP_EMAIL_WINDOW_SECONDS)
+    if (emailHits > 1) {
+      throw AppError.rateLimited("Please wait before requesting another code.")
+    }
 
-    await this.mailer.sendOtp(normalized, code)
+    try {
+      // Supersede any prior unconsumed codes, then store the new one (hash only), then mail it.
+      await this.store.invalidateActiveForEmail(normalized)
+      const code = generateNumericCode(OTP_CODE_LENGTH)
+      const codeHash = await argonHash(code, ARGON_OPTS)
+      await this.store.insert({
+        email: normalized,
+        codeHash,
+        expiresAt: new Date(this.now() + OTP_TTL_SECONDS * 1000),
+      })
+      await this.mailer.sendOtp(normalized, code)
+    } catch (err) {
+      // The code was never delivered: release the cooldown THIS call set so an immediate retry is not
+      // locked out for 60s (P1-7). Only clear when we anchored it (emailHits === 1); a concurrent caller
+      // that legitimately holds the window is untouched. Best-effort: a cache hiccup here is non-fatal.
+      if (emailHits === 1) {
+        await this.cache.del(emailKey).catch(() => {})
+      }
+      throw err
+    }
+
     return { resendAfterSec: OTP_EMAIL_WINDOW_SECONDS }
   }
 

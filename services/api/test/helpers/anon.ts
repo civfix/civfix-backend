@@ -43,6 +43,8 @@ export interface StoredAnonReport {
   lng: number
   jurisdictionGeoid: string | null
   h3Cell: string
+  /** Per-report single-use claim code (0005). Cleared on claim. Null for non-anon reports. */
+  claimCode: string | null
   createdAt: Date
   publishedAt: Date | null
   deletedAt: Date | null
@@ -124,6 +126,7 @@ export class InMemoryAnonStore {
       lng: over.lng ?? -118.35,
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
       h3Cell: over.h3Cell ?? "8a2830828767fff",
+      claimCode: over.claimCode ?? null,
       createdAt: over.createdAt ?? now,
       publishedAt: over.publishedAt ?? null,
       deletedAt: over.deletedAt ?? null,
@@ -169,10 +172,11 @@ export class InMemoryAnonStore {
         const prior = this.idempotency.get(idemKey)
         if (prior) return Promise.resolve({ kind: "replayed", snapshot: prior })
 
-        // ATOMIC per-token cap (bugs P0-1), mirroring the Drizzle tx: bump report_count + stamp the
-        // claim code ONLY while the token is under the cap, and abort (throw, no writes) otherwise. The
-        // whole body runs synchronously here, so two interleaved calls cannot both pass the cap check -
-        // exactly the atomic check-and-consume the real UPDATE ... WHERE report_count < cap provides.
+        // ATOMIC per-token cap (bugs P0-1), mirroring the Drizzle tx: bump report_count ONLY while the
+        // token is under the cap, and abort (throw, no writes) otherwise. The whole body runs
+        // synchronously here, so two interleaved calls cannot both pass the cap check - exactly the
+        // atomic check-and-consume the real UPDATE ... WHERE report_count < cap provides. The claim code
+        // is stamped on the REPORT row (0005), not the token, so it is not overwritten by later submits.
         const token = this.tokens.get(args.anonSessionId)
         if (token && token.reportCount >= args.reportCap) {
           return Promise.reject(
@@ -183,7 +187,6 @@ export class InMemoryAnonStore {
         }
         if (token) {
           token.reportCount += 1
-          token.claimCode = args.claimCode
         }
 
         this.seedReport({
@@ -198,6 +201,7 @@ export class InMemoryAnonStore {
           lng: args.lng,
           jurisdictionGeoid: args.jurisdictionGeoid,
           h3Cell: args.h3Cell,
+          claimCode: args.claimCode,
           publishedAt: null,
         })
         // Attach media (only unattached or already-ours).
@@ -227,12 +231,12 @@ export class InMemoryAnonStore {
       findAnonReportStatus: (reportId: string): Promise<AnonReportStatusRow | null> => {
         const r = this.reports.get(reportId)
         if (!r || r.deletedAt !== null) return Promise.resolve(null)
-        const token = r.anonSessionId ? this.tokens.get(r.anonSessionId) : undefined
+        // Per-report claim code (0005): read it off the report row, not the (overwritten) token row.
         return Promise.resolve({
           reportId: r.id,
           status: r.status,
           publishedAt: r.publishedAt,
-          claimCode: token?.claimCode ?? null,
+          claimCode: r.claimCode,
         })
       },
     }
@@ -285,6 +289,14 @@ export class InMemoryAnonStore {
         })
         return Promise.resolve(true)
       },
+      findHeldAnonReportIds: (limit: number): Promise<string[]> => {
+        const ids = [...this.reports.values()]
+          .filter((r) => r.status === "held" && r.reporterUserId === null && r.deletedAt === null)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+          .slice(0, limit)
+          .map((r) => r.id)
+        return Promise.resolve(ids)
+      },
     }
   }
 
@@ -303,26 +315,30 @@ export class InMemoryAnonStore {
       },
       findPendingByTokenId: (tokenId: string): Promise<PendingAnonReport | null> => {
         const token = this.tokens.get(tokenId)
-        if (!token || token.claimCode === null) return Promise.resolve(null)
+        if (!token) return Promise.resolve(null)
+        // The claim code is per-report (0005): the nudge surfaces the newest unclaimed report that still
+        // carries its own code.
         const report = [...this.reports.values()]
           .filter(
             (r) =>
-              r.anonSessionId === tokenId && r.reporterUserId === null && r.deletedAt === null,
+              r.anonSessionId === tokenId &&
+              r.reporterUserId === null &&
+              r.deletedAt === null &&
+              r.claimCode !== null,
           )
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
-        if (!report) return Promise.resolve(null)
-        return Promise.resolve({ reportId: report.id, claimCode: token.claimCode })
+        if (!report || report.claimCode === null) return Promise.resolve(null)
+        return Promise.resolve({ reportId: report.id, claimCode: report.claimCode })
       },
       claimByCode: (claimCode: string, userId: string): Promise<{ reportId: string } | null> => {
-        const token = [...this.tokens.values()].find((t) => t.claimCode === claimCode)
-        if (!token) return Promise.resolve(null)
+        // Match the specific report carrying this per-report code (0005), not the token. Single-use:
+        // a cleared code no longer matches. anon_session_id is kept as an audit trail.
         const report = [...this.reports.values()].find(
-          (r) =>
-            r.anonSessionId === token.id && r.reporterUserId === null && r.deletedAt === null,
+          (r) => r.claimCode === claimCode && r.reporterUserId === null && r.deletedAt === null,
         )
         if (!report) return Promise.resolve(null)
         report.reporterUserId = userId
-        token.claimCode = null // single-use consume; anon_session_id kept as audit trail.
+        report.claimCode = null
         return Promise.resolve({ reportId: report.id })
       },
     }

@@ -43,6 +43,10 @@ export const reports = pgTable(
     status: text("status").$type<ReportStatus>().notNull(),
     visibility: text("visibility").$type<ReportVisibility>().notNull().default("public"),
     h3Cell: text("h3_cell").notNull(),
+    // Per-report single-use claim code for anonymous reports (0005). Minted at insert, returned in
+    // AnonReportResponse, and cleared on claim. Nullable: non-anon reports never carry one. Replaces the
+    // prior overwritten anon_tokens.claim_code so EACH report on a token is independently claimable.
+    claimCode: text("claim_code"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -55,6 +59,8 @@ export const reports = pgTable(
     index("reports_h3_created_idx").on(t.h3Cell, t.createdAt),
     index("reports_reporter_idx").on(t.reporterUserId),
     index("reports_anon_session_idx").on(t.anonSessionId),
+    // Partial unique (WHERE claim_code IS NOT NULL): an active code resolves to exactly one report.
+    uniqueIndex("reports_claim_code_key").on(t.claimCode).where(sql`claim_code IS NOT NULL`),
   ],
 )
 

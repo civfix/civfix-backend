@@ -190,6 +190,81 @@ describe("media.checks IMAGE path", () => {
     })
   })
 
+  it("P0-2: re-processing the SAME asset does NOT mark it a near-duplicate of itself", async () => {
+    // Simulate the production media_assets phash lookup with self-exclusion (AND id <> excludeAssetId).
+    // The index reflects every asset's persisted (id, phash, reportId); the lookup returns a dup ONLY for
+    // a DIFFERENT asset sharing the phash. This is the exact behavior makePhashDuplicateLookup provides.
+    const index = new Map<string, { phash: string; reportId: string | null }>()
+    const findPhashDuplicate = (hash: string, opts?: { excludeAssetId?: string }) => {
+      for (const [id, row] of index) {
+        if (row.phash === hash && row.reportId !== null && id !== opts?.excludeAssetId) {
+          return Promise.resolve({ dup: true, ofReportId: row.reportId })
+        }
+      }
+      return Promise.resolve({ dup: false })
+    }
+    const env = makeDeps({ findPhashDuplicate })
+
+    const input = await fx.makeValidPng()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+    // The row already carries a report_id (set at report-create) BEFORE the first run, like production.
+    env.repo.get(id)!.reportId = "report-self"
+
+    // FIRST run: persists the asset's phash. The lookup index is updated to reflect the persisted row
+    // (in production the row's phash column is written by applyResult; we mirror that here so the SECOND
+    // run sees a row with the same phash + a report_id - the exact self-collision the bug hit).
+    const s1 = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    expect(s1).toBe("ready")
+    const phash1 = env.repo.get(id)!.phash as string
+    index.set(id, { phash: phash1, reportId: "report-self" })
+
+    // SECOND run of the SAME asset (job re-delivered / double-enqueued): recomputes the identical phash.
+    // Without self-exclusion it would match its OWN row -> held + phash_dup. With the fix it stays ready.
+    const s2 = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    expect(s2).toBe("ready")
+    expect(env.repo.get(id)!.status).toBe("ready")
+    expect(env.repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
+  })
+
+  it("P0-2: a DIFFERENT asset with the same phash IS still held as a near-duplicate", async () => {
+    const index = new Map<string, { phash: string; reportId: string | null }>()
+    const findPhashDuplicate = (hash: string, opts?: { excludeAssetId?: string }) => {
+      for (const [id, row] of index) {
+        if (row.phash === hash && row.reportId !== null && id !== opts?.excludeAssetId) {
+          return Promise.resolve({ dup: true, ofReportId: row.reportId })
+        }
+      }
+      return Promise.resolve({ dup: false })
+    }
+    const env = makeDeps({ findPhashDuplicate })
+
+    // First asset (attached to report-A) processes ready and is recorded in the index.
+    const bytes = await fx.makeValidPng()
+    const first = await seedAsset(env.storage, env.repo, "image", bytes)
+    env.repo.get(first.id)!.reportId = "report-A"
+    const s1 = await runMediaChecksJob(
+      { mediaId: first.id, uploadId: first.uploadId, r2Key: first.r2Key, kind: "image" },
+      env.deps,
+    )
+    expect(s1).toBe("ready")
+    index.set(first.id, { phash: env.repo.get(first.id)!.phash as string, reportId: "report-A" })
+
+    // Second, DISTINCT asset (different id, attached to report-B) with the SAME bytes -> same phash.
+    // Self-exclusion does not save it (it is a different row), so it is correctly held as a duplicate.
+    const second = await seedAsset(env.storage, env.repo, "image", bytes)
+    env.repo.get(second.id)!.reportId = "report-B"
+    const s2 = await runMediaChecksJob(
+      { mediaId: second.id, uploadId: second.uploadId, r2Key: second.r2Key, kind: "image" },
+      env.deps,
+    )
+    expect(s2).toBe("held")
+    expect(env.repo.flags).toContainEqual({
+      subjectId: second.id,
+      reason: "phash_dup",
+      source: "worker",
+    })
+  })
+
   it("each crafted bad image -> rejected row, no throw, GlitchTip notified", async () => {
     const bad: { name: string; bytes: Uint8Array }[] = [
       { name: "garbage", bytes: fx.makeGarbageImage() },

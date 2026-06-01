@@ -121,19 +121,37 @@ export class PgUserStore implements UserStore {
     return r ? toUserRecord(r) : null
   }
 
+  /**
+   * Create a user. IDEMPOTENT ON EMAIL (P1-4): two concurrent first-sign-ins for the SAME brand-new
+   * email both see findByEmail = null and both INSERT; without this the second trips users_email_key and
+   * throws an unhandled 500. We use ON CONFLICT (email) DO NOTHING and, when our INSERT lost the race (no
+   * row returned), re-select the winner's row so BOTH callers resolve to the same user instead of one
+   * 500ing. A null email cannot conflict on the partial index, so it always inserts.
+   */
   async create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
+    const normalizedEmail = email === null ? null : email.toLowerCase()
     const inserted = await this.db
       .insert(users)
       .values({
         displayName: input.displayName,
         role: input.role ?? "citizen",
-        email: email === null ? null : email.toLowerCase(),
+        email: normalizedEmail,
         emailVerified: email !== null && (input.emailVerified ?? false),
       })
+      // The unique index on email is PARTIAL (WHERE email IS NOT NULL), so the conflict target must carry
+      // the same predicate for Postgres to infer it. For onConflictDoNothing, Drizzle emits the index
+      // predicate from `where` -> ON CONFLICT (email) WHERE email IS NOT NULL DO NOTHING.
+      .onConflictDoNothing({ target: users.email, where: sql`${users.email} is not null` })
       .returning()
     const row = inserted[0]
-    if (!row) throw new Error("PgUserStore.create: insert returned no row")
-    return toUserRecord(row)
+    if (row) return toUserRecord(row)
+
+    // Our INSERT was a no-op because a concurrent create won the unique email. Re-select that winner.
+    if (normalizedEmail !== null) {
+      const existing = await this.findByEmail(normalizedEmail)
+      if (existing) return existing
+    }
+    throw new Error("PgUserStore.create: insert returned no row")
   }
 }
 

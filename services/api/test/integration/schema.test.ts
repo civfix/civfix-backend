@@ -8,7 +8,7 @@
  *   - reports.idempotency_key has a UNIQUE constraint/index;
  *   - the GiST spatial indexes exist on jurisdictions/reports/cleanups;
  *   - chat_messages is a declaratively partitioned (range) table;
- *   - the migration bookkeeping recorded ALL current migration files (0000..0004), in order.
+ *   - the migration bookkeeping recorded ALL current migration files (0000..0005), in order.
  */
 
 import { afterAll, describe, expect, it } from "vitest"
@@ -149,6 +149,46 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
     expect(rows[0]?.is_nullable).toBe("YES")
   })
 
+  it("added the nullable reports.claim_code column with a partial unique index (0005)", async () => {
+    const cols = await h.sql<{ data_type: string; is_nullable: string }[]>`
+      SELECT data_type, is_nullable FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'reports' AND column_name = 'claim_code'
+    `
+    expect(cols.length).toBe(1)
+    expect(cols[0]?.data_type).toBe("text")
+    expect(cols[0]?.is_nullable).toBe("YES")
+
+    // The partial unique index exists and actually rejects two reports sharing a non-null claim code,
+    // while permitting many rows with a NULL code.
+    const idx = await h.sql<{ indexname: string }[]>`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'reports' AND indexname = 'reports_claim_code_key'
+    `
+    expect(idx.length).toBe(1)
+
+    const a = "22222222-2222-2222-2222-222222222222"
+    const b = "33333333-3333-3333-3333-333333333333"
+    await h.sql`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, claim_code)
+      VALUES (${a}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h0', 'shared-code')
+    `
+    await expect(
+      h.sql`
+        INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, claim_code)
+        VALUES (${b}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h1', 'shared-code')
+      `,
+    ).rejects.toThrow()
+    // Two reports with a NULL claim code are fine (partial index excludes NULLs).
+    await h.sql`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell)
+      VALUES (${"44444444-4444-4444-4444-444444444444"}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h2')
+    `
+    await h.sql`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell)
+      VALUES (${"55555555-5555-5555-5555-555555555555"}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h3')
+    `
+  })
+
   it("recorded every migration file in the bookkeeping table", async () => {
     const rows = await h.sql<{ name: string }[]>`SELECT name FROM _civfix_migrations ORDER BY name`
     const names = rows.map((r) => r.name)
@@ -158,6 +198,7 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
       "0002_chat_partitioning.sql",
       "0003_users_email.sql",
       "0004_cleanup_address.sql",
+      "0005_report_claim_code.sql",
     ])
   })
 })

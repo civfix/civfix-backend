@@ -15,12 +15,17 @@
  * no-orphan + quota-consistency contract.
  *
  * HELD-CREATE TRANSACTION (createAnonReportTx):
- *   1. INSERT the report (reporter_user_id NULL, anon_session_id = token id, status 'held',
- *      visibility 'public', published_at NULL, geom from the point, h3_cell precomputed).
- *   2. Attach each media_asset by setting report_id, but only when unattached or already ours (never
+ *   1. ATOMIC per-token cap: UPDATE anon_tokens SET report_count = report_count + 1
+ *      WHERE id = token AND report_count < cap. 0 rows -> cap reached -> rollback. (The cap is a TOKEN
+ *      property; the claim code is NOT stamped here anymore - it lives on the report row, see step 2.)
+ *   2. INSERT the report (reporter_user_id NULL, anon_session_id = token id, status 'held',
+ *      visibility 'public', published_at NULL, geom from the point, h3_cell precomputed, AND the
+ *      per-report single-use claim_code). Storing the code PER REPORT (not on the shared anon_tokens
+ *      row, which a later submit would overwrite) is what makes each of a token's up-to-5 reports
+ *      independently status-queryable + claimable (0005).
+ *   3. Attach each media_asset by setting report_id, but only when unattached or already ours (never
  *      steal a foreign asset; unknown ids no-op) - identical safety to the authed path.
- *   3. INSERT the initial timeline rows: 'submitted' then 'held'.
- *   4. UPDATE anon_tokens: report_count = report_count + 1, claim_code = <new code> for this token.
+ *   4. INSERT the initial timeline rows: 'submitted' then 'held'.
  *   5. INSERT the AnonReportResponse snapshot into idempotency_keys.response_snapshot.
  *   All five happen atomically. A UNIQUE(idempotency_key) (or PK) race rolls the tx back; we then read
  *   and return the winner's stored snapshot as a "replayed" result.
@@ -120,13 +125,15 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
     ): Promise<CreateAnonReportTxResult> {
       try {
         const snapshot = await sql.begin(async (tx) => {
-          // 1) ATOMIC per-token cap (bugs P0-1): bump report_count and stamp the claim code ONLY while
-          // the token is still under the cap. Folding the cap into the WHERE makes the check-and-consume
-          // a single statement, so N concurrent submits on one token cannot all pass a stale read and
-          // overshoot. 0 rows updated means the cap is reached: throw, which rolls the whole tx back.
+          // 1) ATOMIC per-token cap (bugs P0-1): bump report_count ONLY while the token is still under
+          // the cap. Folding the cap into the WHERE makes the check-and-consume a single statement, so N
+          // concurrent submits on one token cannot all pass a stale read and overshoot. 0 rows updated
+          // means the cap is reached: throw, which rolls the whole tx back. NOTE: the claim code is NOT
+          // stamped here - it is a PER-REPORT secret stored on the report row in step 2 (0005), so each
+          // of the token's reports keeps its own code instead of the latest submit overwriting the rest.
           const bumped = await tx<{ report_count: number }[]>`
             UPDATE anon_tokens
-            SET report_count = report_count + 1, claim_code = ${args.claimCode}
+            SET report_count = report_count + 1
             WHERE id = ${args.anonSessionId} AND report_count < ${args.reportCap}
             RETURNING report_count
           `
@@ -136,11 +143,13 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
             )
           }
 
-          // 2) Insert the report HELD (anon: reporter_user_id NULL, anon_session_id = token id).
+          // 2) Insert the report HELD (anon: reporter_user_id NULL, anon_session_id = token id) with its
+          // own single-use claim_code (0005).
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, anon_session_id, idempotency_key, geom, geom_source,
-              jurisdiction_geoid, category, description, status, visibility, h3_cell, published_at
+              jurisdiction_geoid, category, description, status, visibility, h3_cell, claim_code,
+              published_at
             ) VALUES (
               ${args.reportId},
               ${null},
@@ -154,6 +163,7 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
               ${"held"},
               ${"public"},
               ${args.h3Cell},
+              ${args.claimCode},
               ${null}
             )
           `
@@ -202,7 +212,8 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
 
     // --- status lookup ---
     async findAnonReportStatus(reportId: string): Promise<AnonReportStatusRow | null> {
-      // Join the report to its anon_tokens row (by anon_session_id) to read the stamped claim code.
+      // The claim code is stored PER REPORT (0005), so read it straight off the report row - no
+      // anon_tokens join (which used to return the LATEST submit's code, breaking older reports).
       const rows = await sql<
         {
           id: string
@@ -211,9 +222,8 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
           claim_code: string | null
         }[]
       >`
-        SELECT r.id, r.status, r.published_at, t.claim_code
+        SELECT r.id, r.status, r.published_at, r.claim_code
         FROM reports r
-        LEFT JOIN anon_tokens t ON t.id = r.anon_session_id
         WHERE r.id = ${reportId} AND r.deleted_at IS NULL
         LIMIT 1
       `
@@ -252,13 +262,18 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
     },
 
     async findPendingByTokenId(tokenId: string): Promise<PendingAnonReport | null> {
-      // The token stamps the claim code; the matching not-deleted, not-yet-claimed report is the
-      // pending one. (reporter_user_id IS NULL = not yet claimed.)
+      // The claim code now lives on the report row (0005). The nudge surfaces the most recent
+      // not-deleted, not-yet-claimed report that still has a code. (reporter_user_id IS NULL = not yet
+      // claimed; claim_code IS NOT NULL = not yet consumed.) Each of the token's reports has its own
+      // code, so older reports remain claimable directly via /claim/report even though the nudge shows
+      // the newest.
       const rows = await sql<{ id: string; claim_code: string }[]>`
-        SELECT r.id, t.claim_code
-        FROM anon_tokens t
-        JOIN reports r ON r.anon_session_id = t.id AND r.reporter_user_id IS NULL AND r.deleted_at IS NULL
-        WHERE t.id = ${tokenId} AND t.claim_code IS NOT NULL
+        SELECT r.id, r.claim_code
+        FROM reports r
+        WHERE r.anon_session_id = ${tokenId}
+          AND r.reporter_user_id IS NULL
+          AND r.deleted_at IS NULL
+          AND r.claim_code IS NOT NULL
         ORDER BY r.created_at DESC
         LIMIT 1
       `
@@ -272,29 +287,24 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
       userId: string,
     ): Promise<{ reportId: string } | null> {
       return sql.begin(async (tx) => {
-        // Find the token holding this (still-present) claim code, locking it so two concurrent claims
-        // cannot both succeed. A consumed code has claim_code cleared, so it will not match.
-        const tokens = await tx<{ id: string }[]>`
-          SELECT id FROM anon_tokens WHERE claim_code = ${claimCode} FOR UPDATE
-        `
-        const token = tokens[0]
-        if (!token) return null
-
-        // Link the (unclaimed, not-deleted) report tied to that token to the user.
+        // Atomically claim THE report carrying this code: lock + link + clear in one statement. The
+        // code is per-report (0005) and partial-unique, so it identifies exactly one report. A consumed
+        // code is cleared, so it no longer matches (single-use). reporter_user_id IS NULL guards against
+        // double-claim; anon_session_id is KEPT as an audit trail (documented in claim-service).
         const updated = await tx<{ id: string }[]>`
           UPDATE reports
-          SET reporter_user_id = ${userId}
-          WHERE anon_session_id = ${token.id}
-            AND reporter_user_id IS NULL
-            AND deleted_at IS NULL
+          SET reporter_user_id = ${userId}, claim_code = ${null}
+          WHERE id = (
+            SELECT id FROM reports
+            WHERE claim_code = ${claimCode}
+              AND reporter_user_id IS NULL
+              AND deleted_at IS NULL
+            FOR UPDATE
+          )
           RETURNING id
         `
         const report = updated[0]
         if (!report) return null
-
-        // Consume the code (single-use): clear it so it cannot be replayed. anon_session_id is KEPT as
-        // an audit trail (documented choice in claim-service).
-        await tx`UPDATE anon_tokens SET claim_code = ${null} WHERE id = ${token.id}`
         return { reportId: report.id }
       })
     },

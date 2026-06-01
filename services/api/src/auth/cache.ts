@@ -91,6 +91,15 @@ export class InMemoryCacheClient implements CacheClient {
   size(): number {
     return this.store.size
   }
+
+  /**
+   * Test helper: the absolute expiry (epoch ms) of a live key, or null when absent/expired. Lets a test
+   * assert the TTL a writer set (its key's expiry) lines up with the value's own expiresAtMs (P1-6).
+   */
+  expiryOf(key: string): number | null {
+    const entry = this.live(key)
+    return entry ? entry.expiresAtMs : null
+  }
 }
 
 /**

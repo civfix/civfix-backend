@@ -21,7 +21,8 @@ import {
  * asserts:
  *   - A and B (both members) join room R; A sends a message;
  *   - B's send() receives the broadcast {type:"message"} frame (A -> B flows);
- *   - A receives an {type:"ack"} with its clientId and the persisted message (optimistic reconcile);
+ *   - A receives an {type:"ack"} with its clientId and the persisted message (optimistic reconcile) and
+ *     EXACTLY ONE total frame for the send (no echoed {type:"message"} - P1-2 exactly-once to sender);
  *   - the message was persisted (history returns it);
  *   - a NON-member is rejected on join AND cannot send (membership gate);
  *   - every inbound/outbound frame validates against the shared WS schemas.
@@ -114,9 +115,21 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(ack.message.id).toBe(broadcast.message.id)
     expect(ack.message.body).toBe("hello bob")
 
-    // A also receives the broadcast (its own message, e.g. for multi-device) - that is fine and valid.
-    // Validate EVERY outbound frame on both sockets against the server schema.
+    // ---- P1-2: the sender receives EXACTLY ONE frame for the send (the ack), NOT the broadcast ----
+    // A's socket is in the room, but it is excluded from the broadcast fan-out, so it never gets a
+    // {type:"message"} echo of its own message. The ack is its only copy (exactly-once to the sender).
+    expect(aConn.framesOfType("message")).toHaveLength(0)
+    // Total frames A received during the send: just the one ack (the presence(join) came earlier).
+    const aFramesAfterJoin = aConn.frames.filter((f) => f.type !== "presence")
+    expect(aFramesAfterJoin).toHaveLength(1)
+    expect(aFramesAfterJoin[0]!.type).toBe("ack")
+
+    // Validate EVERY outbound frame on both sockets against the server schema (the broadcast frame B got
+    // must NOT carry the internal excludeConnId hint - it is stripped before the wire).
     for (const raw of [...aConn.sent, ...bConn.sent]) assertServerFrame(raw)
+    expect(JSON.parse(bConn.sent.find((s) => JSON.parse(s).type === "message")!)).not.toHaveProperty(
+      "excludeConnId",
+    )
 
     // ---- The message was persisted: history returns it ----
     const page = await chat.history(ROOM, undefined, 50)
@@ -253,6 +266,31 @@ describe("ack updates read state for the open room", () => {
     await handleClientFrame(session, JSON.stringify({ type: "ack", upToId: "55555555-5555-5555-5555-555555555555" }))
     expect(marks).toHaveLength(1)
     expect(marks[0]).toMatchObject({ cleanupId: ROOM, userId: ALICE })
+  })
+})
+
+describe("history `before` cursor is room-scoped (P1-5)", () => {
+  it("a cursor id from another room does not seek/leak into this room (in-memory parity)", async () => {
+    const roomA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    const roomB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    repo.registerSender({ id: ALICE, displayName: "Alice" })
+
+    // Room A has 3 messages; room B has 1.
+    const a1 = await repo.insertMessage({ cleanupId: roomA, userId: ALICE, body: "a1" }, "a1-id")
+    const a2 = await repo.insertMessage({ cleanupId: roomA, userId: ALICE, body: "a2" }, "a2-id")
+    const a3 = await repo.insertMessage({ cleanupId: roomA, userId: ALICE, body: "a3" }, "a3-id")
+    const b1 = await repo.insertMessage({ cleanupId: roomB, userId: ALICE, body: "b1" }, "b1-id")
+
+    // Paging room A with room B's message id as the `before` cursor: the foreign id is not found in
+    // room A, so we get room A's newest page (a3, a2) - never b1, never a B-timestamp-carved window.
+    const page = await chat.history(roomA, b1.id, 2)
+    expect(page.items.map((m) => m.id)).toEqual([a3.id, a2.id])
+    expect(page.items.every((m) => m.cleanupId === roomA)).toBe(true)
+    expect(page.items.some((m) => m.id === b1.id)).toBe(false)
+
+    // Control: a valid in-room cursor pages correctly.
+    const within = await chat.history(roomA, a3.id, 2)
+    expect(within.items.map((m) => m.id)).toEqual([a2.id, a1.id])
   })
 })
 

@@ -246,8 +246,14 @@ export function reportH3Cell(lat: number, lng: number): string {
  * clusters rather than hundreds of pins.
  */
 export function clusterCellSizeDeg(zoom: number): number {
+  // Defense-in-depth NaN/non-finite guard (P2): a non-finite zoom (e.g. NaN slipping past a caller that
+  // does not validate) would otherwise yield a NaN cell size -> every point maps to a "NaN:NaN" grid key
+  // -> one cluster at NaN coords (serializes to null = a broken pin). Treat a non-finite zoom as 0 (the
+  // coarsest, widest cell) so clustering still produces a valid result. The route additionally rejects a
+  // bad zoom with a 422 before reaching here.
+  const safeZoom = Number.isFinite(zoom) ? zoom : 0
   // 360 degrees split into 2^(zoom+1) columns. At zoom 0 that is 180deg; at zoom 13 ~ 0.022deg.
-  const z = Math.max(0, Math.floor(zoom))
+  const z = Math.max(0, Math.floor(safeZoom))
   return 360 / Math.pow(2, z + 1)
 }
 

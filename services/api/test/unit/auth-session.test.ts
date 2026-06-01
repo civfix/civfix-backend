@@ -137,6 +137,41 @@ describe("SessionService", () => {
     expect(await service.resolveSession(token)).toBeNull()
   })
 
+  it("P1-6: the cache TTL is derived from the SAME clock read as the stored expiry (no undershoot)", async () => {
+    // A STRIPED clock that advances on EVERY read. The bug was writeCache calling now() a SECOND time, so
+    // its TTL was computed against a LATER instant than expiresAt -> the Redis key would expire before the
+    // Postgres row. With the fix, writeCache uses the nowMs already captured, so the TTL is exactly the
+    // full lifetime. We pin the cache's OWN clock to a fixed instant so we can recover the TTL the writer
+    // set (entryExpiry - fixedCacheNow) and assert it equals the configured lifetime to the second.
+    let striped = 1_700_000_000_000
+    const STEP = 1000 // each now() read advances 1s, so a second read would visibly shrink a buggy TTL.
+    const serviceNow = (): number => {
+      const v = striped
+      striped += STEP
+      return v
+    }
+    const FIXED_CACHE_NOW = 1_700_000_000_000
+    const store = new InMemorySessionStore()
+    const cache = new InMemoryCacheClient(() => FIXED_CACHE_NOW)
+    const ttlSeconds = 1000
+    const service = new SessionService({ store, cache, ttlSeconds, now: serviceNow })
+
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+
+    const storedExpiry = (await store.findById(hash))!.expiresAt.getTime()
+    const cacheExpiry = cache.expiryOf(`sess:${hash}`)
+    expect(cacheExpiry).not.toBeNull()
+
+    // The TTL the writer set, recovered against the cache's fixed clock.
+    const ttlSet = Math.round((cacheExpiry! - FIXED_CACHE_NOW) / 1000)
+    // With the fix it is the FULL lifetime (same nowMs as expiresAt). The bug would make it < ttlSeconds.
+    expect(ttlSet).toBe(ttlSeconds)
+
+    // And the cache key never expires before the durable row: its absolute expiry is >= the stored row's.
+    expect(cacheExpiry!).toBeGreaterThanOrEqual(storedExpiry)
+  })
+
   it("expired cache entry falls through to the store and is re-validated", async () => {
     // TTL short so the cache entry expires on its own while the store row would also be expired.
     const clockRef = { value: 1_700_000_000_000 }

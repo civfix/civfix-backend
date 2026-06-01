@@ -21,6 +21,15 @@
  * Delivering via the subscription (rather than writing to local sockets directly in broadcast) means
  * there is exactly ONE delivery path, so local and cross-worker recipients are treated identically and
  * a message is never double-sent to a local socket.
+ *
+ * SENDER EXACTLY-ONCE (P1-2): the sender's own socket is in the room, so the broadcast {type:"message"}
+ * frame would ALSO reach it on top of the separate {type:"ack"} frame - a double-delivery the sender's
+ * client would render twice. broadcast therefore accepts an optional excludeConnId (the sender's
+ * connection id, threaded by the gateway). The id rides INSIDE the published envelope (not the
+ * client-facing frame), and the subscription handler skips the matching local connection before sending
+ * the schema-clean {type:"message"} frame to everyone else. The sender learns durability from the ack
+ * alone, so delivery to the sender is exactly-once. Cross-worker recipients are unaffected: the excluded
+ * connection only exists on the sender's worker, so other workers deliver to all their local sockets.
  */
 
 import type {
@@ -70,12 +79,17 @@ export class WsChatService implements ChatService {
     let room = this.rooms.get(cleanupId)
     if (!room) {
       const connections = new Set<ChatConnection>()
-      // Subscribe first so no published frame is missed once the room exists. The handler fans the frame
-      // out to whatever local connections are present at delivery time.
+      // Subscribe first so no published frame is missed once the room exists. The handler decodes the
+      // internal envelope (message + optional excludeConnId), then delivers the CLIENT-facing
+      // {type:"message"} frame to every local connection EXCEPT the excluded one (the sender, P1-2).
       const unsubscribe = await this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
         const current = this.rooms.get(cleanupId)
         if (!current) return
-        for (const c of current.connections) c.send(payload)
+        const { frame, excludeConnId } = decodeEnvelope(payload)
+        for (const c of current.connections) {
+          if (excludeConnId !== undefined && c.id === excludeConnId) continue
+          c.send(frame)
+        }
       })
       room = { connections, unsubscribe }
       this.rooms.set(cleanupId, room)
@@ -98,12 +112,23 @@ export class WsChatService implements ChatService {
   }
 
   /**
-   * Publish a message frame to the cleanup's channel. Delivery to sockets happens in the subscription
-   * handler (single delivery path), so this method does not touch local sockets directly.
+   * Publish a message to the cleanup's channel. Delivery to sockets happens in the subscription handler
+   * (single delivery path), so this method does not touch local sockets directly. The OPTIONAL
+   * excludeConnId (the sender's connection id) rides inside the internal envelope so the handler can skip
+   * the sender's own socket - the sender reconciles via the separate ack frame instead (exactly-once,
+   * P1-2). The third parameter is optional, so this still satisfies the (2-arg) ChatService.broadcast.
    */
-  async broadcast(cleanupId: string, msg: ChatMessageDTO): Promise<void> {
-    const frame = JSON.stringify({ type: "message", message: msg })
-    await this.pubsub.publish(chatChannel(cleanupId), frame)
+  async broadcast(
+    cleanupId: string,
+    msg: ChatMessageDTO,
+    opts?: { excludeConnId?: string },
+  ): Promise<void> {
+    const envelope = JSON.stringify({
+      type: "message",
+      message: msg,
+      ...(opts?.excludeConnId !== undefined ? { excludeConnId: opts.excludeConnId } : {}),
+    })
+    await this.pubsub.publish(chatChannel(cleanupId), envelope)
   }
 
   /** Insert a message and return its DTO (sender joined). Delegates to the persistence seam. */
@@ -138,4 +163,32 @@ export class WsChatService implements ChatService {
   roomSize(cleanupId: string): number {
     return this.rooms.get(cleanupId)?.connections.size ?? 0
   }
+}
+
+/**
+ * Decode a published pub/sub payload into the CLIENT-facing frame string plus the optional excludeConnId.
+ * The internal envelope is `{ type:"message", message, excludeConnId? }`; we strip excludeConnId (it is a
+ * server-internal routing hint, not part of the WsServerMessage contract) so clients only ever see the
+ * schema-clean `{ type:"message", message }`. A payload that does not parse as such an envelope (defensive
+ * - a future frame shape, or a non-JSON publish) is passed through verbatim with no exclusion, preserving
+ * the prior fan-out-to-all behavior.
+ */
+function decodeEnvelope(payload: string): { frame: string; excludeConnId: string | undefined } {
+  try {
+    const parsed = JSON.parse(payload) as {
+      type?: unknown
+      message?: unknown
+      excludeConnId?: unknown
+    }
+    if (parsed.type === "message" && parsed.message !== undefined) {
+      const excludeConnId =
+        typeof parsed.excludeConnId === "string" ? parsed.excludeConnId : undefined
+      // Re-serialize WITHOUT excludeConnId so the wire frame matches WsServerMessageSchema exactly.
+      const frame = JSON.stringify({ type: "message", message: parsed.message })
+      return { frame, excludeConnId }
+    }
+  } catch {
+    // fall through: not our envelope, deliver as-is.
+  }
+  return { frame: payload, excludeConnId: undefined }
 }

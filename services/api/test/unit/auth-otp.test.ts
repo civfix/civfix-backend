@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
+import type { Mailer } from "@civfix/shared/interfaces"
 import { AppError, ErrorCode } from "@civfix/shared"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryOtpStore, InMemoryUserStore } from "../../src/auth/stores.js"
@@ -12,6 +13,26 @@ import {
   OTP_VERIFY_EMAIL_FAIL_MAX,
   OTP_VERIFY_IP_FAIL_MAX,
 } from "../../src/auth/otp.js"
+
+/** A Mailer that throws on the first N sends (to simulate a transient SMTP hiccup), then succeeds. */
+class FlakyMailer implements Mailer {
+  failures: number
+  readonly sent: { to: string; code: string }[] = []
+  constructor(failures: number) {
+    this.failures = failures
+  }
+  sendOtp(to: string, code: string): Promise<void> {
+    if (this.failures > 0) {
+      this.failures -= 1
+      return Promise.reject(new Error("smtp down"))
+    }
+    this.sent.push({ to, code })
+    return Promise.resolve()
+  }
+  sendTransactional(_to: string, _template: string, _vars: Record<string, unknown>): Promise<void> {
+    return Promise.resolve()
+  }
+}
 
 const EMAIL = "Jane.Doe@example.com"
 const IP = "203.0.113.9"
@@ -101,6 +122,49 @@ describe("OtpService.issueOtp", () => {
     const active = store.all().filter((r) => r.consumedAt === null)
     expect(active.length).toBe(1)
   })
+
+  // -------------------------------------------------------------------------
+  // P1-7: a mailer failure must NOT lock the user out of an immediate retry
+  // -------------------------------------------------------------------------
+
+  it("P1-7: a mailer failure does NOT lock out a legitimate immediate retry (cooldown rolled back)", async () => {
+    const clockRef = { value: 1_700_000_000_000 }
+    const now = (): number => clockRef.value
+    const store = new InMemoryOtpStore()
+    const users = new InMemoryUserStore()
+    const cache = new InMemoryCacheClient(now)
+    const mailer = new FlakyMailer(1) // first send throws, second succeeds
+    const service = new OtpService({ store, users, cache, mailer, now })
+
+    // First attempt: the mailer throws. The caller sees the error...
+    await expect(service.issueOtp(EMAIL, IP)).rejects.toThrow()
+    // ...but the per-email cooldown was rolled back, so it is NOT set.
+    expect(await cache.get(`otp:rl:email:${EMAIL.toLowerCase()}`)).toBeNull()
+
+    // An IMMEDIATE retry (same email, well within the 60s window) is allowed and succeeds - the user is
+    // not stuck for 60s with no code. The second send delivers a real code.
+    const res = await service.issueOtp(EMAIL, IP)
+    expect(res.resendAfterSec).toBe(OTP_EMAIL_WINDOW_SECONDS)
+    expect(mailer.sent.length).toBe(1)
+    expect(mailer.sent[0]!.code).toMatch(/^\d{6}$/)
+
+    // After a SUCCESSFUL issue the cooldown IS set, so a third immediate request is rate-limited.
+    expect(await cache.get(`otp:rl:email:${EMAIL.toLowerCase()}`)).not.toBeNull()
+    await expectAppError(service.issueOtp(EMAIL, IP), ErrorCode.RATE_LIMITED)
+  })
+
+  it("P1-7: a per-IP cap rejection does not burn the per-email window", async () => {
+    const { service } = makeOtp()
+    // Exhaust the per-IP cap with DISTINCT emails (so no per-email window is touched for `victim`).
+    for (let i = 0; i < OTP_IP_MAX_PER_WINDOW; i++) {
+      await service.issueOtp(`filler${i}@example.com`, IP)
+    }
+    // `victim` has never requested a code, but shares the (now-capped) IP. The request is IP-rate-limited.
+    await expectAppError(service.issueOtp("victim@example.com", IP), ErrorCode.RATE_LIMITED)
+    // Because the per-IP check runs BEFORE the per-email increment, victim's own per-email window was NOT
+    // consumed: from a DIFFERENT IP (under the cap) they can immediately get a code.
+    await expect(service.issueOtp("victim@example.com", "198.51.100.7")).resolves.toBeTruthy()
+  })
 })
 
 describe("OtpService.verifyOtp", () => {
@@ -165,6 +229,47 @@ describe("OtpService.verifyOtp", () => {
       service.verifyOtp("nobody@example.com", "123456", IP),
       ErrorCode.UNAUTHORIZED,
     )
+  })
+
+  // -------------------------------------------------------------------------
+  // P1-4: concurrent first-sign-in for the same NEW email resolves to ONE user (no 500)
+  // -------------------------------------------------------------------------
+
+  it("P1-4: two concurrent verifies for the same brand-new email resolve to the SAME user (no 500)", async () => {
+    const { service, mailer, users } = makeOtp()
+    await service.issueOtp(EMAIL, IP)
+    const code = sentCode(mailer, EMAIL)
+
+    // Fire two verifies concurrently. Both read the (unconsumed) code before either consumes it, both
+    // verify the correct code, both find no existing user, and both attempt to create one. The
+    // find-or-create must be idempotent on email: NEITHER throws a unique-violation 500, and BOTH resolve
+    // to the same account (the duplicate INSERT is absorbed by ON CONFLICT (email) DO NOTHING + re-select).
+    const [a, b] = await Promise.all([
+      service.verifyOtp(EMAIL, code, IP),
+      service.verifyOtp(EMAIL, code, IP),
+    ])
+    expect(a).toBe(b)
+    // Exactly one user exists for that email.
+    const user = await users.findByEmail(EMAIL)
+    expect(user).not.toBeNull()
+    expect(user!.id).toBe(a)
+  })
+
+  it("P1-4: users.create is idempotent on email (concurrent create -> one row, same id)", async () => {
+    // Direct proof of the primitive the fix relies on: two creates for the same email converge on one
+    // row (mirrors the Pg store's ON CONFLICT (email) DO NOTHING + re-select).
+    const { users } = makeOtp()
+    const [u1, u2] = await Promise.all([
+      users.create("dup@example.com", { displayName: "Dup One", emailVerified: true }),
+      users.create("dup@example.com", { displayName: "Dup Two", emailVerified: true }),
+    ])
+    expect(u1.id).toBe(u2.id)
+    // A null email never conflicts: two null-email creates are distinct rows.
+    const [n1, n2] = await Promise.all([
+      users.create(null, { displayName: "No Email A" }),
+      users.create(null, { displayName: "No Email B" }),
+    ])
+    expect(n1.id).not.toBe(n2.id)
   })
 })
 

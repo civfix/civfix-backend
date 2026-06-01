@@ -42,6 +42,7 @@ import type {
   MediaWorkerRepo,
   WorkerAbuseReason,
 } from "@civfix/api/media-repo"
+import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { Storage } from "@civfix/shared/interfaces"
 import type { WorkerLimits } from "../config.js"
 import { ALLOWED_VIDEO_CODECS } from "../config.js"
@@ -79,11 +80,25 @@ export interface MediaProcessResult {
 export interface ProcessInput {
   bytes: Uint8Array
   kind: MediaKind
+  /**
+   * The id of the asset being processed. Threaded into the near-duplicate lookup as excludeAssetId so a
+   * re-delivered/double-enqueued job (which recomputes the SAME phash on a row that already has its phash
+   * persisted) never matches the asset against its OWN row and flags it a duplicate of itself (P0-2).
+   * Optional so pure-core unit tests that only assert decode/strip behavior can omit it.
+   */
+  selfAssetId?: string
 }
 
 export interface ProcessDeps {
   abuseChecks: AbuseChecks
   limits: WorkerLimits
+  /**
+   * Self-aware near-duplicate lookup (excludes the current asset via excludeAssetId). When provided it is
+   * used INSTEAD of abuseChecks.isNearDuplicate so the self-exclusion (P0-2) is honored; when omitted the
+   * pipeline falls back to abuseChecks.isNearDuplicate (e.g. FakeAbuseChecks in offline tests, which has
+   * no persisted self-row to collide with). Injected by the worker from its DB-backed lookup.
+   */
+  findPhashDuplicate?: FindPhashDuplicateFn
 }
 
 /** Build a rejected result with a note. Helper to keep the safe-failure paths terse + consistent. */
@@ -121,6 +136,7 @@ async function applyAbuseSeams(
   bytes: Uint8Array,
   phash: string | null,
   deps: ProcessDeps,
+  selfAssetId?: string,
 ): Promise<{ status: MediaStatus; flags: PipelineFlag[]; note: string | null }> {
   const flags: PipelineFlag[] = []
   let note: string | null = null
@@ -141,10 +157,13 @@ async function applyAbuseSeams(
   }
 
   // Near-duplicate: fail OPEN (a dedupe outage must not reject good uploads). Only consult the seam
-  // when we actually have a perceptual hash.
+  // when we actually have a perceptual hash. Prefer the self-aware lookup (excludes THIS asset's own row
+  // so a re-delivered job is not a duplicate of itself, P0-2); fall back to the plain isNearDuplicate.
   if (phash !== null) {
     try {
-      const dup = await deps.abuseChecks.isNearDuplicate(phash)
+      const dup = deps.findPhashDuplicate
+        ? await deps.findPhashDuplicate(phash, { excludeAssetId: selfAssetId })
+        : await deps.abuseChecks.isNearDuplicate(phash)
       if (dup.dup) {
         flags.push({ reason: "phash_dup" })
         return {
@@ -165,6 +184,7 @@ async function applyAbuseSeams(
 async function processImageBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
+  selfAssetId?: string,
 ): Promise<MediaProcessResult> {
   let img: Awaited<ReturnType<typeof processImage>>
   try {
@@ -181,7 +201,7 @@ async function processImageBytes(
     phash = null
   }
 
-  const seam = await applyAbuseSeams(bytes, phash, deps)
+  const seam = await applyAbuseSeams(bytes, phash, deps, selfAssetId)
 
   return {
     status: seam.status,
@@ -286,7 +306,7 @@ export async function processMedia(
       )
     }
     if (input.kind === "image") {
-      return await processImageBytes(input.bytes, deps)
+      return await processImageBytes(input.bytes, deps, input.selfAssetId)
     }
     return await processVideoBytes(input.bytes, deps)
   } catch (err) {
@@ -342,6 +362,12 @@ export interface MediaChecksDeps {
   abuseChecks: AbuseChecks
   limits: WorkerLimits
   download: DownloadFn
+  /**
+   * Self-aware near-duplicate lookup over media_assets.phash. The orchestrator passes the processing
+   * asset's id as excludeAssetId so a re-delivered job does not flag the asset a duplicate of itself
+   * (P0-2). Optional: when omitted, processMedia falls back to abuseChecks.isNearDuplicate.
+   */
+  findPhashDuplicate?: FindPhashDuplicateFn
   /** Report an exceptional/rejection event to GlitchTip (no-op when reporting is disabled). */
   report?: (err: unknown, context?: Record<string, unknown>) => void
   /** Structured log sink (defaults to console). */
@@ -421,7 +447,16 @@ export async function runMediaChecksJob(
     result = await withJobTimeout(
       (async () => {
         const bytes = await deps.download(asset.r2Key, deps.limits.maxDownloadBytes)
-        return processMedia({ bytes, kind: asset.kind }, deps)
+        // Pass the asset id (selfAssetId) so the dedupe lookup excludes this asset's own row (P0-2), and
+        // forward the self-aware lookup so processMedia uses it over the plain isNearDuplicate.
+        return processMedia(
+          { bytes, kind: asset.kind, selfAssetId: asset.id },
+          {
+            abuseChecks: deps.abuseChecks,
+            limits: deps.limits,
+            ...(deps.findPhashDuplicate ? { findPhashDuplicate: deps.findPhashDuplicate } : {}),
+          },
+        )
       })(),
       deps.limits.jobTimeoutMs,
     )

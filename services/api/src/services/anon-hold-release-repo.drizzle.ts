@@ -97,5 +97,20 @@ export function makeDrizzleAnonHoldReleaseRepo(sql: Sql): AnonHoldReleaseRepo {
         return true
       })
     },
+
+    async findHeldAnonReportIds(limit: number): Promise<string[]> {
+      // Candidate held anon reports for the self-healing release sweep (P2-8). Anon = reporter_user_id
+      // IS NULL; held + not deleted. Oldest-first so the longest-stuck reports are reconciled first.
+      const rows = await sql<{ id: string }[]>`
+        SELECT id
+        FROM reports
+        WHERE status = ${"held"}
+          AND reporter_user_id IS NULL
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT ${limit}
+      `
+      return rows.map((r) => r.id)
+    },
   }
 }

@@ -53,6 +53,8 @@ export interface WorkerLimits {
   orphanTtlMs: number
   /** Max orphan rows reaped per sweep run. */
   orphanSweepBatch: number
+  /** Max held anon reports re-evaluated per hold-release sweep run (P2-8 self-healing backstop). */
+  holdReleaseSweepBatch: number
 }
 
 /** Kill signal used when a sandboxed child exceeds its timeout. SIGKILL is non-catchable. */
@@ -83,6 +85,7 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     mediaChecksConcurrency: parsePosInt(source.MEDIA_CHECKS_CONCURRENCY, 2),
     orphanTtlMs: parsePosInt(source.MEDIA_ORPHAN_TTL_MS, 24 * 60 * 60 * 1000),
     orphanSweepBatch: parsePosInt(source.MEDIA_ORPHAN_SWEEP_BATCH, 200),
+    holdReleaseSweepBatch: parsePosInt(source.MEDIA_HOLD_RELEASE_SWEEP_BATCH, 200),
   }
 }
 
@@ -100,3 +103,7 @@ export { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES }
 /** Cron expressions for the scheduled maintenance jobs (UTC; pg-boss uses node-cron syntax). */
 export const ORPHAN_SWEEP_CRON = "17 * * * *" // hourly at :17 (off the top of the hour)
 export const CHAT_PARTITION_CRON = "0 3 28 * *" // 03:00 UTC on the 28th, before month rollover
+// Hold-release self-healing sweep (P2-8): every 5 minutes, re-check held anon reports so a release that
+// lost its inline enqueue (e.g. a shutdown race) is reconciled promptly rather than the report staying
+// held until an unrelated media event. Frequent + cheap (a bounded indexed scan + idempotent re-checks).
+export const HOLD_RELEASE_SWEEP_CRON = "*/5 * * * *"

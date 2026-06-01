@@ -40,8 +40,20 @@ function jsonParam<S extends z.ZodTypeAny>(inner: S) {
     .pipe(inner)
 }
 
-/** bbox as the client sends it: a single JSON-encoded BBox object param. */
-export const BBoxQueryParam = jsonParam(BBoxSchema)
+/**
+ * bbox as the client sends it: a single JSON-encoded BBox object param.
+ *
+ * ORDERING VALIDATION (P2): the shared BBoxSchema range-checks each bound independently but does NOT
+ * require west < east or south < north (and it is the frozen contract, so we cannot add the refine there).
+ * An inverted/degenerate bbox (west >= east or south >= north) would otherwise build an empty
+ * ST_MakeEnvelope and SILENTLY return no rows. We reject it here with a clear 422 so a transposed bbox
+ * from a client bug is a loud error, not a mysterious empty map. (A strict `<` also rejects a
+ * zero-area bbox, which can never contain a point and is therefore never a legitimate viewport query.)
+ */
+export const BBoxQueryParam = jsonParam(BBoxSchema).refine(
+  (b) => b.west < b.east && b.south < b.north,
+  { message: "bbox must satisfy west < east and south < north" },
+)
 
 /** near as the client sends it: a single JSON-encoded LatLng object param. */
 export const LatLngQueryParam = jsonParam(LatLngSchema)

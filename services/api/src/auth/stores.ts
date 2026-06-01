@@ -148,6 +148,18 @@ export class InMemoryUserStore implements UserStore {
   }
 
   create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
+    // IDEMPOTENT ON EMAIL (P1-4): mirror the Pg store's ON CONFLICT (email) DO NOTHING + re-select. A
+    // non-null email that already exists resolves to the existing row instead of creating a duplicate (or
+    // throwing), so a concurrent first-sign-in for the same address converges on one user. A null email
+    // never conflicts (the partial unique index excludes NULLs), so it always creates a fresh row.
+    if (email !== null) {
+      const normalized = email.toLowerCase()
+      for (const existing of this.byId.values()) {
+        if (existing.email !== null && existing.email.toLowerCase() === normalized) {
+          return Promise.resolve({ ...existing })
+        }
+      }
+    }
     const row: UserRecord = {
       id: randomUUID(),
       role: input.role ?? "citizen",

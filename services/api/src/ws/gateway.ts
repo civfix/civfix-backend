@@ -108,9 +108,24 @@ export type IsMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 /** Optional read-state updater (per-user last-read), used by the `ack` frame. No-op when omitted. */
 export type MarkReadFn = (cleanupId: string, userId: string, upToId: string) => Promise<void>
 
+/**
+ * The ChatService the gateway drives. Identical to the shared ChatService except `broadcast` accepts an
+ * OPTIONAL excludeConnId so the gateway can keep the sender out of the broadcast fan-out (it learns
+ * durability from the ack instead, P1-2). A 2-arg ChatService.broadcast is assignable here (fewer
+ * params), so both the real WsChatService (which uses the hint) and the FakeChatService (which ignores
+ * the extra arg) satisfy this type without any change to the frozen shared interface.
+ */
+export type GatewayChatService = Omit<ChatService, "broadcast"> & {
+  broadcast(
+    cleanupId: string,
+    msg: Parameters<ChatService["broadcast"]>[1],
+    opts?: { excludeConnId?: string },
+  ): Promise<void>
+}
+
 /** The dependencies the gateway frame handler needs (no Fastify/socket types here so it stays testable). */
 export interface GatewayDeps {
-  chat: ChatService
+  chat: GatewayChatService
   isMember: IsMemberFn
   markRead?: MarkReadFn | undefined
 }
@@ -142,8 +157,9 @@ function sendError(conn: ChatConnection, code: string, message: string): void {
  *   - parse + validate against WsClientMessageSchema; a malformed frame -> a single error frame, no throw.
  *   - join: membership-gate, then ChatService.joinRoom + a presence frame to the joiner's own socket.
  *   - leave: ChatService.leaveRoom.
- *   - send: membership-gate, persist via ChatService, broadcast to the room, and ack the SENDER with the
- *     clientId + persisted message so the optimistic client reconciles.
+ *   - send: membership-gate, persist via ChatService, broadcast to the room EXCEPT the sender's socket,
+ *     and ack the SENDER with the clientId + persisted message so the optimistic client reconciles
+ *     (the sender's exactly-once copy; P1-2).
  *   - typing: broadcast a presence/typing frame to the room (best-effort).
  *   - ack: update read state via markRead (optional).
  */
@@ -206,10 +222,14 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
         ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
         clientId: frame.clientId,
       })
-      // Broadcast to the room (every member, including the sender's other devices).
-      await deps.chat.broadcast(frame.cleanupId, message)
-      // Ack the SENDER directly with the clientId so its optimistic bubble is reconciled even if the
-      // broadcast path is async/cross-worker.
+      // Broadcast to the room EXCEPT this sender's socket (P1-2): the sender would otherwise get both the
+      // broadcast {type:"message"} frame AND the {type:"ack"} below for the same id and render it twice.
+      // excludeConnId keeps the sender out of the fan-out; the sender reconciles its optimistic bubble
+      // from the ack alone. Other members (and the sender's OTHER devices, which are different
+      // connections) still receive the message frame.
+      await deps.chat.broadcast(frame.cleanupId, message, { excludeConnId: conn.id })
+      // Ack the SENDER directly with the clientId so its optimistic bubble is reconciled. This is the
+      // sender's ONLY copy of the message (exactly-once delivery to the sender).
       conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
       return
     }

@@ -11,6 +11,11 @@
  *   `before` is the id of the last message the client already has; we resolve its created_at and return
  *   only rows strictly older than (created_at, id). nextCursor is the id of the oldest row returned when
  *   another page may exist, else null. Soft-deleted rows (deleted_at not null) are excluded.
+ *
+ *   CURSOR IS ROOM-SCOPED (P1-5): the anchor lookup that resolves `before` -> (created_at) is scoped to
+ *   the SAME cleanup_id (AND deleted_at IS NULL). A `before` id from another room (a client/relay bug or
+ *   a malicious caller) does NOT resolve to a foreign message's timestamp; it simply finds no anchor and
+ *   we return the newest page, so a cursor can never seek into / leak the ordering of a different room.
  */
 
 import type { Queryable, Sql } from "../db/client.js"
@@ -128,12 +133,17 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
       before: string | undefined,
       limit: number,
     ): Promise<ChatHistoryPage> {
-      // Resolve the `before` cursor id to its (created_at) so we can keyset strictly older than it. An
-      // unknown cursor id yields no anchor, so we just return the newest page (defensive).
+      // Resolve the `before` cursor id to its (created_at) so we can keyset strictly older than it. The
+      // anchor lookup is SCOPED TO THIS cleanup (P1-5): a `before` id that belongs to another room (or is
+      // unknown / soft-deleted) finds no anchor, so we just return the newest page (defensive) - a foreign
+      // cursor can never seek into or leak another room's ordering. Scoping also lets the planner use the
+      // (cleanup_id, created_at) access path instead of probing every partition by id alone.
       let anchor: { createdAt: Date; id: string } | null = null
       if (before !== undefined) {
         const rows = await sql<{ created_at: Date; id: string }[]>`
-          SELECT created_at, id FROM chat_messages WHERE id = ${before} LIMIT 1
+          SELECT created_at, id FROM chat_messages
+          WHERE id = ${before} AND cleanup_id = ${cleanupId} AND deleted_at IS NULL
+          LIMIT 1
         `
         if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }
       }

@@ -16,17 +16,19 @@
  *
  * Then, in a SINGLE transaction (createAnonReportTx): insert the report (reporter_user_id null,
  * anon_session_id = anon token id, status "held", visibility "public", published_at null, jurisdiction
- * resolved, h3_cell, geom), attach media, insert the initial timeline rows (submitted + held), bump the
- * anon_tokens.report_count, stamp a single-use claimCode on the anon_tokens row, and store the
- * AnonReportResponse snapshot in idempotency_keys - all atomically. The media.checks jobs are enqueued
- * after commit (idempotently; a no-op if media-intake already enqueued at finalize).
+ * resolved, h3_cell, geom, AND a per-report single-use claimCode), attach media, insert the initial
+ * timeline rows (submitted + held), bump the anon_tokens.report_count (the cap is a token property), and
+ * store the AnonReportResponse snapshot in idempotency_keys - all atomically. The claim code is stored
+ * PER REPORT (reports.claim_code, 0005), NOT on the shared anon_tokens row, so each of a token's up-to-5
+ * reports stays independently status-queryable/claimable (a later submit no longer overwrites it). The
+ * media.checks jobs are enqueued after commit (idempotently; a no-op if media-intake already enqueued).
  *
  * HELD reports stay HIDDEN: the report is created status "held" (NOT published+public), so the existing
  * getReport (404s non-published to strangers) and the map/list candidate queries (published+public
  * only) already exclude it. Its status is observable ONLY via anonReportStatus with the matching
  * claimCode. The worker later releases the hold (see releaseAnonHoldIfReady).
  *
- * anonReportStatus verifies the claimCode against the report's anon token row and returns
+ * anonReportStatus verifies the claimCode against the report's own claim_code and returns
  * {status, publishedAt}; a wrong code is NOT-FOUND (no enumeration of report existence).
  */
 
@@ -81,7 +83,7 @@ export interface CreateAnonReportTxArgs {
   description: string | null
   h3Cell: string
   mediaUploadIds: string[]
-  /** The single-use claim code to stamp on the anon_tokens row for this submission. */
+  /** The single-use claim code to stamp on THIS report's row (reports.claim_code, 0005). */
   claimCode: string
   /**
    * The per-token report cap. The held-create tx folds this into the SAME atomic statement that
@@ -104,7 +106,7 @@ export interface AnonReportStatusRow {
   reportId: string
   status: ReportStatus
   publishedAt: Date | null
-  /** The claim code stamped on the report's anon_tokens row (null if none). */
+  /** The report's own claim code (reports.claim_code, 0005); null once claimed or if none. */
   claimCode: string | null
 }
 

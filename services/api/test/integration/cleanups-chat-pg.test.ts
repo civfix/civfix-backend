@@ -145,6 +145,44 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     expect(partition[0]!.child).toContain("chat_messages_")
   })
 
+  it("P1-5: a `before` cursor from ANOTHER room cannot seek/leak into this room", async () => {
+    const organizerId = await newUser("Org XRoom")
+    const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
+    const cleanupService = makeCleanupService({ repo: cleanupRepo })
+    const mk = (title: string) =>
+      cleanupService.createCleanup(
+        {
+          title,
+          type: "site",
+          lat: 34.07,
+          lng: -118.27,
+          scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        },
+        organizerId,
+      )
+    const roomA = await mk("Room A")
+    const roomB = await mk("Room B")
+
+    const chatRepo = makeDrizzleChatRepository(h.sql)
+    // Room A has 3 messages; room B has 1 message whose id we will (mis)use as a cursor against room A.
+    for (let i = 1; i <= 3; i++) {
+      await chatRepo.insertMessage({ cleanupId: roomA.id, userId: organizerId, body: `a${i}` }, randomUUID())
+    }
+    const bMsg = await chatRepo.insertMessage(
+      { cleanupId: roomB.id, userId: organizerId, body: "b1" },
+      randomUUID(),
+    )
+
+    // Page room A with a `before` cursor that belongs to ROOM B. The foreign anchor does NOT resolve
+    // (the lookup is scoped to room A), so we get room A's NEWEST page - never a window carved by B's
+    // timestamp, and never any of B's rows. Every returned row belongs to room A.
+    const page = await chatRepo.history(roomA.id, bMsg.id, 2)
+    expect(page.items.map((m) => m.body)).toEqual(["a3", "a2"])
+    expect(page.items.every((m) => m.cleanupId === roomA.id)).toBe(true)
+    // Sanity: room B's message is not leaked into room A's page.
+    expect(page.items.some((m) => m.id === bMsg.id)).toBe(false)
+  })
+
   it("GET /cleanups/:id/messages is membership-gated against real Postgres (200 member, 403 non-member)", async () => {
     // Real DB-backed cleanup routes (no cleanupOverrides) + an in-memory auth bundle for sessions.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })

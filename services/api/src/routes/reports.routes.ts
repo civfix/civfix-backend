@@ -78,10 +78,20 @@ const ReportIdParamsSchema = z.object({ id: IdSchema }).strict()
  * truth. NOT .strict(): qs may surface extra/unknown params (and tolerating them is more robust for a
  * public GET), but the re-validation against the shared .strict() schema still rejects a malformed body.
  */
+/**
+ * zoom decoder (P2): the client sends a scalar; we coerce then HARD-bound it. The shared schema's
+ * `zoom: z.number()` is frozen and does not clamp, and the clustering math (clusterCellSizeDeg) has no
+ * NaN/range guard of its own - a NaN zoom would map every point to a "NaN:NaN" grid cell and emit a
+ * single cluster at NaN coords (which serializes to null -> a broken pin). z.coerce.number() turns a
+ * non-numeric string into NaN, so we explicitly reject non-finite via .int() (NaN/Infinity fail int) and
+ * bound to a sane web tile range [0, 22]. A bad zoom is now a clean 422, not a corrupt cluster.
+ */
+const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
+
 const MapReportsQuerySchema = z.object({
   bbox: BBoxQueryParam,
   categories: CategoriesQueryParam.optional(),
-  zoom: z.coerce.number(),
+  zoom: ZoomQueryParam,
 })
 
 export async function registerReportRoutes(

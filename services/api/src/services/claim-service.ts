@@ -39,7 +39,8 @@ export interface PendingAnonReport {
  * nudge) with claim-by-code linking. Production impl is Drizzle/Postgres; tests pass an in-memory impl.
  */
 export interface ClaimRepository extends AnonTokenStore {
-  /** The pending (held or published) anon report tied to a token id, via its stamped claim code; null if none. */
+  /** The pending (held or published) unclaimed anon report tied to a token id that still carries its own
+   * per-report claim code (0005); null if none. */
   findPendingByTokenId(tokenId: string): Promise<PendingAnonReport | null>
   /**
    * Atomically claim the report carrying `claimCode` for `userId`: set reporter_user_id = userId and

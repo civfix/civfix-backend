@@ -40,6 +40,14 @@ export interface WorkerSeams {
   repo: MediaWorkerRepo | undefined
   /** Anon hold-release gate repo (undefined in all-fake mode; needs a real DB). */
   anonHoldRepo: AnonHoldReleaseRepo | undefined
+  /**
+   * Self-aware near-duplicate lookup over media_assets.phash (undefined in all-fake mode where no DB is
+   * configured). The media.checks job calls this directly with the processing asset's id as
+   * excludeAssetId so a re-delivered job never flags an asset as a duplicate of itself (P0-2). When
+   * undefined, the pipeline falls back to AbuseChecks.isNearDuplicate (the FakeAbuseChecks dedupe memory
+   * in offline mode), which has no persisted self-row to collide with.
+   */
+  findPhashDuplicate: FindPhashDuplicateFn | undefined
   /** Report an error to GlitchTip (no-op when no DSN). */
   report: (err: unknown, context?: Record<string, unknown>) => void
   /** Tear down created resources (DB pool, flush telemetry). */
@@ -95,6 +103,14 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
     throw new Error("media-worker: DATABASE_URL is required in production to persist media results")
   }
 
+  // The self-aware near-duplicate lookup (media_assets.phash query with AND id <> selfId, P0-2). Built
+  // once when a DB is configured; the media.checks job passes the processing asset's id so a re-delivered
+  // job never matches the asset against its own row. Also handed to RealAbuseChecks below so the adapter's
+  // isNearDuplicate stays functional for any caller that does not thread a self id.
+  const findPhashDuplicate: FindPhashDuplicateFn | undefined = dbHandle
+    ? makePhashDuplicateLookup(dbHandle)
+    : undefined
+
   // ----- abuse checks (NSFW + perceptual hash + near-dup behind the seam) -----
   // RealAbuseChecks lives in the API adapter (Turnstile SDK is confined there). The worker injects the
   // REAL perceptual hasher (sharp-based dHash from sandbox/phash.ts, kept out of the adapter per the
@@ -102,7 +118,7 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   // USE_REAL_NSFW + a model is wired (no model vendored yet, so it logs once and scores benign).
   const abuseChecks: AbuseChecks = fakeAbuse
     ? new FakeAbuseChecks()
-    : await buildRealAbuseChecks(source, limits, dbHandle)
+    : await buildRealAbuseChecks(source, limits, findPhashDuplicate)
 
   const download = makeDownloader(storage)
 
@@ -114,6 +130,7 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
     dbHandle,
     repo,
     anonHoldRepo,
+    findPhashDuplicate,
     report: captureError,
     async close(): Promise<void> {
       if (dbHandle) await dbHandle.close()
@@ -143,7 +160,7 @@ function req(source: NodeJS.ProcessEnv, key: string): string {
 async function buildRealAbuseChecks(
   source: NodeJS.ProcessEnv,
   limits: WorkerLimits,
-  dbHandle: DbHandle | undefined,
+  findPhashDuplicate: FindPhashDuplicateFn | undefined,
 ): Promise<AbuseChecks> {
   const { RealAbuseChecks } = await import("@civfix/api/adapters/abuse-checks")
   // The real perceptual hasher lives in the sandbox (sharp). Bind it to the worker limits.
@@ -153,25 +170,37 @@ async function buildRealAbuseChecks(
     ...(source.CF_TURNSTILE_SECRET ? { turnstileSecret: source.CF_TURNSTILE_SECRET } : {}),
     useRealNsfw: parseBool(source.USE_REAL_NSFW, false),
     perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
-    ...(dbHandle
-      ? { findPhashDuplicate: makePhashDuplicateLookup(dbHandle) }
-      : {}),
+    ...(findPhashDuplicate ? { findPhashDuplicate } : {}),
   })
 }
 
 /**
  * Build an exact-match near-duplicate lookup over media_assets.phash. Returns { dup: true, ofReportId }
- * when another asset already carries the same phash and is attached to a report; otherwise { dup: false }.
+ * when ANOTHER asset already carries the same phash and is attached to a report; otherwise { dup: false }.
  * Exact match is sufficient for Phase 1 (the phash column is indexed); a future phase can widen this to
  * a bounded Hamming distance. The query is read-only and fail-safe at the call site (the media pipeline
  * treats a dedupe error as "not a duplicate").
+ *
+ * SELF-EXCLUSION (P0-2): the asset being processed already has its OWN row (with a report_id set at
+ * report-create) and, after its first run, its OWN persisted phash. A re-delivered/double-enqueued
+ * media.checks job recomputes the identical phash; without excluding the current asset the lookup would
+ * match the asset's own row and flag it a near-duplicate of itself - flipping a clean asset to held with
+ * a bogus phash_dup flag (which, for an anon report, then blocks hold-release forever). `excludeAssetId`
+ * (threaded from the processing asset's id) adds `AND id <> $selfId` so the asset can never be its own
+ * duplicate; a genuinely different asset sharing the phash still matches.
  */
 function makePhashDuplicateLookup(dbHandle: DbHandle): FindPhashDuplicateFn {
-  return async (hash: string): Promise<NearDuplicateResult> => {
+  return async (
+    hash: string,
+    opts?: { excludeAssetId?: string },
+  ): Promise<NearDuplicateResult> => {
+    const excludeId = opts?.excludeAssetId ?? null
     const rows = await dbHandle.sql<{ report_id: string | null }[]>`
       SELECT report_id
       FROM media_assets
-      WHERE phash = ${hash} AND report_id IS NOT NULL
+      WHERE phash = ${hash}
+        AND report_id IS NOT NULL
+        ${excludeId !== null ? dbHandle.sql`AND id <> ${excludeId}` : dbHandle.sql``}
       ORDER BY created_at ASC
       LIMIT 1
     `
