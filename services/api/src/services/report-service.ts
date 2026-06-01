@@ -1,0 +1,555 @@
+/**
+ * Report service: the create/get/my-list/clustered-map/follow half of the reports domain.
+ *
+ * It ties together jurisdiction resolution, the media pipeline, and the report timeline. All DB access
+ * sits behind a ReportRepository seam (Drizzle impl in report-repository.drizzle.ts; an in-memory impl
+ * in the offline tests), mirroring the auth/media pattern so the service is unit-testable with no
+ * database and no Docker.
+ *
+ * IDEMPOTENCY + NO-DUPLICATE + NO-ORPHAN (the Phase-1 done-criterion and the section-17 probe):
+ *   createReport keys off idempotency_keys (scope "report_create"). On the FIRST submit, the repository
+ *   runs ONE transaction that: inserts the report row (geom via ST_SetSRID(ST_MakePoint(lng,lat),4326),
+ *   geom_source verbatim), attaches each media_asset (sets report_id; never steals media already bound
+ *   to another report), inserts the initial timeline row, AND writes the resulting ReportDTO JSON into
+ *   idempotency_keys.response_snapshot - all atomically. A retry with the same key finds the snapshot
+ *   and replays it verbatim: no second report row, no second media attach, no orphaned R2 object. If two
+ *   concurrent first-submits race, the UNIQUE(idempotency_key) on reports (and the PK on
+ *   idempotency_keys) trips for the loser; the repository catches that and returns the winner's stored
+ *   snapshot, so the caller still sees the original. The media attach is part of the same transaction,
+ *   so a rolled-back create never leaves a half-attached asset.
+ *
+ *   Snapshot freshness note: the stored snapshot is the ReportDTO verbatim, including the media presigned
+ *   URLs computed at create time. A replay therefore returns those same URLs even though a presigned URL
+ *   eventually expires. This is the deliberate "replay the original response" idempotency contract; a
+ *   client that needs a fresh URL re-fetches GET /reports/:id (which always re-presigns). See REPORT.
+ *
+ * AUTHED PUBLISH-IMMEDIATELY (plan 11.7): a signed-in reporter's pin skips the abuse hold and is created
+ * already "published" with published_at = now and visibility "public". The held/abuse path is for the
+ * anonymous flow (the next step). The initial timeline entry therefore records "published".
+ *
+ * HELD/NON-PUBLIC HIDING: getReport returns 404 (notFound, never a 403 that would leak existence) for a
+ * soft-deleted report, and for any report that is not (published AND public) UNLESS the viewer owns it.
+ * So a stranger cannot tell a held report from a missing one; the owner can still see their own.
+ *
+ * SPATIAL ACCESS RULE (same as the jurisdiction/cleanup code): every geometry read/write goes through
+ * the raw postgres-js tag wrapped in PostGIS functions, never through the Drizzle ORM. Clustering is a
+ * PURE function over already-fetched candidate points, so it is unit-testable with no DB.
+ */
+
+import { randomUUID } from "node:crypto"
+import { latLngToCell } from "h3-js"
+import { AppError } from "@civfix/shared"
+import type {
+  CreateReportRequest,
+  GeomSource,
+  ListMyReportsResponse,
+  MediaDTO,
+  PaginationQuery,
+  ReportCategory,
+  ReportClusterDTO,
+  ReportClusterResponse,
+  ReportDTO,
+  ReportPinDTO,
+  ReportStatus,
+  ReportTimelineEntryDTO,
+  ReportVisibility,
+} from "@civfix/shared"
+
+// ---------------------------------------------------------------------------
+// Config constants
+// ---------------------------------------------------------------------------
+
+/** Idempotency scope namespacing report-create keys in idempotency_keys.scope. */
+export const REPORT_CREATE_SCOPE = "report_create"
+
+/** H3 resolution used for reports.h3_cell. r10 (~65 m edge) suits per-cell clustering + rate limiting. */
+export const REPORT_H3_RESOLUTION = 10
+
+/**
+ * Max candidate report points pulled from the DB for a single bbox/cluster query. Bounds the payload
+ * and the per-request work for a very wide bbox; the clustering then collapses them to far fewer pins.
+ * Documented cap: a denser area is sampled (ORDER BY recency) up to this many points.
+ */
+export const MAP_REPORTS_CANDIDATE_CAP = 2000
+
+/**
+ * Zoom at/above which the map returns INDIVIDUAL pins; below it the points are snapped to a grid and
+ * returned as clusters with counts. ~14 is "street" zoom, where ~200 pins render at 60fps; zoomed out
+ * past it, clustering keeps the pin count (and the render cost) bounded.
+ */
+export const CLUSTER_ZOOM_THRESHOLD = 14
+
+// ---------------------------------------------------------------------------
+// Repository seam (structural views; faked in tests)
+// ---------------------------------------------------------------------------
+
+/** The owner context (a signed-in user) creating/viewing a report. */
+export interface ReportOwner {
+  userId?: string | undefined
+  anonSessionId?: string | undefined
+}
+
+/** A media row as the report service needs it to render a MediaDTO (presign happens in the service). */
+export interface ReportMediaView {
+  id: string
+  kind: "image" | "video"
+  codec: string | null
+  r2Key: string
+  thumbKey: string | null
+  status: "validating" | "ready" | "rejected" | "held"
+  width: number | null
+  height: number | null
+}
+
+/** A timeline row as stored, projected for the DTO. */
+export interface ReportTimelineView {
+  status: ReportStatus
+  note: string | null
+  createdAt: Date
+}
+
+/** The persisted report row the service projects into a ReportDTO (geom already decoded to lat/lng). */
+export interface ReportRecord {
+  id: string
+  reporterUserId: string | null
+  anonSessionId: string | null
+  category: ReportCategory
+  title: string | null
+  description: string | null
+  status: ReportStatus
+  visibility: ReportVisibility
+  lat: number
+  lng: number
+  geomSource: GeomSource
+  jurisdictionGeoid: string | null
+  createdAt: Date
+  publishedAt: Date | null
+  deletedAt: Date | null
+}
+
+/** A candidate map point fetched for clustering (the minimal handle the pure clusterer needs). */
+export interface ReportMapPoint {
+  id: string
+  lat: number
+  lng: number
+  category: ReportCategory
+  status: ReportStatus
+}
+
+/** Everything the create transaction needs to persist a report (jurisdiction + h3 already computed). */
+export interface CreateReportTxArgs {
+  reportId: string
+  reporterUserId: string
+  idempotencyKey: string
+  lat: number
+  lng: number
+  geomSource: GeomSource
+  jurisdictionGeoid: string | null
+  category: ReportCategory
+  description: string | null
+  status: ReportStatus
+  visibility: ReportVisibility
+  h3Cell: string
+  publishedAt: Date | null
+  mediaUploadIds: string[]
+  /** Initial timeline note (optional). */
+  timelineNote: string | null
+  /** Idempotency bookkeeping written in the SAME transaction. */
+  idempotency: { key: string; scope: string; userOrAnon: string | null }
+  /**
+   * Build the response snapshot to persist, given the freshly-inserted report record + attached media
+   * views + timeline views. Runs INSIDE the transaction so the stored snapshot is exactly the DTO the
+   * first caller receives. Returns a JSON-serializable ReportDTO.
+   */
+  buildSnapshot: (
+    record: ReportRecord,
+    media: ReportMediaView[],
+    timeline: ReportTimelineView[],
+  ) => Promise<ReportDTO>
+}
+
+/** The outcome of a create attempt: either freshly created, or an idempotent replay of a prior snapshot. */
+export type CreateReportTxResult =
+  | { kind: "created"; snapshot: ReportDTO }
+  | { kind: "replayed"; snapshot: ReportDTO }
+
+/**
+ * Persistence seam for the reports domain. The production impl runs Drizzle/PostGIS inside a
+ * transaction; the offline tests pass an in-memory implementation. Keeping ALL reports/media-attach/
+ * timeline/idempotency access behind this interface is what makes the service testable with no DB.
+ */
+export interface ReportRepository {
+  /** Look up a stored idempotency snapshot for (key, scope); null when this is a first submit. */
+  findIdempotentSnapshot(key: string, scope: string): Promise<ReportDTO | null>
+  /**
+   * Run the create transaction (insert report, attach media, insert timeline, persist snapshot) and
+   * return the snapshot. Catches a UNIQUE(idempotency_key) race and returns the stored snapshot as a
+   * "replayed" result so the caller still sees the original report.
+   */
+  createReportTx(args: CreateReportTxArgs): Promise<CreateReportTxResult>
+  /** Load a report record by id (including soft-deleted, so the caller can 404 deleted ones). */
+  findReportById(id: string): Promise<ReportRecord | null>
+  /** Media attached to a report, ordered by created_at. */
+  findMediaForReport(reportId: string): Promise<ReportMediaView[]>
+  /** Timeline entries for a report, ordered by created_at ascending. */
+  findTimelineForReport(reportId: string): Promise<ReportTimelineView[]>
+  /** Whether `userId` follows `reportId`. */
+  isFollowing(userId: string, reportId: string): Promise<boolean>
+  /**
+   * Page the caller's own (non-deleted) reports, newest first. `cursor` is an opaque keyset cursor; the
+   * impl returns up to `limit` records plus the next cursor (null when exhausted).
+   */
+  listMyReports(
+    userId: string,
+    cursor: string | null,
+    limit: number,
+  ): Promise<{ records: ReportRecord[]; nextCursor: string | null }>
+  /** Fetch up to `cap` published+public+non-deleted candidate points inside the bbox, newest first. */
+  findMapCandidates(
+    bbox: BBox,
+    categories: ReportCategory[] | null,
+    cap: number,
+  ): Promise<ReportMapPoint[]>
+  /** Upsert a follow; returns true if the report exists (so the route can 404 a missing report). */
+  addFollow(userId: string, reportId: string): Promise<boolean>
+  /** Delete a follow; returns true if the report exists. */
+  removeFollow(userId: string, reportId: string): Promise<boolean>
+}
+
+/** Plain bbox (west/south/east/north) - re-declared structurally to avoid importing the zod type here. */
+export interface BBox {
+  west: number
+  south: number
+  east: number
+  north: number
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers (no DB, no IO)
+// ---------------------------------------------------------------------------
+
+/** Compute the H3 cell index for a point at the report resolution. Pure; wraps h3-js. */
+export function reportH3Cell(lat: number, lng: number): string {
+  return latLngToCell(lat, lng, REPORT_H3_RESOLUTION)
+}
+
+/**
+ * Grid cell size (in degrees) used to snap points into clusters at a given zoom. Halves with each zoom
+ * step so the world stays partitioned into ~constant screen-space tiles. Tuned so that below the
+ * threshold a wide view yields a handful of clusters rather than hundreds of pins.
+ */
+export function clusterCellSizeDeg(zoom: number): number {
+  // 360 degrees split into 2^(zoom+1) columns. At zoom 0 that is 180deg; at zoom 13 ~ 0.022deg.
+  const z = Math.max(0, Math.floor(zoom))
+  return 360 / Math.pow(2, z + 1)
+}
+
+/**
+ * PURE server-side clustering keyed by zoom.
+ *
+ *   - At/above CLUSTER_ZOOM_THRESHOLD: emit every point as an individual ReportPinDTO (no clusters).
+ *   - Below it: snap each point to a grid cell (size from clusterCellSizeDeg(zoom)) and emit one
+ *     ReportClusterDTO per non-empty cell, positioned at the centroid of the cell's points with the
+ *     point count. No pins are returned in this mode.
+ *
+ * Deterministic (cells iterated in insertion order) so tests can assert exact output. No DB access:
+ * callers fetch candidate points (capped) and pass them in. This backs the "60fps with 200 pins" goal
+ * by keeping the rendered marker count bounded when zoomed out.
+ */
+export function clusterByZoom(
+  points: ReportMapPoint[],
+  zoom: number,
+): { clusters: ReportClusterDTO[]; pins: ReportPinDTO[] } {
+  if (zoom >= CLUSTER_ZOOM_THRESHOLD) {
+    const pins: ReportPinDTO[] = points.map((p) => ({
+      id: p.id,
+      category: p.category,
+      lat: p.lat,
+      lng: p.lng,
+      status: p.status,
+    }))
+    return { clusters: [], pins }
+  }
+
+  const size = clusterCellSizeDeg(zoom)
+  // Accumulate per-cell sums for a centroid + count. Keyed by integer grid coordinates.
+  const cells = new Map<string, { latSum: number; lngSum: number; count: number }>()
+  for (const p of points) {
+    const gx = Math.floor(p.lng / size)
+    const gy = Math.floor(p.lat / size)
+    const key = `${gx}:${gy}`
+    const cell = cells.get(key)
+    if (cell) {
+      cell.latSum += p.lat
+      cell.lngSum += p.lng
+      cell.count += 1
+    } else {
+      cells.set(key, { latSum: p.lat, lngSum: p.lng, count: 1 })
+    }
+  }
+
+  const clusters: ReportClusterDTO[] = []
+  for (const cell of cells.values()) {
+    clusters.push({
+      lat: cell.latSum / cell.count,
+      lng: cell.lngSum / cell.count,
+      count: cell.count,
+    })
+  }
+  return { clusters, pins: [] }
+}
+
+/**
+ * PURE per-category pin count over the candidate set. Always counts ALL candidates (independent of the
+ * cluster/pin split) so the filter popover shows how many reports of each category are in view. Only
+ * categories with a non-zero count are present in the record.
+ */
+export function countByCategory(points: ReportMapPoint[]): Partial<Record<ReportCategory, number>> {
+  const counts: Partial<Record<ReportCategory, number>> = {}
+  for (const p of points) {
+    counts[p.category] = (counts[p.category] ?? 0) + 1
+  }
+  return counts
+}
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+export interface ReportServiceDeps {
+  repo: ReportRepository
+  /**
+   * Resolve a point to a jurisdiction geoid (nullable when outside coverage). Wraps the
+   * jurisdiction-service so the report service does not import the spatial SQL directly and so it can be
+   * faked offline. May also enqueue discovery (a side effect of the real impl); the report service does
+   * not depend on that.
+   */
+  resolveJurisdictionGeoid: (lat: number, lng: number) => Promise<string | null>
+  /**
+   * Presign (or otherwise render) the URL pair for a media object. Wraps the Storage seam; returns a
+   * url and an optional thumbUrl. Injected so the service stays free of the storage SDK and is fakeable.
+   */
+  presignMedia: (
+    r2Key: string,
+    thumbKey: string | null,
+  ) => Promise<{ url: string; thumbUrl?: string }>
+  /** Injectable id factory (defaults to crypto.randomUUID) for deterministic tests. */
+  newId?: () => string
+  /** Injectable clock (defaults to Date.now) so published_at/created_at are deterministic in tests. */
+  now?: () => Date
+}
+
+export interface ReportService {
+  createReport(input: CreateReportRequest, owner: { userId: string }): Promise<ReportDTO>
+  getReport(id: string, viewer: ReportOwner): Promise<ReportDTO>
+  listMyReports(userId: string, pagination: PaginationQuery): Promise<ListMyReportsResponse>
+  listReportsInBBox(
+    bbox: BBox,
+    categories: ReportCategory[] | null,
+    zoom: number,
+  ): Promise<ReportClusterResponse>
+  followReport(userId: string, reportId: string): Promise<{ following: boolean }>
+  unfollowReport(userId: string, reportId: string): Promise<{ following: boolean }>
+}
+
+export function makeReportService(deps: ReportServiceDeps): ReportService {
+  const newId = deps.newId ?? (() => randomUUID())
+  const now = deps.now ?? (() => new Date())
+
+  /** Render a stored media view into a presigned MediaDTO. */
+  async function toMediaDTO(view: ReportMediaView): Promise<MediaDTO> {
+    const { url, thumbUrl } = await deps.presignMedia(view.r2Key, view.thumbKey)
+    return {
+      id: view.id,
+      kind: view.kind,
+      codec: view.codec,
+      url,
+      ...(thumbUrl !== undefined ? { thumbUrl } : {}),
+      width: view.width,
+      height: view.height,
+      status: view.status,
+    }
+  }
+
+  /** Map a timeline view to its DTO. */
+  function toTimelineDTO(view: ReportTimelineView): ReportTimelineEntryDTO {
+    return {
+      status: view.status,
+      at: view.createdAt.toISOString(),
+      ...(view.note !== null ? { note: view.note } : {}),
+    }
+  }
+
+  /**
+   * Assemble a full ReportDTO from a record + its media/timeline, presigning media URLs. `mine`/
+   * `following` are computed by the caller (they depend on the viewer). `gov` is always false in Phase
+   * 1 (no gov-authored reports yet).
+   */
+  async function toReportDTO(
+    record: ReportRecord,
+    media: ReportMediaView[],
+    timeline: ReportTimelineView[],
+    flags: { mine: boolean; following: boolean },
+  ): Promise<ReportDTO> {
+    const mediaDTOs = await Promise.all(media.map(toMediaDTO))
+    return {
+      id: record.id,
+      category: record.category,
+      ...(record.title !== null ? { title: record.title } : {}),
+      ...(record.description !== null ? { description: record.description } : {}),
+      status: record.status,
+      visibility: record.visibility,
+      lat: record.lat,
+      lng: record.lng,
+      geomSource: record.geomSource,
+      ...(record.jurisdictionGeoid !== null
+        ? { jurisdictionGeoid: record.jurisdictionGeoid }
+        : {}),
+      createdAt: record.createdAt.toISOString(),
+      ...(record.publishedAt !== null ? { publishedAt: record.publishedAt.toISOString() } : {}),
+      mine: flags.mine,
+      gov: false,
+      following: flags.following,
+      media: mediaDTOs,
+      timeline: timeline.map(toTimelineDTO),
+    }
+  }
+
+  return {
+    async createReport(input: CreateReportRequest, owner: { userId: string }): Promise<ReportDTO> {
+      // (a) Honeypot: a non-empty value means a bot filled a hidden field. Reject silently-ish (a plain
+      // VALIDATION envelope, no hint that it was the honeypot) and DO NOT create anything.
+      if (input.honeypot !== undefined && input.honeypot.trim() !== "") {
+        throw AppError.validation({ honeypot: "invalid" })
+      }
+
+      // (b) Idempotency fast path: a stored snapshot for this key means a prior submit already created
+      // the report. Replay it verbatim (no new row, no media attach, no R2 object). This is the
+      // IDEMPOTENT_REPLAY semantics expressed as returning the original ReportDTO.
+      const existing = await deps.repo.findIdempotentSnapshot(input.idempotencyKey, REPORT_CREATE_SCOPE)
+      if (existing) return existing
+
+      // (c) First submit. Resolve jurisdiction (nullable) and compute the H3 cell up front (both are
+      // deterministic given the point); then run the single create transaction.
+      const jurisdictionGeoid = await deps.resolveJurisdictionGeoid(input.lat, input.lng)
+      const h3Cell = reportH3Cell(input.lat, input.lng)
+      const publishedAt = now()
+      const reportId = newId()
+
+      const result = await deps.repo.createReportTx({
+        reportId,
+        reporterUserId: owner.userId,
+        idempotencyKey: input.idempotencyKey,
+        lat: input.lat,
+        lng: input.lng,
+        geomSource: input.geomSource,
+        jurisdictionGeoid,
+        category: input.category,
+        description: input.description ?? null,
+        // Authed pins publish immediately (plan 11.7): skip the hold.
+        status: "published",
+        visibility: "public",
+        h3Cell,
+        publishedAt,
+        mediaUploadIds: input.mediaUploadIds,
+        timelineNote: null,
+        idempotency: {
+          key: input.idempotencyKey,
+          scope: REPORT_CREATE_SCOPE,
+          userOrAnon: owner.userId,
+        },
+        // The snapshot is built INSIDE the transaction from the freshly-persisted rows, so a duplicate
+        // submit replays exactly what the first caller received. mine=true (the creator owns it),
+        // following=false (creating does not auto-follow).
+        buildSnapshot: (record, media, timeline) =>
+          toReportDTO(record, media, timeline, { mine: true, following: false }),
+      })
+
+      return result.snapshot
+    },
+
+    async getReport(id: string, viewer: ReportOwner): Promise<ReportDTO> {
+      const record = await deps.repo.findReportById(id)
+      // Missing OR soft-deleted -> 404 (a deleted report is gone for everyone, including the owner).
+      if (!record || record.deletedAt !== null) {
+        throw AppError.notFound("Report not found")
+      }
+
+      const viewerId = viewer.userId ?? null
+      const mine = viewerId !== null && record.reporterUserId === viewerId
+
+      // Visibility: a report that is not (published AND public) is only visible to its owner. Everyone
+      // else gets a 404 (notFound, not forbidden) so a held/hidden report does not leak its existence.
+      const isPublic = record.status === "published" && record.visibility === "public"
+      if (!isPublic && !mine) {
+        throw AppError.notFound("Report not found")
+      }
+
+      const [media, timeline, following] = await Promise.all([
+        deps.repo.findMediaForReport(record.id),
+        deps.repo.findTimelineForReport(record.id),
+        viewerId !== null ? deps.repo.isFollowing(viewerId, record.id) : Promise.resolve(false),
+      ])
+
+      return toReportDTO(record, media, timeline, { mine, following })
+    },
+
+    async listMyReports(
+      userId: string,
+      pagination: PaginationQuery,
+    ): Promise<ListMyReportsResponse> {
+      const cursor = pagination.cursor ?? null
+      const { records, nextCursor } = await deps.repo.listMyReports(
+        userId,
+        cursor,
+        pagination.limit,
+      )
+
+      // Each item is a full ReportDTO. The caller owns all of them (mine=true). following is resolved
+      // per row so the "my reports" list shows the follow state honestly.
+      const items = await Promise.all(
+        records.map(async (record) => {
+          const [media, timeline, following] = await Promise.all([
+            deps.repo.findMediaForReport(record.id),
+            deps.repo.findTimelineForReport(record.id),
+            deps.repo.isFollowing(userId, record.id),
+          ])
+          return toReportDTO(record, media, timeline, { mine: true, following })
+        }),
+      )
+
+      return { items, nextCursor }
+    },
+
+    async listReportsInBBox(
+      bbox: BBox,
+      categories: ReportCategory[] | null,
+      zoom: number,
+    ): Promise<ReportClusterResponse> {
+      // Fetch a capped candidate set (published + public + not deleted, inside the bbox). Clustering and
+      // counting are pure functions over this set, so the heavy lifting is unit-testable without a DB.
+      const points = await deps.repo.findMapCandidates(bbox, categories, MAP_REPORTS_CANDIDATE_CAP)
+      const { clusters, pins } = clusterByZoom(points, zoom)
+      const counts = countByCategory(points)
+
+      return {
+        clusters,
+        pins,
+        // Only include counts when there is at least one candidate, so an empty view omits the field.
+        ...(Object.keys(counts).length > 0 ? { counts } : {}),
+      }
+    },
+
+    async followReport(userId: string, reportId: string): Promise<{ following: boolean }> {
+      const exists = await deps.repo.addFollow(userId, reportId)
+      if (!exists) throw AppError.notFound("Report not found")
+      return { following: true }
+    },
+
+    async unfollowReport(userId: string, reportId: string): Promise<{ following: boolean }> {
+      const exists = await deps.repo.removeFollow(userId, reportId)
+      if (!exists) throw AppError.notFound("Report not found")
+      return { following: false }
+    },
+  }
+}

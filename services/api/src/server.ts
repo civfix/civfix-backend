@@ -27,6 +27,7 @@ import {
   type AuthServices,
 } from "./auth/auth-services.js"
 import type { MediaRepository } from "./services/media-intake-service.js"
+import type { ReportServiceOverrides } from "./routes/reports.routes.js"
 import { registerRoutes } from "./routes/index.js"
 import { SERVICE_VERSION } from "./version.js"
 
@@ -54,6 +55,12 @@ export interface BuildServerOptions {
    * production: the routes reach the database lazily via container.getDb().
    */
   mediaRepo?: MediaRepository
+  /**
+   * Inject report-service overrides (tests): an in-memory ReportRepository plus optional fake
+   * jurisdiction/presign so the create/get/my-list/map/follow HTTP flow runs offline (no Docker). Left
+   * unset in production, where the report routes build the Drizzle-backed repo + real seams lazily.
+   */
+  reportOverrides?: ReportServiceOverrides
 }
 
 /**
@@ -98,6 +105,12 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   // Drizzle-backed repo from the lazily-created DB handle.
   if (opts.mediaRepo) {
     app.decorate("mediaRepo", opts.mediaRepo)
+  }
+
+  // Optional injected report-service overrides (tests). Left unset in production so the report routes
+  // build the Drizzle-backed repo + real jurisdiction/presign seams from the lazily-created DB handle.
+  if (opts.reportOverrides) {
+    app.decorate("reportOverrides", opts.reportOverrides)
   }
 
   // Auth context hook (resolves req.auth from the session, or anonymous).

@@ -15,6 +15,7 @@ import { registerHealthRoutes } from "./health.routes.js"
 import { registerAuthRoutes } from "./auth.routes.js"
 import { registerMapRoutes } from "./map.routes.js"
 import { registerMediaRoutes } from "./media.routes.js"
+import { registerReportRoutes } from "./reports.routes.js"
 
 export interface RegisterRoutesOptions {
   /** Whether an auth service bundle is available; gates mounting the auth routes. */
@@ -43,7 +44,11 @@ export async function registerRoutes(
   // job this enqueues on finalize.
   await registerMediaRoutes(app, container)
 
+  // Reports: create (idempotent) + get + my-list + clustered map + follow. POST/follow require auth +
+  // CSRF (anonymous submissions go through /anon/reports, a later step); GET /reports/:id and
+  // GET /map/reports are anon-ok. DB-backed handlers reach the database lazily via container.getDb().
+  await registerReportRoutes(app, container)
+
   // <-- later domain steps append their route registrations below, e.g.:
-  // await registerReportRoutes(app, container)
   // await registerCleanupRoutes(app, container)
 }

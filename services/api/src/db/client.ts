@@ -11,6 +11,14 @@ import postgres from "postgres"
 import * as schema from "./schema/index.js"
 
 export type Sql = ReturnType<typeof postgres>
+/**
+ * The transaction-scoped postgres-js tag handed to a `sql.begin(async (tx) => ...)` callback. Reads and
+ * writes inside a transaction use this tag; helpers that must work both standalone and inside a
+ * transaction accept `Queryable` (the union of the two).
+ */
+export type TransactionSql = postgres.TransactionSql
+/** Either the pooled tag or a transaction-scoped tag. Use for query helpers that run in both contexts. */
+export type Queryable = Sql | TransactionSql
 export type Db = ReturnType<typeof drizzle<typeof schema>>
 
 export interface DbHandle {

@@ -1,0 +1,407 @@
+import { describe, it, expect, afterEach } from "vitest"
+import type { FastifyInstance } from "fastify"
+import { FakeMailer } from "@civfix/shared/fakes"
+import { buildServer } from "../../src/server.js"
+import { loadEnv } from "../../src/env.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
+import { makeInMemoryStores } from "../../src/auth/stores.js"
+import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { StubJwksVerifier } from "../helpers/auth.js"
+import { InMemoryReportRepository } from "../helpers/reports.js"
+import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
+
+/**
+ * Route-level tests for the report plugin, run with NO database: an in-memory ReportRepository (+ fake
+ * jurisdiction/presign) is injected via buildServer(opts.reportOverrides), and a full in-memory auth
+ * bundle is injected so the [auth] routes get a real bearer session. Exercised through the real Fastify
+ * app via app.inject. The Drizzle/PostGIS transaction path is covered by the Docker-gated integration
+ * test instead.
+ */
+
+interface Harness {
+  app: FastifyInstance
+  repo: InMemoryReportRepository
+  mailer: FakeMailer
+  /** A signed-in user's bearer token + id (minted through the real OTP flow). */
+  token: string
+  userId: string
+}
+
+let current: Harness | undefined
+
+/** Build the app with injected auth + report seams and sign a user in (bearer/mobile transport). */
+async function makeHarness(
+  reportOpts: {
+    geoid?: string | null
+    seed?: (repo: InMemoryReportRepository) => void
+  } = {},
+): Promise<Harness> {
+  const env = loadEnv({ NODE_ENV: "test" })
+
+  // In-memory auth bundle (mirrors makeAuthHarness) so [auth] routes resolve a real session.
+  const stores = makeInMemoryStores()
+  const cache = new InMemoryCacheClient(() => Date.now())
+  const mailer = new FakeMailer()
+  const verifier = new StubJwksVerifier()
+  const authServices = buildAuthServices({
+    stores,
+    cache,
+    mailer,
+    oauthConfig: {},
+    verifier,
+    now: () => Date.now(),
+  })
+
+  const repo = new InMemoryReportRepository()
+  if (reportOpts.seed) reportOpts.seed(repo)
+
+  const reportOverrides: ReportServiceOverrides = {
+    repo,
+    resolveJurisdictionGeoid: () =>
+      Promise.resolve("geoid" in reportOpts ? (reportOpts.geoid ?? null) : "0644000"),
+    presignMedia: (r2Key, thumbKey) =>
+      Promise.resolve(
+        thumbKey === null
+          ? { url: `memory://${r2Key}` }
+          : { url: `memory://${r2Key}`, thumbUrl: `memory://${thumbKey}` },
+      ),
+  }
+
+  const app = await buildServer({ env, authServices, reportOverrides })
+
+  // Sign in through the real OTP flow (mobile transport -> bearer token in the body).
+  const email = "reporter@example.com"
+  await app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+  const code = mailer.lastOtpFor(email)!
+  const verify = await app.inject({
+    method: "POST",
+    url: "/auth/otp/verify",
+    headers: { "x-client": "mobile" },
+    payload: { email, code },
+  })
+  const body = verify.json()
+  const h: Harness = { app, repo, mailer, token: body.token, userId: body.user.id }
+  current = h
+  return h
+}
+
+/** Authorization header for the signed-in user. */
+function auth(token: string): Record<string, string> {
+  return { authorization: `Bearer ${token}` }
+}
+
+afterEach(async () => {
+  if (current) {
+    await current.app.close()
+    current = undefined
+  }
+})
+
+const KEY_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+describe("POST /reports", () => {
+  it("creates a report and returns a 201 ReportDTO (published, mine=true)", async () => {
+    const { app, repo, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "graffiti",
+        description: "tag on the wall",
+        lat: 34.1,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json()
+    expect(dto.status).toBe("published")
+    expect(dto.visibility).toBe("public")
+    expect(dto.category).toBe("graffiti")
+    expect(dto.geomSource).toBe("device")
+    expect(dto.jurisdictionGeoid).toBe("0644000")
+    expect(dto.mine).toBe(true)
+    expect(dto.gov).toBe(false)
+    expect(dto.timeline).toHaveLength(1)
+    expect(repo.reports.size).toBe(1)
+  })
+
+  it("a duplicate idempotency key returns the SAME report id (no second row)", async () => {
+    const { app, repo, token } = await makeHarness()
+    const payload = {
+      idempotencyKey: KEY_A,
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+      geomSource: "device",
+      mediaUploadIds: [],
+    }
+    const first = await app.inject({ method: "POST", url: "/reports", headers: auth(token), payload })
+    expect(first.statusCode).toBe(201)
+    const firstId = first.json().id
+
+    // Same key again -> same id, still one row.
+    const second = await app.inject({
+      method: "POST",
+      url: "/reports",
+      headers: auth(token),
+      payload: { ...payload, category: "hazard" },
+    })
+    expect(second.statusCode).toBe(201)
+    expect(second.json().id).toBe(firstId)
+    expect(repo.reports.size).toBe(1)
+  })
+
+  it("401s an anonymous POST /reports (anon uses /anon/reports)", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/reports",
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "trash",
+        lat: 34.1,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json().code).toBe("UNAUTHORIZED")
+  })
+
+  it("422s a malformed body (bad category)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "not-a-category",
+        lat: 34.1,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+
+  it("422s a honeypot-filled body and creates nothing", async () => {
+    const { app, repo, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "trash",
+        lat: 34.1,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+        honeypot: "gotcha",
+      },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(repo.reports.size).toBe(0)
+  })
+})
+
+describe("GET /reports/:id", () => {
+  it("returns a published report to an anonymous viewer", async () => {
+    let seededId = ""
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        seededId = repo.seedReport({
+          reporterUserId: "someone",
+          status: "published",
+          visibility: "public",
+        }).id
+      },
+    })
+    const res = await app.inject({ method: "GET", url: `/reports/${seededId}` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().id).toBe(seededId)
+    expect(res.json().mine).toBe(false)
+  })
+
+  it("404s a HELD report to a stranger (no existence leak)", async () => {
+    let heldId = ""
+    const { app, token } = await makeHarness({
+      seed: (repo) => {
+        heldId = repo.seedReport({
+          reporterUserId: "someone-else",
+          status: "held",
+          visibility: "public",
+          publishedAt: null,
+        }).id
+      },
+    })
+    // The signed-in caller is NOT the owner -> 404.
+    const res = await app.inject({ method: "GET", url: `/reports/${heldId}`, headers: auth(token) })
+    expect(res.statusCode).toBe(404)
+    expect(res.json().code).toBe("NOT_FOUND")
+  })
+
+  it("422s a non-UUID id", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({ method: "GET", url: "/reports/not-a-uuid" })
+    expect(res.statusCode).toBe(422)
+  })
+})
+
+describe("GET /reports (my reports)", () => {
+  it("lists the caller's own reports, newest first", async () => {
+    const { app, token, userId } = await makeHarness()
+    // Create two reports as the signed-in user.
+    for (const key of [
+      "11111111-1111-1111-1111-111111111111",
+      "22222222-2222-2222-2222-222222222222",
+    ]) {
+      await app.inject({
+        method: "POST",
+        url: "/reports",
+        headers: auth(token),
+        payload: {
+          idempotencyKey: key,
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+          geomSource: "device",
+          mediaUploadIds: [],
+        },
+      })
+    }
+    const res = await app.inject({ method: "GET", url: "/reports", headers: auth(token) })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.items).toHaveLength(2)
+    expect(body.items.every((r: { mine: boolean }) => r.mine === true)).toBe(true)
+    expect(body.nextCursor).toBeNull()
+    // Sanity: they are this user's.
+    void userId
+  })
+
+  it("401s an anonymous GET /reports", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({ method: "GET", url: "/reports" })
+    expect(res.statusCode).toBe(401)
+  })
+})
+
+describe("GET /map/reports", () => {
+  it("returns clusters at low zoom and pins at high zoom for points in the bbox", async () => {
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+      },
+    })
+
+    const lowZoom = await app.inject({
+      method: "GET",
+      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=3",
+    })
+    expect(lowZoom.statusCode).toBe(200)
+    const low = lowZoom.json()
+    expect(low.pins).toHaveLength(0)
+    expect(low.clusters.length).toBeGreaterThanOrEqual(1)
+    expect(low.counts).toEqual({ trash: 1, graffiti: 1 })
+
+    const highZoom = await app.inject({
+      method: "GET",
+      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=16",
+    })
+    const high = highZoom.json()
+    expect(high.clusters).toHaveLength(0)
+    expect(high.pins).toHaveLength(2)
+  })
+
+  it("filters by a categories CSV", async () => {
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+      },
+    })
+    const res = await app.inject({
+      method: "GET",
+      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=16&categories=trash",
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().pins).toHaveLength(1)
+    expect(res.json().pins[0].category).toBe("trash")
+  })
+
+  it("422s an unknown category in the CSV", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=16&categories=bogus",
+    })
+    expect(res.statusCode).toBe(422)
+  })
+
+  it("is anon-ok (no auth required)", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=3",
+    })
+    expect(res.statusCode).toBe(200)
+  })
+})
+
+describe("POST/DELETE /reports/:id/follow", () => {
+  it("follows then unfollows a report", async () => {
+    let reportId = ""
+    const { app, token } = await makeHarness({
+      seed: (repo) => {
+        reportId = repo.seedReport({ reporterUserId: "owner", status: "published" }).id
+      },
+    })
+
+    const follow = await app.inject({
+      method: "POST",
+      url: `/reports/${reportId}/follow`,
+      headers: auth(token),
+    })
+    expect(follow.statusCode).toBe(200)
+    expect(follow.json()).toEqual({ following: true })
+
+    const unfollow = await app.inject({
+      method: "DELETE",
+      url: `/reports/${reportId}/follow`,
+      headers: auth(token),
+    })
+    expect(unfollow.statusCode).toBe(200)
+    expect(unfollow.json()).toEqual({ following: false })
+  })
+
+  it("404s following a missing report", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/reports/00000000-0000-0000-0000-000000000000/follow",
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("401s an anonymous follow", async () => {
+    let reportId = ""
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        reportId = repo.seedReport({ reporterUserId: "owner" }).id
+      },
+    })
+    const res = await app.inject({ method: "POST", url: `/reports/${reportId}/follow` })
+    expect(res.statusCode).toBe(401)
+  })
+})
