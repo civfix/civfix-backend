@@ -263,19 +263,23 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       cursor: string | null,
       limit: number,
     ): Promise<{ records: ReportRecord[]; nextCursor: string | null }> {
-      // Keyset pagination on created_at DESC (the cursor is the ISO timestamp of the last item seen).
-      // Fetch limit+1 to know whether there is a next page; ORDER BY (created_at DESC, id DESC) keeps a
-      // total order even when timestamps tie. The cursor filters on created_at alone, so in the rare
-      // case where two of a single user's reports share the SAME created_at exactly at a page boundary
-      // one could be skipped; for Phase 1 (one user's own list, sub-millisecond collisions improbable)
-      // this is acceptable. A later step can widen the cursor to (created_at, id) if needed.
-      const cursorDate = cursor !== null ? new Date(cursor) : null
+      // Keyset pagination over the SAME total order as the ORDER BY: (created_at DESC, id DESC). The
+      // cursor encodes BOTH columns ("<iso>|<id>") and the filter uses a row-value comparison
+      // (created_at, id) < (cursorCreatedAt, cursorId), exactly like chat-repository.drizzle history.
+      // This is the fix for the page-boundary skip: filtering on created_at alone could drop a row when
+      // two of a user's reports share the same created_at across a boundary; the (created_at, id) tuple
+      // makes the keyset a strict, total successor of the last row seen.
+      const anchor = parseMyReportsCursor(cursor)
+      const cursorFilter =
+        anchor !== null
+          ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          : sql``
       const rows = await sql<ReportRowSelect[]>`
         SELECT ${reportColumns(sql)}
         FROM reports
         WHERE reporter_user_id = ${userId}
           AND deleted_at IS NULL
-          ${cursorDate !== null ? sql`AND created_at < ${cursorDate}` : sql``}
+          ${cursorFilter}
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `
@@ -283,7 +287,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       const page = hasMore ? rows.slice(0, limit) : rows
       const records = page.map(toRecord)
       const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? last.created_at.toISOString() : null
+      const nextCursor =
+        hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
       return { records, nextCursor }
     },
 
@@ -342,6 +347,27 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return true
     },
   }
+}
+
+/**
+ * Parse a listMyReports keyset cursor "<iso>|<id>" into its anchor, or null when absent/malformed. For
+ * resilience an OLD timestamp-only cursor (no "|id") is still accepted: it falls back to a max-uuid id
+ * so the row-value comparison degrades to the previous created_at-only behavior rather than 500ing.
+ */
+function parseMyReportsCursor(cursor: string | null): { createdAt: Date; id: string } | null {
+  if (cursor === null) return null
+  const idx = cursor.indexOf("|")
+  if (idx < 0) {
+    // Legacy/timestamp-only cursor: anchor at the latest possible id for that instant.
+    const at = new Date(cursor)
+    if (Number.isNaN(at.getTime())) return null
+    return { createdAt: at, id: "ffffffff-ffff-ffff-ffff-ffffffffffff" }
+  }
+  const iso = cursor.slice(0, idx)
+  const id = cursor.slice(idx + 1)
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime()) || id.length === 0) return null
+  return { createdAt: at, id }
 }
 
 /** True when a non-deleted report with this id exists. */

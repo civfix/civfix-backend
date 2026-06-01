@@ -224,15 +224,28 @@ export class InMemoryReportRepository implements ReportRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ records: ReportRecord[]; nextCursor: string | null }> {
-    const cursorMs = cursor !== null ? new Date(cursor).getTime() : null
+    // Mirror the Drizzle impl's keyset: total order (created_at DESC, id DESC) with a row-value cursor
+    // "<iso>|<id>" so a created_at tie at a page boundary never skips a row.
+    const anchor = parseCursor(cursor)
+    const isBefore = (r: ReportRecord): boolean => {
+      if (anchor === null) return true
+      const t = r.createdAt.getTime()
+      if (t !== anchor.at) return t < anchor.at
+      return r.id < anchor.id // tie on created_at -> compare id (DESC means strictly less)
+    }
     const all = [...this.reports.values()]
       .filter((r) => r.reporterUserId === userId && r.deletedAt === null)
-      .filter((r) => (cursorMs !== null ? r.createdAt.getTime() < cursorMs : true))
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .filter((r) => isBefore(r))
+      .sort((a, b) => {
+        const cmp = b.createdAt.getTime() - a.createdAt.getTime()
+        if (cmp !== 0) return cmp
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0 // id DESC tiebreak
+      })
     const hasMore = all.length > limit
     const page = hasMore ? all.slice(0, limit) : all
     const last = page[page.length - 1]
-    const nextCursor = hasMore && last ? last.createdAt.toISOString() : null
+    const nextCursor =
+      hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null
     return Promise.resolve({ records: page.map((r) => ({ ...r })), nextCursor })
   }
 
@@ -274,4 +287,18 @@ export class InMemoryReportRepository implements ReportRepository {
     const r = this.reports.get(reportId)
     return r !== undefined && r.deletedAt === null
   }
+}
+
+/** Parse a "<iso>|<id>" listMyReports cursor into { at(ms), id }; null when absent/malformed. */
+function parseCursor(cursor: string | null): { at: number; id: string } | null {
+  if (cursor === null) return null
+  const idx = cursor.indexOf("|")
+  if (idx < 0) {
+    const at = new Date(cursor).getTime()
+    return Number.isNaN(at) ? null : { at, id: "ffffffff-ffff-ffff-ffff-ffffffffffff" }
+  }
+  const at = new Date(cursor.slice(0, idx)).getTime()
+  const id = cursor.slice(idx + 1)
+  if (Number.isNaN(at) || id.length === 0) return null
+  return { at, id }
 }

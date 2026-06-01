@@ -129,7 +129,10 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   await registerRequestId(app)
   await registerCookie(app, env.SESSION_SIGNING_KEY)
   await registerCors(app, env.WEB_ORIGINS)
-  await registerRateLimit(app)
+  // Use the shared Redis store for rate-limiting when REDIS_URL is configured (multi-instance correct);
+  // otherwise the plugin's in-memory store (single instance / offline dev). getRedis() returns a
+  // lazily-connecting ioredis client, so this does not open a socket until the first limited request.
+  await registerRateLimit(app, env.REDIS_URL ? { redis: container.getRedis() } : {})
 
   // Auth services: injected (tests) or built from the container (production: Pg stores + Redis +
   // mailer). In all-fakes mode with no DATABASE_URL/REDIS_URL there is no infra to back them, so the
@@ -216,6 +219,17 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   })
 
   const app = await buildServer({ env })
+
+  // Start the jobs queue BEFORE listening so the hot enqueue paths (POST /media/:uploadId/finalize ->
+  // media.checks; POST /reports + /anon/reports -> jurisdiction.discovery) work the moment we serve
+  // traffic. Only the real PgBossJobs needs starting (it opens pg-boss + creates the API's queues), and
+  // only when a database is actually configured; FakeJobs has no start. We feature-detect start() and
+  // gate on DATABASE_URL so an all-fakes boot (no infra) stays connectionless.
+  const startableJobs = app.container.jobs as { start?: () => Promise<void> }
+  if (typeof startableJobs.start === "function" && env.DATABASE_URL) {
+    await startableJobs.start()
+    app.log.info("jobs: queue started")
+  }
 
   async function shutdown(signal: string): Promise<void> {
     if (shuttingDown) return

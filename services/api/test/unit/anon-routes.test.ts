@@ -13,6 +13,7 @@ import { makeAnonService } from "../../src/services/anon-service.js"
 import { makeClaimService } from "../../src/services/claim-service.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"
+import { clientQuery } from "../helpers/query.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 import type { ReportOwner } from "../../src/services/report-service.js"
 
@@ -234,6 +235,81 @@ describe("POST /anon/reports", () => {
   })
 })
 
+describe("web anon token round-trips via the civfix_anon cookie (P1-2)", () => {
+  /** Pull the civfix_anon cookie VALUE out of a response's Set-Cookie header(s). */
+  function readAnonCookie(res: { headers: Record<string, unknown> }): string | undefined {
+    const raw = res.headers["set-cookie"]
+    const lines = Array.isArray(raw) ? (raw as string[]) : raw ? [raw as string] : []
+    const line = lines.find((l) => l.startsWith("civfix_anon="))
+    if (!line) return undefined
+    // "civfix_anon=<value>; Path=/; ..." -> <value>
+    return decodeURIComponent(line.slice("civfix_anon=".length).split(";")[0]!)
+  }
+
+  it("a second submit carrying ONLY the civfix_anon cookie reuses the same token (report_count -> 2)", async () => {
+    const { app, anonStore } = await makeHarness()
+
+    // First submit: no token presented -> a fresh one is minted and handed back via the cookie + header.
+    const first = await app.inject({
+      method: "POST",
+      url: "/anon/reports",
+      payload: anonPayload({ idempotencyKey: "11111111-1111-1111-1111-111111111111" }),
+    })
+    expect(first.statusCode).toBe(202)
+    const cookie = readAnonCookie(first)
+    expect(cookie).toBeTruthy()
+    // Exactly one token row exists, at report_count 1.
+    expect(anonStore.tokens.size).toBe(1)
+    const tokenId = [...anonStore.tokens.keys()][0]!
+    expect(anonStore.tokens.get(tokenId)!.reportCount).toBe(1)
+
+    // Second submit: a DIFFERENT idempotency key, NO body anonToken, but the browser auto-resends the
+    // civfix_anon cookie. The route must fall back to that cookie so the SAME token is reused.
+    const second = await app.inject({
+      method: "POST",
+      url: "/anon/reports",
+      headers: { cookie: `civfix_anon=${encodeURIComponent(cookie!)}` },
+      payload: anonPayload({ idempotencyKey: "22222222-2222-2222-2222-222222222222" }),
+    })
+    expect(second.statusCode).toBe(202)
+
+    // The cap accrues on the SAME token: still one token row, now at report_count 2. (Before the fix the
+    // cookie was ignored, a second token was minted, and each token's count reset to 1.)
+    expect(anonStore.tokens.size).toBe(1)
+    expect(anonStore.tokens.get(tokenId)!.reportCount).toBe(2)
+    // No fresh token was issued on the second submit (an existing one was reused).
+    expect(second.headers["x-anon-token"]).toBeUndefined()
+  })
+
+  it("an explicit body anonToken still wins over the cookie", async () => {
+    const { app, anonStore } = await makeHarness()
+    // Seed a known token and present it in the BODY while also sending a different cookie value.
+    const first = await app.inject({
+      method: "POST",
+      url: "/anon/reports",
+      payload: anonPayload({ idempotencyKey: "33333333-3333-3333-3333-333333333333" }),
+    })
+    const bodyToken = first.headers["x-anon-token"] as string
+    expect(bodyToken).toBeTruthy()
+    const tokenId = [...anonStore.tokens.keys()][0]!
+
+    // Second submit echoes the token in the body AND carries a bogus cookie; the body must win, so the
+    // same token's count advances to 2 and the bogus cookie is not used to mint anything.
+    const second = await app.inject({
+      method: "POST",
+      url: "/anon/reports",
+      headers: { cookie: "civfix_anon=bogus.signature" },
+      payload: anonPayload({
+        idempotencyKey: "44444444-4444-4444-4444-444444444444",
+        anonToken: bodyToken,
+      }),
+    })
+    expect(second.statusCode).toBe(202)
+    expect(anonStore.tokens.size).toBe(1)
+    expect(anonStore.tokens.get(tokenId)!.reportCount).toBe(2)
+  })
+})
+
 describe("held anon report stays hidden", () => {
   it("is absent from GET /map/reports, 404s on GET /reports/:id, but its status is visible with the code", async () => {
     const h = await makeHarness()
@@ -245,10 +321,11 @@ describe("held anon report stays hidden", () => {
     const { reportId, claimCode } = submit.json()
     mirrorHeldIntoReportRepo(h, reportId)
 
-    // (a) Not on the public map (only published+public points are candidates).
+    // (a) Not on the public map (only published+public points are candidates). bbox is sent as the
+    // client encodes it (a single JSON param).
     const map = await h.app.inject({
       method: "GET",
-      url: "/map/reports?west=-119&south=33&east=-118&north=35&zoom=16",
+      url: `/map/reports${clientQuery({ bbox: { west: -119, south: 33, east: -118, north: 35 }, zoom: 16 })}`,
     })
     expect(map.statusCode).toBe(200)
     expect(map.json().pins).toHaveLength(0)

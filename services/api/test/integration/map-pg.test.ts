@@ -15,6 +15,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { clientQuery } from "../helpers/query.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -129,11 +130,12 @@ describe.skipIf(!pg)("map routes (integration)", () => {
         (${near1Id}, ${memberId}, 'member')
     `
 
-    // Query the LA city box (LA_CITY.bbox = [xmin(lng), ymin(lat), xmax(lng), ymax(lat)]).
+    // Query the LA city box (LA_CITY.bbox = [xmin(lng), ymin(lat), xmax(lng), ymax(lat)]). bbox is sent
+    // as the shared client encodes it (a single JSON param), via clientQuery.
     const [west, south, east, north] = LA_CITY.bbox
     const res = await app.inject({
       method: "GET",
-      url: `/map/cleanups?west=${west}&south=${south}&east=${east}&north=${north}&when=upcoming`,
+      url: `/map/cleanups${clientQuery({ bbox: { west, south, east, north }, when: "upcoming" })}`,
     })
     expect(res.statusCode).toBe(200)
     const body = res.json()

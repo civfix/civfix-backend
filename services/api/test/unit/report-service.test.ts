@@ -424,6 +424,40 @@ describe("listMyReports", () => {
     expect(page2.items[0]!.id).toBe(r1.id)
     expect(page2.nextCursor).toBeNull()
   })
+
+  it("does NOT skip a row when two reports share the SAME created_at across a page boundary (P1-3)", async () => {
+    const { repo, service } = makeHarness()
+    // Three of the caller's reports where TWO share the exact same created_at. With a created_at-only
+    // cursor, paging at the tie boundary (limit=1) would skip one of the tied rows. The row-value
+    // (created_at, id) cursor returns all three with no skip and no duplicate.
+    const tie = new Date("2026-05-31T12:00:00.000Z")
+    const later = new Date("2026-05-31T12:00:01.000Z")
+    repo.seedReport({ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", reporterUserId: "me", createdAt: tie })
+    repo.seedReport({ id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", reporterUserId: "me", createdAt: tie })
+    repo.seedReport({ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", reporterUserId: "me", createdAt: later })
+
+    // Walk every page at limit=1 and collect the ids.
+    const seen: string[] = []
+    let cursor: string | null | undefined = undefined
+    for (let guard = 0; guard < 10; guard++) {
+      const page: Awaited<ReturnType<typeof service.listMyReports>> = await service.listMyReports("me", {
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      })
+      for (const item of page.items) seen.push(item.id)
+      if (page.nextCursor === null) break
+      cursor = page.nextCursor
+    }
+
+    // All three came back exactly once (no skip at the created_at tie, no duplicate).
+    expect(seen).toHaveLength(3)
+    expect(new Set(seen).size).toBe(3)
+    expect(seen).toContain("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    expect(seen).toContain("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    expect(seen).toContain("cccccccc-cccc-cccc-cccc-cccccccccccc")
+    // Newest (distinct created_at) is first.
+    expect(seen[0]).toBe("cccccccc-cccc-cccc-cccc-cccccccccccc")
+  })
 })
 
 describe("listReportsInBBox", () => {

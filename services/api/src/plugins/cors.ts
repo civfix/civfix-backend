@@ -21,6 +21,11 @@ export async function registerCors(app: FastifyInstance, webOrigins: string[]): 
   await app.register(fastifyCors, {
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    // Expose the anon-token header so a CROSS-ORIGIN client could read a freshly-issued token from the
+    // response. Same-origin web does not need this (it round-trips via the readable civfix_anon cookie),
+    // but a cross-origin SPA reading X-Anon-Token must have it whitelisted here (browsers hide all but a
+    // few simple response headers from JS otherwise). Header name is case-insensitive on the wire.
+    exposedHeaders: ["X-Anon-Token"],
     origin(origin, cb) {
       if (!origin || allowAll || allowlist.has(origin)) {
         cb(null, true)

@@ -10,6 +10,7 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
+import { clientQuery } from "../helpers/query.js"
 import type { CleanupServiceOverrides } from "../../src/routes/cleanups.routes.js"
 
 /**
@@ -196,6 +197,70 @@ describe("GET /cleanups and /cleanups/:id", () => {
     const { app } = await makeHarness()
     const res = await app.inject({ method: "GET", url: "/cleanups/not-a-uuid" })
     expect(res.statusCode).toBe(422)
+  })
+})
+
+describe("GET /cleanups query encoding (the previously-422 client calls)", () => {
+  // The shared client serializes near/bbox as a single JSON-encoded object param. These tests build the
+  // query exactly as the client's buildQuery does (clientQuery) and prove the backend now parses it.
+  it("GET /cleanups?near=<json> succeeds (200) and orders by distance, nearest first", async () => {
+    const { app, token } = await makeHarness()
+    // Two cleanups at different distances from the query point.
+    await app.inject({
+      method: "POST",
+      url: "/cleanups",
+      headers: auth(token),
+      payload: { title: "Near", type: "site", lat: 34.01, lng: -118.49, scheduledAt: FUTURE },
+    })
+    await app.inject({
+      method: "POST",
+      url: "/cleanups",
+      headers: auth(token),
+      payload: { title: "Far", type: "site", lat: 35.5, lng: -118.49, scheduledAt: FUTURE },
+    })
+
+    // near as the client sends it: ?near=%7B%22lat%22%3A34%2C%22lng%22%3A-118.49%7D
+    const res = await app.inject({
+      method: "GET",
+      url: `/cleanups${clientQuery({ near: { lat: 34.0, lng: -118.49 }, when: "upcoming" })}`,
+    })
+    expect(res.statusCode).toBe(200)
+    const items = res.json().items as { title: string }[]
+    expect(items.map((i) => i.title)).toEqual(["Near", "Far"])
+  })
+
+  it("GET /cleanups?bbox=<json> succeeds (200) and filters to the box", async () => {
+    const { app, token } = await makeHarness()
+    await app.inject({
+      method: "POST",
+      url: "/cleanups",
+      headers: auth(token),
+      payload: { title: "Inside", type: "site", lat: 34.0, lng: -118.49, scheduledAt: FUTURE },
+    })
+    await app.inject({
+      method: "POST",
+      url: "/cleanups",
+      headers: auth(token),
+      payload: { title: "Outside", type: "site", lat: 40.0, lng: -74.0, scheduledAt: FUTURE },
+    })
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/cleanups${clientQuery({
+        bbox: { west: -119, south: 33, east: -118, north: 35 },
+        when: "upcoming",
+      })}`,
+    })
+    expect(res.statusCode).toBe(200)
+    const items = res.json().items as { title: string }[]
+    expect(items.map((i) => i.title)).toEqual(["Inside"])
+  })
+
+  it("422s a malformed (non-JSON) near param", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({ method: "GET", url: "/cleanups?near=not-json" })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
   })
 })
 

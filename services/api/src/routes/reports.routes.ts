@@ -44,6 +44,7 @@ import {
   type ReportServiceDeps,
 } from "../services/report-service.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
+import { BBoxQueryParam, CategoriesQueryParam } from "./query-encoding.js"
 
 /**
  * Optional injected report-service dependencies (tests). When present, the routes build the service
@@ -70,20 +71,18 @@ declare module "fastify" {
 const ReportIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 /**
- * Flat query schema for GET /map/reports. The bbox arrives as four coercible query params plus an
- * optional categories CSV and a zoom; we re-assemble + re-validate against the shared nested schema so
- * the wire contract stays the single source of truth (mirrors GET /map/cleanups).
+ * Query schema for GET /map/reports, decoding EXACTLY what the shared client sends (see
+ * ./query-encoding.ts): bbox as a single JSON-encoded object param, categories as repeated params (or a
+ * CSV for resilience), and a scalar zoom. We decode here, then re-validate the assembled shape against
+ * the shared nested ListReportsInBBoxRequest below so the wire contract stays the single source of
+ * truth. NOT .strict(): qs may surface extra/unknown params (and tolerating them is more robust for a
+ * public GET), but the re-validation against the shared .strict() schema still rejects a malformed body.
  */
-const MapReportsQuerySchema = z
-  .object({
-    west: z.coerce.number().min(-180).max(180),
-    south: z.coerce.number().min(-90).max(90),
-    east: z.coerce.number().min(-180).max(180),
-    north: z.coerce.number().min(-90).max(90),
-    categories: z.string().optional(),
-    zoom: z.coerce.number(),
-  })
-  .strict()
+const MapReportsQuerySchema = z.object({
+  bbox: BBoxQueryParam,
+  categories: CategoriesQueryParam.optional(),
+  zoom: z.coerce.number(),
+})
 
 export async function registerReportRoutes(
   app: FastifyInstance,
@@ -157,14 +156,13 @@ export async function registerReportRoutes(
   // GET /map/reports  (anon-ok)
   // -------------------------------------------------------------------------
   app.get("/map/reports", async (request, reply) => {
+    // Decode the client's wire form (JSON bbox + repeated categories + scalar zoom).
     const q = parse(MapReportsQuerySchema, request.query)
-    // Split the CSV into raw tokens; the shared schema below validates each against ReportCategory, so
-    // an unknown token becomes a 422 (not a silent drop or a 500). null categories means "no filter".
-    const categoryTokens = splitCsv(q.categories)
-    // Re-validate the assembled shape against the shared schema so the wire contract is the single source.
+    // Re-validate the assembled shape against the shared schema so the wire contract is the single
+    // source of truth. q.categories is already a validated ReportCategory[] (or undefined = no filter).
     const validated = parse(ListReportsInBBoxRequestSchema, {
-      bbox: { west: q.west, south: q.south, east: q.east, north: q.north },
-      ...(categoryTokens !== null ? { categories: categoryTokens } : {}),
+      bbox: q.bbox,
+      ...(q.categories !== undefined ? { categories: q.categories } : {}),
       zoom: q.zoom,
     })
     const payload: ReportClusterResponse = await service().listReportsInBBox(
@@ -204,16 +202,6 @@ function defaultPresign(container: Container): ReportServiceDeps["presignMedia"]
     const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
     return { url, thumbUrl }
   }
-}
-
-/** Split a CSV into trimmed non-empty tokens (null when absent/empty). Validation happens downstream. */
-function splitCsv(raw: string | undefined): string[] | null {
-  if (raw === undefined || raw.trim() === "") return null
-  const parts = raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  return parts.length > 0 ? parts : null
 }
 
 /** Derive the owner/viewer context from the resolved auth on the request. */

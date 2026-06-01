@@ -41,6 +41,7 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
 
 /**
  * Optional injected cleanup-service dependencies (tests). When present the routes build the service from
@@ -65,23 +66,19 @@ declare module "fastify" {
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 /**
- * Flat query schema for GET /cleanups. bbox arrives as four coercible params; near as nearLat/nearLng;
- * when/cursor/limit are scalar. We re-assemble + re-validate against the shared nested
- * ListCleanupsRequest so the wire contract stays the single source of truth.
+ * Query schema for GET /cleanups, decoding EXACTLY what the shared client sends (see
+ * ./query-encoding.ts): optional bbox + optional near each as a single JSON-encoded object param, and
+ * scalar when/cursor/limit. We decode here, then re-validate against the shared nested
+ * ListCleanupsRequest so the wire contract stays the single source of truth. (NOT .strict(); the
+ * re-validation against the shared .strict() schema is the gate.)
  */
-const ListCleanupsQuerySchema = z
-  .object({
-    west: z.coerce.number().min(-180).max(180).optional(),
-    south: z.coerce.number().min(-90).max(90).optional(),
-    east: z.coerce.number().min(-180).max(180).optional(),
-    north: z.coerce.number().min(-90).max(90).optional(),
-    nearLat: z.coerce.number().min(-90).max(90).optional(),
-    nearLng: z.coerce.number().min(-180).max(180).optional(),
-    when: z.enum(["upcoming", "past"]).optional(),
-    cursor: z.string().optional(),
-    limit: z.coerce.number().int().positive().max(50).optional(),
-  })
-  .strict()
+const ListCleanupsQuerySchema = z.object({
+  bbox: BBoxQueryParam.optional(),
+  near: LatLngQueryParam.optional(),
+  when: z.enum(["upcoming", "past"]).optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(50).optional(),
+})
 
 /** Query schema for GET /cleanups/:id/messages (history): optional before cursor + limit. */
 const HistoryQuerySchema = z
@@ -130,13 +127,11 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   app.get("/cleanups", async (request, reply) => {
     const q = parse(ListCleanupsQuerySchema, request.query)
-    // Re-assemble the nested shape and re-validate against the shared schema (single source of truth).
-    const hasBbox =
-      q.west !== undefined && q.south !== undefined && q.east !== undefined && q.north !== undefined
-    const hasNear = q.nearLat !== undefined && q.nearLng !== undefined
+    // Re-validate the decoded shape against the shared schema (single source of truth). bbox/near are
+    // already decoded BBox/LatLng objects (or undefined); when/cursor/limit are scalars.
     const validated = parse(ListCleanupsRequestSchema, {
-      ...(hasBbox ? { bbox: { west: q.west, south: q.south, east: q.east, north: q.north } } : {}),
-      ...(hasNear ? { near: { lat: q.nearLat, lng: q.nearLng } } : {}),
+      ...(q.bbox !== undefined ? { bbox: q.bbox } : {}),
+      ...(q.near !== undefined ? { near: q.near } : {}),
       ...(q.when !== undefined ? { when: q.when } : {}),
       ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
       ...(q.limit !== undefined ? { limit: q.limit } : {}),

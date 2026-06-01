@@ -8,6 +8,7 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
+import { clientQuery } from "../helpers/query.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 
 /**
@@ -296,7 +297,12 @@ describe("GET /reports (my reports)", () => {
 })
 
 describe("GET /map/reports", () => {
-  it("returns clusters at low zoom and pins at high zoom for points in the bbox", async () => {
+  // The shared client serializes bbox as a single JSON param and categories as repeated params. We build
+  // the query with clientQuery() (a byte-for-byte replica of the client's buildQuery) so these tests
+  // prove the previously-422 client calls now parse + succeed.
+  const BBOX = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
+
+  it("returns clusters at low zoom and pins at high zoom for points in the bbox (client-encoded bbox)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
         repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
@@ -306,7 +312,7 @@ describe("GET /map/reports", () => {
 
     const lowZoom = await app.inject({
       method: "GET",
-      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=3",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 3 })}`,
     })
     expect(lowZoom.statusCode).toBe(200)
     const low = lowZoom.json()
@@ -316,43 +322,88 @@ describe("GET /map/reports", () => {
 
     const highZoom = await app.inject({
       method: "GET",
-      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=16",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}`,
     })
     const high = highZoom.json()
     expect(high.clusters).toHaveLength(0)
     expect(high.pins).toHaveLength(2)
   })
 
-  it("filters by a categories CSV", async () => {
+  it("filters by categories sent as repeated params (the client's array encoding)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
         repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
         repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
       },
     })
+    // clientQuery({categories:["trash"]}) -> ?...&categories=trash (repeated-param form).
     const res = await app.inject({
       method: "GET",
-      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=16&categories=trash",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["trash"] })}`,
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().pins).toHaveLength(1)
     expect(res.json().pins[0].category).toBe("trash")
   })
 
-  it("422s an unknown category in the CSV", async () => {
+  it("accepts MULTIPLE repeated categories params", async () => {
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+        repo.seedReport({ status: "published", visibility: "public", category: "water", lat: 34.12, lng: -118.33 })
+      },
+    })
+    // ?...&categories=trash&categories=graffiti -> both kept, water excluded.
+    const res = await app.inject({
+      method: "GET",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["trash", "graffiti"] })}`,
+    })
+    expect(res.statusCode).toBe(200)
+    const cats = (res.json().pins as { category: string }[]).map((p) => p.category).sort()
+    expect(cats).toEqual(["graffiti", "trash"])
+  })
+
+  it("still accepts a categories CSV (resilience)", async () => {
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+      },
+    })
+    // A single CSV param (hand-built) is tolerated: categories=trash,graffiti.
+    const res = await app.inject({
+      method: "GET",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}&categories=trash,graffiti`,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().pins).toHaveLength(2)
+  })
+
+  it("422s an unknown category", async () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=16&categories=bogus",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["bogus"] })}`,
     })
     expect(res.statusCode).toBe(422)
+  })
+
+  it("422s a malformed (non-JSON) bbox param", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: "/map/reports?bbox=not-json&zoom=3",
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
   })
 
   it("is anon-ok (no auth required)", async () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: "/map/reports?west=-118.5&south=34.0&east=-118.2&north=34.2&zoom=3",
+      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 3 })}`,
     })
     expect(res.statusCode).toBe(200)
   })

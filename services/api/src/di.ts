@@ -19,8 +19,9 @@
  * handle is only created when something needs it (a real seam, or readiness checks). In all-fakes
  * dev/test mode they stay undefined, so the server boots with no DATABASE_URL/REDIS_URL.
  *
- * Seams whose REAL impls need db/redis (chat, push, jobs) force creation of the relevant handle
- * even though the scaffold bodies throw; this keeps wiring honest for when the bodies are filled in.
+ * Seams whose REAL impls need db/redis (chat, push) force creation of the relevant handle here; jobs
+ * (PgBossJobs) takes the connection string and opens pg-boss lazily in start() (called from the server
+ * before it listens). chat, push, and jobs are all fully implemented now (no scaffold throws remain).
  */
 
 import type {
@@ -156,11 +157,18 @@ export function buildContainer(env: Env): Container {
     env.NODE_ENV === "production" ? new HttpRoutingProvider() : new FakeRoutingProvider()
 
   // ----- abuse checks (NSFW gated by USE_FAKE_ABUSE_NSFW) -----
+  // The API only uses verifyTurnstile + gpsPlausible from this seam; pHash/isNearDuplicate/nsfwScore are
+  // worker-only. We still pass USE_REAL_NSFW for symmetry. With no model wired and the flag off (the
+  // default), nsfwScore is benign and nothing here throws. The worker wires the real perceptual hasher +
+  // near-duplicate lookup separately (see media-worker/src/seams.ts).
   const abuseChecks: AbuseChecks = env.USE_FAKE_ABUSE_NSFW
     ? new FakeAbuseChecks()
-    : new RealAbuseChecks(
-        env.CF_TURNSTILE_SECRET !== undefined ? { turnstileSecret: env.CF_TURNSTILE_SECRET } : {},
-      )
+    : new RealAbuseChecks({
+        ...(env.CF_TURNSTILE_SECRET !== undefined
+          ? { turnstileSecret: env.CF_TURNSTILE_SECRET }
+          : {}),
+        useRealNsfw: env.USE_REAL_NSFW,
+      })
 
   // ----- chat service (REAL needs db + redis) -----
   // REAL: persistence via the Drizzle chat repo (over the raw sql tag) + fan-out via Redis pub/sub. Both

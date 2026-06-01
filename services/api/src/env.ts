@@ -158,6 +158,14 @@ export interface Env {
   USE_FAKE_ABUSE_NSFW: boolean
   USE_FAKE_CHAT: boolean
   USE_FAKE_JOBS: boolean
+
+  /**
+   * Opt-in real NSFW scoring. Default false EVEN in production: with the flag off (or on but with no
+   * model wired) RealAbuseChecks.nsfwScore returns benign (0), so default-flag production publishes
+   * media instead of holding all of it. Flipping this to true is a flag-gated follow-up that also
+   * requires a real model behind the seam. The media-worker reads the same flag from its own env.
+   */
+  USE_REAL_NSFW: boolean
 }
 
 /** Optional-string schema that treats "" as undefined so blank env entries do not satisfy [BOOT]. */
@@ -192,6 +200,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const useFakeAbuseNsfw = parseBool(source.USE_FAKE_ABUSE_NSFW, !isProd)
   const useFakeChat = parseBool(source.USE_FAKE_CHAT, !isProd)
   const useFakeJobs = parseBool(source.USE_FAKE_JOBS, !isProd)
+  // Real NSFW is opt-in and defaults OFF in ALL environments (production publishes benign by default).
+  const useRealNsfw = parseBool(source.USE_REAL_NSFW, false)
 
   /**
    * Require a [BOOT] string. `gatedOff` true means a fake bypasses it (so it is only required when
@@ -334,6 +344,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     USE_FAKE_ABUSE_NSFW: useFakeAbuseNsfw,
     USE_FAKE_CHAT: useFakeChat,
     USE_FAKE_JOBS: useFakeJobs,
+    USE_REAL_NSFW: useRealNsfw,
   }
 
   return env

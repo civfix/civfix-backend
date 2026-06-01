@@ -35,24 +35,21 @@ import { ZodError, z, type ZodTypeAny } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { BBoxQueryParam } from "./query-encoding.js"
 
 /** Max cleanup pins returned for a single bbox query. Documented in MapCleanupsResponse handling. */
 export const MAP_CLEANUPS_LIMIT = 500
 
 /**
- * Flat query schema for GET /map/cleanups. The bbox arrives as four separate, coercible query params
- * (west/south/east/north) plus an optional `when`; we re-assemble it into the shared nested
- * ListCleanupsInBBoxRequest shape and re-validate so the contract stays the single source of truth.
+ * Query schema for GET /map/cleanups, decoding EXACTLY what the shared client sends: bbox as a single
+ * JSON-encoded object param (see ./query-encoding.ts) plus an optional scalar `when`. We decode here,
+ * then re-validate against the shared nested ListCleanupsInBBoxRequest so the contract stays the single
+ * source of truth. (NOT .strict(); the re-validation against the shared .strict() schema is the gate.)
  */
-const CleanupsQuerySchema = z
-  .object({
-    west: z.coerce.number().min(-180).max(180),
-    south: z.coerce.number().min(-90).max(90),
-    east: z.coerce.number().min(-180).max(180),
-    north: z.coerce.number().min(-90).max(90),
-    when: z.enum(["upcoming", "past"]).optional(),
-  })
-  .strict()
+const CleanupsQuerySchema = z.object({
+  bbox: BBoxQueryParam,
+  when: z.enum(["upcoming", "past"]).optional(),
+})
 
 export async function registerMapRoutes(app: FastifyInstance, container: Container): Promise<void> {
   // -------------------------------------------------------------------------
@@ -107,7 +104,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     const q = parse(CleanupsQuerySchema, request.query)
     // Re-validate via the shared schema so the wire contract is enforced from the single source.
     const { bbox, when } = parse(ListCleanupsInBBoxRequestSchema, {
-      bbox: { west: q.west, south: q.south, east: q.east, north: q.north },
+      bbox: q.bbox,
       ...(q.when !== undefined ? { when: q.when } : {}),
     })
 

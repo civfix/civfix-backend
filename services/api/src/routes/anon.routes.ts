@@ -34,7 +34,7 @@ import {
   type AnonReportStatusResponse,
 } from "@civfix/shared"
 import { ZodError, z, type ZodTypeAny } from "zod"
-import type { FastifyInstance, FastifyReply } from "fastify"
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { ANON_COOKIE } from "../auth/transport.js"
 import { ANON_TOKEN_TTL_SECONDS } from "../abuse/anon-token.js"
@@ -100,9 +100,19 @@ export async function registerAnonRoutes(
   // -------------------------------------------------------------------------
   app.post("/anon/reports", async (request, reply) => {
     const body = parse(AnonReportRequestSchema, request.body)
-    // The presented anon token travels in the body (body.anonToken); the context carries only the
-    // transport signals the abuse stack reads (IP + CF geo headers + UA).
-    const result = await service().submitAnonReport(body, {
+
+    // Resolve the presented anon token from the body (mobile echoes it as anonToken) OR, when the body
+    // does not carry one, from the readable civfix_anon cookie (web). The browser auto-resends that
+    // cookie with credentials:include, so the web round-trips WITHOUT any client change; previously only
+    // body.anonToken was read, so the cookie was ignored and a NEW token was minted every submit,
+    // resetting the per-token abuse cap. Body wins when both are present (an explicit echo is canonical).
+    const presentedAnonToken = body.anonToken ?? cookieAnonToken(request)
+    const effectiveBody =
+      presentedAnonToken !== undefined ? { ...body, anonToken: presentedAnonToken } : body
+
+    // The presented anon token travels in the body (effectiveBody.anonToken); the context carries only
+    // the transport signals the abuse stack reads (IP + CF geo headers + UA).
+    const result = await service().submitAnonReport(effectiveBody, {
       ip: request.ip || null,
       cfGeo: request.headers,
       ...(request.headers["user-agent"] !== undefined
@@ -139,6 +149,16 @@ export async function registerAnonRoutes(
 
 /** Query schema for the status route: the claim code echoed by the client. */
 const AnonReportStatusQuerySchema = z.object({ claimCode: z.string().min(1) }).strict()
+
+/**
+ * Read the anon token from the readable civfix_anon cookie (web transport). Returns undefined when the
+ * cookie is absent or empty. The browser auto-resends this cookie (set on a prior submit) with
+ * credentials:include, so the web client round-trips the SAME token without echoing it in the body.
+ */
+function cookieAnonToken(request: FastifyRequest): string | undefined {
+  const value = request.cookies[ANON_COOKIE]
+  return value && value.length > 0 ? value : undefined
+}
 
 /**
  * Set the readable anon-token cookie (web transport). NOT httpOnly (the SPA reads it to echo as

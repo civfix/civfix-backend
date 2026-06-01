@@ -10,9 +10,11 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
+import { RealAbuseChecks } from "@civfix/api/adapters/abuse-checks"
 import exifr from "exifr"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
+import { perceptualHash } from "../../src/sandbox/phash.js"
 import {
   processMedia,
   runMediaChecksJob,
@@ -316,6 +318,134 @@ describe("media.checks orchestration robustness", () => {
       r2Key: "c",
       kind: "image",
     })
+  })
+})
+
+describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", () => {
+  /**
+   * The production default has USE_FAKE_ABUSE_NSFW=false (real adapter) and no NSFW model wired. This
+   * proves the regression fix: a clean image runs through RealAbuseChecks and ends READY (publishable),
+   * instead of the old behavior where nsfwScore threw -> the pipeline failed CLOSED -> the asset was
+   * held forever. The real perceptual hasher (sandbox/phash.ts) is injected exactly as the worker wires
+   * it; no NSFW model + no dedupe lookup -> benign by default, never throws.
+   */
+  function realDeps(): { deps: MediaChecksDeps; storage: FakeStorage; repo: InMemoryWorkerRepo } {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const abuse = new RealAbuseChecks({
+      perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
+      // no useRealNsfw, no nsfwModel, no findPhashDuplicate -> benign defaults.
+      log: () => {},
+    })
+    const deps: MediaChecksDeps = {
+      repo,
+      storage,
+      abuseChecks: abuse,
+      limits,
+      download: makeDownloader(storage),
+      report: () => {},
+      log: () => {},
+    }
+    return { deps, storage, repo }
+  }
+
+  it("a clean JPEG -> READY (benign NSFW default), real phash set, thumbnail written", async () => {
+    const { deps, storage, repo } = realDeps()
+    const input = await fx.makeValidJpegWithGps()
+    const id = `media-real-1`
+    const uploadId = `up-real-1`
+    const r2Key = `uploads/2026/06/${id}`
+    repo.seed({ id, uploadId, kind: "image", r2Key })
+    await storage.put(r2Key, Buffer.from(input), { contentType: "image/jpeg" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+
+    // The whole point: real adapter + no model -> READY (publishes), NOT held.
+    expect(status).toBe("ready")
+    const row = repo.get(id)!
+    expect(row.status).toBe("ready")
+    // Real dHash from sandbox/phash.ts (16-char hex), not the adapter's byte-hash fallback.
+    expect((row.phash as string)).toMatch(/^[0-9a-f]{16}$/)
+    expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)
+    // No abuse flags raised on a clean asset.
+    expect(repo.flags).toHaveLength(0)
+  })
+
+  it("a clean PNG -> READY with no abuse flags", async () => {
+    const { deps, storage, repo } = realDeps()
+    const input = await fx.makeValidPng()
+    const id = `media-real-2`
+    const uploadId = `up-real-2`
+    const r2Key = `uploads/2026/06/${id}`
+    repo.seed({ id, uploadId, kind: "image", r2Key })
+    await storage.put(r2Key, Buffer.from(input), { contentType: "image/png" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+    expect(status).toBe("ready")
+    expect(repo.get(id)!.status).toBe("ready")
+    expect(repo.flags).toHaveLength(0)
+  })
+
+  it("a real NSFW POSITIVE (model returns high) -> HELD + abuse_flag nsfw", async () => {
+    // Wire a model that scores above the hold threshold to prove the held path still works end-to-end
+    // through the real adapter (the FLOW was always implemented; this confirms decoupling left it intact).
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const abuse = new RealAbuseChecks({
+      useRealNsfw: true,
+      nsfwModel: () => Promise.resolve(0.99),
+      perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
+      log: () => {},
+    })
+    const deps: MediaChecksDeps = {
+      repo,
+      storage,
+      abuseChecks: abuse,
+      limits,
+      download: makeDownloader(storage),
+      report: () => {},
+      log: () => {},
+    }
+    const input = await fx.makeValidPng()
+    const id = `media-real-nsfw`
+    const uploadId = `up-real-nsfw`
+    const r2Key = `uploads/2026/06/${id}`
+    repo.seed({ id, uploadId, kind: "image", r2Key })
+    await storage.put(r2Key, Buffer.from(input), { contentType: "image/png" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+    expect(status).toBe("held")
+    expect(repo.get(id)!.status).toBe("held")
+    expect(repo.flags).toContainEqual({ subjectId: id, reason: "nsfw", source: "worker" })
+  })
+
+  it("a near-duplicate (injected lookup reports dup) -> HELD + abuse_flag phash_dup", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const abuse = new RealAbuseChecks({
+      perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
+      findPhashDuplicate: () => Promise.resolve({ dup: true, ofReportId: "prior-report" }),
+      log: () => {},
+    })
+    const deps: MediaChecksDeps = {
+      repo,
+      storage,
+      abuseChecks: abuse,
+      limits,
+      download: makeDownloader(storage),
+      report: () => {},
+      log: () => {},
+    }
+    const input = await fx.makeValidPng()
+    const id = `media-real-dup`
+    const uploadId = `up-real-dup`
+    const r2Key = `uploads/2026/06/${id}`
+    repo.seed({ id, uploadId, kind: "image", r2Key })
+    await storage.put(r2Key, Buffer.from(input), { contentType: "image/png" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+    expect(status).toBe("held")
+    expect(repo.flags).toContainEqual({ subjectId: id, reason: "phash_dup", source: "worker" })
   })
 })
 

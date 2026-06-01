@@ -18,7 +18,8 @@
  */
 
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
-import type { AbuseChecks, Storage } from "@civfix/shared/interfaces"
+import type { AbuseChecks, NearDuplicateResult, Storage } from "@civfix/shared/interfaces"
+import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { makeDb, type DbHandle } from "@civfix/api/db"
 import { makeDrizzleMediaWorkerRepo, type MediaWorkerRepo } from "@civfix/api/media-repo"
 import { makeDrizzleAnonHoldReleaseRepo } from "@civfix/api/anon-hold-repo"
@@ -80,14 +81,8 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
         ...(source.R2_PUBLIC_BASE ? { publicBase: source.R2_PUBLIC_BASE } : {}),
       })
 
-  // ----- abuse checks (NSFW behind the seam) -----
-  const abuseChecks: AbuseChecks = fakeAbuse
-    ? new FakeAbuseChecks()
-    : // RealAbuseChecks lives in the API adapter; the worker only needs nsfwScore/isNearDuplicate here.
-      // It is constructed lazily by the API DI in the API process; for the worker we import the class.
-      await buildRealAbuseChecks(source)
-
   // ----- db + repo (only when results must be persisted to a real DB) -----
+  // Built BEFORE abuse checks so the near-duplicate lookup can query media_assets phash via the sql tag.
   let dbHandle: DbHandle | undefined
   let repo: MediaWorkerRepo | undefined
   let anonHoldRepo: AnonHoldReleaseRepo | undefined
@@ -99,6 +94,15 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   } else if (source.NODE_ENV === "production") {
     throw new Error("media-worker: DATABASE_URL is required in production to persist media results")
   }
+
+  // ----- abuse checks (NSFW + perceptual hash + near-dup behind the seam) -----
+  // RealAbuseChecks lives in the API adapter (Turnstile SDK is confined there). The worker injects the
+  // REAL perceptual hasher (sharp-based dHash from sandbox/phash.ts, kept out of the adapter per the
+  // seam rule) and a media_assets-backed near-duplicate lookup. NSFW stays benign-by-default unless
+  // USE_REAL_NSFW + a model is wired (no model vendored yet, so it logs once and scores benign).
+  const abuseChecks: AbuseChecks = fakeAbuse
+    ? new FakeAbuseChecks()
+    : await buildRealAbuseChecks(source, limits, dbHandle)
 
   const download = makeDownloader(storage)
 
@@ -126,13 +130,53 @@ function req(source: NodeJS.ProcessEnv, key: string): string {
 }
 
 /**
- * Construct the REAL AbuseChecks. Imported lazily so the @sentry/onnx/turnstile machinery referenced by
- * the adapter is never loaded in all-fake mode. The adapter is the API's RealAbuseChecks (the seam SDK
- * stays confined there); a real NSFW model is a flag-gated follow-up that swaps this body only.
+ * Construct the REAL AbuseChecks for the worker. The adapter (API's RealAbuseChecks) keeps the Turnstile
+ * SDK confined; the worker injects the pieces that must NOT live in the adapter:
+ *   - perceptualHash: the sharp-based dHash from sandbox/phash.ts (sharp stays in sandbox/ per the seam
+ *     rule), so pHash returns a REAL perceptual signature rather than the adapter's byte-hash fallback.
+ *   - findPhashDuplicate: an exact-match media_assets phash lookup (Phase 1: exact match is enough),
+ *     wired only when a DB is configured; otherwise the adapter's benign { dup: false } default applies.
+ *   - useRealNsfw: the USE_REAL_NSFW flag (default false). No NSFW model is vendored yet, so even when
+ *     true the adapter logs once and scores benign (never throws) - a flag-gated follow-up.
+ * Imported lazily so the adapter's vendor machinery is never loaded in all-fake mode.
  */
-async function buildRealAbuseChecks(source: NodeJS.ProcessEnv): Promise<AbuseChecks> {
+async function buildRealAbuseChecks(
+  source: NodeJS.ProcessEnv,
+  limits: WorkerLimits,
+  dbHandle: DbHandle | undefined,
+): Promise<AbuseChecks> {
   const { RealAbuseChecks } = await import("@civfix/api/adapters/abuse-checks")
-  return new RealAbuseChecks(
-    source.CF_TURNSTILE_SECRET ? { turnstileSecret: source.CF_TURNSTILE_SECRET } : {},
-  )
+  // The real perceptual hasher lives in the sandbox (sharp). Bind it to the worker limits.
+  const { perceptualHash } = await import("./sandbox/phash.js")
+
+  return new RealAbuseChecks({
+    ...(source.CF_TURNSTILE_SECRET ? { turnstileSecret: source.CF_TURNSTILE_SECRET } : {}),
+    useRealNsfw: parseBool(source.USE_REAL_NSFW, false),
+    perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
+    ...(dbHandle
+      ? { findPhashDuplicate: makePhashDuplicateLookup(dbHandle) }
+      : {}),
+  })
+}
+
+/**
+ * Build an exact-match near-duplicate lookup over media_assets.phash. Returns { dup: true, ofReportId }
+ * when another asset already carries the same phash and is attached to a report; otherwise { dup: false }.
+ * Exact match is sufficient for Phase 1 (the phash column is indexed); a future phase can widen this to
+ * a bounded Hamming distance. The query is read-only and fail-safe at the call site (the media pipeline
+ * treats a dedupe error as "not a duplicate").
+ */
+function makePhashDuplicateLookup(dbHandle: DbHandle): FindPhashDuplicateFn {
+  return async (hash: string): Promise<NearDuplicateResult> => {
+    const rows = await dbHandle.sql<{ report_id: string | null }[]>`
+      SELECT report_id
+      FROM media_assets
+      WHERE phash = ${hash} AND report_id IS NOT NULL
+      ORDER BY created_at ASC
+      LIMIT 1
+    `
+    const ofReportId = rows[0]?.report_id ?? null
+    if (ofReportId !== null) return { dup: true, ofReportId }
+    return { dup: false }
+  }
 }
