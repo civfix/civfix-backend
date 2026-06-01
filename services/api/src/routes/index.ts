@@ -16,6 +16,8 @@ import { registerAuthRoutes } from "./auth.routes.js"
 import { registerMapRoutes } from "./map.routes.js"
 import { registerMediaRoutes } from "./media.routes.js"
 import { registerReportRoutes } from "./reports.routes.js"
+import { registerAnonRoutes } from "./anon.routes.js"
+import { registerClaimRoutes } from "./claim.routes.js"
 
 export interface RegisterRoutesOptions {
   /** Whether an auth service bundle is available; gates mounting the auth routes. */
@@ -45,9 +47,19 @@ export async function registerRoutes(
   await registerMediaRoutes(app, container)
 
   // Reports: create (idempotent) + get + my-list + clustered map + follow. POST/follow require auth +
-  // CSRF (anonymous submissions go through /anon/reports, a later step); GET /reports/:id and
-  // GET /map/reports are anon-ok. DB-backed handlers reach the database lazily via container.getDb().
+  // CSRF (anonymous submissions go through /anon/reports); GET /reports/:id and GET /map/reports are
+  // anon-ok. DB-backed handlers reach the database lazily via container.getDb().
   await registerReportRoutes(app, container)
+
+  // Anon: the logged-out submit (POST /anon/reports, full abuse stack, held) + the claim-code-gated
+  // status (GET /anon/reports/:id/status). Both public, so they mount unconditionally; the DB +
+  // CounterStore + AbuseChecks seams are reached lazily inside the handlers.
+  await registerAnonRoutes(app, container)
+
+  // Claim: the post-submit nudge (GET /claim/nudge, anon-ok) + claiming a held anon report into the
+  // signed-in account (POST /claim/report, auth + CSRF). Mount unconditionally; the claim POST 401s
+  // when no session is presented.
+  await registerClaimRoutes(app, container)
 
   // <-- later domain steps append their route registrations below, e.g.:
   // await registerCleanupRoutes(app, container)

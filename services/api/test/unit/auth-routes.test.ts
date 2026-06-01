@@ -157,6 +157,78 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     expect(checkRes.json().authenticated).toBe(true)
   })
 
+  it("GET /auth/session returns csrfToken for the WEB cookie flow, echoing the CSRF cookie", async () => {
+    harness = await makeAuthHarness()
+    const email = "csrf.web@example.com"
+    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    const code = harness.mailer.lastOtpFor(email)!
+    const verify = await harness.app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: { "x-client": "web" },
+      payload: { email, code },
+    })
+    const cookies = parseCookies(verify.headers["set-cookie"])
+
+    // A cookie-authenticated session check surfaces the SAME csrfToken as the readable CSRF cookie, so
+    // the SPA can recover it after a reload/redirect.
+    const check = await harness.app.inject({
+      method: "GET",
+      url: "/auth/session",
+      headers: { cookie: `civfix_session=${cookies.civfix_session}; civfix_csrf=${cookies.civfix_csrf}` },
+    })
+    expect(check.json().authenticated).toBe(true)
+    expect(check.json().csrfToken).toBe(cookies.civfix_csrf)
+  })
+
+  it("GET /auth/session MINTS a csrfToken (+ cookie) for a cookie session missing the CSRF cookie", async () => {
+    harness = await makeAuthHarness()
+    const email = "csrf.recover@example.com"
+    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    const code = harness.mailer.lastOtpFor(email)!
+    const verify = await harness.app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: { "x-client": "web" },
+      payload: { email, code },
+    })
+    const cookies = parseCookies(verify.headers["set-cookie"])
+
+    // Present ONLY the session cookie (CSRF cookie lost, e.g. after an OAuth redirect): the check both
+    // returns a csrfToken and sets a matching readable CSRF cookie.
+    const check = await harness.app.inject({
+      method: "GET",
+      url: "/auth/session",
+      headers: { cookie: `civfix_session=${cookies.civfix_session}` },
+    })
+    const minted = check.json().csrfToken as string
+    expect(typeof minted).toBe("string")
+    const setCookies = parseCookies(check.headers["set-cookie"])
+    expect(setCookies.civfix_csrf).toBe(minted)
+  })
+
+  it("GET /auth/session OMITS csrfToken for the bearer (mobile) flow", async () => {
+    harness = await makeAuthHarness()
+    const email = "csrf.bearer@example.com"
+    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    const code = harness.mailer.lastOtpFor(email)!
+    const verify = await harness.app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: { "x-client": "mobile" },
+      payload: { email, code },
+    })
+    const token = verify.json().token as string
+
+    const check = await harness.app.inject({
+      method: "GET",
+      url: "/auth/session",
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(check.json().authenticated).toBe(true)
+    expect(check.json().csrfToken).toBeUndefined()
+  })
+
   it("logout requires CSRF on the cookie flow and revokes the session", async () => {
     harness = await makeAuthHarness()
     const email = "logout.user@example.com"

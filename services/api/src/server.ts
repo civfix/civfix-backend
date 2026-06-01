@@ -28,6 +28,8 @@ import {
 } from "./auth/auth-services.js"
 import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
+import type { AnonServiceOverride } from "./routes/anon.routes.js"
+import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import { registerRoutes } from "./routes/index.js"
 import { SERVICE_VERSION } from "./version.js"
 
@@ -61,6 +63,17 @@ export interface BuildServerOptions {
    * unset in production, where the report routes build the Drizzle-backed repo + real seams lazily.
    */
   reportOverrides?: ReportServiceOverrides
+  /**
+   * Inject an anon-service override (tests): a fully-wired AnonService over an in-memory repo + fakes,
+   * so the POST /anon/reports abuse + held-create flow and GET /anon/reports/:id/status run offline.
+   * Left unset in production, where the anon routes build the Drizzle-backed service lazily.
+   */
+  anonOverride?: AnonServiceOverride
+  /**
+   * Inject a claim-service override (tests): a ClaimService over an in-memory repo, so the
+   * GET /claim/nudge + POST /claim/report flow runs offline. Left unset in production.
+   */
+  claimOverride?: ClaimServiceOverride
 }
 
 /**
@@ -111,6 +124,15 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   // build the Drizzle-backed repo + real jurisdiction/presign seams from the lazily-created DB handle.
   if (opts.reportOverrides) {
     app.decorate("reportOverrides", opts.reportOverrides)
+  }
+
+  // Optional injected anon/claim service overrides (tests). Left unset in production so those routes
+  // build their Drizzle-backed services from the lazily-created DB handle + container seams.
+  if (opts.anonOverride) {
+    app.decorate("anonOverride", opts.anonOverride)
+  }
+  if (opts.claimOverride) {
+    app.decorate("claimOverride", opts.claimOverride)
   }
 
   // Auth context hook (resolves req.auth from the session, or anonymous).

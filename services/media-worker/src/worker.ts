@@ -20,6 +20,7 @@
 
 import type { JobHandler } from "@civfix/shared/interfaces"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
 import { buildJobs, type JobsHandle, type WorkerJobs } from "./jobs.js"
 import { buildSeams, type WorkerSeams } from "./seams.js"
 import { CHAT_PARTITION_CRON, ORPHAN_SWEEP_CRON, type WorkerLimits } from "./config.js"
@@ -30,6 +31,8 @@ import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
 /** Queue/cron names. media.checks MUST equal the name the API enqueues (MEDIA_CHECKS_JOB). */
 export const ORPHAN_SWEEP_JOB = "orphan.sweep"
 export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
+/** Hold-release queue: enqueued by the media.checks post-success hook for an anon report's media. */
+export const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
 
 export interface Worker {
   jobs: WorkerJobs
@@ -42,8 +45,15 @@ export interface Worker {
  * Build the media.checks JobHandler bound to the given seams. Requires a repo (a real DB): without one
  * there is nowhere to persist results, so the handler logs and no-ops (this only happens in all-fake
  * offline boot, where nothing enqueues real media anyway).
+ *
+ * POST-SUCCESS HOOK (hold-then-publish): after the job records its terminal media status, if that media
+ * belongs to an anonymous HELD report, enqueue an anon.hold.release job for the report so the release
+ * gate re-evaluates (and publishes when all media are ready + clean). We enqueue on EVERY terminal
+ * status (not just ready): a rejected/held media must also trigger a re-check so the report can settle
+ * (the gate keeps it held). Enqueue is best-effort + idempotent (singletonKey = reportId): a transient
+ * queue error is logged, never thrown, so the media.checks job still completes.
  */
-function makeMediaChecksHandler(seams: WorkerSeams): JobHandler {
+function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandler {
   return async (job) => {
     const payload = parsePayload(job.data)
     if (!payload) {
@@ -64,6 +74,67 @@ function makeMediaChecksHandler(seams: WorkerSeams): JobHandler {
       download: seams.download,
       report: seams.report,
     })
+
+    // Hold-release hook: find the media's report and, when it is an anon held report, enqueue a
+    // release re-check. Best-effort; failures here must not fail the (already-complete) media job.
+    try {
+      const asset =
+        (await seams.repo.findById(payload.mediaId)) ??
+        (await seams.repo.findByUploadId(payload.uploadId))
+      if (asset?.reportId) {
+        await jobs.enqueue(
+          ANON_HOLD_RELEASE_JOB,
+          { reportId: asset.reportId },
+          { singletonKey: asset.reportId },
+        )
+      }
+    } catch (err) {
+      console.warn("media.checks: failed to enqueue anon.hold.release (non-fatal)", {
+        uploadId: payload.uploadId,
+        err: String(err),
+      })
+    }
+  }
+}
+
+/** Coerce an unknown anon.hold.release payload into its reportId, or null when malformed. */
+function parseHoldReleasePayload(data: unknown): { reportId: string } | null {
+  if (typeof data !== "object" || data === null) return null
+  const d = data as Record<string, unknown>
+  return typeof d.reportId === "string" ? { reportId: d.reportId } : null
+}
+
+/**
+ * Build the anon.hold.release JobHandler: runs the release gate for the report id. Requires the
+ * anonHoldRepo (a real DB); no-ops in all-fake offline boot. The release function returns a structured
+ * outcome and does not throw for the normal stay-held reasons; an unexpected error is logged + reported
+ * but the job still completes.
+ */
+function makeAnonHoldReleaseHandler(seams: WorkerSeams): JobHandler {
+  return async (job) => {
+    const payload = parseHoldReleasePayload(job.data)
+    if (!payload) {
+      console.warn("anon.hold.release: malformed payload, skipping", { id: job.id })
+      return
+    }
+    if (!seams.anonHoldRepo) {
+      console.warn("anon.hold.release: no DB repo configured (offline mode); skipping", {
+        reportId: payload.reportId,
+      })
+      return
+    }
+    try {
+      await releaseAnonHoldIfReady(payload.reportId, {
+        repo: seams.anonHoldRepo,
+        abuseChecks: seams.abuseChecks,
+      })
+    } catch (err) {
+      seams.report(err, { job: ANON_HOLD_RELEASE_JOB, reportId: payload.reportId })
+      console.error("anon.hold.release: unexpected error", {
+        reportId: payload.reportId,
+        err: String(err),
+      })
+    }
   }
 }
 
@@ -107,11 +178,16 @@ async function registerHandlers(
   await jobs.createQueue(MEDIA_CHECKS_JOB)
   await jobs.createQueue(ORPHAN_SWEEP_JOB)
   await jobs.createQueue(CHAT_PARTITION_JOB)
+  await jobs.createQueue(ANON_HOLD_RELEASE_JOB)
 
-  // media.checks: concurrency-capped untrusted-byte pipeline.
-  await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(seams), {
+  // media.checks: concurrency-capped untrusted-byte pipeline. Its post-success hook enqueues
+  // anon.hold.release, so it needs the jobs handle.
+  await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams), {
     batchSize: limits.mediaChecksConcurrency,
   })
+
+  // anon.hold.release: re-evaluate + publish a held anon report once its media settle.
+  await jobs.work(ANON_HOLD_RELEASE_JOB, makeAnonHoldReleaseHandler(seams))
 
   // Maintenance crons.
   await jobs.work(ORPHAN_SWEEP_JOB, makeOrphanSweepHandler(seams))

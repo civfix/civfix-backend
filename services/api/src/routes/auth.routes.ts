@@ -39,9 +39,11 @@ import { requireAuth } from "../auth/context.js"
 import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
 import {
   clientKind,
+  bearerToken,
   presentedSessionToken,
   setSessionCookie,
   clearSessionCookie,
+  CSRF_COOKIE,
   type ClientKind,
 } from "../auth/transport.js"
 import type { UserRecord } from "../auth/stores.js"
@@ -135,7 +137,7 @@ export async function registerAuthRoutes(
   // -------------------------------------------------------------------------
 
   app.get("/auth/session", async (request, reply) => {
-    const payload = await buildSessionCheck(services, request)
+    const payload = await buildSessionCheck(services, request, reply)
     reply.status(200).send(payload)
   })
 
@@ -202,10 +204,22 @@ async function issueSessionForUser(
   reply.status(200).send(payload)
 }
 
-/** Build the /auth/session response from the resolved req.auth (Redis-backed) + the user row. */
+/**
+ * Build the /auth/session response from the resolved req.auth (Redis-backed) + the user row.
+ *
+ * CSRF recovery (web only): for an AUTHENTICATED WEB (cookie) client we include the current csrfToken
+ * in the response so the SPA can recover it after a page reload or an OAuth redirect, when only
+ * GET /auth/session runs and the sign-in response (which normally carries csrfToken) was never seen by
+ * JS. We read it from the readable CSRF cookie; if that cookie is missing/empty (e.g. it expired, or
+ * the OAuth callback set the session before a CSRF cookie existed), we MINT one and set the cookie here
+ * so the returned field and the cookie stay consistent (the double-submit pair the SPA will echo).
+ * MOBILE (bearer) requests are unaffected: they carry no cookie and use no CSRF, so csrfToken is
+ * omitted for them (and for unauthenticated callers).
+ */
 async function buildSessionCheck(
   services: AuthServices,
   request: FastifyRequest,
+  reply: FastifyReply,
 ): Promise<SessionCheckResponse> {
   // Best-effort: tell the web which sign-in buttons to show. Omitted when none are configured.
   const enabledProviders =
@@ -222,7 +236,40 @@ async function buildSessionCheck(
     // The session resolved but the user row is gone; treat as unauthenticated.
     return { authenticated: false, roles: [], ...enabledProviders }
   }
-  return { authenticated: true, user: toUserDTO(user), roles: auth.roles, ...enabledProviders }
+
+  // For the WEB cookie flow, surface the CSRF token so the SPA can recover it post-reload/redirect.
+  const csrf = webCsrfToken(request, reply, services)
+
+  return {
+    authenticated: true,
+    user: toUserDTO(user),
+    roles: auth.roles,
+    ...enabledProviders,
+    ...(csrf !== null ? { csrfToken: csrf } : {}),
+  }
+}
+
+/**
+ * Resolve the CSRF token to return for an authenticated session check, or null for the bearer (mobile)
+ * transport. WEB is detected as "no bearer token" (the same rule csrfProtect uses): we read the
+ * readable CSRF cookie and, when absent, mint + set one so the field and cookie are consistent.
+ */
+function webCsrfToken(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  services: AuthServices,
+): string | null {
+  // Bearer (mobile) transport: no cookie, no CSRF. Omit the field entirely.
+  if (bearerToken(request) !== null) return null
+
+  const existing = request.cookies[CSRF_COOKIE]
+  if (existing && existing.length > 0) return existing
+
+  // No CSRF cookie yet on a cookie-authenticated session: mint one and set it so the SPA's next
+  // state-changing request has a matching cookie+header pair. Cookie lifetime matches the session TTL.
+  const token = generateCsrfToken()
+  setCsrfCookie(reply, token, services.sessions.ttl)
+  return token
 }
 
 interface OAuthStash {

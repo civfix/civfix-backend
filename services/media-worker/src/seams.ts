@@ -21,6 +21,8 @@ import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { AbuseChecks, Storage } from "@civfix/shared/interfaces"
 import { makeDb, type DbHandle } from "@civfix/api/db"
 import { makeDrizzleMediaWorkerRepo, type MediaWorkerRepo } from "@civfix/api/media-repo"
+import { makeDrizzleAnonHoldReleaseRepo } from "@civfix/api/anon-hold-repo"
+import type { AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
 import { R2Storage } from "@civfix/api/adapters/storage"
 import { captureError, initErrorReporting, flushErrorReporting } from "@civfix/api/errors"
 import { loadLimits, parseBool, type WorkerLimits } from "./config.js"
@@ -35,6 +37,8 @@ export interface WorkerSeams {
   dbHandle: DbHandle | undefined
   /** Worker media repo (undefined in all-fake mode). */
   repo: MediaWorkerRepo | undefined
+  /** Anon hold-release gate repo (undefined in all-fake mode; needs a real DB). */
+  anonHoldRepo: AnonHoldReleaseRepo | undefined
   /** Report an error to GlitchTip (no-op when no DSN). */
   report: (err: unknown, context?: Record<string, unknown>) => void
   /** Tear down created resources (DB pool, flush telemetry). */
@@ -86,10 +90,12 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   // ----- db + repo (only when results must be persisted to a real DB) -----
   let dbHandle: DbHandle | undefined
   let repo: MediaWorkerRepo | undefined
+  let anonHoldRepo: AnonHoldReleaseRepo | undefined
   const databaseUrl = (source.DATABASE_URL ?? "").trim()
   if (databaseUrl) {
     dbHandle = makeDb(databaseUrl)
     repo = makeDrizzleMediaWorkerRepo(dbHandle.db)
+    anonHoldRepo = makeDrizzleAnonHoldReleaseRepo(dbHandle.sql)
   } else if (source.NODE_ENV === "production") {
     throw new Error("media-worker: DATABASE_URL is required in production to persist media results")
   }
@@ -103,6 +109,7 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
     download,
     dbHandle,
     repo,
+    anonHoldRepo,
     report: captureError,
     async close(): Promise<void> {
       if (dbHandle) await dbHandle.close()
