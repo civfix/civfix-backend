@@ -1,0 +1,24 @@
+-- =============================================================================
+-- 0004_cleanup_address.sql
+-- -----------------------------------------------------------------------------
+-- Adds a nullable human-readable address line to cleanups.
+--
+--   * address  text, nullable. The host's "name the spot" line shown in the web
+--              events list. lat/lng (+ dist for sorting) still drive the map; this
+--              is purely the display label echoed back as CleanupDTO.address.
+--
+-- WHY a stored column (vs deriving from the geocoder on read): the organizer types
+-- a free-form spot name ("North gate, by the oak") that a reverse-geocoder cannot
+-- reproduce, so it must be persisted verbatim. CreateCleanupRequest.address (now in
+-- @civfix/shared) is optional, so the column is nullable and old rows read back null.
+--
+-- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle
+-- definition in src/db/schema/cleanups.ts mirrors it for typed queries.
+--
+-- Ordering rules:
+--   * Requires 0001_core.sql (cleanups) already applied.
+--   * IF NOT EXISTS so a partial / repeat apply is safe; the migrate runner also
+--     records applied files in _civfix_migrations.
+-- =============================================================================
+
+ALTER TABLE cleanups ADD COLUMN IF NOT EXISTS address text;

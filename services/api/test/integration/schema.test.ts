@@ -139,6 +139,16 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
     expect(children.has("chat_messages_2026_07")).toBe(true)
   })
 
+  it("added the nullable cleanups.address column (0004)", async () => {
+    const rows = await h.sql<{ data_type: string; is_nullable: string }[]>`
+      SELECT data_type, is_nullable FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'cleanups' AND column_name = 'address'
+    `
+    expect(rows.length).toBe(1)
+    expect(rows[0]?.data_type).toBe("text")
+    expect(rows[0]?.is_nullable).toBe("YES")
+  })
+
   it("recorded every migration file in the bookkeeping table", async () => {
     const rows = await h.sql<{ name: string }[]>`SELECT name FROM _civfix_migrations ORDER BY name`
     const names = rows.map((r) => r.name)
@@ -147,6 +157,7 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
       "0001_core.sql",
       "0002_chat_partitioning.sql",
       "0003_users_email.sql",
+      "0004_cleanup_address.sql",
     ])
   })
 })

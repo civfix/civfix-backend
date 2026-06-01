@@ -18,6 +18,8 @@ import { registerMediaRoutes } from "./media.routes.js"
 import { registerReportRoutes } from "./reports.routes.js"
 import { registerAnonRoutes } from "./anon.routes.js"
 import { registerClaimRoutes } from "./claim.routes.js"
+import { registerCleanupRoutes } from "./cleanups.routes.js"
+import { registerChatRoutes } from "./chat.routes.js"
 
 export interface RegisterRoutesOptions {
   /** Whether an auth service bundle is available; gates mounting the auth routes. */
@@ -61,6 +63,13 @@ export async function registerRoutes(
   // when no session is presented.
   await registerClaimRoutes(app, container)
 
-  // <-- later domain steps append their route registrations below, e.g.:
-  // await registerCleanupRoutes(app, container)
+  // Cleanups: create/join/leave (auth + CSRF) + list/get (anon-ok) + member-gated chat history. Mount
+  // unconditionally; DB-backed handlers reach the database lazily via container.getDb(), and the
+  // auth-gated POST/messages routes 401/403 cleanly with no infra.
+  await registerCleanupRoutes(app, container)
+
+  // Chat: the GET /ws WebSocket upgrade (real-time cleanup chat, dual-auth handshake) + GET /threads
+  // (auth). Registers @fastify/websocket. Mount unconditionally; the gateway authenticates each
+  // handshake and GET /threads 401s with no session.
+  await registerChatRoutes(app, container)
 }

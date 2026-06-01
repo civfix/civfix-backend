@@ -14,6 +14,7 @@ import {
 } from "@civfix/shared/fakes"
 import { R2Storage } from "../../src/adapters/storage.r2.js"
 import { PgBossJobs } from "../../src/adapters/jobs.pgboss.js"
+import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 
 describe("DI container", () => {
   it("selects all fakes in dev/test mode and leaves db/redis uncreated", () => {
@@ -45,6 +46,20 @@ describe("DI container", () => {
     expect(c.storage).toBeInstanceOf(R2Storage)
     // Still a fake everywhere else.
     expect(c.mailer).toBeInstanceOf(FakeMailer)
+  })
+
+  it("real WsChatService (Drizzle repo + Redis pub/sub) is wired when USE_FAKE_CHAT is off", () => {
+    const env = loadEnv({
+      NODE_ENV: "test",
+      USE_FAKE_CHAT: "0",
+      DATABASE_URL: "postgres://u:p@localhost:5432/civfix",
+      REDIS_URL: "redis://localhost:6379",
+    })
+    const c = buildContainer(env)
+    // The real chat service builds over the lazily-created db + redis handles (no connection opens yet).
+    expect(c.chatService).toBeInstanceOf(WsChatService)
+    expect(c.dbHandle).toBeDefined()
+    expect(c.redis).toBeDefined()
   })
 
   it("real jobs adapter is wired when USE_FAKE_JOBS is off", () => {

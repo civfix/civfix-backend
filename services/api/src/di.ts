@@ -55,6 +55,8 @@ import { OciMailer } from "./adapters/mailer.oci.js"
 import { CfInboundMail } from "./adapters/inbound-mail.cf.js"
 import { TigerGeocoder } from "./adapters/geocoder.tiger.js"
 import { WsChatService } from "./adapters/chat-service.ws.js"
+import { RedisChatPubSub } from "./adapters/chat-pubsub.js"
+import { makeDrizzleChatRepository } from "./services/chat-repository.drizzle.js"
 import { MultiPushSender } from "./adapters/push-sender.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
@@ -161,9 +163,14 @@ export function buildContainer(env: Env): Container {
       )
 
   // ----- chat service (REAL needs db + redis) -----
+  // REAL: persistence via the Drizzle chat repo (over the raw sql tag) + fan-out via Redis pub/sub. Both
+  // are injected so the realtime/Redis SDKs stay confined to the adapter and tests can swap fakes.
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
-    : new WsChatService({ db: getDb().db, redis: getRedis() })
+    : new WsChatService({
+        repo: makeDrizzleChatRepository(getDb().sql),
+        pubsub: new RedisChatPubSub(getRedis()),
+      })
 
   // ----- push sender (REAL needs db) -----
   const pushSender: PushSender = env.USE_FAKE_PUSH
@@ -180,6 +187,12 @@ export function buildContainer(env: Env): Container {
     const maybePgBoss = jobs as { stop?: () => Promise<void> }
     if (typeof maybePgBoss.stop === "function") {
       await maybePgBoss.stop()
+    }
+    // Tear down the chat service's pub/sub subscriptions (the duplicated Redis subscriber connection)
+    // before closing the shared redis handle below.
+    const maybeChat = chatService as { close?: () => Promise<void> }
+    if (typeof maybeChat.close === "function") {
+      await maybeChat.close()
     }
     if (redis) {
       redis.disconnect()

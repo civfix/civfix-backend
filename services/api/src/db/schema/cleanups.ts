@@ -3,6 +3,7 @@
  *
  * `geom` is a Point(4326) for the meeting point / site; the GiST index is in 0001_core.sql. `bring`
  * is a text[] checklist of items to bring. `scheduled_at` and `status` drive the upcoming/past feeds.
+ * `address` is the nullable host "name the spot" display line (added in 0004_cleanup_address.sql).
  */
 
 import { sql } from "drizzle-orm"
@@ -29,6 +30,8 @@ export const cleanups = pgTable(
     scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
     status: text("status").$type<CleanupStatus>().notNull(),
     bring: text("bring").array(),
+    // Nullable host-typed display line; see 0004_cleanup_address.sql.
+    address: text("address"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   // NOTE: GiST(geom) is in 0001_core.sql.

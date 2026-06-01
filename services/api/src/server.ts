@@ -30,6 +30,8 @@ import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
 import type { AnonServiceOverride } from "./routes/anon.routes.js"
 import type { ClaimServiceOverride } from "./routes/claim.routes.js"
+import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
+import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
 import { registerRoutes } from "./routes/index.js"
 import { SERVICE_VERSION } from "./version.js"
 
@@ -74,6 +76,16 @@ export interface BuildServerOptions {
    * GET /claim/nudge + POST /claim/report flow runs offline. Left unset in production.
    */
   claimOverride?: ClaimServiceOverride
+  /**
+   * Inject cleanup-service overrides (tests): an in-memory CleanupRepository so the cleanups
+   * create/list/get/join/leave + member-gated history HTTP flow runs offline. Left unset in production.
+   */
+  cleanupOverrides?: CleanupServiceOverrides
+  /**
+   * Inject chat/threads overrides (tests): an isMember probe + in-memory ThreadsRepository (+ optional
+   * shared ChatReadState) so the WS gateway and GET /threads run offline. Left unset in production.
+   */
+  chatOverrides?: ChatGatewayOverrides
 }
 
 /**
@@ -133,6 +145,15 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   }
   if (opts.claimOverride) {
     app.decorate("claimOverride", opts.claimOverride)
+  }
+
+  // Optional injected cleanup/chat overrides (tests). Left unset in production so those routes build
+  // their Drizzle-backed repos from the lazily-created DB handle + the container's chat seam.
+  if (opts.cleanupOverrides) {
+    app.decorate("cleanupOverrides", opts.cleanupOverrides)
+  }
+  if (opts.chatOverrides) {
+    app.decorate("chatOverrides", opts.chatOverrides)
   }
 
   // Auth context hook (resolves req.auth from the session, or anonymous).
