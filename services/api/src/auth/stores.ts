@@ -1,0 +1,314 @@
+/**
+ * Persistence seams for the auth subsystem.
+ *
+ * Each store is a narrow interface over exactly the rows the auth flows touch (sessions, email_otps,
+ * users, oauth_identities). Two implementations exist:
+ *   - the Drizzle/Postgres impls in pg-stores.ts (durable source of truth, used in production), and
+ *   - the InMemory impls below (used by the offline unit + route tests).
+ *
+ * Splitting persistence behind these interfaces is what lets the session sliding-expiry logic, the
+ * Redis hit/miss path, and the full OTP sign-in route run GREEN with no database. The InMemory impls
+ * are intentionally faithful: uuid ids, citext-style case-insensitive email matching, ordering by
+ * createdAt, soft-delete awareness.
+ */
+
+import { randomUUID } from "node:crypto"
+import type { Role } from "@civfix/shared"
+
+// ---------------------------------------------------------------------------
+// Session store
+// ---------------------------------------------------------------------------
+
+/** A persisted session row. `id` is the SHA-256 hex of the raw token. `roles` is denormalized. */
+export interface SessionRecord {
+  id: string
+  userId: string
+  roles: Role[]
+  createdAt: Date
+  expiresAt: Date
+  lastSeenAt: Date
+  userAgent: string | null
+  ip: string | null
+}
+
+export interface SessionInsert {
+  id: string
+  userId: string
+  roles: Role[]
+  expiresAt: Date
+  lastSeenAt: Date
+  userAgent: string | null
+  ip: string | null
+}
+
+export interface SessionStore {
+  insert(row: SessionInsert): Promise<void>
+  findById(hash: string): Promise<SessionRecord | null>
+  updateExpiry(hash: string, expiresAt: Date, lastSeen: Date): Promise<void>
+  deleteById(hash: string): Promise<void>
+}
+
+/**
+ * In-memory SessionStore. Note that production `sessions` does not have a `roles` column; the Pg impl
+ * resolves roles from the user row. The in-memory impl stores them directly so the session-service
+ * unit tests do not also need a user store.
+ */
+export class InMemorySessionStore implements SessionStore {
+  private readonly rows = new Map<string, SessionRecord>()
+
+  insert(row: SessionInsert): Promise<void> {
+    this.rows.set(row.id, {
+      ...row,
+      roles: [...row.roles],
+      createdAt: new Date(row.lastSeenAt),
+    })
+    return Promise.resolve()
+  }
+
+  findById(hash: string): Promise<SessionRecord | null> {
+    const row = this.rows.get(hash)
+    return Promise.resolve(row ? { ...row, roles: [...row.roles] } : null)
+  }
+
+  updateExpiry(hash: string, expiresAt: Date, lastSeen: Date): Promise<void> {
+    const row = this.rows.get(hash)
+    if (row) {
+      row.expiresAt = expiresAt
+      row.lastSeenAt = lastSeen
+    }
+    return Promise.resolve()
+  }
+
+  deleteById(hash: string): Promise<void> {
+    this.rows.delete(hash)
+    return Promise.resolve()
+  }
+
+  /** Test helper. */
+  count(): number {
+    return this.rows.size
+  }
+}
+
+// ---------------------------------------------------------------------------
+// User store
+// ---------------------------------------------------------------------------
+
+/** Subset of a users row the auth flows read/write. */
+export interface UserRecord {
+  id: string
+  role: Role
+  displayName: string
+  handle: string | null
+  createdAt: Date
+  deletedAt: Date | null
+}
+
+export interface CreateUserInput {
+  displayName: string
+  role?: Role
+}
+
+export interface UserStore {
+  findById(id: string): Promise<UserRecord | null>
+  /** Look up a user by the email recorded against their account, case-insensitively. */
+  findByEmail(email: string): Promise<UserRecord | null>
+  /**
+   * Create a user. When `email` is non-null it is associated with the account so a later sign-in
+   * with the same address (OTP or OAuth) converges on this user.
+   */
+  create(email: string | null, input: CreateUserInput): Promise<UserRecord>
+}
+
+/**
+ * In-memory UserStore. Email is matched case-insensitively to mirror the CITEXT column. An internal
+ * email index models the account/email association without needing a separate table for tests.
+ */
+export class InMemoryUserStore implements UserStore {
+  private readonly byId = new Map<string, UserRecord>()
+  private readonly idByEmail = new Map<string, string>()
+
+  findById(id: string): Promise<UserRecord | null> {
+    const row = this.byId.get(id)
+    return Promise.resolve(row ? { ...row } : null)
+  }
+
+  findByEmail(email: string): Promise<UserRecord | null> {
+    const id = this.idByEmail.get(email.toLowerCase())
+    if (!id) return Promise.resolve(null)
+    const row = this.byId.get(id)
+    return Promise.resolve(row ? { ...row } : null)
+  }
+
+  create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
+    const row: UserRecord = {
+      id: randomUUID(),
+      role: input.role ?? "citizen",
+      displayName: input.displayName,
+      handle: null,
+      createdAt: new Date(),
+      deletedAt: null,
+    }
+    this.byId.set(row.id, row)
+    if (email !== null) this.idByEmail.set(email.toLowerCase(), row.id)
+    return Promise.resolve({ ...row })
+  }
+
+  /** Test helper: seed a user directly (e.g. to test an existing-account sign-in). */
+  seed(email: string | null, row: UserRecord): void {
+    this.byId.set(row.id, { ...row })
+    if (email !== null) this.idByEmail.set(email.toLowerCase(), row.id)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OAuth identity store
+// ---------------------------------------------------------------------------
+
+export interface OAuthIdentityRecord {
+  id: string
+  userId: string
+  provider: string
+  providerUserId: string
+}
+
+export interface OAuthIdentityStore {
+  findByProvider(provider: string, providerUserId: string): Promise<OAuthIdentityRecord | null>
+  /** Attach a provider identity to an existing user. Globally unique on (provider, providerUserId). */
+  linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void>
+}
+
+/** In-memory OAuthIdentityStore. Holds only identity rows; users live in the UserStore. */
+export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
+  private readonly identities = new Map<string, OAuthIdentityRecord>()
+
+  private key(provider: string, providerUserId: string): string {
+    return `${provider}:${providerUserId}`
+  }
+
+  findByProvider(provider: string, providerUserId: string): Promise<OAuthIdentityRecord | null> {
+    const row = this.identities.get(this.key(provider, providerUserId))
+    return Promise.resolve(row ? { ...row } : null)
+  }
+
+  linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void> {
+    const k = this.key(provider, providerUserId)
+    this.identities.set(k, { id: randomUUID(), userId, provider, providerUserId })
+    return Promise.resolve()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OTP store
+// ---------------------------------------------------------------------------
+
+export interface OtpRecord {
+  id: string
+  email: string
+  codeHash: string
+  expiresAt: Date
+  attempts: number
+  consumedAt: Date | null
+  createdAt: Date
+}
+
+export interface OtpInsert {
+  email: string
+  codeHash: string
+  expiresAt: Date
+}
+
+export interface OtpStore {
+  /** Mark every unconsumed code for an email as consumed (resend invalidates prior codes). */
+  invalidateActiveForEmail(email: string): Promise<void>
+  insert(row: OtpInsert): Promise<OtpRecord>
+  /** Most recent unconsumed, non-expired code for an email, or null. */
+  findLatestActive(email: string, now: Date): Promise<OtpRecord | null>
+  incrementAttempts(id: string): Promise<number>
+  markConsumed(id: string, at: Date): Promise<void>
+}
+
+/** In-memory OtpStore. Email matched case-insensitively; latest = max createdAt. */
+export class InMemoryOtpStore implements OtpStore {
+  private readonly rows: OtpRecord[] = []
+
+  invalidateActiveForEmail(email: string): Promise<void> {
+    const now = new Date()
+    for (const row of this.rows) {
+      if (row.email.toLowerCase() === email.toLowerCase() && row.consumedAt === null) {
+        row.consumedAt = now
+      }
+    }
+    return Promise.resolve()
+  }
+
+  insert(row: OtpInsert): Promise<OtpRecord> {
+    const record: OtpRecord = {
+      id: randomUUID(),
+      email: row.email,
+      codeHash: row.codeHash,
+      expiresAt: row.expiresAt,
+      attempts: 0,
+      consumedAt: null,
+      createdAt: new Date(),
+    }
+    this.rows.push(record)
+    return Promise.resolve({ ...record })
+  }
+
+  findLatestActive(email: string, now: Date): Promise<OtpRecord | null> {
+    let best: OtpRecord | null = null
+    for (const row of this.rows) {
+      if (row.email.toLowerCase() !== email.toLowerCase()) continue
+      if (row.consumedAt !== null) continue
+      if (row.expiresAt.getTime() <= now.getTime()) continue
+      if (!best || row.createdAt.getTime() > best.createdAt.getTime()) best = row
+    }
+    return Promise.resolve(best ? { ...best } : null)
+  }
+
+  incrementAttempts(id: string): Promise<number> {
+    const row = this.rows.find((r) => r.id === id)
+    if (!row) return Promise.resolve(0)
+    row.attempts += 1
+    return Promise.resolve(row.attempts)
+  }
+
+  markConsumed(id: string, at: Date): Promise<void> {
+    const row = this.rows.find((r) => r.id === id)
+    if (row) row.consumedAt = at
+    return Promise.resolve()
+  }
+
+  /** Test helper. */
+  all(): readonly OtpRecord[] {
+    return this.rows
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bundle
+// ---------------------------------------------------------------------------
+
+/** All auth persistence seams grouped, for convenient construction/injection. */
+export interface AuthStores {
+  sessions: SessionStore
+  users: UserStore
+  oauth: OAuthIdentityStore
+  otps: OtpStore
+}
+
+/** Build a fully-wired set of in-memory stores. */
+export function makeInMemoryStores(): AuthStores & {
+  users: InMemoryUserStore
+  sessions: InMemorySessionStore
+  oauth: InMemoryOAuthIdentityStore
+  otps: InMemoryOtpStore
+} {
+  return {
+    users: new InMemoryUserStore(),
+    sessions: new InMemorySessionStore(),
+    oauth: new InMemoryOAuthIdentityStore(),
+    otps: new InMemoryOtpStore(),
+  }
+}

@@ -22,6 +22,10 @@ import { registerHelmet } from "./plugins/helmet.js"
 import { registerCookie } from "./plugins/cookie.js"
 import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerAuthContext } from "./auth/context.js"
+import {
+  buildAuthServicesFromContainer,
+  type AuthServices,
+} from "./auth/auth-services.js"
 import { registerRoutes } from "./routes/index.js"
 import { SERVICE_VERSION } from "./version.js"
 
@@ -37,6 +41,12 @@ export interface BuildServerOptions {
   env?: Env
   /** Override/inject a container (tests). Defaults to one built from env. */
   container?: Container
+  /**
+   * Inject the auth service bundle (tests). When omitted it is built from the container (production:
+   * Postgres stores + Redis cache + the selected mailer). Injecting in-memory stores + cache here is
+   * what lets the full auth flow be exercised offline via app.inject.
+   */
+  authServices?: AuthServices
 }
 
 /**
@@ -68,13 +78,37 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   await registerCors(app, env.WEB_ORIGINS)
   await registerRateLimit(app)
 
-  // Auth decorator/hook (placeholder anonymous context for now).
+  // Auth services: injected (tests) or built from the container (production: Pg stores + Redis +
+  // mailer). In all-fakes mode with no DATABASE_URL/REDIS_URL there is no infra to back them, so the
+  // bundle is left off; the context hook then resolves every request as anonymous and the auth
+  // routes are not mounted. This keeps `buildServer` bootable with no infra (health/unit tests).
+  const authServices = resolveAuthServices(opts, env, container)
+  if (authServices) {
+    app.decorate("authServices", authServices)
+  }
+
+  // Auth context hook (resolves req.auth from the session, or anonymous).
   await registerAuthContext(app)
 
-  // Domain routes (health now; later steps append in routes/index.ts).
-  await registerRoutes(app, container)
+  // Domain routes (health always; auth when an auth bundle is present).
+  await registerRoutes(app, container, { authMounted: authServices !== undefined })
 
   return app
+}
+
+/**
+ * Decide which auth bundle to use. Prefer an injected bundle; otherwise build from the container only
+ * when both DATABASE_URL and REDIS_URL are present (real infra). Returns undefined in the no-infra
+ * all-fakes case so the server still boots for health/unit tests.
+ */
+function resolveAuthServices(
+  opts: BuildServerOptions,
+  env: Env,
+  container: Container,
+): AuthServices | undefined {
+  if (opts.authServices) return opts.authServices
+  if (env.DATABASE_URL && env.REDIS_URL) return buildAuthServicesFromContainer(container)
+  return undefined
 }
 
 let shuttingDown = false
