@@ -21,7 +21,6 @@ services:
       - --storage.tsdb.retention.time=30d
       - --storage.tsdb.retention.size=15GB
       - --web.listen-address=0.0.0.0:9090
-      - --web.enable-lifecycle=false
     volumes:
       - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -65,8 +64,10 @@ services:
       - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - alloy-data:/var/lib/alloy/data
     mem_limit: 256m
+    # The grafana/alloy image runs as root and needs the default Docker cap set (incl. DAC_OVERRIDE)
+    # to manage its WAL/positions dir; we don't drop caps here. Still contained: no host ports, logs are
+    # read via the read-only socket-proxy (never the raw docker.sock), and no-new-privileges is enforced.
     security_opt: ["no-new-privileges:true"]
-    cap_drop: ["ALL"]
     depends_on:
       - loki
       - socket-proxy
@@ -78,11 +79,11 @@ services:
     restart: unless-stopped
     environment:
       CONTAINERS: "1"   # GET /containers and /containers/{id}/logs (what Alloy needs)
+      NETWORKS: "1"     # GET /networks — Alloy's discovery.docker computes network labels (read-only)
       VERSION: "1"      # API version negotiation
       PING: "1"
       POST: "0"         # deny all mutating calls
       IMAGES: "0"
-      NETWORKS: "0"
       VOLUMES: "0"
       INFO: "0"
       EXEC: "0"
@@ -193,6 +194,8 @@ services:
       GF_SECURITY_DISABLE_GRAVATAR: "true"
       GF_SECURITY_X_CONTENT_TYPE_OPTIONS: "true"
       GF_SECURITY_X_XSS_PROTECTION: "true"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_USERS_VIEWERS_CAN_EDIT: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"

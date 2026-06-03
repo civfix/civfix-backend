@@ -68,12 +68,24 @@ groups:
           description: "{{ $value | humanizePercentage }} of max_connections in use for 5m."
 
       - alert: RedisMemoryHigh
-        expr: redis_memory_used_bytes > 8e8
+        # Redis runs with maxmemory 768MB + allkeys-lru, so used_memory caps there; alert on the ratio
+        # (guard against maxmemory being unset → no false-positive from divide-by-zero).
+        expr: redis_memory_max_bytes > 0 and (redis_memory_used_bytes / redis_memory_max_bytes) > 0.90
         for: 5m
         labels: { severity: warning }
         annotations:
-          summary: "Redis memory > 800MB"
-          description: "Redis is using {{ $value | humanize1024 }}B (container limit 1g)."
+          summary: "Redis memory > 90% of maxmemory"
+          description: "Redis at {{ $value | humanizePercentage }} of maxmemory; eviction imminent."
+
+      - alert: RedisEvictingKeys
+        # The real memory-pressure signal once at maxmemory: keys being evicted (sessions / rate-limit
+        # state can be dropped). RedisMemoryHigh may not fire because eviction holds used_memory at the cap.
+        expr: rate(redis_evicted_keys_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis is evicting keys"
+          description: "Redis hit maxmemory and is evicting ~{{ $value | humanize }} keys/s."
 
   - name: abuse
     rules:

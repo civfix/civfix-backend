@@ -177,7 +177,7 @@
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 40 },
       "id": 41,
       "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "dedupStrategy": "none" },
-      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=~\"api|media-worker\"} | json | level >= 50 or res_statusCode >= 500" } ]
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service=~\"api|media-worker\"} | json | (level >= 50 or res_statusCode >= 500)" } ]
     }
   ]
 }

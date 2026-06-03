@@ -30,6 +30,14 @@ discovery.relabel "containers" {
 		source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
 		target_label  = "project"
 	}
+
+	// Don't tail the log pipeline's own containers — avoids a log-on-log feedback loop.
+	// (Grafana/Prometheus logs are kept; their errors are worth seeing.)
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "loki|alloy"
+		action        = "drop"
+	}
 }
 
 // Stream container logs to Loki via the Docker API (works regardless of the host's `local` log driver).
