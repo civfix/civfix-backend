@@ -29,7 +29,7 @@ import {
   type NotificationPrefsDTO,
   type RegisterPushTokenResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { ZodError, type z, type ZodTypeAny } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -58,14 +58,6 @@ declare module "fastify" {
   }
 }
 
-/** Flat query schema for GET /notifications (cursor/limit). Re-validated against the shared schema. */
-const ListNotificationsQuerySchema = z
-  .object({
-    cursor: z.string().optional(),
-    limit: z.coerce.number().int().positive().max(50).optional(),
-  })
-  .strict()
-
 export async function registerNotificationRoutes(
   app: FastifyInstance,
   container: Container,
@@ -91,11 +83,7 @@ export async function registerNotificationRoutes(
   // -------------------------------------------------------------------------
   app.get("/notifications", async (request, reply) => {
     const userId = requireAuth(request)
-    const q = parse(ListNotificationsQuerySchema, request.query)
-    const pagination = parse(PaginationQuerySchema, {
-      ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
-      ...(q.limit !== undefined ? { limit: q.limit } : {}),
-    })
+    const pagination = parse(PaginationQuerySchema, request.query)
     const payload: ListNotificationsResponse = await service().listNotifications(userId, pagination)
     reply.status(200).send(payload)
   })

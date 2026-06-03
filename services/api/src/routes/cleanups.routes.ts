@@ -20,6 +20,7 @@
 import {
   CreateCleanupRequestSchema,
   ListCleanupsRequestSchema,
+  ChatHistoryQuerySchema,
   IdSchema,
   AppError,
   type CleanupDTO,
@@ -68,38 +69,20 @@ const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 /**
  * Query schema for GET /cleanups, decoding EXACTLY what the shared client sends (see
  * ./query-encoding.ts): optional bbox + optional near each as a single JSON-encoded object param, and
- * scalar when/cursor/limit. We decode here, then re-validate against the shared nested
- * ListCleanupsRequest so the wire contract stays the single source of truth. (NOT .strict(); the
- * re-validation against the shared .strict() schema is the gate.)
+ * scalar when/cursor/limit. We decode bbox/near here, then re-validate the assembled object against the
+ * shared nested ListCleanupsRequest so the wire contract stays the single source of truth — including
+ * the `limit` coercion, so `limit` is passed through as a raw string here rather than coerced twice.
+ * (NOT .strict(); the re-validation against the shared .strict() schema is the gate.)
  */
 const ListCleanupsQuerySchema = z.object({
   bbox: BBoxQueryParam.optional(),
   near: LatLngQueryParam.optional(),
   when: z.enum(["upcoming", "past"]).optional(),
   cursor: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(50).optional(),
+  limit: z.string().optional(),
 })
 
-/**
- * Query schema for GET /cleanups/:id/messages (history): optional before cursor + limit.
- *
- * TOLERATES AN EXTRA cleanupId KEY (P2): the shared typed client serializes a GET's input object as BOTH
- * path params AND the query string, so ChatHistoryRequest.cleanupId is echoed into the query (?cleanupId=
- * ...&before=...) even though the cleanup id already travels in the URL path. A `.strict()` schema would
- * 400 on that extra key. Until the shared client is fixed to drop path-param fields from the query (a
- * later phase), we accept and IGNORE a cleanupId query key rather than reject the otherwise-valid request.
- * We do NOT read it: the authoritative cleanup id is the URL path param (which the membership gate uses).
- * The schema is non-strict so any other stray param is also tolerated (robust for a public-ish GET); the
- * fields we actually consume (before, limit) are still precisely typed.
- */
-const HistoryQuerySchema = z.object({
-  before: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(50).optional(),
-  // Accepted-and-ignored: the redundant path-param echo from the shared client (see above).
-  cleanupId: z.string().optional(),
-})
-
-/** Default + max history page size (mirrors the shared ChatHistoryRequest limit cap of 50). */
+/** Default history page size when GET /cleanups/:id/messages omits `limit` (shared cap is 50). */
 const HISTORY_DEFAULT_LIMIT = 30
 
 export async function registerCleanupRoutes(
@@ -186,7 +169,9 @@ export async function registerCleanupRoutes(
   app.get("/cleanups/:id/messages", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
-    const q = parse(HistoryQuerySchema, request.query)
+    // Shared ChatHistoryQuerySchema is non-strict: it tolerates (and strips) the cleanupId path-param
+    // echo the typed client still serializes into the query. The authoritative id is the URL path.
+    const q = parse(ChatHistoryQuerySchema, request.query)
 
     // Membership gate: only a cleanup member may read the room history. A non-member gets a 403 (the
     // cleanup's existence is not secret - it is listed on the public map - so 403, not 404).

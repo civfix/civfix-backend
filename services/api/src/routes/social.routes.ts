@@ -62,15 +62,6 @@ declare module "fastify" {
 /** Path param schema for the routes that take a person UUID in the URL. */
 const PersonIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-/** Flat query schema for GET /people (q/cursor/limit). Re-validated against the shared request schema. */
-const ListPeopleQuerySchema = z
-  .object({
-    q: z.string().optional(),
-    cursor: z.string().optional(),
-    limit: z.coerce.number().int().positive().max(50).optional(),
-  })
-  .strict()
-
 export async function registerSocialRoutes(
   app: FastifyInstance,
   container: Container,
@@ -110,13 +101,9 @@ export async function registerSocialRoutes(
   // GET /people  (anon-ok)
   // -------------------------------------------------------------------------
   app.get("/people", async (request, reply) => {
-    const q = parse(ListPeopleQuerySchema, request.query)
-    // Re-validate against the shared schema (single source of truth).
-    const validated = parse(ListPeopleRequestSchema, {
-      ...(q.q !== undefined ? { q: q.q } : {}),
-      ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
-      ...(q.limit !== undefined ? { limit: q.limit } : {}),
-    })
+    // The shared request schema (q + cursor + coerced limit) is the single source of truth; the query
+    // string is validated directly against it.
+    const validated = parse(ListPeopleRequestSchema, request.query)
     const payload: ListPeopleResponse = await service().listPeople(validated, viewerOf(request))
     reply.status(200).send(payload)
   })

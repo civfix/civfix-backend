@@ -84,6 +84,9 @@ export const MAP_REPORTS_CANDIDATE_CAP = 2000
  */
 export const CLUSTER_ZOOM_THRESHOLD = 14
 
+/** Default page size for listMyReports when the request omits `limit`. Matches the shared cap of 50. */
+export const REPORTS_DEFAULT_LIMIT = 20
+
 // ---------------------------------------------------------------------------
 // Repository seam (structural views; faked in tests)
 // ---------------------------------------------------------------------------
@@ -512,11 +515,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       pagination: PaginationQuery,
     ): Promise<ListMyReportsResponse> {
       const cursor = pagination.cursor ?? null
-      const { records, nextCursor } = await deps.repo.listMyReports(
-        userId,
-        cursor,
-        pagination.limit,
-      )
+      const limit = pagination.limit ?? REPORTS_DEFAULT_LIMIT
+      const { records, nextCursor } = await deps.repo.listMyReports(userId, cursor, limit)
 
       // Each item is a full ReportDTO. The caller owns all of them (mine=true). following is resolved
       // per row so the "my reports" list shows the follow state honestly.
