@@ -125,6 +125,16 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       ids.push(dto.id)
       expect(dto.from.id).toBe(organizerId)
     }
+    // insertMessage stamps created_at = now(), which can TIE for back-to-back inserts; the table's uuid
+    // id is random, not a send-order tiebreaker, so newest-first ordering of tied rows is unstable. Force
+    // strictly-increasing created_at (1s apart, send order) so the cursor-paging assertions below are
+    // deterministic. (Real chat messages arrive seconds apart, so this matches production ordering.)
+    const base = Date.now()
+    let order = 0
+    for (const id of ids) {
+      await h.sql`UPDATE chat_messages SET created_at = ${new Date(base + order * 1000)} WHERE id = ${id}`
+      order++
+    }
 
     // Newest-first page of 2.
     const page1 = await chatRepo.history(created.id, undefined, 2)

@@ -17,6 +17,7 @@ interface MockBoss {
   start: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
   createQueue: ReturnType<typeof vi.fn>
+  updateQueue: ReturnType<typeof vi.fn>
   send: ReturnType<typeof vi.fn>
   schedule: ReturnType<typeof vi.fn>
   work: ReturnType<typeof vi.fn>
@@ -44,6 +45,7 @@ function freshBoss(sendReturns: string | null = "job-123"): MockBoss {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     createQueue: vi.fn().mockResolvedValue(undefined),
+    updateQueue: vi.fn().mockResolvedValue(undefined),
     send: vi.fn().mockResolvedValue(sendReturns),
     schedule: vi.fn().mockResolvedValue(undefined),
     work: vi.fn().mockResolvedValue(undefined),
@@ -73,6 +75,14 @@ describe("PgBossJobs (API enqueue adapter)", () => {
     expect(created).toEqual([...API_QUEUE_NAMES])
     expect(created).toContain("media.checks")
     expect(created).toContain("jurisdiction.discovery")
+
+    // Each queue is created AND updated with the "short" policy so a singletonKey actually dedupes
+    // pending jobs in pg-boss v10 (the default "standard" policy does not, and createQueue is a no-op on
+    // an already-existing queue — so updateQueue is what fixes a pre-existing default-policy queue).
+    for (const name of API_QUEUE_NAMES) {
+      expect(lastBoss.createQueue).toHaveBeenCalledWith(name, expect.objectContaining({ policy: "short" }))
+      expect(lastBoss.updateQueue).toHaveBeenCalledWith(name, expect.objectContaining({ policy: "short" }))
+    }
   })
 
   it("start() is idempotent (a second call does not re-open pg-boss)", async () => {

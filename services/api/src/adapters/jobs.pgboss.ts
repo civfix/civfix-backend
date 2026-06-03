@@ -68,9 +68,14 @@ export class PgBossJobs implements Jobs {
     await boss.start()
     // pg-boss v10 requires a queue to exist before send(); create the API's queues up front so the hot
     // paths (finalize -> media.checks, report create -> jurisdiction.discovery) never 500 on a missing
-    // queue. createQueue is idempotent.
+    // queue. Every API queue is enqueued with a singletonKey for dedup, and in v10 that dedup ONLY
+    // happens under a queue policy — the default "standard" policy does NOT dedup. "short" allows at most
+    // one job per (queue, singletonKey) in the `created` state, which is exactly "don't pile up duplicate
+    // pending work". createQueue is a no-op if the queue already exists, so updateQueue is what actually
+    // brings a previously-created (e.g. default-policy) queue to the right policy. Both are idempotent.
     for (const name of API_QUEUE_NAMES) {
-      await boss.createQueue(name)
+      await boss.createQueue(name, { name, policy: "short" })
+      await boss.updateQueue(name, { name, policy: "short" })
     }
     this.boss = boss
   }

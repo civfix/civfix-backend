@@ -1,0 +1,55 @@
+# civfix Prometheus — scrapes the host, containers, datastores and the Caddy edge.
+# Targets resolve by compose service name on the shared `compose_default` network.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: civfix-prod
+    host: civfix
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# No Alertmanager wired (delivery deferred per ops decision). Rules still evaluate and surface as the
+# ALERTS series, which the "Active alerts" panel in Grafana reads. Add an alertmanagers block here to
+# enable delivery later.
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  # Caddy edge metrics (request rates, status codes, durations) — the app exposes no /metrics yet,
+  # so this is our primary HTTP error/latency signal. Served on an internal-only listener (see Caddyfile).
+  - job_name: caddy
+    static_configs:
+      - targets: ["caddy:9974"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: alloy
+    static_configs:
+      - targets: ["alloy:12345"]
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]

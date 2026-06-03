@@ -180,12 +180,15 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
             `
           }
 
-          // 4) Initial timeline: submitted, then held (the anon flow records both transitions).
+          // 4) Initial timeline: submitted, then held (the anon flow records both transitions). Both
+          // rows share now() (constant within a transaction) and report_timeline.id is a random uuid, so
+          // ORDER BY created_at, id had NO stable tiebreaker — a reader could get held-before-submitted.
+          // Stamp held 1ms after submitted so the chronological order is deterministic for every reader.
           await tx`
-            INSERT INTO report_timeline (report_id, status, note, actor_id)
+            INSERT INTO report_timeline (report_id, status, note, actor_id, created_at)
             VALUES
-              (${args.reportId}, ${"submitted"}, ${null}, ${null}),
-              (${args.reportId}, ${"held"}, ${"Awaiting automated review"}, ${null})
+              (${args.reportId}, ${"submitted"}, ${null}, ${null}, now()),
+              (${args.reportId}, ${"held"}, ${"Awaiting automated review"}, ${null}, now() + interval '1 millisecond')
           `
 
           // 5) Persist the AnonReportResponse snapshot under the idempotency key (same tx).

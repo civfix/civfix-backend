@@ -91,6 +91,10 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
       lng: over.lng ?? PROBE_INSIDE_CITY.lng,
       geomSource: "device",
       mediaUploadIds: over.mediaUploadIds ?? [],
+      // Forward a presented anon token when the caller supplies one (the P0-1 cap test relies on all
+      // submits presenting the SAME seeded token; without this the token was dropped and every submit
+      // minted a fresh one, so the per-token cap was never actually exercised).
+      ...(over.anonToken !== undefined ? { anonToken: over.anonToken } : {}),
     }
   }
 

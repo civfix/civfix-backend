@@ -33,27 +33,42 @@ export interface DbHandle {
 /**
  * Build a DB handle. Does not connect until the first query is issued.
  *
+ * IMPORTANT — two postgres.js clients, on purpose. `drizzle(client, ...)` REPLACES postgres.js's value
+ * serializers (Date, json/jsonb, arrays, ...) with identity passthroughs, because Drizzle pre-serializes
+ * values in its own column layer. That is correct for the Drizzle query builder (`db`), but it BREAKS
+ * the hand-written SQL in the raw-`sql` repositories, which pass real JS values (a `Date`, a plain
+ * object for a jsonb column, ...) and rely on postgres.js converting them — otherwise postgres.js hands
+ * the raw value to its byte writer and Node throws `ERR_INVALID_ARG_TYPE` ("Received an instance of
+ * Date/Object"). So Drizzle gets its OWN client; the raw `sql` client is never wrapped and keeps
+ * postgres.js's full default serialization. The two are separate pools to the same database.
+ * (See drizzle-orm#3108.)
+ *
  * @param databaseUrl postgres connection string (postgres://...).
- * @param opts.max    max pool connections (default 10).
+ * @param opts.max    max pool connections for the raw `sql` client (default 10).
  */
 export function makeDb(databaseUrl: string, opts: { max?: number } = {}): DbHandle {
   if (!databaseUrl) {
     throw new Error("makeDb: databaseUrl is required")
   }
-  const sql = postgres(databaseUrl, {
-    max: opts.max ?? 10,
+  const common = {
     // Fail fast rather than hanging forever if the host is unreachable.
     connect_timeout: 10,
     // Let the app own its lifecycle/logging; keep the driver quiet by default.
     onnotice: () => {},
-  })
-  const db = drizzle(sql, { schema })
+  }
+  // Raw client for the hand-written SQL repositories (PostGIS / transactional SQL). Full default value
+  // serialization — NEVER passed to drizzle (see the note above).
+  const sql = postgres(databaseUrl, { ...common, max: opts.max ?? 10 })
+  // Drizzle's OWN client (small pool — only the media/auth `db`-repositories use the query builder), so
+  // its serializer reconfiguration never leaks onto `sql`.
+  const drizzleSql = postgres(databaseUrl, { ...common, max: 4 })
+  const db = drizzle(drizzleSql, { schema })
 
   let closed = false
   async function close(): Promise<void> {
     if (closed) return
     closed = true
-    await sql.end({ timeout: 5 })
+    await Promise.all([sql.end({ timeout: 5 }), drizzleSql.end({ timeout: 5 })])
   }
 
   return { db, sql, close }

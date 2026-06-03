@@ -68,8 +68,15 @@ export async function withPg(): Promise<PgHarness | null> {
   }
 
   const uri = started.getConnectionUri()
+  // Raw client (full postgres.js serialization) for the repositories, test-side inserts, and migrations.
   const sql = postgres(uri, { max: 4, onnotice: () => {} }) as Sql
-  const db = drizzle(sql, { schema })
+  // Drizzle gets its OWN client so it never clobbers `sql`'s value serializers (see makeDb in
+  // src/db/client.ts and drizzle-orm#3108).
+  const drizzleSql = postgres(uri, { max: 2, onnotice: () => {} })
+  const db = drizzle(drizzleSql, { schema })
+
+  const closeClients = () =>
+    Promise.all([sql.end({ timeout: 5 }), drizzleSql.end({ timeout: 5 })]).catch(() => {})
 
   try {
     // Apply the EXACT canonical SQL the production runner applies, then the shared seed.
@@ -77,7 +84,7 @@ export async function withPg(): Promise<PgHarness | null> {
     await seedJurisdictions(sql)
   } catch (err) {
     // A migration/seed failure is a real error: clean up and rethrow so the test FAILS (not skips).
-    await sql.end({ timeout: 5 }).catch(() => {})
+    await closeClients()
     await started.stop().catch(() => {})
     throw err
   }
@@ -90,7 +97,7 @@ export async function withPg(): Promise<PgHarness | null> {
     async teardown() {
       if (torn) return
       torn = true
-      await sql.end({ timeout: 5 }).catch(() => {})
+      await closeClients()
       await started.stop().catch(() => {})
     },
   }
