@@ -29,6 +29,7 @@ import { makeDrizzleThreadsRepository } from "../services/threads-repository.dri
 import {
   makeThreadsService,
   InMemoryChatReadState,
+  THREADS_DEFAULT_LIMIT,
   type ChatReadState,
   type ThreadsRepository,
 } from "../services/threads-service.js"
@@ -90,11 +91,14 @@ export async function registerChatRoutes(
   app.get("/threads", async (request, reply) => {
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
+    // The shared limit is optional with no baked-in default (each resource owns its page size), so apply
+    // the threads default explicitly rather than passing undefined down to the repo's SQL LIMIT.
+    const limit = pagination.limit ?? THREADS_DEFAULT_LIMIT
     const threadsRepo: ThreadsRepository = overrides
       ? overrides.threadsRepo
       : makeDrizzleThreadsRepository(container.getDb().sql)
     const threads = makeThreadsService({ repo: threadsRepo, readState })
-    const result = await threads.listThreads(userId, pagination.limit)
+    const result = await threads.listThreads(userId, limit)
     const payload: ListThreadsResponse = { items: result.items, nextCursor: result.nextCursor }
     reply.status(200).send(payload)
   })
