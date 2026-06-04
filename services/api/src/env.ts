@@ -67,9 +67,9 @@ const DEV_SESSION_SIGNING_KEY = "dev-insecure-session-signing-key-do-not-use-in-
 const DEV_ANON_TOKEN_SIGNING_KEY = "dev-insecure-anon-token-signing-key-do-not-use-in-prod"
 
 /**
- * Map-tile defaults. Used by GET /map/tileinfo when the corresponding TILES_* vars are unset so the
- * route never 500s on missing config. Bounds are the continental-US-ish envelope [west, south, east,
- * north]; zoom range covers a typical web slippy map.
+ * Map basemap defaults. Used by GET /map/tileinfo when the optional TILES_* vars are unset so the route
+ * never 500s on missing config (the raster URL itself defaults in map.routes). Bounds are the
+ * continental-US-ish envelope [west, south, east, north]; zoom range covers a typical web slippy map.
  */
 const TILES_MIN_ZOOM_DEFAULT = 1
 const TILES_MAX_ZOOM_DEFAULT = 19
@@ -99,20 +99,25 @@ export interface Env {
    */
   TRUST_PROXY: TrustProxyValue
 
-  // ----- storage (R2): [BOOT] unless USE_FAKE_STORAGE -----
+  // ----- storage (R2 - MEDIA ONLY: report photos/videos): [BOOT] unless USE_FAKE_STORAGE -----
+  // R2 is NOT used for map tiles. The map uses the OpenStreetMap (CARTO Voyager) raster basemap loaded
+  // directly by the clients (plan override; see GET /map/tileinfo and TILES_RASTER_URL below).
   R2_ACCOUNT_ID: string
   R2_ACCESS_KEY_ID: string
   R2_SECRET_ACCESS_KEY: string
   R2_BUCKET: string
   R2_PUBLIC_BASE?: string
 
-  // ----- map tiles (all [OPT]; the /map/tileinfo route degrades to a documented default) -----
-  /** PMTiles archive URL (vector basemap). Absent -> tileinfo returns "" and a raster/style fallback. */
-  TILES_PMTILES_URL?: string
-  /** Raster XYZ tile template (e.g. https://.../{z}/{x}/{y}.png). Fallback when PMTiles is absent. */
+  // ----- map basemap (all [OPT]) -----
+  // The map uses the OpenStreetMap (CARTO Voyager) RASTER basemap directly in the clients (plan
+  // override; the platform does NOT host its own vector/pmtiles tiles). These vars only tune what
+  // GET /map/tileinfo advertises; the clients hardcode the CARTO Voyager raster and need no config.
+  /**
+   * OPTIONAL override of the default OpenStreetMap/CARTO Voyager raster XYZ template that
+   * GET /map/tileinfo advertises. Absent -> the built-in CARTO Voyager default (CARTO_VOYAGER_RASTER_URL
+   * in map.routes). Set this only to point at a different raster basemap.
+   */
   TILES_RASTER_URL?: string
-  /** Full MapLibre style JSON URL. Optional alternative the client may prefer over pmtiles/raster. */
-  TILES_STYLE_URL?: string
   /** Min zoom advertised by tileinfo. Defaults to TILES_MIN_ZOOM_DEFAULT. */
   TILES_MIN_ZOOM: number
   /** Max zoom advertised by tileinfo. Defaults to TILES_MAX_ZOOM_DEFAULT. */
@@ -303,14 +308,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...(optStr.parse(source.R2_PUBLIC_BASE) !== undefined
       ? { R2_PUBLIC_BASE: source.R2_PUBLIC_BASE!.trim() }
       : {}),
-    ...(optStr.parse(source.TILES_PMTILES_URL) !== undefined
-      ? { TILES_PMTILES_URL: source.TILES_PMTILES_URL!.trim() }
-      : {}),
     ...(optStr.parse(source.TILES_RASTER_URL) !== undefined
       ? { TILES_RASTER_URL: source.TILES_RASTER_URL!.trim() }
-      : {}),
-    ...(optStr.parse(source.TILES_STYLE_URL) !== undefined
-      ? { TILES_STYLE_URL: source.TILES_STYLE_URL!.trim() }
       : {}),
     TILES_MIN_ZOOM: parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT),
     TILES_MAX_ZOOM: parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT),

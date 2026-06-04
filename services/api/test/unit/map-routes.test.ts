@@ -21,12 +21,33 @@ afterEach(async () => {
 })
 
 describe("GET /map/tileinfo", () => {
-  it("returns env-driven values when the TILES_* vars are set", async () => {
+  // Plan override: the map uses the OpenStreetMap (CARTO Voyager) RASTER basemap directly in the
+  // clients; the platform serves no pmtiles. tileinfo advertises that same raster basemap. pmtilesUrl is
+  // always "" (no vector basemap); rasterUrl defaults to the CARTO Voyager template, overridable via the
+  // optional TILES_RASTER_URL. minZoom/maxZoom/bounds remain env-tunable.
+  it("advertises the default OpenStreetMap/CARTO Voyager raster basemap when unconfigured", async () => {
+    // The vitest env sets no TILES_* vars, so this exercises the built-in defaults.
+    app = await buildServer({ env: loadEnv() })
+    const res = await app.inject({ method: "GET", url: "/map/tileinfo" })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    // No self-hosted vector basemap.
+    expect(body.pmtilesUrl).toBe("")
+    expect(body.styleUrl).toBeUndefined()
+    // The OpenStreetMap-derived CARTO Voyager raster default.
+    expect(body.rasterUrl).toBe(
+      "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+    )
+    expect(body.attribution).toBe("(c) OpenStreetMap contributors, (c) CARTO")
+    expect(body.minZoom).toBe(1)
+    expect(body.maxZoom).toBe(19)
+    expect(body.bounds).toEqual([-125, 24, -66, 50])
+  })
+
+  it("honors TILES_RASTER_URL as an override plus env-driven zoom/bounds", async () => {
     const env = loadEnv({
       NODE_ENV: "test",
-      TILES_PMTILES_URL: "https://tiles.example/basemap.pmtiles",
       TILES_RASTER_URL: "https://tiles.example/{z}/{x}/{y}.png",
-      TILES_STYLE_URL: "https://tiles.example/style.json",
       TILES_MIN_ZOOM: "3",
       TILES_MAX_ZOOM: "17",
       TILES_BOUNDS: "-130,20,-60,55",
@@ -37,28 +58,12 @@ describe("GET /map/tileinfo", () => {
     const res = await app.inject({ method: "GET", url: "/map/tileinfo" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
-    expect(body.pmtilesUrl).toBe("https://tiles.example/basemap.pmtiles")
+    expect(body.pmtilesUrl).toBe("")
     expect(body.rasterUrl).toBe("https://tiles.example/{z}/{x}/{y}.png")
-    expect(body.styleUrl).toBe("https://tiles.example/style.json")
     expect(body.minZoom).toBe(3)
     expect(body.maxZoom).toBe(17)
     expect(body.bounds).toEqual([-130, 20, -60, 55])
     expect(typeof body.attribution).toBe("string")
-  })
-
-  it("returns a safe default (empty pmtilesUrl, default zoom/bounds) when unconfigured", async () => {
-    // The vitest env sets no TILES_* vars, so this exercises the documented degraded default.
-    app = await buildServer({ env: loadEnv() })
-    const res = await app.inject({ method: "GET", url: "/map/tileinfo" })
-    expect(res.statusCode).toBe(200)
-    const body = res.json()
-    // Never 500s; pmtilesUrl is "" and the raster/style fallbacks are simply absent.
-    expect(body.pmtilesUrl).toBe("")
-    expect(body.rasterUrl).toBeUndefined()
-    expect(body.styleUrl).toBeUndefined()
-    expect(body.minZoom).toBe(1)
-    expect(body.maxZoom).toBe(19)
-    expect(body.bounds).toEqual([-125, 24, -66, 50])
   })
 })
 

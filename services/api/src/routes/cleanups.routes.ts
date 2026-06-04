@@ -20,7 +20,6 @@
 import {
   CreateCleanupRequestSchema,
   ListCleanupsRequestSchema,
-  ChatHistoryQuerySchema,
   IdSchema,
   AppError,
   type CleanupDTO,
@@ -80,6 +79,18 @@ const ListCleanupsQuerySchema = z.object({
   when: z.enum(["upcoming", "past"]).optional(),
   cursor: z.string().optional(),
   limit: z.string().optional(),
+})
+
+/**
+ * Query schema for GET /cleanups/:id/messages. Decoded locally (NOT .strict()) so it tolerates and
+ * ignores the redundant `cleanupId` path-param echo the shared typed client still serializes into the
+ * query: the authoritative cleanup id is the URL path. Only `before` (cursor) and `limit` are read; the
+ * shared cap (<= 50) is re-asserted here. (The shared ChatHistoryRequestSchema is the strict wire
+ * contract for the typed client; this route accepts the same fields plus the harmless echo.)
+ */
+const ChatHistoryQuerySchema = z.object({
+  before: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(50).optional(),
 })
 
 /** Default history page size when GET /cleanups/:id/messages omits `limit` (shared cap is 50). */
@@ -169,8 +180,8 @@ export async function registerCleanupRoutes(
   app.get("/cleanups/:id/messages", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
-    // Shared ChatHistoryQuerySchema is non-strict: it tolerates (and strips) the cleanupId path-param
-    // echo the typed client still serializes into the query. The authoritative id is the URL path.
+    // Local non-strict query schema (above): tolerates and strips the cleanupId path-param echo the
+    // typed client still serializes into the query. The authoritative id is the URL path.
     const q = parse(ChatHistoryQuerySchema, request.query)
 
     // Membership gate: only a cleanup member may read the room history. A non-member gets a 403 (the

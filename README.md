@@ -31,7 +31,7 @@ civfix-backend/
     compose/                    docker-compose (prod-ish + dev)
     caddy/                      reverse-proxy Caddyfile
     secrets/                    SOPS + age docs and .sops.yaml
-    tiles/                      PMTiles dev docs
+    tiles/                      note: map uses OpenStreetMap (CARTO Voyager) raster; no self-hosted tiles
   .github/workflows/ci.yml      lint / typecheck / build / test + integration services
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph

@@ -1,7 +1,7 @@
 /**
  * Map route plugin (all endpoints anon-ok; no auth guard).
  *
- *   GET  /map/tileinfo             basemap metadata for the client renderer (env-driven, never 500s).
+ *   GET  /map/tileinfo             basemap metadata (OpenStreetMap / CARTO Voyager raster; never 500s).
  *   POST /map/resolve-jurisdiction LatLng -> JurisdictionDTO, or 200 null when outside coverage.
  *   POST /map/reverse-label        LatLng -> { cityStateLabel } via the Geocoder seam.
  *   GET  /map/cleanups             bbox (+ when?) -> lightweight cleanup pins with RSVP counts.
@@ -41,6 +41,15 @@ import { BBoxQueryParam } from "./query-encoding.js"
 export const MAP_CLEANUPS_LIMIT = 500
 
 /**
+ * Default basemap: the OpenStreetMap-derived CARTO Voyager raster XYZ template. This is the basemap the
+ * clients render directly (plan override; see the GET /map/tileinfo handler). `{r}` is the optional
+ * retina suffix ("@2x" on hi-dpi, empty otherwise) per the standard slippy-map convention. Overridable
+ * via the optional TILES_RASTER_URL env var.
+ */
+export const CARTO_VOYAGER_RASTER_URL =
+  "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+
+/**
  * Query schema for GET /map/cleanups, decoding EXACTLY what the shared client sends: bbox as a single
  * JSON-encoded object param (see ./query-encoding.ts) plus an optional scalar `when`. We decode here,
  * then re-validate against the shared nested ListCleanupsInBBoxRequest so the contract stays the single
@@ -55,16 +64,22 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   // -------------------------------------------------------------------------
   // GET /map/tileinfo  (anon-ok; pure env read, must never 500 on missing config)
   // -------------------------------------------------------------------------
+  // PLAN OVERRIDE (supersedes civfixplan.md's MapLibre + Protomaps-pmtiles-on-R2 decision): the map
+  // uses the OpenStreetMap (CARTO Voyager) RASTER basemap loaded directly by the clients. The platform
+  // does NOT serve its own vector tiles; R2 is for media only. The clients already hardcode the CARTO
+  // Voyager raster URL, so they no longer depend on this endpoint for the basemap. We keep the endpoint
+  // (the @civfix/shared contract still defines it) and have it advertise that same raster basemap, so
+  // anything reading tileinfo gets a consistent, working raster source. pmtilesUrl is "" ("no vector
+  // basemap") and styleUrl is omitted. The field shapes are unchanged, so this stays non-breaking.
   app.get("/map/tileinfo", async (_request, reply) => {
     const env = container.env
     const payload: TileInfoResponse = {
-      // pmtilesUrl is "" when unconfigured: the schema requires a string, and "" is the documented
-      // "no vector basemap" signal. Clients then fall back to rasterUrl/styleUrl (below) or their own
-      // default tiles, so the map still renders.
-      pmtilesUrl: env.TILES_PMTILES_URL ?? "",
-      ...(env.TILES_RASTER_URL !== undefined ? { rasterUrl: env.TILES_RASTER_URL } : {}),
-      ...(env.TILES_STYLE_URL !== undefined ? { styleUrl: env.TILES_STYLE_URL } : {}),
-      attribution: "(c) OpenStreetMap contributors",
+      // No self-hosted vector basemap: "" is the documented "no pmtiles" signal. Clients use rasterUrl.
+      pmtilesUrl: "",
+      // CARTO Voyager raster XYZ template (OpenStreetMap-derived). TILES_RASTER_URL is an optional
+      // override of this default; absent -> the public CARTO Voyager basemap CDN.
+      rasterUrl: env.TILES_RASTER_URL ?? CARTO_VOYAGER_RASTER_URL,
+      attribution: "(c) OpenStreetMap contributors, (c) CARTO",
       minZoom: env.TILES_MIN_ZOOM,
       maxZoom: env.TILES_MAX_ZOOM,
       bounds: env.TILES_BOUNDS,

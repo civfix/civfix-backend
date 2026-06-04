@@ -89,7 +89,7 @@ endpoint map (Phase-1 screens):
 | --- | --- |
 | Sign in (Apple / Google / email) | `POST /auth/apple`, `POST /auth/google`, `GET /auth/google/start`, `GET /auth/google/callback`, `POST /auth/otp/request`, `POST /auth/otp/verify` |
 | Session bootstrap / sign out | `GET /auth/session`, `POST /auth/logout` |
-| Map / explore (tiles + pins) | `GET /map/tileinfo`, `GET /map/reports`, `GET /map/cleanups` |
+| Map / explore (basemap + pins) | `GET /map/tileinfo` (advertises the OpenStreetMap/CARTO Voyager raster), `GET /map/reports`, `GET /map/cleanups` |
 | Drop a pin -> new report | `POST /map/resolve-jurisdiction`, `POST /map/reverse-label`, `POST /media/upload`, `POST /media/:uploadId/finalize`, `POST /reports` |
 | Report detail | `GET /reports/:id`, `GET /media/:id`, `POST` + `DELETE /reports/:id/follow` |
 | My reports | `GET /reports` |
@@ -158,9 +158,10 @@ endpoint map (Phase-1 screens):
 
 This is a CLIENT/INFRA probe (render performance + tile-server latency), not a backend unit assertion.
 The backend supports it via:
-- `GET /map/tileinfo` advertises the PMTiles/raster/style URL + zoom range + bounds so the client renders
-  vector tiles from the CDN/object store (not the API hot path). Code: `routes/map.routes.ts`, `env.ts`
-  (TILES_* with safe defaults).
+- `GET /map/tileinfo` advertises the OpenStreetMap (CARTO Voyager) raster basemap URL + zoom range +
+  bounds. The clients render that raster basemap directly from the public CARTO CDN (plan override; the
+  platform does NOT host its own pmtiles, and this is not on the API hot path). Code:
+  `routes/map.routes.ts`, `env.ts` (optional TILES_RASTER_URL override + safe defaults).
 - `GET /map/reports` does SERVER-SIDE clustering below a zoom threshold so the pin count (and render
   cost) stays bounded at wide zooms, keeping the client at 60fps; at/above the threshold it returns
   individual pins. Candidate points are capped (MAP_REPORTS_CANDIDATE_CAP = 2000). Code:
