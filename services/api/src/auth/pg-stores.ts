@@ -26,6 +26,7 @@ import type {
   SessionInsert,
   SessionRecord,
   SessionStore,
+  UpdateProfileInput,
   UserRecord,
   UserStore,
 } from "./stores.js"
@@ -137,6 +138,8 @@ export class PgUserStore implements UserStore {
         role: input.role ?? "citizen",
         email: normalizedEmail,
         emailVerified: email !== null && (input.emailVerified ?? false),
+        avatarUrl: input.avatarUrl ?? null,
+        // profile_complete uses the column default (false): new users must finish first-run registration.
       })
       // The unique index on email is PARTIAL (WHERE email IS NOT NULL), so the conflict target must carry
       // the same predicate for Postgres to infer it. For onConflictDoNothing, Drizzle emits the index
@@ -152,6 +155,24 @@ export class PgUserStore implements UserStore {
       if (existing) return existing
     }
     throw new Error("PgUserStore.create: insert returned no row")
+  }
+
+  async findByHandle(handle: string): Promise<UserRecord | null> {
+    // `handle` is CITEXT, so the eq comparison is case-insensitive at the DB.
+    const rows = await this.db.select().from(users).where(eq(users.handle, handle)).limit(1)
+    const r = rows[0]
+    return r ? toUserRecord(r) : null
+  }
+
+  async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+    const updated = await this.db
+      .update(users)
+      .set({ handle: input.handle, displayName: input.displayName, profileComplete: true })
+      .where(eq(users.id, id))
+      .returning()
+    const r = updated[0]
+    if (!r) throw new Error("PgUserStore.updateProfile: user not found")
+    return toUserRecord(r)
   }
 }
 
@@ -277,6 +298,8 @@ interface UserRowLike {
   handle: string | null
   email: string | null
   emailVerified: boolean
+  avatarUrl: string | null
+  profileComplete: boolean
   createdAt: Date
   deletedAt: Date | null
 }
@@ -289,6 +312,8 @@ function toUserRecord(r: UserRowLike): UserRecord {
     handle: r.handle,
     email: r.email,
     emailVerified: r.emailVerified,
+    avatarUrl: r.avatarUrl,
+    profileComplete: r.profileComplete,
     createdAt: r.createdAt,
     deletedAt: r.deletedAt,
   }

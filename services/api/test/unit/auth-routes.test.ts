@@ -313,6 +313,7 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
       email: "oauth.google@example.com",
       emailVerified: true,
       name: "Google Person",
+      picture: null,
     })
 
     const res = await harness.app.inject({
@@ -342,6 +343,7 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
       email: "oauth.apple@example.com",
       emailVerified: true,
       name: null,
+      picture: null,
     })
     const res = await harness.app.inject({
       method: "POST",
@@ -418,7 +420,7 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
     // Register a token bound to nonce "abc123" (the verifier enforces params.expectedNonce against it).
     harness.verifier.register(
       "apple-nonce-token",
-      { sub: "apple-nonce-sub", email: "nonce@example.com", emailVerified: true, name: null },
+      { sub: "apple-nonce-sub", email: "nonce@example.com", emailVerified: true, name: null, picture: null },
       "abc123",
     )
 
@@ -450,6 +452,7 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
       email: "plain@example.com",
       emailVerified: true,
       name: null,
+      picture: null,
     })
     const res = await harness.app.inject({
       method: "POST",
@@ -458,5 +461,111 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
       payload: { identityToken: "apple-plain", fullName: "Plain User" },
     })
     expect(res.statusCode).toBe(200)
+  })
+})
+
+describe("auth routes: first-run registration (handle availability + PUT /me/profile)", () => {
+  /** Sign in a fresh email via the mobile OTP flow (bearer; no CSRF) -> token + session user. */
+  async function signIn(
+    h: AuthHarness,
+    email: string,
+  ): Promise<{ token: string; user: { profileComplete: boolean; handle: string | null } }> {
+    await h.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    const code = h.mailer.lastOtpFor(email)!
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: { "x-client": "mobile" },
+      payload: { email, code },
+    })
+    return res.json() as { token: string; user: { profileComplete: boolean; handle: string | null } }
+  }
+
+  it("a fresh account is profileComplete:false with no handle (the gate trigger)", async () => {
+    harness = await makeAuthHarness()
+    const { user } = await signIn(harness, "newbie@example.com")
+    expect(user.profileComplete).toBe(false)
+    expect(user.handle ?? null).toBeNull()
+  })
+
+  it("GET /me/handle-available reports free / invalid / unauthorized", async () => {
+    harness = await makeAuthHarness()
+    const { token } = await signIn(harness, "checker@example.com")
+    const headers = { authorization: `Bearer ${token}` }
+
+    const free = await harness.app.inject({ method: "GET", url: "/me/handle-available?handle=ana_99", headers })
+    expect(free.statusCode).toBe(200)
+    expect(free.json()).toEqual({ available: true, reason: null })
+
+    const invalid = await harness.app.inject({ method: "GET", url: "/me/handle-available?handle=ab", headers })
+    expect(invalid.json()).toEqual({ available: false, reason: "invalid" })
+
+    const anon = await harness.app.inject({ method: "GET", url: "/me/handle-available?handle=ana_99" })
+    expect(anon.statusCode).toBe(401)
+  })
+
+  it("PUT /me/profile sets the username + name and completes the profile", async () => {
+    harness = await makeAuthHarness()
+    const { token } = await signIn(harness, "register@example.com")
+    const headers = { authorization: `Bearer ${token}`, "x-client": "mobile" }
+
+    const res = await harness.app.inject({
+      method: "PUT",
+      url: "/me/profile",
+      headers,
+      payload: { handle: "ana_99", displayName: "Ana Rivera" },
+    })
+    expect(res.statusCode).toBe(200)
+    const user = res.json().user
+    expect(user.handle).toBe("ana_99")
+    expect(user.displayName).toBe("Ana Rivera")
+    expect(user.profileComplete).toBe(true)
+
+    // The session now reflects the completed profile.
+    const check = await harness.app.inject({ method: "GET", url: "/auth/session", headers })
+    expect(check.json().user.profileComplete).toBe(true)
+    expect(check.json().user.handle).toBe("ana_99")
+  })
+
+  it("rejects a username already taken by another user with 409", async () => {
+    harness = await makeAuthHarness()
+    const a = await signIn(harness, "first@example.com")
+    const b = await signIn(harness, "second@example.com")
+
+    const claim = await harness.app.inject({
+      method: "PUT",
+      url: "/me/profile",
+      headers: { authorization: `Bearer ${a.token}`, "x-client": "mobile" },
+      payload: { handle: "rivera", displayName: "A" },
+    })
+    expect(claim.statusCode).toBe(200)
+
+    const avail = await harness.app.inject({
+      method: "GET",
+      url: "/me/handle-available?handle=rivera",
+      headers: { authorization: `Bearer ${b.token}` },
+    })
+    expect(avail.json()).toEqual({ available: false, reason: "taken" })
+
+    const conflict = await harness.app.inject({
+      method: "PUT",
+      url: "/me/profile",
+      headers: { authorization: `Bearer ${b.token}`, "x-client": "mobile" },
+      payload: { handle: "rivera", displayName: "B" },
+    })
+    expect(conflict.statusCode).toBe(409)
+    expect(conflict.json().code).toBe("CONFLICT")
+  })
+
+  it("validates the handle format (bad handle -> 422)", async () => {
+    harness = await makeAuthHarness()
+    const { token } = await signIn(harness, "badhandle@example.com")
+    const res = await harness.app.inject({
+      method: "PUT",
+      url: "/me/profile",
+      headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      payload: { handle: "no spaces!", displayName: "X" },
+    })
+    expect(res.statusCode).toBe(422)
   })
 })

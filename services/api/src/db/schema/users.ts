@@ -33,6 +33,11 @@ export const users = pgTable(
     email: citext("email"),
     emailVerified: boolean("email_verified").notNull().default(false),
     bio: text("bio"),
+    // Provider (Google) profile photo URL; NULL => clients render the solid-color + letter monogram.
+    avatarUrl: text("avatar_url"),
+    // First-run registration gate: false until the user sets a username + name. Backfilled true for
+    // pre-existing accounts in 0006 so only NEW users are forced through registration.
+    profileComplete: boolean("profile_complete").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },

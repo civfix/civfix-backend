@@ -24,6 +24,8 @@ export interface VerifiedIdToken {
   emailVerified: boolean
   /** Display name, when present (Google `name`). */
   name: string | null
+  /** Profile photo URL, when present (Google `picture`; Apple never sends one). */
+  picture: string | null
 }
 
 export interface VerifyParams {
@@ -74,6 +76,7 @@ interface JwtClaims {
   email?: string
   email_verified?: boolean | string
   name?: string
+  picture?: string
 }
 
 /** Fetch function shape, injectable so the cache/fetch can be unit-tested without real network. */
@@ -256,5 +259,6 @@ function validateClaims(
     emailVerified:
       claims.email_verified === true || claims.email_verified === "true" ? true : false,
     name: typeof claims.name === "string" ? claims.name : null,
+    picture: typeof claims.picture === "string" ? claims.picture : null,
   }
 }

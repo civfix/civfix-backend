@@ -23,11 +23,16 @@ import {
   EmailOtpVerifyRequestSchema,
   OAuthCallbackQuerySchema,
   OAuthStartQuerySchema,
+  UpdateProfileRequestSchema,
+  HandleAvailableRequestSchema,
+  isValidHandle,
   AppError,
   type SessionResponse,
   type SessionCheckResponse,
   type LogoutResponse,
   type EmailOtpRequestResponse,
+  type UpdateProfileResponse,
+  type HandleAvailableResponse,
   type UserDTO,
 } from "@civfix/shared"
 import { ZodError, type ZodTypeAny, type z } from "zod"
@@ -164,6 +169,46 @@ export async function registerAuthRoutes(
     clearSessionCookie(reply)
     clearCsrfCookie(reply)
     const payload: LogoutResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // First-run registration: username availability + profile completion
+  // -------------------------------------------------------------------------
+
+  // GET /me/handle-available?handle=  [auth]  - is this username free for me to take?
+  app.get("/me/handle-available", async (request, reply) => {
+    const userId = requireAuth(request)
+    const { handle } = parse(HandleAvailableRequestSchema, request.query)
+    if (!isValidHandle(handle)) {
+      const payload: HandleAvailableResponse = { available: false, reason: "invalid" }
+      reply.status(200).send(payload)
+      return
+    }
+    const existing = await services.users.findByHandle(handle.trim())
+    // Free if unclaimed, or already claimed by the asking user (idempotent re-check).
+    const available = existing === null || existing.id === userId
+    const payload: HandleAvailableResponse = available
+      ? { available: true, reason: null }
+      : { available: false, reason: "taken" }
+    reply.status(200).send(payload)
+  })
+
+  // PUT /me/profile  [auth][csrf]  - finish first-run registration (set username + display name).
+  app.put("/me/profile", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const body = parse(UpdateProfileRequestSchema, request.body)
+    // Reject a username already owned by someone else (the schema enforces the format; this is the
+    // uniqueness gate, racing the partial-unique index for the rare concurrent-claim case).
+    const existing = await services.users.findByHandle(body.handle)
+    if (existing !== null && existing.id !== userId) {
+      throw AppError.conflict("That username is taken.")
+    }
+    const updated = await services.users.updateProfile(userId, {
+      handle: body.handle,
+      displayName: body.displayName,
+    })
+    const payload: UpdateProfileResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)
   })
 }

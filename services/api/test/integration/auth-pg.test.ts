@@ -113,6 +113,7 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
       email: "oauth.it@example.com",
       emailVerified: true,
       name: "OAuth IT",
+      picture: null,
     }
     const svcGoogle = new OAuthService({
       config: {
@@ -132,6 +133,7 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
       email: "oauth.it@example.com",
       emailVerified: true,
       name: null,
+      picture: null,
     }
     const svcApple = new OAuthService({
       config: {

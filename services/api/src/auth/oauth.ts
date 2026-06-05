@@ -201,6 +201,8 @@ export class OAuthService {
       displayName: fullName ?? deriveDisplayName(claims, provider),
       role: "citizen",
       emailVerified: claims.email !== null && claims.emailVerified,
+      // Capture the provider photo (Google `picture`); Apple never sends one, so this stays null there.
+      avatarUrl: claims.picture,
     })
     await this.oauthStore.linkIdentity(created.id, provider, claims.sub)
     return created

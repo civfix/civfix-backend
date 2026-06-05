@@ -102,6 +102,10 @@ export interface UserRecord {
   handle: string | null
   email: string | null
   emailVerified: boolean
+  /** Provider (Google) profile photo URL; null => monogram avatar. */
+  avatarUrl: string | null
+  /** First-run registration gate: false until the user sets a username + name. */
+  profileComplete: boolean
   createdAt: Date
   deletedAt: Date | null
 }
@@ -111,17 +115,30 @@ export interface CreateUserInput {
   role?: Role
   /** Whether the associated email is proven (verified OTP / verified-email OAuth). Defaults to false. */
   emailVerified?: boolean
+  /** Provider photo URL captured at OAuth sign-in (Google); null for Apple/OTP. */
+  avatarUrl?: string | null
+}
+
+/** First-run registration update: the username (handle) + display name the user chooses. */
+export interface UpdateProfileInput {
+  handle: string
+  displayName: string
 }
 
 export interface UserStore {
   findById(id: string): Promise<UserRecord | null>
   /** Look up a user by their `users.email`, case-insensitively (the column is CITEXT). */
   findByEmail(email: string): Promise<UserRecord | null>
+  /** Look up a user by their `users.handle`, case-insensitively (the column is CITEXT). */
+  findByHandle(handle: string): Promise<UserRecord | null>
   /**
    * Create a user. When `email` is non-null it is stored on `users.email` so a later sign-in with the
    * same address (OTP or OAuth) converges on this user. `input.emailVerified` sets `email_verified`.
+   * New users start with `profile_complete = false` (they must finish first-run registration).
    */
   create(email: string | null, input: CreateUserInput): Promise<UserRecord>
+  /** First-run registration: set the handle + displayName and mark the profile complete. */
+  updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord>
 }
 
 /**
@@ -167,11 +184,36 @@ export class InMemoryUserStore implements UserStore {
       handle: null,
       email: email === null ? null : email.toLowerCase(),
       emailVerified: email !== null && (input.emailVerified ?? false),
+      avatarUrl: input.avatarUrl ?? null,
+      profileComplete: false,
       createdAt: new Date(),
       deletedAt: null,
     }
     this.byId.set(row.id, row)
     return Promise.resolve({ ...row })
+  }
+
+  findByHandle(handle: string): Promise<UserRecord | null> {
+    const normalized = handle.toLowerCase()
+    for (const row of this.byId.values()) {
+      if (row.handle !== null && row.handle.toLowerCase() === normalized) {
+        return Promise.resolve({ ...row })
+      }
+    }
+    return Promise.resolve(null)
+  }
+
+  updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+    const row = this.byId.get(id)
+    if (!row) throw new Error("InMemoryUserStore.updateProfile: user not found")
+    const next: UserRecord = {
+      ...row,
+      handle: input.handle,
+      displayName: input.displayName,
+      profileComplete: true,
+    }
+    this.byId.set(id, next)
+    return Promise.resolve({ ...next })
   }
 
   /** Test helper: seed a user directly (e.g. to test an existing-account sign-in). */

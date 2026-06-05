@@ -15,7 +15,7 @@ class StubVerifier implements JwksVerifier {
 }
 
 function claims(sub: string, email: string | null, name?: string): VerifiedIdToken {
-  return { sub, email, emailVerified: true, name: name ?? null }
+  return { sub, email, emailVerified: true, name: name ?? null, picture: null }
 }
 
 function makeService() {

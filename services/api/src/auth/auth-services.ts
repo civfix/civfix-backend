@@ -134,6 +134,8 @@ export function toUserDTO(user: UserRecord): UserDTO {
     displayName: user.displayName,
     handle: user.handle,
     email: user.email,
+    avatarUrl: user.avatarUrl,
+    profileComplete: user.profileComplete,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
   }

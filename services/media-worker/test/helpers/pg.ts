@@ -2,9 +2,15 @@
  * Postgres integration harness for the worker (Docker-gated; SKIPS when Docker is unavailable).
  *
  * Mirrors the API's withPg: starts a throwaway postgis container, applies the SAME canonical migrations
- * via the shared @civfix/api/migrate runner (single source of DDL), and hands back a postgres-js tag +
- * Drizzle client. On machines with no Docker (like this dev box) it returns null so the integration
- * suite is skipped, keeping the local run green; CI runs it for real.
+ * via the shared @civfix/api/migrate runner (single source of DDL), and hands back a RAW postgres-js tag
+ * (`sql`, full value serialization) plus a Drizzle client on its OWN separate connection. On machines
+ * with no Docker (like this dev box) it returns null so the integration suite is skipped, keeping the
+ * local run green; CI runs it for real.
+ *
+ * TWO CLIENTS, like the API harness and makeDb (drizzle-orm#3108): `drizzle(client)` overwrites that
+ * client's postgres.js value serializers with identity passthroughs, so drizzle gets its OWN client and
+ * the raw `sql` keeps full serialization. Sharing one client would make any raw `sql` query that binds a
+ * JS Date/object/array throw ERR_INVALID_ARG_TYPE.
  */
 
 import postgres from "postgres"
@@ -37,15 +43,22 @@ export async function withWorkerPg(): Promise<WorkerPgHarness | null> {
   }
 
   const uri = started.getConnectionUri()
+  // Raw client (full postgres.js serialization) for raw `sql` queries + migrations.
   const sql = postgres(uri, { max: 4, onnotice: () => {} }) as Sql
-  const db = drizzle(sql, { schema })
+  // Drizzle gets its OWN client so it never clobbers `sql`'s value serializers (see makeDb in
+  // @civfix/api src/db/client.ts and drizzle-orm#3108). Mirrors the API test harness.
+  const drizzleSql = postgres(uri, { max: 2, onnotice: () => {} })
+  const db = drizzle(drizzleSql, { schema })
+
+  const closeClients = () =>
+    Promise.all([sql.end({ timeout: 5 }), drizzleSql.end({ timeout: 5 })]).catch(() => {})
 
   try {
     // Apply the EXACT canonical migrations the production runner applies (default dir resolves to the
     // API package's drizzle/ folder via the runner's own module-relative path).
     await applyMigrations(sql)
   } catch (err) {
-    await sql.end({ timeout: 5 }).catch(() => {})
+    await closeClients()
     await started.stop().catch(() => {})
     throw err
   }
@@ -57,7 +70,7 @@ export async function withWorkerPg(): Promise<WorkerPgHarness | null> {
     async teardown() {
       if (torn) return
       torn = true
-      await sql.end({ timeout: 5 }).catch(() => {})
+      await closeClients()
       await started.stop().catch(() => {})
     },
   }
