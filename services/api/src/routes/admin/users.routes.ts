@@ -1,0 +1,182 @@
+/**
+ * Admin users routes (Phase 2).
+ *
+ *   GET  /admin/users              the user list (filter/search/paginate) (AdminUserListResponse).
+ *   GET  /admin/users/:id          a user detail (GetAdminUserResponse).
+ *   GET  /admin/users/:id/reports  the user's reports (UserReportsResponse).
+ *   GET  /admin/users/:id/events   the user's cleanups (UserEventsResponse).
+ *   GET  /admin/users/:id/messages the user's chat messages (UserMessagesResponse).
+ *   POST /admin/users/:id/flag     flag/unflag (FlagUserRequest). [csrf]
+ *   POST /admin/users/:id/status   set account status; ban revokes sessions (SetUserStatusRequest). [csrf]
+ *   POST /admin/users/:id/role     set role (SetRoleRequest). [csrf]
+ *
+ * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
+ * applied by routes/admin/index.ts; mutations additionally carry csrfProtect. The acting operator's
+ * userId comes from request.auth.userId and is recorded on every audit write (flag/status audits are
+ * written inside the repo transaction; the role audit by the service). The service is built lazily from
+ * the container (Drizzle user repo) with the session-revoke wired to SessionService.revokeAllForUser and
+ * the role write wired to UserStore.setRole (both from app.authServices), or from a per-instance test
+ * override.
+ */
+
+import {
+  AdminUserListQuerySchema,
+  FlagUserRequestSchema,
+  SetRoleRequestSchema,
+  SetUserStatusRequestSchema,
+  UserSubListQuerySchema,
+  type AdminOkResponse,
+  type AdminUserDTO,
+  type AdminUserListResponse,
+  type UserEventsResponse,
+  type UserMessagesResponse,
+  type UserReportsResponse,
+} from "@civfix/shared"
+import type { FastifyInstance } from "fastify"
+import type { Container } from "../../di.js"
+import { csrfProtect } from "../../auth/csrf.js"
+import { idParam, parse } from "./_route-utils.js"
+import {
+  makeAdminUserService,
+  type AdminUserRepository,
+  type AdminUserService,
+  type SessionControl,
+  type SetUserRole,
+} from "../../services/admin/admin-user-service.js"
+import { makeDrizzleAdminUserRepository } from "../../services/admin/admin-user-repository.drizzle.js"
+
+/**
+ * Optional injected admin-user dependencies (tests). When present the routes build the service from
+ * these (an in-memory repo + stub revoke/role seams) instead of the container, so the HTTP flow runs
+ * offline.
+ */
+export interface AdminUserRouteOverrides {
+  repo: AdminUserRepository
+  sessions: SessionControl
+  setUserRole: SetUserRole
+  now?: () => Date
+}
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /** Injected admin-user route overrides (tests). See AdminUserRouteOverrides. */
+    adminUserOverrides?: AdminUserRouteOverrides
+  }
+}
+
+export async function registerAdminUsersRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
+  /** Build the admin-user service from injected overrides (tests) or the container (production). */
+  function service(): AdminUserService {
+    const overrides = app.adminUserOverrides
+    if (overrides) {
+      return makeAdminUserService({
+        repo: overrides.repo,
+        sessions: overrides.sessions,
+        setUserRole: overrides.setUserRole,
+        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+      })
+    }
+    const repo: AdminUserRepository = makeDrizzleAdminUserRepository(container.getDb().sql)
+    // H2: a ban revokes ALL the user's sessions + marks the account banned; a role change revokes all
+    // sessions so a cached role cannot outlive the change. Both are wired to the SessionService in the
+    // auth bundle (present whenever the admin routes are mounted).
+    const sessionSvc = app.authServices.sessions
+    const sessions: SessionControl = {
+      ban: (userId) => sessionSvc.banUser(userId),
+      clearBan: (userId) => sessionSvc.clearBan(userId),
+      revokeAll: (userId) => sessionSvc.revokeAllForUser(userId),
+    }
+    const setUserRole: SetUserRole = async (userId, role) => {
+      await app.authServices.users.setRole(userId, role)
+    }
+    return makeAdminUserService({ repo, sessions, setUserRole })
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /admin/users
+  // -------------------------------------------------------------------------
+  app.get("/admin/users", async (request, reply) => {
+    const query = parse(AdminUserListQuerySchema, request.query)
+    const payload: AdminUserListResponse = await service().list(query)
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /admin/users/:id
+  // -------------------------------------------------------------------------
+  app.get("/admin/users/:id", async (request, reply) => {
+    const { id } = idParam(request)
+    const payload: AdminUserDTO = await service().get(id)
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /admin/users/:id/reports
+  // -------------------------------------------------------------------------
+  app.get("/admin/users/:id/reports", async (request, reply) => {
+    const { id } = idParam(request)
+    const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
+    const payload: UserReportsResponse = await service().getReports(query)
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /admin/users/:id/events
+  // -------------------------------------------------------------------------
+  app.get("/admin/users/:id/events", async (request, reply) => {
+    const { id } = idParam(request)
+    const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
+    const payload: UserEventsResponse = await service().getEvents(query)
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /admin/users/:id/messages
+  // -------------------------------------------------------------------------
+  app.get("/admin/users/:id/messages", async (request, reply) => {
+    const { id } = idParam(request)
+    const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
+    const payload: UserMessagesResponse = await service().getMessages(query)
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:id/flag  [csrf]
+  // -------------------------------------------------------------------------
+  app.post("/admin/users/:id/flag", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(FlagUserRequestSchema, { ...(request.body as object), id })
+    await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:id/status  [csrf]   (ban revokes all the user's sessions)
+  // -------------------------------------------------------------------------
+  app.post("/admin/users/:id/status", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(SetUserStatusRequestSchema, { ...(request.body as object), id })
+    await service().setStatus(id, {
+      status: body.status,
+      reason: body.reason ?? null,
+      actorId: request.auth.userId,
+    })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:id/role  [csrf]
+  // -------------------------------------------------------------------------
+  app.post("/admin/users/:id/role", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(SetRoleRequestSchema, { ...(request.body as object), id })
+    await service().setRole(id, { role: body.role, actorId: request.auth.userId })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+}

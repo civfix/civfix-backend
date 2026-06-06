@@ -3,8 +3,9 @@
  *
  * Imports the canonical endpoint registry from @civfix/shared/client (the single source of truth the
  * web + mobile clients call) and, against a server built with ALL fakes/overrides (no Docker, no infra),
- * asserts EVERY one of the ~43 endpoints is REGISTERED and reachable: app.inject for each returns
- * something OTHER than Fastify's route-not-found 404. This proves the entire contract surface is wired.
+ * asserts EVERY one of the 112 endpoints (45 Phase 1 + 67 Phase 2 admin) is REGISTERED and reachable:
+ * app.inject for each returns something OTHER than Fastify's route-not-found 404. This proves the entire
+ * contract surface is wired.
  *
  * What "registered" means here: a matched route runs SOME handler (auth guard, validation, or the
  * handler body), so the response is NOT produced by Fastify's notFound handler. We discriminate the two
@@ -203,8 +204,11 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 45 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(45)
+  it("covers ALL 112 endpoints in the registry (no endpoint skipped)", () => {
+    // 45 Phase 1 + 67 Phase 2 admin endpoints (per documents/phase2/02-contract.md). The admin routes
+    // mount under the requireOperator guard, so an unauthenticated inject above returns 401 (a wired
+    // route), not the route-missing 404 - which is exactly what the per-endpoint assertions check.
+    expect(Object.keys(endpoints).length).toBe(112)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

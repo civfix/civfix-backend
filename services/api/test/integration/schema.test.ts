@@ -39,6 +39,16 @@ const EXPECTED_TABLES = [
   "idempotency_keys",
   "jurisdiction_discovery_tasks",
   "audit_log",
+  // Phase 2 (admin / operator) tables, created by 0007_admin_phase2.sql.
+  "jurisdiction_contacts",
+  "gov_claims",
+  "user_moderation",
+  "moderation_items",
+  "mail_threads",
+  "mail_messages",
+  "mail_events",
+  "outreach_state",
+  "cleanup_timeline",
 ] as const
 
 describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
@@ -199,6 +209,105 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
       "0003_users_email.sql",
       "0004_cleanup_address.sql",
       "0005_report_claim_code.sql",
+      "0006_user_profile.sql",
+      "0007_admin_phase2.sql",
     ])
+  })
+})
+
+/**
+ * Phase 2 (admin / operator) schema scaffold: applies the SAME canonical migrations (0007 included) and
+ * asserts the new tables, columns, and constraints exist. Docker-gated like the block above (skipped
+ * locally, exercised in CI), so 0007_admin_phase2.sql and its Drizzle mirror are verified against a real
+ * Postgres without needing infra on a dev machine.
+ */
+describe.skipIf(!pg)("schema (Phase 2): admin migration 0007 produces the expected shape", () => {
+  const h = pg as PgHarness
+
+  it("creates every Phase 2 admin table", async () => {
+    const rows = await h.sql<{ table_name: string }[]>`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+    `
+    const present = new Set(rows.map((r) => r.table_name))
+    for (const t of [
+      "jurisdiction_contacts",
+      "gov_claims",
+      "user_moderation",
+      "moderation_items",
+      "mail_threads",
+      "mail_messages",
+      "mail_events",
+      "outreach_state",
+      "cleanup_timeline",
+    ]) {
+      expect(present.has(t), `missing Phase 2 table: ${t}`).toBe(true)
+    }
+  })
+
+  it("added cleanups.capacity (nullable int) and cleanups.bags (NOT NULL default 0)", async () => {
+    const rows = await h.sql<{ column_name: string; data_type: string; is_nullable: string }[]>`
+      SELECT column_name, data_type, is_nullable FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'cleanups'
+        AND column_name IN ('capacity', 'bags')
+    `
+    const byName = new Map(rows.map((r) => [r.column_name, r]))
+    expect(byName.get("capacity")?.data_type).toBe("integer")
+    expect(byName.get("capacity")?.is_nullable).toBe("YES")
+    expect(byName.get("bags")?.data_type).toBe("integer")
+    expect(byName.get("bags")?.is_nullable).toBe("NO")
+
+    // An insert that omits both new columns reads bags back as 0 (default) and capacity as NULL.
+    const host = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name) VALUES ('Cleanup Host') RETURNING id
+    `
+    const ins = await h.sql<{ bags: number; capacity: number | null }[]>`
+      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
+      VALUES (${host[0]!.id}, 'site', 'Bags default check',
+              ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), now(), 'upcoming')
+      RETURNING bags, capacity
+    `
+    expect(ins[0]?.bags).toBe(0)
+    expect(ins[0]?.capacity).toBeNull()
+  })
+
+  it("enforces the unique thread_token on mail_threads", async () => {
+    const idx = await h.sql<{ indexname: string }[]>`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'mail_threads'
+        AND indexname = 'mail_threads_thread_token_key'
+    `
+    expect(idx.length).toBe(1)
+    await h.sql`INSERT INTO mail_threads (thread_token) VALUES ('tok-dup')`
+    await expect(
+      h.sql`INSERT INTO mail_threads (thread_token) VALUES ('tok-dup')`,
+    ).rejects.toThrow()
+  })
+
+  it("enforces the gov_claims.status CHECK constraint", async () => {
+    // A valid status inserts; an invalid one is rejected by the CHECK.
+    await h.sql`
+      INSERT INTO gov_claims (name, method, status) VALUES ('Valid Claim', 'email', 'pending')
+    `
+    await expect(
+      h.sql`INSERT INTO gov_claims (name, method, status) VALUES ('Bad Claim', 'email', 'bogus')`,
+    ).rejects.toThrow()
+  })
+
+  it("enforces one default (NULL category) contact per geoid via the partial unique index", async () => {
+    // Seed a jurisdiction to reference (geoid FK). The seed already loads some; use a fresh one.
+    await h.sql`
+      INSERT INTO jurisdictions (geoid, name, layer, priority, geom)
+      VALUES ('TEST07', 'Test City', 'place', 1,
+              ST_SetSRID(ST_GeomFromText('MULTIPOLYGON(((0 0,0 1,1 1,1 0,0 0)))'), 4326))
+      ON CONFLICT (geoid) DO NOTHING
+    `
+    // Two default (NULL category) rows for the same geoid collide on the partial unique index.
+    await h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email) VALUES ('TEST07', NULL, 'a@x.gov')`
+    await expect(
+      h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email) VALUES ('TEST07', NULL, 'b@x.gov')`,
+    ).rejects.toThrow()
+    // But a category-specific row alongside the default is allowed.
+    await h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email) VALUES ('TEST07', 'trash', 'c@x.gov')`
   })
 })

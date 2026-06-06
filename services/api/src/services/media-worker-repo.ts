@@ -19,6 +19,9 @@
 import { and, eq, isNull, lt, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import { abuseFlags } from "../db/schema/moderation.js"
+import { moderationItems } from "../db/schema/moderation_items.js"
+import { reports } from "../db/schema/reports.js"
+import { jurisdictions } from "../db/schema/jurisdictions.js"
 import type { Db } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
@@ -82,6 +85,41 @@ export interface MediaWorkerRepo {
   findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]>
   /** Delete a media_assets row by id. Idempotent (deleting a missing id is a no-op). */
   deleteById(id: string): Promise<void>
+  /**
+   * Phase 2 MODERATION PRODUCER HOOK (optional). Enqueue a moderation_items row for a report whose media
+   * the worker just HELD (NSFW score over threshold, or a near-duplicate cluster). The kind is "image"
+   * for an NSFW hold and "duplicate" for a phash-duplicate hold; the report's media surfaces in the
+   * operator moderation detail. DEDUPED against an existing OPEN item for the report so a re-delivered
+   * job does not double-enqueue. Optional on the interface so the in-memory worker test fake need not
+   * implement it; the production impl below provides it.
+   *
+   * INTEGRATION POINT (documented, NOT auto-wired to keep the worker pipeline untouched): in
+   * services/media-worker/src/jobs/media-checks.ts, in the `result.status === "held"` branch of
+   * runMediaChecksJob (around the existing `log("media.checks: held", ...)` call), when the asset has a
+   * `reportId`, call:
+   *
+   *     if (asset.reportId && deps.repo.enqueueHeldModerationItem) {
+   *       await deps.repo
+   *         .enqueueHeldModerationItem({
+   *           reportId: asset.reportId,
+   *           reason: result.flags.some((f) => f.reason === "phash_dup")
+   *             ? "Near-duplicate cluster"
+   *             : "NSFW model over threshold",
+   *           kind: result.flags.some((f) => f.reason === "phash_dup") ? "duplicate" : "image",
+   *           note: result.note ?? null,
+   *         })
+   *         .catch((err) => log("media.checks: moderation enqueue failed (non-fatal)", { err: String(err) }))
+   *     }
+   *
+   * This is intentionally a best-effort, non-fatal call (a moderation-enqueue failure must not flip an
+   * already-correct media hold into a job failure), mirroring the existing best-effort abuse_flag insert.
+   */
+  enqueueHeldModerationItem?(input: {
+    reportId: string
+    reason: string
+    kind?: "image" | "duplicate"
+    note?: string | null
+  }): Promise<void>
 }
 
 function toAsset(row: typeof mediaAssets.$inferSelect): MediaWorkerAsset {
@@ -155,6 +193,57 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
 
     async deleteById(id: string): Promise<void> {
       await db.delete(mediaAssets).where(eq(mediaAssets.id, id))
+    },
+
+    async enqueueHeldModerationItem(input: {
+      reportId: string
+      reason: string
+      kind?: "image" | "duplicate"
+      note?: string | null
+    }): Promise<void> {
+      // Dedupe: skip when an OPEN moderation item already exists for this report (e.g. the anon
+      // hold-then-publish path already enqueued one at submit, or a re-delivered worker job).
+      const existing = await db
+        .select({ id: moderationItems.id })
+        .from(moderationItems)
+        .where(
+          and(
+            eq(moderationItems.subjectType, "report"),
+            eq(moderationItems.subjectId, input.reportId),
+            eq(moderationItems.status, "open"),
+          ),
+        )
+        .limit(1)
+      if (existing[0]) return
+
+      // Read the report's category + jurisdiction name + description so the moderation detail is useful.
+      const ctx = await db
+        .select({
+          category: reports.category,
+          description: reports.description,
+          place: jurisdictions.name,
+        })
+        .from(reports)
+        .leftJoin(jurisdictions, eq(jurisdictions.geoid, reports.jurisdictionGeoid))
+        .where(eq(reports.id, input.reportId))
+        .limit(1)
+      const row = ctx[0]
+      if (!row) return
+
+      const kind = input.kind ?? "image"
+      await db.insert(moderationItems).values({
+        kind,
+        subjectType: "report",
+        subjectId: input.reportId,
+        flag: kind === "duplicate" ? "Near-duplicate media" : "Held media (NSFW)",
+        reason: input.reason,
+        category: row.category,
+        place: row.place,
+        priority: "high",
+        autoAction: "Hidden pending review",
+        status: "open",
+        meta: { reporter: "Anonymous", desc: row.description ?? "", note: input.note ?? null },
+      })
     },
   }
 }

@@ -39,30 +39,64 @@ export interface JurisdictionDiscoveryJob {
  */
 export interface JurisdictionHealthRow {
   geoid: string
-  /** contact_emails text[]; null or empty means "no known contact" -> needs discovery. */
+  /** contact_emails text[]; null or empty means "no legacy contact". */
   contactEmails: string[] | null
   /** contact_updated_at timestamptz; null or older than CONTACT_STALE_MONTHS -> needs discovery. */
   contactUpdatedAt: Date | null
+  /**
+   * Phase 2: whether ANY usable jurisdiction_contacts row exists for the geoid (a category-specific OR a
+   * default/category-NULL row with a non-empty email). The per-category routing model resolves
+   * category-specific -> default -> legacy contact_emails[]; a present jurisdiction_contacts row means
+   * the jurisdiction IS routable even if the legacy contact_emails[] column is still empty. Optional +
+   * defaulting to false so the decision stays BACKWARD COMPATIBLE: when no jurisdiction_contacts rows
+   * exist (the Phase 1 state), the behavior is exactly the legacy contact_emails[] check.
+   */
+  hasRoutingContact?: boolean
   population?: number | null
 }
 
 /**
  * PURE decision: does this jurisdiction need a (re)discovery pass as of `now`?
  *
- * True when EITHER it has no usable contact emails (null/empty/all-blank), OR its contact metadata is
- * missing a timestamp, OR that timestamp is older than CONTACT_STALE_MONTHS. False only for a
- * jurisdiction that both has a contact and was refreshed within the window.
+ * Contact resolution precedence (Phase 2): a jurisdiction is "routable" when it has a per-category /
+ * default jurisdiction_contacts row (`hasRoutingContact`) OR a usable legacy contact_emails[] entry.
+ *   - No routable contact at all  -> needs discovery (true).
+ *   - A jurisdiction_contacts row -> routable now; only the staleness clock can still flag it, and only
+ *     when the legacy contact_updated_at is set + old (a fresh save sets contact_updated_at, so a
+ *     just-saved contact never re-flags; a contact with no timestamp does NOT re-flag when a
+ *     jurisdiction_contacts row exists, since that row is the authoritative routing signal).
+ *   - Legacy emails only          -> the Phase 1 behavior: routable but re-flagged when the metadata
+ *     timestamp is missing or older than CONTACT_STALE_MONTHS.
  *
- * No DB, no clock of its own: `now` is injected so callers (and tests) control time.
+ * BACKWARD COMPATIBLE: with `hasRoutingContact` absent/false the function reduces to the original legacy
+ * check exactly, so an empty jurisdiction_contacts table changes nothing. No DB, no clock of its own:
+ * `now` is injected so callers (and tests) control time.
  */
 export function needsDiscovery(row: JurisdictionHealthRow, now: Date): boolean {
-  const hasContact = Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
-  if (!hasContact) return true
+  const hasLegacyContact =
+    Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
+  const hasRoutingContact = row.hasRoutingContact === true
 
+  // No routable contact via either path -> needs discovery.
+  if (!hasRoutingContact && !hasLegacyContact) return true
+
+  // A per-category / default jurisdiction_contacts row is the authoritative routing signal: the
+  // jurisdiction is routable. It is only re-flagged for staleness when the legacy metadata timestamp is
+  // present AND old (a just-saved contact stamps contact_updated_at, so it stays fresh; a missing
+  // timestamp does NOT re-flag here, unlike the legacy-only path, because the row itself proves routing).
+  if (hasRoutingContact) {
+    if (!(row.contactUpdatedAt instanceof Date) || Number.isNaN(row.contactUpdatedAt.getTime())) {
+      return false
+    }
+    const staleBefore = new Date(now)
+    staleBefore.setMonth(staleBefore.getMonth() - CONTACT_STALE_MONTHS)
+    return row.contactUpdatedAt.getTime() < staleBefore.getTime()
+  }
+
+  // Legacy-only path: the Phase 1 behavior (missing/old timestamp re-flags).
   if (!(row.contactUpdatedAt instanceof Date) || Number.isNaN(row.contactUpdatedAt.getTime())) {
     return true
   }
-
   const staleBefore = new Date(now)
   staleBefore.setMonth(staleBefore.getMonth() - CONTACT_STALE_MONTHS)
   return row.contactUpdatedAt.getTime() < staleBefore.getTime()
@@ -116,14 +150,35 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
   }
 }
 
-/** Load the discovery-relevant scalar columns for a geoid. Returns null if the row vanished. */
+/**
+ * Load the discovery-relevant scalar columns for a geoid. Returns null if the row vanished.
+ *
+ * Phase 2: also probes jurisdiction_contacts for ANY usable routing row (a category-specific OR a
+ * default/category-NULL row with a non-empty email) so `needsDiscovery` consults the per-category routing
+ * model (category-specific -> default -> legacy contact_emails[]). `has_routing_contact` is false when the
+ * table has no row for the geoid, which keeps the legacy-only behavior unchanged (backward compatible).
+ */
 async function loadHealth(sql: Sql, geoid: string): Promise<JurisdictionHealthRow | null> {
   const rows = await sql<
-    { geoid: string; contact_emails: string[] | null; contact_updated_at: Date | null; population: number | null }[]
+    {
+      geoid: string
+      contact_emails: string[] | null
+      contact_updated_at: Date | null
+      population: number | null
+      has_routing_contact: boolean
+    }[]
   >`
-    SELECT geoid, contact_emails, contact_updated_at, population
-    FROM jurisdictions
-    WHERE geoid = ${geoid}
+    SELECT
+      j.geoid,
+      j.contact_emails,
+      j.contact_updated_at,
+      j.population,
+      EXISTS (
+        SELECT 1 FROM jurisdiction_contacts jc
+        WHERE jc.geoid = j.geoid AND jc.email IS NOT NULL AND jc.email <> ''
+      ) AS has_routing_contact
+    FROM jurisdictions j
+    WHERE j.geoid = ${geoid}
     LIMIT 1
   `
   const row = rows[0]
@@ -132,6 +187,7 @@ async function loadHealth(sql: Sql, geoid: string): Promise<JurisdictionHealthRo
     geoid: row.geoid,
     contactEmails: row.contact_emails,
     contactUpdatedAt: row.contact_updated_at,
+    hasRoutingContact: row.has_routing_contact,
     population: row.population,
   }
 }

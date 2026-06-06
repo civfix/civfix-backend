@@ -16,16 +16,24 @@ import {
   CleanupTypeSchema,
   DiscoveryStatusSchema,
   GeomSourceSchema,
+  GovClaimStatusSchema,
+  GovMethodSchema,
   JurisdictionLayerSchema,
+  MailDirectionSchema,
+  MailStatusSchema,
   MediaKindSchema,
   MediaStatusSchema,
+  ModerationKindSchema,
   NotificationTypeSchema,
   OAuthProviderSchema,
+  PrioritySchema,
   RegisterPushTokenRequestSchema,
   ReportCategorySchema,
   ReportStatusSchema,
   ReportVisibilitySchema,
+  RiskSchema,
   RoleSchema,
+  UserStatusSchema,
 } from "@civfix/shared"
 import {
   ABUSE_REASON_VALUES,
@@ -37,9 +45,15 @@ import {
   CLEANUP_TYPE_VALUES,
   DISCOVERY_STATUS_VALUES,
   GEOM_SOURCE_VALUES,
+  GOV_CLAIM_STATUS_VALUES,
+  GOV_METHOD_VALUES,
   JURISDICTION_LAYER_VALUES,
+  MAIL_DIRECTION_VALUES,
+  MAIL_THREAD_STATUS_VALUES,
   MEDIA_KIND_VALUES,
   MEDIA_STATUS_VALUES,
+  MODERATION_KIND_VALUES,
+  MODERATION_PRIORITY_VALUES,
   NOTIFICATION_TYPE_VALUES,
   OAUTH_PROVIDER_VALUES,
   PUSH_PLATFORM_VALUES,
@@ -47,6 +61,8 @@ import {
   REPORT_STATUS_VALUES,
   REPORT_VISIBILITY_VALUES,
   ROLE_VALUES,
+  USER_ACCOUNT_STATUS_VALUES,
+  USER_RISK_VALUES,
 } from "../../src/db/schema/types.js"
 
 describe("schema enum tuples mirror @civfix/shared", () => {
@@ -69,6 +85,15 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["AbuseReason", ABUSE_REASON_VALUES, AbuseReasonSchema.options],
     ["AbuseSource", ABUSE_SOURCE_VALUES, AbuseSourceSchema.options],
     ["DiscoveryStatus", DISCOVERY_STATUS_VALUES, DiscoveryStatusSchema.options],
+    // Phase 2 (admin) tuples that mirror standalone shared enums.
+    ["GovMethod", GOV_METHOD_VALUES, GovMethodSchema.options],
+    ["GovClaimStatus", GOV_CLAIM_STATUS_VALUES, GovClaimStatusSchema.options],
+    ["UserStatus", USER_ACCOUNT_STATUS_VALUES, UserStatusSchema.options],
+    ["Risk", USER_RISK_VALUES, RiskSchema.options],
+    ["ModerationKind", MODERATION_KIND_VALUES, ModerationKindSchema.options],
+    ["Priority", MODERATION_PRIORITY_VALUES, PrioritySchema.options],
+    ["MailStatus", MAIL_THREAD_STATUS_VALUES, MailStatusSchema.options],
+    ["MailDirection", MAIL_DIRECTION_VALUES, MailDirectionSchema.options],
   ])("%s matches the shared enum exactly", (_name, mirrored, shared) => {
     expect([...mirrored]).toEqual([...shared])
   })

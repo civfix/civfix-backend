@@ -26,11 +26,23 @@ export interface RecordedFlag {
   source: NonNullable<NewAbuseFlag["source"]>
 }
 
+/** A recorded held-media moderation enqueue (M3), inspectable by tests. */
+export interface RecordedModerationEnqueue {
+  reportId: string
+  reason: string
+  kind?: "image" | "duplicate"
+  note?: string | null
+}
+
 export class InMemoryWorkerRepo implements MediaWorkerRepo {
   readonly byId = new Map<string, StoredWorkerMedia>()
   readonly flags: RecordedFlag[] = []
+  /** Recorded enqueueHeldModerationItem calls (M3: the held media -> moderation queue producer). */
+  readonly moderationEnqueues: RecordedModerationEnqueue[] = []
   /** Set to a non-null Error to make a method reject (simulate an infra failure). */
   failApplyResult: Error | null = null
+  /** Set to a non-null Error to make enqueueHeldModerationItem reject (assert it is non-fatal). */
+  failModerationEnqueue: Error | null = null
 
   /** Seed a media row. Returns the stored row. */
   seed(
@@ -107,6 +119,17 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
 
   deleteById(id: string): Promise<void> {
     this.byId.delete(id)
+    return Promise.resolve()
+  }
+
+  enqueueHeldModerationItem(input: {
+    reportId: string
+    reason: string
+    kind?: "image" | "duplicate"
+    note?: string | null
+  }): Promise<void> {
+    if (this.failModerationEnqueue) return Promise.reject(this.failModerationEnqueue)
+    this.moderationEnqueues.push({ ...input })
     return Promise.resolve()
   }
 

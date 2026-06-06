@@ -7,7 +7,7 @@
  */
 
 import { sql } from "drizzle-orm"
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
+import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 import { geometry, type CLEANUP_STATUS_VALUES, type CLEANUP_TYPE_VALUES } from "./types.js"
 
@@ -32,6 +32,10 @@ export const cleanups = pgTable(
     bring: text("bring").array(),
     // Nullable host-typed display line; see 0004_cleanup_address.sql.
     address: text("address"),
+    // Phase 2 (Events) Turnout panel: capacity is the RSVP cap (nullable), bags the count collected
+    // (default 0). Added in 0007_admin_phase2.sql.
+    capacity: integer("capacity"),
+    bags: integer("bags").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   // NOTE: GiST(geom) is in 0001_core.sql.

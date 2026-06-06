@@ -1,0 +1,334 @@
+import { describe, it, expect } from "vitest"
+import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import {
+  makeAdminUserService,
+  resolveUserFilter,
+  type AdminUserService,
+} from "../../src/services/admin/admin-user-service.js"
+import type { Role } from "@civfix/shared"
+
+/**
+ * Offline unit tests for the admin users service over the in-memory AdminUserRepository (no DB, no
+ * Docker). They cover the list (status + flagged facet, search, pagination), the detail (role + derived
+ * trust/status/counts), the three sub-activity lists (reports/events/messages, paginated), the flag
+ * toggle (user_moderation + audit), setStatus (ban revokes sessions + sets account_status + audit) and
+ * setRole (delegates to the injected setUserRole seam + audit), plus the pure helper.
+ */
+
+const NOW = new Date("2026-06-06T00:00:00.000Z")
+
+interface Harness {
+  repo: InMemoryAdminUserRepository
+  svc: AdminUserService
+  /** Records of sessions.ban(userId) calls (H2). */
+  banned: string[]
+  /** Records of sessions.clearBan(userId) calls (H2). */
+  cleared: string[]
+  /** Records of sessions.revokeAll(userId) calls (H2). */
+  revoked: string[]
+  /** Records of setUserRole(userId, role) calls. */
+  roleWrites: Array<{ userId: string; role: Role }>
+}
+
+function harness(): Harness {
+  const repo = new InMemoryAdminUserRepository()
+  const banned: string[] = []
+  const cleared: string[] = []
+  const revoked: string[] = []
+  const roleWrites: Array<{ userId: string; role: Role }> = []
+  const svc = makeAdminUserService({
+    repo,
+    sessions: {
+      ban: (userId) => {
+        banned.push(userId)
+        return Promise.resolve(1) // pretend 1 session revoked
+      },
+      clearBan: (userId) => {
+        cleared.push(userId)
+        return Promise.resolve()
+      },
+      revokeAll: (userId) => {
+        revoked.push(userId)
+        return Promise.resolve(1)
+      },
+    },
+    setUserRole: (userId, role) => {
+      roleWrites.push({ userId, role })
+      return Promise.resolve()
+    },
+    now: () => NOW,
+  })
+  return { repo, svc, banned, cleared, revoked, roleWrites }
+}
+
+/** A timestamp `hours` before NOW. */
+function hoursAgo(hours: number): Date {
+  return new Date(NOW.getTime() - hours * 60 * 60 * 1000)
+}
+
+describe("admin users pure helpers", () => {
+  it("resolveUserFilter maps the design facet to status + flaggedOnly", () => {
+    expect(resolveUserFilter("all")).toEqual({ status: null, flaggedOnly: false })
+    expect(resolveUserFilter("active")).toEqual({ status: "active", flaggedOnly: false })
+    expect(resolveUserFilter("suspended")).toEqual({ status: "suspended", flaggedOnly: false })
+    expect(resolveUserFilter("flagged")).toEqual({ status: null, flaggedOnly: true })
+  })
+})
+
+describe("admin users list", () => {
+  it("projects a list row with derived trust/status/counts and rel/abs labels", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({
+      id: "u-1",
+      name: "Jane Neighbor",
+      handle: "jane",
+      emailVerified: true,
+      city: "Austin",
+      joinedAt: new Date(Date.UTC(2025, 0, 1)),
+      lastActiveAt: hoursAgo(5),
+      accountStatus: "active",
+      reports: 7,
+      cleanups: 2,
+      removals: 1,
+      strikes: 0,
+      risk: "watch",
+    })
+    const page = await svc.list({})
+    const row = page.items[0]!
+    expect(row.name).toBe("Jane Neighbor")
+    expect(row.trust).toBe("Verified neighbor")
+    expect(row.city).toBe("Austin")
+    expect(row.status).toBe("active")
+    expect(row.reports).toBe(7)
+    expect(row.cleanups).toBe(2)
+    expect(row.removals).toBe(1)
+    expect(row.risk).toBe("watch")
+    expect(row.lastActive).toBe("5h")
+    expect(row.joined).toContain("2025")
+  })
+
+  it("filters by status (active/suspended) and by flagged", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "a", accountStatus: "active" })
+    repo.seedUser({ id: "s", accountStatus: "suspended" })
+    repo.seedUser({ id: "b", accountStatus: "banned" })
+    repo.seedUser({ id: "f", accountStatus: "active", flagged: true, flagReason: "spammy" })
+
+    expect((await svc.list({ filter: "active" })).items.map((i) => i.id).sort()).toEqual(["a", "f"])
+    expect((await svc.list({ filter: "suspended" })).items.map((i) => i.id)).toEqual(["s"])
+    const flagged = (await svc.list({ filter: "flagged" })).items
+    expect(flagged.map((i) => i.id)).toEqual(["f"])
+    expect(flagged[0]?.flagReason).toBe("spammy")
+  })
+
+  it("search matches name, handle, and city (case-insensitive)", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1", name: "Maria Lopez", handle: "mlopez", city: "Dallas" })
+    repo.seedUser({ id: "u-2", name: "Sam Park", handle: "spark", city: "Austin" })
+    expect((await svc.list({ q: "maria" })).items.map((i) => i.id)).toEqual(["u-1"])
+    expect((await svc.list({ q: "SPARK" })).items.map((i) => i.id)).toEqual(["u-2"])
+    expect((await svc.list({ q: "austin" })).items.map((i) => i.id)).toEqual(["u-2"])
+  })
+
+  it("paginates with a cursor (no overlap)", async () => {
+    const { repo, svc } = harness()
+    for (let i = 0; i < 5; i++) {
+      repo.seedUser({ id: `u${i}`, joinedAt: hoursAgo(i + 1) })
+    }
+    const first = await svc.list({ limit: 2 })
+    expect(first.items).toHaveLength(2)
+    const second = await svc.list({ limit: 2, cursor: first.nextCursor ?? undefined })
+    const firstIds = new Set(first.items.map((i) => i.id))
+    expect(second.items.every((i) => !firstIds.has(i.id))).toBe(true)
+  })
+})
+
+describe("admin users detail + sub-lists", () => {
+  it("detail includes the role", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1", role: "gov_admin" })
+    const detail = await svc.get("u-1")
+    expect(detail.role).toBe("gov_admin")
+  })
+
+  it("detail throws notFound for an unknown user", async () => {
+    const { svc } = harness()
+    await expect(svc.get("nope")).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("getReports/getEvents/getMessages project the sub-activity rows", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1" })
+    repo.seedReport("u-1", {
+      id: "r-1",
+      category: "trash",
+      title: "Bin",
+      place: "Austin",
+      status: "submitted",
+      createdAt: hoursAgo(3),
+    })
+    repo.seedEvent("u-1", {
+      id: "e-1",
+      title: "Park day",
+      place: "Austin",
+      role: "organizer",
+      attendees: 10,
+      whenAt: hoursAgo(48),
+    })
+    repo.seedMessage("u-1", {
+      id: "m-1",
+      text: "See you there",
+      thread: "Park day",
+      createdAt: hoursAgo(2),
+    })
+
+    const reports = await svc.getReports({ id: "u-1" })
+    expect(reports.items[0]).toMatchObject({
+      id: "r-1",
+      category: "trash",
+      status: "submitted",
+      age: "3h",
+    })
+    const events = await svc.getEvents({ id: "u-1" })
+    expect(events.items[0]).toMatchObject({ id: "e-1", role: "organizer", attendees: 10 })
+    const messages = await svc.getMessages({ id: "u-1" })
+    expect(messages.items[0]).toMatchObject({
+      id: "m-1",
+      text: "See you there",
+      thread: "Park day",
+    })
+  })
+
+  it("sub-lists throw notFound for an unknown user", async () => {
+    const { svc } = harness()
+    await expect(svc.getReports({ id: "nope" })).rejects.toMatchObject({ httpStatus: 404 })
+    await expect(svc.getEvents({ id: "nope" })).rejects.toMatchObject({ httpStatus: 404 })
+    await expect(svc.getMessages({ id: "nope" })).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("sub-lists paginate with a cursor", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1" })
+    for (let i = 0; i < 5; i++) {
+      repo.seedReport("u-1", {
+        id: `r${i}`,
+        category: "other",
+        title: `R${i}`,
+        place: "X",
+        status: "submitted",
+        createdAt: hoursAgo(i + 1),
+      })
+    }
+    const first = await svc.getReports({ id: "u-1", limit: 2 })
+    expect(first.items).toHaveLength(2)
+    const second = await svc.getReports({
+      id: "u-1",
+      limit: 2,
+      cursor: first.nextCursor ?? undefined,
+    })
+    const firstIds = new Set(first.items.map((i) => i.id))
+    expect(second.items.every((i) => !firstIds.has(i.id))).toBe(true)
+  })
+})
+
+describe("admin users mutations", () => {
+  it("flag toggles user_moderation.flagged on then off, each audited", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1", flagged: false })
+    const on = await svc.flag("u-1", { reason: "abuse", actorId: "op-1" })
+    expect(on).toBe(true)
+    expect(repo.users.get("u-1")?.flagged).toBe(true)
+    expect(repo.users.get("u-1")?.flagReason).toBe("abuse")
+    expect(repo.audits.at(-1)).toMatchObject({ action: "user.flagged", target: "user:u-1" })
+
+    const off = await svc.flag("u-1", { reason: null, actorId: "op-1" })
+    expect(off).toBe(false)
+    expect(repo.users.get("u-1")?.flagged).toBe(false)
+    expect(repo.audits.at(-1)).toMatchObject({ action: "user.unflagged" })
+  })
+
+  it("flag throws notFound for an unknown user", async () => {
+    const { svc } = harness()
+    await expect(svc.flag("nope", { reason: null, actorId: null })).rejects.toMatchObject({
+      httpStatus: 404,
+    })
+  })
+
+  it("setStatus to suspended sets account_status, audits, clears the ban marker, and does NOT revoke sessions", async () => {
+    const { repo, svc, banned, cleared } = harness()
+    repo.seedUser({ id: "u-1", accountStatus: "active" })
+    const result = await svc.setStatus("u-1", {
+      status: "suspended",
+      reason: "warnings",
+      actorId: "op-1",
+    })
+    expect(result.revokedSessions).toBe(0)
+    expect(repo.users.get("u-1")?.accountStatus).toBe("suspended")
+    expect(banned).toHaveLength(0)
+    // H2: a non-ban status lifts any stale ban marker (idempotent) but does not revoke sessions.
+    expect(cleared).toEqual(["u-1"])
+    expect(repo.audits.at(-1)).toMatchObject({
+      action: "user.status_changed",
+      meta: { status: "suspended" },
+    })
+  })
+
+  it("setStatus to banned sets account_status, BANS (revoke + marker), and audits user.banned (H2)", async () => {
+    const { repo, svc, banned, cleared } = harness()
+    repo.seedUser({ id: "u-1", accountStatus: "active" })
+    const result = await svc.setStatus("u-1", { status: "banned", reason: "tos", actorId: "op-1" })
+    expect(repo.users.get("u-1")?.accountStatus).toBe("banned")
+    // H2: ban revokes all sessions AND sets the banned marker (via sessions.ban); does not clearBan.
+    expect(banned).toEqual(["u-1"])
+    expect(cleared).toHaveLength(0)
+    expect(result.revokedSessions).toBeGreaterThanOrEqual(1)
+    expect(repo.audits.at(-1)).toMatchObject({ action: "user.banned", target: "user:u-1" })
+  })
+
+  it("setStatus surfaces a ban-revoke failure (H2: a failed ban must NOT 200)", async () => {
+    const repo = new InMemoryAdminUserRepository()
+    repo.seedUser({ id: "u-1", accountStatus: "active" })
+    const svc = makeAdminUserService({
+      repo,
+      sessions: {
+        ban: () => Promise.reject(new Error("redis down")),
+        clearBan: () => Promise.resolve(),
+        revokeAll: () => Promise.resolve(0),
+      },
+      setUserRole: () => Promise.resolve(),
+      now: () => NOW,
+    })
+    await expect(
+      svc.setStatus("u-1", { status: "banned", reason: "tos", actorId: "op-1" }),
+    ).rejects.toThrow("redis down")
+  })
+
+  it("setStatus throws notFound for an unknown user", async () => {
+    const { svc } = harness()
+    await expect(
+      svc.setStatus("nope", { status: "banned", reason: null, actorId: null }),
+    ).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("setRole delegates to setUserRole, audits, AND revokes sessions so the role change takes effect (H2)", async () => {
+    const { repo, svc, roleWrites, revoked } = harness()
+    repo.seedUser({ id: "u-1", role: "operator" })
+    await svc.setRole("u-1", { role: "citizen", actorId: "op-1" })
+    expect(roleWrites).toEqual([{ userId: "u-1", role: "citizen" }])
+    // H2: the demotion revokes all the user's sessions so the cached operator role cannot outlive it.
+    expect(revoked).toEqual(["u-1"])
+    expect(repo.audits.at(-1)).toMatchObject({
+      action: "user.role_changed",
+      meta: { role: "citizen" },
+    })
+  })
+
+  it("setRole throws notFound for an unknown user (before writing the role or revoking)", async () => {
+    const { svc, roleWrites, revoked } = harness()
+    await expect(svc.setRole("nope", { role: "operator", actorId: null })).rejects.toMatchObject({
+      httpStatus: 404,
+    })
+    expect(roleWrites).toHaveLength(0)
+    expect(revoked).toHaveLength(0)
+  })
+})

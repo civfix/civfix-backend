@@ -33,7 +33,13 @@ export interface PgBossJobsConfig {
  * missing queue. The worker creates the same names on its side; createQueue is idempotent so both
  * processes calling it is safe. Keep this list in sync with every name the API passes to enqueue().
  */
-export const API_QUEUE_NAMES = ["media.checks", "jurisdiction.discovery"] as const
+export const API_QUEUE_NAMES = [
+  "media.checks",
+  "jurisdiction.discovery",
+  // Phase 2 outreach digest: enqueued by discovery "Save & route" (singletonKey=geoid) and scheduled as
+  // a cron by registerOutreachJobs. Created here so both the enqueue + the schedule/work find the queue.
+  "outreach.digest",
+] as const
 
 /** Map the shared EnqueueOptions onto pg-boss SendOptions (only set the fields that are provided). */
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {

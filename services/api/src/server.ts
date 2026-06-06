@@ -35,6 +35,7 @@ import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
 import type { SocialServiceOverrides } from "./routes/social.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
 import { registerRoutes } from "./routes/index.js"
+import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
@@ -232,6 +233,11 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   if (typeof startableJobs.start === "function" && env.DATABASE_URL) {
     await startableJobs.start()
     app.log.info("jobs: queue started")
+
+    // Phase 2 outreach seam: register the outreach.digest cron + worker AFTER the API queues are up,
+    // and only when real (pg-boss) jobs back a real database (same gate as the queue start above).
+    // WAVE-1 this is a no-op; wave 2 fills registerOutreachJobs (see services/admin/outreach-jobs.ts).
+    await registerOutreachJobs(app.container)
   }
 
   async function shutdown(signal: string): Promise<void> {

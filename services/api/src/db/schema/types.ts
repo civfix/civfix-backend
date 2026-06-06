@@ -159,3 +159,55 @@ export const ABUSE_SOURCE_VALUES = ["worker", "api", "user_report"] as const
 
 /** jurisdiction_discovery_tasks.status. Mirrors shared DiscoveryStatusSchema. */
 export const DISCOVERY_STATUS_VALUES = ["open", "in_progress", "done"] as const
+
+// ---------------------------------------------------------------------------
+// Phase 2 (admin / operator) enum value tuples. These mirror the @civfix/shared
+// admin enums and the CHECK constraints in drizzle/0007_admin_phase2.sql.
+// ---------------------------------------------------------------------------
+
+/** gov_claims.method. Mirrors shared GovMethodSchema. */
+export const GOV_METHOD_VALUES = ["email", "cold_outreach"] as const
+
+/** gov_claims.status. Mirrors shared GovClaimStatusSchema. */
+export const GOV_CLAIM_STATUS_VALUES = ["pending", "approved", "rejected"] as const
+
+/** user_moderation.account_status. Mirrors shared UserStatusSchema. */
+export const USER_ACCOUNT_STATUS_VALUES = ["active", "suspended", "review", "banned"] as const
+
+/** user_moderation.risk. Mirrors shared RiskSchema. */
+export const USER_RISK_VALUES = ["low", "watch", "elevated", "high"] as const
+
+/** moderation_items.kind. Mirrors shared ModerationKindSchema. */
+export const MODERATION_KIND_VALUES = ["image", "pattern", "appeal", "gps", "duplicate"] as const
+
+/** moderation_items.subject_type. */
+export const MODERATION_SUBJECT_TYPE_VALUES = ["report", "user", "chat"] as const
+
+/** moderation_items.priority. Mirrors shared PrioritySchema. */
+export const MODERATION_PRIORITY_VALUES = ["low", "med", "high"] as const
+
+/** moderation_items.status. */
+export const MODERATION_STATUS_VALUES = ["open", "approved", "removed", "held"] as const
+
+/** mail_threads.status. Mirrors shared MailStatusSchema (order matches the shared enum for the drift guard). */
+export const MAIL_THREAD_STATUS_VALUES = [
+  "sent",
+  "delivered",
+  "opened",
+  "replied",
+  "auto",
+  "needs_action",
+  "bounced",
+] as const
+
+/** mail_messages.direction. Mirrors shared MailDirectionSchema. */
+export const MAIL_DIRECTION_VALUES = ["in", "out"] as const
+
+/** mail_events.type. */
+export const MAIL_EVENT_TYPE_VALUES = [
+  "sent",
+  "delivered",
+  "bounced",
+  "complained",
+  "opened",
+] as const

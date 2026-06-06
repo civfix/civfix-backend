@@ -166,6 +166,47 @@ describe("media.checks IMAGE path", () => {
     expect(env.repo.flags).toContainEqual({ subjectId: id, reason: "nsfw", source: "worker" })
   })
 
+  // M3: a held asset WITH a reportId enqueues a moderation item (the held media -> moderation queue
+  // producer the documented call site wires), so held media surfaces to operators.
+  it("M3: an NSFW hold on an authenticated report enqueues a high-priority moderation item", async () => {
+    const input = await fx.makeNsfwJpeg()
+    const id = "media-nsfw-rep"
+    const uploadId = "up-nsfw-rep"
+    const r2Key = `uploads/2026/06/${id}`
+    env.repo.seed({ id, uploadId, kind: "image", r2Key, reportId: "report-123" })
+    await env.storage.put(r2Key, Buffer.from(input), { contentType: "image/jpeg" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    expect(status).toBe("held")
+    expect(env.repo.moderationEnqueues).toHaveLength(1)
+    expect(env.repo.moderationEnqueues[0]).toMatchObject({
+      reportId: "report-123",
+      kind: "image",
+    })
+  })
+
+  it("M3: a moderation-enqueue failure is non-fatal (the media hold still completes)", async () => {
+    const input = await fx.makeNsfwJpeg()
+    const id = "media-nsfw-fail"
+    const uploadId = "up-nsfw-fail"
+    const r2Key = `uploads/2026/06/${id}`
+    env.repo.seed({ id, uploadId, kind: "image", r2Key, reportId: "report-456" })
+    await env.storage.put(r2Key, Buffer.from(input), { contentType: "image/jpeg" })
+    env.repo.failModerationEnqueue = new Error("moderation insert down")
+
+    // Must NOT throw, and the asset must still be held (the enqueue is best-effort).
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    expect(status).toBe("held")
+    expect(env.repo.get(id)!.status).toBe("held")
+  })
+
+  it("M3: a held asset with NO reportId does not enqueue a moderation item", async () => {
+    const input = await fx.makeNsfwJpeg()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+    await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    expect(env.repo.moderationEnqueues).toHaveLength(0)
+  })
+
   it("near-duplicate (repeated phash) -> held + abuse_flag reason phash_dup", async () => {
     // First upload: ready and its phash is now 'seen' by FakeAbuseChecks.
     const a = await fx.makeValidPng()

@@ -65,6 +65,10 @@ export async function resolveAuthContext(request: FastifyRequest): Promise<AuthC
   const services: AuthServices | undefined = request.server.authServices
   const token = presentedSessionToken(request)
   if (services && token) {
+    // H2 defense-in-depth + V1: resolveSession itself vetoes a banned account (a single Redis read,
+    // never Postgres) BEFORE it slides the session expiry, so a missed-revoke session cannot be extended
+    // past the banned marker and a banned user resolves to null here. The warm-session Redis-only
+    // property is preserved for active users (no store read is added on the hot path).
     const resolved = await services.sessions.resolveSession(token)
     if (resolved) {
       return { userId: resolved.userId, roles: resolved.roles, anon: false }

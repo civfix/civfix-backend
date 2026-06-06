@@ -35,6 +35,19 @@ function parseCsv(raw: string | undefined): string[] {
 }
 
 /**
+ * Split a comma list into a normalized (trimmed, lowercased) de-duplicated array. Used for
+ * ADMIN_EMAILS so the allowlist compare is case-insensitive and free of duplicates regardless of how
+ * the operator typed the .env value.
+ */
+function parseCsvLower(raw: string | undefined): string[] {
+  const seen = new Set<string>()
+  for (const item of parseCsv(raw)) {
+    seen.add(item.toLowerCase())
+  }
+  return [...seen]
+}
+
+/**
  * Parse a non-negative integer from an env string, falling back when blank/invalid. Used for the
  * optional tile zoom levels; an unparseable value silently uses the default rather than blocking boot
  * (these are [OPT], not [BOOT]).
@@ -132,6 +145,31 @@ export interface Env {
   OCI_EMAIL_SMTP_PASS: string
   MAIL_FROM_NOREPLY: string
   MAIL_FROM_OUTREACH: string
+
+  // ----- admin / operator (Phase 2) [OPT] -----
+  /**
+   * Allowlist of emails authorized to sign in to the admin/operator dashboard. Parsed from a
+   * comma-separated ADMIN_EMAILS into a normalized (trimmed, lowercased, de-duplicated) array. NOT
+   * required at boot: an EMPTY allowlist means NO ONE can log in to admin (admin login request returns
+   * the generic { sent: true } without issuing, and verify rejects). Document + set this in deployment
+   * to enable operator access.
+   */
+  ADMIN_EMAILS: string[]
+  /**
+   * Reply domain used to mint reply+{threadToken}@{MAIL_REPLY_DOMAIN} inbound addresses for the mail
+   * threads. Defaults to "civfix.org".
+   */
+  MAIL_REPLY_DOMAIN: string
+  /**
+   * Outreach throttle window in days: at most one outreach per jurisdiction per this many days.
+   * Defaults to 7.
+   */
+  OUTREACH_THROTTLE_DAYS: number
+  /**
+   * Cron expression for the daily outreach digest sweep (the "outreach.digest" pg-boss job). Defaults
+   * to "0 14 * * *" (14:00 daily). Not validated as a cron string here; the scheduler owns that.
+   */
+  OUTREACH_DIGEST_CRON: string
 
   // ----- feature / integration [OPT] -----
   CF_TURNSTILE_SECRET?: string
@@ -321,6 +359,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OCI_EMAIL_SMTP_PASS,
     MAIL_FROM_NOREPLY: (source.MAIL_FROM_NOREPLY ?? "").trim() || "no-reply@civfix.org",
     MAIL_FROM_OUTREACH: (source.MAIL_FROM_OUTREACH ?? "").trim() || "outreach@civfix.org",
+
+    // Admin / operator (Phase 2). ADMIN_EMAILS is normalized (lowercased) + de-duped; empty is allowed
+    // (no admin can log in). The rest carry sane defaults so the dashboard backend boots with no config.
+    ADMIN_EMAILS: parseCsvLower(source.ADMIN_EMAILS),
+    MAIL_REPLY_DOMAIN: (source.MAIL_REPLY_DOMAIN ?? "").trim() || "civfix.org",
+    OUTREACH_THROTTLE_DAYS: parseIntOr(source.OUTREACH_THROTTLE_DAYS, 7),
+    OUTREACH_DIGEST_CRON: (source.OUTREACH_DIGEST_CRON ?? "").trim() || "0 14 * * *",
 
     ...optGroup(source, [
       "CF_TURNSTILE_SECRET",

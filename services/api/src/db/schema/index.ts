@@ -44,3 +44,13 @@ export * from "./moderation.js"
 export * from "./idempotency.js"
 export * from "./discovery.js"
 export * from "./audit.js"
+
+// Phase 2 (admin / operator): routing contacts, gov queue, user trust, moderation queue, mail,
+// outreach throttle, event timeline. Canonical DDL in drizzle/0007_admin_phase2.sql.
+export * from "./jurisdiction_contacts.js"
+export * from "./gov_claims.js"
+export * from "./user_moderation.js"
+export * from "./moderation_items.js"
+export * from "./mail.js"
+export * from "./outreach_state.js"
+export * from "./cleanup_timeline.js"

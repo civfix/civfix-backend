@@ -91,6 +91,17 @@ export class PgSessionStore implements SessionStore {
   async deleteById(hash: string): Promise<void> {
     await this.db.delete(sessions).where(eq(sessions.id, hash))
   }
+
+  async deleteAllForUser(userId: string): Promise<string[]> {
+    // Delete every session row for the user and RETURN the ids (token hashes) so the caller can drop the
+    // matching write-through cache entries (the durable row is the source of truth; the cache is keyed by
+    // the same id). Phase 2: a ban revokes all of the user's sessions instantly.
+    const deleted = await this.db
+      .delete(sessions)
+      .where(eq(sessions.userId, userId))
+      .returning({ id: sessions.id })
+    return deleted.map((r) => r.id)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +185,17 @@ export class PgUserStore implements UserStore {
     if (!r) throw new Error("PgUserStore.updateProfile: user not found")
     return toUserRecord(r)
   }
+
+  /**
+   * Set the user's role (Phase 2 admin/gov provisioning). A plain UPDATE: writing the role the user
+   * already holds is a harmless no-op, so the operator-login grant + gov-claim approve are idempotent.
+   */
+  async setRole(id: string, role: Role): Promise<UserRecord> {
+    const updated = await this.db.update(users).set({ role }).where(eq(users.id, id)).returning()
+    const r = updated[0]
+    if (!r) throw new Error("PgUserStore.setRole: user not found")
+    return toUserRecord(r)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +220,9 @@ export class PgOAuthIdentityStore implements OAuthIdentityStore {
       )
       .limit(1)
     const r = rows[0]
-    return r ? { id: r.id, userId: r.userId, provider: r.provider, providerUserId: r.providerUserId } : null
+    return r
+      ? { id: r.id, userId: r.userId, provider: r.provider, providerUserId: r.providerUserId }
+      : null
   }
 
   async linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void> {

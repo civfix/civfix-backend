@@ -101,6 +101,65 @@ describe("needsDiscovery (pure)", () => {
   })
 })
 
+/**
+ * Phase 2 routing-resolution precedence: needsDiscovery now consults the per-category routing model
+ * (category-specific / default jurisdiction_contacts -> legacy contact_emails[]) via the
+ * `hasRoutingContact` flag. These cases prove the precedence + backward compatibility.
+ */
+describe("needsDiscovery (per-category routing precedence)", () => {
+  it("is routable when a jurisdiction_contacts row exists even though legacy contact_emails is empty", () => {
+    // No legacy emails, but a per-category/default contact row is on file -> NOT needs discovery.
+    const row: JurisdictionHealthRow = {
+      geoid: "x",
+      contactEmails: null,
+      contactUpdatedAt: NOW,
+      hasRoutingContact: true,
+    }
+    expect(needsDiscovery(row, NOW)).toBe(false)
+  })
+
+  it("a just-saved jurisdiction_contacts row with no timestamp does NOT re-flag (the row is the signal)", () => {
+    const row: JurisdictionHealthRow = {
+      geoid: "x",
+      contactEmails: null,
+      contactUpdatedAt: null,
+      hasRoutingContact: true,
+    }
+    expect(needsDiscovery(row, NOW)).toBe(false)
+  })
+
+  it("a jurisdiction_contacts row still re-flags once its contact metadata goes stale", () => {
+    const stale = new Date(NOW)
+    stale.setMonth(stale.getMonth() - 19)
+    const row: JurisdictionHealthRow = {
+      geoid: "x",
+      contactEmails: null,
+      contactUpdatedAt: stale,
+      hasRoutingContact: true,
+    }
+    expect(needsDiscovery(row, NOW)).toBe(true)
+  })
+
+  it("BACKWARD COMPATIBLE: with hasRoutingContact absent/false it reduces to the legacy check", () => {
+    // No routing row and no legacy emails -> needs discovery (unchanged Phase 1 behavior).
+    expect(
+      needsDiscovery({ geoid: "x", contactEmails: null, contactUpdatedAt: NOW }, NOW),
+    ).toBe(true)
+    expect(
+      needsDiscovery(
+        { geoid: "x", contactEmails: null, contactUpdatedAt: NOW, hasRoutingContact: false },
+        NOW,
+      ),
+    ).toBe(true)
+    // Legacy fresh emails, no routing row -> routable (unchanged).
+    const fresh = new Date(NOW)
+    fresh.setMonth(fresh.getMonth() - 1)
+    expect(
+      needsDiscovery({ geoid: "x", contactEmails: ["311@x.gov"], contactUpdatedAt: fresh }, NOW),
+    ).toBe(false)
+  })
+})
+
 describe("makeJurisdictionService.resolveForPoint", () => {
   const resolved: ResolvedRow = { geoid: "0644000", name: "Los Angeles", layer: "place" }
 

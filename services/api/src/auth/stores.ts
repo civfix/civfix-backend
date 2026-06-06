@@ -46,6 +46,12 @@ export interface SessionStore {
   findById(hash: string): Promise<SessionRecord | null>
   updateExpiry(hash: string, expiresAt: Date, lastSeen: Date): Promise<void>
   deleteById(hash: string): Promise<void>
+  /**
+   * Delete EVERY session row for a user and return the deleted session ids (the token SHA-256 hashes),
+   * so the caller can invalidate the matching write-through cache entries. Phase 2: banning a user
+   * revokes all of their sessions instantly. Idempotent (an empty result when the user has none).
+   */
+  deleteAllForUser(userId: string): Promise<string[]>
 }
 
 /**
@@ -82,6 +88,17 @@ export class InMemorySessionStore implements SessionStore {
   deleteById(hash: string): Promise<void> {
     this.rows.delete(hash)
     return Promise.resolve()
+  }
+
+  deleteAllForUser(userId: string): Promise<string[]> {
+    const deleted: string[] = []
+    for (const [id, row] of this.rows) {
+      if (row.userId === userId) {
+        this.rows.delete(id)
+        deleted.push(id)
+      }
+    }
+    return Promise.resolve(deleted)
   }
 
   /** Test helper. */
@@ -139,6 +156,12 @@ export interface UserStore {
   create(email: string | null, input: CreateUserInput): Promise<UserRecord>
   /** First-run registration: set the handle + displayName and mark the profile complete. */
   updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord>
+  /**
+   * Set the user's role (Phase 2 admin/gov provisioning). IDEMPOTENT: setting the role a user already
+   * holds is a no-op that still returns the row, so the operator-login grant + gov-claim approve can be
+   * called repeatedly without error. Returns the updated user.
+   */
+  setRole(id: string, role: Role): Promise<UserRecord>
 }
 
 /**
@@ -212,6 +235,15 @@ export class InMemoryUserStore implements UserStore {
       displayName: input.displayName,
       profileComplete: true,
     }
+    this.byId.set(id, next)
+    return Promise.resolve({ ...next })
+  }
+
+  setRole(id: string, role: Role): Promise<UserRecord> {
+    const row = this.byId.get(id)
+    if (!row) throw new Error("InMemoryUserStore.setRole: user not found")
+    // Idempotent: writing the same role is a harmless no-op that still returns the row.
+    const next: UserRecord = { ...row, role }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })
   }

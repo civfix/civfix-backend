@@ -22,6 +22,8 @@ import { registerCleanupRoutes } from "./cleanups.routes.js"
 import { registerChatRoutes } from "./chat.routes.js"
 import { registerSocialRoutes } from "./social.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
+import { registerAdminRoutes } from "./admin/index.js"
+import { registerInboundMailWebhook } from "./webhooks/inbound-mail.routes.js"
 
 export interface RegisterRoutesOptions {
   /** Whether an auth service bundle is available; gates mounting the auth routes. */
@@ -85,4 +87,18 @@ export async function registerRoutes(
   // registration (auth + CSRF). Mount unconditionally; DB-backed handlers reach the database lazily via
   // container.getDb(), and push registration also delegates to the container push seam.
   await registerNotificationRoutes(app, container)
+
+  // Admin / operator dashboard (Phase 2): the operator-auth routes (public) + every operator-gated
+  // domain router under the requireOperator guard. Gated on the auth bundle presence, like the citizen
+  // auth routes: operator sign-in reuses the same OtpService/SessionService, which only exist when the
+  // Pg/Redis-backed bundle is mounted (the no-infra all-fakes boot has nothing to back them). The
+  // group's index.ts is the complete, final wiring; wave-2 agents implement the individual domain files.
+  if (opts.authMounted) {
+    await registerAdminRoutes(app, container)
+  }
+
+  // Inbound mail webhook (Phase 2): server-side ingress for the Cloudflare Email worker. NOT under
+  // /admin and NOT operator-gated; authenticated by CF_EMAIL_WEBHOOK_SECRET inside the handler. Mount
+  // unconditionally (it needs no auth bundle); it refuses every call when the secret is unconfigured.
+  await registerInboundMailWebhook(app, container)
 }

@@ -1,10 +1,7 @@
 import { describe, it, expect, vi } from "vitest"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemorySessionStore } from "../../src/auth/stores.js"
-import {
-  SessionService,
-  DEFAULT_SESSION_TTL_SECONDS,
-} from "../../src/auth/session-service.js"
+import { SessionService, DEFAULT_SESSION_TTL_SECONDS } from "../../src/auth/session-service.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 
 const USER = "11111111-1111-1111-1111-111111111111"
@@ -104,7 +101,9 @@ describe("SessionService", () => {
     const expected = before + 16 * 24 * 60 * 60 * 1000
     expect(Math.abs(after - expected)).toBeLessThan(2000)
     // Sanity: the extension is exactly a full TTL ahead of "now".
-    expect(after).toBe((await store.findById(hash))!.lastSeenAt.getTime() + DEFAULT_SESSION_TTL_SECONDS * 1000)
+    expect(after).toBe(
+      (await store.findById(hash))!.lastSeenAt.getTime() + DEFAULT_SESSION_TTL_SECONDS * 1000,
+    )
   })
 
   it("returns null and cleans up for an expired session on the miss path", async () => {
@@ -135,6 +134,38 @@ describe("SessionService", () => {
     expect(await store.findById(hash)).toBeNull()
     expect(await cache.get(`sess:${hash}`)).toBeNull()
     expect(await service.resolveSession(token)).toBeNull()
+  })
+
+  it("revokeAllForUser revokes every session for the user (store rows + cache) but not others (Phase 2 ban)", async () => {
+    const { service, store, cache } = makeService()
+    const OTHER = "22222222-2222-2222-2222-222222222222"
+    // Two sessions for the banned user, one for an unrelated user.
+    const t1 = await service.createSession(USER, ["citizen"])
+    const t2 = await service.createSession(USER, ["citizen"])
+    const tOther = await service.createSession(OTHER, ["citizen"])
+    const h1 = await sha256Hex(t1)
+    const h2 = await sha256Hex(t2)
+    const hOther = await sha256Hex(tOther)
+
+    const revoked = await service.revokeAllForUser(USER)
+    expect(revoked).toBe(2)
+
+    // Both of the banned user's sessions are gone from BOTH layers; a warm hit can no longer keep them in.
+    expect(await store.findById(h1)).toBeNull()
+    expect(await store.findById(h2)).toBeNull()
+    expect(await cache.get(`sess:${h1}`)).toBeNull()
+    expect(await cache.get(`sess:${h2}`)).toBeNull()
+    expect(await service.resolveSession(t1)).toBeNull()
+    expect(await service.resolveSession(t2)).toBeNull()
+
+    // The unrelated user's session is untouched.
+    expect(await store.findById(hOther)).not.toBeNull()
+    expect(await service.resolveSession(tOther)).not.toBeNull()
+  })
+
+  it("revokeAllForUser is idempotent: a user with no sessions revokes 0", async () => {
+    const { service } = makeService()
+    expect(await service.revokeAllForUser("33333333-3333-3333-3333-333333333333")).toBe(0)
   })
 
   it("P1-6: the cache TTL is derived from the SAME clock read as the stored expiry (no undershoot)", async () => {
@@ -187,5 +218,75 @@ describe("SessionService", () => {
     clockRef.value += 101 * 1000
     expect(await cache.get(`sess:${hash}`)).toBeNull()
     expect(await service.resolveSession(token)).toBeNull()
+  })
+})
+
+describe("SessionService banned-account control (H2)", () => {
+  it("banUser revokes all sessions AND sets a marker; isUserActive then reports false", async () => {
+    const { service, store } = makeService()
+    await service.createSession(USER, ["operator"])
+    expect(store.count()).toBe(1)
+    expect(await service.isUserActive(USER)).toBe(true)
+
+    const revoked = await service.banUser(USER)
+    expect(revoked).toBe(1)
+    // All sessions gone (durable) AND the account is marked banned (defense in depth).
+    expect(store.count()).toBe(0)
+    expect(await service.isUserActive(USER)).toBe(false)
+  })
+
+  it("isUserActive returns false for a banned user even if a session was NOT revoked (missed-revoke window)", async () => {
+    // Simulate the partial-failure case: set the marker WITHOUT revoking (a session is still live).
+    const { service, cache } = makeService()
+    const token = await service.createSession(USER, ["operator"])
+    // The session still resolves at the SessionService layer (it only checks the session itself)...
+    expect((await service.resolveSession(token))?.userId).toBe(USER)
+    // ...but the banned marker is the request-path veto: mark banned without touching sessions.
+    await cache.set(`banned:${USER}`, "1", 60)
+    expect(await service.isUserActive(USER)).toBe(false)
+  })
+
+  it("clearBan lifts the marker so the account is active again", async () => {
+    const { service } = makeService()
+    await service.banUser(USER)
+    expect(await service.isUserActive(USER)).toBe(false)
+    await service.clearBan(USER)
+    expect(await service.isUserActive(USER)).toBe(true)
+  })
+
+  it("V1: a banned user cannot keep a session alive by repeatedly hitting the API (veto BEFORE slide)", async () => {
+    // The missed-durable-revoke window: a live session whose durable row was NOT deleted (only the banned
+    // marker is set). Without the V1 fix, resolveSession would SLIDE this session's expiry forward before
+    // the banned veto ran, so a banned user hammering the API for ~30 days could push the orphaned session
+    // past the (fixed-TTL) marker and re-authenticate. With the fix, resolveSession vetoes the banned
+    // account BEFORE maybeSlide, so the session is never extended and every resolve returns null.
+    const { service, store, cache, clockRef } = makeService()
+    const token = await service.createSession(USER, ["operator"])
+    const hash = await sha256Hex(token)
+    const originalExpiry = (await store.findById(hash))!.expiresAt.getTime()
+
+    // Set ONLY the banned marker (simulate a silently-failed durable revoke: the session row survives).
+    await cache.set(`banned:${USER}`, "1", DEFAULT_SESSION_TTL_SECONDS + 60)
+
+    // A maybeSlide must NEVER run for a banned account, regardless of how far the clock has advanced.
+    const updateSpy = vi.spyOn(store, "updateExpiry")
+
+    // Hammer the API across the slide threshold: jump past the halfway mark (>15 days) where an ACTIVE
+    // session would slide, then keep resolving. Every call must be vetoed, and the expiry must not move.
+    clockRef.value += 20 * 24 * 60 * 60 * 1000 // 20 days: well past the half-window slide trigger.
+    for (let i = 0; i < 5; i++) {
+      expect(await service.resolveSession(token)).toBeNull()
+      clockRef.value += 24 * 60 * 60 * 1000 // advance another day each iteration.
+    }
+
+    // The veto won regardless of slide order: no extension was ever written, so the session expiry is
+    // unchanged and the orphaned session cannot outlive the banned marker.
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect((await store.findById(hash))!.expiresAt.getTime()).toBe(originalExpiry)
+
+    // And the cache TTL was likewise never pushed forward (the marker would expire before a slid session).
+    const cacheExpiry = cache.expiryOf(`sess:${hash}`)
+    expect(cacheExpiry).not.toBeNull()
+    expect(cacheExpiry!).toBeLessThanOrEqual(originalExpiry)
   })
 })

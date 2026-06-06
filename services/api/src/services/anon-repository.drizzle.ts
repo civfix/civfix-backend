@@ -45,6 +45,7 @@ import type { AnonTokenRecord } from "../abuse/anon-token.js"
 import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
+import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
 
 /** Postgres unique-violation SQLSTATE; surfaced on the idempotency-key race. */
 const PG_UNIQUE_VIOLATION = "23505"
@@ -83,10 +84,7 @@ function toTokenRecord(r: AnonTokenRowSelect): AnonTokenRecord {
 // ---------------------------------------------------------------------------
 
 export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository {
-  async function readSnapshot(
-    key: string,
-    scope: string,
-  ): Promise<AnonReportResponse | null> {
+  async function readSnapshot(key: string, scope: string): Promise<AnonReportResponse | null> {
     const rows = await sql<{ response_snapshot: AnonReportResponse }[]>`
       SELECT response_snapshot
       FROM idempotency_keys
@@ -114,17 +112,12 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
     },
 
     // --- idempotency ---
-    async findIdempotentSnapshot(
-      key: string,
-      scope: string,
-    ): Promise<AnonReportResponse | null> {
+    async findIdempotentSnapshot(key: string, scope: string): Promise<AnonReportResponse | null> {
       return readSnapshot(key, scope)
     },
 
     // --- held-create transaction ---
-    async createAnonReportTx(
-      args: CreateAnonReportTxArgs,
-    ): Promise<CreateAnonReportTxResult> {
+    async createAnonReportTx(args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult> {
       try {
         const snapshot = await sql.begin(async (tx) => {
           // 1) ATOMIC per-token cap (bugs P0-1): bump report_count ONLY while the token is still under
@@ -190,6 +183,24 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
               (${args.reportId}, ${"submitted"}, ${null}, ${null}, now()),
               (${args.reportId}, ${"held"}, ${"Awaiting automated review"}, ${null}, now() + interval '1 millisecond')
           `
+
+          // 4b) Enqueue the moderation_items row for this held report (Phase 2 producer hook). The anon
+          // hold-then-publish path holds EVERY anon report pending automated review, so the operator
+          // moderation queue surfaces it immediately. Done inside the SAME tx as the report insert so the
+          // item and the held report are atomic (never an item without its report, or vice versa). Kept
+          // lean: kind 'image', subject the report, the dominant category + description carried for the
+          // detail; signals/user are enriched later by the media-worker / abuse detection if applicable.
+          await insertModerationItem(tx, {
+            kind: "image",
+            subjectType: "report",
+            subjectId: args.reportId,
+            flag: "Held report",
+            reason: "Awaiting automated review",
+            category: args.category,
+            autoAction: "Hidden pending review",
+            reporter: "Anonymous",
+            desc: args.description ?? "",
+          })
 
           // 5) Persist the AnonReportResponse snapshot under the idempotency key (same tx).
           await tx`
@@ -287,10 +298,7 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
       return { reportId: row.id, claimCode: row.claim_code }
     },
 
-    async claimByCode(
-      claimCode: string,
-      userId: string,
-    ): Promise<{ reportId: string } | null> {
+    async claimByCode(claimCode: string, userId: string): Promise<{ reportId: string } | null> {
       return sql.begin(async (tx) => {
         // Atomically claim THE report carrying this code: lock + link + clear in one statement. The
         // code is per-report (0005) and partial-unique, so it identifies exactly one report. A consumed

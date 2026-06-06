@@ -547,6 +547,22 @@ export async function runMediaChecksJob(
       note: result.note,
       flags: result.flags.map((f) => f.reason),
     })
+    // M3: surface the held MEDIA to the operator moderation queue. Best-effort + non-fatal (a
+    // moderation-enqueue failure must not flip an already-correct media hold into a job failure), guarded
+    // by the optional repo method + a present reportId, and deduped against an open item in the impl.
+    if (asset.reportId && deps.repo.enqueueHeldModerationItem) {
+      const isDup = result.flags.some((f) => f.reason === "phash_dup")
+      await deps.repo
+        .enqueueHeldModerationItem({
+          reportId: asset.reportId,
+          reason: isDup ? "Near-duplicate cluster" : "NSFW model over threshold",
+          kind: isDup ? "duplicate" : "image",
+          note: result.note ?? null,
+        })
+        .catch((err) =>
+          log("media.checks: moderation enqueue failed (non-fatal)", { err: String(err) }),
+        )
+    }
   } else {
     log("media.checks: ready", {
       mediaId: asset.id,

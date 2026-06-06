@@ -27,6 +27,16 @@ export const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 /** Redis key namespace for sessions. */
 const SESSION_KEY_PREFIX = "sess:"
 
+/**
+ * Redis key namespace for the banned-account marker (H2 defense-in-depth). A flag set when a user is
+ * banned, so even if a session-revoke was missed (a Redis/Pg hiccup during the ban) a still-warm session
+ * does not resolve to an authenticated context. The marker is consulted by resolveSession via a single
+ * cache read - never Postgres - and is checked BEFORE the sliding-expiry extension (V1), so a banned
+ * account can neither resolve nor have its session slid; the "warm session is Redis-only" property is
+ * preserved. TTL >= the session TTL so the marker outlives any session it must veto.
+ */
+const BANNED_KEY_PREFIX = "banned:"
+
 /** The resolved identity carried by a live session. */
 export interface ResolvedSession {
   userId: string
@@ -64,6 +74,10 @@ export interface SessionServiceOptions {
 
 function sessionKey(hash: string): string {
   return SESSION_KEY_PREFIX + hash
+}
+
+function bannedKey(userId: string): string {
+  return BANNED_KEY_PREFIX + userId
 }
 
 /**
@@ -119,6 +133,12 @@ export class SessionService {
    * Resolve a presented token to an identity, or null. Redis-first: a HIT returns without any store
    * read. A MISS reads the durable store, re-warms Redis on a valid row, and returns. Expired rows
    * (in either layer) resolve to null. On success, sliding expiry may extend the session.
+   *
+   * Banned veto (V1): a banned account is vetoed BEFORE the session expiry is slid, so a still-warm
+   * session whose durable revoke was missed can NOT be extended past the banned marker's lifetime (the
+   * marker has a fixed TTL; sliding would otherwise let an orphaned session outlive it). The veto is a
+   * single Redis read (isUserActive, never Postgres), so the warm-session Redis-only property is
+   * preserved for active users (no store read is added on the hot path).
    */
   async resolveSession(token: string): Promise<ResolveResult | null> {
     const hash = await sha256Hex(token)
@@ -129,6 +149,8 @@ export class SessionService {
     if (cachedRaw !== null) {
       const cached = this.parseCache(cachedRaw)
       if (cached && cached.expiresAtMs > nowMs) {
+        // Veto a banned account BEFORE sliding (V1): never extend a session whose account is inactive.
+        if (!(await this.isUserActive(cached.userId))) return null
         await this.maybeSlide(hash, cached.expiresAtMs, nowMs)
         return { userId: cached.userId, roles: cached.roles, source: "cache" }
       }
@@ -145,6 +167,9 @@ export class SessionService {
       await this.cache.del(sessionKey(hash))
       return null
     }
+
+    // Veto a banned account BEFORE re-warming/sliding (V1), same Redis-only read as the hit path.
+    if (!(await this.isUserActive(row.userId))) return null
 
     // Re-warm Redis from the durable row, then apply sliding expiry. The TTL uses the SAME nowMs (P1-6).
     await this.writeCache(
@@ -168,6 +193,49 @@ export class SessionService {
     const hash = await sha256Hex(token)
     await this.store.deleteById(hash)
     await this.cache.del(sessionKey(hash))
+  }
+
+  /**
+   * Revoke ALL of a user's sessions at once (Phase 2: banning a user). Deletes every durable session row
+   * for the user (the store returns the deleted ids, which ARE the token SHA-256 hashes) and drops each
+   * matching write-through cache entry so a warm Redis hit cannot keep a banned user signed in. Returns
+   * the number of sessions revoked. Idempotent: a user with no sessions revokes 0.
+   */
+  async revokeAllForUser(userId: string): Promise<number> {
+    const ids = await this.store.deleteAllForUser(userId)
+    for (const hash of ids) {
+      await this.cache.del(sessionKey(hash))
+    }
+    return ids.length
+  }
+
+  /**
+   * Ban a user (H2): revoke ALL their sessions (durable rows + cache entries) AND set a banned marker so a
+   * still-warm session that slipped through the revoke (a partial-failure window) is rejected by
+   * isUserActive on the next request. The revoke runs FIRST so a revoke failure surfaces (the caller must
+   * treat it as a failed ban and not 200); the marker is then set as the backstop. Returns the number of
+   * sessions revoked.
+   */
+  async banUser(userId: string): Promise<number> {
+    const revoked = await this.revokeAllForUser(userId)
+    // Marker TTL outlives the session TTL so it can veto any session that could still be live.
+    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + 60)
+    return revoked
+  }
+
+  /** Clear a user's banned marker (H2): on un-ban (status set back to active/suspended/review). Idempotent. */
+  async clearBan(userId: string): Promise<void> {
+    await this.cache.del(bannedKey(userId))
+  }
+
+  /**
+   * Whether the account is NOT banned (H2 defense-in-depth). A single cache read (never Postgres), so it
+   * preserves the warm-session Redis-only property. Returns true (active) when no marker is present - the
+   * common case - so an unbanned user is unaffected.
+   */
+  async isUserActive(userId: string): Promise<boolean> {
+    const marked = await this.cache.get(bannedKey(userId))
+    return marked === null
   }
 
   /** Total configured TTL in seconds (exposed for callers that set matching cookie max-age). */
@@ -218,7 +286,11 @@ export class SessionService {
         Array.isArray(parsed.roles) &&
         typeof parsed.expiresAtMs === "number"
       ) {
-        return { userId: parsed.userId, roles: parsed.roles as Role[], expiresAtMs: parsed.expiresAtMs }
+        return {
+          userId: parsed.userId,
+          roles: parsed.roles as Role[],
+          expiresAtMs: parsed.expiresAtMs,
+        }
       }
       return null
     } catch {
