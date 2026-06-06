@@ -133,7 +133,8 @@ CREATE TABLE IF NOT EXISTS moderation_items (
   priority     text        NOT NULL DEFAULT 'med' CHECK (priority IN ('low', 'med', 'high')),
   auto_action  text,
   signals      jsonb       NOT NULL DEFAULT '[]'::jsonb,
-  similar      jsonb       NOT NULL DEFAULT '[]'::jsonb,
+  -- "similar" is a reserved SQL key word, so the identifier must be quoted.
+  "similar"    jsonb       NOT NULL DEFAULT '[]'::jsonb,
   status       text        NOT NULL DEFAULT 'open'
                            CHECK (status IN ('open', 'approved', 'removed', 'held')),
   meta         jsonb       NOT NULL DEFAULT '{}'::jsonb,

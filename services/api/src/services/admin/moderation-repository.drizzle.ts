@@ -237,7 +237,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       const rows = (await sql`
         SELECT
           id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-          auto_action, status, signals, similar, meta, created_at
+          auto_action, status, signals, "similar", meta, created_at
         FROM moderation_items
         WHERE status = 'open'
         ${facet}
@@ -260,7 +260,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       const rows = (await sql`
         SELECT
           id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-          auto_action, status, signals, similar, meta, created_at
+          auto_action, status, signals, "similar", meta, created_at
         FROM moderation_items
         WHERE id = ${id}
         LIMIT 1
@@ -374,7 +374,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
           WHERE id = ${id} AND status = 'open' AND kind = 'appeal'
           RETURNING
             id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-            auto_action, status, signals, similar, meta, created_at
+            auto_action, status, signals, "similar", meta, created_at
         `) as unknown as ModerationItemRow[]
         const resolved = rows[0]
         if (!resolved) return null
@@ -422,7 +422,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         WITH inserted AS (
           INSERT INTO moderation_items (
             kind, subject_type, subject_id, flag, reason, category, place, priority, auto_action,
-            signals, similar, status, meta, created_at
+            signals, "similar", status, meta, created_at
           )
           SELECT
             -- L5: derive the kind from the held media instead of hardcoding 'image'. A report with any
@@ -468,7 +468,7 @@ async function resolveItem(
     WHERE id = ${id} AND status = 'open'
     RETURNING
       id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-      auto_action, status, signals, similar, meta, created_at
+      auto_action, status, signals, "similar", meta, created_at
   `) as unknown as ModerationItemRow[]
   return rows[0] ?? null
 }
@@ -495,7 +495,7 @@ export async function insertModerationItem(
   const rows = await tx<{ id: string }[]>`
     INSERT INTO moderation_items (
       kind, subject_type, subject_id, flag, reason, category, place, priority, auto_action,
-      signals, similar, status, meta
+      signals, "similar", status, meta
     ) VALUES (
       ${input.kind},
       ${input.subjectType},
