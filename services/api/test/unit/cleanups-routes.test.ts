@@ -149,6 +149,39 @@ describe("POST /cleanups", () => {
     expect(res.statusCode).toBe(401)
   })
 
+  // Regression for the "Host an event" 500: replays the BYTE-EXACT payload the mobile host-event form
+  // builds (app/host-event.tsx onPublish) — title, type "site", lat/lng, an ISO scheduledAt, the
+  // "name the spot" address line, a description, and a bring[] checklist. The whole valid host payload
+  // must create the cleanup and return 201 (the organizer auto-joins; address/bring/description echo
+  // back). The DB-backed createCleanupTx for this same shape is covered by the Docker-gated integration
+  // test (cleanups-chat-pg.test.ts).
+  it("creates a cleanup from the exact mobile host-event payload (201)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/cleanups",
+      headers: auth(token),
+      payload: {
+        title: "Saturday beach sweep",
+        type: "site",
+        lat: 34.0195,
+        lng: -118.4912,
+        scheduledAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+        address: "North gate, by the oak",
+        description: "Bring water and sunscreen.",
+        bring: ["gloves", "bags", "grabbers"],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json()
+    expect(dto.joined).toBe(true)
+    expect(dto.going).toBe(1)
+    expect(dto.status).toBe("upcoming")
+    expect(dto.address).toBe("North gate, by the oak")
+    expect(dto.description).toBe("Bring water and sunscreen.")
+    expect(dto.bring).toEqual(["gloves", "bags", "grabbers"])
+  })
+
   it("422s a malformed body (bad type)", async () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({

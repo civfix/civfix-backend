@@ -130,6 +130,51 @@ describe("POST /reports", () => {
     expect(repo.reports.size).toBe(1)
   })
 
+  // Regression for the live mobile createReport 500 (api.civfix.org, stale deploy): submitReport.ts
+  // POSTs the FULL payload after the media pipeline succeeds - a NON-EMPTY mediaUploadIds[] holding a
+  // finalized upload id, geomSource:"device", and a composed description. The other happy-path test
+  // sends mediaUploadIds: [] (no attach); this one exercises the with-media attach through the REAL
+  // route (auth + csrf + body parse + service + repo) so the exact wire body the app sends returns 201
+  // and the finalized asset is bound to the new report. (The Drizzle/PostGIS SQL is covered by the
+  // Docker-gated reports-pg integration test; this guards the HTTP contract offline.)
+  it("creates a 201 from the exact mobile payload (finalized media id + composed description)", async () => {
+    let uploadId = ""
+    let mediaId = ""
+    const { app, repo, token } = await makeHarness({
+      seed: (r) => {
+        const asset = r.seedMedia({ status: "ready", r2Key: "uploads/2026/06/photo" })
+        uploadId = asset.uploadId
+        mediaId = asset.id
+      },
+    })
+    const res = await app.inject({
+      method: "POST",
+      url: "/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "trash",
+        lat: 34.1,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [uploadId],
+        capturedAt: "2026-06-06T12:00:00.000Z",
+        description: "Pile of trash on the corner.\n\nBlocking the sidewalk or road.",
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json()
+    expect(dto.status).toBe("published")
+    expect(dto.category).toBe("trash")
+    expect(dto.geomSource).toBe("device")
+    expect(dto.description).toBe("Pile of trash on the corner.\n\nBlocking the sidewalk or road.")
+    // The finalized media asset is attached to the new report and presigned into the DTO.
+    expect(dto.media).toHaveLength(1)
+    expect(dto.media[0].id).toBe(mediaId)
+    expect(repo.media.find((m) => m.id === mediaId)!.reportId).toBe(dto.id)
+    expect(repo.reports.size).toBe(1)
+  })
+
   it("a duplicate idempotency key returns the SAME report id (no second row)", async () => {
     const { app, repo, token } = await makeHarness()
     const payload = {
@@ -293,6 +338,32 @@ describe("GET /reports (my reports)", () => {
     const { app } = await makeHarness()
     const res = await app.inject({ method: "GET", url: "/reports" })
     expect(res.statusCode).toBe(401)
+  })
+
+  // Regression: the mobile infinite-list (cursorInfiniteQuery) fetches the first page as
+  // `GET /reports?limit=20`. Through Fastify's query parser `limit` arrives as the STRING "20";
+  // the shared PaginationQuerySchema coerces it (z.coerce.number). A non-coerced `z.number()` here
+  // would 422 the live client (the original bug). clientQuery() builds the exact wire query the
+  // shared client serializes, so this guards the coercion end-to-end through the real route.
+  it("accepts the client's ?limit=20 (string-coerced) first page (200, not 422)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: `/reports${clientQuery({ limit: 20 })}`,
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().items).toEqual([])
+  })
+
+  it("accepts the client's ?limit=20&cursor=<c> follow-up page (200)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: `/reports${clientQuery({ limit: 20, cursor: "deadbeef" })}`,
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(200)
   })
 })
 

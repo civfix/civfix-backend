@@ -9,6 +9,7 @@ import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { SessionService } from "../../src/auth/session-service.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
+import { clientQuery } from "../helpers/query.js"
 import { resolveWsUser, isAllowedWsOrigin, checkWsHandshake } from "../../src/ws/gateway.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { SESSION_COOKIE } from "../../src/auth/transport.js"
@@ -84,6 +85,24 @@ describe("GET /threads", () => {
     })
     const res = await app.inject({ method: "GET", url: "/threads" })
     expect(res.statusCode).toBe(401)
+  })
+
+  // Regression: the mobile inbox (cursorInfiniteQuery / useTotalUnread) fetches GET /threads?limit=20.
+  // Through Fastify the `limit` arrives as the STRING "20"; the shared PaginationQuerySchema must coerce
+  // it. A non-coerced z.number() would 422 the live client (the original bug). clientQuery() builds the
+  // exact wire query the shared client serializes, guarding the coercion through the real route.
+  it("accepts the client's ?limit=20 (string-coerced) request (200, not 422)", async () => {
+    const { app, mailer } = await makeThreadsHarness((repo) => {
+      repo.seedCleanup("x")
+    })
+    const { token } = await signIn(app, mailer, "limit@example.com")
+    const res = await app.inject({
+      method: "GET",
+      url: `/threads${clientQuery({ limit: 20 })}`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(Array.isArray(res.json().items)).toBe(true)
   })
 
   it("returns a populated thread for a member (unread + lastFromMe)", async () => {
