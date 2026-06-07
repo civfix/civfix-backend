@@ -277,3 +277,72 @@ describe("listCleanups filters", () => {
     expect(res.items[0]!.dist!).toBeLessThan(res.items[1]!.dist!)
   })
 })
+
+describe("listAttendees (who's going)", () => {
+  const CAROL = "44444444-4444-4444-4444-444444444444"
+  const VIC = "55555555-5555-5555-5555-555555555555"
+
+  /** Organizer (auto-joined) + Alice/Bob/Carol RSVP'd. going === 4. All seeded so names resolve. */
+  async function setupEvent() {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    repo.seedUser({ id: CAROL, displayName: "Carol" })
+    const created = await service.createCleanup(baseInput(), ORG)
+    await service.joinCleanup(created.id, ALICE)
+    await service.joinCleanup(created.id, BOB)
+    await service.joinCleanup(created.id, CAROL)
+    return created
+  }
+
+  it("a non-member sees only the attendees they follow (scope 'following'), with the full going count", async () => {
+    const created = await setupEvent()
+    // VIC follows Alice + Carol but has NOT RSVP'd (and does not follow the organizer or Bob).
+    repo.seedFollow(VIC, ALICE)
+    repo.seedFollow(VIC, CAROL)
+
+    const res = await service.listAttendees(created.id, { userId: VIC })
+    expect(res.scope).toBe("following")
+    expect(res.going).toBe(4) // full member count, not the filtered roster length
+    expect(res.attendees.map((p) => p.name)).toEqual(["Alice", "Carol"])
+    expect(res.attendees.every((p) => p.isFollowing)).toBe(true)
+  })
+
+  it("an anonymous viewer sees no names but the real going count", async () => {
+    const created = await setupEvent()
+    const res = await service.listAttendees(created.id, { userId: null })
+    expect(res.scope).toBe("following")
+    expect(res.attendees).toEqual([])
+    expect(res.going).toBe(4)
+  })
+
+  it("a member (RSVP'd) sees everyone going (scope 'all'), organizer first", async () => {
+    const created = await setupEvent()
+    const res = await service.listAttendees(created.id, { userId: ALICE })
+    expect(res.scope).toBe("all")
+    expect(res.going).toBe(4)
+    expect(res.attendees.map((p) => p.name)).toEqual(["Olive Organizer", "Alice", "Bob", "Carol"])
+  })
+
+  it("the organizer always sees everyone (the organizer counts as joined)", async () => {
+    const created = await setupEvent()
+    const res = await service.listAttendees(created.id, { userId: ORG })
+    expect(res.scope).toBe("all")
+    expect(res.attendees.map((p) => p.name)).toEqual(["Olive Organizer", "Alice", "Bob", "Carol"])
+  })
+
+  it("marks isFollowing per attendee for a member viewer", async () => {
+    const created = await setupEvent()
+    repo.seedFollow(ALICE, BOB) // Alice (a member) follows Bob only.
+    const res = await service.listAttendees(created.id, { userId: ALICE })
+    const followingByName = Object.fromEntries(res.attendees.map((p) => [p.name, p.isFollowing]))
+    expect(followingByName["Bob"]).toBe(true)
+    expect(followingByName["Carol"]).toBe(false)
+    expect(followingByName["Olive Organizer"]).toBe(false)
+  })
+
+  it("404s a missing cleanup", async () => {
+    await expect(
+      service.listAttendees("00000000-0000-0000-0000-000000000000", { userId: null }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+})

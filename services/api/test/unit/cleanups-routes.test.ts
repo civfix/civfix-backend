@@ -397,6 +397,57 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     expect(res.statusCode).toBe(401)
   })
 
+  describe("GET /cleanups/:id/attendees (who's going, anon-ok)", () => {
+    it("scopes the roster to the viewer: follows-only until you RSVP, everyone after", async () => {
+      const { app, token, userId, repo, mailer } = await makeHarness()
+      const id = await createCleanup(app, token) // organizer (userId) auto-joins; going = 1
+
+      // A second user RSVPs (seed their person row so the name resolves).
+      const joiner = await signIn(app, mailer, "joiner@example.com")
+      repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
+      await app.inject({ method: "POST", url: `/cleanups/${id}/join`, headers: auth(joiner.token) })
+
+      // Anonymous viewer: no names, but the real going count.
+      const anon = await app.inject({ method: "GET", url: `/cleanups/${id}/attendees` })
+      expect(anon.statusCode).toBe(200)
+      expect(anon.json()).toMatchObject({ scope: "following", attendees: [], going: 2 })
+
+      // A non-member who follows the organizer sees ONLY the organizer (follows-only gate).
+      const stranger = await signIn(app, mailer, "stranger@example.com")
+      repo.seedFollow(stranger.userId, userId)
+      const asStranger = await app.inject({
+        method: "GET",
+        url: `/cleanups/${id}/attendees`,
+        headers: auth(stranger.token),
+      })
+      expect(asStranger.statusCode).toBe(200)
+      const sBody = asStranger.json()
+      expect(sBody.scope).toBe("following")
+      expect(sBody.going).toBe(2)
+      expect(sBody.attendees.map((p: { name: string }) => p.name)).toEqual(["Organizer"])
+      expect(sBody.attendees[0].isFollowing).toBe(true)
+
+      // The joiner (a member) sees EVERYONE going, organizer first.
+      const asJoiner = await app.inject({
+        method: "GET",
+        url: `/cleanups/${id}/attendees`,
+        headers: auth(joiner.token),
+      })
+      const jBody = asJoiner.json()
+      expect(jBody.scope).toBe("all")
+      expect(jBody.attendees.map((p: { name: string }) => p.name)).toEqual(["Organizer", "Jordan"])
+    })
+
+    it("404s a missing cleanup", async () => {
+      const { app } = await makeHarness()
+      const res = await app.inject({
+        method: "GET",
+        url: "/cleanups/00000000-0000-0000-0000-000000000000/attendees",
+      })
+      expect(res.statusCode).toBe(404)
+    })
+  })
+
   it("P2: tolerates an extra `cleanupId` query key (the shared client's redundant path-param echo)", async () => {
     const { app, token, userId, chat } = await makeHarness()
     const id = await createCleanup(app, token)

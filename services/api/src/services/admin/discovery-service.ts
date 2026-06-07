@@ -119,6 +119,18 @@ export interface DiscoveryNoteRecord {
   createdAt: Date
 }
 
+/**
+ * A citizen-suggested routing contact for a geoid (public POST /map/jurisdictions/:geoid/suggest-contact,
+ * stored as an audit_log `discovery.contact_suggested` row). Surfaced in the discovery detail as a
+ * "Reporter" note so the operator triages it alongside operator notes in the existing UI.
+ */
+export interface DiscoveryContactSuggestionRecord {
+  email: string | null
+  formUrl: string | null
+  note: string | null
+  createdAt: Date
+}
+
 /** The detail bundle: the task record + its existing contacts + geometry + sample pins. */
 export interface DiscoveryDetailRecord {
   task: DiscoveryTaskRecord
@@ -160,6 +172,11 @@ export interface DiscoveryRepository {
   getDetail(id: string): Promise<DiscoveryDetailRecord | null>
   /** Load the notes for a task, oldest first. */
   listNotes(id: string): Promise<DiscoveryNoteRecord[]>
+  /**
+   * Load citizen contact suggestions for a geoid (public suggest-contact submissions), oldest first.
+   * Surfaced as "Reporter" notes in the detail so operators triage them in the existing discovery UI.
+   */
+  listContactSuggestions(geoid: string): Promise<DiscoveryContactSuggestionRecord[]>
   /** Load the bare task record (no contacts/geometry) by id, or null. Used to resolve geoid for writes. */
   getTask(id: string): Promise<DiscoveryTaskRecord | null>
   /**
@@ -274,6 +291,23 @@ export function derivePriority(record: DiscoveryTaskRecord, now: Date): Priority
   return "low"
 }
 
+/**
+ * Render a citizen contact suggestion as an operator-facing note record ("Reporter" + a one-line
+ * summary of the offered email/form + any note). Pure so the projection is testable and identical
+ * regardless of which repo loaded the suggestion.
+ */
+export function suggestionToNote(s: DiscoveryContactSuggestionRecord): DiscoveryNoteRecord {
+  const contact = [s.email, s.formUrl]
+    .filter((v): v is string => !!v && v.trim() !== "")
+    .join(" / ")
+  const head = `Suggested contact: ${contact || "(none provided)"}`
+  return {
+    who: "Reporter",
+    text: s.note && s.note.trim() !== "" ? `${head} — ${s.note.trim()}` : head,
+    createdAt: s.createdAt,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -351,7 +385,14 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
       const [detail, notes] = await Promise.all([deps.repo.getDetail(id), deps.repo.listNotes(id)])
       if (!detail) throw AppError.notFound("Discovery task not found")
 
-      const base = toTaskDTO(detail.task, notes, ref)
+      // Merge citizen contact suggestions (keyed by geoid) into the note stream as "Reporter" notes so
+      // operators see them inline in the existing discovery detail UI, interleaved oldest-first.
+      const suggestions = await deps.repo.listContactSuggestions(detail.task.geoid)
+      const merged = [...notes, ...suggestions.map(suggestionToNote)].sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+      )
+
+      const base = toTaskDTO(detail.task, merged, ref)
       const contacts: DiscoveryContact[] = detail.contacts.map((c) => ({
         category: c.category,
         email: c.email,

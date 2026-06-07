@@ -92,6 +92,33 @@ describe("POST /map/reverse-label", () => {
   })
 })
 
+describe("POST /map/jurisdictions/:geoid/suggest-contact (validation, no DB)", () => {
+  // Body validation runs BEFORE any DB access, so the "needs a contact" + bad-email cases are clean 422s
+  // with no Postgres wired. The 404 (unknown geoid) and 201 (audit written) paths need the DB and are
+  // covered by the Docker-gated integration test.
+  it("422s when neither an email nor a form URL is provided", async () => {
+    app = await buildServer({ env: loadEnv() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/map/jurisdictions/0644000/suggest-contact",
+      payload: { note: "no contact here" },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+
+  it("422s a malformed contact email", async () => {
+    app = await buildServer({ env: loadEnv() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/map/jurisdictions/0644000/suggest-contact",
+      payload: { email: "not-an-email" },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+})
+
 describe("GET /map/cleanups bbox validation (P2)", () => {
   // The bbox ordering check runs at query-parse time, BEFORE any DB access, so an inverted bbox is a
   // clean 422 even with no database wired (the valid-bbox happy path needs Postgres -> integration test).

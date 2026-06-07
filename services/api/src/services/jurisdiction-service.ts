@@ -102,6 +102,22 @@ export function needsDiscovery(row: JurisdictionHealthRow, now: Date): boolean {
   return row.contactUpdatedAt.getTime() < staleBefore.getTime()
 }
 
+/**
+ * PURE: is this jurisdiction routable RIGHT NOW? True when it has a per-category / default
+ * jurisdiction_contacts row (`hasRoutingContact`) OR a usable legacy contact_emails[] entry. This is
+ * the inverse of "has no contact at all" and drives the public JurisdictionDTO.routable flag (the
+ * report card shows "routes to {name}" when true, vs a "new area, manual review" state when false).
+ * Note this is NOT the same as `!needsDiscovery`: a routable jurisdiction can still need a refresh pass
+ * when its contact metadata has gone stale, yet it is still routable today.
+ */
+export function isRoutable(
+  row: Pick<JurisdictionHealthRow, "hasRoutingContact" | "contactEmails">,
+): boolean {
+  const hasLegacy =
+    Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
+  return row.hasRoutingContact === true || hasLegacy
+}
+
 export interface JurisdictionServiceDeps {
   /** Raw postgres-js tag (dbHandle.sql) for the spatial + scalar reads. */
   sql: Sql
@@ -145,6 +161,9 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
         name: resolved.name,
         layer: resolved.layer,
         cityStateLabel: label,
+        // Whether routing is already configured (public, no contact address exposed). Defaults false
+        // when the health row could not be read, so an unknown jurisdiction reads as "manual review".
+        routable: health ? isRoutable(health) : false,
       }
     },
   }

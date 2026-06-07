@@ -222,6 +222,29 @@ describe("discovery detail", () => {
     const { svc } = harness()
     await expect(svc.getTask("nope")).rejects.toMatchObject({ httpStatus: 404 })
   })
+
+  it("surfaces citizen contact suggestions (by geoid) as Reporter notes in the detail", async () => {
+    const { repo, svc } = harness()
+    repo.seedTask({ id: "JUR-1", geoid: "4805000", place: "Austin", perCategory: { trash: 1 } })
+    repo.seedSuggestion("4805000", { email: "311@austintexas.gov", note: "ask for the SR desk" })
+
+    const detail = await svc.getTask("JUR-1")
+    const reporterNotes = detail.notes.filter((n) => n.who === "Reporter")
+    expect(reporterNotes).toHaveLength(1)
+    expect(reporterNotes[0]?.text).toContain("311@austintexas.gov")
+    expect(reporterNotes[0]?.text).toContain("ask for the SR desk")
+  })
+
+  it("interleaves operator notes and citizen suggestions oldest-first", async () => {
+    const { repo, svc } = harness()
+    repo.seedTask({ id: "JUR-1", geoid: "4805000", place: "Austin", perCategory: { trash: 1 } })
+    // Suggestion lands first (earlier clock tick), then an operator note.
+    repo.seedSuggestion("4805000", { formUrl: "https://austin.gov/report" })
+    await svc.addNote("JUR-1", { text: "Verified the form", actorId: "op", who: "jane" })
+
+    const detail = await svc.getTask("JUR-1")
+    expect(detail.notes.map((n) => n.who)).toEqual(["Reporter", "jane"])
+  })
 })
 
 describe("discovery mutations", () => {

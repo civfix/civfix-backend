@@ -26,11 +26,13 @@
 
 import type { Queryable, Sql } from "../db/client.js"
 import type {
+  AttendeeView,
   CleanupBBox,
   CleanupPersonView,
   CleanupRecord,
   CleanupRepository,
   CreateCleanupTxArgs,
+  ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
 } from "./cleanup-service.js"
@@ -55,6 +57,15 @@ interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
+}
+
+/** Shape of an attendee row selected for the roster (person fields + the viewer's follow flag). */
+interface AttendeeRowSelect {
+  id: string
+  display_name: string
+  handle: string | null
+  bio: string | null
+  is_following: boolean
 }
 
 /** Project a selected cleanup row into the structural CleanupRecord the service consumes. */
@@ -279,6 +290,44 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
       `
       return true
+    },
+
+    async listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]> {
+      const { cleanupId, viewerId, onlyFollowed, limit } = args
+      // The viewer's follow edge per attendee. An anonymous viewer follows no one (FALSE). Mirrors the
+      // social repo's EXISTS pattern so isFollowing stays consistent across screens.
+      const followingExpr =
+        viewerId !== null
+          ? sql`EXISTS (SELECT 1 FROM follows_people f WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id)`
+          : sql`FALSE`
+      // "Not yet RSVP'd" gate: restrict to followed attendees. Anonymous + onlyFollowed => nothing.
+      const onlyFollowedFilter = onlyFollowed
+        ? viewerId !== null
+          ? sql`AND EXISTS (SELECT 1 FROM follows_people f2 WHERE f2.follower_id = ${viewerId} AND f2.followee_id = u.id)`
+          : sql`AND FALSE`
+        : sql``
+      const rows = await sql<AttendeeRowSelect[]>`
+        SELECT
+          u.id,
+          u.display_name,
+          u.handle,
+          u.bio,
+          ${followingExpr} AS is_following
+        FROM cleanup_members m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.cleanup_id = ${cleanupId}
+          AND u.deleted_at IS NULL
+          ${onlyFollowedFilter}
+        ORDER BY (m.role = 'organizer') DESC, m.joined_at ASC, u.id ASC
+        LIMIT ${limit}
+      `
+      return rows.map((r) => ({
+        id: r.id,
+        displayName: r.display_name,
+        handle: r.handle,
+        bio: r.bio,
+        isFollowing: r.is_following,
+      }))
     },
   }
 }

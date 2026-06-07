@@ -19,11 +19,13 @@
 
 import { randomUUID } from "node:crypto"
 import type {
+  AttendeeView,
   CleanupBBox,
   CleanupPersonView,
   CleanupRecord,
   CleanupRepository,
   CreateCleanupTxArgs,
+  ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
 } from "../../src/services/cleanup-service.js"
@@ -80,6 +82,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   readonly cleanups = new Map<string, StoredCleanup>()
   readonly members: StoredMember[] = []
   readonly users = new Map<string, StoredUser>()
+  /** Follow edges as "<followerId>:<followeeId>" so listAttendees can resolve isFollowing. */
+  readonly follows = new Set<string>()
 
   /** Injectable clock so when-filters are deterministic. Defaults to real now. */
   now: () => Date = () => new Date()
@@ -94,6 +98,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     this.users.set(user.id, user)
     return user
+  }
+
+  /** Test helper: record that `followerId` follows `followeeId` (drives listAttendees' isFollowing). */
+  seedFollow(followerId: string, followeeId: string): void {
+    this.follows.add(`${followerId}:${followeeId}`)
   }
 
   /** Test helper: seed a cleanup directly (and optionally its organizer membership). */
@@ -284,6 +293,31 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const idx = this.members.findIndex((m) => m.cleanupId === cleanupId && m.userId === userId)
     if (idx >= 0) this.members.splice(idx, 1)
     return Promise.resolve(true)
+  }
+
+  listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]> {
+    const { cleanupId, viewerId, onlyFollowed, limit } = args
+    const follows = (userId: string): boolean =>
+      viewerId !== null && this.follows.has(`${viewerId}:${userId}`)
+
+    // Members of this cleanup, organizer-first then insertion order (mirrors joined_at ASC in the
+    // Drizzle impl, since members are appended in join order).
+    const ordered = this.members
+      .map((m, idx) => ({ m, idx }))
+      .filter((x) => x.m.cleanupId === cleanupId)
+      .sort((a, b) => {
+        const aOrg = a.m.role === "organizer" ? 1 : 0
+        const bOrg = b.m.role === "organizer" ? 1 : 0
+        if (aOrg !== bOrg) return bOrg - aOrg
+        return a.idx - b.idx
+      })
+
+    let views: AttendeeView[] = ordered.map((x) => {
+      const view = this.personView(x.m.userId)
+      return { ...view, isFollowing: follows(x.m.userId) }
+    })
+    if (onlyFollowed) views = views.filter((v) => v.isFollowing)
+    return Promise.resolve(views.slice(0, limit))
   }
 }
 

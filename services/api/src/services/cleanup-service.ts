@@ -27,6 +27,7 @@
 import { randomUUID } from "node:crypto"
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
+  CleanupAttendeesResponse,
   CleanupDTO,
   CleanupStatus,
   CleanupType,
@@ -41,6 +42,13 @@ import type {
 
 /** Default page size for listCleanups when the request omits `limit`. Matches the shared cap of 50. */
 export const CLEANUPS_DEFAULT_LIMIT = 20
+
+/**
+ * Max attendee names returned by listAttendees. Cleanups are neighborhood-scale, so a generous flat cap
+ * (no pagination) is enough for the "who's going" strip; the full `going` count is always returned
+ * alongside so the client can show "+N others" when the roster exceeds this.
+ */
+export const ATTENDEES_DEFAULT_LIMIT = 50
 
 // ---------------------------------------------------------------------------
 // Repository seam (structural views; faked in tests)
@@ -79,6 +87,26 @@ export interface CleanupPersonView {
   displayName: string
   handle: string | null
   bio: string | null
+}
+
+/** An attendee row: the same person fields as the organizer view plus the viewer's follow relationship. */
+export interface AttendeeView extends CleanupPersonView {
+  /** Whether the viewer follows this attendee (always false for an anonymous viewer). */
+  isFollowing: boolean
+}
+
+/** Arguments for the attendee roster read (the service resolves `onlyFollowed`/`limit` from the viewer). */
+export interface ListAttendeesArgs {
+  cleanupId: string
+  /** The signed-in viewer, or null when anonymous. Drives the per-row `isFollowing`. */
+  viewerId: string | null
+  /**
+   * When true, return only attendees the viewer follows (the "not yet RSVP'd" rule). An anonymous viewer
+   * follows no one, so this yields an empty roster.
+   */
+  onlyFollowed: boolean
+  /** Max rows to return (the service passes ATTENDEES_DEFAULT_LIMIT). */
+  limit: number
 }
 
 /** Everything the create transaction needs to persist a cleanup + the organizer membership atomically. */
@@ -161,6 +189,12 @@ export interface CleanupRepository {
    * a non-existent membership on an existing cleanup is a no-op that still returns true (idempotent).
    */
   leaveCleanup(cleanupId: string, userId: string): Promise<boolean>
+  /**
+   * The attendee roster for a cleanup: cleanup_members joined to their (non-deleted) user, with the
+   * viewer's `isFollowing` per row. Ordered organizer-first then by join time. When `onlyFollowed` is
+   * set, only attendees the viewer follows are returned. Capped at `limit`.
+   */
+  listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>
 }
 
 // ---------------------------------------------------------------------------
@@ -173,11 +207,12 @@ export interface CleanupRepository {
 // the identical [from, to] gradient from a user id.
 
 /**
- * Build the organizer PersonDTO from the joined person view. followers/following are 0 and isFollowing
- * false in the cleanup context (the cleanups domain does not load social graph counts; the social step
- * owns those). avatar is the shared derived gradient so the client can render an initials chip.
+ * Build a PersonDTO from a joined cleanup person view + the viewer's follow relationship. followers/
+ * following are 0 in the cleanup context (the cleanups domain does not load social-graph counts; the
+ * social step owns those). avatar is the shared derived gradient so the client can render an initials
+ * chip. Used for both the organizer and the attendee roster so their shapes never drift.
  */
-export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
+export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolean): PersonDTO {
   return {
     id: view.id,
     name: view.displayName,
@@ -186,8 +221,17 @@ export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
     avatar: avatarGradient(view.id),
     followers: 0,
     following: 0,
-    isFollowing: false,
+    isFollowing,
   }
+}
+
+/**
+ * Build the organizer PersonDTO from the joined person view. isFollowing is false here: the cleanups
+ * domain does not load the viewer's follow edge for the organizer (the detail screen's Follow button
+ * reads it from the dedicated social endpoint).
+ */
+export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
+  return toAttendeePersonDTO(view, false)
 }
 
 /**
@@ -240,6 +284,7 @@ export interface CleanupService {
   getCleanup(id: string, viewer: CleanupViewer): Promise<CleanupDTO>
   joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }>
   leaveCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }>
+  listAttendees(id: string, viewer: CleanupViewer): Promise<CleanupAttendeesResponse>
 }
 
 export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
@@ -324,6 +369,28 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       await deps.repo.leaveCleanup(id, userId)
       const going = await deps.repo.memberCount(id)
       return { joined: false, going }
+    },
+
+    async listAttendees(id: string, viewer: CleanupViewer): Promise<CleanupAttendeesResponse> {
+      // Confirm the cleanup exists (404 like getCleanup) and read the authoritative `going` count.
+      const record = await deps.repo.findCleanupById(id, null)
+      if (!record) throw AppError.notFound("Cleanup not found")
+
+      // RSVP unlocks the full roster; until then a viewer sees only attendees they follow. The organizer
+      // counts as joined (they are always a member), so an organizer always sees everyone.
+      const joined = await viewerJoined(id, viewer)
+      const scope: CleanupAttendeesResponse["scope"] = joined ? "all" : "following"
+
+      const views = await deps.repo.listAttendees({
+        cleanupId: id,
+        viewerId: viewer.userId,
+        onlyFollowed: !joined,
+        limit: ATTENDEES_DEFAULT_LIMIT,
+      })
+      const attendees = views.map((v) => toAttendeePersonDTO(v, v.isFollowing))
+      // `going` is the FULL member count (not the possibly-filtered roster length) so the client can show
+      // the real total and an "+N others" overflow regardless of how many names it may display.
+      return { attendees, going: record.going, scope }
     },
   }
 }

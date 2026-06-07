@@ -20,6 +20,7 @@ import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import {
   computeContactState,
   type DiscoveryContactRecord,
+  type DiscoveryContactSuggestionRecord,
   type DiscoveryDetailRecord,
   type DiscoveryNoteRecord,
   type DiscoveryRepository,
@@ -45,6 +46,8 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
   readonly tasks = new Map<string, SeededDiscoveryTask>()
   /** Notes keyed by task id, oldest first. */
   readonly notes = new Map<string, DiscoveryNoteRecord[]>()
+  /** Citizen contact suggestions keyed by GEOID (not task id), oldest first. */
+  readonly contactSuggestions = new Map<string, DiscoveryContactSuggestionRecord[]>()
 
   /** Deterministic clock for note timestamps; each note advances by one millisecond. */
   now = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 0))
@@ -165,6 +168,27 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
 
   async listNotes(id: string): Promise<DiscoveryNoteRecord[]> {
     return [...(this.notes.get(id) ?? [])]
+  }
+
+  /** Seed a citizen contact suggestion for a geoid (tests). Advances the deterministic clock. */
+  seedSuggestion(
+    geoid: string,
+    input: { email?: string | null; formUrl?: string | null; note?: string | null },
+  ): DiscoveryContactSuggestionRecord {
+    const rec: DiscoveryContactSuggestionRecord = {
+      email: input.email ?? null,
+      formUrl: input.formUrl ?? null,
+      note: input.note ?? null,
+      createdAt: this.nextDate(),
+    }
+    const list = this.contactSuggestions.get(geoid) ?? []
+    list.push(rec)
+    this.contactSuggestions.set(geoid, list)
+    return rec
+  }
+
+  async listContactSuggestions(geoid: string): Promise<DiscoveryContactSuggestionRecord[]> {
+    return [...(this.contactSuggestions.get(geoid) ?? [])]
   }
 
   async getTask(id: string): Promise<DiscoveryTaskRecord | null> {

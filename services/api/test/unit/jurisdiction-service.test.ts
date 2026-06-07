@@ -3,6 +3,7 @@ import { FakeJobs, FakeGeocoder } from "@civfix/shared/fakes"
 import type { Sql } from "../../src/db/client.js"
 import {
   needsDiscovery,
+  isRoutable,
   makeJurisdictionService,
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionHealthRow,
@@ -30,6 +31,8 @@ interface HealthDbRow {
   contact_emails: string[] | null
   contact_updated_at: Date | null
   population: number | null
+  /** Phase 2: whether a usable jurisdiction_contacts row exists (drives routable without legacy emails). */
+  has_routing_contact?: boolean
 }
 
 /**
@@ -185,6 +188,8 @@ describe("makeJurisdictionService.resolveForPoint", () => {
     expect(dto?.geoid).toBe("0644000")
     expect(dto?.layer).toBe("place")
     expect(dto?.cityStateLabel).toBe("Los Angeles, CA")
+    // A legacy contact email is on file -> the jurisdiction is routable.
+    expect(dto?.routable).toBe(true)
   })
 
   it("returns null when the point resolves to no jurisdiction", async () => {
@@ -245,5 +250,58 @@ describe("makeJurisdictionService.resolveForPoint", () => {
 
     await service.resolveForPoint(34.1, -118.35)
     expect(jobs.jobsFor(JURISDICTION_DISCOVERY_JOB)).toHaveLength(0)
+  })
+
+  it("sets routable=true via a jurisdiction_contacts row even without legacy emails", async () => {
+    const sql = makeFakeSql({
+      resolveRows: [resolved],
+      healthRows: [
+        {
+          geoid: "0644000",
+          contact_emails: null,
+          contact_updated_at: NOW,
+          population: 100,
+          has_routing_contact: true,
+        },
+      ],
+    })
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs: new FakeJobs(),
+      now: () => NOW,
+    })
+    const dto = await service.resolveForPoint(34.1, -118.35)
+    expect(dto?.routable).toBe(true)
+  })
+
+  it("sets routable=false when the jurisdiction has no contact at all", async () => {
+    const sql = makeFakeSql({
+      resolveRows: [resolved],
+      healthRows: [
+        { geoid: "0644000", contact_emails: null, contact_updated_at: null, population: 100 },
+      ],
+    })
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs: new FakeJobs(),
+      now: () => NOW,
+    })
+    const dto = await service.resolveForPoint(34.1, -118.35)
+    expect(dto?.routable).toBe(false)
+  })
+})
+
+describe("isRoutable (pure)", () => {
+  it("true with a usable legacy contact email", () => {
+    expect(isRoutable({ hasRoutingContact: false, contactEmails: ["311@x.gov"] })).toBe(true)
+  })
+  it("true with a jurisdiction_contacts routing row", () => {
+    expect(isRoutable({ hasRoutingContact: true, contactEmails: null })).toBe(true)
+  })
+  it("false with neither (empty/blank legacy + no routing row)", () => {
+    expect(isRoutable({ hasRoutingContact: false, contactEmails: [] })).toBe(false)
+    expect(isRoutable({ hasRoutingContact: false, contactEmails: ["", "  "] })).toBe(false)
   })
 })

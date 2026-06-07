@@ -58,6 +58,8 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(body.geoid).toBe(LA_CITY.geoid)
     expect(body.layer).toBe("place")
     expect(typeof body.cityStateLabel).toBe("string")
+    // The public DTO now carries the routable flag (whether routing is configured for this jurisdiction).
+    expect(typeof body.routable).toBe("boolean")
   })
 
   it("resolves unincorporated county land to the county layer", async () => {
@@ -148,5 +150,43 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(near1Pin.going).toBe(2)
     expect(near1Pin.lat).toBeCloseTo(insideLat, 5)
     expect(near1Pin.lng).toBeCloseTo(insideLng, 5)
+  })
+
+  it("POST /map/jurisdictions/:geoid/suggest-contact 404s an unknown geoid", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/map/jurisdictions/99999999/suggest-contact",
+      payload: { email: "311@example.gov" },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("suggest-contact records a discovery.contact_suggested audit row for a known geoid", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/map/jurisdictions/${LA_CITY.geoid}/suggest-contact`,
+      payload: {
+        email: "sanitation@lacity.example",
+        formUrl: "https://lacity.example/report",
+        note: "use the SR portal",
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toEqual({ ok: true })
+
+    const rows = await h.sql<
+      { meta: { email: string; formUrl: string; note: string; source: string } }[]
+    >`
+      SELECT meta FROM audit_log
+      WHERE action = 'discovery.contact_suggested'
+        AND target = ${"jurisdiction:" + LA_CITY.geoid}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.meta.email).toBe("sanitation@lacity.example")
+    expect(rows[0]?.meta.formUrl).toBe("https://lacity.example/report")
+    expect(rows[0]?.meta.note).toBe("use the SR portal")
+    expect(rows[0]?.meta.source).toBe("anon")
   })
 })

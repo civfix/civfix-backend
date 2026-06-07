@@ -27,6 +27,7 @@ import {
   type GetCleanupResponse,
   type JoinCleanupResponse,
   type LeaveCleanupResponse,
+  type CleanupAttendeesResponse,
   type ChatHistoryResponse,
 } from "@civfix/shared"
 import { ZodError, z, type ZodTypeAny } from "zod"
@@ -160,6 +161,17 @@ export async function registerCleanupRoutes(
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: LeaveCleanupResponse = await service().leaveCleanup(id, userId)
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /cleanups/:id/attendees  (anon-ok)
+  // -------------------------------------------------------------------------
+  // The "who's going" roster. The service scopes it to the viewer: only people you follow until you
+  // RSVP, then everyone going. Anonymous/non-member viewers therefore get an empty roster + the count.
+  app.get("/cleanups/:id/attendees", async (request, reply) => {
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const payload: CleanupAttendeesResponse = await service().listAttendees(id, viewerOf(request))
     reply.status(200).send(payload)
   })
 

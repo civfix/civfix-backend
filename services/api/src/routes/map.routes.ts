@@ -24,17 +24,20 @@ import {
   ResolveJurisdictionRequestSchema,
   ReverseLabelRequestSchema,
   ListCleanupsInBBoxRequestSchema,
+  SuggestContactRequestSchema,
   AppError,
   type TileInfoResponse,
   type JurisdictionDTO,
   type ReverseLabelResponse,
   type MapCleanupsResponse,
   type CleanupPinDTO,
+  type SuggestContactResponse,
 } from "@civfix/shared"
 import { ZodError, z, type ZodTypeAny } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { writeAudit } from "../services/admin/audit.js"
 import { BBoxQueryParam } from "./query-encoding.js"
 
 /** Max cleanup pins returned for a single bbox query. Documented in MapCleanupsResponse handling. */
@@ -59,6 +62,15 @@ const CleanupsQuerySchema = z.object({
   bbox: BBoxQueryParam,
   when: z.enum(["upcoming", "past"]).optional(),
 })
+
+/** Path param for the public suggest-contact route. */
+const GeoidParamsSchema = z.object({ geoid: z.string().min(1) }).strict()
+
+/**
+ * Tight per-IP limit for the public suggest-contact write (mirrors the anon status limiter). Suggestions
+ * are operator-reviewed and never auto-route, so a modest cap bounds spam without hurting real reporters.
+ */
+const SUGGEST_CONTACT_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 
 export async function registerMapRoutes(app: FastifyInstance, container: Container): Promise<void> {
   // -------------------------------------------------------------------------
@@ -127,6 +139,46 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     const payload: MapCleanupsResponse = { pins }
     reply.status(200).send(payload)
   })
+
+  // -------------------------------------------------------------------------
+  // POST /map/jurisdictions/:geoid/suggest-contact  (public, rate-limited)
+  // -------------------------------------------------------------------------
+  // A reporter in an UNMAPPED area offers a routing contact (an email and/or the city's reporting form,
+  // at least one) plus an optional note. It is recorded as an audit_log `discovery.contact_suggested`
+  // row (target jurisdiction:<geoid>) so it surfaces in the operator's discovery queue as a "Reporter"
+  // note; it NEVER auto-routes. The geoid is taken from the PATH (authoritative) and injected into the
+  // body before validation, so a caller need not echo it. 404 when the geoid is not a known jurisdiction.
+  app.post(
+    "/map/jurisdictions/:geoid/suggest-contact",
+    { config: { rateLimit: SUGGEST_CONTACT_RATE_LIMIT } },
+    async (request, reply) => {
+      const { geoid } = parse(GeoidParamsSchema, request.params)
+      const body = parse(SuggestContactRequestSchema, {
+        ...(request.body as Record<string, unknown> | undefined),
+        geoid,
+      })
+
+      const sql = container.getDb().sql
+      const exists =
+        (await sql`SELECT 1 FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1`).length > 0
+      if (!exists) throw AppError.notFound("Jurisdiction not found")
+
+      await writeAudit(sql, {
+        actorId: null,
+        action: "discovery.contact_suggested",
+        target: `jurisdiction:${geoid}`,
+        meta: {
+          email: body.email ?? null,
+          formUrl: body.formUrl ?? null,
+          note: body.note ?? null,
+          source: "anon",
+        },
+      })
+
+      const payload: SuggestContactResponse = { ok: true }
+      reply.status(201).send(payload)
+    },
+  )
 }
 
 /**

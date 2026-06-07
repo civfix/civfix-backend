@@ -35,6 +35,7 @@ import { writeAudit } from "./audit.js"
 import {
   DISCOVERY_CATEGORIES,
   type DiscoveryContactRecord,
+  type DiscoveryContactSuggestionRecord,
   type DiscoveryDetailRecord,
   type DiscoveryNoteRecord,
   type DiscoveryRepository,
@@ -241,6 +242,31 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       return rows
         .filter((r) => r.text !== null)
         .map((r) => ({ text: r.text ?? "", who: r.who ?? "operator", createdAt: r.created_at }))
+    },
+
+    async listContactSuggestions(geoid: string): Promise<DiscoveryContactSuggestionRecord[]> {
+      // Citizen suggestions are audit_log rows keyed by the jurisdiction (NOT a task id), so they survive
+      // even before a discovery task materializes for the geoid. Read newest-last so they interleave with
+      // operator notes by created_at in the service.
+      const rows = await sql<
+        { email: string | null; form_url: string | null; note: string | null; created_at: Date }[]
+      >`
+        SELECT
+          meta->>'email' AS email,
+          meta->>'formUrl' AS form_url,
+          meta->>'note' AS note,
+          created_at
+        FROM audit_log
+        WHERE action = 'discovery.contact_suggested'
+          AND target = ${"jurisdiction:" + geoid}
+        ORDER BY created_at ASC
+      `
+      return rows.map((r) => ({
+        email: r.email,
+        formUrl: r.form_url,
+        note: r.note,
+        createdAt: r.created_at,
+      }))
     },
 
     async getTask(id: string): Promise<DiscoveryTaskRecord | null> {
