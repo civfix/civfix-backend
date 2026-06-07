@@ -35,8 +35,6 @@ jobs:
     name: ssh deploy + health gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Manual runs always proceed; automatic (workflow_run) runs only when CI actually succeeded.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
     env:
       DEPLOY_HOST: 150.136.102.127
