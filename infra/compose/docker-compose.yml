@@ -47,6 +47,17 @@ services:
     env_file:
       # Prefer a SOPS-decrypted file mounted at deploy time; fall back to a local .env.
       - ../secrets/api.env
+    # NODE_ENV is owned by the DEPLOYMENT, never the secrets file. Compose `environment` overrides any
+    # value in `env_file` (and the Dockerfile's `ENV NODE_ENV=production`), so a secrets file copied from
+    # .env.example (which ships NODE_ENV=development for local dev) can NEVER silently demote the API to
+    # dev mode. That demotion is exactly what breaks the operator dashboard: in dev mode env.ts does not
+    # require DATABASE_URL/REDIS_URL, so the auth bundle is not built and registerRoutes skips BOTH the
+    # citizen /auth/* and the operator /admin/* routes -> every such request 404s ("Route GET
+    # /admin/auth/session not found") while /healthz still passes. Forcing production here makes env.ts
+    # REQUIRE the real infra (DB/Redis/signing keys/creds): the API either boots correctly or fails
+    # loudly listing the missing vars, instead of silently serving an all-fakes backend.
+    environment:
+      NODE_ENV: production
     # NOT host-published: the API is reachable only on the internal compose network. Caddy proxies to it
     # by service name (api:8080), so every request passes the edge header-strip. For a local-dev direct
     # port, use docker-compose.dev.yml (dev-only). Containers on this network reach it via `api:8080`.
@@ -83,6 +94,13 @@ services:
     restart: unless-stopped
     env_file:
       - ../secrets/media-worker.env
+    # Same rationale as the API: force production so a copied secrets file cannot demote the worker to
+    # dev mode, where seams.ts/jobs.ts default every USE_FAKE_* ON and the untrusted-byte pipeline would
+    # silently run FAKE NSFW/abuse + dup checks and FAKE storage in production (a security gap). In
+    # production the real R2/abuse adapters are required (or explicitly toggled via USE_FAKE_* in the
+    # secrets file), and a missing DATABASE_URL fails the worker loudly.
+    environment:
+      NODE_ENV: production
     depends_on:
       migrate:
         condition: service_completed_successfully

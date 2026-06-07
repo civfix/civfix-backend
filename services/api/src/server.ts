@@ -145,6 +145,24 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   const authServices = resolveAuthServices(opts, env, container)
   if (authServices) {
     app.decorate("authServices", authServices)
+  } else {
+    // No auth bundle => registerRoutes mounts NEITHER the citizen /auth/* NOR the operator /admin/*
+    // routes, so every request to them returns Fastify's route-not-found 404 (e.g. "Route GET
+    // /admin/auth/session not found"). This is the intended all-fakes offline boot for local dev and
+    // unit tests, but in a real deployment it is a MISCONFIGURATION: DATABASE_URL/REDIS_URL are unset,
+    // which only happens when NODE_ENV !== "production" (production REQUIRES both — see env.ts). Warn
+    // loudly so a server that silently booted in all-fakes mode (healthy /healthz, 404 on every auth /
+    // admin route) is diagnosable from the logs rather than a mystery 404. Silent in tests (logger off).
+    app.log.warn(
+      {
+        nodeEnv: env.NODE_ENV,
+        hasDatabaseUrl: env.DATABASE_URL.length > 0,
+        hasRedisUrl: env.REDIS_URL.length > 0,
+      },
+      "auth bundle absent: citizen /auth/* and operator /admin/* routes are NOT mounted. " +
+        "These mount only when DATABASE_URL and REDIS_URL are both set; production sets NODE_ENV=production " +
+        "and requires both. If this is a deployed server, set NODE_ENV=production and the infra URLs.",
+    )
   }
 
   // Optional injected media repository (tests). Left unset in production so the media routes build the
