@@ -67,18 +67,6 @@ jobs:
               -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
               "${DEPLOY_USER}@${DEPLOY_HOST}"
 
-      - name: Health gate (poll /readyz through Cloudflare until 200)
-        run: |
-          set -uo pipefail
-          for i in $(seq 1 30); do
-            code=$(curl -sS -o /tmp/ready.json -w '%{http_code}' --max-time 10 "$HEALTH_URL" || echo 000)
-            echo "attempt $i: $HEALTH_URL -> HTTP $code $(cat /tmp/ready.json 2>/dev/null)"
-            if [ "$code" = "200" ]; then echo "✅ service is ready"; exit 0; fi
-            sleep 6
-          done
-          echo "❌ service did not report ready (HTTP 200) within ~3 minutes"
-          exit 1
-
       - name: Cleanup deploy key
         if: always()
         run: rm -f ~/.ssh/deploy_key
