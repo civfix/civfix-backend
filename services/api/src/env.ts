@@ -171,6 +171,24 @@ export interface Env {
    */
   OUTREACH_DIGEST_CRON: string
 
+  // ----- admin auth: Cloudflare Access (Zero Trust) SSO (doc 16) [OPT] -----
+  /**
+   * The team Access domain. Used as BOTH the expected JWT `iss` and the JWKS base
+   * (`${CF_ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`), e.g. https://civfix.cloudflareaccess.com.
+   * The admin Access exchange route (`/admin/auth/access/exchange`) is enabled ONLY when both this and
+   * CF_ACCESS_AUD are present; otherwise the POST exchange fails loudly (503) so a half-configured deploy
+   * is obvious rather than silently accepting nothing. [OPT]
+   */
+  CF_ACCESS_TEAM_DOMAIN?: string
+  /** The Application Audience (AUD) tag of the path-scoped Access app on api.civfix.org/admin. [OPT] */
+  CF_ACCESS_AUD?: string
+  /**
+   * Optional comma list of permitted Cloudflare Access service-token client IDs (the `common_name`
+   * claim) for non-interactive admin access. Empty => no service tokens accepted. Service-token support
+   * is NOT yet wired into the exchange (deferred, doc 16 §6.6); this is parsed and reserved only. [OPT]
+   */
+  CF_ACCESS_SERVICE_TOKENS: string[]
+
   // ----- feature / integration [OPT] -----
   CF_TURNSTILE_SECRET?: string
   CF_EMAIL_WEBHOOK_SECRET?: string
@@ -367,7 +385,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OUTREACH_THROTTLE_DAYS: parseIntOr(source.OUTREACH_THROTTLE_DAYS, 7),
     OUTREACH_DIGEST_CRON: (source.OUTREACH_DIGEST_CRON ?? "").trim() || "0 14 * * *",
 
+    // Admin auth: Cloudflare Access (doc 16). Team domain + AUD are optional strings (the exchange route
+    // self-gates on both being present). Service-token client IDs are parsed but not yet consumed.
+    CF_ACCESS_SERVICE_TOKENS: parseCsv(source.CF_ACCESS_SERVICE_TOKENS),
+
     ...optGroup(source, [
+      "CF_ACCESS_TEAM_DOMAIN",
+      "CF_ACCESS_AUD",
       "CF_TURNSTILE_SECRET",
       "CF_EMAIL_WEBHOOK_SECRET",
       "CF_API_TOKEN",
