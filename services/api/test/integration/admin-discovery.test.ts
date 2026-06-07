@@ -189,7 +189,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
         defaultEmails: ["311@lacity.gov"],
         formUrl: null,
       },
-      { actorId: "00000000-0000-0000-0000-000000000001" },
+      { actorId: null },
     )
     expect(result.taskResolved).toBe(true)
     expect(result.routedReports).toBe(2)
@@ -243,7 +243,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
         defaultEmails: ["311@lacity.gov"],
         formUrl: null,
       },
-      { actorId: "00000000-0000-0000-0000-000000000001" },
+      { actorId: null },
     )
 
     const { records } = await contacts.listDirectory({

@@ -54,10 +54,6 @@ const EXPECTED_TABLES = [
 describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
   const h = pg as PgHarness
 
-  afterAll(async () => {
-    await h.teardown()
-  })
-
   it("creates every expected table", async () => {
     const rows = await h.sql<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables
@@ -310,4 +306,10 @@ describe.skipIf(!pg)("schema (Phase 2): admin migration 0007 produces the expect
     // But a category-specific row alongside the default is allowed.
     await h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email) VALUES ('TEST07', 'trash', 'c@x.gov')`
   })
+})
+
+// Tear down the shared, memoized withPg() harness only after BOTH describe blocks above have run.
+// A per-block afterAll would stop the container before the second (Phase 2) block's tests execute.
+afterAll(async () => {
+  if (pg) await pg.teardown()
 })

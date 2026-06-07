@@ -665,8 +665,9 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async recordEvent(input: RecordEventInput): Promise<string> {
-      const meta =
-        input.meta == null ? null : sql.json(input.meta as Parameters<typeof sql.json>[0])
+      // mail_events.meta is NOT NULL DEFAULT '{}'; an explicit NULL overrides the default and
+      // violates the constraint, so coalesce a missing meta to an empty object.
+      const meta = sql.json((input.meta ?? {}) as Parameters<typeof sql.json>[0])
       const rows = await sql<{ id: string }[]>`
         INSERT INTO mail_events (thread_id, message_id, type, meta)
         VALUES (${input.threadId ?? null}, ${input.messageId ?? null}, ${input.type}, ${meta})

@@ -117,7 +117,10 @@ describe.skipIf(!pg)("admin event repository (integration: real schema)", () => 
     const ok = await repo.setStatus(id, { status: "in_progress", note: "live", actorId: null })
     expect(ok).toBe(true)
     const status = await h.sql<{ status: string }[]>`SELECT status FROM cleanups WHERE id = ${id}`
-    expect(status[0]?.status).toBe("in_progress")
+    // Storage stays on the Phase-1 enum: EventStatus 'in_progress' is persisted as 'active'.
+    expect(status[0]?.status).toBe("active")
+    // The read side maps the stored Phase-1 value back to the Phase-2 EventStatus wire enum.
+    expect((await repo.getEvent(id))?.status).toBe("in_progress")
     const tl = await h.sql<
       { kind: string }[]
     >`SELECT kind FROM cleanup_timeline WHERE cleanup_id = ${id} ORDER BY created_at DESC LIMIT 1`

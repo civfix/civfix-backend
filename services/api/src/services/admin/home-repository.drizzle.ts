@@ -206,7 +206,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           r.status AS status,
           EXISTS (
             SELECT 1 FROM abuse_flags af
-            WHERE af.subject_type = 'report' AND af.subject_id = r.id AND af.resolved_at IS NULL
+            WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
           ) AS flagged,
           r.title AS title,
           j.name AS place
