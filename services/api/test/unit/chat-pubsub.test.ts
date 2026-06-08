@@ -61,9 +61,13 @@ describe("Redis pub/sub fan-out across two workers (in-memory pub/sub)", () => {
     await worker.broadcast(ROOM, msg)
 
     expect(received).toHaveLength(1)
-    const frame = JSON.parse(received[0]!) as { type: string; message: ChatMessageDTO }
-    expect(frame.type).toBe("message")
-    expect(frame.message.body).toBe("hi")
+    // The internal pub/sub envelope wraps the client-facing frame under `frame` (+ optional
+    // excludeConnId), so subscribers on any worker can deliver the schema-clean WsServerMessage.
+    const envelope = JSON.parse(received[0]!) as {
+      frame: { type: string; message: ChatMessageDTO }
+    }
+    expect(envelope.frame.type).toBe("message")
+    expect(envelope.frame.message.body).toBe("hi")
   })
 
   it("a message on a DIFFERENT room channel is not delivered to this room's subscribers", async () => {

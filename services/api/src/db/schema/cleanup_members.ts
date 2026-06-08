@@ -24,6 +24,10 @@ export const cleanupMembers = pgTable(
       .references(() => users.id),
     role: text("role").$type<CleanupMemberRole>().notNull(),
     joinedAt: timestamp("joined_at", { withTimezone: true }).defaultNow(),
+    // Chat read watermark: the timestamp of the newest chat message this member has read (NULL = never
+    // read; unread baseline falls back to joined_at). Written by the WS `ack` handler, read by the
+    // threads service for unread counts. See drizzle/0008_chat_read_state.sql.
+    lastReadAt: timestamp("last_read_at", { withTimezone: true }),
   },
   (t) => [
     primaryKey({ columns: [t.cleanupId, t.userId] }),

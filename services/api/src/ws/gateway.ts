@@ -50,6 +50,7 @@ import type { WebSocket } from "@fastify/websocket"
 import { WsClientMessageSchema, type WsServerMessage } from "@civfix/shared"
 import type { ChatService, ChatConnection } from "@civfix/shared/interfaces"
 import type { SessionService } from "../auth/session-service.js"
+import type { ChatPresence } from "../adapters/chat-presence.js"
 import { presentedSessionToken, SESSION_COOKIE } from "../auth/transport.js"
 import { randomUUID } from "node:crypto"
 
@@ -58,6 +59,12 @@ export const WS_HEARTBEAT_MS = 30_000
 
 /** Close code used when a handshake is unauthenticated (RFC 6455 policy violation). */
 export const WS_CLOSE_POLICY_VIOLATION = 1008
+
+/**
+ * Server-side typing throttle (ms): a backstop against a chatty/abusive client. At most one typing
+ * fan-out per room per connection in this window; the clients also throttle, but we never trust them.
+ */
+export const TYPING_MIN_INTERVAL_MS = 1000
 
 /**
  * Decide whether a WebSocket upgrade Origin is allowed (anti-CSWSH). Pure so it is unit-testable with no
@@ -128,17 +135,22 @@ export interface GatewayDeps {
   chat: GatewayChatService
   isMember: IsMemberFn
   markRead?: MarkReadFn | undefined
+  /** Optional presence registry: tracks who is online per room and powers presence snapshots/deltas. */
+  presence?: ChatPresence | undefined
 }
 
 /**
  * Per-connection session: the authenticated user, the wrapped connection, the set of rooms this socket
- * has joined (so close can leave them all), and the deps. One is created per socket.
+ * has joined (so close can leave them all), the deps, and a per-room typing throttle clock. One is
+ * created per socket.
  */
 export interface GatewaySession {
   readonly userId: string
   readonly conn: ChatConnection
   readonly joined: Set<string>
   readonly deps: GatewayDeps
+  /** Per-room last typing-broadcast epoch ms (server-side throttle). Mutated in place. */
+  readonly typingThrottle: Map<string, number>
 }
 
 /** Build a server frame as a JSON string (typed against the shared server-frame union). */
@@ -149,6 +161,31 @@ function serverFrame(frame: WsServerMessage): string {
 /** Send an {type:"error"} frame to a connection. */
 function sendError(conn: ChatConnection, code: string, message: string): void {
   conn.send(serverFrame({ type: "error", code, message }))
+}
+
+/**
+ * Leave a room AND announce a presence(leave) delta to the remaining members when this was the user's
+ * LAST connection in the room. Shared by the explicit `leave` frame and the socket `close` cleanup so
+ * both paths drop the room AND deregister presence (otherwise a closed socket would linger as "online"
+ * until its TTL pruned it). Order: drop from the message fan-out first (the conn is gone from the room,
+ * so the leave delta below reaches only the OTHERS), then deregister presence and broadcast the delta.
+ */
+async function leaveRoomAndAnnounce(session: GatewaySession, cleanupId: string): Promise<void> {
+  const { conn, deps, userId } = session
+  await deps.chat.leaveRoom(cleanupId, conn)
+  session.joined.delete(cleanupId)
+  session.typingThrottle.delete(cleanupId)
+  if (deps.presence) {
+    const { userGone } = await deps.presence.leave(cleanupId, conn.id, userId)
+    if (userGone) {
+      await deps.chat.broadcastEvent?.(cleanupId, {
+        type: "presence",
+        cleanupId,
+        userId,
+        state: "leave",
+      })
+    }
+  }
 }
 
 /**
@@ -192,18 +229,28 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
       }
       await deps.chat.joinRoom(frame.cleanupId, conn, userId)
       session.joined.add(frame.cleanupId)
-      // Presence: tell the joiner's own socket it is in (clients use this to flip room state). Other
-      // members learn of the join via the same channel only if presence is broadcast; we keep join
-      // presence local to avoid leaking membership churn, matching the "optional" presence in the spec.
-      conn.send(
-        serverFrame({ type: "presence", cleanupId: frame.cleanupId, userId, state: "join" }),
-      )
+      // Presence (when a registry is wired): register this connection, send the joiner the CURRENT online
+      // snapshot so it can render "N online" immediately, and broadcast a join DELTA to the OTHER members
+      // only when this is the user's FIRST connection in the room (so opening a second tab/device does not
+      // spam a redundant join). The joiner is excluded from the delta - it already has the snapshot.
+      if (deps.presence) {
+        const { online, userJoined } = await deps.presence.join(frame.cleanupId, conn.id, userId)
+        conn.send(
+          serverFrame({ type: "presence_snapshot", cleanupId: frame.cleanupId, userIds: online }),
+        )
+        if (userJoined) {
+          await deps.chat.broadcastEvent?.(
+            frame.cleanupId,
+            { type: "presence", cleanupId: frame.cleanupId, userId, state: "join" },
+            { excludeConnId: conn.id },
+          )
+        }
+      }
       return
     }
 
     case "leave": {
-      await deps.chat.leaveRoom(frame.cleanupId, conn)
-      session.joined.delete(frame.cleanupId)
+      await leaveRoomAndAnnounce(session, frame.cleanupId)
       return
     }
 
@@ -235,16 +282,25 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
     }
 
     case "typing": {
-      // Typing presence is OPTIONAL and best-effort (see the spec). The ChatService.broadcast contract
-      // only carries a ChatMessageDTO, and we will not abuse it to push a non-message presence frame
-      // (which would corrupt the message stream) nor modify the shared interface. So we gate on
-      // membership (a non-member must not even signal typing) and otherwise no-op. A later step can add
-      // a dedicated presence channel to the ChatService seam if live typing indicators are desired.
+      // A member is typing: fan a {type:"typing"} frame to the OTHER members (the sender is excluded) over
+      // the dedicated broadcastEvent channel - it carries an ephemeral, un-persisted frame, so it never
+      // touches the message stream or history. A non-member must not even signal typing.
       const ok = await deps.isMember(frame.cleanupId, userId)
       if (!ok) {
         sendError(conn, "FORBIDDEN", "You are not a member of this cleanup.")
         return
       }
+      // Server-side throttle backstop: drop typing fan-outs more frequent than TYPING_MIN_INTERVAL_MS for
+      // this connection+room, regardless of what the client sends.
+      const now = Date.now()
+      const last = session.typingThrottle.get(frame.cleanupId) ?? 0
+      if (now - last < TYPING_MIN_INTERVAL_MS) return
+      session.typingThrottle.set(frame.cleanupId, now)
+      await deps.chat.broadcastEvent?.(
+        frame.cleanupId,
+        { type: "typing", cleanupId: frame.cleanupId, userId },
+        { excludeConnId: conn.id },
+      )
       return
     }
 
@@ -360,6 +416,8 @@ export interface RegisterGatewayOptions {
   sessions: SessionService | undefined
   /** Optional read-state updater for the `ack` frame. */
   markRead?: MarkReadFn | undefined
+  /** Optional presence registry: powers presence snapshots/deltas and is refreshed by the heartbeat. */
+  presence?: ChatPresence | undefined
   /** CORS/WS Origin allowlist (env.WEB_ORIGINS). Empty allows all (dev). See isAllowedWsOrigin. */
   webOrigins: readonly string[]
 }
@@ -395,10 +453,12 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
         userId,
         conn: wrapSocket(socket),
         joined: new Set<string>(),
+        typingThrottle: new Map<string, number>(),
         deps: {
           chat: opts.chat,
           isMember: opts.isMember,
           markRead: opts.markRead,
+          presence: opts.presence,
         },
       }
 
@@ -414,6 +474,14 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           return
         }
         alive = false
+        // Refresh this socket's presence entries so they are not pruned while it stays connected (the
+        // registry's last-seen TTL is a few heartbeats; a long-idle-but-connected member must remain
+        // "online"). Fire-and-forget; a Redis hiccup must not affect the keepalive.
+        if (opts.presence) {
+          for (const cleanupId of session.joined) {
+            void opts.presence.refresh(cleanupId, session.conn.id, session.userId).catch(() => {})
+          }
+        }
         try {
           socket.ping()
         } catch {
@@ -434,9 +502,11 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
 
       socket.on("close", () => {
         clearInterval(heartbeat)
-        // Leave every room this socket joined so the ChatService drops it from fan-out.
-        for (const cleanupId of session.joined) {
-          void opts.chat.leaveRoom(cleanupId, session.conn)
+        // Leave every room this socket joined so the ChatService drops it from fan-out AND presence
+        // deregisters it (announcing a leave delta when it was the user's last connection). Iterate a
+        // copy because leaveRoomAndAnnounce mutates session.joined.
+        for (const cleanupId of [...session.joined]) {
+          void leaveRoomAndAnnounce(session, cleanupId).catch(() => {})
         }
         session.joined.clear()
       })

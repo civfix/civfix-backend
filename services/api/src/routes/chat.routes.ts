@@ -26,6 +26,12 @@ import { requireAuth } from "../auth/context.js"
 import { registerChatGateway, type IsMemberFn } from "../ws/gateway.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleThreadsRepository } from "../services/threads-repository.drizzle.js"
+import { makeDrizzleChatReadState } from "../services/chat-read-state.drizzle.js"
+import {
+  InMemoryChatPresence,
+  RedisChatPresence,
+  type ChatPresence,
+} from "../adapters/chat-presence.js"
 import {
   makeThreadsService,
   InMemoryChatReadState,
@@ -43,6 +49,7 @@ export interface ChatGatewayOverrides {
   isMember: IsMemberFn
   threadsRepo: ThreadsRepository
   readState?: ChatReadState
+  presence?: ChatPresence
 }
 
 declare module "fastify" {
@@ -63,15 +70,46 @@ export async function registerChatRoutes(
 
   const overrides = app.chatOverrides
 
-  // The shared read-state store (process-local in Phase 1; see threads-service.ts). One instance backs
-  // both the gateway `ack` writes and the threads `unread` reads so they agree within a process.
-  const readState: ChatReadState = overrides?.readState ?? new InMemoryChatReadState()
+  // The shared read-state store. In production it is DB-backed (cleanup_members.last_read_at) so unread
+  // counts decrement on read AND survive a restart / span instances; in the all-fakes dev/test path
+  // (USE_FAKE_CHAT, no DB) it is process-local. One instance backs both the gateway `ack` writes and the
+  // threads `unread` reads so they agree.
+  const readState: ChatReadState =
+    overrides?.readState ??
+    (container.env.USE_FAKE_CHAT
+      ? new InMemoryChatReadState()
+      : makeDrizzleChatReadState(container.getDb().sql))
+
+  // The presence registry powers the live "N online" snapshot/deltas. Redis-backed in production (shared
+  // source of truth across workers, self-healing via the heartbeat); in-memory in the all-fakes path.
+  const presence: ChatPresence =
+    overrides?.presence ??
+    (container.env.USE_FAKE_CHAT
+      ? new InMemoryChatPresence()
+      : new RedisChatPresence(container.getRedis()))
 
   // Membership probe: injected (tests) or the Drizzle cleanup repo's isMember (production). Built lazily
   // so merely registering the plugin opens no DB connection.
   const isMember: IsMemberFn = overrides
     ? overrides.isMember
     : (cleanupId, userId) => makeDrizzleCleanupRepository(container.getDb().sql).isMember(cleanupId, userId)
+
+  // Resolve the read watermark for an `ack`: the created_at of the acked message (upToId), NOT the
+  // server's wall clock. Stamping now() would push the watermark past the acked message and silently mark
+  // a message that arrived in the ack's debounce/network window as read (undercounting unread). Anchoring
+  // to the message's own timestamp marks read EXACTLY up to what the client acked; a later message stays
+  // unread until its own ack. The lookup is a partition-wise PK seek on chat_messages(id, ...), scoped to
+  // the room for safety; a foreign/unknown id falls back to now() so a stray ack still advances liveness.
+  // In the all-fakes dev path (no DB) we cannot resolve it, so we use now() (unread precision is moot in
+  // dev). Reads come off the lazily-created DB handle, so this opens no connection until an ack lands.
+  const resolveReadAt: (cleanupId: string, upToId: string) => Promise<Date> = container.env.USE_FAKE_CHAT
+    ? () => Promise.resolve(new Date())
+    : async (cleanupId, upToId) => {
+        const rows = await container.getDb().sql<{ created_at: Date }[]>`
+          SELECT created_at FROM chat_messages WHERE id = ${upToId} AND cleanup_id = ${cleanupId} LIMIT 1
+        `
+        return rows[0]?.created_at ?? new Date()
+      }
 
   // -------------------------------------------------------------------------
   // GET /ws  (WebSocket upgrade; dual handshake auth inside the gateway)
@@ -80,7 +118,11 @@ export async function registerChatRoutes(
     chat: container.chatService,
     isMember,
     sessions: app.authServices?.sessions,
-    markRead: (cleanupId, userId, _upToId) => readState.markRead(cleanupId, userId, new Date()),
+    markRead: async (cleanupId, userId, upToId) => {
+      const at = await resolveReadAt(cleanupId, upToId)
+      await readState.markRead(cleanupId, userId, at)
+    },
+    presence,
     // Anti-CSWSH: the gateway rejects a cross-site upgrade Origin not in the WEB_ORIGINS allowlist.
     webOrigins: container.env.WEB_ORIGINS,
   })

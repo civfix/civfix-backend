@@ -38,7 +38,7 @@ import type {
   PersistChatInput,
   ChatHistoryPage,
 } from "@civfix/shared/interfaces"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO, WsServerMessage } from "@civfix/shared"
 import { randomUUID } from "node:crypto"
 import { chatChannel, type ChatPubSub } from "./chat-pubsub.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
@@ -123,10 +123,38 @@ export class WsChatService implements ChatService {
     msg: ChatMessageDTO,
     opts?: { excludeConnId?: string },
   ): Promise<void> {
+    await this.publishFrame(cleanupId, { type: "message", message: msg }, opts?.excludeConnId)
+  }
+
+  /**
+   * Fan an EPHEMERAL, un-persisted server frame (presence delta / typing) to the room's live sockets
+   * across workers via the SAME pub/sub channel + envelope as messages. Unlike broadcast(), nothing is
+   * persisted and the frame is whatever WsServerMessage the gateway built ({type:"presence"} /
+   * {type:"typing"}). excludeConnId keeps the originator out of the fan-out (e.g. a typist does not see
+   * its own "typing", a joiner gets the presence snapshot instead of its own join delta). Cross-worker
+   * recipients are unaffected: the excluded connection only exists on the originator's worker.
+   */
+  async broadcastEvent(
+    cleanupId: string,
+    frame: WsServerMessage,
+    opts?: { excludeConnId?: string },
+  ): Promise<void> {
+    await this.publishFrame(cleanupId, frame, opts?.excludeConnId)
+  }
+
+  /**
+   * Publish one client-facing frame to the room's channel inside the internal `{ frame, excludeConnId? }`
+   * envelope. The subscription handler (joinRoom) strips excludeConnId before writing the clean
+   * WsServerMessage to each local socket, so the wire frame always matches WsServerMessageSchema exactly.
+   */
+  private async publishFrame(
+    cleanupId: string,
+    frame: WsServerMessage,
+    excludeConnId: string | undefined,
+  ): Promise<void> {
     const envelope = JSON.stringify({
-      type: "message",
-      message: msg,
-      ...(opts?.excludeConnId !== undefined ? { excludeConnId: opts.excludeConnId } : {}),
+      frame,
+      ...(excludeConnId !== undefined ? { excludeConnId } : {}),
     })
     await this.pubsub.publish(chatChannel(cleanupId), envelope)
   }
@@ -167,25 +195,31 @@ export class WsChatService implements ChatService {
 
 /**
  * Decode a published pub/sub payload into the CLIENT-facing frame string plus the optional excludeConnId.
- * The internal envelope is `{ type:"message", message, excludeConnId? }`; we strip excludeConnId (it is a
+ * The internal envelope is `{ frame: WsServerMessage, excludeConnId? }`; we strip excludeConnId (it is a
  * server-internal routing hint, not part of the WsServerMessage contract) so clients only ever see the
- * schema-clean `{ type:"message", message }`. A payload that does not parse as such an envelope (defensive
- * - a future frame shape, or a non-JSON publish) is passed through verbatim with no exclusion, preserving
- * the prior fan-out-to-all behavior.
+ * schema-clean frame (`{type:"message",...}` / `{type:"presence",...}` / `{type:"typing",...}`). For
+ * resilience across a mixed-version rollout we ALSO accept the legacy `{ type:"message", message }`
+ * envelope (the prior message-only shape). A payload that parses as neither (defensive - a non-JSON
+ * publish) is passed through verbatim with no exclusion, preserving the prior fan-out-to-all behavior.
  */
 function decodeEnvelope(payload: string): { frame: string; excludeConnId: string | undefined } {
   try {
     const parsed = JSON.parse(payload) as {
+      frame?: unknown
       type?: unknown
       message?: unknown
       excludeConnId?: unknown
     }
+    const excludeConnId =
+      typeof parsed.excludeConnId === "string" ? parsed.excludeConnId : undefined
+    // Current envelope: a nested WsServerMessage under `frame`. Re-serialize the frame alone (no
+    // excludeConnId) so the wire frame matches WsServerMessageSchema exactly.
+    if (parsed.frame !== undefined && parsed.frame !== null && typeof parsed.frame === "object") {
+      return { frame: JSON.stringify(parsed.frame), excludeConnId }
+    }
+    // Legacy envelope (message-only): `{ type:"message", message, excludeConnId? }`.
     if (parsed.type === "message" && parsed.message !== undefined) {
-      const excludeConnId =
-        typeof parsed.excludeConnId === "string" ? parsed.excludeConnId : undefined
-      // Re-serialize WITHOUT excludeConnId so the wire frame matches WsServerMessageSchema exactly.
-      const frame = JSON.stringify({ type: "message", message: parsed.message })
-      return { frame, excludeConnId }
+      return { frame: JSON.stringify({ type: "message", message: parsed.message }), excludeConnId }
     }
   } catch {
     // fall through: not our envelope, deliver as-is.

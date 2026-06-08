@@ -207,6 +207,7 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
       "0005_report_claim_code.sql",
       "0006_user_profile.sql",
       "0007_admin_phase2.sql",
+      "0008_chat_read_state.sql",
     ])
   })
 })

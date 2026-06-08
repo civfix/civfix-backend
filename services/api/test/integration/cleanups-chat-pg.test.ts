@@ -25,6 +25,7 @@ import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
+import { makeDrizzleChatReadState } from "../../src/services/chat-read-state.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 
 const pg = await withPg()
@@ -191,6 +192,43 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     expect(page.items.every((m) => m.cleanupId === roomA.id)).toBe(true)
     // Sanity: room B's message is not leaked into room A's page.
     expect(page.items.some((m) => m.id === bMsg.id)).toBe(false)
+  })
+
+  it("persists the chat read watermark (cleanup_members.last_read_at) monotonically", async () => {
+    const organizerId = await newUser("Org Read")
+    const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
+    const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+      {
+        title: "Read sweep",
+        type: "site",
+        lat: 34.09,
+        lng: -118.29,
+        scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      organizerId,
+    )
+
+    const readState = makeDrizzleChatReadState(h.sql)
+    // Never marked -> null (unread baseline falls back to joined_at).
+    expect(await readState.lastReadAt(created.id, organizerId)).toBeNull()
+
+    const t1 = new Date("2026-06-01T12:00:00.000Z")
+    await readState.markRead(created.id, organizerId, t1)
+    expect((await readState.lastReadAt(created.id, organizerId))!.getTime()).toBe(t1.getTime())
+
+    // Monotonic: an EARLIER mark never moves the watermark back.
+    await readState.markRead(created.id, organizerId, new Date("2026-06-01T11:00:00.000Z"))
+    expect((await readState.lastReadAt(created.id, organizerId))!.getTime()).toBe(t1.getTime())
+
+    // A LATER mark advances it.
+    const t2 = new Date("2026-06-01T13:00:00.000Z")
+    await readState.markRead(created.id, organizerId, t2)
+    expect((await readState.lastReadAt(created.id, organizerId))!.getTime()).toBe(t2.getTime())
+
+    // Marking read for a NON-member is a silent no-op (0 rows; nothing to read back).
+    const strangerId = await newUser("Stranger Read")
+    await readState.markRead(created.id, strangerId, t2)
+    expect(await readState.lastReadAt(created.id, strangerId)).toBeNull()
   })
 
   it("GET /cleanups/:id/messages is membership-gated against real Postgres (200 member, 403 non-member)", async () => {

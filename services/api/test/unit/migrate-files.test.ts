@@ -67,7 +67,7 @@ describe("orderMigrationFiles", () => {
   // Guards the deploy contract WITHOUT Docker: the migration runner applies exactly these files, in this
   // order. If a new migration lands (or one is renamed/removed) this fails until the canonical list (and
   // the Docker-gated schema bookkeeping assertion) is updated to match. The same list the runner reads.
-  it("the REAL services/api/drizzle directory holds exactly 0000..0007 in order", () => {
+  it("the REAL services/api/drizzle directory holds exactly 0000..0008 in order", () => {
     const ordered = orderMigrationFiles(readdirSync(DRIZZLE_DIR))
     expect(ordered).toEqual([
       "0000_extensions.sql",
@@ -78,6 +78,7 @@ describe("orderMigrationFiles", () => {
       "0005_report_claim_code.sql",
       "0006_user_profile.sql",
       "0007_admin_phase2.sql",
+      "0008_chat_read_state.sql",
     ])
   })
 })

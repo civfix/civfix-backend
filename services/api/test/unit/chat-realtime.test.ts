@@ -6,6 +6,7 @@ import {
 } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
+import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 import {
   WsClientMessageSchema,
@@ -42,11 +43,12 @@ function memberOf(cleanupId: string, userId: string): Promise<boolean> {
 let chat: WsChatService
 let pubsub: InMemoryChatPubSub
 let repo: InMemoryChatRepository
+let presence: InMemoryChatPresence
 
 /** Build a fresh gateway session for a user over a mock connection. */
 function sessionFor(userId: string, conn: MockConnection): GatewaySession {
-  const deps: GatewayDeps = { chat, isMember: memberOf }
-  return { userId, conn, joined: new Set<string>(), deps }
+  const deps: GatewayDeps = { chat, isMember: memberOf, presence }
+  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
 }
 
 /** Assert a raw frame string parses as a valid client frame (outbound-from-client direction). */
@@ -63,6 +65,7 @@ function assertServerFrame(raw: string): void {
 beforeEach(() => {
   pubsub = new InMemoryChatPubSub()
   repo = new InMemoryChatRepository()
+  presence = new InMemoryChatPresence()
   repo.registerSender({ id: ALICE, displayName: "Alice" })
   repo.registerSender({ id: BOB, displayName: "Bob" })
   chat = new WsChatService({ repo, pubsub })
@@ -83,10 +86,16 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     await handleClientFrame(aSession, joinFrameA)
     await handleClientFrame(bSession, joinFrameB)
 
-    // Both sockets are now in the local room and each got a presence(join) frame for itself.
+    // Both sockets are in the local room. On join each got a presence_snapshot of who was online; A (who
+    // joined first) then also got a presence(join) DELTA for B, while B (joined last) got no delta.
     expect(chat.roomSize(ROOM)).toBe(2)
+    expect(aConn.framesOfType("presence_snapshot")).toHaveLength(1)
+    expect(bConn.framesOfType("presence_snapshot")).toHaveLength(1)
     expect(aConn.framesOfType("presence")).toHaveLength(1)
-    expect(bConn.framesOfType("presence")).toHaveLength(1)
+    expect(bConn.framesOfType("presence")).toHaveLength(0)
+    // B's snapshot (joined last) lists both online members; A's (joined alone) listed only itself.
+    const bSnap = bConn.framesOfType("presence_snapshot")[0]! as { userIds: string[] }
+    expect([...bSnap.userIds].sort()).toEqual([ALICE, BOB].sort())
 
     // A sends a message with a client-generated id.
     const clientId = "client-temp-1"
@@ -119,8 +128,11 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     // A's socket is in the room, but it is excluded from the broadcast fan-out, so it never gets a
     // {type:"message"} echo of its own message. The ack is its only copy (exactly-once to the sender).
     expect(aConn.framesOfType("message")).toHaveLength(0)
-    // Total frames A received during the send: just the one ack (the presence(join) came earlier).
-    const aFramesAfterJoin = aConn.frames.filter((f) => f.type !== "presence")
+    // Total frames A received during the send: just the one ack (the presence_snapshot + presence(join)
+    // deltas came earlier, during the joins).
+    const aFramesAfterJoin = aConn.frames.filter(
+      (f) => f.type !== "presence" && f.type !== "presence_snapshot",
+    )
     expect(aFramesAfterJoin).toHaveLength(1)
     expect(aFramesAfterJoin[0]!.type).toBe("ack")
 
@@ -255,7 +267,13 @@ describe("ack updates read state for the open room", () => {
         return Promise.resolve()
       },
     }
-    const session: GatewaySession = { userId: ALICE, conn, joined: new Set<string>(), deps }
+    const session: GatewaySession = {
+      userId: ALICE,
+      conn,
+      joined: new Set<string>(),
+      typingThrottle: new Map<string, number>(),
+      deps,
+    }
 
     // An ack before joining any room marks nothing.
     await handleClientFrame(session, JSON.stringify({ type: "ack", upToId: ROOM }))
