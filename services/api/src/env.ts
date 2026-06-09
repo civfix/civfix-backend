@@ -170,6 +170,11 @@ export interface Env {
    * to "0 14 * * *" (14:00 daily). Not validated as a cron string here; the scheduler owns that.
    */
   OUTREACH_DIGEST_CRON: string
+  /**
+   * Cron expression for the inbound-mail reconciliation sweep (the "inbound.sweep" pg-boss job that
+   * LISTs R2 inbound/pending/ and processes anything the webhook missed). Defaults to every 5 minutes.
+   */
+  INBOUND_SWEEP_CRON: string
 
   // ----- admin auth: Cloudflare Access (Zero Trust) SSO (doc 16) [OPT] -----
   /**
@@ -384,6 +389,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     MAIL_REPLY_DOMAIN: (source.MAIL_REPLY_DOMAIN ?? "").trim() || "civfix.org",
     OUTREACH_THROTTLE_DAYS: parseIntOr(source.OUTREACH_THROTTLE_DAYS, 7),
     OUTREACH_DIGEST_CRON: (source.OUTREACH_DIGEST_CRON ?? "").trim() || "0 14 * * *",
+    INBOUND_SWEEP_CRON: (source.INBOUND_SWEEP_CRON ?? "").trim() || "*/5 * * * *",
 
     // Admin auth: Cloudflare Access (doc 16). Team domain + AUD are optional strings (the exchange route
     // self-gates on both being present). Service-token client IDs are parsed but not yet consumed.

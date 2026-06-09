@@ -36,6 +36,7 @@ import type { SocialServiceOverrides } from "./routes/social.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
+import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
@@ -256,6 +257,11 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     // and only when real (pg-boss) jobs back a real database (same gate as the queue start above).
     // WAVE-1 this is a no-op; wave 2 fills registerOutreachJobs (see services/admin/outreach-jobs.ts).
     await registerOutreachJobs(app.container)
+
+    // Inbound-mail sweep: register the cron + worker, then enqueue ONE boot sweep so anything the
+    // Cloudflare Email Worker buffered to R2 while the API was down is drained immediately on startup.
+    await registerInboundJobs(app.container)
+    await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
   }
 
   async function shutdown(signal: string): Promise<void> {

@@ -27,6 +27,7 @@ import type {
   SessionRecord,
   SessionStore,
   UpdateProfileInput,
+  UpdateSettingsInput,
   UserRecord,
   UserStore,
 } from "./stores.js"
@@ -196,6 +197,19 @@ export class PgUserStore implements UserStore {
     if (!r) throw new Error("PgUserStore.setRole: user not found")
     return toUserRecord(r)
   }
+
+  /**
+   * Update account/privacy settings. Only present fields are written (an empty patch is a harmless
+   * no-op that still returns the current row). Currently just the DM toggle.
+   */
+  async updateSettings(id: string, input: UpdateSettingsInput): Promise<UserRecord> {
+    const set: Partial<typeof users.$inferInsert> = {}
+    if (input.allowDirectMessages !== undefined) set.allowDirectMessages = input.allowDirectMessages
+    const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
+    const r = updated[0]
+    if (!r) throw new Error("PgUserStore.updateSettings: user not found")
+    return toUserRecord(r)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +338,7 @@ interface UserRowLike {
   emailVerified: boolean
   avatarUrl: string | null
   profileComplete: boolean
+  allowDirectMessages: boolean
   createdAt: Date
   deletedAt: Date | null
 }
@@ -338,6 +353,7 @@ function toUserRecord(r: UserRowLike): UserRecord {
     emailVerified: r.emailVerified,
     avatarUrl: r.avatarUrl,
     profileComplete: r.profileComplete,
+    allowDirectMessages: r.allowDirectMessages,
     createdAt: r.createdAt,
     deletedAt: r.deletedAt,
   }

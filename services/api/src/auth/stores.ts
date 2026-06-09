@@ -123,6 +123,8 @@ export interface UserRecord {
   avatarUrl: string | null
   /** First-run registration gate: false until the user sets a username + name. */
   profileComplete: boolean
+  /** Whether the account accepts NEW direct messages (the DM privacy toggle). Defaults true. */
+  allowDirectMessages: boolean
   createdAt: Date
   deletedAt: Date | null
 }
@@ -162,6 +164,16 @@ export interface UserStore {
    * called repeatedly without error. Returns the updated user.
    */
   setRole(id: string, role: Role): Promise<UserRecord>
+  /**
+   * Update account/privacy settings (currently just the DM toggle). Only the provided fields are
+   * written; omitted fields are left unchanged. Returns the updated user.
+   */
+  updateSettings(id: string, input: UpdateSettingsInput): Promise<UserRecord>
+}
+
+/** Partial settings patch (PUT /me/settings). Only present fields are written. */
+export interface UpdateSettingsInput {
+  allowDirectMessages?: boolean
 }
 
 /**
@@ -209,6 +221,7 @@ export class InMemoryUserStore implements UserStore {
       emailVerified: email !== null && (input.emailVerified ?? false),
       avatarUrl: input.avatarUrl ?? null,
       profileComplete: false,
+      allowDirectMessages: true,
       createdAt: new Date(),
       deletedAt: null,
     }
@@ -244,6 +257,19 @@ export class InMemoryUserStore implements UserStore {
     if (!row) throw new Error("InMemoryUserStore.setRole: user not found")
     // Idempotent: writing the same role is a harmless no-op that still returns the row.
     const next: UserRecord = { ...row, role }
+    this.byId.set(id, next)
+    return Promise.resolve({ ...next })
+  }
+
+  updateSettings(id: string, input: UpdateSettingsInput): Promise<UserRecord> {
+    const row = this.byId.get(id)
+    if (!row) throw new Error("InMemoryUserStore.updateSettings: user not found")
+    const next: UserRecord = {
+      ...row,
+      ...(input.allowDirectMessages !== undefined
+        ? { allowDirectMessages: input.allowDirectMessages }
+        : {}),
+    }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })
   }

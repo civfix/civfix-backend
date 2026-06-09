@@ -32,6 +32,8 @@ import type {
   PresignPutResult,
   StorageHead,
   StoragePutMeta,
+  StorageListOptions,
+  StorageListResult,
 } from "@civfix/shared/interfaces"
 import type { S3Client } from "@aws-sdk/client-s3"
 
@@ -155,6 +157,52 @@ export class R2Storage implements Storage {
       )
     } catch (err) {
       throw new AppError(ErrorCode.INTERNAL, "R2 put failed", { cause: err })
+    }
+  }
+
+  /**
+   * LIST keys under `prefix`, paginated. `opts.cursor` is the S3 ContinuationToken; the returned
+   * `cursor` is the NextContinuationToken (absent when the listing is exhausted). Used by the
+   * inbound-mail sweep to reconcile R2-buffered messages.
+   */
+  async list(prefix: string, opts?: StorageListOptions): Promise<StorageListResult> {
+    const { ListObjectsV2Command } = await import("@aws-sdk/client-s3")
+    const client = await this.getClient()
+    try {
+      const res = await client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          Prefix: prefix,
+          ...(opts?.cursor ? { ContinuationToken: opts.cursor } : {}),
+          ...(opts?.limit && opts.limit > 0 ? { MaxKeys: opts.limit } : {}),
+        }),
+      )
+      const keys = (res.Contents ?? [])
+        .map((o) => o.Key)
+        .filter((k): k is string => typeof k === "string")
+      return res.IsTruncated && res.NextContinuationToken
+        ? { keys, cursor: res.NextContinuationToken }
+        : { keys }
+    } catch (err) {
+      throw new AppError(ErrorCode.INTERNAL, "R2 list failed", { cause: err })
+    }
+  }
+
+  /** GET `key`: returns the raw bytes, or null when the object does not exist. */
+  async getObject(key: string): Promise<Uint8Array | null> {
+    const { GetObjectCommand } = await import("@aws-sdk/client-s3")
+    const client = await this.getClient()
+    try {
+      const res = await client.send(
+        new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+      )
+      if (!res.Body) return null
+      // v3 SdkStream helper: collect the streaming body into a single byte array.
+      const bytes = await res.Body.transformToByteArray()
+      return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+    } catch (err) {
+      if (isNotFound(err)) return null
+      throw new AppError(ErrorCode.INTERNAL, "R2 getObject failed", { cause: err })
     }
   }
 

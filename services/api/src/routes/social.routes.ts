@@ -98,13 +98,20 @@ export async function registerSocialRoutes(
   }
 
   // -------------------------------------------------------------------------
-  // GET /people  (anon-ok)
+  // GET /people  [auth]  (requires a non-empty `q` — never enumerates all users)
   // -------------------------------------------------------------------------
   app.get("/people", async (request, reply) => {
+    // Auth-required now (privacy: the directory must not be browsable logged-out).
+    const userId = requireAuth(request)
     // The shared request schema (q + cursor + coerced limit) is the single source of truth; the query
     // string is validated directly against it.
     const validated = parse(ListPeopleRequestSchema, request.query)
-    const payload: ListPeopleResponse = await service().listPeople(validated, viewerOf(request))
+    // REQUIRE a non-empty `q`: there is deliberately no list-everyone form (the server never enumerates
+    // all users). A missing/blank query is a 422, not a full dump.
+    if (validated.q === null || validated.q === undefined || validated.q.trim().length === 0) {
+      throw AppError.validation({ q: "A non-empty search query is required." })
+    }
+    const payload: ListPeopleResponse = await service().listPeople(validated, { userId })
     reply.status(200).send(payload)
   })
 

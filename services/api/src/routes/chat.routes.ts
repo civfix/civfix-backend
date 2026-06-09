@@ -23,10 +23,17 @@ import { ZodError, type z, type ZodTypeAny } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { registerChatGateway, type IsMemberFn } from "../ws/gateway.js"
+import {
+  registerChatGateway,
+  type GatewayDmDeps,
+  type IsBlockedEitherWayFn,
+  type IsMemberFn,
+} from "../ws/gateway.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleThreadsRepository } from "../services/threads-repository.drizzle.js"
 import { makeDrizzleChatReadState } from "../services/chat-read-state.drizzle.js"
+import type { DmRepository } from "../services/dm-repository.drizzle.js"
+import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import {
   InMemoryChatPresence,
   RedisChatPresence,
@@ -37,6 +44,7 @@ import {
   InMemoryChatReadState,
   THREADS_DEFAULT_LIMIT,
   type ChatReadState,
+  type DmThreadsSource,
   type ThreadsRepository,
 } from "../services/threads-service.js"
 
@@ -50,6 +58,10 @@ export interface ChatGatewayOverrides {
   threadsRepo: ThreadsRepository
   readState?: ChatReadState
   presence?: ChatPresence
+  /** Injected DM repository (tests/dev): backs the gateway dm seam + the threads UNION + the dm routes. */
+  dmRepo?: DmRepository
+  /** Injected blocks repository (tests/dev): backs the gateway block check + the block routes. */
+  blocksRepo?: BlocksRepository
 }
 
 declare module "fastify" {
@@ -94,6 +106,38 @@ export async function registerChatRoutes(
     ? overrides.isMember
     : (cleanupId, userId) => makeDrizzleCleanupRepository(container.getDb().sql).isMember(cleanupId, userId)
 
+  // DM + blocks seams. Tests inject them through the overrides; otherwise they come from the container's
+  // MEMOIZED singletons (Drizzle-backed in production, in-memory in the all-fakes dev path), so the
+  // gateway, the threads UNION, and the dm/block routes all share the SAME store. A partial override is
+  // allowed (a test may inject only one); the other falls back to the container singleton.
+  const blocksRepo: BlocksRepository = overrides?.blocksRepo ?? container.getBlocksRepo()
+  const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
+
+  // The DM read watermark resolves an acked message's created_at scoped to the thread (mirrors the cleanup
+  // resolveReadAt below); a foreign/unknown id falls back to now() so a stray ack still advances liveness.
+  const dmGatewayDeps: GatewayDmDeps = {
+    isParticipant: (threadId, userId) => dmRepo.isParticipant(threadId, userId),
+    peerOf: async (threadId, userId) => {
+      const t = await dmRepo.getThread(threadId)
+      if (t === null) return null
+      if (t.userLo === userId) return t.userHi
+      if (t.userHi === userId) return t.userLo
+      return null
+    },
+    persist: (input) => dmRepo.persist(input),
+    markRead: async (threadId, userId, upToId) => {
+      const at = (await dmRepo.resolveMessageCreatedAt(threadId, upToId)) ?? new Date()
+      await dmRepo.markRead(threadId, userId, at)
+    },
+  }
+  const isBlockedEitherWay: IsBlockedEitherWayFn = (a, b) => blocksRepo.isBlockedEitherWay(a, b)
+
+  // The DM half of the inbox: a thin source over the dm repo's listThreadsForUser, merged with cleanup
+  // threads by the threads service.
+  const dmThreadsSource: DmThreadsSource = {
+    listDmThreadsFor: (userId) => dmRepo.listThreadsForUser(userId),
+  }
+
   // Resolve the read watermark for an `ack`: the created_at of the acked message (upToId), NOT the
   // server's wall clock. Stamping now() would push the watermark past the acked message and silently mark
   // a message that arrived in the ack's debounce/network window as read (undercounting unread). Anchoring
@@ -123,6 +167,10 @@ export async function registerChatRoutes(
       await readState.markRead(cleanupId, userId, at)
     },
     presence,
+    // DM routing: the gateway uses these for `roomKind:"dm"` frames (participant + not-blocked gating,
+    // persist, dm read-state). Cleanup group chat is unaffected.
+    dm: dmGatewayDeps,
+    isBlockedEitherWay,
     // Anti-CSWSH: the gateway rejects a cross-site upgrade Origin not in the WEB_ORIGINS allowlist.
     webOrigins: container.env.WEB_ORIGINS,
   })
@@ -139,7 +187,9 @@ export async function registerChatRoutes(
     const threadsRepo: ThreadsRepository = overrides
       ? overrides.threadsRepo
       : makeDrizzleThreadsRepository(container.getDb().sql)
-    const threads = makeThreadsService({ repo: threadsRepo, readState })
+    // Merge cleanup threads with the viewer's DM threads (the dm source already excludes blocked-either-way
+    // threads + computes peer/last/unread).
+    const threads = makeThreadsService({ repo: threadsRepo, readState, dm: dmThreadsSource })
     const result = await threads.listThreads(userId, limit)
     const payload: ListThreadsResponse = { items: result.items, nextCursor: result.nextCursor }
     reply.status(200).send(payload)

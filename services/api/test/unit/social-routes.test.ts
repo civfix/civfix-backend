@@ -102,43 +102,46 @@ afterEach(async () => {
 const OTHER = "44444444-4444-4444-4444-444444444444"
 
 describe("GET /people", () => {
-  it("lists people anonymously (anon-ok) and attaches an avatar gradient", async () => {
+  // The directory is now AUTH-REQUIRED and `q` is REQUIRED server-side (no list-everyone form): a
+  // logged-out request 401s, and a missing/blank q 422s, so the endpoint can never enumerate all users.
+  it("401s an anonymous request (auth required)", async () => {
     const { app } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Other Person", handle: "other" })
     })
-    const res = await app.inject({ method: "GET", url: "/people" })
-    expect(res.statusCode).toBe(200)
-    const body = res.json()
-    const ids = body.items.map((p: { id: string }) => p.id)
-    expect(ids).toContain(OTHER)
-    // Each item carries an avatar gradient pair.
-    expect(body.items[0].avatar).toHaveLength(2)
+    const res = await app.inject({ method: "GET", url: "/people?q=oth" })
+    expect(res.statusCode).toBe(401)
   })
 
-  it("excludes the signed-in viewer from their own people list", async () => {
+  it("422s a missing/blank q (never enumerates all users)", async () => {
+    const { app, token } = await makeHarness((repo) => {
+      repo.seedUser({ id: OTHER, displayName: "Other Person", handle: "other" })
+    })
+    const noQ = await app.inject({ method: "GET", url: "/people", headers: auth(token) })
+    expect(noQ.statusCode).toBe(422)
+    const blankQ = await app.inject({ method: "GET", url: "/people?q=%20", headers: auth(token) })
+    expect(blankQ.statusCode).toBe(422)
+  })
+
+  it("filters by q, excludes the signed-in viewer, and attaches an avatar gradient", async () => {
     const { app, token, userId } = await makeHarness((repo) => {
-      repo.seedUser({ id: OTHER, displayName: "Other Person", handle: "other" })
-    })
-    const res = await app.inject({ method: "GET", url: "/people", headers: auth(token) })
-    expect(res.statusCode).toBe(200)
-    const ids = res.json().items.map((p: { id: string }) => p.id)
-    expect(ids).toContain(OTHER)
-    expect(ids).not.toContain(userId) // the viewer is excluded
-  })
-
-  it("filters by q", async () => {
-    const { app } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Zelda", handle: "zelda" })
     })
-    const hit = await app.inject({ method: "GET", url: "/people?q=zel" })
-    expect(hit.json().items.map((p: { id: string }) => p.id)).toEqual([OTHER])
-    const miss = await app.inject({ method: "GET", url: "/people?q=nobody" })
+    const hit = await app.inject({ method: "GET", url: "/people?q=zel", headers: auth(token) })
+    expect(hit.statusCode).toBe(200)
+    const body = hit.json()
+    const ids = body.items.map((p: { id: string }) => p.id)
+    expect(ids).toEqual([OTHER])
+    expect(ids).not.toContain(userId) // the viewer is excluded
+    // Each item carries an avatar gradient pair.
+    expect(body.items[0].avatar).toHaveLength(2)
+
+    const miss = await app.inject({ method: "GET", url: "/people?q=nobody", headers: auth(token) })
     expect(miss.json().items).toEqual([])
   })
 
   it("422s a bad limit", async () => {
-    const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/people?limit=999" })
+    const { app, token } = await makeHarness()
+    const res = await app.inject({ method: "GET", url: "/people?q=zel&limit=999", headers: auth(token) })
     expect(res.statusCode).toBe(422)
   })
 })

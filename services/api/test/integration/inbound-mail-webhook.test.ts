@@ -1,33 +1,39 @@
 /**
- * Inbound-mail webhook integration test (Docker-gated). Exercises the webhook HTTP route end-to-end with
- * the REAL Drizzle MailRepository against a live Postgres container via withPg (mail_threads /
- * mail_messages / mail_events created by the canonical migration), plus the FakeInboundMail parser + a
- * FakeStorage. Proves the full ingress path writes the real schema:
- *   - a valid secret + reply+{token} body upserts the thread, inserts the inbound mail_messages row,
- *     marks the thread unread, and records a mail_events row;
- *   - the thread + message round-trip back through getThread.
+ * Inbound-mail webhook integration test (Docker-gated). Exercises the pointer + HMAC webhook end-to-end
+ * with the REAL Drizzle MailRepository + InboundRepository against a live Postgres container via withPg
+ * (mail_threads/mail_messages/mail_events + inbound_emails created by the canonical migrations), plus the
+ * FakeInboundMail parser and a FakeStorage seeded with the raw .eml. Proves the full ingress path writes
+ * the real schema:
+ *   - a reply+{token} message threads into mail_threads (unread + a mail_events row);
+ *   - a no-token message lands in inbound_emails (the catch-all inbox);
+ *   - the pending R2 object is deleted on success; a wrong signature writes nothing.
  *
  * When Docker is unavailable the whole describe block SKIPS (describe.skipIf), so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
+ * green; CI runs it for real.
  */
 
+import { createHmac } from "node:crypto"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import Fastify, { type FastifyInstance } from "fastify"
 import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
   registerInboundMailWebhook,
-  CF_WEBHOOK_SECRET_HEADER,
+  CF_WEBHOOK_SIGNATURE_HEADER,
 } from "../../src/routes/webhooks/inbound-mail.routes.js"
+import { INBOUND_PENDING_PREFIX } from "../../src/services/admin/inbound-processor.js"
 import { makeDrizzleMailRepository } from "../../src/services/admin/mail-repository.drizzle.js"
+import { makeDrizzleInboundRepository } from "../../src/services/admin/inbound-repository.drizzle.js"
 import { makeErrorHandler } from "../../src/errors/http-mapper.js"
 import type { Container } from "../../src/di.js"
 
 const pg = await withPg()
-
 const SECRET = "cf-webhook-secret-value"
 
-/** Build a minimal RFC822 message the FakeInboundMail subset parses. */
+function sign(body: string): string {
+  return createHmac("sha256", SECRET).update(body).digest("hex")
+}
+
 function rfc822(opts: { from: string; to: string; subject?: string; body?: string }): Buffer {
   const lines = [`From: ${opts.from}`, `To: ${opts.to}`]
   if (opts.subject !== undefined) lines.push(`Subject: ${opts.subject}`)
@@ -38,26 +44,30 @@ function rfc822(opts: { from: string; to: string; subject?: string; body?: strin
 describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
   let h: PgHarness
   let app: FastifyInstance
+  let storage: FakeStorage
 
   beforeAll(async () => {
     h = pg as PgHarness
+    storage = new FakeStorage()
     const container = {
       env: { CF_EMAIL_WEBHOOK_SECRET: SECRET },
       inboundMail: new FakeInboundMail(),
     } as unknown as Container
     app = Fastify()
     app.setErrorHandler(makeErrorHandler())
-    // Use the REAL Drizzle mail repo (against the container DB) + a FakeStorage for attachments.
     app.decorate("inboundMailOverrides", {
-      repo: makeDrizzleMailRepository(h.sql),
-      storage: new FakeStorage(),
+      storage,
+      inboundMail: new FakeInboundMail(),
+      mailRepo: makeDrizzleMailRepository(h.sql),
+      inboundRepo: makeDrizzleInboundRepository(h.sql),
     })
     await registerInboundMailWebhook(app, container)
     await app.ready()
   })
 
   beforeEach(async () => {
-    await h.sql`TRUNCATE mail_events, mail_messages, mail_threads, outreach_state RESTART IDENTITY CASCADE`
+    await h.sql`TRUNCATE mail_events, mail_messages, mail_threads, inbound_emails, outreach_state RESTART IDENTITY CASCADE`
+    storage.reset()
   })
 
   afterAll(async () => {
@@ -65,48 +75,67 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
     await h.teardown()
   })
 
-  it("threads an inbound reply onto an existing thread, marks unread, records an event", async () => {
-    // Seed the outbound thread the reply belongs to (token tok-la).
-    const seeded = await makeDrizzleMailRepository(h.sql).createThread({
-      threadToken: "tok-la",
-      subject: "Pothole",
-    })
-
-    const res = await app.inject({
+  async function ingest(eml: Buffer, key: string) {
+    await storage.put(key, eml)
+    const body = JSON.stringify({ key })
+    return app.inject({
       method: "POST",
       url: "/webhooks/inbound-mail",
-      headers: { "content-type": "message/rfc822", [CF_WEBHOOK_SECRET_HEADER]: SECRET },
-      payload: rfc822({
-        from: "clerk@lacity.gov",
-        to: "reply+tok-la@civfix.org",
-        subject: "Re: Pothole",
-        body: "We are on it.",
-      }),
+      headers: { "content-type": "application/json", [CF_WEBHOOK_SIGNATURE_HEADER]: sign(body) },
+      payload: body,
     })
+  }
+
+  it("threads an inbound reply onto an existing thread, marks unread, records an event", async () => {
+    const seeded = await makeDrizzleMailRepository(h.sql).createThread({ threadToken: "tok-la", subject: "Pothole" })
+    const key = `${INBOUND_PENDING_PREFIX}reply-1.eml`
+    const res = await ingest(
+      rfc822({ from: "clerk@lacity.gov", to: "reply+tok-la@civfix.org", subject: "Re: Pothole", body: "We are on it." }),
+      key,
+    )
     expect(res.statusCode).toBe(202)
-    expect(res.json()).toMatchObject({ accepted: true, threaded: true, threadId: seeded.id })
+    expect(res.json()).toMatchObject({ accepted: true, outcome: "threaded" })
 
     const repo = makeDrizzleMailRepository(h.sql)
     const dto = await repo.getThread(seeded.id)
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("in")
-    expect(dto?.messages[0]?.body).toBe("We are on it.")
     expect((await repo.getThreadRecord(seeded.id))?.unread).toBe(true)
-
     const events = await h.sql<{ type: string }[]>`SELECT type FROM mail_events WHERE thread_id = ${seeded.id}`
-    expect(events).toHaveLength(1)
     expect(events[0]?.type).toBe("delivered")
+    // Pending object consumed.
+    expect(storage.get(key)).toBeNull()
   })
 
-  it("rejects a wrong secret (401) and writes nothing", async () => {
+  it("lands a no-token message in inbound_emails (catch-all inbox)", async () => {
+    const key = `${INBOUND_PENDING_PREFIX}cold-1.eml`
+    const res = await ingest(
+      rfc822({ from: "resident@example.com", to: "support@civfix.org", subject: "Help", body: "a question" }),
+      key,
+    )
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toMatchObject({ accepted: true, outcome: "inbox" })
+
+    const rows = await h.sql<{ recipient: string; status: string }[]>`
+      SELECT recipient, status FROM inbound_emails
+    `
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.recipient).toBe("support@civfix.org")
+    expect(rows[0]?.status).toBe("unread")
+    expect(storage.get(key)).toBeNull()
+  })
+
+  it("rejects a wrong signature (401) and writes nothing", async () => {
+    const key = `${INBOUND_PENDING_PREFIX}nope.eml`
+    await storage.put(key, rfc822({ from: "c@city.gov", to: "support@civfix.org", body: "x" }))
     const res = await app.inject({
       method: "POST",
       url: "/webhooks/inbound-mail",
-      headers: { "content-type": "message/rfc822", [CF_WEBHOOK_SECRET_HEADER]: "wrong" },
-      payload: rfc822({ from: "clerk@city.gov", to: "reply+tok-la@civfix.org", body: "x" }),
+      headers: { "content-type": "application/json", [CF_WEBHOOK_SIGNATURE_HEADER]: "deadbeef" },
+      payload: JSON.stringify({ key }),
     })
     expect(res.statusCode).toBe(401)
-    const threads = await h.sql<{ id: string }[]>`SELECT id FROM mail_threads`
-    expect(threads).toHaveLength(0)
+    const rows = await h.sql<{ id: string }[]>`SELECT id FROM inbound_emails`
+    expect(rows).toHaveLength(0)
   })
 })

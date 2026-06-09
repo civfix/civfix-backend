@@ -204,14 +204,14 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 113 endpoints in the registry (no endpoint skipped)", () => {
-    // 47 Phase 1 + 66 Phase 2 admin endpoints. The admin OTP request/verify routes were replaced by the
-    // single Cloudflare Access exchange route (doc 16), so the admin surface is 67 - 2 + 1 = 66; Phase 1
-    // includes the public suggest-contact endpoint. The admin data routes mount under the requireOperator
-    // guard, so an unauthenticated inject above returns 401 (a wired route); the public Access exchange
-    // returns 503 when CF_ACCESS_* is unset (also wired, not a route-missing 404) - exactly what the
-    // per-endpoint assertions check.
-    expect(Object.keys(endpoints).length).toBe(113)
+  it("covers ALL 123 endpoints in the registry (no endpoint skipped)", () => {
+    // 47 Phase 1 + 66 Phase 2 admin + the DM/privacy surface (openDm, dmMessages, searchUsers, blockUser,
+    // unblockUser, listBlocks, updateSettings = 7) plus the inbound-mail surface (3) = 123. The admin OTP
+    // request/verify routes were replaced by the single Cloudflare Access exchange route (doc 16); the
+    // admin data routes mount under requireOperator (an unauthenticated inject returns 401, a wired route);
+    // the public Access exchange returns 503 when CF_ACCESS_* is unset (also wired, not a route-missing
+    // 404) - exactly what the per-endpoint assertions check.
+    expect(Object.keys(endpoints).length).toBe(123)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

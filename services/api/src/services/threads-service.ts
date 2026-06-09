@@ -20,8 +20,8 @@
  * service is unit-testable with no database.
  */
 
-import { relativeAgo } from "@civfix/shared"
-import type { MessageThreadDTO } from "@civfix/shared"
+import { relativeAgo, avatarGradient } from "@civfix/shared"
+import type { MessageThreadDTO, PersonDTO } from "@civfix/shared"
 
 // ---------------------------------------------------------------------------
 // Read-state store (injectable; process-local in Phase 1)
@@ -87,6 +87,38 @@ export interface ThreadsRepository {
   countUnread(cleanupId: string, userId: string, after: Date): Promise<number>
 }
 
+/**
+ * A per-thread aggregate row for one of the viewer's DM threads. The dm repository computes the peer, the
+ * last message, and the unread count in one pass (it already excludes any thread blocked either way), so
+ * the threads service just projects it into the MessageThreadDTO and merges it with cleanup threads.
+ */
+export interface DmThreadAggregateView {
+  threadId: string
+  createdAt: Date
+  peer: {
+    id: string
+    displayName: string
+    handle: string | null
+    bio: string | null
+    avatarUrl: string | null
+  }
+  last: {
+    body: string | null
+    createdAt: Date
+    senderId: string
+  } | null
+  unread: number
+}
+
+/**
+ * The DM half of the inbox: the viewer's DM threads (excluding any blocked either way), each with the
+ * peer + last message + unread. Optional on the threads service so the all-cleanup test path can omit it;
+ * production + the DM tests wire the dm repo's listThreadsForUser through it.
+ */
+export interface DmThreadsSource {
+  listDmThreadsFor(userId: string): Promise<DmThreadAggregateView[]>
+}
+
 // ---------------------------------------------------------------------------
 // Relative-time label
 // ---------------------------------------------------------------------------
@@ -106,8 +138,26 @@ export const THREADS_DEFAULT_LIMIT = 30
 export interface ThreadsServiceDeps {
   repo: ThreadsRepository
   readState: ChatReadState
+  /** Optional DM thread source: when wired, the inbox merges DM threads with cleanup threads. */
+  dm?: DmThreadsSource
   /** Injectable clock (defaults to Date.now) so `ago` is deterministic in tests. */
   now?: () => Date
+}
+
+/** Build the peer PersonDTO for a DM thread from the aggregate's peer fields. */
+function peerOf(p: DmThreadAggregateView["peer"]): PersonDTO {
+  return {
+    id: p.id,
+    name: p.displayName,
+    handle: p.handle,
+    bio: p.bio,
+    // Deterministic server avatar seed (parity with the message-DTO sender + openDm peer).
+    avatar: avatarGradient(p.id),
+    ...(p.avatarUrl !== null ? { avatarUrl: p.avatarUrl } : {}),
+    followers: 0,
+    following: 0,
+    isFollowing: false,
+  }
 }
 
 export interface ThreadsService {
@@ -127,8 +177,10 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
     ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }> {
       const aggregates = await deps.repo.listThreadsFor(userId, limit)
 
-      const items = await Promise.all(
-        aggregates.map(async (agg): Promise<MessageThreadDTO> => {
+      // Each merged entry carries its DTO plus the activity timestamp used to sort cleanup + dm threads
+      // into one inbox (last message time, else the room/thread creation/join baseline).
+      const cleanupEntries = await Promise.all(
+        aggregates.map(async (agg): Promise<{ dto: MessageThreadDTO; activity: number }> => {
           // Watermark = max(joinedAt, lastRead). unread counts others' messages strictly after it.
           const lastRead = await deps.readState.lastReadAt(agg.cleanupId, userId)
           const watermark =
@@ -140,24 +192,55 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
           const lastFromMe = agg.last !== null && agg.last.senderId === userId
 
           return {
-            id: agg.cleanupId,
-            kind: "cleanup",
-            // refId is the room/cleanup id this thread maps to. It equals id today, but populating it
-            // explicitly (additive, the contract field is nullable+optional) lets clients stop assuming
-            // thread.id === cleanupId.
-            refId: agg.cleanupId,
-            title: agg.title,
-            // last/ago are null when the room has no messages yet.
-            last: agg.last !== null ? (agg.last.body ?? "") : null,
-            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-            lastFromMe,
-            unread,
-            members: agg.members,
+            dto: {
+              id: agg.cleanupId,
+              kind: "cleanup",
+              // refId is the room/cleanup id this thread maps to. It equals id today, but populating it
+              // explicitly (additive, the contract field is nullable+optional) lets clients stop assuming
+              // thread.id === cleanupId.
+              refId: agg.cleanupId,
+              title: agg.title,
+              // last/ago are null when the room has no messages yet.
+              last: agg.last !== null ? (agg.last.body ?? "") : null,
+              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+              lastFromMe,
+              unread,
+              members: agg.members,
+            },
+            activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
           }
         }),
       )
 
-      // Single page for Phase 1 (capped at `limit`); cursor paging can be added later.
+      // DM threads (when the source is wired). The dm aggregate already excludes any thread blocked either
+      // way and pre-computes peer + last + unread, so we just project into the MessageThreadDTO.
+      const dmAggregates = deps.dm ? await deps.dm.listDmThreadsFor(userId) : []
+      const dmEntries = dmAggregates.map(
+        (agg): { dto: MessageThreadDTO; activity: number } => {
+          const lastFromMe = agg.last !== null && agg.last.senderId === userId
+          const peer = peerOf(agg.peer)
+          const title = agg.peer.handle !== null ? `@${agg.peer.handle}` : agg.peer.displayName
+          return {
+            dto: {
+              id: agg.threadId,
+              kind: "dm",
+              refId: agg.threadId,
+              title,
+              peer,
+              last: agg.last !== null ? (agg.last.body ?? "") : null,
+              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+              lastFromMe,
+              unread: agg.unread,
+              members: 2,
+            },
+            activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
+          }
+        },
+      )
+
+      // Merge both kinds, most-recent-activity first, capped at `limit` (single page for Phase 1).
+      const merged = [...cleanupEntries, ...dmEntries].sort((a, b) => b.activity - a.activity)
+      const items = merged.slice(0, limit).map((e) => e.dto)
       return { items, nextCursor: null }
     },
   }

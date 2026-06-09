@@ -211,3 +211,6 @@ export const MAIL_EVENT_TYPE_VALUES = [
   "complained",
   "opened",
 ] as const
+
+/** inbound_emails.status (catch-all inbox triage). Mirrors shared InboundEmailStatusSchema. */
+export const INBOUND_EMAIL_STATUS_VALUES = ["unread", "read", "archived"] as const

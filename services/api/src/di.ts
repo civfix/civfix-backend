@@ -58,6 +58,15 @@ import { TigerGeocoder } from "./adapters/geocoder.tiger.js"
 import { WsChatService } from "./adapters/chat-service.ws.js"
 import { RedisChatPubSub } from "./adapters/chat-pubsub.js"
 import { makeDrizzleChatRepository } from "./services/chat-repository.drizzle.js"
+import { makeDrizzleDmRepository, type DmRepository } from "./services/dm-repository.drizzle.js"
+import {
+  makeDrizzleBlocksRepository,
+  type BlocksRepository,
+} from "./services/blocks-repository.drizzle.js"
+import {
+  InMemoryBlocksRepository,
+  InMemoryDmRepository,
+} from "./services/dm-repository.memory.js"
 import { MultiPushSender } from "./adapters/push-sender.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
@@ -90,6 +99,17 @@ export interface Container {
   /** Force-create (memoized) the Redis client. Use in readiness checks / real seams. */
   getRedis(): RedisClient
 
+  /**
+   * Memoized DM repository, shared by the WS gateway, the threads UNION, and the dm routes. Drizzle-backed
+   * in production; an in-memory process-local impl in the all-fakes dev path (USE_FAKE_CHAT, no DB).
+   */
+  getDmRepo(): DmRepository
+  /**
+   * Memoized blocks repository, shared by the WS gateway (block gate), the threads UNION, and the
+   * block/search routes. Drizzle-backed in production; in-memory in the all-fakes dev path.
+   */
+  getBlocksRepo(): BlocksRepository
+
   /** Tear down created resources (db pool, redis, jobs). Safe to call once at shutdown. */
   close(): Promise<void>
 }
@@ -109,6 +129,32 @@ export function buildContainer(env: Env): Container {
   function getRedis(): RedisClient {
     if (!redis) redis = makeRedis(env.REDIS_URL)
     return redis
+  }
+
+  // DM + blocks repos (memoized singletons). In the all-fakes dev path they are in-memory and the blocks
+  // repo is wired into the dm repo so the threads UNION excludes blocked-either-way threads; in production
+  // they are Drizzle-backed over the lazily-created DB handle. Built on first use so merely constructing
+  // the container opens no DB connection.
+  let dmRepo: DmRepository | undefined
+  let blocksRepo: BlocksRepository | undefined
+  function getBlocksRepo(): BlocksRepository {
+    if (!blocksRepo) {
+      blocksRepo = env.USE_FAKE_CHAT
+        ? new InMemoryBlocksRepository()
+        : makeDrizzleBlocksRepository(getDb().sql)
+    }
+    return blocksRepo
+  }
+  function getDmRepo(): DmRepository {
+    if (!dmRepo) {
+      if (env.USE_FAKE_CHAT) {
+        const blocks = getBlocksRepo()
+        dmRepo = new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b))
+      } else {
+        dmRepo = makeDrizzleDmRepository(getDb().sql)
+      }
+    }
+    return dmRepo
   }
 
   // ----- storage -----
@@ -231,6 +277,8 @@ export function buildContainer(env: Env): Container {
     },
     getDb,
     getRedis,
+    getDmRepo,
+    getBlocksRepo,
     close,
   }
 }

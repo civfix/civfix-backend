@@ -39,6 +39,9 @@ export const API_QUEUE_NAMES = [
   // Phase 2 outreach digest: enqueued by discovery "Save & route" (singletonKey=geoid) and scheduled as
   // a cron by registerOutreachJobs. Created here so both the enqueue + the schedule/work find the queue.
   "outreach.digest",
+  // Inbound-mail sweep: reconciles R2-buffered catch-all email (inbound/pending/) the API may have
+  // missed while offline. Scheduled as a cron + enqueued once at boot by registerInboundJobs.
+  "inbound.sweep",
 ] as const
 
 /** Map the shared EnqueueOptions onto pg-boss SendOptions (only set the fields that are provided). */

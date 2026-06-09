@@ -297,6 +297,10 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve(best?.toAddr ?? null)
   }
 
+  messageExists(messageId: string): Promise<boolean> {
+    return Promise.resolve(this.messages.some((m) => m.messageId === messageId))
+  }
+
   markThreadRead(id: string): Promise<boolean> {
     const t = this.threads.get(id)
     if (!t) return Promise.resolve(false)

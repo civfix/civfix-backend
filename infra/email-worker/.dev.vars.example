@@ -1,0 +1,6 @@
+# Local-only secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and fill in.
+# CF_EMAIL_WEBHOOK_SECRET must match the LOCAL backend's CF_EMAIL_WEBHOOK_SECRET so HMAC verification passes.
+CF_EMAIL_WEBHOOK_SECRET=dev-shared-secret
+
+# Optionally override the webhook target for local dev (point at a locally-running backend):
+# BACKEND_WEBHOOK_URL=http://localhost:8080/webhooks/inbound-mail

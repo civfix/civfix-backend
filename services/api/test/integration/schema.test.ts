@@ -198,7 +198,10 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
   it("recorded every migration file in the bookkeeping table", async () => {
     const rows = await h.sql<{ name: string }[]>`SELECT name FROM _civfix_migrations ORDER BY name`
     const names = rows.map((r) => r.name)
-    expect(names).toEqual([
+    // The bookkeeping must include every Phase 1/2 migration, in order, up to and including the DM +
+    // privacy migration (0009). Asserted as a prefix so a later migration (e.g. 0010) added by a parallel
+    // step does not break this; the DM contract is that 0000..0009 are recorded in this exact order.
+    expect(names.slice(0, 10)).toEqual([
       "0000_extensions.sql",
       "0001_core.sql",
       "0002_chat_partitioning.sql",
@@ -208,7 +211,102 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
       "0006_user_profile.sql",
       "0007_admin_phase2.sql",
       "0008_chat_read_state.sql",
+      "0009_dm_and_privacy.sql",
     ])
+  })
+})
+
+/**
+ * 0009 (direct messages + privacy) schema scaffold: applies the SAME canonical migrations and asserts the
+ * new DM/blocking tables, columns, and partitioning exist. Docker-gated like the blocks above.
+ */
+describe.skipIf(!pg)("schema (0009): DM + privacy migration produces the expected shape", () => {
+  const h = pg as PgHarness
+
+  it("creates the DM + blocking tables", async () => {
+    const rows = await h.sql<{ table_name: string }[]>`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+    `
+    const present = new Set(rows.map((r) => r.table_name))
+    for (const t of ["dm_threads", "dm_messages", "dm_read_state", "user_blocks"]) {
+      expect(present.has(t), `missing 0009 table: ${t}`).toBe(true)
+    }
+  })
+
+  it("added users.allow_direct_messages (NOT NULL default true)", async () => {
+    const rows = await h.sql<{ data_type: string; is_nullable: string; column_default: string | null }[]>`
+      SELECT data_type, is_nullable, column_default FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'allow_direct_messages'
+    `
+    expect(rows.length).toBe(1)
+    expect(rows[0]?.data_type).toBe("boolean")
+    expect(rows[0]?.is_nullable).toBe("NO")
+
+    // A user inserted without the column reads it back as true (the default).
+    const ins = await h.sql<{ allow_direct_messages: boolean }[]>`
+      INSERT INTO users (display_name) VALUES ('DM Default Check') RETURNING allow_direct_messages
+    `
+    expect(ins[0]?.allow_direct_messages).toBe(true)
+  })
+
+  it("declares dm_messages as a RANGE-partitioned table with the monthly partitions + default", async () => {
+    const strat = await h.sql<{ partstrat: string }[]>`
+      SELECT partstrat FROM pg_partitioned_table WHERE partrelid = 'public.dm_messages'::regclass
+    `
+    expect(strat.length).toBe(1)
+    expect(strat[0]?.partstrat).toBe("r")
+
+    const children = await h.sql<{ child: string }[]>`
+      SELECT c.relname AS child
+      FROM pg_inherits i
+      JOIN pg_class c ON c.oid = i.inhrelid
+      WHERE i.inhparent = 'public.dm_messages'::regclass
+    `
+    const set = new Set(children.map((r) => r.child))
+    expect(set.has("dm_messages_default")).toBe(true)
+    expect(set.has("dm_messages_2026_06")).toBe(true)
+    expect(set.has("dm_messages_2026_07")).toBe(true)
+    expect(set.has("dm_messages_2026_08")).toBe(true)
+  })
+
+  it("enforces the unique (user_lo, user_hi) thread pair and the lo<hi CHECK", async () => {
+    const a = (
+      await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Pair A') RETURNING id`
+    )[0]!.id
+    const b = (
+      await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Pair B') RETURNING id`
+    )[0]!.id
+    const lo = a < b ? a : b
+    const hi = a < b ? b : a
+
+    await h.sql`INSERT INTO dm_threads (user_lo, user_hi) VALUES (${lo}, ${hi})`
+    // A second thread for the same pair collides on the unique key.
+    await expect(
+      h.sql`INSERT INTO dm_threads (user_lo, user_hi) VALUES (${lo}, ${hi})`,
+    ).rejects.toThrow()
+    // A pair with lo >= hi violates the CHECK.
+    await expect(
+      h.sql`INSERT INTO dm_threads (user_lo, user_hi) VALUES (${hi}, ${lo})`,
+    ).rejects.toThrow()
+  })
+
+  it("enforces user_blocks PK (idempotent) and the no-self-block CHECK", async () => {
+    const a = (
+      await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Blk A') RETURNING id`
+    )[0]!.id
+    const b = (
+      await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Blk B') RETURNING id`
+    )[0]!.id
+    await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${a}, ${b})`
+    // Re-inserting the same edge collides on the PK.
+    await expect(
+      h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${a}, ${b})`,
+    ).rejects.toThrow()
+    // A self-block violates the CHECK.
+    await expect(
+      h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${a}, ${a})`,
+    ).rejects.toThrow()
   })
 })
 

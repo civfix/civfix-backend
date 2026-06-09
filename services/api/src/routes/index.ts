@@ -20,6 +20,8 @@ import { registerAnonRoutes } from "./anon.routes.js"
 import { registerClaimRoutes } from "./claim.routes.js"
 import { registerCleanupRoutes } from "./cleanups.routes.js"
 import { registerChatRoutes } from "./chat.routes.js"
+import { registerDmRoutes } from "./dm.routes.js"
+import { registerUsersRoutes } from "./users.routes.js"
 import { registerSocialRoutes } from "./social.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
 import { registerAdminRoutes } from "./admin/index.js"
@@ -77,7 +79,18 @@ export async function registerRoutes(
   // handshake and GET /threads 401s with no session.
   await registerChatRoutes(app, container)
 
-  // Social: people directory/search (anon-ok) + follow/unfollow (auth + CSRF) + public profile (anon-ok)
+  // DM: open/fetch a 1:1 thread (POST /dm, auth + CSRF) + DM history (GET /dm/:id/messages, auth,
+  // participant + not-blocked gated). Mount unconditionally; the dm/blocks repos come from the container
+  // singletons (Drizzle in prod, in-memory in the all-fakes path) and the auth-gated routes 401 with no
+  // session. Cleanup group chat is unaffected.
+  await registerDmRoutes(app, container)
+
+  // Users / privacy: @handle search (GET /users/search, auth) + block/unblock (POST/DELETE
+  // /users/:id/block, auth + CSRF) + the viewer's blocks (GET /me/blocks, auth) + privacy settings
+  // (PUT /me/settings, auth + CSRF). Mount unconditionally; DB-backed handlers reach the database lazily.
+  await registerUsersRoutes(app, container)
+
+  // Social: people directory/search (auth, q required) + follow/unfollow (auth + CSRF) + public profile
   // + own profile (auth). Mount unconditionally; DB-backed handlers reach the database lazily via
   // container.getDb(), and a NEW follow fires a new_follower notification (which inline-pushes when the
   // followed user's prefs allow). The auth-gated routes 401 cleanly with no infra.

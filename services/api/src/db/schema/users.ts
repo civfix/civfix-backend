@@ -38,6 +38,9 @@ export const users = pgTable(
     // First-run registration gate: false until the user sets a username + name. Backfilled true for
     // pre-existing accounts in 0006 so only NEW users are forced through registration.
     profileComplete: boolean("profile_complete").notNull().default(false),
+    // Per-account DM toggle (0009). When false the user is hidden from people search and a NEW openDm
+    // toward them is rejected; existing dm threads keep working. NOT NULL default true.
+    allowDirectMessages: boolean("allow_direct_messages").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },

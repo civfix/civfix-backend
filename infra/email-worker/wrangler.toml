@@ -1,0 +1,41 @@
+# Cloudflare Email Worker for catch-all *@civfix.org inbound mail.
+#
+# This Worker is NOT part of the pnpm/Turbo workspace (pnpm-workspace.yaml globs shared/, services/*,
+# packages/* — not infra/*). It has its own wrangler toolchain. See README.md + documents/17.
+#
+# NOTE: the catch-all -> Worker route and the Email Routing enablement are configured in the Cloudflare
+# dashboard/API, NOT here. The shared secret is a Worker secret (wrangler secret put), NOT a var.
+
+name = "civfix-inbound-email"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"   # pinned; bump deliberately
+# nodejs_compat is NOT needed — only WebCrypto + fetch + R2 are used.
+
+# Bind the SAME physical R2 bucket the backend uses (its R2_BUCKET value). The code references
+# env.R2_BUCKET; bucket_name must be the real bucket so the backend's sweep over inbound/pending/
+# sees objects this Worker writes. Replace the placeholder with the actual bucket name from prod.
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "civfix-media"   # <-- set to the backend's real R2_BUCKET value
+
+[vars]
+BACKEND_WEBHOOK_URL = "https://api.civfix.org/webhooks/inbound-mail"   # must equal PUBLIC_API_URL + /webhooks/inbound-mail
+
+# ---------------------------------------------------------------------------
+# Environments — Email Routing routes to ONE deployed worker; use distinct names per env.
+# ---------------------------------------------------------------------------
+[env.production]
+name = "civfix-inbound-email"
+[env.production.vars]
+BACKEND_WEBHOOK_URL = "https://api.civfix.org/webhooks/inbound-mail"
+[[env.production.r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "civfix-media"
+
+[env.staging]
+name = "civfix-inbound-email-staging"
+[env.staging.vars]
+BACKEND_WEBHOOK_URL = "https://api.staging.civfix.org/webhooks/inbound-mail"
+[[env.staging.r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "civfix-media-staging"

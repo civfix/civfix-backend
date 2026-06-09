@@ -47,7 +47,7 @@
 
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { WebSocket } from "@fastify/websocket"
-import { WsClientMessageSchema, type WsServerMessage } from "@civfix/shared"
+import { WsClientMessageSchema, type RoomKind, type WsServerMessage } from "@civfix/shared"
 import type { ChatService, ChatConnection } from "@civfix/shared/interfaces"
 import type { SessionService } from "../auth/session-service.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
@@ -116,6 +116,33 @@ export type IsMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 export type MarkReadFn = (cleanupId: string, userId: string, upToId: string) => Promise<void>
 
 /**
+ * The DM seam the gateway drives for `roomKind:"dm"` frames. It mirrors the cleanup seams but is
+ * addressed by thread id: an isParticipant membership probe, a persist (returns the broadcastable DTO),
+ * a markRead watermark, and a peerOf lookup (the OTHER participant) so block checks can run before a join
+ * or send. Optional on GatewayDeps so the cleanup-only tests and the legacy path need not wire it; the
+ * frame handler falls back to refusing dm frames when it is absent.
+ */
+export interface GatewayDmDeps {
+  /** Whether `userId` is one of the dm thread's two participants. */
+  isParticipant(threadId: string, userId: string): Promise<boolean>
+  /** The OTHER participant of the thread (for the block check), or null when `userId` is not in it. */
+  peerOf(threadId: string, userId: string): Promise<string | null>
+  /** Persist a dm message and return the broadcastable ChatMessageDTO (roomKind:"dm", cleanupId=thread). */
+  persist(input: {
+    threadId: string
+    senderId: string
+    body: string
+    kind?: import("@civfix/shared").ChatMessageKind
+    clientId?: string
+  }): Promise<import("@civfix/shared").ChatMessageDTO>
+  /** Record that `userId` read `threadId` up to message `upToId` (monotonic). */
+  markRead(threadId: string, userId: string, upToId: string): Promise<void>
+}
+
+/** Bidirectional block check: is `a` blocked by `b` or vice versa? Used to gate dm join/send. */
+export type IsBlockedEitherWayFn = (a: string, b: string) => Promise<boolean>
+
+/**
  * The ChatService the gateway drives. Identical to the shared ChatService except `broadcast` accepts an
  * OPTIONAL excludeConnId so the gateway can keep the sender out of the broadcast fan-out (it learns
  * durability from the ack instead, P1-2). A 2-arg ChatService.broadcast is assignable here (fewer
@@ -137,6 +164,10 @@ export interface GatewayDeps {
   markRead?: MarkReadFn | undefined
   /** Optional presence registry: tracks who is online per room and powers presence snapshots/deltas. */
   presence?: ChatPresence | undefined
+  /** Optional DM seam: membership/persist/read-state for `roomKind:"dm"` frames. Absent ⇒ dm refused. */
+  dm?: GatewayDmDeps | undefined
+  /** Optional bidirectional block check, gating dm join/send (refuses when blocked either way). */
+  isBlockedEitherWay?: IsBlockedEitherWayFn | undefined
 }
 
 /**
@@ -158,9 +189,47 @@ function serverFrame(frame: WsServerMessage): string {
   return JSON.stringify(frame)
 }
 
-/** Send an {type:"error"} frame to a connection. */
-function sendError(conn: ChatConnection, code: string, message: string): void {
-  conn.send(serverFrame({ type: "error", code, message }))
+/**
+ * Send an {type:"error"} frame. When the error is room-scoped (a rejected join/send/typing for a
+ * specific room) pass `room` so the frame carries the bare room id + roomKind: a client multiplexing
+ * several rooms over ONE socket then applies the error (and any "stop re-joining this room" logic) only
+ * to the matching room, never to a healthy sibling. Omit `room` for connection-level errors (auth /
+ * malformed frame). roomKind is stamped only for dm (absent ⇒ cleanup), matching the other frames.
+ */
+function sendError(
+  conn: ChatConnection,
+  code: string,
+  message: string,
+  room?: { kind: RoomKind; id: string },
+): void {
+  conn.send(
+    serverFrame({
+      type: "error",
+      code,
+      message,
+      ...(room ? { cleanupId: room.id, ...(room.kind === "dm" ? { roomKind: "dm" as const } : {}) } : {}),
+    }),
+  )
+}
+
+/** Prefix that namespaces a dm thread's fan-out room key so dm and cleanup ids can never collide. */
+const DM_ROOM_PREFIX = "dm:"
+
+/**
+ * Map a frame's (roomKind, id) to the internal fan-out room key. Cleanup ids stay bare (backward
+ * compatible); dm ids are namespaced `dm:<id>` so the presence/pubsub key space is partitioned and a dm
+ * thread id can never collide with a cleanup id. The presence adapter keys off whatever room id we pass,
+ * so passing the namespaced key gives dm threads their own presence/typing space automatically.
+ */
+function roomKeyFor(kind: RoomKind, id: string): string {
+  return kind === "dm" ? `${DM_ROOM_PREFIX}${id}` : id
+}
+
+/** Recover the (roomKind, bare id) a stored room key represents (the inverse of roomKeyFor). */
+function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
+  return roomKey.startsWith(DM_ROOM_PREFIX)
+    ? { kind: "dm", id: roomKey.slice(DM_ROOM_PREFIX.length) }
+    : { kind: "cleanup", id: roomKey }
 }
 
 /**
@@ -170,17 +239,21 @@ function sendError(conn: ChatConnection, code: string, message: string): void {
  * until its TTL pruned it). Order: drop from the message fan-out first (the conn is gone from the room,
  * so the leave delta below reaches only the OTHERS), then deregister presence and broadcast the delta.
  */
-async function leaveRoomAndAnnounce(session: GatewaySession, cleanupId: string): Promise<void> {
+async function leaveRoomAndAnnounce(session: GatewaySession, roomKey: string): Promise<void> {
   const { conn, deps, userId } = session
-  await deps.chat.leaveRoom(cleanupId, conn)
-  session.joined.delete(cleanupId)
-  session.typingThrottle.delete(cleanupId)
+  const { kind, id } = decodeRoomKey(roomKey)
+  // Fan-out + presence are keyed by the namespaced roomKey; the presence frame carries the BARE id +
+  // roomKind so clients route it to the right (cleanup|dm) room.
+  await deps.chat.leaveRoom(roomKey, conn)
+  session.joined.delete(roomKey)
+  session.typingThrottle.delete(roomKey)
   if (deps.presence) {
-    const { userGone } = await deps.presence.leave(cleanupId, conn.id, userId)
+    const { userGone } = await deps.presence.leave(roomKey, conn.id, userId)
     if (userGone) {
-      await deps.chat.broadcastEvent?.(cleanupId, {
+      await deps.chat.broadcastEvent?.(roomKey, {
         type: "presence",
-        cleanupId,
+        cleanupId: id,
+        ...(kind === "dm" ? { roomKind: kind } : {}),
         userId,
         state: "leave",
       })
@@ -189,16 +262,51 @@ async function leaveRoomAndAnnounce(session: GatewaySession, cleanupId: string):
 }
 
 /**
+ * Authorize a room for a (kind, id). Returns { ok:true } when the user may join/send, else { ok:false }
+ * with the error code/message to send. Cleanup: cleanup membership (existing isMember). DM: the user must
+ * be a thread participant AND not blocked either way w.r.t. the peer (and the dm/block seams must be
+ * wired). The dm failure message is intentionally the generic "no longer reach" copy so block and
+ * not-a-participant are not distinguished. NOTE: cleanup group chat behavior is unchanged.
+ */
+async function authorizeRoom(
+  deps: GatewayDeps,
+  kind: RoomKind,
+  id: string,
+  userId: string,
+): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
+  if (kind === "cleanup") {
+    const ok = await deps.isMember(id, userId)
+    return ok ? { ok: true } : { ok: false, code: "FORBIDDEN", message: "You are not a member of this cleanup." }
+  }
+  // dm
+  if (!deps.dm) {
+    return { ok: false, code: "FORBIDDEN", message: "Direct messages are not available." }
+  }
+  const peer = await deps.dm.peerOf(id, userId)
+  if (peer === null) {
+    return { ok: false, code: "FORBIDDEN", message: "You can't message in this conversation." }
+  }
+  if (deps.isBlockedEitherWay && (await deps.isBlockedEitherWay(userId, peer))) {
+    return { ok: false, code: "FORBIDDEN", message: "You can't message in this conversation." }
+  }
+  return { ok: true }
+}
+
+/**
  * Handle ONE inbound client frame for a session. Returns nothing; all effects are sends/persist/
  * broadcast/room changes. This is the unit-tested core of the gateway:
  *   - parse + validate against WsClientMessageSchema; a malformed frame -> a single error frame, no throw.
- *   - join: membership-gate, then ChatService.joinRoom + a presence frame to the joiner's own socket.
- *   - leave: ChatService.leaveRoom.
- *   - send: membership-gate, persist via ChatService, broadcast to the room EXCEPT the sender's socket,
- *     and ack the SENDER with the clientId + persisted message so the optimistic client reconciles
- *     (the sender's exactly-once copy; P1-2).
- *   - typing: broadcast a presence/typing frame to the room (best-effort).
- *   - ack: update read state via markRead (optional).
+ *   - each frame carries an OPTIONAL roomKind (absent ⇒ "cleanup"); the room id travels in `cleanupId`
+ *     (a dm thread id for roomKind:"dm"). The internal fan-out/presence room key is roomKeyFor(kind, id):
+ *     cleanup ids stay bare, dm ids are namespaced `dm:<id>` so the two id spaces never collide.
+ *   - join: authorize the room (cleanup membership OR dm participant+not-blocked), then ChatService.joinRoom
+ *     under the room key + a presence snapshot to the joiner's own socket (frames carry the bare id + roomKind).
+ *   - leave: ChatService.leaveRoom under the room key.
+ *   - send: authorize, persist (cleanup → chat seam; dm → dm seam, with a fresh block re-check), broadcast
+ *     under the room key EXCEPT the sender's socket, and ack the SENDER (the sender's exactly-once copy; P1-2).
+ *   - typing: authorize, then broadcast a typing frame under the room key (best-effort, carries id + roomKind).
+ *   - ack: route by (roomKind, cleanupId) when present, else the socket's first joined room; markRead routes
+ *     by kind (cleanup → cleanup read-state; dm → dm read-state).
  */
 export async function handleClientFrame(session: GatewaySession, raw: string): Promise<void> {
   const { conn, deps, userId } = session
@@ -222,26 +330,41 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
 
   switch (frame.type) {
     case "join": {
-      const ok = await deps.isMember(frame.cleanupId, userId)
-      if (!ok) {
-        sendError(conn, "FORBIDDEN", "You are not a member of this cleanup.")
+      const kind: RoomKind = frame.roomKind ?? "cleanup"
+      const id = frame.cleanupId
+      const auth = await authorizeRoom(deps, kind, id, userId)
+      if (!auth.ok) {
+        sendError(conn, auth.code, auth.message, { kind, id })
         return
       }
-      await deps.chat.joinRoom(frame.cleanupId, conn, userId)
-      session.joined.add(frame.cleanupId)
+      const roomKey = roomKeyFor(kind, id)
+      await deps.chat.joinRoom(roomKey, conn, userId)
+      session.joined.add(roomKey)
       // Presence (when a registry is wired): register this connection, send the joiner the CURRENT online
       // snapshot so it can render "N online" immediately, and broadcast a join DELTA to the OTHER members
       // only when this is the user's FIRST connection in the room (so opening a second tab/device does not
-      // spam a redundant join). The joiner is excluded from the delta - it already has the snapshot.
+      // spam a redundant join). The joiner is excluded from the delta - it already has the snapshot. The
+      // presence frames carry the BARE id + roomKind so clients route them to the right (cleanup|dm) room.
       if (deps.presence) {
-        const { online, userJoined } = await deps.presence.join(frame.cleanupId, conn.id, userId)
+        const { online, userJoined } = await deps.presence.join(roomKey, conn.id, userId)
         conn.send(
-          serverFrame({ type: "presence_snapshot", cleanupId: frame.cleanupId, userIds: online }),
+          serverFrame({
+            type: "presence_snapshot",
+            cleanupId: id,
+            ...(kind === "dm" ? { roomKind: kind } : {}),
+            userIds: online,
+          }),
         )
         if (userJoined) {
           await deps.chat.broadcastEvent?.(
-            frame.cleanupId,
-            { type: "presence", cleanupId: frame.cleanupId, userId, state: "join" },
+            roomKey,
+            {
+              type: "presence",
+              cleanupId: id,
+              ...(kind === "dm" ? { roomKind: kind } : {}),
+              userId,
+              state: "join",
+            },
             { excludeConnId: conn.id },
           )
         }
@@ -250,31 +373,49 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
     }
 
     case "leave": {
-      await leaveRoomAndAnnounce(session, frame.cleanupId)
+      const kind: RoomKind = frame.roomKind ?? "cleanup"
+      await leaveRoomAndAnnounce(session, roomKeyFor(kind, frame.cleanupId))
       return
     }
 
     case "send": {
-      const ok = await deps.isMember(frame.cleanupId, userId)
-      if (!ok) {
-        sendError(conn, "FORBIDDEN", "You are not a member of this cleanup.")
+      const kind: RoomKind = frame.roomKind ?? "cleanup"
+      const id = frame.cleanupId
+      const auth = await authorizeRoom(deps, kind, id, userId)
+      if (!auth.ok) {
+        sendError(conn, auth.code, auth.message, { kind, id })
         return
       }
+      const roomKey = roomKeyFor(kind, id)
       // Persist first so the broadcast + ack carry the durable id/createdAt (the optimistic client
-      // reconciles its temporary clientId against the server message).
-      const message = await deps.chat.persist({
-        cleanupId: frame.cleanupId,
-        userId,
-        body: frame.body,
-        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
-        clientId: frame.clientId,
-      })
+      // reconciles its temporary clientId against the server message). Route persistence by kind:
+      // cleanup → the chat seam; dm → the dm seam (the block re-check already ran in authorizeRoom).
+      let message: import("@civfix/shared").ChatMessageDTO
+      if (kind === "dm") {
+        // dm seam must be wired (authorizeRoom already refused dm when it is absent).
+        message = await deps.dm!.persist({
+          threadId: id,
+          senderId: userId,
+          body: frame.body,
+          ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+          clientId: frame.clientId,
+        })
+      } else {
+        message = await deps.chat.persist({
+          cleanupId: id,
+          roomKind: "cleanup",
+          userId,
+          body: frame.body,
+          ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+          clientId: frame.clientId,
+        })
+      }
       // Broadcast to the room EXCEPT this sender's socket (P1-2): the sender would otherwise get both the
       // broadcast {type:"message"} frame AND the {type:"ack"} below for the same id and render it twice.
       // excludeConnId keeps the sender out of the fan-out; the sender reconciles its optimistic bubble
       // from the ack alone. Other members (and the sender's OTHER devices, which are different
-      // connections) still receive the message frame.
-      await deps.chat.broadcast(frame.cleanupId, message, { excludeConnId: conn.id })
+      // connections) still receive the message frame. The DTO already carries cleanupId=id + roomKind.
+      await deps.chat.broadcast(roomKey, message, { excludeConnId: conn.id })
       // Ack the SENDER directly with the clientId so its optimistic bubble is reconciled. This is the
       // sender's ONLY copy of the message (exactly-once delivery to the sender).
       conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
@@ -284,38 +425,63 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
     case "typing": {
       // A member is typing: fan a {type:"typing"} frame to the OTHER members (the sender is excluded) over
       // the dedicated broadcastEvent channel - it carries an ephemeral, un-persisted frame, so it never
-      // touches the message stream or history. A non-member must not even signal typing.
-      const ok = await deps.isMember(frame.cleanupId, userId)
-      if (!ok) {
-        sendError(conn, "FORBIDDEN", "You are not a member of this cleanup.")
+      // touches the message stream or history. A non-member / non-participant must not even signal typing.
+      const kind: RoomKind = frame.roomKind ?? "cleanup"
+      const id = frame.cleanupId
+      const auth = await authorizeRoom(deps, kind, id, userId)
+      if (!auth.ok) {
+        sendError(conn, auth.code, auth.message, { kind, id })
         return
       }
+      const roomKey = roomKeyFor(kind, id)
       // Server-side throttle backstop: drop typing fan-outs more frequent than TYPING_MIN_INTERVAL_MS for
       // this connection+room, regardless of what the client sends.
       const now = Date.now()
-      const last = session.typingThrottle.get(frame.cleanupId) ?? 0
+      const last = session.typingThrottle.get(roomKey) ?? 0
       if (now - last < TYPING_MIN_INTERVAL_MS) return
-      session.typingThrottle.set(frame.cleanupId, now)
+      session.typingThrottle.set(roomKey, now)
       await deps.chat.broadcastEvent?.(
-        frame.cleanupId,
-        { type: "typing", cleanupId: frame.cleanupId, userId },
+        roomKey,
+        {
+          type: "typing",
+          cleanupId: id,
+          ...(kind === "dm" ? { roomKind: kind } : {}),
+          userId,
+        },
         { excludeConnId: conn.id },
       )
       return
     }
 
     case "ack": {
-      // Update per-user read state (OPTIONAL; drives the threads unread count). The shared ack frame
-      // carries only upToId, not a cleanupId, so we scope the read to the room this socket is in. A
-      // socket is expected to be in exactly one room (the open conversation); when it is in more than
-      // one we take the first joined room, and when it is in none there is nothing to mark. A later
-      // step can widen the ack frame to carry the cleanupId for a stricter mapping. No-op when no
-      // markRead is wired.
-      if (deps.markRead) {
-        const cleanupId: string | undefined = session.joined.values().next().value
-        if (cleanupId !== undefined) {
-          await deps.markRead(cleanupId, userId, frame.upToId)
+      // Update per-user read state (OPTIONAL; drives the threads unread count). Route by (roomKind,
+      // cleanupId) when the frame carries them (a socket joined to BOTH a cleanup and a dm thread marks
+      // the right one); otherwise fall back to the socket's FIRST joined room (legacy single-room
+      // behavior). markRead routes by kind: cleanup → the cleanup read-state seam; dm → the dm read-state
+      // seam. No-op when neither seam is wired / there is nothing to mark.
+      let kind: RoomKind
+      let id: string | undefined
+      if (frame.cleanupId !== undefined) {
+        kind = frame.roomKind ?? "cleanup"
+        id = frame.cleanupId
+      } else {
+        const firstKey: string | undefined = session.joined.values().next().value
+        if (firstKey === undefined) return
+        const decoded = decodeRoomKey(firstKey)
+        kind = decoded.kind
+        id = decoded.id
+      }
+      if (id === undefined) return
+      if (kind === "dm") {
+        // Gate the write on participation: an ack carries an arbitrary thread id and the dm markRead is an
+        // unconditional upsert, so without this any authenticated socket could write dm_read_state rows for
+        // threads it isn't in (an authorization asymmetry with the self-gating cleanup path). peerOf returns
+        // null for a non-participant.
+        if (deps.dm && (await deps.dm.peerOf(id, userId)) !== null) {
+          await deps.dm.markRead(id, userId, frame.upToId)
         }
+      } else if (deps.markRead) {
+        await deps.markRead(id, userId, frame.upToId)
       }
       return
     }
@@ -414,10 +580,14 @@ export interface RegisterGatewayOptions {
   isMember: IsMemberFn
   /** Session service for resolving the ?token query param (mobile). */
   sessions: SessionService | undefined
-  /** Optional read-state updater for the `ack` frame. */
+  /** Optional read-state updater for the `ack` frame (cleanup chat). */
   markRead?: MarkReadFn | undefined
   /** Optional presence registry: powers presence snapshots/deltas and is refreshed by the heartbeat. */
   presence?: ChatPresence | undefined
+  /** Optional DM seam: membership/persist/read-state for `roomKind:"dm"` frames. */
+  dm?: GatewayDmDeps | undefined
+  /** Optional bidirectional block check, gating dm join/send. */
+  isBlockedEitherWay?: IsBlockedEitherWayFn | undefined
   /** CORS/WS Origin allowlist (env.WEB_ORIGINS). Empty allows all (dev). See isAllowedWsOrigin. */
   webOrigins: readonly string[]
 }
@@ -459,6 +629,8 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           isMember: opts.isMember,
           markRead: opts.markRead,
           presence: opts.presence,
+          dm: opts.dm,
+          isBlockedEitherWay: opts.isBlockedEitherWay,
         },
       }
 

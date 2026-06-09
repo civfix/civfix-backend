@@ -1,0 +1,20 @@
+{
+  "name": "@civfix/email-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cloudflare Email Worker: catch-all *@civfix.org inbound mail -> R2 -> backend webhook nudge.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --env production",
+    "deploy:staging": "wrangler deploy --env staging",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250601.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^3.80.0"
+  }
+}

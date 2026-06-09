@@ -30,6 +30,12 @@ export * from "./cleanups.js"
 export * from "./cleanup_members.js"
 export * from "./chat.js"
 
+// direct messages (1:1) + blocking (0009)
+export * from "./dm_threads.js"
+export * from "./dm_messages.js"
+export * from "./dm_read_state.js"
+export * from "./user_blocks.js"
+
 // social
 export * from "./follows.js"
 
@@ -52,5 +58,6 @@ export * from "./gov_claims.js"
 export * from "./user_moderation.js"
 export * from "./moderation_items.js"
 export * from "./mail.js"
+export * from "./inbound_emails.js"
 export * from "./outreach_state.js"
 export * from "./cleanup_timeline.js"

@@ -136,6 +136,7 @@ export function toUserDTO(user: UserRecord): UserDTO {
     email: user.email,
     avatarUrl: user.avatarUrl,
     profileComplete: user.profileComplete,
+    allowDirectMessages: user.allowDirectMessages,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
   }

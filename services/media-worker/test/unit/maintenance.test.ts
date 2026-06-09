@@ -117,10 +117,18 @@ describe("chat.partition.maintenance", () => {
       log: () => {},
     })
     expect(table).toBe("chat_messages_2026_07")
-    expect(calls.length).toBe(1)
-    expect(calls[0]).toContain("CREATE TABLE IF NOT EXISTS chat_messages_2026_07")
-    expect(calls[0]).toContain("PARTITION OF chat_messages")
-    expect(calls[0]).toContain("FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00')")
+    // The maintenance now ensures BOTH the chat_messages AND the dm_messages partition for next month, so
+    // it issues two CREATE TABLE statements (one per partitioned table).
+    expect(calls.length).toBe(2)
+    const chatCall = calls.find((c) => c.includes("chat_messages_2026_07"))!
+    expect(chatCall).toContain("CREATE TABLE IF NOT EXISTS chat_messages_2026_07")
+    expect(chatCall).toContain("PARTITION OF chat_messages")
+    expect(chatCall).toContain("FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00')")
+    // And the dm_messages partition with the same bounds.
+    const dmCall = calls.find((c) => c.includes("dm_messages_2026_07"))!
+    expect(dmCall).toContain("CREATE TABLE IF NOT EXISTS dm_messages_2026_07")
+    expect(dmCall).toContain("PARTITION OF dm_messages")
+    expect(dmCall).toContain("FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00')")
   })
 
   it("rolls the year correctly: December -> next-January partition", async () => {

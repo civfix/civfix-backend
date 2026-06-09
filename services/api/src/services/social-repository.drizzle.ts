@@ -18,13 +18,14 @@
  */
 
 import type { Sql } from "../db/client.js"
+import { avatarGradient } from "@civfix/shared"
 import type {
   PersonView,
   ProfileStats,
   SocialRepository,
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
-import type { CleanupStatus, CleanupType } from "@civfix/shared"
+import type { CleanupStatus, CleanupType, UserSearchResultDTO } from "@civfix/shared"
 
 /** Shape of a person row as selected for the directory/profile (counts joined inline). */
 interface PersonRowSelect {
@@ -268,6 +269,51 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       }
     },
   }
+}
+
+/**
+ * @handle PREFIX search for starting a DM (GET /users/search). Returns the minimal, privacy-conscious
+ * UserSearchResultDTO (no email/bio/follower counts). Matches `handle ILIKE <prefix>%` case-insensitively
+ * (handle is citext) with the prefix escaped so %/_/\ are literal. Exclusions (the locked product rules):
+ *   - self (u.id <> viewerId);
+ *   - soft-deleted users (deleted_at IS NOT NULL);
+ *   - users with NULL handle (not searchable);
+ *   - users with allow_direct_messages = false (DM-disabled accounts are hidden from search);
+ *   - users blocked either way w.r.t. the viewer (NOT EXISTS over user_blocks in both directions).
+ * `q` is the raw query with a leading `@` already stripped by the route. Ordered by handle asc, capped.
+ */
+export async function searchByHandlePrefix(
+  sql: Sql,
+  q: string,
+  viewerId: string,
+  limit: number,
+): Promise<UserSearchResultDTO[]> {
+  const prefix = escapeLike(q) + "%"
+  const rows = await sql<
+    { id: string; handle: string; display_name: string; avatar_url: string | null }[]
+  >`
+    SELECT u.id, u.handle, u.display_name, u.avatar_url
+    FROM users u
+    WHERE u.deleted_at IS NULL
+      AND u.handle IS NOT NULL
+      AND u.allow_direct_messages = true
+      AND u.id <> ${viewerId}
+      AND u.handle ILIKE ${prefix} ESCAPE '\\'
+      AND NOT EXISTS (
+        SELECT 1 FROM user_blocks b
+        WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
+           OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
+      )
+    ORDER BY u.handle ASC
+    LIMIT ${limit}
+  `
+  return rows.map((r) => ({
+    id: r.id,
+    handle: r.handle,
+    displayName: r.display_name,
+    avatar: avatarGradient(r.id),
+    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+  }))
 }
 
 /**

@@ -197,6 +197,12 @@ export interface MailRepository {
    * to_addr, which is not carried on MailMessageDTO.
    */
   getLastOutboundRecipient(threadId: string): Promise<string | null>
+  /**
+   * True when a mail_messages row already carries this message_id. The inbound processor's idempotency
+   * guard for the threaded path: a re-delivered reply (webhook + sweep racing the same R2 object) is
+   * skipped rather than inserted twice. (The catch-all path dedups via the inbound_emails UNIQUE index.)
+   */
+  messageExists(messageId: string): Promise<boolean>
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +642,13 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         LIMIT 1
       `
       return rows[0]?.to_addr ?? null
+    },
+
+    async messageExists(messageId: string): Promise<boolean> {
+      const rows = await sql<{ exists: boolean }[]>`
+        SELECT EXISTS(SELECT 1 FROM mail_messages WHERE message_id = ${messageId}) AS exists
+      `
+      return rows[0]?.exists ?? false
     },
 
     async markThreadRead(id: string): Promise<boolean> {
