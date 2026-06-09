@@ -119,6 +119,12 @@ export interface Env {
   R2_ACCESS_KEY_ID: string
   R2_SECRET_ACCESS_KEY: string
   R2_BUCKET: string
+  /**
+   * Optional DEDICATED R2 bucket for the inbound-mail buffer (the Cloudflare Email Worker writes raw
+   * .eml to `inbound/pending/` here + extracted attachments to `inbound-emails/`). When unset, the
+   * inbound pipeline shares R2_BUCKET. The Email Worker must bind THIS bucket. [OPT]
+   */
+  R2_INBOUND_BUCKET?: string
   R2_PUBLIC_BASE?: string
 
   // ----- map basemap (all [OPT]) -----
@@ -366,6 +372,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     R2_ACCESS_KEY_ID,
     R2_SECRET_ACCESS_KEY,
     R2_BUCKET,
+    ...(optStr.parse(source.R2_INBOUND_BUCKET) !== undefined
+      ? { R2_INBOUND_BUCKET: source.R2_INBOUND_BUCKET!.trim() }
+      : {}),
     ...(optStr.parse(source.R2_PUBLIC_BASE) !== undefined
       ? { R2_PUBLIC_BASE: source.R2_PUBLIC_BASE!.trim() }
       : {}),

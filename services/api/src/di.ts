@@ -80,6 +80,8 @@ export interface Container {
   readonly env: Env
 
   readonly storage: Storage
+  /** Storage for the inbound-mail buffer (R2_INBOUND_BUCKET, else R2_BUCKET). See buildContainer. */
+  readonly inboundStorage: Storage
   readonly mailer: Mailer
   readonly inboundMail: InboundMail
   readonly geocoder: Geocoder
@@ -166,6 +168,21 @@ export function buildContainer(env: Env): Container {
         secretAccessKey: env.R2_SECRET_ACCESS_KEY,
         bucket: env.R2_BUCKET,
         ...(env.R2_PUBLIC_BASE !== undefined ? { publicBase: env.R2_PUBLIC_BASE } : {}),
+      })
+
+  // ----- inbound-mail storage (the catch-all email buffer) -----
+  // The Cloudflare Email Worker writes raw .eml + extracted attachments to a (possibly DEDICATED) bucket;
+  // the inbound webhook + sweep read/delete/presign from the SAME bucket. Defaults to R2_BUCKET when
+  // R2_INBOUND_BUCKET is unset (single-bucket deploy). No publicBase: inbox attachment links are signed
+  // GET URLs (the media public domain does not front this bucket). In all-fakes dev the inbound flow
+  // shares the one in-memory FakeStorage so a dev sweep/webhook sees what a (hypothetical) put wrote.
+  const inboundStorage: Storage = env.USE_FAKE_STORAGE
+    ? storage
+    : new R2Storage({
+        accountId: env.R2_ACCOUNT_ID,
+        accessKeyId: env.R2_ACCESS_KEY_ID,
+        secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+        bucket: env.R2_INBOUND_BUCKET ?? env.R2_BUCKET,
       })
 
   // ----- mailer -----
@@ -261,6 +278,7 @@ export function buildContainer(env: Env): Container {
   return {
     env,
     storage,
+    inboundStorage,
     mailer,
     inboundMail,
     geocoder,

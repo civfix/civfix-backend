@@ -59,7 +59,7 @@ export async function processInboundObject(
   key: string,
   deps: InboundProcessorDeps = {},
 ): Promise<ProcessResult> {
-  const storage = deps.storage ?? container.storage
+  const storage = deps.storage ?? container.inboundStorage
   const inboundMail = deps.inboundMail ?? container.inboundMail
   const mailRepo = deps.mailRepo ?? makeDrizzleMailRepository(container.getDb().sql)
   const inboundRepo = deps.inboundRepo ?? makeDrizzleInboundRepository(container.getDb().sql)

@@ -32,7 +32,7 @@ export async function runInboundSweep(
   container: Container,
   opts: { batch?: number; deps?: InboundProcessorDeps } = {},
 ): Promise<InboundSweepResult> {
-  const storage = opts.deps?.storage ?? container.storage
+  const storage = opts.deps?.storage ?? container.inboundStorage
   const cap = opts.batch ?? INBOUND_SWEEP_BATCH
   let cursor: string | undefined
   let scanned = 0

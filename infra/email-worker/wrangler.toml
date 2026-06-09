@@ -11,12 +11,12 @@ main = "src/index.ts"
 compatibility_date = "2025-06-01"   # pinned; bump deliberately
 # nodejs_compat is NOT needed — only WebCrypto + fetch + R2 are used.
 
-# Bind the SAME physical R2 bucket the backend uses (its R2_BUCKET value). The code references
-# env.R2_BUCKET; bucket_name must be the real bucket so the backend's sweep over inbound/pending/
-# sees objects this Worker writes. Replace the placeholder with the actual bucket name from prod.
+# Bind the inbound-mail bucket. The code references env.R2_BUCKET; bucket_name is the real R2 bucket the
+# backend ALSO reads (set the backend's R2_INBOUND_BUCKET to this same name) so its sweep over
+# inbound/pending/ sees what this Worker writes.
 [[r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "civfix-media"   # <-- set to the backend's real R2_BUCKET value
+bucket_name = "civfix-emails"   # dedicated inbound bucket; backend reads it via R2_INBOUND_BUCKET
 
 [vars]
 BACKEND_WEBHOOK_URL = "https://api.civfix.org/webhooks/inbound-mail"   # must equal PUBLIC_API_URL + /webhooks/inbound-mail
@@ -30,7 +30,7 @@ name = "civfix-inbound-email"
 BACKEND_WEBHOOK_URL = "https://api.civfix.org/webhooks/inbound-mail"
 [[env.production.r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "civfix-media"
+bucket_name = "civfix-emails"
 
 [env.staging]
 name = "civfix-inbound-email-staging"
@@ -38,4 +38,4 @@ name = "civfix-inbound-email-staging"
 BACKEND_WEBHOOK_URL = "https://api.staging.civfix.org/webhooks/inbound-mail"
 [[env.staging.r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "civfix-media-staging"
+bucket_name = "civfix-emails-staging"

@@ -55,7 +55,7 @@ export async function registerAdminInboxRoutes(
     return app.adminInboxOverrides?.repo ?? makeDrizzleInboundRepository(container.getDb().sql)
   }
   function storage(): Storage {
-    return app.adminInboxOverrides?.storage ?? container.storage
+    return app.adminInboxOverrides?.storage ?? container.inboundStorage
   }
 
   // GET /admin/inbox
