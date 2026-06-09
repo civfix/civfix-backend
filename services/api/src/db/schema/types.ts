@@ -106,7 +106,7 @@ export const MEDIA_KIND_VALUES = ["image", "video"] as const
 export const MEDIA_STATUS_VALUES = ["validating", "ready", "rejected", "held"] as const
 
 /** jurisdictions.layer. Mirrors shared JurisdictionLayerSchema. */
-export const JURISDICTION_LAYER_VALUES = ["place", "county", "state"] as const
+export const JURISDICTION_LAYER_VALUES = ["place", "county", "state", "federal", "tribal"] as const
 
 /** cleanups.type. Mirrors shared CleanupTypeSchema. */
 export const CLEANUP_TYPE_VALUES = ["site", "route"] as const

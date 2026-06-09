@@ -28,7 +28,7 @@ import {
   type DiscoveryTaskRecord,
   type ListDiscoveryArgs,
 } from "./discovery-service.js"
-import type { ReportCategory } from "@civfix/shared"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
 /** A seeded discovery task plus its detail extras (contacts/geometry/pins) held in one place. */
 export interface SeededDiscoveryTask {
@@ -63,6 +63,7 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
     id?: string
     geoid: string
     place: string
+    layer?: JurisdictionLayer
     population?: number | null
     status?: string
     perCategory?: Partial<Record<ReportCategory, number>>
@@ -84,6 +85,7 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
         id,
         geoid: input.geoid,
         place: input.place,
+        layer: input.layer ?? "place",
         population: input.population ?? null,
         status: input.status ?? "open",
         perCategory,

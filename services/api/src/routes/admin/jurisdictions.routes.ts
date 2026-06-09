@@ -129,6 +129,8 @@ export async function registerAdminJurisdictionsRoutes(
         ...(body.defaultEmails !== undefined ? { defaultEmails: body.defaultEmails } : {}),
         ...(body.formUrl !== undefined ? { formUrl: body.formUrl ?? null } : {}),
         ...(body.notes !== undefined ? { notes: body.notes } : {}),
+        ...(body.flagged !== undefined ? { flagged: body.flagged } : {}),
+        ...(body.flagReason !== undefined ? { flagReason: body.flagReason } : {}),
       },
       request.auth.userId,
     )

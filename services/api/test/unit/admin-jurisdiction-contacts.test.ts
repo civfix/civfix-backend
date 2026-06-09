@@ -50,13 +50,18 @@ function record(over: Partial<JurisdictionDirectoryRecord> = {}): JurisdictionDi
   return {
     geoid: "1",
     name: "City",
+    layer: "place",
+    population: null,
     defaultEmails: [],
     categoryContacts: [],
     hasDefaultContact: false,
     reportFormUrl: null,
+    reportsWaiting: 0,
+    perCategoryCounts: {},
     lastRoutedAt: null,
     bounced: false,
     contactUpdatedAt: null,
+    flaggedAt: null,
     ...over,
   }
 }
@@ -394,6 +399,46 @@ describe("listDirectory", () => {
 
     const noneOnly = await svc.listDirectory({ filter: "none" })
     expect(noneOnly.items.map((i) => i.geoid)).toEqual(["3"])
+  })
+
+  it("surfaces the jurisdiction TYPE, population, waiting counts, contacts, and flag state", async () => {
+    const { repo, svc } = harness()
+    // A FEDERAL-land jurisdiction with an existing trash contact, a flag, and a mix of reports.
+    repo.seedJurisdiction({
+      geoid: "FED-ANF",
+      name: "Angeles National Forest",
+      layer: "federal",
+      population: 12345,
+      categoryContacts: { trash: "info@fs.usda.gov" },
+      flaggedAt: NOW,
+      flagReason: "boundary dispute",
+    })
+    repo.seedReport({ geoid: "FED-ANF", category: "trash", status: "submitted" })
+    repo.seedReport({ geoid: "FED-ANF", category: "trash", status: "held" })
+    repo.seedReport({ geoid: "FED-ANF", category: "hazard", status: "published" })
+    // An already-routed report must NOT be counted as waiting.
+    repo.seedReport({ geoid: "FED-ANF", category: "trash", status: "acknowledged" })
+
+    const row = (await svc.listDirectory({})).items.find((i) => i.geoid === "FED-ANF")!
+    expect(row.layer).toBe("federal")
+    expect(row.population).toBe(12345)
+    expect(row.reportsWaiting).toBe(3) // 2 trash + 1 hazard; the acknowledged one is excluded
+    expect(row.perCategoryCounts).toEqual({ trash: 2, hazard: 1 })
+    expect(row.contacts).toContainEqual({ category: "trash", email: "info@fs.usda.gov" })
+    expect(row.flaggedAt).not.toBeNull()
+  })
+
+  it("flag / unflag a jurisdiction via patch sets then clears flaggedAt (no routing)", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "1", name: "City" })
+
+    await svc.patch("1", { flagged: true, flagReason: "needs review" }, "op-1")
+    let row = (await svc.listDirectory({})).items.find((i) => i.geoid === "1")!
+    expect(row.flaggedAt).not.toBeNull()
+
+    await svc.patch("1", { flagged: false }, "op-1")
+    row = (await svc.listDirectory({})).items.find((i) => i.geoid === "1")!
+    expect(row.flaggedAt).toBeNull()
   })
 
   it("searches org/geoid and paginates", async () => {

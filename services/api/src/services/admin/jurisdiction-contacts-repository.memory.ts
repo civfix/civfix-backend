@@ -27,12 +27,14 @@ import {
   type ListDirectoryArgs,
   type SaveContactsInput,
 } from "./jurisdiction-contacts-service.js"
-import type { ReportCategory } from "@civfix/shared"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
 /** A seeded jurisdiction's mutable contact + routing state. */
 export interface SeededJurisdiction {
   geoid: string
   name: string
+  layer: JurisdictionLayer
+  population: number | null
   defaultEmails: string[]
   categoryContacts: Map<ReportCategory, string | null>
   hasDefaultContact: boolean
@@ -41,6 +43,8 @@ export interface SeededJurisdiction {
   lastRoutedAt: Date | null
   bounced: boolean
   contactUpdatedAt: Date | null
+  flaggedAt: Date | null
+  flagReason: string | null
 }
 
 /** A seeded report (the subset the routing path mutates). */
@@ -96,6 +100,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
   seedJurisdiction(input: {
     geoid: string
     name: string
+    layer?: JurisdictionLayer
+    population?: number | null
     defaultEmails?: string[]
     categoryContacts?: Partial<Record<ReportCategory, string | null>>
     hasDefaultContact?: boolean
@@ -104,6 +110,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     lastRoutedAt?: Date | null
     bounced?: boolean
     contactUpdatedAt?: Date | null
+    flaggedAt?: Date | null
+    flagReason?: string | null
   }): SeededJurisdiction {
     const categoryContacts = new Map<ReportCategory, string | null>()
     for (const [category, email] of Object.entries(input.categoryContacts ?? {}) as [
@@ -115,6 +123,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     const j: SeededJurisdiction = {
       geoid: input.geoid,
       name: input.name,
+      layer: input.layer ?? "place",
+      population: input.population ?? null,
       defaultEmails: input.defaultEmails ?? [],
       categoryContacts,
       hasDefaultContact: input.hasDefaultContact ?? false,
@@ -123,6 +133,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       lastRoutedAt: input.lastRoutedAt ?? null,
       bounced: input.bounced ?? false,
       contactUpdatedAt: input.contactUpdatedAt ?? null,
+      flaggedAt: input.flaggedAt ?? null,
+      flagReason: input.flagReason ?? null,
     }
     this.jurisdictions.set(j.geoid, j)
     return j
@@ -224,6 +236,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       defaultEmails?: string[]
       formUrl?: string | null
       notes?: string | null
+      flagged?: boolean
+      flagReason?: string | null
     },
     audit: { actorId: string | null },
   ): Promise<boolean> {
@@ -239,6 +253,11 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       touchedContact = true
     }
     if (input.notes !== undefined) j.notes = input.notes
+    // Flag / unflag for review: set stamps flaggedAt + reason; clear nulls both (mirrors the Drizzle impl).
+    if (input.flagged !== undefined) {
+      j.flaggedAt = input.flagged ? this.now : null
+      j.flagReason = input.flagged ? (input.flagReason ?? null) : null
+    }
     if (touchedContact) j.contactUpdatedAt = this.now
     // Mirror the Drizzle in-tx audit (H4).
     this.audits.push({
@@ -264,7 +283,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
   async listDirectory(
     args: ListDirectoryArgs,
   ): Promise<{ records: JurisdictionDirectoryRecord[]; nextCursor: string | null }> {
-    let records = [...this.jurisdictions.values()].map(toRecord)
+    let records = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))
 
     if (args.q !== null) {
       const needle = args.q.toLowerCase()
@@ -317,10 +336,21 @@ function applyContacts(j: SeededJurisdiction, input: SaveContactsInput): void {
 }
 
 /** Project a seeded jurisdiction into the directory record the service consumes. */
-function toRecord(j: SeededJurisdiction): JurisdictionDirectoryRecord {
+function toRecord(j: SeededJurisdiction, reports: SeededReport[]): JurisdictionDirectoryRecord {
+  // Waiting = open, un-routed reports for this geoid (same NON_WAITING exclusion the Drizzle query uses).
+  const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
+  let reportsWaiting = 0
+  for (const r of reports) {
+    if (r.geoid === j.geoid && r.deletedAt === null && !NON_WAITING.has(r.status)) {
+      reportsWaiting += 1
+      perCategoryCounts[r.category] = (perCategoryCounts[r.category] ?? 0) + 1
+    }
+  }
   return {
     geoid: j.geoid,
     name: j.name,
+    layer: j.layer,
+    population: j.population,
     defaultEmails: [...j.defaultEmails],
     categoryContacts: [...j.categoryContacts.entries()].map(([category, email]) => ({
       category,
@@ -328,9 +358,12 @@ function toRecord(j: SeededJurisdiction): JurisdictionDirectoryRecord {
     })),
     hasDefaultContact: j.hasDefaultContact,
     reportFormUrl: j.reportFormUrl,
+    reportsWaiting,
+    perCategoryCounts,
     lastRoutedAt: j.lastRoutedAt,
     bounced: j.bounced,
     contactUpdatedAt: j.contactUpdatedAt,
+    flaggedAt: j.flaggedAt,
   }
 }
 

@@ -20,6 +20,7 @@
 import { AppError } from "@civfix/shared"
 import type {
   JurisdictionDirectoryDTO,
+  JurisdictionLayer,
   JurisdictionListQuery,
   JurisdictionDirectoryResponse,
   ReportCategory,
@@ -36,19 +37,29 @@ export const OUTREACH_DIGEST_JOB = "outreach.digest"
 export interface JurisdictionDirectoryRecord {
   geoid: string
   name: string
+  /** The jurisdiction layer/type (place|county|state|federal|tribal); drives the directory type chip. */
+  layer: JurisdictionLayer
+  /** TIGER/Census population (null when unknown); shown in the detail stats card. */
+  population: number | null
   /** Legacy default contact emails (contact_emails[]); first is the directory's primary email. */
   defaultEmails: string[]
-  /** Per-category contact emails on file (drives the coverage label). */
+  /** Per-category contact emails on file (drives the coverage label + prefills the routing grid). */
   categoryContacts: { category: ReportCategory; email: string | null }[]
   /** Whether a default (category NULL) jurisdiction_contacts row exists. */
   hasDefaultContact: boolean
   reportFormUrl: string | null
+  /** Total open reports in the geoid still waiting on a routing contact (un-routed, un-closed). */
+  reportsWaiting: number
+  /** Per-category breakdown of the waiting reports (only categories with >0 are present). */
+  perCategoryCounts: Partial<Record<ReportCategory, number>>
   /** When a pin last routed to this jurisdiction's contact (null if never). */
   lastRoutedAt: Date | null
   /** Whether the contact has a recorded bounce (drives the 'bounced' status). */
   bounced: boolean
   /** contact_updated_at; a recently-saved contact is 'verified', an unsaved one 'pending'. */
   contactUpdatedAt: Date | null
+  /** When an operator flagged this jurisdiction for review (null if not flagged). */
+  flaggedAt: Date | null
 }
 
 /** Normalized directory list arguments (search + method facet + page window). */
@@ -100,7 +111,7 @@ export interface JurisdictionContactsRepository {
    */
   patch(
     geoid: string,
-    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null },
+    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null; flagged?: boolean; flagReason?: string | null },
     audit: { actorId: string | null },
   ): Promise<boolean>
   /** Read the outreach throttle state for a geoid (last_outreach_at + suppressed), or null when absent. */
@@ -212,7 +223,7 @@ export interface JurisdictionContactsService {
   /** Patch a jurisdiction's contacts/notes/form WITHOUT routing. Audited in-tx (H4). */
   patch(
     geoid: string,
-    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null },
+    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null; flagged?: boolean; flagReason?: string | null },
     actorId: string | null,
   ): Promise<void>
   /** List the jurisdiction directory (org/dept/email/form/method/status/coverage/lastRouted). */
@@ -254,6 +265,8 @@ export function makeJurisdictionContactsService(
         defaultEmails?: string[]
         formUrl?: string | null
         notes?: string | null
+        flagged?: boolean
+        flagReason?: string | null
       },
       actorId: string | null,
     ): Promise<void> {
@@ -300,5 +313,16 @@ export function toDirectoryDTO(record: JurisdictionDirectoryRecord): Jurisdictio
     status: directoryStatus(record),
     coverage: coverageLabel(record),
     lastRouted: record.lastRoutedAt !== null ? record.lastRoutedAt.toISOString() : null,
+    layer: record.layer,
+    population: record.population ?? 0,
+    reportsWaiting: record.reportsWaiting,
+    perCategoryCounts: record.perCategoryCounts,
+    // The existing per-category contacts prefill the routing grid; drop empty-string emails to null so
+    // they satisfy the DTO's email-or-null contract.
+    contacts: record.categoryContacts.map((c) => ({
+      category: c.category,
+      email: c.email !== null && c.email.trim() !== "" ? c.email : null,
+    })),
+    flaggedAt: record.flaggedAt !== null ? record.flaggedAt.toISOString() : null,
   }
 }

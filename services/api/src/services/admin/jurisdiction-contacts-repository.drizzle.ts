@@ -31,7 +31,7 @@ import {
   type ListDirectoryArgs,
   type SaveContactsInput,
 } from "./jurisdiction-contacts-service.js"
-import type { ReportCategory } from "@civfix/shared"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
 /** The 6 canonical categories (local copy; the directory record maps per-category contacts by these). */
 const CATEGORIES: readonly ReportCategory[] = [
@@ -47,6 +47,8 @@ const CATEGORIES: readonly ReportCategory[] = [
 interface DirectoryRow {
   geoid: string
   name: string
+  layer: string
+  population: number | null
   default_emails: string[] | null
   report_form_url: string | null
   contact_updated_at: Date | null
@@ -54,6 +56,15 @@ interface DirectoryRow {
   category_emails: { category: string; email: string | null }[] | null
   last_routed_at: Date | null
   bounced: boolean
+  flagged_at: Date | null
+  // COUNT(*) comes back from postgres-js as a string; parsed in toRecord.
+  reports_waiting: string
+  cat_trash: string
+  cat_recycling: string
+  cat_graffiti: string
+  cat_hazard: string
+  cat_water: string
+  cat_other: string
 }
 
 function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
@@ -62,16 +73,34 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
       (CATEGORIES as readonly string[]).includes(c.category),
     )
     .map((c) => ({ category: c.category, email: c.email }))
+  const waitingByCat: Record<ReportCategory, string> = {
+    trash: r.cat_trash,
+    recycling: r.cat_recycling,
+    graffiti: r.cat_graffiti,
+    hazard: r.cat_hazard,
+    water: r.cat_water,
+    other: r.cat_other,
+  }
+  const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
+  for (const c of CATEGORIES) {
+    const n = Number(waitingByCat[c] ?? "0")
+    if (n > 0) perCategoryCounts[c] = n
+  }
   return {
     geoid: r.geoid,
     name: r.name,
+    layer: r.layer as JurisdictionLayer,
+    population: r.population,
     defaultEmails: r.default_emails ?? [],
     categoryContacts,
     hasDefaultContact: r.has_default_contact,
     reportFormUrl: r.report_form_url,
+    reportsWaiting: Number(r.reports_waiting ?? "0"),
+    perCategoryCounts,
     lastRoutedAt: r.last_routed_at,
     bounced: r.bounced,
     contactUpdatedAt: r.contact_updated_at,
+    flaggedAt: r.flagged_at,
   }
 }
 
@@ -159,6 +188,8 @@ export function makeDrizzleJurisdictionContactsRepository(
         defaultEmails?: string[]
         formUrl?: string | null
         notes?: string | null
+        flagged?: boolean
+        flagReason?: string | null
       },
       audit: { actorId: string | null },
     ): Promise<boolean> {
@@ -184,6 +215,14 @@ export function makeDrizzleJurisdictionContactsRepository(
         }
         if (input.notes !== undefined) {
           await tx`UPDATE jurisdictions SET notes = ${input.notes} WHERE geoid = ${geoid}`
+        }
+        // Flag / unflag for operator review: set stamps flagged_at + reason; clear nulls both.
+        if (input.flagged !== undefined) {
+          if (input.flagged) {
+            await tx`UPDATE jurisdictions SET flagged_at = now(), flag_reason = ${input.flagReason ?? null} WHERE geoid = ${geoid}`
+          } else {
+            await tx`UPDATE jurisdictions SET flagged_at = NULL, flag_reason = NULL WHERE geoid = ${geoid}`
+          }
         }
         // Audit the patch IN-TX (H4), recording which fields changed.
         await writeAudit(tx, {
@@ -254,8 +293,35 @@ export function makeDrizzleJurisdictionContactsRepository(
             SELECT 1 FROM mail_events me
             JOIN mail_threads mt ON mt.id = me.thread_id
             WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced'
-          ) AS bounced
+          ) AS bounced,
+          j.layer,
+          j.population,
+          j.flagged_at,
+          COALESCE(w.total, 0)::text AS reports_waiting,
+          COALESCE(w.cat_trash, 0)::text AS cat_trash,
+          COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
+          COALESCE(w.cat_graffiti, 0)::text AS cat_graffiti,
+          COALESCE(w.cat_hazard, 0)::text AS cat_hazard,
+          COALESCE(w.cat_water, 0)::text AS cat_water,
+          COALESCE(w.cat_other, 0)::text AS cat_other
         FROM jurisdictions j
+        LEFT JOIN LATERAL (
+          -- "Waiting" = open, un-routed reports (the same statuses save-and-route would flip): excludes
+          -- acknowledged/in_progress (already routed) and rejected/resolved (closed). So reportsWaiting
+          -- is the backlog needing a contact, and it drops to 0 once the jurisdiction is routed.
+          SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE r.category = 'trash') AS cat_trash,
+            COUNT(*) FILTER (WHERE r.category = 'recycling') AS cat_recycling,
+            COUNT(*) FILTER (WHERE r.category = 'graffiti') AS cat_graffiti,
+            COUNT(*) FILTER (WHERE r.category = 'hazard') AS cat_hazard,
+            COUNT(*) FILTER (WHERE r.category = 'water') AS cat_water,
+            COUNT(*) FILTER (WHERE r.category = 'other') AS cat_other
+          FROM reports r
+          WHERE r.jurisdiction_geoid = j.geoid
+            AND r.deleted_at IS NULL
+            AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
+        ) w ON true
         WHERE true
         ${search}
         ${after}

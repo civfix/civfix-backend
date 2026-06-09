@@ -25,7 +25,7 @@
  */
 
 import type postgres from "postgres"
-import type { ReportCategory } from "@civfix/shared"
+import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 
 /** A composable SQL fragment (postgres.js `PendingQuery<any>`); what a `sql\`...\`` expression yields. */
@@ -52,6 +52,7 @@ interface TaskAggRow {
   id: string
   geoid: string | null
   place: string | null
+  layer: string | null
   population: number | null
   status: string
   total: string
@@ -90,6 +91,7 @@ function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
     id: r.id,
     geoid: r.geoid ?? "",
     place: r.place ?? r.geoid ?? "",
+    layer: (r.layer ?? "place") as JurisdictionLayer,
     population: r.population,
     status: r.status,
     perCategory,
@@ -115,6 +117,7 @@ async function taskAggregateSql(sql: Queryable, extraWhere: SqlFragment): Promis
       t.id,
       t.geoid,
       j.name AS place,
+      j.layer AS layer,
       COALESCE(j.population, t.population) AS population,
       t.status,
       COALESCE(w.total, 0)::text AS total,

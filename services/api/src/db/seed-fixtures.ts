@@ -21,7 +21,10 @@
  * Envelope bounds: [xmin(lng), ymin(lat), xmax(lng), ymax(lat)].
  */
 
-/** A jurisdiction seed row plus its bounding box (lng/lat). */
+/**
+ * A jurisdiction seed row plus its bounding box (lng/lat). These are the nested place/county/state TEST
+ * boxes; the real federal + tribal lands are a separate curated set in data/federal-lands.ts.
+ */
 export interface JurisdictionSeed {
   geoid: string
   name: string
@@ -66,7 +69,11 @@ export const LA_CITY: JurisdictionSeed = {
   bbox: [-118.5, 34.0, -118.2, 34.2],
 }
 
-/** All seeded jurisdictions, outer-to-inner (insertion order is irrelevant; ON CONFLICT DO NOTHING). */
+/**
+ * The place/county/state seed set, outer-to-inner (insertion order is irrelevant; ON CONFLICT DO
+ * NOTHING). The real federal + tribal lands (incl. the Angeles National Forest that overlaps LA County)
+ * live in data/federal-lands.ts and are seeded alongside these by seedJurisdictions -> seedFederalLands.
+ */
 export const JURISDICTION_SEEDS: readonly JurisdictionSeed[] = [CALIFORNIA, LA_COUNTY, LA_CITY]
 
 /** A probe point and the geoid we expect resolveJurisdiction() to return (null = outside all). */

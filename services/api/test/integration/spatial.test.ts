@@ -19,6 +19,7 @@ import {
   PROBE_INSIDE_CITY,
   PROBE_OUTSIDE_ALL,
 } from "../../src/db/seed-fixtures.js"
+import { FEDERAL_PROBES, PROBE_ANGELES_OVER_CITY } from "../../src/db/data/federal-lands.js"
 
 const pg = await withPg()
 
@@ -44,6 +45,26 @@ describe.skipIf(!pg)("spatial: jurisdiction resolution", () => {
     expect(r).not.toBeNull()
     expect(r?.geoid).toBe(LA_COUNTY.geoid)
     expect(r?.layer).toBe("county")
+  })
+
+  it("resolves each real federal / tribal land to its OWN distinct unit (different parks -> different mappings)", async () => {
+    // A point in each curated federal/tribal land must resolve to THAT unit and read back as a
+    // federal/tribal layer - proving Yellowstone, Yosemite, the Angeles National Forest, the Navajo
+    // Nation, etc. are separate jurisdictions, each routable on its own.
+    for (const probe of FEDERAL_PROBES) {
+      const r = await resolveJurisdiction(h.sql, probe.lng, probe.lat)
+      expect(r, probe.name).not.toBeNull()
+      expect(r?.geoid, probe.name).toBe(probe.expectGeoid)
+      expect(["federal", "tribal"], probe.name).toContain(r?.layer)
+    }
+  })
+
+  it("routes a national-forest point to the forest, not the surrounding city (ownership overrides place)", async () => {
+    // PROBE_ANGELES_OVER_CITY sits inside the Angeles National Forest AND the LA city box; federal wins.
+    const r = await resolveJurisdiction(h.sql, PROBE_ANGELES_OVER_CITY.lng, PROBE_ANGELES_OVER_CITY.lat)
+    expect(r).not.toBeNull()
+    expect(r?.geoid).toBe(PROBE_ANGELES_OVER_CITY.expectGeoid)
+    expect(r?.layer).toBe("federal")
   })
 
   it("returns null for a point outside all jurisdictions", async () => {

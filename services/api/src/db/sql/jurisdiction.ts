@@ -2,9 +2,11 @@
  * Single source of truth for the jurisdiction-resolution spatial query.
  *
  * Given a longitude/latitude, find the most-specific jurisdiction whose boundary CONTAINS the point.
- * "Most specific" = place before county before state, so an address inside an incorporated city
- * resolves to the city; a point in unincorporated county land (inside the county polygon but outside
- * every place polygon) resolves to the county; a point outside all boundaries resolves to null.
+ * "Most specific" = federal land, then tribal land (both land-OWNERSHIP overrides), then place, then
+ * county, then state. A point inside a national park / forest / military base resolves to the federal
+ * owner even when it also falls within a city/county polygon (ownership supersedes local incorporation);
+ * an address inside an incorporated city resolves to the city; a point in unincorporated county land
+ * (inside the county polygon but outside every place polygon) resolves to the county; outside all -> null.
  *
  * The ordering is done by the layer rank, NOT by the `priority` column, so this query is correct even
  * if priorities are not yet curated. The GiST index on jurisdictions.geom (0001_core.sql) makes the
@@ -33,7 +35,7 @@ export interface ResolvedJurisdiction {
 export const JURISDICTION_RESOLVE_SQL = `SELECT geoid, name, layer
 FROM jurisdictions
 WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326))
-ORDER BY CASE layer WHEN 'place' THEN 0 WHEN 'county' THEN 1 ELSE 2 END
+ORDER BY CASE layer WHEN 'federal' THEN 0 WHEN 'tribal' THEN 1 WHEN 'place' THEN 2 WHEN 'county' THEN 3 ELSE 4 END
 LIMIT 1` as const
 
 /**

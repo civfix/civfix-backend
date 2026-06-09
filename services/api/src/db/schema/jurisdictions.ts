@@ -28,6 +28,9 @@ export const jurisdictions = pgTable(
     reportFormUrl: text("report_form_url"),
     notes: text("notes"),
     contactUpdatedAt: timestamp("contact_updated_at", { withTimezone: true }),
+    // Operator "flag for review" state (0012). Nullable; purely advisory (does not affect resolution).
+    flaggedAt: timestamp("flagged_at", { withTimezone: true }),
+    flagReason: text("flag_reason"),
   },
   // NOTE: the GiST(geom) index lives in 0001_core.sql. Only b-tree indexes are declared here.
   (t) => [

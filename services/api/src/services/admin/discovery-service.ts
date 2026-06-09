@@ -35,6 +35,7 @@ import type {
   DiscoverySamplePin,
   DiscoveryTaskDTO,
   DiscoveryTaskDetailDTO,
+  JurisdictionLayer,
   PerCategoryCounts,
   Priority,
   ReportCategory,
@@ -87,6 +88,8 @@ export interface DiscoveryTaskRecord {
   id: string
   geoid: string
   place: string
+  /** The jurisdiction layer/type (place|county|state|federal|tribal); drives the queue row type chip. */
+  layer: JurisdictionLayer
   population: number | null
   status: string
   perCategory: Partial<Record<ReportCategory, number>>
@@ -349,6 +352,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
       id: record.id,
       geoid: record.geoid,
       place: record.place,
+      layer: record.layer,
       category,
       catLabel: CATEGORY_LABELS[category],
       pop: record.population ?? 0,

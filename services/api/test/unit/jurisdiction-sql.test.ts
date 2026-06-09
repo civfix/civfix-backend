@@ -19,8 +19,10 @@ describe("JURISDICTION_RESOLVE_SQL", () => {
     expect(sql).toContain("ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326))")
   })
 
-  it("orders place -> county -> state so the most specific jurisdiction wins", () => {
-    expect(sql).toContain("ORDER BY CASE layer WHEN 'place' THEN 0 WHEN 'county' THEN 1 ELSE 2 END")
+  it("orders federal -> tribal -> place -> county -> state so the most specific authority wins", () => {
+    expect(sql).toContain(
+      "ORDER BY CASE layer WHEN 'federal' THEN 0 WHEN 'tribal' THEN 1 WHEN 'place' THEN 2 WHEN 'county' THEN 3 ELSE 4 END",
+    )
   })
 
   it("returns at most one row", () => {
