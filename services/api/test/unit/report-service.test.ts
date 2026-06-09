@@ -59,7 +59,9 @@ function createReq(over: Partial<CreateReportRequest> = {}): CreateReportRequest
     lng: over.lng ?? -118.35,
     geomSource: over.geomSource ?? "device",
     mediaUploadIds: over.mediaUploadIds ?? [],
+    ...(over.title !== undefined ? { title: over.title } : {}),
     ...(over.description !== undefined ? { description: over.description } : {}),
+    ...(over.addr !== undefined ? { addr: over.addr } : {}),
     ...(over.capturedAt !== undefined ? { capturedAt: over.capturedAt } : {}),
     ...(over.honeypot !== undefined ? { honeypot: over.honeypot } : {}),
   }
@@ -213,6 +215,29 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     const { service } = makeHarness({ geoid: null })
     const dto = await service.createReport(createReq(), { userId: "u1" })
     expect(dto.jurisdictionGeoid).toBeUndefined()
+  })
+
+  it("persists the title + reverse-geocoded address and echoes them in the DTO", async () => {
+    // The operator console reads reports.title + reports.addr; a submission that carries them must
+    // round-trip through create so the admin reports surface is fully populated (not "Untitled report").
+    const { repo, service } = makeHarness()
+    const dto = await service.createReport(
+      createReq({ title: "Mattress dumped on the corner", addr: "123 Main St, Springfield" }),
+      { userId: "u1" },
+    )
+    expect(dto.title).toBe("Mattress dumped on the corner")
+    expect(dto.addr).toBe("123 Main St, Springfield")
+    // Persisted on the row (so the admin report SELECT reads them back).
+    const stored = repo.reports.get(dto.id)!
+    expect(stored.title).toBe("Mattress dumped on the corner")
+    expect(stored.addr).toBe("123 Main St, Springfield")
+  })
+
+  it("omits title/addr from the DTO when the submission carries neither (photo-only report)", async () => {
+    const { service } = makeHarness()
+    const dto = await service.createReport(createReq(), { userId: "u1" })
+    expect(dto.title).toBeUndefined()
+    expect(dto.addr).toBeUndefined()
   })
 
   it("attaches finalized media (sets report_id; presigns into the DTO) without requiring ready", async () => {

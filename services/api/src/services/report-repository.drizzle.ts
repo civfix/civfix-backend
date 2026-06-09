@@ -49,6 +49,7 @@ interface ReportRowSelect {
   category: ReportCategory
   title: string | null
   description: string | null
+  addr: string | null
   status: ReportStatus
   visibility: "public" | "hidden"
   lng: number
@@ -69,6 +70,7 @@ function toRecord(r: ReportRowSelect): ReportRecord {
     category: r.category,
     title: r.title,
     description: r.description,
+    addr: r.addr,
     status: r.status,
     visibility: r.visibility,
     lat: r.lat,
@@ -84,7 +86,7 @@ function toRecord(r: ReportRowSelect): ReportRecord {
 /** The SELECT list (with geom decoded) shared by every report read. */
 function reportColumns(sql: Queryable) {
   return sql`
-    id, reporter_user_id, anon_session_id, category, title, description, status, visibility,
+    id, reporter_user_id, anon_session_id, category, title, description, addr, status, visibility,
     ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, jurisdiction_geoid,
     created_at, published_at, deleted_at
   `
@@ -165,7 +167,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, idempotency_key, geom, geom_source, jurisdiction_geoid,
-              category, description, status, visibility, h3_cell, published_at
+              category, title, description, addr, status, visibility, h3_cell, published_at
             ) VALUES (
               ${args.reportId},
               ${args.reporterUserId},
@@ -174,7 +176,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
               ${args.geomSource},
               ${args.jurisdictionGeoid},
               ${args.category},
+              ${args.title},
               ${args.description},
+              ${args.addr},
               ${args.status},
               ${args.visibility},
               ${args.h3Cell},

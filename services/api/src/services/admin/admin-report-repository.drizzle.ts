@@ -96,8 +96,8 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
 /**
  * The shared report SELECT (geom decoded, reporter joined, flagged/confirmations/hasPhoto computed). The
  * `extraWhere` clause narrows it (a single id for detail, the facet filters for the list). The address
- * label is the jurisdiction name when the report carries no own address text (Phase 1 has no per-report
- * address column, so we fall back to the place label).
+ * label is the report's own reverse-geocoded `addr` (0011) when present, falling back to the
+ * jurisdiction name when the report carries no address text (older rows / web submissions).
  */
 function reportSelect(
   sql: Queryable,
@@ -115,7 +115,7 @@ function reportSelect(
       ) AS flagged,
       r.title,
       j.name AS place,
-      j.name AS address,
+      COALESCE(NULLIF(r.addr, ''), j.name) AS address,
       r.description,
       ST_Y(r.geom) AS lat,
       ST_X(r.geom) AS lng,

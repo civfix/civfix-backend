@@ -124,6 +124,7 @@ export interface ReportRecord {
   category: ReportCategory
   title: string | null
   description: string | null
+  addr: string | null
   status: ReportStatus
   visibility: ReportVisibility
   lat: number
@@ -154,7 +155,9 @@ export interface CreateReportTxArgs {
   geomSource: GeomSource
   jurisdictionGeoid: string | null
   category: ReportCategory
+  title: string | null
   description: string | null
+  addr: string | null
   status: ReportStatus
   visibility: ReportVisibility
   h3Cell: string
@@ -413,6 +416,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       category: record.category,
       ...(record.title !== null ? { title: record.title } : {}),
       ...(record.description !== null ? { description: record.description } : {}),
+      ...(record.addr !== null ? { addr: record.addr } : {}),
       status: record.status,
       visibility: record.visibility,
       lat: record.lat,
@@ -461,7 +465,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         geomSource: input.geomSource,
         jurisdictionGeoid,
         category: input.category,
+        title: input.title ?? null,
         description: input.description ?? null,
+        addr: input.addr ?? null,
         // Authed pins publish immediately (plan 11.7): skip the hold.
         status: "published",
         visibility: "public",

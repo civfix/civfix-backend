@@ -80,7 +80,9 @@ export interface CreateAnonReportTxArgs {
   geomSource: GeomSource
   jurisdictionGeoid: string | null
   category: ReportCategory
+  title: string | null
   description: string | null
+  addr: string | null
   h3Cell: string
   mediaUploadIds: string[]
   /** The single-use claim code to stamp on THIS report's row (reports.claim_code, 0005). */
@@ -291,7 +293,9 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         geomSource: input.geomSource,
         jurisdictionGeoid,
         category: input.category,
+        title: input.title ?? null,
         description: input.description ?? null,
+        addr: input.addr ?? null,
         h3Cell,
         mediaUploadIds: input.mediaUploadIds,
         claimCode,

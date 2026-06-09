@@ -40,6 +40,9 @@ export const reports = pgTable(
     category: text("category").$type<ReportCategory>().notNull(),
     title: text("title"),
     description: text("description"),
+    // Reverse-geocoded street address for the point (0011). Display label echoed to the operator
+    // console (admin report detail); lat/lng (geom) stays canonical. Nullable: clients may omit it.
+    addr: text("addr"),
     status: text("status").$type<ReportStatus>().notNull(),
     visibility: text("visibility").$type<ReportVisibility>().notNull().default("public"),
     h3Cell: text("h3_cell").notNull(),

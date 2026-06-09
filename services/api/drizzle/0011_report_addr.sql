@@ -1,0 +1,29 @@
+-- =============================================================================
+-- 0011_report_addr.sql
+-- -----------------------------------------------------------------------------
+-- Adds a nullable reverse-geocoded street address to reports.
+--
+--   * addr  text, nullable. The human-readable street address the client resolves
+--           for the report point (mobile reverse-geocodes it; web omits it). Shown
+--           in the operator console report detail (admin reports "location" row).
+--           lat/lng (geom) stays the canonical location; this is purely the display
+--           label echoed back. When absent, the admin report SELECT falls back to
+--           the jurisdiction name (COALESCE(NULLIF(r.addr, ''), j.name)).
+--
+-- WHY a stored column (vs deriving from the geocoder on read): the address is
+-- captured client-side at submit time against the exact pinned point, so it must be
+-- persisted verbatim rather than re-derived. CreateReportRequest.addr /
+-- AnonReportRequest.addr (now in @civfix/shared) are optional, so the column is
+-- nullable and old rows read back null. (reports.title already exists since 0001;
+-- only addr is new here.)
+--
+-- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle
+-- definition in src/db/schema/reports.ts mirrors it for typed queries.
+--
+-- Ordering rules:
+--   * Requires 0001_core.sql (reports) already applied.
+--   * IF NOT EXISTS so a partial / repeat apply is safe; the migrate runner also
+--     records applied files in _civfix_migrations.
+-- =============================================================================
+
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS addr text;
