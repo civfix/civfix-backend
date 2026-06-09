@@ -97,8 +97,14 @@ async function handleInbound(
     const deps = app.inboundMailOverrides ?? {}
     const result = await processInboundObject(container, key, deps)
     return ack(reply, { processed: result.outcome !== "skipped", outcome: result.outcome })
-  } catch {
-    // Drop the nudge: the boot/cron sweep will reprocess the still-present pending object.
+  } catch (err) {
+    // Drop the nudge: the boot/cron sweep will reprocess the still-present pending object. Log it —
+    // a recurring failure here (most often the R2 token lacking access to R2_INBOUND_BUCKET, i.e. a
+    // 403 on getObject) would otherwise be invisible behind the always-202 contract.
+    request.log.warn(
+      { err, key },
+      "inbound-mail webhook: processing failed (acked 202; sweep will retry)",
+    )
     return ack(reply, { processed: false, reason: "error" })
   }
 }

@@ -26,7 +26,14 @@ export async function registerInboundJobs(container: Container): Promise<void> {
   await container.jobs.schedule(INBOUND_SWEEP_JOB, container.env.INBOUND_SWEEP_CRON)
   await container.jobs.work(INBOUND_SWEEP_JOB, async () => {
     const result = await runInboundSweep(container)
-    if (result.processed > 0 || result.errors > 0) {
+    if (result.listError !== undefined) {
+      // The backlog could not even be listed — almost always the R2 token is not scoped to
+      // R2_INBOUND_BUCKET (403). Log loudly + actionably: buffered email piles up in R2 until fixed.
+      console.error(
+        `inbound.sweep: R2 LIST of '${container.env.R2_INBOUND_BUCKET ?? container.env.R2_BUCKET}' failed ` +
+          `(grant the R2 token Object Read & Write on that bucket): ${result.listError}`,
+      )
+    } else if (result.processed > 0 || result.errors > 0) {
       console.info(
         `inbound.sweep: scanned=${result.scanned} processed=${result.processed} errors=${result.errors}`,
       )

@@ -52,6 +52,30 @@ describe("runInboundSweep", () => {
     expect((await h.storage.list(INBOUND_PENDING_PREFIX)).keys).toHaveLength(3)
   })
 
+  it("surfaces an R2 LIST failure as listError without throwing (misscoped token -> 403)", async () => {
+    const h = harness()
+    // Wrap the fake storage so list() always rejects, simulating a 403 from an R2 token that is not
+    // scoped to the inbound bucket. The sweep must NOT throw (it runs in a pg-boss handler); it reports.
+    const failingStorage = new Proxy(h.storage, {
+      get(target, prop, recv) {
+        if (prop === "list") {
+          return async () => {
+            throw new Error("Access Denied")
+          }
+        }
+        return Reflect.get(target, prop, recv)
+      },
+    })
+    const result = await runInboundSweep(h.container, {
+      deps: { ...h.deps, storage: failingStorage },
+    })
+    expect(result.listError).toBeDefined()
+    expect(result.listError).toContain("Access Denied")
+    expect(result.errors).toBe(1)
+    expect(result.scanned).toBe(0)
+    expect(result.processed).toBe(0)
+  })
+
   it("isolates a poison object: it is parked under failed/ while the rest process", async () => {
     const h = harness()
     await h.storage.put(`${INBOUND_PENDING_PREFIX}good.eml`, rfc822("support@civfix.org", "ok", "<g@x>"))

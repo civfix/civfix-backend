@@ -26,6 +26,14 @@ export interface InboundSweepResult {
   scanned: number
   processed: number
   errors: number
+  /**
+   * Set when the R2 LIST itself failed (the inbound bucket is unreachable, or — the most likely cause —
+   * the R2 token is not scoped to R2_INBOUND_BUCKET, so every list/get returns 403). A LIST failure
+   * means we could not even enumerate the backlog, so it is a misconfiguration the caller must log
+   * loudly. The sweep never throws on it (see file header): it returns this so the job stays observable
+   * and the next tick retries once the access is granted.
+   */
+  listError?: string
 }
 
 export async function runInboundSweep(
@@ -41,7 +49,18 @@ export async function runInboundSweep(
 
   do {
     const listOpts = cursor !== undefined ? { cursor, limit: LIST_PAGE } : { limit: LIST_PAGE }
-    const { keys, cursor: next } = await storage.list(INBOUND_PENDING_PREFIX, listOpts)
+    let keys: string[]
+    let next: string | undefined
+    try {
+      const page = await storage.list(INBOUND_PENDING_PREFIX, listOpts)
+      keys = page.keys
+      next = page.cursor
+    } catch (err) {
+      // A LIST failure (inbound bucket unreachable / R2 token lacks access to it) must NOT throw out of
+      // the sweep: that would fail the pg-boss job silently. Surface it as listError so the job logs a
+      // loud, actionable line and the next tick retries. See InboundSweepResult.listError.
+      return { scanned, processed, errors: errors + 1, listError: errorMessage(err) }
+    }
     for (const key of keys) {
       if (scanned >= cap) return { scanned, processed, errors }
       scanned += 1
@@ -57,4 +76,10 @@ export async function runInboundSweep(
   } while (cursor !== undefined && scanned < cap)
 
   return { scanned, processed, errors }
+}
+
+/** Best-effort one-line description of a thrown value for logging (Error.message, else String()). */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err)
 }
