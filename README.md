@@ -10,18 +10,19 @@ whole stack boots offline with no credentials for development and tests.
 Deployment is via Docker Compose (per-service multi-stage Dockerfiles) given external Postgres/Redis
 in env files. See "Deploy with Docker Compose" below.
 
-Part of four repos that all publish under the SAME GitHub owner:
+Part of a set of independent repos that share one contract:
 
 - `civfix-shared` (the contract: zod schemas, domain types, the 9 vendor-neutral interfaces, fakes,
-  design tokens, typed client) - wired here as a git submodule at `shared/`.
+  design tokens, typed client) - published as `@civfix/shared` to the private registry at
+  `repo.civfix.org` and installed here as a normal dependency.
 - `civfix-backend` (this repo).
-- the web app and the mobile app (separate repos).
+- the web app, the mobile app, and the admin app (separate repos).
 
 ## Layout
 
 ```
 civfix-backend/
-  shared/                       git submodule -> civfix-shared (DO NOT edit here)
+  .npmrc                        @civfix:registry=https://repo.civfix.org/ (installs @civfix/shared)
   packages/
     config/                     shared eslint / prettier / tsconfig presets (@civfix/config)
   services/
@@ -42,30 +43,26 @@ civfix-backend/
 
 - Node >= 22 (see `.nvmrc`)
 - pnpm 9.12.0 (this repo is pnpm-only)
-- git (for the submodule)
 - Docker is only needed later for integration tests / running infra; not required to build or test.
 
-## The shared submodule (relative-url publish story)
+## The shared contract (`@civfix/shared` from the private registry)
 
-`@civfix/shared` is consumed as a git submodule mounted at `shared/` and linked into the pnpm
-workspace, so the backend always builds against the exact committed contract.
+`@civfix/shared` is consumed as a normal npm dependency from the private Verdaccio registry at
+`https://repo.civfix.org`, so the backend always builds against a published, versioned contract.
 
-`.gitmodules` records the submodule url as the RELATIVE path `../civfix-shared`. That relative url
-resolves correctly once all four repos are published under the same GitHub owner (a sibling repo of
-this one). Locally, before any remote exists, the working copy was cloned from the absolute path and
-then the url was rewritten to the relative form. To initialize the submodule on a fresh clone:
+The repo-root `.npmrc` scopes `@civfix` to the registry
+(`@civfix:registry=https://repo.civfix.org/`), and the service `package.json` files depend on a
+published version (`^0.1.0` today). The registry allows anonymous read, so no credentials are needed
+to install. A fresh clone needs only:
 
 ```
 git clone <civfix-backend remote>
 cd civfix-backend
-git submodule update --init --recursive
+pnpm install   # fetches @civfix/shared from repo.civfix.org
 ```
 
-If you cloned before the sibling `civfix-shared` repo existed at the same owner, point the submodule
-at a local path temporarily with `git -c submodule.shared.url=<path> submodule update --init`.
-
-Do NOT edit files under `shared/`; it is a separate repo. Contract changes are made in
-`civfix-shared` and pulled in by bumping the submodule pointer.
+Contract changes are made in `civfix-shared`, published as a new version (push a `vX.Y.Z` tag), and
+adopted here by bumping the `@civfix/shared` dependency range and running `pnpm install`.
 
 ## Install
 
@@ -197,7 +194,8 @@ PostGIS-enabled instance via `DATABASE_URL`); Redis is provided as a local servi
 API.
 
 Build contexts are the REPO ROOT (the services are pnpm-workspace packages that need the root
-manifests + lockfile + the `shared/` submodule); each service's `Dockerfile` header documents this.
+manifests + lockfile + the root `.npmrc`, so the in-image `pnpm install` resolves `@civfix/shared`
+from `repo.civfix.org`); each service's `Dockerfile` header documents this.
 
 ```
 # 1) Provide config (gitignored, SOPS-decrypted at deploy):
