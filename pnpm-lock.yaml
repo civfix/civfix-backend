@@ -42,8 +42,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.1
+        version: 0.1.1
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -166,8 +166,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.1
+        version: 0.1.1
       drizzle-orm:
         specifier: ^0.36.4
         version: 0.36.4(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(pg@8.21.0)(postgres@3.4.9)
@@ -355,8 +355,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.1.0':
-    resolution: {integrity: sha512-mXPvzFVM0PjbTr6BLusH480n5VNbiNJikYDrs+g56QM9a0IVXiGm+V7njeu67SVBKCmcQk7RHeAFJPJ3NqH66Q==}
+  '@civfix/shared@0.1.1':
+    resolution: {integrity: sha512-EAO4bQNOMQGt5mTWDMXDt+W1H5l3iJjI/yetrR77qbOh3sH8SKnMrBdgEmcWhxSqLu+sdJMZ2A3SWRtIohfEXg==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4885,7 +4885,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.1.0':
+  '@civfix/shared@0.1.1':
     dependencies:
       zod: 3.25.76
 
