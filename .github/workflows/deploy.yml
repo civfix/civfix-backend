@@ -1,7 +1,7 @@
 name: Deploy (production)
 
 # Deploys the civfix backend to the production VPS by SSHing in and running the on-box deploy script
-# (/opt/civfix/ops/deploy.sh), which git-pulls origin/main + the shared submodule, SOPS-decrypts the
+# (/opt/civfix/ops/deploy.sh), which git-pulls origin/main, SOPS-decrypts the
 # secrets, then rebuilds and restarts the docker compose stack. The build happens ON the VPS (4-vCPU
 # arm64 box); this workflow only triggers it and then verifies the service is healthy.
 #

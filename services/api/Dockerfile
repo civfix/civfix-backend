@@ -3,8 +3,9 @@
 # civfix API production image (multi-stage).
 #
 # BUILD CONTEXT MUST BE THE REPO ROOT (civfix-backend/), NOT services/api/. The API is a pnpm workspace
-# package that depends on @civfix/shared (a workspace package / git submodule), so the build needs the
-# root manifests + pnpm-lock.yaml + shared/ + packages/ in the context. The compose file sets
+# package that depends on @civfix/shared (installed from the private registry repo.civfix.org via the
+# root .npmrc), so the build needs the root manifests + pnpm-lock.yaml + .npmrc + packages/ in the
+# context. The compose file sets
 # `build.context: ../..` and `build.dockerfile: services/api/Dockerfile` accordingly. To build by hand
 # from the repo root:
 #     docker build -f services/api/Dockerfile -t civfix/api:latest .

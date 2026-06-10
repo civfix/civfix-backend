@@ -14,16 +14,8 @@ jobs:
     name: lint / typecheck / build / test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # `shared/` is a submodule in the SEPARATE private repo github.com/civfix/civfix-shared.
-          # The default GITHUB_TOKEN is scoped to civfix-backend only and cannot clone it (the job
-          # fails with "Repository not found"), so check out with SUBMODULE_READ_TOKEN — a token with
-          # read access to BOTH civfix-backend and civfix-shared (fine-grained PAT, Contents: Read, or
-          # a GitHub App token). checkout applies it to github.com so the submodule fetch authenticates.
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_READ_TOKEN }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -83,16 +75,8 @@ jobs:
       DATABASE_URL: postgres://civfix:civfix@localhost:5432/civfix
       REDIS_URL: redis://localhost:6379
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # `shared/` is a submodule in the SEPARATE private repo github.com/civfix/civfix-shared.
-          # The default GITHUB_TOKEN is scoped to civfix-backend only and cannot clone it (the job
-          # fails with "Repository not found"), so check out with SUBMODULE_READ_TOKEN — a token with
-          # read access to BOTH civfix-backend and civfix-shared (fine-grained PAT, Contents: Read, or
-          # a GitHub App token). checkout applies it to github.com so the submodule fetch authenticates.
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_READ_TOKEN }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

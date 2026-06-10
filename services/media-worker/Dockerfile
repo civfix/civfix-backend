@@ -3,10 +3,11 @@
 # civfix media-worker production image (multi-stage).
 #
 # BUILD CONTEXT MUST BE THE REPO ROOT (civfix-backend/). The worker is a pnpm workspace package that
-# (a) inlines @civfix/api + @civfix/shared at BUILD time from their SOURCE (tsup noExternal), and
+# (a) inlines @civfix/api (workspace source) + @civfix/shared (from the private registry repo.civfix.org)
+# at BUILD time (tsup noExternal), and
 # (b) keeps the native / heavy runtime deps EXTERNAL (sharp, ffmpeg-static, ffprobe-static, execa,
 # exifr, pg-boss, postgres, drizzle-orm, @sentry/node, @aws-sdk/*). So the build needs the root
-# manifests + lockfile + shared/ + services/api/ (its source) in the context, and the runtime needs the
+# manifests + lockfile + .npmrc + services/api/ (its source) in the context, and the runtime needs the
 # external deps installed for THIS platform. Build by hand from the repo root:
 #     docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 #
