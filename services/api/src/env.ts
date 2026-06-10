@@ -213,6 +213,13 @@ export interface Env {
   GOOGLE_OAUTH_CLIENT_ID?: string
   GOOGLE_OAUTH_CLIENT_SECRET?: string
   GOOGLE_OAUTH_REDIRECT_URI?: string
+  /**
+   * iOS / Android native OAuth client ids. Separate Google clients from the web one; the native sign-in
+   * SDK can mint ID tokens whose `aud` is one of these, so the backend accepts them as valid audiences
+   * alongside GOOGLE_OAUTH_CLIENT_ID. [OPT] — set per platform you ship native Google sign-in on.
+   */
+  GOOGLE_OAUTH_IOS_CLIENT_ID?: string
+  GOOGLE_OAUTH_ANDROID_CLIENT_ID?: string
 
   APNS_KEY_ID?: string
   APNS_TEAM_ID?: string
@@ -417,6 +424,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       "GOOGLE_OAUTH_CLIENT_ID",
       "GOOGLE_OAUTH_CLIENT_SECRET",
       "GOOGLE_OAUTH_REDIRECT_URI",
+      "GOOGLE_OAUTH_IOS_CLIENT_ID",
+      "GOOGLE_OAUTH_ANDROID_CLIENT_ID",
       "APNS_KEY_ID",
       "APNS_TEAM_ID",
       "APNS_PRIVATE_KEY",

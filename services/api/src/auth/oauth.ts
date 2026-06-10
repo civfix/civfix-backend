@@ -35,6 +35,13 @@ export interface OAuthConfig {
     clientId: string
     clientSecret: string
     redirectUri: string
+    /**
+     * Additional accepted ID-token audiences beyond `clientId` (the web client). Google's native mobile
+     * sign-in can mint a token whose `aud` is the iOS or Android OAuth client id — separate clients from
+     * the web one — so those ids are accepted here too (GOOGLE_OAUTH_IOS_CLIENT_ID /
+     * GOOGLE_OAUTH_ANDROID_CLIENT_ID). The web `clientId` is always accepted implicitly.
+     */
+    extraAudiences?: string[]
   }
   apple?: {
     clientId: string
@@ -122,7 +129,8 @@ export class OAuthService {
     return this.verifier.verify(idToken, {
       jwksUrl: GOOGLE_JWKS_URL,
       issuers: GOOGLE_ISSUERS,
-      audience: google.clientId,
+      // Web client id is always valid; configured iOS/Android native client ids are accepted too.
+      audiences: [google.clientId, ...(google.extraAudiences ?? [])],
     })
   }
 
@@ -139,7 +147,7 @@ export class OAuthService {
     return this.verifier.verify(identityToken, {
       jwksUrl: APPLE_JWKS_URL,
       issuers: [APPLE_ISSUER],
-      audience: apple.clientId,
+      audiences: [apple.clientId],
       ...(expectedNonce !== undefined ? { expectedNonce } : {}),
     })
   }

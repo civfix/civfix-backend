@@ -103,10 +103,17 @@ export function buildAuthServicesFromContainer(container: Container): AuthServic
 export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
   const config: OAuthConfig = {}
   if (env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && env.GOOGLE_OAUTH_REDIRECT_URI) {
+    // The native mobile SDK can present a token whose audience is the iOS or Android OAuth client id
+    // (separate Google clients from the web one). Accept those alongside the web client id.
+    const extraAudiences = [
+      env.GOOGLE_OAUTH_IOS_CLIENT_ID,
+      env.GOOGLE_OAUTH_ANDROID_CLIENT_ID,
+    ].filter((id): id is string => typeof id === "string" && id.length > 0)
     config.google = {
       clientId: env.GOOGLE_OAUTH_CLIENT_ID,
       clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET,
       redirectUri: env.GOOGLE_OAUTH_REDIRECT_URI,
+      ...(extraAudiences.length > 0 ? { extraAudiences } : {}),
     }
   }
   if (

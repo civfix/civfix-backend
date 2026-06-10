@@ -116,26 +116,28 @@ export async function registerAuthRoutes(
 
   app.get("/auth/google/start", async (request, reply) => {
     const startQuery = parse(OAuthStartQuerySchema, request.query)
-    // P2-2 (open-redirect prevention): the `redirect` param is parsed but not yet wired into the flow.
-    // Validate it NOW against the WEB_ORIGINS allowlist (or accept a safe relative internal path), so a
-    // future change that does honor it cannot become an open redirect. A disallowed value is a 422.
+    // P2-2 (open-redirect prevention): validate the post-login `redirect` target against the WEB_ORIGINS
+    // allowlist (or accept a safe relative internal path) BEFORE stashing it, so the callback can only
+    // ever bounce the browser to a trusted location. A disallowed value is a 422.
     if (startQuery.redirect !== undefined && !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)) {
       throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
     }
     const auth = services.oauth.createGoogleAuthUrl()
-    // Stash state + verifier in a signed, httpOnly, short-lived cookie for the callback to validate.
-    reply.setCookie(
-      OAUTH_STATE_COOKIE,
-      JSON.stringify({ state: auth.state, codeVerifier: auth.codeVerifier }),
-      {
-        signed: true,
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
-        maxAge: OAUTH_STATE_TTL_SECONDS,
-      },
-    )
+    // Stash state + PKCE verifier + the validated post-login redirect in a signed, httpOnly, short-lived
+    // cookie. The callback validates the state, then sends the browser on to `redirect` after sign-in.
+    const stash: OAuthStash = {
+      state: auth.state,
+      codeVerifier: auth.codeVerifier,
+      ...(startQuery.redirect !== undefined ? { redirect: startQuery.redirect } : {}),
+    }
+    reply.setCookie(OAUTH_STATE_COOKIE, JSON.stringify(stash), {
+      signed: true,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: OAUTH_STATE_TTL_SECONDS,
+    })
     reply.redirect(auth.url)
   })
 
@@ -147,8 +149,14 @@ export async function registerAuthRoutes(
     }
     reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
     const user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
-    // Web flow always uses the cookie transport regardless of X-Client.
-    await issueSessionForUser(services, request, reply, user, "web")
+    // The browser reached this URL via a top-level navigation (not a fetch), so we establish the WEB
+    // cookie session and then 302 the user back to the app origin they started from (validated at /start),
+    // defaulting to the first WEB_ORIGINS entry. The SPA hydrates its session via GET /auth/session there.
+    const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
+    await issueSessionForUser(services, request, reply, user, {
+      forceKind: "web",
+      webRedirectTo: target,
+    })
   })
 
   // -------------------------------------------------------------------------
@@ -217,30 +225,42 @@ export async function registerAuthRoutes(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Options shared by the session-issuing helpers. */
+interface IssueSessionOptions {
+  /** Force a transport regardless of the X-Client header (the Google web callback forces "web"). */
+  forceKind?: ClientKind
+  /**
+   * WEB transport only: after setting the session + CSRF cookies, 302-redirect the browser here instead
+   * of returning the SessionResponse JSON. Used by the Google web callback (a top-level browser
+   * navigation) to send the user back to the app. Ignored for the mobile bearer transport.
+   */
+  webRedirectTo?: string
+}
+
 /** Create a session for a userId and render the transport-appropriate SessionResponse. */
 async function issueSession(
   services: AuthServices,
   request: FastifyRequest,
   reply: FastifyReply,
   userId: string,
-  forceKind?: ClientKind,
+  opts: IssueSessionOptions = {},
 ): Promise<void> {
   const user = await services.users.findById(userId)
   if (!user) {
     throw AppError.internal("User vanished after sign-in.")
   }
-  await issueSessionForUser(services, request, reply, user, forceKind)
+  await issueSessionForUser(services, request, reply, user, opts)
 }
 
-/** Create a session for an already-loaded user row and render the SessionResponse. */
+/** Create a session for an already-loaded user row and render the SessionResponse (or web redirect). */
 async function issueSessionForUser(
   services: AuthServices,
   request: FastifyRequest,
   reply: FastifyReply,
   user: UserRecord,
-  forceKind?: ClientKind,
+  opts: IssueSessionOptions = {},
 ): Promise<void> {
-  const kind = forceKind ?? clientKind(request)
+  const kind = opts.forceKind ?? clientKind(request)
   const token = await services.sessions.createSession(user.id, [user.role], {
     userAgent: request.headers["user-agent"] ?? null,
     ip: request.ip || null,
@@ -259,6 +279,12 @@ async function issueSessionForUser(
   setSessionCookie(reply, token, ttl)
   const csrfToken = generateCsrfToken()
   setCsrfCookie(reply, csrfToken, ttl)
+  if (opts.webRedirectTo !== undefined) {
+    // Top-level browser navigation (OAuth callback): the cookies above ride on the 302 response and the
+    // SPA hydrates its session via GET /auth/session on arrival. No JSON body is returned.
+    reply.redirect(opts.webRedirectTo)
+    return
+  }
   const payload: SessionResponse = { user: dto, csrfToken }
   reply.status(200).send(payload)
 }
@@ -334,6 +360,8 @@ function webCsrfToken(
 interface OAuthStash {
   state: string
   codeVerifier: string
+  /** The validated post-login redirect target (where to send the browser after sign-in). */
+  redirect?: string
 }
 
 /** Read + unsign the Google web flow stash cookie; null when absent or tampered. */
@@ -345,12 +373,31 @@ function readOAuthStash(request: FastifyRequest): OAuthStash | null {
   try {
     const parsed = JSON.parse(unsigned.value) as Partial<OAuthStash>
     if (typeof parsed.state === "string" && typeof parsed.codeVerifier === "string") {
-      return { state: parsed.state, codeVerifier: parsed.codeVerifier }
+      return {
+        state: parsed.state,
+        codeVerifier: parsed.codeVerifier,
+        ...(typeof parsed.redirect === "string" ? { redirect: parsed.redirect } : {}),
+      }
     }
     return null
   } catch {
     return null
   }
+}
+
+/**
+ * Resolve where to send the browser after a successful Google web sign-in. Prefers the `redirect` target
+ * captured at /start (re-validated here as defense-in-depth, even though the stash cookie is signed),
+ * falling back to the first WEB_ORIGINS entry, then the site root. PURE. Exported for unit testing.
+ */
+export function resolvePostLoginRedirect(
+  redirect: string | undefined,
+  webOrigins: readonly string[],
+): string {
+  if (redirect !== undefined && isAllowedPostLoginRedirect(redirect, webOrigins)) {
+    return redirect
+  }
+  return webOrigins[0] ?? "/"
 }
 
 /**

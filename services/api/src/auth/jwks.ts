@@ -33,8 +33,12 @@ export interface VerifyParams {
   jwksUrl: string
   /** Acceptable `iss` values (a provider may use more than one spelling). */
   issuers: string[]
-  /** Expected `aud` (our OAuth client id). */
-  audience: string
+  /**
+   * Accepted `aud` values — our OAuth client id(s). The token verifies when its `aud` claim matches ANY
+   * entry. Google issues tokens whose audience is the web, iOS, or Android OAuth client id depending on
+   * the platform that minted them, so this set may hold more than one id (see GOOGLE_OAUTH_*_CLIENT_ID).
+   */
+  audiences: string[]
   /**
    * Optional expected `nonce` (P2-3 replay binding). When set, the token's `nonce` claim MUST match
    * either this raw value OR its SHA-256 hex (Apple's native Sign in with Apple stores SHA256(nonce) in
@@ -233,7 +237,7 @@ function validateClaims(
     throw AppError.unauthorized("Identity token issuer mismatch.")
   }
   const auds = Array.isArray(claims.aud) ? claims.aud : claims.aud ? [claims.aud] : []
-  if (!auds.includes(params.audience)) {
+  if (!auds.some((a) => params.audiences.includes(a))) {
     throw AppError.unauthorized("Identity token audience mismatch.")
   }
   if (typeof claims.exp !== "number" || claims.exp <= nowSec) {

@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
+import { resolvePostLoginRedirect } from "../../src/routes/auth.routes.js"
 
 /**
  * Full offline sign-in flows through the real Fastify app (app.inject), wired with the in-memory
@@ -411,6 +412,31 @@ describe("auth routes: OAuth redirect allowlist (P2-2 open-redirect guard)", () 
       url: "/auth/google/start?redirect=" + encodeURIComponent("//evil.example.com"),
     })
     expect(protoRel.statusCode).toBe(422)
+  })
+})
+
+describe("resolvePostLoginRedirect (web OAuth callback target)", () => {
+  const origins = ["https://civfix.org", "https://www.civfix.org"]
+
+  it("honors an allowlisted absolute redirect", () => {
+    expect(resolvePostLoginRedirect("https://civfix.org/home", origins)).toBe("https://civfix.org/home")
+  })
+
+  it("honors a safe relative redirect", () => {
+    expect(resolvePostLoginRedirect("/dashboard", origins)).toBe("/dashboard")
+  })
+
+  it("falls back to the first web origin when no redirect was captured", () => {
+    expect(resolvePostLoginRedirect(undefined, origins)).toBe("https://civfix.org")
+  })
+
+  it("falls back to the first web origin for a disallowed redirect (never an open redirect)", () => {
+    expect(resolvePostLoginRedirect("https://evil.example.com", origins)).toBe("https://civfix.org")
+    expect(resolvePostLoginRedirect("//evil.example.com", origins)).toBe("https://civfix.org")
+  })
+
+  it("falls back to the site root when there are no web origins", () => {
+    expect(resolvePostLoginRedirect(undefined, [])).toBe("/")
   })
 })
 

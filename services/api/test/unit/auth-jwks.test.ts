@@ -30,10 +30,10 @@ function makeVerifier(publicKey: KeyObject, nowSeconds: number) {
   return verifier
 }
 
-const params = (nowSeconds: number) => ({
+const params = (nowSeconds: number, audiences: string[] = [AUD]) => ({
   jwksUrl: "https://example.com/certs",
   issuers: [ISS],
-  audience: AUD,
+  audiences,
   nowSeconds,
 })
 
@@ -80,6 +80,14 @@ describe("RemoteJwksVerifier", () => {
     const token = signJwt(privateKey, { iss: ISS, aud: "someone-else", sub: "s", exp: NOW + 60 })
     const verifier = makeVerifier(publicKey, NOW)
     await expectUnauthorized(verifier.verify(token, params(NOW)))
+  })
+
+  it("accepts a token whose aud matches any configured audience (multi-client)", async () => {
+    // A token minted for the iOS/Android native client id, verified against the set {web, iOS}.
+    const token = signJwt(privateKey, { iss: ISS, aud: "ios-client", sub: "s", exp: NOW + 60 })
+    const verifier = makeVerifier(publicKey, NOW)
+    const result = await verifier.verify(token, params(NOW, [AUD, "ios-client"]))
+    expect(result.sub).toBe("s")
   })
 
   it("rejects an issuer mismatch", async () => {
