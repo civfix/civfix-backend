@@ -2,7 +2,7 @@
   "name": "@civfix/backend-root",
   "version": "0.0.0",
   "private": true,
-  "description": "civfix backend monorepo: Fastify API, media worker, and infra. Depends on @civfix/shared (git submodule) as the single contract source.",
+  "description": "civfix backend monorepo: Fastify API, media worker, and infra. Depends on @civfix/shared (from the private npm registry) as the single contract source.",
   "license": "UNLICENSED",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
