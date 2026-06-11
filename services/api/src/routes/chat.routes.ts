@@ -29,8 +29,10 @@ import {
   type GatewayDmDeps,
   type IsBlockedEitherWayFn,
   type IsMemberFn,
+  type ThreadRecipientsOf,
 } from "../ws/gateway.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { THREAD_SIGNAL_MEMBER_CAP } from "../services/cleanup-service.js"
 import { makeDrizzleThreadsRepository } from "../services/threads-repository.drizzle.js"
 import { makeDrizzleChatReadState } from "../services/chat-read-state.drizzle.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
@@ -156,6 +158,24 @@ export async function registerChatRoutes(
         return rows[0]?.created_at ?? new Date()
       }
 
+  // Resolve the thread-signal recipients for a freshly-persisted message (excludes the sender). DM →
+  // the peer (always a single recipient, never the sender). Cleanup → the room's members minus the sender,
+  // capped to a soft fan-out bound. In the all-fakes dev path (no DB) we cannot read cleanup membership,
+  // so cleanup yields no recipients (the signal is a freshness hint; its absence in dev is harmless). Built
+  // off the lazily-created DB handle, so this opens no connection until a message is sent.
+  const threadRecipientsOf: ThreadRecipientsOf = async (kind, id, senderId) => {
+    if (kind === "dm") {
+      const peer = await dmGatewayDeps.peerOf(id, senderId)
+      return peer !== null ? [peer] : []
+    }
+    if (container.env.USE_FAKE_CHAT) return []
+    const members = await makeDrizzleCleanupRepository(container.getDb().sql).listMemberIds(
+      id,
+      THREAD_SIGNAL_MEMBER_CAP,
+    )
+    return members.filter((m) => m !== senderId)
+  }
+
   // -------------------------------------------------------------------------
   // GET /ws  (WebSocket upgrade; dual handshake auth inside the gateway)
   // -------------------------------------------------------------------------
@@ -172,6 +192,10 @@ export async function registerChatRoutes(
     // persist, dm read-state). Cleanup group chat is unaffected.
     dm: dmGatewayDeps,
     isBlockedEitherWay,
+    // Per-user realtime signals: subscribe each socket's user on the channel for its lifetime, and fan a
+    // thread-unread signal to a new message's recipients (resolved above, sender excluded).
+    userChannel: container.userChannel,
+    threadRecipientsOf,
     // Anti-CSWSH: the gateway rejects a cross-site upgrade Origin not in the WEB_ORIGINS allowlist.
     webOrigins: container.env.WEB_ORIGINS,
   })

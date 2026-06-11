@@ -70,11 +70,12 @@ export async function registerNotificationRoutes(
     return makeDrizzleNotificationRepository(container.getDb().sql)
   }
 
-  /** Build the notification service over the resolved repo + the container's push seam. */
+  /** Build the notification service over the resolved repo + the container's push + signal seams. */
   function service(): NotificationService {
     return makeNotificationService({
       repo: repo(),
       pushSender: container.pushSender,
+      userChannel: container.userChannel,
       logger: app.log,
     })
   }

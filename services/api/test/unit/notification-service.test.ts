@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { FakePushSender } from "@civfix/shared/fakes"
+import { FakePushSender, FakeUserChannel } from "@civfix/shared/fakes"
 import {
   makeNotificationService,
   isWithinQuietHours,
@@ -393,5 +393,78 @@ describe("onNewFollower", () => {
     expect(n.link).toBe(`/people/${V}`)
     // And it inline-pushed (follows on by default, midday).
     expect(push.sent).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// createNotification: best-effort per-user signal (the realtime invalidate channel)
+// ---------------------------------------------------------------------------
+
+describe("createNotification (per-user signal)", () => {
+  /** Build a service over a fresh in-memory repo + fake push + an injected FakeUserChannel. */
+  function makeSignalHarness(): {
+    repo: InMemoryNotificationRepository
+    channel: FakeUserChannel
+    service: NotificationService
+  } {
+    const repo = new InMemoryNotificationRepository()
+    const channel = new FakeUserChannel()
+    const service = makeNotificationService({
+      repo,
+      pushSender: new FakePushSender(),
+      userChannel: channel,
+      now: () => at(12, 0),
+    })
+    return { repo, channel, service }
+  }
+
+  it("publishes exactly ONE {topic:'notifications'} signal to the recipient", async () => {
+    const { channel, service } = makeSignalHarness()
+    await service.createNotification(U, { type: "report_update", title: "Your report was updated" })
+    expect(channel.published).toHaveLength(1)
+    expect(channel.published[0]!.userId).toBe(U)
+    expect(channel.published[0]!.signal).toEqual({ topic: "notifications" })
+  })
+
+  it("signals the SINGLE notifications topic regardless of the notification type", async () => {
+    const { channel, service } = makeSignalHarness()
+    await service.createNotification(U, { type: "new_follower", title: "x" })
+    await service.createNotification(U, { type: "cleanup_chat", title: "y" })
+    await service.createNotification(U, { type: "system", title: "z" })
+    expect(channel.published).toHaveLength(3)
+    expect(channel.published.every((p) => p.userId === U && p.signal.topic === "notifications")).toBe(
+      true,
+    )
+  })
+
+  it("signals even when the PUSH is suppressed (prefs/quiet hours gate push, not the in-app badge)", async () => {
+    const { channel, service } = makeSignalHarness()
+    // Master push off: no push, but the in-app feed badge should still refresh -> a signal still fires.
+    await service.updatePrefs(U, { push: false })
+    await service.createNotification(U, { type: "new_follower", title: "x" })
+    expect(channel.published).toHaveLength(1)
+    expect(channel.published[0]!.signal).toEqual({ topic: "notifications" })
+  })
+
+  it("STILL returns the row when publishToUser throws (the row is already persisted)", async () => {
+    const repo = new InMemoryNotificationRepository()
+    const channel = new FakeUserChannel()
+    channel.publishToUser = () => Promise.reject(new Error("signal boom"))
+    const service = makeNotificationService({
+      repo,
+      pushSender: new FakePushSender(),
+      userChannel: channel,
+      now: () => at(12, 0),
+    })
+
+    const dto = await service.createNotification(U, { type: "system", title: "ok" })
+    expect(dto.title).toBe("ok")
+    expect(repo.notifications).toHaveLength(1)
+  })
+
+  it("no channel wired -> records the row and publishes nothing", async () => {
+    const { repo, service } = makeHarness(() => at(12, 0)) // makeHarness injects NO userChannel
+    await service.createNotification(U, { type: "system", title: "ok" })
+    expect(repo.notifications).toHaveLength(1)
   })
 })

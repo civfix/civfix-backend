@@ -244,6 +244,13 @@ export interface Env {
   USE_FAKE_ABUSE_NSFW: boolean
   USE_FAKE_CHAT: boolean
   USE_FAKE_JOBS: boolean
+  /**
+   * Use the in-memory FakeUserChannel instead of the Redis-backed RedisUserChannel for the per-user
+   * realtime invalidate-signal channel. Defaults ON outside production (so dev/tests boot offline with
+   * the fake) and OFF in production. The real impl needs only Redis, which is already required when chat
+   * is real, so this adds no new [BOOT] var.
+   */
+  USE_FAKE_USER_CHANNEL: boolean
 
   /**
    * Opt-in real NSFW scoring. Default false EVEN in production: with the flag off (or on but with no
@@ -286,6 +293,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const useFakeAbuseNsfw = parseBool(source.USE_FAKE_ABUSE_NSFW, !isProd)
   const useFakeChat = parseBool(source.USE_FAKE_CHAT, !isProd)
   const useFakeJobs = parseBool(source.USE_FAKE_JOBS, !isProd)
+  const useFakeUserChannel = parseBool(source.USE_FAKE_USER_CHANNEL, !isProd)
   // Real NSFW is opt-in and defaults OFF in ALL environments (production publishes benign by default).
   const useRealNsfw = parseBool(source.USE_REAL_NSFW, false)
 
@@ -448,6 +456,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     USE_FAKE_ABUSE_NSFW: useFakeAbuseNsfw,
     USE_FAKE_CHAT: useFakeChat,
     USE_FAKE_JOBS: useFakeJobs,
+    USE_FAKE_USER_CHANNEL: useFakeUserChannel,
     USE_REAL_NSFW: useRealNsfw,
   }
 

@@ -85,6 +85,7 @@ export async function registerSocialRoutes(
     return makeNotificationService({
       repo: makeDrizzleNotificationRepository(container.getDb().sql),
       pushSender: container.pushSender,
+      userChannel: container.userChannel,
       logger: app.log,
     })
   }

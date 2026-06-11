@@ -10,6 +10,7 @@
  *   pushSender   REAL MultiPushSender     unless env.USE_FAKE_PUSH         -> FakePushSender
  *   abuseChecks  REAL RealAbuseChecks     unless env.USE_FAKE_ABUSE_NSFW   -> FakeAbuseChecks
  *   chatService  REAL WsChatService       unless env.USE_FAKE_CHAT         -> FakeChatService
+ *   userChannel  REAL RedisUserChannel    unless env.USE_FAKE_USER_CHANNEL -> FakeUserChannel
  *   jobs         REAL PgBossJobs          unless env.USE_FAKE_JOBS         -> FakeJobs
  *   geocoder     REAL TigerGeocoder       (no flag; falls back to fake outside production)
  *   inboundMail  REAL CfInboundMail       (no flag; falls back to fake outside production)
@@ -34,6 +35,7 @@ import type {
   PushSender,
   RoutingProvider,
   Storage,
+  UserChannel,
 } from "@civfix/shared/interfaces"
 import {
   FakeAbuseChecks,
@@ -45,6 +47,7 @@ import {
   FakePushSender,
   FakeRoutingProvider,
   FakeStorage,
+  FakeUserChannel,
 } from "@civfix/shared/fakes"
 
 import type { Env } from "./env.js"
@@ -57,6 +60,7 @@ import { CfInboundMail } from "./adapters/inbound-mail.cf.js"
 import { TigerGeocoder } from "./adapters/geocoder.tiger.js"
 import { WsChatService } from "./adapters/chat-service.ws.js"
 import { RedisChatPubSub } from "./adapters/chat-pubsub.js"
+import { RedisUserChannel } from "./adapters/user-channel.redis.js"
 import { makeDrizzleChatRepository } from "./services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository, type DmRepository } from "./services/dm-repository.drizzle.js"
 import {
@@ -86,6 +90,8 @@ export interface Container {
   readonly inboundMail: InboundMail
   readonly geocoder: Geocoder
   readonly chatService: ChatService
+  /** Per-user realtime invalidate-signal channel (notifications / thread-unread). Best-effort. */
+  readonly userChannel: UserChannel
   readonly pushSender: PushSender
   readonly routingProvider: RoutingProvider
   readonly abuseChecks: AbuseChecks
@@ -233,15 +239,37 @@ export function buildContainer(env: Env): Container {
         useRealNsfw: env.USE_REAL_NSFW,
       })
 
+  // ----- shared Redis pub/sub (chat fan-out + per-user signals) -----
+  // ONE RedisChatPubSub multiplexes chat:* (rooms) AND user:* (per-user signals) over a single duplicated
+  // subscriber connection, so a worker holding a user's socket does not open a second Redis subscriber.
+  // Built lazily + memoized: it only exists when a REAL chat service or a REAL user channel needs it; in
+  // the all-fakes dev/test path no Redis handle is created. CLOSE OWNERSHIP: WsChatService.close() owns
+  // pubsub.close() (it disconnects the dedicated subscriber connection); RedisUserChannel.close() only
+  // unsubscribes its own user:* channels. See both adapter headers — exactly one closes the shared pubsub.
+  let sharedPubSub: RedisChatPubSub | undefined
+  function getSharedPubSub(): RedisChatPubSub {
+    if (!sharedPubSub) sharedPubSub = new RedisChatPubSub(getRedis())
+    return sharedPubSub
+  }
+
   // ----- chat service (REAL needs db + redis) -----
-  // REAL: persistence via the Drizzle chat repo (over the raw sql tag) + fan-out via Redis pub/sub. Both
-  // are injected so the realtime/Redis SDKs stay confined to the adapter and tests can swap fakes.
+  // REAL: persistence via the Drizzle chat repo (over the raw sql tag) + fan-out via the shared Redis
+  // pub/sub. Both are injected so the realtime/Redis SDKs stay confined to the adapter and tests can swap
+  // fakes.
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
     : new WsChatService({
         repo: makeDrizzleChatRepository(getDb().sql),
-        pubsub: new RedisChatPubSub(getRedis()),
+        pubsub: getSharedPubSub(),
       })
+
+  // ----- user channel (REAL needs redis) -----
+  // REAL: per-user invalidate-signal fan-out over the SAME shared Redis pub/sub as chat. In-memory fake in
+  // the dev/test path so the server boots offline and the gateway/notification signal paths are testable
+  // with no Redis.
+  const userChannel: UserChannel = env.USE_FAKE_USER_CHANNEL
+    ? new FakeUserChannel()
+    : new RedisUserChannel({ pubsub: getSharedPubSub(), logger: undefined })
 
   // ----- push sender (REAL needs db) -----
   const pushSender: PushSender = env.USE_FAKE_PUSH
@@ -259,11 +287,23 @@ export function buildContainer(env: Env): Container {
     if (typeof maybePgBoss.stop === "function") {
       await maybePgBoss.stop()
     }
-    // Tear down the chat service's pub/sub subscriptions (the duplicated Redis subscriber connection)
-    // before closing the shared redis handle below.
+    // Tear down the user channel's per-user subscriptions (it never closes the shared pub/sub itself).
+    const maybeUserChannel = userChannel as { close?: () => Promise<void> }
+    if (typeof maybeUserChannel.close === "function") {
+      await maybeUserChannel.close()
+    }
+    // Tear down the chat service's pub/sub subscriptions; the REAL WsChatService also closes the shared
+    // pub/sub here (the duplicated Redis subscriber connection) — it OWNS that close, see the adapter
+    // headers. Do this before disconnecting the shared redis handle below.
     const maybeChat = chatService as { close?: () => Promise<void> }
     if (typeof maybeChat.close === "function") {
       await maybeChat.close()
+    }
+    // Edge case: a REAL user channel paired with a FAKE chat service still created the shared pub/sub, but
+    // FakeChatService.close() does not own it — so close it here to release the duplicated subscriber
+    // connection (idempotent; the real-chat path already closed it via chatService.close()).
+    if (env.USE_FAKE_CHAT && sharedPubSub) {
+      await sharedPubSub.close()
     }
     if (redis) {
       redis.disconnect()
@@ -283,6 +323,7 @@ export function buildContainer(env: Env): Container {
     inboundMail,
     geocoder,
     chatService,
+    userChannel,
     pushSender,
     routingProvider,
     abuseChecks,

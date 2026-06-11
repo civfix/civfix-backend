@@ -38,7 +38,7 @@ import type {
   RegisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
 } from "@civfix/shared"
-import type { PushPayload, PushSender } from "@civfix/shared/interfaces"
+import type { PushPayload, PushSender, UserChannel } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import type { PersonView, SocialNotifier } from "./social-service.js"
 
@@ -273,6 +273,12 @@ export interface NotificationServiceDeps {
   repo: NotificationRepository
   /** The push seam (FakePushSender in dev/test; MultiPushSender in production). */
   pushSender: PushSender
+  /**
+   * Optional per-user signal channel. When wired, createNotification fires a best-effort
+   * `{topic:"notifications"}` invalidate-signal so a signed-in client refreshes its bell without polling.
+   * Absent ⇒ no signal (the in-app feed row is still recorded; the client picks it up on its next fetch).
+   */
+  userChannel?: UserChannel
   /** Logger for the swallowed-push-failure path. Optional; defaults to a no-op. */
   logger?: Pick<FastifyBaseLogger, "warn" | "error">
   /** Injectable clock (defaults to () => new Date()) so the quiet-hours gate is deterministic in tests. */
@@ -334,6 +340,22 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   }
 
   /**
+   * Best-effort per-user signal for a freshly-recorded notification: a single `{topic:"notifications"}`
+   * invalidate-signal so a signed-in client refreshes its bell without polling. UNGATED by prefs/quiet
+   * hours — those gate the PUSH delivery (an out-of-app interruption); the in-app feed badge should always
+   * reflect the recorded row. Never throws: the row is already persisted, so a signal failure is logged,
+   * not propagated. No-op when no channel is wired.
+   */
+  async function maybeSignalNotification(userId: string): Promise<void> {
+    if (!deps.userChannel) return
+    try {
+      await deps.userChannel.publishToUser(userId, { topic: "notifications" })
+    } catch (err) {
+      deps.logger?.warn({ err, userId }, "notification signal publish failed (suppressed)")
+    }
+  }
+
+  /**
    * Record a notification row + best-effort inline push. The shared implementation behind both the public
    * createNotification method and the onNewFollower hook, so neither relies on `this` (safe to destructure).
    */
@@ -351,6 +373,13 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     })
     // 2) Best-effort inline push (gated by prefs + quiet hours; never throws).
     await maybeSendPush(userId, record)
+    // 3) Best-effort realtime signal so an open client refreshes its bell now. FIRE-AND-FORGET: the row
+    // is already persisted, and the realtime publish must never block or delay the write — so we void the
+    // promise (it swallows its own errors and logs; the outer .catch is a defensive backstop) and return
+    // without awaiting the Redis PUBLISH round-trip. Mirrors the threads-signal pattern in the WS gateway.
+    void maybeSignalNotification(userId).catch((err: unknown) => {
+      deps.logger?.error({ err, userId }, "notification signal dispatch failed (suppressed)")
+    })
     return toNotificationDTO(record)
   }
 

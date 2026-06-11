@@ -50,6 +50,13 @@ export const CLEANUPS_DEFAULT_LIMIT = 20
  */
 export const ATTENDEES_DEFAULT_LIMIT = 50
 
+/**
+ * Soft cap on the member ids a thread-unread signal fans out to per cleanup message (listMemberIds).
+ * Cleanups are neighborhood-scale so this is realistically never hit; the cap is a defensive bound so a
+ * pathologically large cleanup cannot emit an unbounded set of PUBLISHes on every send.
+ */
+export const THREAD_SIGNAL_MEMBER_CAP = 500
+
 // ---------------------------------------------------------------------------
 // Repository seam (structural views; faked in tests)
 // ---------------------------------------------------------------------------
@@ -175,6 +182,12 @@ export interface CleanupRepository {
   ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }>
   /** Whether `userId` is a member of `cleanupId` (member or organizer). */
   isMember(cleanupId: string, userId: string): Promise<boolean>
+  /**
+   * The user ids of a cleanup's members, capped at `limit` (a soft fan-out bound so a large cleanup does
+   * not signal an unbounded set on every message). Used by the WS gateway to fan a thread-unread signal to
+   * the room's members. Returns an empty list when the cleanup has no members.
+   */
+  listMemberIds(cleanupId: string, limit: number): Promise<string[]>
   /** Current member count for a cleanup (the "going" number). */
   memberCount(cleanupId: string): Promise<number>
   /** The organizer's user id for a cleanup, or null when the cleanup does not exist. */

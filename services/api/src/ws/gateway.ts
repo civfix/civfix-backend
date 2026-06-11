@@ -45,10 +45,10 @@
  * error frame and never crash the socket. Outbound frames conform to WsServerMessageSchema.
  */
 
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from "fastify"
 import type { WebSocket } from "@fastify/websocket"
 import { WsClientMessageSchema, type RoomKind, type WsServerMessage } from "@civfix/shared"
-import type { ChatService, ChatConnection } from "@civfix/shared/interfaces"
+import type { ChatService, ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import type { SessionService } from "../auth/session-service.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import { presentedSessionToken, SESSION_COOKIE } from "../auth/transport.js"
@@ -143,6 +143,19 @@ export interface GatewayDmDeps {
 export type IsBlockedEitherWayFn = (a: string, b: string) => Promise<boolean>
 
 /**
+ * Resolve the per-user signal recipients for a freshly-persisted message in room `(kind, id)`, EXCLUDING
+ * the sender. Lets the gateway fire a `{topic:"threads", id}` invalidate-signal to participants who do not
+ * have the room open WITHOUT importing any repo (the caller wires the cleanup-members / dm-peer lookup).
+ * Returns an empty list when there is no one else to signal. Best-effort: a failure here must never affect
+ * the send path.
+ */
+export type ThreadRecipientsOf = (
+  kind: RoomKind,
+  id: string,
+  senderId: string,
+) => Promise<string[]>
+
+/**
  * The ChatService the gateway drives. Identical to the shared ChatService except `broadcast` accepts an
  * OPTIONAL excludeConnId so the gateway can keep the sender out of the broadcast fan-out (it learns
  * durability from the ack instead, P1-2). A 2-arg ChatService.broadcast is assignable here (fewer
@@ -168,6 +181,10 @@ export interface GatewayDeps {
   dm?: GatewayDmDeps | undefined
   /** Optional bidirectional block check, gating dm join/send (refuses when blocked either way). */
   isBlockedEitherWay?: IsBlockedEitherWayFn | undefined
+  /** Optional per-user signal channel: fires a `{topic:"threads"}` invalidate-signal on a new message. */
+  userChannel?: UserChannel | undefined
+  /** Optional resolver for the message recipients to signal (excludes the sender). Wired in chat.routes. */
+  threadRecipientsOf?: ThreadRecipientsOf | undefined
 }
 
 /**
@@ -419,6 +436,18 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
       // Ack the SENDER directly with the clientId so its optimistic bubble is reconciled. This is the
       // sender's ONLY copy of the message (exactly-once delivery to the sender).
       conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
+      // Best-effort thread-unread signal: fire a {topic:"threads", id} invalidate-signal to the message
+      // recipients (so a participant WITHOUT the room open gets an unread bump). Fully fire-and-forget —
+      // it runs after the message is durably persisted + delivered + acked, so a resolver/publish failure
+      // must NEVER affect the send path. Only emit when both the channel and the resolver are wired.
+      if (deps.userChannel && deps.threadRecipientsOf) {
+        const { userChannel, threadRecipientsOf } = deps
+        void (async () => {
+          const recipients = await threadRecipientsOf(kind, id, userId)
+          if (recipients.length === 0) return
+          await userChannel.publishToUsers(recipients, { topic: "threads", id })
+        })().catch(() => {})
+      }
       return
     }
 
@@ -485,6 +514,30 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
       }
       return
     }
+  }
+}
+
+/**
+ * Subscribe an authenticated socket's user on the per-user signal channel for the socket's lifetime
+ * (independent of any room join), so the backend can push invalidate-signals to this client. Returns the
+ * unsubscribe handle to dispose on socket close, or undefined when no channel is wired or the subscribe
+ * failed. BEST-EFFORT: a subscribe failure is logged and swallowed (returns undefined) so the handshake
+ * still completes and the socket serves chat — the per-user channel is a freshness layer, not a gate.
+ * Extracted (like handleClientFrame) so the subscribe/disposal lifecycle is unit-testable with a mock
+ * ChatConnection and a FakeUserChannel, independent of a real socket.
+ */
+export async function subscribeUserChannel(
+  userChannel: UserChannel | undefined,
+  userId: string,
+  conn: ChatConnection,
+  logger?: Pick<FastifyBaseLogger, "warn">,
+): Promise<(() => Promise<void>) | undefined> {
+  if (!userChannel) return undefined
+  try {
+    return await userChannel.subscribeUser(userId, conn)
+  } catch (err) {
+    logger?.warn({ err, userId }, "ws: user-channel subscribe failed (continuing)")
+    return undefined
   }
 }
 
@@ -588,6 +641,15 @@ export interface RegisterGatewayOptions {
   dm?: GatewayDmDeps | undefined
   /** Optional bidirectional block check, gating dm join/send. */
   isBlockedEitherWay?: IsBlockedEitherWayFn | undefined
+  /**
+   * Optional per-user signal channel. When wired, every authenticated socket subscribes its user on the
+   * channel for the socket's lifetime (so the backend can push invalidate-signals to the client), and the
+   * `send` handler fires a `{topic:"threads"}` signal to the message recipients. Optional so existing
+   * tests that only exercise chat need not wire it.
+   */
+  userChannel?: UserChannel | undefined
+  /** Optional resolver for the thread-signal recipients (excludes the sender). See ThreadRecipientsOf. */
+  threadRecipientsOf?: ThreadRecipientsOf | undefined
   /** CORS/WS Origin allowlist (env.WEB_ORIGINS). Empty allows all (dev). See isAllowedWsOrigin. */
   webOrigins: readonly string[]
 }
@@ -631,7 +693,37 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           presence: opts.presence,
           dm: opts.dm,
           isBlockedEitherWay: opts.isBlockedEitherWay,
+          userChannel: opts.userChannel,
+          threadRecipientsOf: opts.threadRecipientsOf,
         },
+      }
+
+      // Subscribe this user on the per-user signal channel for the socket's whole lifetime, independent of
+      // any room join, so the backend can push invalidate-signals (new notification / thread-unread) to
+      // this client. Best-effort (see subscribeUserChannel): a subscribe failure does NOT crash the
+      // handshake — the socket still serves chat. The unsubscribe handle is kept in this per-socket closure
+      // and disposed on close.
+      let unsubscribeUser = await subscribeUserChannel(
+        opts.userChannel,
+        userId,
+        session.conn,
+        request.log,
+      )
+
+      // Close-during-subscribe guard (resource-leak fix): the socket may have CLOSED while we were awaiting
+      // checkWsHandshake / subscribeUserChannel above. The "close" listener that disposes the subscription
+      // is not registered yet, so that close event was lost — leaving the user stuck in the channel (and, on
+      // the last connection, the Redis user:<id> SUBSCRIBE never released). If the socket is no longer OPEN
+      // (ws readyState 1 === OPEN, the same convention as wrapSocket), dispose the subscription now and bail
+      // before installing the heartbeat/listeners. There is NO await between this check and the socket.on
+      // ("close") registration below, so on the single-threaded event loop a close can never slip through the
+      // gap: it is observed here, or the listener is already in place to catch it.
+      if (socket.readyState !== 1) {
+        if (unsubscribeUser) {
+          void unsubscribeUser().catch(() => {})
+          unsubscribeUser = undefined
+        }
+        return
       }
 
       // Heartbeat: ws marks a socket alive on pong; if a ping goes unanswered before the next tick, the
@@ -681,6 +773,12 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           void leaveRoomAndAnnounce(session, cleanupId).catch(() => {})
         }
         session.joined.clear()
+        // Drop this socket from the per-user signal channel (unsubscribes the user:* channel on its last
+        // connection). Fire-and-forget; a teardown failure must not affect the close path.
+        if (unsubscribeUser) {
+          void unsubscribeUser().catch(() => {})
+          unsubscribeUser = undefined
+        }
       })
 
       socket.on("error", (err: unknown) => {

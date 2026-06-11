@@ -271,6 +271,15 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
+  listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
+    // Insertion order mirrors the Drizzle impl's joined_at ASC (members are appended in join order).
+    const ids = this.members
+      .filter((m) => m.cleanupId === cleanupId)
+      .map((m) => m.userId)
+      .slice(0, limit)
+    return Promise.resolve(ids)
+  }
+
   memberCount(cleanupId: string): Promise<number> {
     return Promise.resolve(this.memberCountOf(cleanupId))
   }

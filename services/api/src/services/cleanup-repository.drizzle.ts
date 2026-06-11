@@ -250,6 +250,16 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows.length > 0
     },
 
+    async listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
+      const rows = await sql<{ user_id: string }[]>`
+        SELECT user_id FROM cleanup_members
+        WHERE cleanup_id = ${cleanupId}
+        ORDER BY joined_at ASC, user_id ASC
+        LIMIT ${limit}
+      `
+      return rows.map((r) => r.user_id)
+    },
+
     async memberCount(cleanupId: string): Promise<number> {
       const rows = await sql<{ count: number }[]>`
         SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
