@@ -76,11 +76,11 @@ async function signIn(
   mailer: FakeMailer,
   email: string,
 ): Promise<{ token: string; userId: string }> {
-  await app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+  await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
   const code = mailer.lastOtpFor(email)!
   const verify = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/v1/auth/otp/verify",
     headers: { "x-client": "mobile" },
     payload: { email, code },
   })
@@ -108,7 +108,7 @@ describe("GET /people", () => {
     const { app } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Other Person", handle: "other" })
     })
-    const res = await app.inject({ method: "GET", url: "/people?q=oth" })
+    const res = await app.inject({ method: "GET", url: "/v1/people?q=oth" })
     expect(res.statusCode).toBe(401)
   })
 
@@ -116,9 +116,9 @@ describe("GET /people", () => {
     const { app, token } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Other Person", handle: "other" })
     })
-    const noQ = await app.inject({ method: "GET", url: "/people", headers: auth(token) })
+    const noQ = await app.inject({ method: "GET", url: "/v1/people", headers: auth(token) })
     expect(noQ.statusCode).toBe(422)
-    const blankQ = await app.inject({ method: "GET", url: "/people?q=%20", headers: auth(token) })
+    const blankQ = await app.inject({ method: "GET", url: "/v1/people?q=%20", headers: auth(token) })
     expect(blankQ.statusCode).toBe(422)
   })
 
@@ -126,7 +126,7 @@ describe("GET /people", () => {
     const { app, token, userId } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Zelda", handle: "zelda" })
     })
-    const hit = await app.inject({ method: "GET", url: "/people?q=zel", headers: auth(token) })
+    const hit = await app.inject({ method: "GET", url: "/v1/people?q=zel", headers: auth(token) })
     expect(hit.statusCode).toBe(200)
     const body = hit.json()
     const ids = body.items.map((p: { id: string }) => p.id)
@@ -135,13 +135,13 @@ describe("GET /people", () => {
     // Each item carries an avatar gradient pair.
     expect(body.items[0].avatar).toHaveLength(2)
 
-    const miss = await app.inject({ method: "GET", url: "/people?q=nobody", headers: auth(token) })
+    const miss = await app.inject({ method: "GET", url: "/v1/people?q=nobody", headers: auth(token) })
     expect(miss.json().items).toEqual([])
   })
 
   it("422s a bad limit", async () => {
     const { app, token } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/people?q=zel&limit=999", headers: auth(token) })
+    const res = await app.inject({ method: "GET", url: "/v1/people?q=zel&limit=999", headers: auth(token) })
     expect(res.statusCode).toBe(422)
   })
 })
@@ -153,7 +153,7 @@ describe("POST /people/:id/follow and DELETE", () => {
     })
     const res = await app.inject({
       method: "POST",
-      url: `/people/${OTHER}/follow`,
+      url: `/v1/people/${OTHER}/follow`,
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)
@@ -167,10 +167,10 @@ describe("POST /people/:id/follow and DELETE", () => {
       repo.seedUser({ id: OTHER, displayName: "Target" })
     })
     // Follow then unfollow.
-    await app.inject({ method: "POST", url: `/people/${OTHER}/follow`, headers: auth(token) })
+    await app.inject({ method: "POST", url: `/v1/people/${OTHER}/follow`, headers: auth(token) })
     const res = await app.inject({
       method: "DELETE",
-      url: `/people/${OTHER}/follow`,
+      url: `/v1/people/${OTHER}/follow`,
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)
@@ -181,7 +181,7 @@ describe("POST /people/:id/follow and DELETE", () => {
     const { app, token, userId } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: `/people/${userId}/follow`,
+      url: `/v1/people/${userId}/follow`,
       headers: auth(token),
     })
     expect(res.statusCode).toBe(422)
@@ -192,7 +192,7 @@ describe("POST /people/:id/follow and DELETE", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/people/00000000-0000-0000-0000-000000000000/follow",
+      url: "/v1/people/00000000-0000-0000-0000-000000000000/follow",
       headers: auth(token),
     })
     expect(res.statusCode).toBe(404)
@@ -202,7 +202,7 @@ describe("POST /people/:id/follow and DELETE", () => {
     const { app } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Target" })
     })
-    const res = await app.inject({ method: "POST", url: `/people/${OTHER}/follow` })
+    const res = await app.inject({ method: "POST", url: `/v1/people/${OTHER}/follow` })
     expect(res.statusCode).toBe(401)
   })
 })
@@ -214,7 +214,7 @@ describe("GET /people/:id (profile)", () => {
       repo.seedReports(OTHER, 2)
       repo.seedCleanup(makeCleanupRecord({ organizerUserId: OTHER, title: "Past sweep" }))
     })
-    const res = await app.inject({ method: "GET", url: `/people/${OTHER}` })
+    const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}` })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.profile.id).toBe(OTHER)
@@ -227,8 +227,8 @@ describe("GET /people/:id (profile)", () => {
     const { app, token } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Pro" })
     })
-    await app.inject({ method: "POST", url: `/people/${OTHER}/follow`, headers: auth(token) })
-    const res = await app.inject({ method: "GET", url: `/people/${OTHER}`, headers: auth(token) })
+    await app.inject({ method: "POST", url: `/v1/people/${OTHER}/follow`, headers: auth(token) })
+    const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}`, headers: auth(token) })
     expect(res.json().profile.isFollowing).toBe(true)
   })
 
@@ -236,14 +236,14 @@ describe("GET /people/:id (profile)", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: "/people/00000000-0000-0000-0000-000000000000",
+      url: "/v1/people/00000000-0000-0000-0000-000000000000",
     })
     expect(res.statusCode).toBe(404)
   })
 
   it("422s a non-UUID id", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/people/not-a-uuid" })
+    const res = await app.inject({ method: "GET", url: "/v1/people/not-a-uuid" })
     expect(res.statusCode).toBe(422)
   })
 })
@@ -251,7 +251,7 @@ describe("GET /people/:id (profile)", () => {
 describe("GET /me/profile", () => {
   it("returns the signed-in user's own profile", async () => {
     const { app, token, userId } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/me/profile", headers: auth(token) })
+    const res = await app.inject({ method: "GET", url: "/v1/me/profile", headers: auth(token) })
     expect(res.statusCode).toBe(200)
     expect(res.json().profile.id).toBe(userId)
     expect(res.json().profile.isFollowing).toBe(false)
@@ -259,7 +259,7 @@ describe("GET /me/profile", () => {
 
   it("401s anonymously", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/me/profile" })
+    const res = await app.inject({ method: "GET", url: "/v1/me/profile" })
     expect(res.statusCode).toBe(401)
   })
 })

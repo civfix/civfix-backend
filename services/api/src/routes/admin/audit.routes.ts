@@ -20,6 +20,7 @@ import {
   type AuditService,
 } from "../../services/admin/audit-service.js"
 import { makeDrizzleAuditRepository } from "../../services/admin/audit-repository.drizzle.js"
+import { route } from "../../versioning/route.js"
 
 /**
  * Optional injected audit-service dependencies (tests). When present the route builds the service from
@@ -51,7 +52,7 @@ export async function registerAdminAuditRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/audit
   // -------------------------------------------------------------------------
-  app.get("/admin/audit", async (request, reply) => {
+  route(app, "listAudit", async (request, reply) => {
     const query = parse(AuditListQuerySchema, request.query)
     const payload: AuditListResponse = await service().list(query)
     reply.status(200).send(payload)

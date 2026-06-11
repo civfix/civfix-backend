@@ -31,6 +31,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
   makeDiscoveryService,
@@ -75,7 +76,7 @@ export async function registerAdminDiscoveryRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/discovery
   // -------------------------------------------------------------------------
-  app.get("/admin/discovery", async (request, reply) => {
+  route(app, "listDiscovery", async (request, reply) => {
     const query = parse(DiscoveryListQuerySchema, request.query)
     const payload: DiscoveryListResponse = await service().list(query)
     reply.status(200).send(payload)
@@ -84,7 +85,7 @@ export async function registerAdminDiscoveryRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/discovery/:id
   // -------------------------------------------------------------------------
-  app.get("/admin/discovery/:id", async (request, reply) => {
+  route(app, "getDiscoveryTask", async (request, reply) => {
     const { id } = idParam(request)
     const payload: DiscoveryTaskDetailDTO = await service().getTask(id)
     reply.status(200).send(payload)
@@ -93,7 +94,7 @@ export async function registerAdminDiscoveryRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/discovery/:id/notes  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/discovery/:id/notes", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "addDiscoveryNote", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(AddNoteRequestSchema, { ...(request.body as object), id })
     const actorId = request.auth.userId
@@ -108,7 +109,7 @@ export async function registerAdminDiscoveryRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/discovery/:id/flag  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/discovery/:id/flag", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "flagDiscovery", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(FlagDiscoveryRequestSchema, { ...(request.body as object), id })
     await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
@@ -119,7 +120,7 @@ export async function registerAdminDiscoveryRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/discovery/:id/draft  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/discovery/:id/draft", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "saveDiscoveryDraft", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SaveDraftRequestSchema, { ...(request.body as object), id })
     await service().saveDraft(id, {

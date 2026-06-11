@@ -21,7 +21,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance, InjectOptions } from "fastify"
 import { FakeAbuseChecks, FakeMailer } from "@civfix/shared/fakes"
-import { endpoints, type EndpointDef } from "@civfix/shared/client"
+import { endpoints, versionedPath, type EndpointDef } from "@civfix/shared/client"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -157,7 +157,9 @@ function fillPath(path: string): string {
  * handler may answer 400/401/422 - all acceptable. We only care the route MATCHED.
  */
 function injectArgs(ep: EndpointDef): InjectOptions {
-  const url = fillPath(ep.path)
+  // Inject at the VERSIONED wire path (e.g. /v1/reports), the same path the typed client calls and the
+  // route() helper registers — so this audit proves the contract surface is wired at its real URL.
+  const url = fillPath(versionedPath(ep))
   if (ep.method === "GET" || ep.method === "DELETE") {
     return { method: ep.method, url }
   }

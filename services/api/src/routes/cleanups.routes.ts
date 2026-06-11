@@ -43,6 +43,7 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { route } from "../versioning/route.js"
 import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
 
 /**
@@ -110,7 +111,7 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   // POST /cleanups  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/cleanups", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "createCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(CreateCleanupRequestSchema, request.body)
     const dto: CleanupDTO = await service().createCleanup(body, userId)
@@ -120,7 +121,7 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   // GET /cleanups  (anon-ok)
   // -------------------------------------------------------------------------
-  app.get("/cleanups", async (request, reply) => {
+  route(app, "listCleanups", async (request, reply) => {
     const q = parse(ListCleanupsQuerySchema, request.query)
     // Re-validate the decoded shape against the shared schema (single source of truth). bbox/near are
     // already decoded BBox/LatLng objects (or undefined); when/cursor/limit are scalars.
@@ -138,7 +139,7 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   // GET /cleanups/:id  (anon-ok)
   // -------------------------------------------------------------------------
-  app.get("/cleanups/:id", async (request, reply) => {
+  route(app, "getCleanup", async (request, reply) => {
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const dto: GetCleanupResponse = await service().getCleanup(id, viewerOf(request))
     reply.status(200).send(dto)
@@ -147,7 +148,7 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   // POST /cleanups/:id/join  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/cleanups/:id/join", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "joinCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: JoinCleanupResponse = await service().joinCleanup(id, userId)
@@ -157,7 +158,7 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   // POST /cleanups/:id/leave  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/cleanups/:id/leave", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "leaveCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: LeaveCleanupResponse = await service().leaveCleanup(id, userId)
@@ -169,7 +170,7 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   // The "who's going" roster. The service scopes it to the viewer: only people you follow until you
   // RSVP, then everyone going. Anonymous/non-member viewers therefore get an empty roster + the count.
-  app.get("/cleanups/:id/attendees", async (request, reply) => {
+  route(app, "getCleanupAttendees", async (request, reply) => {
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: CleanupAttendeesResponse = await service().listAttendees(id, viewerOf(request))
     reply.status(200).send(payload)
@@ -178,7 +179,7 @@ export async function registerCleanupRoutes(
   // -------------------------------------------------------------------------
   // GET /cleanups/:id/messages  [auth][MEMBER-gated]
   // -------------------------------------------------------------------------
-  app.get("/cleanups/:id/messages", async (request, reply) => {
+  route(app, "cleanupMessages", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     // Shared non-strict ChatHistoryQuerySchema: tolerates and strips the cleanupId path-param echo the

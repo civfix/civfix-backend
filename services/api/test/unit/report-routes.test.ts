@@ -72,11 +72,11 @@ async function makeHarness(
 
   // Sign in through the real OTP flow (mobile transport -> bearer token in the body).
   const email = "reporter@example.com"
-  await app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+  await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
   const code = mailer.lastOtpFor(email)!
   const verify = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/v1/auth/otp/verify",
     headers: { "x-client": "mobile" },
     payload: { email, code },
   })
@@ -105,7 +105,7 @@ describe("POST /reports", () => {
     const { app, repo, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/reports",
+      url: "/v1/reports",
       headers: auth(token),
       payload: {
         idempotencyKey: KEY_A,
@@ -149,7 +149,7 @@ describe("POST /reports", () => {
     })
     const res = await app.inject({
       method: "POST",
-      url: "/reports",
+      url: "/v1/reports",
       headers: auth(token),
       payload: {
         idempotencyKey: KEY_A,
@@ -185,14 +185,14 @@ describe("POST /reports", () => {
       geomSource: "device",
       mediaUploadIds: [],
     }
-    const first = await app.inject({ method: "POST", url: "/reports", headers: auth(token), payload })
+    const first = await app.inject({ method: "POST", url: "/v1/reports", headers: auth(token), payload })
     expect(first.statusCode).toBe(201)
     const firstId = first.json().id
 
     // Same key again -> same id, still one row.
     const second = await app.inject({
       method: "POST",
-      url: "/reports",
+      url: "/v1/reports",
       headers: auth(token),
       payload: { ...payload, category: "hazard" },
     })
@@ -205,7 +205,7 @@ describe("POST /reports", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/reports",
+      url: "/v1/reports",
       payload: {
         idempotencyKey: KEY_A,
         category: "trash",
@@ -223,7 +223,7 @@ describe("POST /reports", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/reports",
+      url: "/v1/reports",
       headers: auth(token),
       payload: {
         idempotencyKey: KEY_A,
@@ -242,7 +242,7 @@ describe("POST /reports", () => {
     const { app, repo, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/reports",
+      url: "/v1/reports",
       headers: auth(token),
       payload: {
         idempotencyKey: KEY_A,
@@ -271,7 +271,7 @@ describe("GET /reports/:id", () => {
         }).id
       },
     })
-    const res = await app.inject({ method: "GET", url: `/reports/${seededId}` })
+    const res = await app.inject({ method: "GET", url: `/v1/reports/${seededId}` })
     expect(res.statusCode).toBe(200)
     expect(res.json().id).toBe(seededId)
     expect(res.json().mine).toBe(false)
@@ -290,14 +290,14 @@ describe("GET /reports/:id", () => {
       },
     })
     // The signed-in caller is NOT the owner -> 404.
-    const res = await app.inject({ method: "GET", url: `/reports/${heldId}`, headers: auth(token) })
+    const res = await app.inject({ method: "GET", url: `/v1/reports/${heldId}`, headers: auth(token) })
     expect(res.statusCode).toBe(404)
     expect(res.json().code).toBe("NOT_FOUND")
   })
 
   it("422s a non-UUID id", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/reports/not-a-uuid" })
+    const res = await app.inject({ method: "GET", url: "/v1/reports/not-a-uuid" })
     expect(res.statusCode).toBe(422)
   })
 })
@@ -312,7 +312,7 @@ describe("GET /reports (my reports)", () => {
     ]) {
       await app.inject({
         method: "POST",
-        url: "/reports",
+        url: "/v1/reports",
         headers: auth(token),
         payload: {
           idempotencyKey: key,
@@ -324,7 +324,7 @@ describe("GET /reports (my reports)", () => {
         },
       })
     }
-    const res = await app.inject({ method: "GET", url: "/reports", headers: auth(token) })
+    const res = await app.inject({ method: "GET", url: "/v1/reports", headers: auth(token) })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.items).toHaveLength(2)
@@ -336,7 +336,7 @@ describe("GET /reports (my reports)", () => {
 
   it("401s an anonymous GET /reports", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/reports" })
+    const res = await app.inject({ method: "GET", url: "/v1/reports" })
     expect(res.statusCode).toBe(401)
   })
 
@@ -349,7 +349,7 @@ describe("GET /reports (my reports)", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: `/reports${clientQuery({ limit: 20 })}`,
+      url: `/v1/reports${clientQuery({ limit: 20 })}`,
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)
@@ -360,7 +360,7 @@ describe("GET /reports (my reports)", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: `/reports${clientQuery({ limit: 20, cursor: "deadbeef" })}`,
+      url: `/v1/reports${clientQuery({ limit: 20, cursor: "deadbeef" })}`,
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)
@@ -383,7 +383,7 @@ describe("GET /map/reports", () => {
 
     const lowZoom = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 3 })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 3 })}`,
     })
     expect(lowZoom.statusCode).toBe(200)
     const low = lowZoom.json()
@@ -393,7 +393,7 @@ describe("GET /map/reports", () => {
 
     const highZoom = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}`,
     })
     const high = highZoom.json()
     expect(high.clusters).toHaveLength(0)
@@ -410,7 +410,7 @@ describe("GET /map/reports", () => {
     // clientQuery({categories:["trash"]}) -> ?...&categories=trash (repeated-param form).
     const res = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["trash"] })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["trash"] })}`,
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().pins).toHaveLength(1)
@@ -428,7 +428,7 @@ describe("GET /map/reports", () => {
     // ?...&categories=trash&categories=graffiti -> both kept, water excluded.
     const res = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["trash", "graffiti"] })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["trash", "graffiti"] })}`,
     })
     expect(res.statusCode).toBe(200)
     const cats = (res.json().pins as { category: string }[]).map((p) => p.category).sort()
@@ -445,7 +445,7 @@ describe("GET /map/reports", () => {
     // A single CSV param (hand-built) is tolerated: categories=trash,graffiti.
     const res = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}&categories=trash,graffiti`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}&categories=trash,graffiti`,
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().pins).toHaveLength(2)
@@ -455,7 +455,7 @@ describe("GET /map/reports", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["bogus"] })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16, categories: ["bogus"] })}`,
     })
     expect(res.statusCode).toBe(422)
   })
@@ -464,7 +464,7 @@ describe("GET /map/reports", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: "/map/reports?bbox=not-json&zoom=3",
+      url: "/v1/map/reports?bbox=not-json&zoom=3",
     })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
@@ -480,7 +480,7 @@ describe("GET /map/reports", () => {
     // pins (a silent failure); now it is a clear 422.
     const transposed = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: { west: -118.2, south: 34.0, east: -118.5, north: 34.2 }, zoom: 16 })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: { west: -118.2, south: 34.0, east: -118.5, north: 34.2 }, zoom: 16 })}`,
     })
     expect(transposed.statusCode).toBe(422)
     expect(transposed.json().code).toBe("VALIDATION")
@@ -488,7 +488,7 @@ describe("GET /map/reports", () => {
     // south >= north (degenerate latitude) is likewise rejected.
     const flat = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: { west: -118.5, south: 34.2, east: -118.2, north: 34.2 }, zoom: 16 })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: { west: -118.5, south: 34.2, east: -118.2, north: 34.2 }, zoom: 16 })}`,
     })
     expect(flat.statusCode).toBe(422)
   })
@@ -498,7 +498,7 @@ describe("GET /map/reports", () => {
     // zoom=NaN (non-numeric) would coerce to NaN and produce a NaN-coord cluster; now a 422.
     const nan = await app.inject({
       method: "GET",
-      url: `/map/reports?bbox=${encodeURIComponent(JSON.stringify(BBOX))}&zoom=notanumber`,
+      url: `/v1/map/reports?bbox=${encodeURIComponent(JSON.stringify(BBOX))}&zoom=notanumber`,
     })
     expect(nan.statusCode).toBe(422)
     expect(nan.json().code).toBe("VALIDATION")
@@ -506,7 +506,7 @@ describe("GET /map/reports", () => {
     // An absurd out-of-range zoom is rejected too.
     const huge = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 99 })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 99 })}`,
     })
     expect(huge.statusCode).toBe(422)
   })
@@ -515,7 +515,7 @@ describe("GET /map/reports", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: BBOX, zoom: 3 })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 3 })}`,
     })
     expect(res.statusCode).toBe(200)
   })
@@ -532,7 +532,7 @@ describe("POST/DELETE /reports/:id/follow", () => {
 
     const follow = await app.inject({
       method: "POST",
-      url: `/reports/${reportId}/follow`,
+      url: `/v1/reports/${reportId}/follow`,
       headers: auth(token),
     })
     expect(follow.statusCode).toBe(200)
@@ -540,7 +540,7 @@ describe("POST/DELETE /reports/:id/follow", () => {
 
     const unfollow = await app.inject({
       method: "DELETE",
-      url: `/reports/${reportId}/follow`,
+      url: `/v1/reports/${reportId}/follow`,
       headers: auth(token),
     })
     expect(unfollow.statusCode).toBe(200)
@@ -551,7 +551,7 @@ describe("POST/DELETE /reports/:id/follow", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/reports/00000000-0000-0000-0000-000000000000/follow",
+      url: "/v1/reports/00000000-0000-0000-0000-000000000000/follow",
       headers: auth(token),
     })
     expect(res.statusCode).toBe(404)
@@ -564,7 +564,7 @@ describe("POST/DELETE /reports/:id/follow", () => {
         reportId = repo.seedReport({ reporterUserId: "owner" }).id
       },
     })
-    const res = await app.inject({ method: "POST", url: `/reports/${reportId}/follow` })
+    const res = await app.inject({ method: "POST", url: `/v1/reports/${reportId}/follow` })
     expect(res.statusCode).toBe(401)
   })
 })

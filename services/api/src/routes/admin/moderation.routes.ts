@@ -33,6 +33,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
   makeModerationService,
@@ -77,7 +78,7 @@ export async function registerAdminModerationRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/moderation
   // -------------------------------------------------------------------------
-  app.get("/admin/moderation", async (request, reply) => {
+  route(app, "listModeration", async (request, reply) => {
     const query = parse(ModerationListQuerySchema, request.query)
     const payload: ModerationListResponse = await service().list(query)
     reply.status(200).send(payload)
@@ -86,7 +87,7 @@ export async function registerAdminModerationRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/moderation/:id
   // -------------------------------------------------------------------------
-  app.get("/admin/moderation/:id", async (request, reply) => {
+  route(app, "getModerationItem", async (request, reply) => {
     const { id } = idParam(request)
     const payload: GetModerationItemResponse = await service().getItem(id)
     reply.status(200).send(payload)
@@ -95,7 +96,7 @@ export async function registerAdminModerationRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/moderation/:id/approve  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/moderation/:id/approve", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "approveModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(ApproveModerationRequestSchema, { ...(request.body as object), id })
     await service().approve(id, { actorId: request.auth.userId, note: body.note ?? null })
@@ -106,7 +107,7 @@ export async function registerAdminModerationRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/moderation/:id/remove  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/moderation/:id/remove", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "removeModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(RemoveModerationRequestSchema, { ...(request.body as object), id })
     await service().remove(id, { actorId: request.auth.userId, reason: body.reason ?? null })
@@ -117,7 +118,7 @@ export async function registerAdminModerationRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/moderation/:id/hold  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/moderation/:id/hold", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "holdModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(HoldModerationRequestSchema, { ...(request.body as object), id })
     await service().hold(id, { actorId: request.auth.userId, note: body.note ?? null })
@@ -128,7 +129,7 @@ export async function registerAdminModerationRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/moderation/:id/appeal  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/moderation/:id/appeal", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "appealModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(AppealModerationRequestSchema, { ...(request.body as object), id })
     await service().appeal(id, {

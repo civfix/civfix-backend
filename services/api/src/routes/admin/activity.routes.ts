@@ -19,6 +19,7 @@ import {
   type ActivityService,
 } from "../../services/admin/activity-service.js"
 import { makeDrizzleActivityRepository } from "../../services/admin/activity-repository.drizzle.js"
+import { route } from "../../versioning/route.js"
 
 /**
  * Optional injected activity-service dependencies (tests). When present the route builds the service from
@@ -56,7 +57,7 @@ export async function registerAdminActivityRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/activity
   // -------------------------------------------------------------------------
-  app.get("/admin/activity", async (request, reply) => {
+  route(app, "adminActivity", async (request, reply) => {
     const query = parse(ActivityListQuerySchema, request.query)
     const payload: ActivityListResponse = await service().list({
       ...(query.limit !== undefined ? { limit: query.limit } : {}),

@@ -53,7 +53,7 @@ describe("POST /media/upload", () => {
     const { app, repo } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/jpeg", byteSize: 1024, sha256: SHA },
     })
     expect(res.statusCode).toBe(200)
@@ -69,7 +69,7 @@ describe("POST /media/upload", () => {
     const { app, repo } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/jpeg", byteSize: MAX_IMAGE_BYTES + 1, sha256: SHA },
     })
     // The shared schema caps byteSize at MAX_VIDEO_BYTES and the superRefine enforces the per-kind cap,
@@ -83,7 +83,7 @@ describe("POST /media/upload", () => {
     const { app, repo } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/gif", byteSize: 1024, sha256: SHA },
     })
     // contentType shape passes the schema (any non-empty string), so the service's allowlist rejects it.
@@ -96,7 +96,7 @@ describe("POST /media/upload", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/jpeg", byteSize: 1024 },
     })
     expect(res.statusCode).toBe(422)
@@ -110,7 +110,7 @@ describe("POST /media/:uploadId/finalize", () => {
 
     const createRes = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/jpeg", byteSize: 2048, sha256: SHA },
     })
     const { uploadId } = createRes.json()
@@ -118,7 +118,7 @@ describe("POST /media/:uploadId/finalize", () => {
     // Simulate the direct-to-R2 PUT having landed.
     await storage.put(row!.r2Key, new Uint8Array(2048), { contentType: "image/jpeg" })
 
-    const finRes = await app.inject({ method: "POST", url: `/media/${uploadId}/finalize` })
+    const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
     expect(finRes.statusCode).toBe(200)
     const fin = finRes.json()
     expect(fin.status).toBe("validating")
@@ -133,14 +133,14 @@ describe("POST /media/:uploadId/finalize", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/media/00000000-0000-0000-0000-000000000000/finalize",
+      url: "/v1/media/00000000-0000-0000-0000-000000000000/finalize",
     })
     expect(res.statusCode).toBe(404)
   })
 
   it("422s when the uploadId path param is not a UUID", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/media/not-a-uuid/finalize" })
+    const res = await app.inject({ method: "POST", url: "/v1/media/not-a-uuid/finalize" })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
   })
@@ -151,14 +151,14 @@ describe("GET /media/:id", () => {
     const { app, repo } = await makeHarness()
     const createRes = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/png", byteSize: 4096, sha256: SHA },
     })
     const { uploadId } = createRes.json()
     const row = await repo.findByUploadId(uploadId)
     repo.patch(row!.id, { status: "ready", width: 640, height: 480 })
 
-    const res = await app.inject({ method: "GET", url: `/media/${row!.id}` })
+    const res = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(res.statusCode).toBe(200)
     const dto = res.json()
     expect(dto.id).toBe(row!.id)
@@ -171,12 +171,12 @@ describe("GET /media/:id", () => {
     const { app, repo } = await makeHarness()
     const createRes = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/png", byteSize: 4096, sha256: SHA },
     })
     const { uploadId } = createRes.json()
     const row = await repo.findByUploadId(uploadId)
-    const res = await app.inject({ method: "GET", url: `/media/${row!.id}` })
+    const res = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(res.statusCode).toBe(404)
   })
 })

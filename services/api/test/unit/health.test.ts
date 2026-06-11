@@ -49,7 +49,7 @@ describe("health routes", () => {
 
   it("unknown route returns the 404 error envelope", async () => {
     app = await buildServer({ env: loadEnv() })
-    const res = await app.inject({ method: "GET", url: "/does-not-exist" })
+    const res = await app.inject({ method: "GET", url: "/v1/does-not-exist" })
     expect(res.statusCode).toBe(404)
     const body = res.json()
     expect(body.code).toBe("NOT_FOUND")

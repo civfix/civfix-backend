@@ -27,6 +27,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { geoidParam, parse } from "./_route-utils.js"
 import {
   makeJurisdictionContactsService,
@@ -82,8 +83,9 @@ export async function registerAdminJurisdictionsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/jurisdictions/:geoid/contacts  [csrf]  "Save & route"
   // -------------------------------------------------------------------------
-  app.post(
-    "/admin/jurisdictions/:geoid/contacts",
+  route(
+    app,
+    "saveJurisdictionContacts",
     { preHandler: csrfProtect },
     async (request, reply) => {
       const geoid = geoidParam(request)
@@ -107,7 +109,7 @@ export async function registerAdminJurisdictionsRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/jurisdictions  (directory)
   // -------------------------------------------------------------------------
-  app.get("/admin/jurisdictions", async (request, reply) => {
+  route(app, "listJurisdictions", async (request, reply) => {
     const query = parse(JurisdictionListQuerySchema, request.query)
     const payload: JurisdictionDirectoryResponse = await service().listDirectory(query)
     reply.status(200).send(payload)
@@ -116,7 +118,7 @@ export async function registerAdminJurisdictionsRoutes(
   // -------------------------------------------------------------------------
   // PATCH /admin/jurisdictions/:geoid  [csrf]
   // -------------------------------------------------------------------------
-  app.patch("/admin/jurisdictions/:geoid", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "patchJurisdiction", { preHandler: csrfProtect }, async (request, reply) => {
     const geoid = geoidParam(request)
     const body = parse(PatchJurisdictionRequestSchema, { ...(request.body as object), geoid })
     // Patch + audit (jurisdiction.patched) run atomically inside the repo transaction (H4).

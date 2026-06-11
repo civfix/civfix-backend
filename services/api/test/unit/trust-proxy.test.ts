@@ -163,7 +163,7 @@ describe("anon submit abuse key is the real client IP (not a spoofed XFF)", () =
 
     const res = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       remoteAddress: "198.51.100.23", // a real internet client
       headers: { "x-forwarded-for": "9.9.9.9" }, // the spoof attempt
       payload: body,

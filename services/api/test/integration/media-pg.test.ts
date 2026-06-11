@@ -49,7 +49,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
   it("create inserts a validating media_assets row with report_id null", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/jpeg", byteSize: 1024, sha256: SHA },
     })
     expect(res.statusCode).toBe(200)
@@ -69,7 +69,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
   it("finalize sets status validating and enqueues one media.checks job", async () => {
     const createRes = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/png", byteSize: 2048, sha256: "d".repeat(64) },
     })
     const { uploadId } = createRes.json()
@@ -80,7 +80,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     // Simulate the direct-to-R2 PUT having landed so finalize's HEAD check passes.
     await storage.put(row!.r2_key, new Uint8Array(2048), { contentType: "image/png" })
 
-    const finRes = await app.inject({ method: "POST", url: `/media/${uploadId}/finalize` })
+    const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
     expect(finRes.statusCode).toBe(200)
     expect(finRes.json().status).toBe("validating")
     expect(finRes.json().mediaId).toBe(row!.id)
@@ -101,7 +101,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
   it("getMedia returns a ready row and 404s a validating row", async () => {
     const createRes = await app.inject({
       method: "POST",
-      url: "/media/upload",
+      url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/webp", byteSize: 4096, sha256: "e".repeat(64) },
     })
     const { uploadId } = createRes.json()
@@ -110,12 +110,12 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     `
 
     // While validating -> 404 on the public path.
-    const notReady = await app.inject({ method: "GET", url: `/media/${row!.id}` })
+    const notReady = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(notReady.statusCode).toBe(404)
 
     // Flip to ready (as the worker would) and re-fetch.
     await h.sql`UPDATE media_assets SET status = 'ready', width = 800, height = 600 WHERE id = ${row!.id}`
-    const ready = await app.inject({ method: "GET", url: `/media/${row!.id}` })
+    const ready = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(ready.statusCode).toBe(200)
     const dto = ready.json()
     expect(dto.status).toBe("ready")

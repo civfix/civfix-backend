@@ -30,6 +30,7 @@ import { makeDrizzleClaimRepository } from "../services/anon-repository.drizzle.
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
 import { makeReportService } from "../services/report-service.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
+import { route } from "../versioning/route.js"
 
 /**
  * Optional injected claim-service (tests). When present the routes use it directly so the nudge/claim
@@ -88,7 +89,7 @@ export async function registerClaimRoutes(
   // -------------------------------------------------------------------------
   // GET /claim/nudge  [anon-ok]  (dedicated tighter per-IP limit, P2-7)
   // -------------------------------------------------------------------------
-  app.get("/claim/nudge", { config: { rateLimit: CLAIM_RATE_LIMIT } }, async (request, reply) => {
+  route(app, "claimNudge", { config: { rateLimit: CLAIM_RATE_LIMIT } }, async (request, reply) => {
     const q = parse(ClaimNudgeQuerySchema, request.query)
     // Prefer the query param (mobile) and fall back to the readable anon cookie (web).
     const anonToken = q.anonToken ?? request.cookies[ANON_COOKIE]
@@ -103,8 +104,9 @@ export async function registerClaimRoutes(
   // -------------------------------------------------------------------------
   // POST /claim/report  [auth][csrf]  (dedicated tighter per-IP limit, P2-7)
   // -------------------------------------------------------------------------
-  app.post(
-    "/claim/report",
+  route(
+    app,
+    "claimReport",
     { preHandler: csrfProtect, config: { rateLimit: CLAIM_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)

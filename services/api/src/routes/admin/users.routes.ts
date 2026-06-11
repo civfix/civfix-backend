@@ -35,6 +35,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
   makeAdminUserService,
@@ -98,7 +99,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/users
   // -------------------------------------------------------------------------
-  app.get("/admin/users", async (request, reply) => {
+  route(app, "listAdminUsers", async (request, reply) => {
     const query = parse(AdminUserListQuerySchema, request.query)
     const payload: AdminUserListResponse = await service().list(query)
     reply.status(200).send(payload)
@@ -107,7 +108,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/users/:id
   // -------------------------------------------------------------------------
-  app.get("/admin/users/:id", async (request, reply) => {
+  route(app, "getAdminUser", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminUserDTO = await service().get(id)
     reply.status(200).send(payload)
@@ -116,7 +117,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/users/:id/reports
   // -------------------------------------------------------------------------
-  app.get("/admin/users/:id/reports", async (request, reply) => {
+  route(app, "getUserReports", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
     const payload: UserReportsResponse = await service().getReports(query)
@@ -126,7 +127,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/users/:id/events
   // -------------------------------------------------------------------------
-  app.get("/admin/users/:id/events", async (request, reply) => {
+  route(app, "getUserEvents", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
     const payload: UserEventsResponse = await service().getEvents(query)
@@ -136,7 +137,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/users/:id/messages
   // -------------------------------------------------------------------------
-  app.get("/admin/users/:id/messages", async (request, reply) => {
+  route(app, "getUserMessages", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
     const payload: UserMessagesResponse = await service().getMessages(query)
@@ -146,7 +147,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/users/:id/flag  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/users/:id/flag", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "flagUser", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(FlagUserRequestSchema, { ...(request.body as object), id })
     await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
@@ -157,7 +158,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/users/:id/status  [csrf]   (ban revokes all the user's sessions)
   // -------------------------------------------------------------------------
-  app.post("/admin/users/:id/status", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setUserStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetUserStatusRequestSchema, { ...(request.body as object), id })
     await service().setStatus(id, {
@@ -172,7 +173,7 @@ export async function registerAdminUsersRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/users/:id/role  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/users/:id/role", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setUserRole", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetRoleRequestSchema, { ...(request.body as object), id })
     await service().setRole(id, { role: body.role, actorId: request.auth.userId })

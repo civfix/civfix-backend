@@ -26,6 +26,7 @@ import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
+import { route } from "../versioning/route.js"
 import { makeDmService, type DmService, type DmUserLookup } from "../services/dm-service.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
@@ -75,8 +76,9 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
   // -------------------------------------------------------------------------
   // POST /dm  [auth][csrf]  (rate-limited)
   // -------------------------------------------------------------------------
-  app.post(
-    "/dm",
+  route(
+    app,
+    "openDm",
     { preHandler: csrfProtect, config: { rateLimit: DM_OPEN_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
@@ -90,7 +92,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
   // -------------------------------------------------------------------------
   // GET /dm/:id/messages  [auth]  (participant + not-blocked gated)
   // -------------------------------------------------------------------------
-  app.get("/dm/:id/messages", async (request, reply) => {
+  route(app, "dmMessages", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(DmIdParamsSchema, request.params)
     // Non-strict like the cleanup history query: tolerates the threadId path-param echo the typed client

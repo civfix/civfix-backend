@@ -4,7 +4,7 @@ import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
-import { AppError } from "@civfix/shared"
+import type { AppError } from "@civfix/shared"
 
 /**
  * DM service unit tests (no DB): openDm rules.

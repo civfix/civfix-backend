@@ -271,7 +271,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       // Member (organizer) -> 200.
       const ok = await app.inject({
         method: "GET",
-        url: `/cleanups/${created.id}/messages`,
+        url: `/v1/cleanups/${created.id}/messages`,
         headers: { authorization: `Bearer ${organizerToken}` },
       })
       expect(ok.statusCode).toBe(200)
@@ -282,7 +282,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       const strangerToken = await authServices.sessions.createSession(strangerId, [])
       const forbidden = await app.inject({
         method: "GET",
-        url: `/cleanups/${created.id}/messages`,
+        url: `/v1/cleanups/${created.id}/messages`,
         headers: { authorization: `Bearer ${strangerToken}` },
       })
       expect(forbidden.statusCode).toBe(403)

@@ -17,8 +17,6 @@ import type { Container } from "../../src/di.js"
  * the missing-object short-circuit, and that a consumed object is deleted.
  */
 
-const enc = new TextEncoder()
-
 function rfc822(opts: { from: string; to: string; body?: string; messageId?: string }): Buffer {
   const lines = [`From: ${opts.from}`, `To: ${opts.to}`]
   if (opts.messageId !== undefined) lines.push(`Message-ID: ${opts.messageId}`)

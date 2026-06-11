@@ -40,6 +40,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
   makeMailService,
@@ -107,7 +108,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/mail/stats  (static segment BEFORE /:id)
   // -------------------------------------------------------------------------
-  app.get("/admin/mail/stats", async (_request, reply) => {
+  route(app, "getMailStats", async (_request, reply) => {
     const payload: MailStatsResponse = await service().stats()
     reply.status(200).send(payload)
   })
@@ -115,7 +116,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/mail
   // -------------------------------------------------------------------------
-  app.get("/admin/mail", async (request, reply) => {
+  route(app, "listMail", async (request, reply) => {
     const query = parse(MailListQuerySchema, request.query)
     const payload: MailListResponse = await service().list(query)
     reply.status(200).send(payload)
@@ -124,7 +125,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/mail/:id
   // -------------------------------------------------------------------------
-  app.get("/admin/mail/:id", async (request, reply) => {
+  route(app, "getMailThread", async (request, reply) => {
     const { id } = idParam(request)
     const payload: MailThreadDTO = await service().getThread(id)
     reply.status(200).send(payload)
@@ -133,7 +134,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/mail  [csrf]  (compose -> mail.sent)
   // -------------------------------------------------------------------------
-  app.post("/admin/mail", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "composeMail", { preHandler: csrfProtect }, async (request, reply) => {
     const body = parse(ComposeRequestSchema, request.body)
     // The mail.sent audit is written in-tx with the first message insert (H4).
     await service().compose(
@@ -147,7 +148,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/mail/:id/reply  [csrf]  (reply -> mail.replied)
   // -------------------------------------------------------------------------
-  app.post("/admin/mail/:id/reply", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "replyMail", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(ReplyRequestSchema, { ...(request.body as object), id })
     // The mail.replied audit is written in-tx with the OUT message insert (H4).
@@ -159,7 +160,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/mail/:id/read  [csrf]  (lifecycle toggle; not audited)
   // -------------------------------------------------------------------------
-  app.post("/admin/mail/:id/read", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "markMailRead", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     parse(MarkMailReadRequestSchema, { ...(request.body as object), id })
     await service().markRead(id)
@@ -170,7 +171,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/mail/:id/status  [csrf]  (status change -> mail.status_changed)
   // -------------------------------------------------------------------------
-  app.post("/admin/mail/:id/status", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setMailStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetMailStatusRequestSchema, { ...(request.body as object), id })
     // The mail.status_changed audit is written in-tx with the status UPDATE (H4).
@@ -182,7 +183,7 @@ export async function registerAdminMailRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/mail/:id/resend  [csrf]  (resend -> mail.resent)
   // -------------------------------------------------------------------------
-  app.post("/admin/mail/:id/resend", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "resendMail", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     parse(ResendRequestSchema, { ...(request.body as object), id })
     // The mail.resent audit is written in-tx with the OUT message insert (H4).

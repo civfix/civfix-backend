@@ -28,7 +28,7 @@ describe("GET /map/tileinfo", () => {
   it("advertises the default OpenStreetMap/CARTO Voyager raster basemap when unconfigured", async () => {
     // The vitest env sets no TILES_* vars, so this exercises the built-in defaults.
     app = await buildServer({ env: loadEnv() })
-    const res = await app.inject({ method: "GET", url: "/map/tileinfo" })
+    const res = await app.inject({ method: "GET", url: "/v1/map/tileinfo" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     // No self-hosted vector basemap.
@@ -55,7 +55,7 @@ describe("GET /map/tileinfo", () => {
     const container = buildContainer(env)
     app = await buildServer({ env, container })
 
-    const res = await app.inject({ method: "GET", url: "/map/tileinfo" })
+    const res = await app.inject({ method: "GET", url: "/v1/map/tileinfo" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.pmtilesUrl).toBe("")
@@ -72,7 +72,7 @@ describe("POST /map/reverse-label", () => {
     app = await buildServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
-      url: "/map/reverse-label",
+      url: "/v1/map/reverse-label",
       payload: { lat: 34.05, lng: -118.25 },
     })
     expect(res.statusCode).toBe(200)
@@ -84,7 +84,7 @@ describe("POST /map/reverse-label", () => {
     app = await buildServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
-      url: "/map/reverse-label",
+      url: "/v1/map/reverse-label",
       payload: { lat: 999, lng: -118.25 },
     })
     expect(res.statusCode).toBe(422)
@@ -100,7 +100,7 @@ describe("POST /map/jurisdictions/:geoid/suggest-contact (validation, no DB)", (
     app = await buildServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
-      url: "/map/jurisdictions/0644000/suggest-contact",
+      url: "/v1/map/jurisdictions/0644000/suggest-contact",
       payload: { note: "no contact here" },
     })
     expect(res.statusCode).toBe(422)
@@ -111,7 +111,7 @@ describe("POST /map/jurisdictions/:geoid/suggest-contact (validation, no DB)", (
     app = await buildServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
-      url: "/map/jurisdictions/0644000/suggest-contact",
+      url: "/v1/map/jurisdictions/0644000/suggest-contact",
       payload: { email: "not-an-email" },
     })
     expect(res.statusCode).toBe(422)
@@ -127,7 +127,7 @@ describe("GET /map/cleanups bbox validation (P2)", () => {
     const bbox = JSON.stringify({ west: -118.2, south: 34.0, east: -118.5, north: 34.2 })
     const res = await app.inject({
       method: "GET",
-      url: `/map/cleanups?bbox=${encodeURIComponent(bbox)}`,
+      url: `/v1/map/cleanups?bbox=${encodeURIComponent(bbox)}`,
     })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
@@ -138,7 +138,7 @@ describe("GET /map/cleanups bbox validation (P2)", () => {
     const bbox = JSON.stringify({ west: -118.5, south: 34.2, east: -118.2, north: 34.0 })
     const res = await app.inject({
       method: "GET",
-      url: `/map/cleanups?bbox=${encodeURIComponent(bbox)}`,
+      url: `/v1/map/cleanups?bbox=${encodeURIComponent(bbox)}`,
     })
     expect(res.statusCode).toBe(422)
   })

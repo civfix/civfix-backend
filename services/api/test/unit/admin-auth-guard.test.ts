@@ -96,18 +96,18 @@ afterEach(async () => {
 
 // A representative spread of admin DATA routes across domains (GET, no body needed) + one mutation.
 const DATA_ROUTES: ReadonlyArray<{ method: "GET" | "POST"; url: string }> = [
-  { method: "GET", url: "/admin/home/summary" },
-  { method: "GET", url: "/admin/discovery" },
-  { method: "GET", url: "/admin/jurisdictions" },
-  { method: "GET", url: "/admin/reports" },
-  { method: "GET", url: "/admin/events" },
-  { method: "GET", url: "/admin/users" },
-  { method: "GET", url: "/admin/moderation" },
-  { method: "GET", url: "/admin/gov-claims" },
-  { method: "GET", url: "/admin/mail" },
-  { method: "GET", url: "/admin/analytics/kpis" },
-  { method: "GET", url: "/admin/audit" },
-  { method: "GET", url: "/admin/system/health" },
+  { method: "GET", url: "/v1/admin/home/summary" },
+  { method: "GET", url: "/v1/admin/discovery" },
+  { method: "GET", url: "/v1/admin/jurisdictions" },
+  { method: "GET", url: "/v1/admin/reports" },
+  { method: "GET", url: "/v1/admin/events" },
+  { method: "GET", url: "/v1/admin/users" },
+  { method: "GET", url: "/v1/admin/moderation" },
+  { method: "GET", url: "/v1/admin/gov-claims" },
+  { method: "GET", url: "/v1/admin/mail" },
+  { method: "GET", url: "/v1/admin/analytics/kpis" },
+  { method: "GET", url: "/v1/admin/audit" },
+  { method: "GET", url: "/v1/admin/system/health" },
 ]
 
 describe("H3: admin data routes are operator-gated", () => {
@@ -157,12 +157,12 @@ describe("M5: malformed :id path params are rejected as 400/422, not 500", () =>
     // These reach the handler (operator passed the guard); a non-uuid id must be caught by idParam
     // (AppError.validation -> 400) BEFORE the SQL layer, where a non-uuid would otherwise 500.
     for (const url of [
-      "/admin/reports/not-a-uuid",
-      "/admin/moderation/not-a-uuid",
-      "/admin/events/not-a-uuid",
-      "/admin/users/not-a-uuid",
-      "/admin/gov-claims/not-a-uuid",
-      "/admin/mail/not-a-uuid",
+      "/v1/admin/reports/not-a-uuid",
+      "/v1/admin/moderation/not-a-uuid",
+      "/v1/admin/events/not-a-uuid",
+      "/v1/admin/users/not-a-uuid",
+      "/v1/admin/gov-claims/not-a-uuid",
+      "/v1/admin/mail/not-a-uuid",
     ]) {
       const res = await harness.app.inject({
         method: "GET",
@@ -182,7 +182,7 @@ describe("doc 16: admin Cloudflare Access exchange (POST /admin/auth/access/exch
     harness = await makeHarness({ verifyAccessJwt: fakeVerifier(identityFor(ALLOWED)) })
     const res = await harness.app.inject({
       method: "POST",
-      url: "/admin/auth/access/exchange",
+      url: "/v1/admin/auth/access/exchange",
       headers: HEADER,
     })
     expect(res.statusCode).toBe(200)
@@ -211,7 +211,7 @@ describe("doc 16: admin Cloudflare Access exchange (POST /admin/auth/access/exch
     const sessionCookie = (String(setCookie).split(";")[0] ?? "").trim()
     const data = await harness.app.inject({
       method: "GET",
-      url: "/admin/home/summary",
+      url: "/v1/admin/home/summary",
       headers: { cookie: sessionCookie },
     })
     expect([401, 403]).not.toContain(data.statusCode)
@@ -222,7 +222,7 @@ describe("doc 16: admin Cloudflare Access exchange (POST /admin/auth/access/exch
     expect(await harness.stores.users.findByEmail(NOT_ALLOWED)).toBeNull()
     const res = await harness.app.inject({
       method: "POST",
-      url: "/admin/auth/access/exchange",
+      url: "/v1/admin/auth/access/exchange",
       headers: HEADER,
     })
     expect(res.statusCode).toBe(403)
@@ -234,7 +234,7 @@ describe("doc 16: admin Cloudflare Access exchange (POST /admin/auth/access/exch
 
   it("is 401 when the Cf-Access-Jwt-Assertion header is absent", async () => {
     harness = await makeHarness({ verifyAccessJwt: fakeVerifier(identityFor(ALLOWED)) })
-    const res = await harness.app.inject({ method: "POST", url: "/admin/auth/access/exchange" })
+    const res = await harness.app.inject({ method: "POST", url: "/v1/admin/auth/access/exchange" })
     expect(res.statusCode).toBe(401)
     expect(res.headers["set-cookie"]).toBeUndefined()
     expect(harness.audits).toHaveLength(0)
@@ -244,7 +244,7 @@ describe("doc 16: admin Cloudflare Access exchange (POST /admin/auth/access/exch
     harness = await makeHarness({ verifyAccessJwt: fakeVerifier("throw") })
     const res = await harness.app.inject({
       method: "POST",
-      url: "/admin/auth/access/exchange",
+      url: "/v1/admin/auth/access/exchange",
       headers: HEADER,
     })
     expect(res.statusCode).toBe(401)
@@ -256,7 +256,7 @@ describe("doc 16: admin Cloudflare Access exchange (POST /admin/auth/access/exch
     harness = await makeHarness() // no verifyAccessJwt override; test env has no CF_ACCESS_*
     const res = await harness.app.inject({
       method: "POST",
-      url: "/admin/auth/access/exchange",
+      url: "/v1/admin/auth/access/exchange",
       headers: HEADER,
     })
     expect(res.statusCode).toBe(503)

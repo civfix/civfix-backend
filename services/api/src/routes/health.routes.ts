@@ -10,6 +10,7 @@
 
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
+import { route } from "../versioning/route.js"
 import { SERVICE_NAME, SERVICE_VERSION } from "../version.js"
 
 type CheckStatus = "ok" | "skipped" | "down"
@@ -26,7 +27,7 @@ export async function registerHealthRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  app.get("/healthz", async () => {
+  route(app, "health", async () => {
     return { ok: true, service: SERVICE_NAME, version: SERVICE_VERSION }
   })
 

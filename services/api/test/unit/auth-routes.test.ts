@@ -37,7 +37,7 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     // 1) Request a code.
     const reqRes = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/request",
+      url: "/v1/auth/otp/request",
       payload: { email },
     })
     expect(reqRes.statusCode).toBe(200)
@@ -50,7 +50,7 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     // 3) Verify as a MOBILE client -> token in the body, no cookies.
     const verifyRes = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "mobile" },
       payload: { email, code },
     })
@@ -70,7 +70,7 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     // 4) GET /auth/session with the bearer token -> authenticated.
     const checkRes = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { authorization: `Bearer ${token}` },
     })
     expect(checkRes.statusCode).toBe(200)
@@ -83,7 +83,7 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
 
   it("an unauthenticated /auth/session reports authenticated:false with enabledProviders", async () => {
     harness = await makeAuthHarness()
-    const res = await harness.app.inject({ method: "GET", url: "/auth/session" })
+    const res = await harness.app.inject({ method: "GET", url: "/v1/auth/session" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.authenticated).toBe(false)
@@ -95,12 +95,12 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
   it("a wrong OTP code is rejected with 401", async () => {
     harness = await makeAuthHarness()
     const email = "wrong.code@example.com"
-    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const correct = harness.mailer.lastOtpFor(email)!
     const wrong = correct === "000000" ? "111111" : "000000"
     const res = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       payload: { email, code: wrong },
     })
     expect(res.statusCode).toBe(401)
@@ -111,7 +111,7 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     harness = await makeAuthHarness()
     const res = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/request",
+      url: "/v1/auth/otp/request",
       payload: { email: "not-an-email" },
     })
     expect(res.statusCode).toBe(422)
@@ -122,12 +122,12 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
   it("verify (web) sets httpOnly session cookie + readable CSRF cookie + csrfToken", async () => {
     harness = await makeAuthHarness()
     const email = "web.user@example.com"
-    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const code = harness.mailer.lastOtpFor(email)!
 
     const verifyRes = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "web" },
       payload: { email, code },
     })
@@ -152,7 +152,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     // The web session cookie authenticates /auth/session with no bearer token.
     const checkRes = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { cookie: `civfix_session=${cookies.civfix_session}` },
     })
     expect(checkRes.json().authenticated).toBe(true)
@@ -161,11 +161,11 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
   it("GET /auth/session returns csrfToken for the WEB cookie flow, echoing the CSRF cookie", async () => {
     harness = await makeAuthHarness()
     const email = "csrf.web@example.com"
-    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const code = harness.mailer.lastOtpFor(email)!
     const verify = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "web" },
       payload: { email, code },
     })
@@ -175,7 +175,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     // the SPA can recover it after a reload/redirect.
     const check = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { cookie: `civfix_session=${cookies.civfix_session}; civfix_csrf=${cookies.civfix_csrf}` },
     })
     expect(check.json().authenticated).toBe(true)
@@ -185,11 +185,11 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
   it("GET /auth/session MINTS a csrfToken (+ cookie) for a cookie session missing the CSRF cookie", async () => {
     harness = await makeAuthHarness()
     const email = "csrf.recover@example.com"
-    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const code = harness.mailer.lastOtpFor(email)!
     const verify = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "web" },
       payload: { email, code },
     })
@@ -199,7 +199,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     // returns a csrfToken and sets a matching readable CSRF cookie.
     const check = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { cookie: `civfix_session=${cookies.civfix_session}` },
     })
     const minted = check.json().csrfToken as string
@@ -211,11 +211,11 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
   it("GET /auth/session OMITS csrfToken for the bearer (mobile) flow", async () => {
     harness = await makeAuthHarness()
     const email = "csrf.bearer@example.com"
-    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const code = harness.mailer.lastOtpFor(email)!
     const verify = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "mobile" },
       payload: { email, code },
     })
@@ -223,7 +223,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
 
     const check = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { authorization: `Bearer ${token}` },
     })
     expect(check.json().authenticated).toBe(true)
@@ -233,11 +233,11 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
   it("logout requires CSRF on the cookie flow and revokes the session", async () => {
     harness = await makeAuthHarness()
     const email = "logout.user@example.com"
-    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const code = harness.mailer.lastOtpFor(email)!
     const verifyRes = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "web" },
       payload: { email, code },
     })
@@ -248,7 +248,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     // Logout WITHOUT the CSRF header -> 403.
     const noCsrf = await harness.app.inject({
       method: "POST",
-      url: "/auth/logout",
+      url: "/v1/auth/logout",
       headers: { cookie: cookieHeader },
     })
     expect(noCsrf.statusCode).toBe(403)
@@ -256,7 +256,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     // Logout WITH the CSRF header -> 200 + session revoked.
     const ok = await harness.app.inject({
       method: "POST",
-      url: "/auth/logout",
+      url: "/v1/auth/logout",
       headers: { cookie: cookieHeader, "x-csrf-token": csrfToken },
     })
     expect(ok.statusCode).toBe(200)
@@ -265,7 +265,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     // The session no longer authenticates.
     const after = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { cookie: `civfix_session=${cookies.civfix_session}` },
     })
     expect(after.json().authenticated).toBe(false)
@@ -274,11 +274,11 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
   it("logout on the bearer flow needs no CSRF and revokes", async () => {
     harness = await makeAuthHarness()
     const email = "bearer.logout@example.com"
-    await harness.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const code = harness.mailer.lastOtpFor(email)!
     const verify = await harness.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "mobile" },
       payload: { email, code },
     })
@@ -286,14 +286,14 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
 
     const logout = await harness.app.inject({
       method: "POST",
-      url: "/auth/logout",
+      url: "/v1/auth/logout",
       headers: { authorization: `Bearer ${token}` },
     })
     expect(logout.statusCode).toBe(200)
 
     const after = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { authorization: `Bearer ${token}` },
     })
     expect(after.json().authenticated).toBe(false)
@@ -301,7 +301,7 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
 
   it("logout while unauthenticated is 401", async () => {
     harness = await makeAuthHarness()
-    const res = await harness.app.inject({ method: "POST", url: "/auth/logout" })
+    const res = await harness.app.inject({ method: "POST", url: "/v1/auth/logout" })
     expect(res.statusCode).toBe(401)
   })
 })
@@ -319,7 +319,7 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
 
     const res = await harness.app.inject({
       method: "POST",
-      url: "/auth/google",
+      url: "/v1/auth/google",
       headers: { "x-client": "mobile" },
       payload: { idToken: "google-id-token" },
     })
@@ -331,7 +331,7 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     // The minted session authenticates.
     const check = await harness.app.inject({
       method: "GET",
-      url: "/auth/session",
+      url: "/v1/auth/session",
       headers: { authorization: `Bearer ${body.token}` },
     })
     expect(check.json().authenticated).toBe(true)
@@ -348,7 +348,7 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     })
     const res = await harness.app.inject({
       method: "POST",
-      url: "/auth/apple",
+      url: "/v1/auth/apple",
       headers: { "x-client": "mobile" },
       payload: { identityToken: "apple-id-token", fullName: "Apple Person" },
     })
@@ -360,7 +360,7 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     harness = await makeAuthHarness()
     const res = await harness.app.inject({
       method: "POST",
-      url: "/auth/google",
+      url: "/v1/auth/google",
       payload: { idToken: "never-registered" },
     })
     // The stub rejects unknown tokens; the error mapper renders a 500 envelope (no session leaked).
@@ -453,7 +453,7 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
     // Correct nonce -> the route threads body.nonce -> service -> verifier; sign-in succeeds.
     const ok = await harness.app.inject({
       method: "POST",
-      url: "/auth/apple",
+      url: "/v1/auth/apple",
       headers: { "x-client": "mobile" },
       payload: { identityToken: "apple-nonce-token", nonce: "abc123", fullName: "Nonce User" },
     })
@@ -463,7 +463,7 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
     // WRONG nonce -> the bind fails -> no session is issued (error envelope, no token leaked).
     const bad = await harness.app.inject({
       method: "POST",
-      url: "/auth/apple",
+      url: "/v1/auth/apple",
       headers: { "x-client": "mobile" },
       payload: { identityToken: "apple-nonce-token", nonce: "WRONG", fullName: "Nonce User" },
     })
@@ -482,7 +482,7 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
     })
     const res = await harness.app.inject({
       method: "POST",
-      url: "/auth/apple",
+      url: "/v1/auth/apple",
       headers: { "x-client": "mobile" },
       payload: { identityToken: "apple-plain", fullName: "Plain User" },
     })
@@ -496,11 +496,11 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     h: AuthHarness,
     email: string,
   ): Promise<{ token: string; user: { profileComplete: boolean; handle: string | null } }> {
-    await h.app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+    await h.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
     const code = h.mailer.lastOtpFor(email)!
     const res = await h.app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/v1/auth/otp/verify",
       headers: { "x-client": "mobile" },
       payload: { email, code },
     })
@@ -519,14 +519,14 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     const { token } = await signIn(harness, "checker@example.com")
     const headers = { authorization: `Bearer ${token}` }
 
-    const free = await harness.app.inject({ method: "GET", url: "/me/handle-available?handle=ana_99", headers })
+    const free = await harness.app.inject({ method: "GET", url: "/v1/me/handle-available?handle=ana_99", headers })
     expect(free.statusCode).toBe(200)
     expect(free.json()).toEqual({ available: true, reason: null })
 
-    const invalid = await harness.app.inject({ method: "GET", url: "/me/handle-available?handle=ab", headers })
+    const invalid = await harness.app.inject({ method: "GET", url: "/v1/me/handle-available?handle=ab", headers })
     expect(invalid.json()).toEqual({ available: false, reason: "invalid" })
 
-    const anon = await harness.app.inject({ method: "GET", url: "/me/handle-available?handle=ana_99" })
+    const anon = await harness.app.inject({ method: "GET", url: "/v1/me/handle-available?handle=ana_99" })
     expect(anon.statusCode).toBe(401)
   })
 
@@ -537,7 +537,7 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
 
     const res = await harness.app.inject({
       method: "PUT",
-      url: "/me/profile",
+      url: "/v1/me/profile",
       headers,
       payload: { handle: "ana_99", displayName: "Ana Rivera" },
     })
@@ -548,7 +548,7 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     expect(user.profileComplete).toBe(true)
 
     // The session now reflects the completed profile.
-    const check = await harness.app.inject({ method: "GET", url: "/auth/session", headers })
+    const check = await harness.app.inject({ method: "GET", url: "/v1/auth/session", headers })
     expect(check.json().user.profileComplete).toBe(true)
     expect(check.json().user.handle).toBe("ana_99")
   })
@@ -560,7 +560,7 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
 
     const claim = await harness.app.inject({
       method: "PUT",
-      url: "/me/profile",
+      url: "/v1/me/profile",
       headers: { authorization: `Bearer ${a.token}`, "x-client": "mobile" },
       payload: { handle: "rivera", displayName: "A" },
     })
@@ -568,14 +568,14 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
 
     const avail = await harness.app.inject({
       method: "GET",
-      url: "/me/handle-available?handle=rivera",
+      url: "/v1/me/handle-available?handle=rivera",
       headers: { authorization: `Bearer ${b.token}` },
     })
     expect(avail.json()).toEqual({ available: false, reason: "taken" })
 
     const conflict = await harness.app.inject({
       method: "PUT",
-      url: "/me/profile",
+      url: "/v1/me/profile",
       headers: { authorization: `Bearer ${b.token}`, "x-client": "mobile" },
       payload: { handle: "rivera", displayName: "B" },
     })
@@ -588,7 +588,7 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     const { token } = await signIn(harness, "badhandle@example.com")
     const res = await harness.app.inject({
       method: "PUT",
-      url: "/me/profile",
+      url: "/v1/me/profile",
       headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
       payload: { handle: "no spaces!", displayName: "X" },
     })

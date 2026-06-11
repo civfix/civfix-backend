@@ -24,6 +24,7 @@ import {
   type SystemHealthProbes,
   type SystemHealthService,
 } from "../../services/admin/system-health-service.js"
+import { route } from "../../versioning/route.js"
 
 /**
  * Optional injected system-health service (tests). When present the route uses it directly instead of
@@ -122,7 +123,7 @@ export async function registerAdminSystemRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/system/health
   // -------------------------------------------------------------------------
-  app.get("/admin/system/health", async (_request, reply) => {
+  route(app, "adminSystemHealth", async (_request, reply) => {
     const payload: SystemHealthResponse = await service().health()
     reply.status(200).send(payload)
   })

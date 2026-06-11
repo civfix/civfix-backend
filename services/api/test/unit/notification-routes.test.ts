@@ -69,11 +69,11 @@ async function signIn(
   mailer: FakeMailer,
   email: string,
 ): Promise<{ token: string; userId: string }> {
-  await app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+  await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
   const code = mailer.lastOtpFor(email)!
   const verify = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/v1/auth/otp/verify",
     headers: { "x-client": "mobile" },
     payload: { email, code },
   })
@@ -100,14 +100,14 @@ describe("GET /notifications", () => {
     await repo.insertNotification({ userId, type: "system", title: "older", body: null, link: null })
     await repo.insertNotification({ userId, type: "system", title: "newer", body: null, link: null })
 
-    const res = await app.inject({ method: "GET", url: "/notifications", headers: auth(token) })
+    const res = await app.inject({ method: "GET", url: "/v1/notifications", headers: auth(token) })
     expect(res.statusCode).toBe(200)
     expect(res.json().items.map((n: { title: string }) => n.title)).toEqual(["newer", "older"])
   })
 
   it("401s anonymously", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/notifications" })
+    const res = await app.inject({ method: "GET", url: "/v1/notifications" })
     expect(res.statusCode).toBe(401)
   })
 })
@@ -126,14 +126,14 @@ describe("POST /notifications/read", () => {
 
     const res = await app.inject({
       method: "POST",
-      url: "/notifications/read",
+      url: "/v1/notifications/read",
       headers: auth(token),
       payload: { ids: [n.id] },
     })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
 
-    const list = await app.inject({ method: "GET", url: "/notifications", headers: auth(token) })
+    const list = await app.inject({ method: "GET", url: "/v1/notifications", headers: auth(token) })
     expect(list.json().items[0].read).toBe(true)
   })
 
@@ -141,7 +141,7 @@ describe("POST /notifications/read", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/notifications/read",
+      url: "/v1/notifications/read",
       headers: auth(token),
       payload: { ids: ["not-a-uuid"] },
     })
@@ -154,7 +154,7 @@ describe("GET + PUT /notifications/prefs", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "GET",
-      url: "/notifications/prefs",
+      url: "/v1/notifications/prefs",
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)
@@ -170,7 +170,7 @@ describe("GET + PUT /notifications/prefs", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "PUT",
-      url: "/notifications/prefs",
+      url: "/v1/notifications/prefs",
       headers: auth(token),
       payload: { follows: false, quietHours: { start: "22:00", end: "07:00" } },
     })
@@ -185,7 +185,7 @@ describe("GET + PUT /notifications/prefs", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "PUT",
-      url: "/notifications/prefs",
+      url: "/v1/notifications/prefs",
       headers: auth(token),
       payload: { bogus: true },
     })
@@ -194,7 +194,7 @@ describe("GET + PUT /notifications/prefs", () => {
 
   it("401s anonymously", async () => {
     const { app } = await makeHarness()
-    expect((await app.inject({ method: "GET", url: "/notifications/prefs" })).statusCode).toBe(401)
+    expect((await app.inject({ method: "GET", url: "/v1/notifications/prefs" })).statusCode).toBe(401)
   })
 })
 
@@ -203,7 +203,7 @@ describe("POST /push/register", () => {
     const { app, token, push, userId } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/push/register",
+      url: "/v1/push/register",
       headers: auth(token),
       payload: { platform: "ios", token: "device-token-1", deviceId: "dev-1" },
     })
@@ -221,7 +221,7 @@ describe("POST /push/register", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/push/register",
+      url: "/v1/push/register",
       headers: auth(token),
       payload: { platform: "blackberry", token: "x" },
     })
@@ -232,7 +232,7 @@ describe("POST /push/register", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/push/register",
+      url: "/v1/push/register",
       payload: { platform: "ios", token: "x" },
     })
     expect(res.statusCode).toBe(401)

@@ -28,6 +28,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
   makeAdminEventService,
@@ -72,7 +73,7 @@ export async function registerAdminEventsRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/events
   // -------------------------------------------------------------------------
-  app.get("/admin/events", async (request, reply) => {
+  route(app, "listAdminEvents", async (request, reply) => {
     const query = parse(AdminEventListQuerySchema, request.query)
     const payload: AdminEventListResponse = await service().list(query)
     reply.status(200).send(payload)
@@ -81,7 +82,7 @@ export async function registerAdminEventsRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/events/:id
   // -------------------------------------------------------------------------
-  app.get("/admin/events/:id", async (request, reply) => {
+  route(app, "getAdminEvent", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminEventDTO = await service().get(id)
     reply.status(200).send(payload)
@@ -90,7 +91,7 @@ export async function registerAdminEventsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/events/:id/status  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/events/:id/status", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setEventStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetEventStatusRequestSchema, { ...(request.body as object), id })
     await service().setStatus(id, { status: body.status, actorId: request.auth.userId })
@@ -101,7 +102,7 @@ export async function registerAdminEventsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/events/:id/flag  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/events/:id/flag", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "flagEvent", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(FlagEventRequestSchema, { ...(request.body as object), id })
     await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
@@ -112,7 +113,7 @@ export async function registerAdminEventsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/events/:id/cancel  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/events/:id/cancel", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "cancelEvent", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(CancelRequestSchema, { ...(request.body as object), id })
     await service().cancel(id, { reason: body.reason ?? null, actorId: request.auth.userId })
@@ -123,7 +124,7 @@ export async function registerAdminEventsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/events/:id/message  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/events/:id/message", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "postEventMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(PostMessageRequestSchema, { ...(request.body as object), id })
     await service().postMessage(id, { body: body.body, actorId: request.auth.userId })

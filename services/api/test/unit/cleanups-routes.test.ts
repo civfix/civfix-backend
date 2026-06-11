@@ -76,11 +76,11 @@ async function signIn(
   mailer: FakeMailer,
   email: string,
 ): Promise<{ token: string; userId: string }> {
-  await app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+  await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
   const code = mailer.lastOtpFor(email)!
   const verify = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/v1/auth/otp/verify",
     headers: { "x-client": "mobile" },
     payload: { email, code },
   })
@@ -105,7 +105,7 @@ const FUTURE = new Date(Date.now() + 7 * 86_400_000).toISOString()
 async function createCleanup(app: FastifyInstance, token: string): Promise<string> {
   const res = await app.inject({
     method: "POST",
-    url: "/cleanups",
+    url: "/v1/cleanups",
     headers: auth(token),
     payload: { title: "Sweep", type: "site", lat: 34, lng: -118.49, scheduledAt: FUTURE },
   })
@@ -117,7 +117,7 @@ describe("POST /cleanups", () => {
     const { app, token, userId } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: {
         title: "Saturday beach sweep",
@@ -143,7 +143,7 @@ describe("POST /cleanups", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       payload: { title: "x", type: "site", lat: 1, lng: 1, scheduledAt: FUTURE },
     })
     expect(res.statusCode).toBe(401)
@@ -159,7 +159,7 @@ describe("POST /cleanups", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: {
         title: "Saturday beach sweep",
@@ -186,7 +186,7 @@ describe("POST /cleanups", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: { title: "x", type: "spaceship", lat: 1, lng: 1, scheduledAt: FUTURE },
     })
@@ -200,11 +200,11 @@ describe("GET /cleanups and /cleanups/:id", () => {
     const { app, token } = await makeHarness()
     await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: { title: "Future sweep", type: "site", lat: 34, lng: -118.49, scheduledAt: FUTURE },
     })
-    const res = await app.inject({ method: "GET", url: "/cleanups?when=upcoming" })
+    const res = await app.inject({ method: "GET", url: "/v1/cleanups?when=upcoming" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.items.length).toBe(1)
@@ -215,20 +215,20 @@ describe("GET /cleanups and /cleanups/:id", () => {
   it("gets one cleanup and 404s a missing one", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token)
-    const got = await app.inject({ method: "GET", url: `/cleanups/${id}` })
+    const got = await app.inject({ method: "GET", url: `/v1/cleanups/${id}` })
     expect(got.statusCode).toBe(200)
     expect(got.json().id).toBe(id)
 
     const missing = await app.inject({
       method: "GET",
-      url: "/cleanups/00000000-0000-0000-0000-000000000000",
+      url: "/v1/cleanups/00000000-0000-0000-0000-000000000000",
     })
     expect(missing.statusCode).toBe(404)
   })
 
   it("422s a non-UUID id", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/cleanups/not-a-uuid" })
+    const res = await app.inject({ method: "GET", url: "/v1/cleanups/not-a-uuid" })
     expect(res.statusCode).toBe(422)
   })
 })
@@ -241,13 +241,13 @@ describe("GET /cleanups query encoding (the previously-422 client calls)", () =>
     // Two cleanups at different distances from the query point.
     await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: { title: "Near", type: "site", lat: 34.01, lng: -118.49, scheduledAt: FUTURE },
     })
     await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: { title: "Far", type: "site", lat: 35.5, lng: -118.49, scheduledAt: FUTURE },
     })
@@ -255,7 +255,7 @@ describe("GET /cleanups query encoding (the previously-422 client calls)", () =>
     // near as the client sends it: ?near=%7B%22lat%22%3A34%2C%22lng%22%3A-118.49%7D
     const res = await app.inject({
       method: "GET",
-      url: `/cleanups${clientQuery({ near: { lat: 34.0, lng: -118.49 }, when: "upcoming" })}`,
+      url: `/v1/cleanups${clientQuery({ near: { lat: 34.0, lng: -118.49 }, when: "upcoming" })}`,
     })
     expect(res.statusCode).toBe(200)
     const items = res.json().items as { title: string }[]
@@ -266,20 +266,20 @@ describe("GET /cleanups query encoding (the previously-422 client calls)", () =>
     const { app, token } = await makeHarness()
     await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: { title: "Inside", type: "site", lat: 34.0, lng: -118.49, scheduledAt: FUTURE },
     })
     await app.inject({
       method: "POST",
-      url: "/cleanups",
+      url: "/v1/cleanups",
       headers: auth(token),
       payload: { title: "Outside", type: "site", lat: 40.0, lng: -74.0, scheduledAt: FUTURE },
     })
 
     const res = await app.inject({
       method: "GET",
-      url: `/cleanups${clientQuery({
+      url: `/v1/cleanups${clientQuery({
         bbox: { west: -119, south: 33, east: -118, north: 35 },
         when: "upcoming",
       })}`,
@@ -291,7 +291,7 @@ describe("GET /cleanups query encoding (the previously-422 client calls)", () =>
 
   it("422s a malformed (non-JSON) near param", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/cleanups?near=not-json" })
+    const res = await app.inject({ method: "GET", url: "/v1/cleanups?near=not-json" })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
   })
@@ -307,7 +307,7 @@ describe("POST /cleanups/:id/join and /leave", () => {
 
     const joinRes = await app.inject({
       method: "POST",
-      url: `/cleanups/${id}/join`,
+      url: `/v1/cleanups/${id}/join`,
       headers: auth(joiner.token),
     })
     expect(joinRes.statusCode).toBe(200)
@@ -316,14 +316,14 @@ describe("POST /cleanups/:id/join and /leave", () => {
     // Re-join is idempotent: still going=2.
     const rejoin = await app.inject({
       method: "POST",
-      url: `/cleanups/${id}/join`,
+      url: `/v1/cleanups/${id}/join`,
       headers: auth(joiner.token),
     })
     expect(rejoin.json()).toEqual({ joined: true, going: 2 })
 
     const leaveRes = await app.inject({
       method: "POST",
-      url: `/cleanups/${id}/leave`,
+      url: `/v1/cleanups/${id}/leave`,
       headers: auth(joiner.token),
     })
     expect(leaveRes.statusCode).toBe(200)
@@ -335,7 +335,7 @@ describe("POST /cleanups/:id/join and /leave", () => {
     const id = await createCleanup(app, token)
     const res = await app.inject({
       method: "POST",
-      url: `/cleanups/${id}/leave`,
+      url: `/v1/cleanups/${id}/leave`,
       headers: auth(token),
     })
     expect(res.statusCode).toBe(409)
@@ -346,7 +346,7 @@ describe("POST /cleanups/:id/join and /leave", () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/cleanups/00000000-0000-0000-0000-000000000000/join",
+      url: "/v1/cleanups/00000000-0000-0000-0000-000000000000/join",
       headers: auth(token),
     })
     expect(res.statusCode).toBe(404)
@@ -355,7 +355,7 @@ describe("POST /cleanups/:id/join and /leave", () => {
   it("401s an anonymous join", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token)
-    const res = await app.inject({ method: "POST", url: `/cleanups/${id}/join` })
+    const res = await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join` })
     expect(res.statusCode).toBe(401)
   })
 })
@@ -372,7 +372,7 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     // The organizer (a member) can read history, newest-first.
     const ok = await app.inject({
       method: "GET",
-      url: `/cleanups/${id}/messages`,
+      url: `/v1/cleanups/${id}/messages`,
       headers: auth(token),
     })
     expect(ok.statusCode).toBe(200)
@@ -383,7 +383,7 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     const stranger = await signIn(app, mailer, "stranger@example.com")
     const forbidden = await app.inject({
       method: "GET",
-      url: `/cleanups/${id}/messages`,
+      url: `/v1/cleanups/${id}/messages`,
       headers: auth(stranger.token),
     })
     expect(forbidden.statusCode).toBe(403)
@@ -393,7 +393,7 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
   it("401s anonymous history", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token)
-    const res = await app.inject({ method: "GET", url: `/cleanups/${id}/messages` })
+    const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/messages` })
     expect(res.statusCode).toBe(401)
   })
 
@@ -405,10 +405,10 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
       // A second user RSVPs (seed their person row so the name resolves).
       const joiner = await signIn(app, mailer, "joiner@example.com")
       repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-      await app.inject({ method: "POST", url: `/cleanups/${id}/join`, headers: auth(joiner.token) })
+      await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
 
       // Anonymous viewer: no names, but the real going count.
-      const anon = await app.inject({ method: "GET", url: `/cleanups/${id}/attendees` })
+      const anon = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/attendees` })
       expect(anon.statusCode).toBe(200)
       expect(anon.json()).toMatchObject({ scope: "following", attendees: [], going: 2 })
 
@@ -417,7 +417,7 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
       repo.seedFollow(stranger.userId, userId)
       const asStranger = await app.inject({
         method: "GET",
-        url: `/cleanups/${id}/attendees`,
+        url: `/v1/cleanups/${id}/attendees`,
         headers: auth(stranger.token),
       })
       expect(asStranger.statusCode).toBe(200)
@@ -430,7 +430,7 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
       // The joiner (a member) sees EVERYONE going, organizer first.
       const asJoiner = await app.inject({
         method: "GET",
-        url: `/cleanups/${id}/attendees`,
+        url: `/v1/cleanups/${id}/attendees`,
         headers: auth(joiner.token),
       })
       const jBody = asJoiner.json()
@@ -442,7 +442,7 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
       const { app } = await makeHarness()
       const res = await app.inject({
         method: "GET",
-        url: "/cleanups/00000000-0000-0000-0000-000000000000/attendees",
+        url: "/v1/cleanups/00000000-0000-0000-0000-000000000000/attendees",
       })
       expect(res.statusCode).toBe(404)
     })
@@ -458,7 +458,7 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     // request still parses + returns history. (We send cleanupId AND before to prove both keys are fine.)
     const res = await app.inject({
       method: "GET",
-      url: `/cleanups/${id}/messages?cleanupId=${id}&limit=10`,
+      url: `/v1/cleanups/${id}/messages?cleanupId=${id}&limit=10`,
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)

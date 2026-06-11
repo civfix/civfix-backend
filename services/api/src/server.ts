@@ -21,6 +21,7 @@ import { registerCors } from "./plugins/cors.js"
 import { registerHelmet } from "./plugins/helmet.js"
 import { registerCookie } from "./plugins/cookie.js"
 import { registerRateLimit } from "./plugins/rate-limit.js"
+import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
 import {
   buildAuthServicesFromContainer,
@@ -138,6 +139,13 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   // otherwise the plugin's in-memory store (single instance / offline dev). getRedis() returns a
   // lazily-connecting ioredis client, so this does not open a socket until the first limited request.
   await registerRateLimit(app, env.REDIS_URL ? { redis: container.getRedis() } : {})
+
+  // API version gate (onRequest): rejects unknown/retired `/vN` segments (and, once a version is flipped
+  // to deprecated/sunset, signals/blocks accordingly) before any handler runs. Registered AFTER rate
+  // limiting (so a flood of bad-version requests is still throttled) and BEFORE the auth-context hook
+  // (so a malformed version is rejected without spending a session resolve). Derives nothing per-route;
+  // the served-versions policy lives in src/versioning/policy.ts.
+  await registerVersionGate(app)
 
   // Auth services: injected (tests) or built from the container (production: Pg stores + Redis +
   // mailer). In all-fakes mode with no DATABASE_URL/REDIS_URL there is no infra to back them, so the

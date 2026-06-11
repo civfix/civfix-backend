@@ -29,6 +29,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
   makeAdminReportService,
@@ -90,7 +91,7 @@ export async function registerAdminReportsRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/reports
   // -------------------------------------------------------------------------
-  app.get("/admin/reports", async (request, reply) => {
+  route(app, "listAdminReports", async (request, reply) => {
     const query = parse(AdminReportListQuerySchema, request.query)
     const payload: AdminReportListResponse = await service().list(query)
     reply.status(200).send(payload)
@@ -99,7 +100,7 @@ export async function registerAdminReportsRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/reports/:id
   // -------------------------------------------------------------------------
-  app.get("/admin/reports/:id", async (request, reply) => {
+  route(app, "getAdminReport", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminReportDTO = await service().get(id)
     reply.status(200).send(payload)
@@ -110,7 +111,7 @@ export async function registerAdminReportsRoutes(
   // -------------------------------------------------------------------------
   // Each mutation is audited inside the service's repo transaction (atomic with the effect + timeline),
   // using the operator userId resolved here from request.auth.userId. See admin-report-repository.drizzle.
-  app.post("/admin/reports/:id/status", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setReportStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetReportStatusRequestSchema, { ...(request.body as object), id })
     await service().setStatus(id, { status: body.status, actorId: request.auth.userId })
@@ -121,7 +122,7 @@ export async function registerAdminReportsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/reports/:id/flag  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/reports/:id/flag", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "flagReport", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(FlagReportRequestSchema, { ...(request.body as object), id })
     await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
@@ -132,7 +133,7 @@ export async function registerAdminReportsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/reports/:id/remove  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/reports/:id/remove", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "removeReport", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(RemoveReportRequestSchema, { ...(request.body as object), id })
     await service().remove(id, { reason: body.reason ?? null, actorId: request.auth.userId })
@@ -143,7 +144,7 @@ export async function registerAdminReportsRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/reports/:id/message  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/reports/:id/message", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "sendReportFollowup", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SendFollowupRequestSchema, { ...(request.body as object), id })
     await service().sendFollowup(id, { to: body.to, body: body.body, actorId: request.auth.userId })

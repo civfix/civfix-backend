@@ -34,6 +34,7 @@ import {
   type MediaRepository,
 } from "../services/media-intake-service.js"
 import { makeDrizzleMediaRepository } from "../services/media-repository.drizzle.js"
+import { route } from "../versioning/route.js"
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -69,7 +70,7 @@ export async function registerMediaRoutes(
   // -------------------------------------------------------------------------
   // POST /media/upload  (anon-ok)
   // -------------------------------------------------------------------------
-  app.post("/media/upload", async (request, reply) => {
+  route(app, "createMediaUpload", async (request, reply) => {
     const body = parse(CreateMediaUploadRequestSchema, request.body)
     const payload: CreateMediaUploadResponse = await service().createUpload(body, ownerOf(request))
     reply.status(200).send(payload)
@@ -78,7 +79,7 @@ export async function registerMediaRoutes(
   // -------------------------------------------------------------------------
   // POST /media/:uploadId/finalize  (anon-ok)
   // -------------------------------------------------------------------------
-  app.post("/media/:uploadId/finalize", async (request, reply) => {
+  route(app, "finalizeMedia", async (request, reply) => {
     const { uploadId } = parse(UploadIdParamsSchema, request.params)
     // The body is empty/ignored; the uploadId in the path is the request. We still validate via the
     // shared schema so the contract (FinalizeMediaRequest { uploadId }) stays the single source.
@@ -90,7 +91,7 @@ export async function registerMediaRoutes(
   // -------------------------------------------------------------------------
   // GET /media/:id  (anon-ok)
   // -------------------------------------------------------------------------
-  app.get("/media/:id", async (request, reply) => {
+  route(app, "getMedia", async (request, reply) => {
     const { id } = parse(MediaIdParamsSchema, request.params)
     const payload: GetMediaResponse = await service().getMedia(id, ownerOf(request))
     reply.status(200).send(payload)

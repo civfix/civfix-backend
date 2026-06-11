@@ -17,6 +17,7 @@ import { makeHomeService, type HomeRepository, type HomeService } from "../../se
 import { makeDrizzleHomeRepository } from "../../services/admin/home-repository.drizzle.js"
 import { makeDrizzleAnalyticsRepository } from "../../services/admin/analytics-repository.drizzle.js"
 import type { AnalyticsRepository } from "../../services/admin/analytics-service.js"
+import { route } from "../../versioning/route.js"
 
 /**
  * Optional injected home-service dependencies (tests). When present the routes build the service from
@@ -65,7 +66,7 @@ export async function registerAdminHomeRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/home/summary
   // -------------------------------------------------------------------------
-  app.get("/admin/home/summary", async (_request, reply) => {
+  route(app, "adminHomeSummary", async (_request, reply) => {
     const payload: HomeSummaryResponse = await service().summary()
     reply.status(200).send(payload)
   })
@@ -73,7 +74,7 @@ export async function registerAdminHomeRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/home/map
   // -------------------------------------------------------------------------
-  app.get("/admin/home/map", async (_request, reply) => {
+  route(app, "adminHomeMap", async (_request, reply) => {
     const payload: HomeMapResponse = await service().map()
     reply.status(200).send(payload)
   })

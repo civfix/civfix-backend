@@ -49,6 +49,7 @@ import {
   setSessionCookie,
   clearSessionCookie,
 } from "../../auth/transport.js"
+import { route } from "../../versioning/route.js"
 
 /**
  * Optional injected admin-auth overrides (tests).
@@ -114,7 +115,7 @@ export async function registerAdminAuthRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/auth/access/exchange  [public]  (credentialed fetch from the SPA)
   // -------------------------------------------------------------------------
-  app.post("/admin/auth/access/exchange", async (request, reply) => {
+  route(app, "adminAccessExchange", async (request, reply) => {
     const verify = app.adminAuthOverrides?.verifyAccessJwt ?? defaultVerify
     if (!verify) {
       throw new AppError(ErrorCode.INTERNAL, "Cloudflare Access is not configured.", {
@@ -134,7 +135,7 @@ export async function registerAdminAuthRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/auth/session  [public]
   // -------------------------------------------------------------------------
-  app.get("/admin/auth/session", async (request, reply) => {
+  route(app, "adminSession", async (request, reply) => {
     const payload = await buildAdminSession(services, request, reply)
     reply.status(200).send(payload)
   })
@@ -142,7 +143,7 @@ export async function registerAdminAuthRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/auth/logout  [public]  (reuses the Phase 1 logout/CSRF)
   // -------------------------------------------------------------------------
-  app.post("/admin/auth/logout", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "adminLogout", { preHandler: csrfProtect }, async (request, reply) => {
     requireAuth(request)
     const token = presentedSessionToken(request)
     if (token) {

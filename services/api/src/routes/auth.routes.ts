@@ -41,6 +41,7 @@ import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import { requireAuth } from "../auth/context.js"
+import { route } from "../versioning/route.js"
 import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
 import {
   clientKind,
@@ -74,14 +75,14 @@ export async function registerAuthRoutes(
   // Email OTP
   // -------------------------------------------------------------------------
 
-  app.post("/auth/otp/request", async (request, reply) => {
+  route(app, "otpRequest", async (request, reply) => {
     const body = parse(EmailOtpRequestRequestSchema, request.body)
     const result = await services.otp.issueOtp(body.email, request.ip || null)
     const payload: EmailOtpRequestResponse = { sent: true, resendAfterSec: result.resendAfterSec }
     reply.status(200).send(payload)
   })
 
-  app.post("/auth/otp/verify", async (request, reply) => {
+  route(app, "otpVerify", async (request, reply) => {
     const body = parse(EmailOtpVerifyRequestSchema, request.body)
     // request.ip is the real client (trusted-proxy enforced; see server.ts) so the per-IP verify
     // throttle keys on the genuine network, not a spoofable X-Forwarded-For.
@@ -93,7 +94,7 @@ export async function registerAuthRoutes(
   // Apple / Google (mobile token flows)
   // -------------------------------------------------------------------------
 
-  app.post("/auth/apple", async (request, reply) => {
+  route(app, "appleSignIn", async (request, reply) => {
     const body = parse(AppleSignInRequestSchema, request.body)
     // P2-3: bind the nonce when the client supplied one (closes ID-token replay within the expiry).
     const user = await services.oauth.signInWithAppleIdToken(
@@ -104,7 +105,7 @@ export async function registerAuthRoutes(
     await issueSessionForUser(services, request, reply, user)
   })
 
-  app.post("/auth/google", async (request, reply) => {
+  route(app, "googleSignIn", async (request, reply) => {
     const body = parse(GoogleSignInRequestSchema, request.body)
     const user = await services.oauth.signInWithGoogleIdToken(body.idToken)
     await issueSessionForUser(services, request, reply, user)
@@ -114,7 +115,7 @@ export async function registerAuthRoutes(
   // Google web (authorization-code + PKCE)
   // -------------------------------------------------------------------------
 
-  app.get("/auth/google/start", async (request, reply) => {
+  route(app, "googleStart", async (request, reply) => {
     const startQuery = parse(OAuthStartQuerySchema, request.query)
     // P2-2 (open-redirect prevention): validate the post-login `redirect` target against the WEB_ORIGINS
     // allowlist (or accept a safe relative internal path) BEFORE stashing it, so the callback can only
@@ -141,7 +142,7 @@ export async function registerAuthRoutes(
     reply.redirect(auth.url)
   })
 
-  app.get("/auth/google/callback", async (request, reply) => {
+  route(app, "googleCallback", async (request, reply) => {
     const query = parse(OAuthCallbackQuerySchema, request.query)
     const stash = readOAuthStash(request)
     if (!stash || stash.state !== query.state) {
@@ -163,12 +164,12 @@ export async function registerAuthRoutes(
   // Session check + logout
   // -------------------------------------------------------------------------
 
-  app.get("/auth/session", async (request, reply) => {
+  route(app, "session", async (request, reply) => {
     const payload = await buildSessionCheck(services, request, reply)
     reply.status(200).send(payload)
   })
 
-  app.post("/auth/logout", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "logout", { preHandler: csrfProtect }, async (request, reply) => {
     requireAuth(request)
     const token = presentedSessionToken(request)
     if (token) {
@@ -185,7 +186,7 @@ export async function registerAuthRoutes(
   // -------------------------------------------------------------------------
 
   // GET /me/handle-available?handle=  [auth]  - is this username free for me to take?
-  app.get("/me/handle-available", async (request, reply) => {
+  route(app, "checkHandle", async (request, reply) => {
     const userId = requireAuth(request)
     const { handle } = parse(HandleAvailableRequestSchema, request.query)
     if (!isValidHandle(handle)) {
@@ -203,7 +204,7 @@ export async function registerAuthRoutes(
   })
 
   // PUT /me/profile  [auth][csrf]  - finish first-run registration (set username + display name).
-  app.put("/me/profile", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "updateProfile", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateProfileRequestSchema, request.body)
     // Reject a username already owned by someone else (the schema enforces the format; this is the

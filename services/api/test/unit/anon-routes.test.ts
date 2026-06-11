@@ -126,11 +126,11 @@ async function makeHarness(): Promise<Harness> {
 
   // Sign a user in (mobile bearer) for the claim route.
   const email = "claimer@example.com"
-  await app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+  await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
   const code = mailer.lastOtpFor(email)!
   const verify = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/v1/auth/otp/verify",
     headers: { "x-client": "mobile" },
     payload: { email, code },
   })
@@ -179,7 +179,7 @@ function mirrorHeldIntoReportRepo(h: Harness, reportId: string): void {
 describe("POST /anon/reports", () => {
   it("creates a HELD report (202) with a claim code and issues an anon token", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const res = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
     expect(res.statusCode).toBe(202)
     const body = res.json()
     expect(body.status).toBe("held")
@@ -196,7 +196,7 @@ describe("POST /anon/reports", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       payload: anonPayload({ turnstileToken: "fail" }),
     })
     expect(res.statusCode).toBe(403)
@@ -207,7 +207,7 @@ describe("POST /anon/reports", () => {
     const { app, anonStore } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       payload: anonPayload({ honeypot: "bot" }),
     })
     expect(res.statusCode).toBe(422)
@@ -216,9 +216,9 @@ describe("POST /anon/reports", () => {
 
   it("replays the original response for a duplicate idempotency key (still 202, same report)", async () => {
     const { app, anonStore } = await makeHarness()
-    const first = await app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const first = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
     const firstBody = first.json()
-    const second = await app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const second = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
     expect(second.statusCode).toBe(202)
     expect(second.json().reportId).toBe(firstBody.reportId)
     expect(anonStore.reports.size).toBe(1)
@@ -228,7 +228,7 @@ describe("POST /anon/reports", () => {
     const { app } = await makeHarness()
     const res = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       payload: anonPayload({ category: "not-a-category" }),
     })
     expect(res.statusCode).toBe(422)
@@ -252,7 +252,7 @@ describe("web anon token round-trips via the civfix_anon cookie (P1-2)", () => {
     // First submit: no token presented -> a fresh one is minted and handed back via the cookie + header.
     const first = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       payload: anonPayload({ idempotencyKey: "11111111-1111-1111-1111-111111111111" }),
     })
     expect(first.statusCode).toBe(202)
@@ -267,7 +267,7 @@ describe("web anon token round-trips via the civfix_anon cookie (P1-2)", () => {
     // civfix_anon cookie. The route must fall back to that cookie so the SAME token is reused.
     const second = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       headers: { cookie: `civfix_anon=${encodeURIComponent(cookie!)}` },
       payload: anonPayload({ idempotencyKey: "22222222-2222-2222-2222-222222222222" }),
     })
@@ -286,7 +286,7 @@ describe("web anon token round-trips via the civfix_anon cookie (P1-2)", () => {
     // Seed a known token and present it in the BODY while also sending a different cookie value.
     const first = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       payload: anonPayload({ idempotencyKey: "33333333-3333-3333-3333-333333333333" }),
     })
     const bodyToken = first.headers["x-anon-token"] as string
@@ -297,7 +297,7 @@ describe("web anon token round-trips via the civfix_anon cookie (P1-2)", () => {
     // same token's count advances to 2 and the bogus cookie is not used to mint anything.
     const second = await app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       headers: { cookie: "civfix_anon=bogus.signature" },
       payload: anonPayload({
         idempotencyKey: "44444444-4444-4444-4444-444444444444",
@@ -315,7 +315,7 @@ describe("held anon report stays hidden", () => {
     const h = await makeHarness()
     const submit = await h.app.inject({
       method: "POST",
-      url: "/anon/reports",
+      url: "/v1/anon/reports",
       payload: anonPayload({ lat: 34.1, lng: -118.35 }),
     })
     const { reportId, claimCode } = submit.json()
@@ -325,7 +325,7 @@ describe("held anon report stays hidden", () => {
     // client encodes it (a single JSON param).
     const map = await h.app.inject({
       method: "GET",
-      url: `/map/reports${clientQuery({ bbox: { west: -119, south: 33, east: -118, north: 35 }, zoom: 16 })}`,
+      url: `/v1/map/reports${clientQuery({ bbox: { west: -119, south: 33, east: -118, north: 35 }, zoom: 16 })}`,
     })
     expect(map.statusCode).toBe(200)
     expect(map.json().pins).toHaveLength(0)
@@ -333,7 +333,7 @@ describe("held anon report stays hidden", () => {
     // (b) 404 to a stranger (signed-in non-owner) on GET /reports/:id (no existence leak).
     const get = await h.app.inject({
       method: "GET",
-      url: `/reports/${reportId}`,
+      url: `/v1/reports/${reportId}`,
       headers: { authorization: `Bearer ${h.token}` },
     })
     expect(get.statusCode).toBe(404)
@@ -342,7 +342,7 @@ describe("held anon report stays hidden", () => {
     // (c) The status IS visible via the claim-code-gated endpoint.
     const status = await h.app.inject({
       method: "GET",
-      url: `/anon/reports/${reportId}/status?claimCode=${encodeURIComponent(claimCode)}`,
+      url: `/v1/anon/reports/${reportId}/status?claimCode=${encodeURIComponent(claimCode)}`,
     })
     expect(status.statusCode).toBe(200)
     expect(status.json().status).toBe("held")
@@ -350,26 +350,26 @@ describe("held anon report stays hidden", () => {
 
   it("GET /anon/reports/:id/status 404s a wrong claim code (no enumeration)", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
     const { reportId } = submit.json()
     const status = await h.app.inject({
       method: "GET",
-      url: `/anon/reports/${reportId}/status?claimCode=wrong`,
+      url: `/v1/anon/reports/${reportId}/status?claimCode=wrong`,
     })
     expect(status.statusCode).toBe(404)
   })
 
   it("GET /anon/reports/:id/status 422s a missing claim code", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
     const { reportId } = submit.json()
-    const status = await h.app.inject({ method: "GET", url: `/anon/reports/${reportId}/status` })
+    const status = await h.app.inject({ method: "GET", url: `/v1/anon/reports/${reportId}/status` })
     expect(status.statusCode).toBe(422)
   })
 
   it("P2-7: the status endpoint has a dedicated tighter per-IP limit (429 past 30/min)", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
     const { reportId } = submit.json()
     // Hammer the status endpoint from one IP; the dedicated 30/min cap (well under the 300/min global)
     // must produce a 429 before 40 requests. A wrong code keeps the handler outcome stable (404) so the
@@ -378,7 +378,7 @@ describe("held anon report stays hidden", () => {
     for (let i = 0; i < 40; i++) {
       const res = await h.app.inject({
         method: "GET",
-        url: `/anon/reports/${reportId}/status?claimCode=wrong`,
+        url: `/v1/anon/reports/${reportId}/status?claimCode=wrong`,
         remoteAddress: "203.0.113.77",
       })
       if (res.statusCode === 429) {
@@ -394,7 +394,7 @@ describe("claim flow", () => {
   it("nudge -> sign-in -> claim links the report to the user (mine=true), single-use", async () => {
     const h = await makeHarness()
     // Submit anonymously; capture the issued anon token from the response header.
-    const submit = await h.app.inject({ method: "POST", url: "/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
     const { reportId } = submit.json()
     const anonToken = submit.headers["x-anon-token"] as string
     mirrorHeldIntoReportRepo(h, reportId)
@@ -402,7 +402,7 @@ describe("claim flow", () => {
     // (1) Nudge with the anon token (mobile passes it as a query param) -> claimCode + reportId.
     const nudge = await h.app.inject({
       method: "GET",
-      url: `/claim/nudge?anonToken=${encodeURIComponent(anonToken)}`,
+      url: `/v1/claim/nudge?anonToken=${encodeURIComponent(anonToken)}`,
     })
     expect(nudge.statusCode).toBe(200)
     const nudgeBody = nudge.json()
@@ -412,7 +412,7 @@ describe("claim flow", () => {
     // (2) Claim with the code as the signed-in user (bearer -> no CSRF needed).
     const claim = await h.app.inject({
       method: "POST",
-      url: "/claim/report",
+      url: "/v1/claim/report",
       headers: { authorization: `Bearer ${h.token}` },
       payload: { claimCode: nudgeBody.claimCode },
     })
@@ -425,7 +425,7 @@ describe("claim flow", () => {
     // (3) Single-use: claiming again 404s.
     const again = await h.app.inject({
       method: "POST",
-      url: "/claim/report",
+      url: "/v1/claim/report",
       headers: { authorization: `Bearer ${h.token}` },
       payload: { claimCode: nudgeBody.claimCode },
     })
@@ -436,7 +436,7 @@ describe("claim flow", () => {
     const h = await makeHarness()
     const res = await h.app.inject({
       method: "POST",
-      url: "/claim/report",
+      url: "/v1/claim/report",
       payload: { claimCode: "x" },
     })
     expect(res.statusCode).toBe(401)
@@ -444,7 +444,7 @@ describe("claim flow", () => {
 
   it("404s GET /claim/nudge with no anon token at all", async () => {
     const h = await makeHarness()
-    const res = await h.app.inject({ method: "GET", url: "/claim/nudge" })
+    const res = await h.app.inject({ method: "GET", url: "/v1/claim/nudge" })
     expect(res.statusCode).toBe(404)
   })
 })

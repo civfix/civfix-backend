@@ -44,6 +44,7 @@ import {
   type ReportServiceDeps,
 } from "../services/report-service.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
+import { route } from "../versioning/route.js"
 import { BBoxQueryParam, CategoriesQueryParam } from "./query-encoding.js"
 
 /**
@@ -132,7 +133,7 @@ export async function registerReportRoutes(
   // -------------------------------------------------------------------------
   // POST /reports  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/reports", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "createReport", { preHandler: csrfProtect }, async (request, reply) => {
     // Anonymous callers must use /anon/reports (the next step); a report here requires a signed-in user.
     const userId = requireAuth(request)
     const body = parse(CreateReportRequestSchema, request.body)
@@ -146,7 +147,7 @@ export async function registerReportRoutes(
   // -------------------------------------------------------------------------
   // GET /reports/:id  (anon-ok)
   // -------------------------------------------------------------------------
-  app.get("/reports/:id", async (request, reply) => {
+  route(app, "getReport", async (request, reply) => {
     const { id } = parse(ReportIdParamsSchema, request.params)
     const dto: GetReportResponse = await service().getReport(id, ownerOf(request))
     reply.status(200).send(dto)
@@ -155,7 +156,7 @@ export async function registerReportRoutes(
   // -------------------------------------------------------------------------
   // GET /reports  [auth]  (the caller's own reports)
   // -------------------------------------------------------------------------
-  app.get("/reports", async (request, reply) => {
+  route(app, "listMyReports", async (request, reply) => {
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
     const payload: ListMyReportsResponse = await service().listMyReports(userId, pagination)
@@ -165,7 +166,7 @@ export async function registerReportRoutes(
   // -------------------------------------------------------------------------
   // GET /map/reports  (anon-ok)
   // -------------------------------------------------------------------------
-  app.get("/map/reports", async (request, reply) => {
+  route(app, "mapReports", async (request, reply) => {
     // Decode the client's wire form (JSON bbox + repeated categories + scalar zoom).
     const q = parse(MapReportsQuerySchema, request.query)
     // Re-validate the assembled shape against the shared schema so the wire contract is the single
@@ -186,7 +187,7 @@ export async function registerReportRoutes(
   // -------------------------------------------------------------------------
   // POST /reports/:id/follow  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/reports/:id/follow", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "followReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(ReportIdParamsSchema, request.params)
     const payload: FollowReportResponse = await service().followReport(userId, id)
@@ -196,7 +197,7 @@ export async function registerReportRoutes(
   // -------------------------------------------------------------------------
   // DELETE /reports/:id/follow  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.delete("/reports/:id/follow", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "unfollowReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(ReportIdParamsSchema, request.params)
     const payload: FollowReportResponse = await service().unfollowReport(userId, id)

@@ -24,6 +24,7 @@ import { AppError } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 import {
@@ -59,14 +60,14 @@ export async function registerAdminInboxRoutes(
   }
 
   // GET /admin/inbox
-  app.get("/admin/inbox", async (request, reply) => {
+  route(app, "listInbox", async (request, reply) => {
     const query = parse(InboxListQuerySchema, request.query)
     const payload: InboxListResponse = await repo().list(query)
     reply.status(200).send(payload)
   })
 
   // GET /admin/inbox/:id  (presign attachment keys -> time-limited GET URLs)
-  app.get("/admin/inbox/:id", async (request, reply) => {
+  route(app, "getInboxMessage", async (request, reply) => {
     const { id } = idParam(request)
     const dto = await repo().get(id)
     if (dto === null) throw AppError.notFound("Inbound email not found.")
@@ -83,7 +84,7 @@ export async function registerAdminInboxRoutes(
   })
 
   // POST /admin/inbox/:id/status  [csrf]
-  app.post("/admin/inbox/:id/status", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setInboxStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetInboxStatusRequestSchema, { ...(request.body as object), id })
     const ok = await repo().setStatus(id, body.status)

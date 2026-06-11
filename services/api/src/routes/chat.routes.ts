@@ -23,6 +23,7 @@ import { ZodError, type z, type ZodTypeAny } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
+import { route } from "../versioning/route.js"
 import {
   registerChatGateway,
   type GatewayDmDeps,
@@ -178,7 +179,7 @@ export async function registerChatRoutes(
   // -------------------------------------------------------------------------
   // GET /threads  [auth]
   // -------------------------------------------------------------------------
-  app.get("/threads", async (request, reply) => {
+  route(app, "listThreads", async (request, reply) => {
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
     // The shared limit is optional with no baked-in default (each resource owns its page size), so apply

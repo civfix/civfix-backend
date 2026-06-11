@@ -31,6 +31,7 @@ import { csrfProtect } from "../auth/csrf.js"
 import { searchByHandlePrefix } from "../services/social-repository.drizzle.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import { route } from "../versioning/route.js"
 
 /** Path param schema for the routes that take a user UUID in the URL. */
 const UserIdParamsSchema = z.object({ id: IdSchema }).strict()
@@ -52,8 +53,9 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
   // -------------------------------------------------------------------------
   // GET /users/search  [auth]  (rate-limited @handle prefix search)
   // -------------------------------------------------------------------------
-  app.get(
-    "/users/search",
+  route(
+    app,
+    "searchUsers",
     { config: { rateLimit: USER_SEARCH_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
@@ -75,7 +77,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
   // -------------------------------------------------------------------------
   // POST /users/:id/block  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/users/:id/block", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
+  route(app, "blockUser", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(UserIdParamsSchema, request.params)
     if (id === userId) throw AppError.validation({ id: "You cannot block yourself." })
@@ -88,7 +90,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
   // -------------------------------------------------------------------------
   // DELETE /users/:id/block  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.delete("/users/:id/block", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
+  route(app, "unblockUser", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(UserIdParamsSchema, request.params)
     await blocksRepo().unblock(userId, id)
@@ -99,7 +101,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
   // -------------------------------------------------------------------------
   // GET /me/blocks  [auth]
   // -------------------------------------------------------------------------
-  app.get("/me/blocks", async (request, reply) => {
+  route(app, "listBlocks", async (request, reply) => {
     const userId = requireAuth(request)
     const blocked = await blocksRepo().listBlocked(userId)
     const payload: ListBlocksResponse = { blocked }
@@ -109,7 +111,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
   // -------------------------------------------------------------------------
   // PUT /me/settings  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.put("/me/settings", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "updateSettings", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateSettingsRequestSchema, request.body)
     const store = app.authServices?.users

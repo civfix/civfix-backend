@@ -26,6 +26,7 @@ import {
   type AnalyticsService,
 } from "../../services/admin/analytics-service.js"
 import { makeDrizzleAnalyticsRepository } from "../../services/admin/analytics-repository.drizzle.js"
+import { route } from "../../versioning/route.js"
 
 /**
  * Optional injected analytics-service dependencies (tests). When present the routes build the service from
@@ -60,47 +61,47 @@ export async function registerAdminAnalyticsRoutes(
     return makeAnalyticsService({ repo })
   }
 
-  app.get("/admin/analytics/kpis", async (_request, reply) => {
+  route(app, "analyticsKpis", async (_request, reply) => {
     reply.status(200).send(await service().kpis())
   })
 
-  app.get("/admin/analytics/pins-by-week", async (_request, reply) => {
+  route(app, "analyticsPinsByWeek", async (_request, reply) => {
     reply.status(200).send(await service().pinsByWeek())
   })
 
-  app.get("/admin/analytics/by-category", async (_request, reply) => {
+  route(app, "analyticsByCategory", async (_request, reply) => {
     reply.status(200).send(await service().byCategory())
   })
 
-  app.get("/admin/analytics/funnel", async (_request, reply) => {
+  route(app, "analyticsFunnel", async (_request, reply) => {
     reply.status(200).send(await service().funnel())
   })
 
-  app.get("/admin/analytics/coverage", async (_request, reply) => {
+  route(app, "analyticsCoverage", async (_request, reply) => {
     reply.status(200).send(await service().coverage())
   })
 
-  app.get("/admin/analytics/resolution-by-category", async (_request, reply) => {
+  route(app, "analyticsResolutionByCategory", async (_request, reply) => {
     reply.status(200).send(await service().resolutionByCategory())
   })
 
-  app.get("/admin/analytics/events", async (_request, reply) => {
+  route(app, "analyticsEvents", async (_request, reply) => {
     reply.status(200).send(await service().events())
   })
 
-  app.get("/admin/analytics/top-jurisdictions", async (_request, reply) => {
+  route(app, "analyticsTopJurisdictions", async (_request, reply) => {
     reply.status(200).send(await service().topJurisdictions())
   })
 
-  app.get("/admin/analytics/top-contributors", async (_request, reply) => {
+  route(app, "analyticsTopContributors", async (_request, reply) => {
     reply.status(200).send(await service().topContributors())
   })
 
-  app.get("/admin/analytics/heatmap", async (_request, reply) => {
+  route(app, "analyticsHeatmap", async (_request, reply) => {
     reply.status(200).send(await service().heatmap())
   })
 
-  app.get("/admin/analytics/retention", async (_request, reply) => {
+  route(app, "analyticsRetention", async (_request, reply) => {
     reply.status(200).send(await service().retention())
   })
 }

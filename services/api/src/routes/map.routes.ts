@@ -39,6 +39,7 @@ import type { Container } from "../di.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
 import { writeAudit } from "../services/admin/audit.js"
 import { BBoxQueryParam } from "./query-encoding.js"
+import { route } from "../versioning/route.js"
 
 /** Max cleanup pins returned for a single bbox query. Documented in MapCleanupsResponse handling. */
 export const MAP_CLEANUPS_LIMIT = 500
@@ -83,7 +84,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   // (the @civfix/shared contract still defines it) and have it advertise that same raster basemap, so
   // anything reading tileinfo gets a consistent, working raster source. pmtilesUrl is "" ("no vector
   // basemap") and styleUrl is omitted. The field shapes are unchanged, so this stays non-breaking.
-  app.get("/map/tileinfo", async (_request, reply) => {
+  route(app, "tileInfo", async (_request, reply) => {
     const env = container.env
     const payload: TileInfoResponse = {
       // No self-hosted vector basemap: "" is the documented "no pmtiles" signal. Clients use rasterUrl.
@@ -102,7 +103,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   // -------------------------------------------------------------------------
   // POST /map/resolve-jurisdiction  (anon-ok)
   // -------------------------------------------------------------------------
-  app.post("/map/resolve-jurisdiction", async (request, reply) => {
+  route(app, "resolveJurisdiction", async (request, reply) => {
     const { lat, lng } = parse(ResolveJurisdictionRequestSchema, request.body)
     const service = makeJurisdictionService({
       sql: container.getDb().sql,
@@ -117,7 +118,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   // -------------------------------------------------------------------------
   // POST /map/reverse-label  (anon-ok)
   // -------------------------------------------------------------------------
-  app.post("/map/reverse-label", async (request, reply) => {
+  route(app, "reverseLabel", async (request, reply) => {
     const { lat, lng } = parse(ReverseLabelRequestSchema, request.body)
     const label = await container.geocoder.cityStateLabel(lat, lng)
     const payload: ReverseLabelResponse = { cityStateLabel: label ?? "" }
@@ -127,7 +128,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   // -------------------------------------------------------------------------
   // GET /map/cleanups  (anon-ok)
   // -------------------------------------------------------------------------
-  app.get("/map/cleanups", async (request, reply) => {
+  route(app, "mapCleanups", async (request, reply) => {
     const q = parse(CleanupsQuerySchema, request.query)
     // Re-validate via the shared schema so the wire contract is enforced from the single source.
     const { bbox, when } = parse(ListCleanupsInBBoxRequestSchema, {
@@ -148,8 +149,9 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   // row (target jurisdiction:<geoid>) so it surfaces in the operator's discovery queue as a "Reporter"
   // note; it NEVER auto-routes. The geoid is taken from the PATH (authoritative) and injected into the
   // body before validation, so a caller need not echo it. 404 when the geoid is not a known jurisdiction.
-  app.post(
-    "/map/jurisdictions/:geoid/suggest-contact",
+  route(
+    app,
+    "suggestJurisdictionContact",
     { config: { rateLimit: SUGGEST_CONTACT_RATE_LIMIT } },
     async (request, reply) => {
       const { geoid } = parse(GeoidParamsSchema, request.params)

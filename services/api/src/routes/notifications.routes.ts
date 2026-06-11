@@ -40,6 +40,7 @@ import {
   type NotificationService,
 } from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
+import { route } from "../versioning/route.js"
 
 /**
  * Optional injected notification-service dependencies (tests). When present the routes build the service
@@ -81,7 +82,7 @@ export async function registerNotificationRoutes(
   // -------------------------------------------------------------------------
   // GET /notifications  [auth]
   // -------------------------------------------------------------------------
-  app.get("/notifications", async (request, reply) => {
+  route(app, "listNotifications", async (request, reply) => {
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
     const payload: ListNotificationsResponse = await service().listNotifications(userId, pagination)
@@ -91,7 +92,7 @@ export async function registerNotificationRoutes(
   // -------------------------------------------------------------------------
   // POST /notifications/read  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/notifications/read", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "markNotificationsRead", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(MarkReadRequestSchema, request.body)
     const payload: MarkReadResponse = await service().markRead(userId, body.ids)
@@ -101,7 +102,7 @@ export async function registerNotificationRoutes(
   // -------------------------------------------------------------------------
   // GET /notifications/prefs  [auth]
   // -------------------------------------------------------------------------
-  app.get("/notifications/prefs", async (request, reply) => {
+  route(app, "getNotificationPrefs", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: GetNotificationPrefsResponse = await service().getPrefs(userId)
     reply.status(200).send(payload)
@@ -110,7 +111,7 @@ export async function registerNotificationRoutes(
   // -------------------------------------------------------------------------
   // PUT /notifications/prefs  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.put("/notifications/prefs", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "updateNotificationPrefs", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateNotificationPrefsRequestSchema, request.body)
     const payload: NotificationPrefsDTO = await service().updatePrefs(userId, body)
@@ -120,7 +121,7 @@ export async function registerNotificationRoutes(
   // -------------------------------------------------------------------------
   // POST /push/register  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/push/register", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "registerPush", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(RegisterPushTokenRequestSchema, request.body)
     const payload: RegisterPushTokenResponse = await service().registerPushToken(userId, body)

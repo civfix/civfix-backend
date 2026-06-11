@@ -40,6 +40,7 @@ import {
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeNotificationService } from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
+import { route } from "../versioning/route.js"
 
 /**
  * Optional injected social-service dependencies (tests). When present the routes build the service from
@@ -100,7 +101,7 @@ export async function registerSocialRoutes(
   // -------------------------------------------------------------------------
   // GET /people  [auth]  (requires a non-empty `q` — never enumerates all users)
   // -------------------------------------------------------------------------
-  app.get("/people", async (request, reply) => {
+  route(app, "listPeople", async (request, reply) => {
     // Auth-required now (privacy: the directory must not be browsable logged-out).
     const userId = requireAuth(request)
     // The shared request schema (q + cursor + coerced limit) is the single source of truth; the query
@@ -118,7 +119,7 @@ export async function registerSocialRoutes(
   // -------------------------------------------------------------------------
   // POST /people/:id/follow  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.post("/people/:id/follow", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "followPerson", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PersonIdParamsSchema, request.params)
     const payload: FollowPersonResponse = await service().followPerson(userId, id)
@@ -128,7 +129,7 @@ export async function registerSocialRoutes(
   // -------------------------------------------------------------------------
   // DELETE /people/:id/follow  [auth][csrf]
   // -------------------------------------------------------------------------
-  app.delete("/people/:id/follow", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "unfollowPerson", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PersonIdParamsSchema, request.params)
     const payload: FollowPersonResponse = await service().unfollowPerson(userId, id)
@@ -138,7 +139,7 @@ export async function registerSocialRoutes(
   // -------------------------------------------------------------------------
   // GET /people/:id  (anon-ok)
   // -------------------------------------------------------------------------
-  app.get("/people/:id", async (request, reply) => {
+  route(app, "getProfile", async (request, reply) => {
     const { id } = parse(PersonIdParamsSchema, request.params)
     const payload: GetProfileResponse = await service().getProfile(id, viewerOf(request))
     reply.status(200).send(payload)
@@ -147,7 +148,7 @@ export async function registerSocialRoutes(
   // -------------------------------------------------------------------------
   // GET /me/profile  [auth]
   // -------------------------------------------------------------------------
-  app.get("/me/profile", async (request, reply) => {
+  route(app, "myProfile", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: GetProfileResponse = await service().getMyProfile(userId)
     reply.status(200).send(payload)

@@ -49,7 +49,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
   it("resolves an in-city point to the place layer", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/map/resolve-jurisdiction",
+      url: "/v1/map/resolve-jurisdiction",
       payload: { lat: PROBE_INSIDE_CITY.lat, lng: PROBE_INSIDE_CITY.lng },
     })
     expect(res.statusCode).toBe(200)
@@ -65,7 +65,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
   it("resolves unincorporated county land to the county layer", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/map/resolve-jurisdiction",
+      url: "/v1/map/resolve-jurisdiction",
       payload: { lat: PROBE_COUNTY_NOT_CITY.lat, lng: PROBE_COUNTY_NOT_CITY.lng },
     })
     expect(res.statusCode).toBe(200)
@@ -77,7 +77,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
   it("returns 200 with a null body for a point outside all coverage", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/map/resolve-jurisdiction",
+      url: "/v1/map/resolve-jurisdiction",
       payload: { lat: PROBE_OUTSIDE_ALL.lat, lng: PROBE_OUTSIDE_ALL.lng },
     })
     expect(res.statusCode).toBe(200)
@@ -137,7 +137,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     const [west, south, east, north] = LA_CITY.bbox
     const res = await app.inject({
       method: "GET",
-      url: `/map/cleanups${clientQuery({ bbox: { west, south, east, north }, when: "upcoming" })}`,
+      url: `/v1/map/cleanups${clientQuery({ bbox: { west, south, east, north }, when: "upcoming" })}`,
     })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -155,7 +155,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
   it("POST /map/jurisdictions/:geoid/suggest-contact 404s an unknown geoid", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/map/jurisdictions/99999999/suggest-contact",
+      url: "/v1/map/jurisdictions/99999999/suggest-contact",
       payload: { email: "311@example.gov" },
     })
     expect(res.statusCode).toBe(404)
@@ -164,7 +164,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
   it("suggest-contact records a discovery.contact_suggested audit row for a known geoid", async () => {
     const res = await app.inject({
       method: "POST",
-      url: `/map/jurisdictions/${LA_CITY.geoid}/suggest-contact`,
+      url: `/v1/map/jurisdictions/${LA_CITY.geoid}/suggest-contact`,
       payload: {
         email: "sanitation@lacity.example",
         formUrl: "https://lacity.example/report",

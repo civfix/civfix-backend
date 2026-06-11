@@ -32,6 +32,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
   makeGovClaimsService,
@@ -114,7 +115,7 @@ export async function registerAdminGovRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/gov-claims
   // -------------------------------------------------------------------------
-  app.get("/admin/gov-claims", async (request, reply) => {
+  route(app, "listGovClaims", async (request, reply) => {
     const query = parse(GovClaimListQuerySchema, request.query)
     const payload: GovClaimListResponse = await service().list(query)
     reply.status(200).send(payload)
@@ -123,7 +124,7 @@ export async function registerAdminGovRoutes(
   // -------------------------------------------------------------------------
   // GET /admin/gov-claims/:id
   // -------------------------------------------------------------------------
-  app.get("/admin/gov-claims/:id", async (request, reply) => {
+  route(app, "getGovClaim", async (request, reply) => {
     const { id } = idParam(request)
     const payload: GetGovClaimResponse = await service().getClaim(id)
     reply.status(200).send(payload)
@@ -132,7 +133,7 @@ export async function registerAdminGovRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/gov-claims/:id/verify  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/gov-claims/:id/verify", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "verifyGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(VerifyCheckRequestSchema, { ...(request.body as object), id })
     await service().verify(id, {
@@ -149,7 +150,7 @@ export async function registerAdminGovRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/gov-claims/:id/approve  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/gov-claims/:id/approve", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "approveGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(ApproveGovClaimRequestSchema, { ...(request.body as object), id })
     await service().approve(id, { actorId: request.auth.userId, note: body.note ?? null })
@@ -160,7 +161,7 @@ export async function registerAdminGovRoutes(
   // -------------------------------------------------------------------------
   // POST /admin/gov-claims/:id/reject  [csrf]
   // -------------------------------------------------------------------------
-  app.post("/admin/gov-claims/:id/reject", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "rejectGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(RejectGovClaimRequestSchema, { ...(request.body as object), id })
     await service().reject(id, { reason: body.reason, actorId: request.auth.userId })

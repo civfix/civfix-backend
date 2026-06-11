@@ -39,7 +39,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
       expect(app.hasDecorator("authServices")).toBe(false)
 
       // GET /admin/auth/session is the exact failing request — it is route-missing, not a domain 404.
-      const admin = await app.inject({ method: "GET", url: "/admin/auth/session" })
+      const admin = await app.inject({ method: "GET", url: "/v1/admin/auth/session" })
       expect(admin.statusCode).toBe(404)
       const adminBody = admin.json() as { code?: string; message?: string }
       expect(adminBody.code).toBe("NOT_FOUND")
@@ -47,7 +47,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
 
       // The citizen session route is gated by the SAME bundle, so it is route-missing too — proving the
       // failure is systemic (the whole auth surface is gone), not specific to the admin plugin.
-      const citizen = await app.inject({ method: "GET", url: "/auth/session" })
+      const citizen = await app.inject({ method: "GET", url: "/v1/auth/session" })
       expect(citizen.statusCode).toBe(404)
       expect((citizen.json() as { message?: string }).message?.startsWith(routeMissingPrefix("GET"))).toBe(
         true,
@@ -93,7 +93,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
     })
     const app = await buildServer({ env: loadEnv({ NODE_ENV: "test" }), authServices })
     try {
-      const res = await app.inject({ method: "GET", url: "/admin/auth/session" })
+      const res = await app.inject({ method: "GET", url: "/v1/admin/auth/session" })
       expect(res.statusCode).toBe(200)
       expect(res.json()).toEqual({ authenticated: false })
     } finally {

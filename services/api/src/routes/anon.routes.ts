@@ -43,6 +43,7 @@ import { RedisCounterStore } from "../abuse/counter-store.js"
 import { makeAnonService, type AnonService } from "../services/anon-service.js"
 import { makeDrizzleAnonReportRepository } from "../services/anon-repository.drizzle.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { route } from "../versioning/route.js"
 
 /** Response header carrying a freshly-issued anon token (mobile reads + re-sends it as anonToken). */
 export const ANON_TOKEN_HEADER = "x-anon-token"
@@ -99,7 +100,7 @@ export async function registerAnonRoutes(
   // -------------------------------------------------------------------------
   // POST /anon/reports  [public, full abuse stack]
   // -------------------------------------------------------------------------
-  app.post("/anon/reports", async (request, reply) => {
+  route(app, "anonCreateReport", async (request, reply) => {
     const body = parse(AnonReportRequestSchema, request.body)
 
     // Resolve the presented anon token from the body (mobile echoes it as anonToken) OR, when the body
@@ -139,8 +140,9 @@ export async function registerAnonRoutes(
   // -------------------------------------------------------------------------
   // GET /anon/reports/:id/status  [public, claimCode-gated]  (dedicated tighter per-IP limit, P2-7)
   // -------------------------------------------------------------------------
-  app.get(
-    "/anon/reports/:id/status",
+  route(
+    app,
+    "anonReportStatus",
     { config: { rateLimit: ANON_STATUS_RATE_LIMIT } },
     async (request, reply) => {
       const { id } = parse(AnonReportIdParamsSchema, request.params)

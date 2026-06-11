@@ -66,11 +66,11 @@ async function signIn(
   mailer: FakeMailer,
   email: string,
 ): Promise<{ token: string; userId: string }> {
-  await app.inject({ method: "POST", url: "/auth/otp/request", payload: { email } })
+  await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
   const code = mailer.lastOtpFor(email)!
   const verify = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/v1/auth/otp/verify",
     headers: { "x-client": "mobile" },
     payload: { email, code },
   })
@@ -83,7 +83,7 @@ describe("GET /threads", () => {
     const { app } = await makeThreadsHarness((repo) => {
       repo.seedCleanup("x")
     })
-    const res = await app.inject({ method: "GET", url: "/threads" })
+    const res = await app.inject({ method: "GET", url: "/v1/threads" })
     expect(res.statusCode).toBe(401)
   })
 
@@ -98,7 +98,7 @@ describe("GET /threads", () => {
     const { token } = await signIn(app, mailer, "limit@example.com")
     const res = await app.inject({
       method: "GET",
-      url: `/threads${clientQuery({ limit: 20 })}`,
+      url: `/v1/threads${clientQuery({ limit: 20 })}`,
       headers: { authorization: `Bearer ${token}` },
     })
     expect(res.statusCode).toBe(200)
@@ -139,7 +139,7 @@ describe("GET /threads", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: "/threads",
+      url: "/v1/threads",
       headers: { authorization: `Bearer ${token}` },
     })
     expect(res.statusCode).toBe(200)
