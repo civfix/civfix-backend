@@ -8,10 +8,12 @@
 // CI so it gets caught before it ships.
 //
 // Two independent checks:
-//   1. pnpm-lock.yaml (read as TEXT) must contain no RESOLVED package whose key is react-native,
-//      react-native-web, or @civfix/ui. We match lockfile-v9 package keys precisely so unrelated
-//      peer-dependency declarations (e.g. `react-native-b4a: '*'` under b4a, or `react: '>=18'` under
-//      drizzle-orm) do NOT trip the guard -- those are optional peers, never resolved here.
+//   1. pnpm-lock.yaml (read as TEXT) must contain no RESOLVED package whose key is react, react-dom,
+//      react-native, react-native-web, or @civfix/ui. We match lockfile-v9 package keys precisely so
+//      unrelated peer-dependency declarations (e.g. `react-native-b4a: '*'` under b4a, or `react: '>=18'`
+//      under drizzle-orm) do NOT trip the guard -- those are optional peers, never resolved here. This
+//      makes Check 1 the lockfile equivalent of `pnpm why react react-native react-native-web -> not
+//      found`.
 //   2. services/api and services/media-worker package.json must not list react / react-dom /
 //      react-native in dependencies or devDependencies.
 //
@@ -32,6 +34,12 @@ const failures = []
 // In pnpm-lock v9 a resolved package is a key in the top-level `packages:` (and `snapshots:`) maps,
 // written as `  <name>@<version>:` at a two-space indent. A scoped name may be quoted. We anchor each
 // pattern to start-of-line + two spaces + the exact package name + `@`, so:
+//   - `react@...`             matches; the trailing `@` boundary stops it from matching `react-dom@`,
+//                             `react-is@`, `react-native@`, or the scoped `'@types/react@'` (which
+//                             starts with `@`, not `react`). The two-space anchor stops it from matching
+//                             the deeply indented `react: '>=18'` peer DECLARATION (6 spaces, no `@`).
+//   - `react-dom@...`         has its own dedicated pattern; the `@` boundary stops it from matching a
+//                             hypothetical `react-dom-something@` package.
 //   - `react-native@...`      matches; `react-native-b4a: '*'` (a peer decl) does NOT (no `@`, and the
 //                             `@` boundary stops `react-native` from matching `react-native-b4a`).
 //   - `react-native-web@...`  has its own dedicated pattern.
@@ -42,6 +50,8 @@ const lockfilePath = join(repoRoot, LOCKFILE)
 
 /** Each entry: a banned resolved-package name + the regex that matches its lockfile-v9 key line. */
 const BANNED_LOCKFILE_PACKAGES = [
+  { name: "react", re: /^ {2}["']?react@/m },
+  { name: "react-dom", re: /^ {2}["']?react-dom@/m },
   { name: "react-native", re: /^ {2}["']?react-native@/m },
   { name: "react-native-web", re: /^ {2}["']?react-native-web@/m },
   { name: "@civfix/ui", re: /^ {2}["']?@civfix\/ui@/m },
