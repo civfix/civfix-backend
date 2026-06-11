@@ -31,6 +31,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Stage 0.7 (UI-unification) backend-isolation guard: fail CI if the backend ever pulls in
+      # frontend runtime deps (react / react-dom / react-native / react-native-web / @civfix/ui).
+      # The backend depends ONLY on the framework-free @civfix/shared contract; this keeps it that way.
+      - name: Assert backend stays React/RN-free
+        run: node scripts/assert-no-frontend.mjs
+
       - name: Lint
         run: pnpm lint
 
