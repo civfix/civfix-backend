@@ -79,10 +79,12 @@ export const MAP_REPORTS_CANDIDATE_CAP = 2000
 
 /**
  * Zoom at/above which the map returns INDIVIDUAL pins; below it the points are snapped to a grid and
- * returned as clusters with counts. ~14 is "street" zoom, where ~200 pins render at 60fps; zoomed out
- * past it, clustering keeps the pin count (and the render cost) bounded.
+ * returned as clusters with counts. 13 is "neighborhood" zoom - the default the clients land on - so a
+ * reporter browsing their area sees individual category pins (each tappable to its detail) rather than
+ * count bubbles. Clustering still engages at city/region zoom (<=12), where the candidate count (capped
+ * at MAP_REPORTS_CANDIDATE_CAP) would otherwise blow past the "~200 pins at 60fps" render budget.
  */
-export const CLUSTER_ZOOM_THRESHOLD = 14
+export const CLUSTER_ZOOM_THRESHOLD = 13
 
 /** Default page size for listMyReports when the request omits `limit`. Matches the shared cap of 50. */
 export const REPORTS_DEFAULT_LIMIT = 20
