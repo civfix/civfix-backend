@@ -54,14 +54,19 @@ export const MEDIA_GET_URL_TTL_SEC = 60 * 60
 
 /**
  * Allowlisted upload content types per kind. CHEAP gate only: the worker re-validates against the real
- * bytes. Kept narrow to the formats the mobile/web clients actually produce.
+ * bytes. Kept narrow to the formats the mobile/web clients produce AND the media-worker can decode +
+ * re-encode.
+ *
+ * HEIC/HEIF are deliberately NOT accepted: the worker's `sharp` ships the prebuilt libvips, which has no
+ * libheif/HEVC decoder, so it cannot decode (or EXIF-strip / normalize) iPhone HEIC. Accepting it created
+ * a media row whose served object stayed the raw, browser-unrenderable HEIC -> a blank image on web.
+ * Mobile already transcodes captures to JPEG before upload; a web pick of a `.heic` file is rejected here
+ * with MEDIA_REJECTED so the client fails fast instead of producing a report with an unviewable photo.
  */
 export const ALLOWED_IMAGE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
-  "image/heic",
-  "image/heif",
 ])
 export const ALLOWED_VIDEO_CONTENT_TYPES: ReadonlySet<string> = new Set([
   "video/mp4",

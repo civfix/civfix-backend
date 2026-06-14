@@ -71,6 +71,10 @@ describe("precheckUpload (pure)", () => {
   it("rejects a disallowed contentType for the kind", () => {
     // gif is not on the image allowlist...
     expect(() => precheckUpload(imageReq({ contentType: "image/gif" }))).toThrow()
+    // ...HEIC/HEIF are rejected too: the media-worker's prebuilt sharp/libvips cannot decode HEVC-coded
+    // HEIF, so accepting it would yield a report whose served image is an unrenderable HEIC (blank on web).
+    expect(() => precheckUpload(imageReq({ contentType: "image/heic" }))).toThrow()
+    expect(() => precheckUpload(imageReq({ contentType: "image/heif" }))).toThrow()
     // ...and an image contentType is not valid for a video upload.
     expect(() => precheckUpload(videoReq({ contentType: "image/jpeg" }))).toThrow()
   })

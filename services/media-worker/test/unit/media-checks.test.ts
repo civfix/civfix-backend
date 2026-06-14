@@ -126,9 +126,11 @@ describe("media.checks IMAGE path", () => {
     expect((row.phash as string).length).toBe(16)
     expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)
 
-    // Processed image written to the processed key and carries NO GPS.
-    const processed = env.storage.get(`processed/${r2Key}.img`)
+    // The source object at r2_key is OVERWRITTEN in place with the stripped re-encode, which carries NO
+    // GPS (the raw upload's EXIF is gone from what downstream readers serve). No stray processed/ key.
+    const processed = env.storage.get(r2Key)
     expect(processed).not.toBeNull()
+    expect(env.storage.get(`processed/${r2Key}.img`)).toBeNull()
     const outGps = await exifr.gps(Buffer.from(processed!))
     expect(outGps?.latitude ?? null).toBeNull()
     expect(outGps?.longitude ?? null).toBeNull()
@@ -323,8 +325,10 @@ describe("media.checks IMAGE path", () => {
       expect(status, `${b.name}`).toBe("rejected")
       expect(local.repo.get(id)!.status, `${b.name}`).toBe("rejected")
       expect(local.reports.length, `${b.name} reported`).toBeGreaterThan(0)
-      // No processed object should have been written for a rejected asset.
+      // A rejected asset is left untouched: its source object is NOT overwritten with processed bytes,
+      // and no stray processed/ key is written.
       expect(local.storage.get(`processed/${r2Key}.img`)).toBeNull()
+      expect(local.storage.get(r2Key)).not.toBeNull()
     }
   })
 
@@ -362,9 +366,11 @@ describe("media.checks VIDEO path", () => {
     expect(row.width).toBe(320)
     expect(row.height).toBe(240)
 
-    // Remuxed object written.
-    const remuxed = env.storage.get(`processed/${r2Key}.mp4`)
+    // The source object at r2_key is overwritten in place with the metadata-stripped remux; no stray
+    // processed/ key is written any more.
+    const remuxed = env.storage.get(r2Key)
     expect(remuxed).not.toBeNull()
+    expect(env.storage.get(`processed/${r2Key}.mp4`)).toBeNull()
 
     // Thumbnail frame grabbed + written.
     expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)

@@ -34,7 +34,12 @@ export interface OrphanSweepResult {
   errors: number
 }
 
-/** Derive the same processed/thumbnail keys the checks job wrote, so the sweep can delete them too. */
+/**
+ * Keys to delete for an orphan: the source object (r2_key), the thumbnail the checks job writes, and any
+ * LEGACY `processed/*` objects from before the worker switched to overwriting r2_key in place (it no
+ * longer writes a separate processed object; older uploads may still have one). Deleting a missing key is
+ * a no-op on R2, so listing the legacy keys is harmless cleanup.
+ */
 function derivedKeys(o: OrphanRow): string[] {
   const keys = [
     o.r2Key,

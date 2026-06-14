@@ -382,12 +382,6 @@ export interface MediaChecksPayload {
   kind: MediaKind
 }
 
-/** Derive the processed-object key from the source key (keep it adjacent, mark it processed). */
-function processedKey(r2Key: string, kind: MediaKind): string {
-  const ext = kind === "video" ? "mp4" : "img"
-  return `processed/${r2Key}.${ext}`
-}
-
 /** Derive the thumbnail key from the source key. */
 function thumbnailKey(r2Key: string): string {
   return `thumbs/${r2Key}.jpg`
@@ -488,16 +482,19 @@ export async function runMediaChecksJob(
 
   try {
     if (result.status !== "rejected" && result.processedBytes) {
-      const pKey = processedKey(asset.r2Key, asset.kind)
-      await deps.storage.put(pKey, result.processedBytes, {
+      // OVERWRITE the source object IN PLACE with the processed bytes: the EXIF/metadata-stripped,
+      // web-normalized re-encode (image -> jpeg/png/webp; video -> metadata-free remux) REPLACES the raw
+      // client upload at the SAME r2_key. This is the object every downstream reader serves
+      // (GET /reports/:id, GET /media/:id), so clients always receive the stripped/normalized copy, never
+      // the original upload (which may carry EXIF/GPS, or be a browser-unrenderable format e.g. HEIC).
+      // R2 PUT is atomic per object and the key already exists, so r2_key never references a missing
+      // object mid-flight. A re-delivered job re-downloads the already-processed bytes and re-strips them
+      // (a harmless near-noop). byteSize is re-measured from the processed object.
+      await deps.storage.put(asset.r2Key, result.processedBytes, {
         ...(result.processedContentType !== null
           ? { contentType: result.processedContentType }
           : {}),
       })
-      // The stripped/remuxed object is written to a NEW key (processed/...). We intentionally leave
-      // media_assets.r2_key pointing at the original validated upload so the row never references a
-      // not-yet-written object mid-flight; downstream readers use r2_key, and the processed/thumb keys
-      // are derivable. byteSize is re-measured from the processed object.
       patch.byteSize = result.processedBytes.byteLength
 
       if (result.thumbnailBytes) {
