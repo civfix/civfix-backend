@@ -57,7 +57,13 @@ export class R2Storage implements Storage {
   private client: S3Client | undefined
 
   constructor(config: R2StorageConfig) {
-    this.config = config
+    // Normalize publicBase to an ABSOLUTE origin. A scheme-less value (e.g. "cdn.civfix.org") would be
+    // joined into a RELATIVE url ("cdn.civfix.org/<key>") that the browser resolves against the current
+    // page (https://civfix.org/pin/cdn.civfix.org/<key> -> 404) instead of the CDN host. Default the
+    // scheme to https:// when absent so the media URL is always absolute.
+    this.config = config.publicBase
+      ? { ...config, publicBase: ensureScheme(config.publicBase) }
+      : config
   }
 
   /**
@@ -236,6 +242,17 @@ function joinUrl(base: string, key: string): string {
   const trimmedBase = base.replace(/\/+$/, "")
   const trimmedKey = key.replace(/^\/+/, "")
   return `${trimmedBase}/${trimmedKey}`
+}
+
+/**
+ * Ensure a base URL has an explicit scheme so it joins into an ABSOLUTE url, not a page-relative one.
+ * A value already starting with http(s):// is returned unchanged; otherwise https:// is prepended (any
+ * leading slashes, e.g. a protocol-relative "//cdn..." , are stripped first). This guards the common
+ * R2_PUBLIC_BASE misconfig "cdn.civfix.org" (no scheme), which the browser would otherwise resolve
+ * against the current page path.
+ */
+function ensureScheme(base: string): string {
+  return /^https?:\/\//i.test(base) ? base : `https://${base.replace(/^\/+/, "")}`
 }
 
 /**

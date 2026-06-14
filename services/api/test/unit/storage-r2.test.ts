@@ -63,4 +63,12 @@ describe("R2Storage.presignGet", () => {
     const url = await storage.presignGet("/uploads/x", 600)
     expect(url).toBe("https://cdn.civfix.org/uploads/x")
   })
+
+  it("prepends https:// to a scheme-less publicBase (so the URL is absolute, not page-relative)", async () => {
+    // Guards the misconfig that produced https://civfix.org/pin/cdn.civfix.org/uploads/... : a
+    // scheme-less "cdn.civfix.org" was joined into a relative url and resolved against the page.
+    const storage = new R2Storage({ ...config, publicBase: "cdn.civfix.org" })
+    const url = await storage.presignGet("uploads/2026/06/abc", 600)
+    expect(url).toBe("https://cdn.civfix.org/uploads/2026/06/abc")
+  })
 })
