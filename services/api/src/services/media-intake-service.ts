@@ -271,21 +271,20 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
-      // Move to "validating" (idempotent: it is already "validating" from createUpload, but finalize is
-      // the authoritative transition into the worker pipeline).
-      const updated = await deps.repo.setStatusByUploadId(input.uploadId, "validating")
+      // Mark the media READY immediately on finalize. The async `media.checks` moderation/processing job
+      // is decommissioned (no longer enqueued), so there is no "validating -> ready" step to wait on: a
+      // finalized upload is servable at once. This is what makes uploaded photos/videos appear to EVERYONE
+      // on GET /reports/:id (findMediaForReport returns `ready` media) without a running media-worker.
+      // TRADE-OFF (deliberate): the worker also did EXIF/GPS stripping + web-normalization by overwriting
+      // r2_key; with it gone, the served object is the RAW client upload (EXIF/GPS metadata is no longer
+      // stripped). HEIC is still rejected at intake (ALLOWED_IMAGE_CONTENT_TYPES) so this does not bring
+      // back blank-HEIC-on-web. Re-add an inline strip here if metadata stripping is needed again.
+      const updated = await deps.repo.setStatusByUploadId(input.uploadId, "ready")
       const mediaId = updated?.id ?? asset.id
 
-      // Enqueue EXACTLY ONE checks job. singletonKey = uploadId so a double-finalize (client retry)
-      // collapses to a single active job in pg-boss. The worker re-reads the row by id/uploadId.
-      const data: MediaChecksJob = {
-        mediaId,
-        uploadId: asset.uploadId,
-        r2Key: asset.r2Key,
-        kind: asset.kind,
-      }
-      await deps.jobs.enqueue(MEDIA_CHECKS_JOB, data, { singletonKey: asset.uploadId })
-
+      // The `media.checks` job is intentionally NOT enqueued anymore. The FinalizeMediaResponse.status
+      // literal ("validating") is a vestigial contract field clients ignore (the @civfix/shared API client
+      // does not validate responses); the AUTHORITATIVE status is the media row set to "ready" above.
       return { mediaId, status: "validating" }
     },
 

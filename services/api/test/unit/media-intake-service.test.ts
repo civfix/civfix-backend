@@ -123,7 +123,7 @@ describe("createUpload", () => {
 })
 
 describe("finalize", () => {
-  it("enqueues exactly one media.checks job (singletonKey=uploadId) and keeps status validating", async () => {
+  it("marks the media READY immediately and enqueues NO media.checks job (moderation decommissioned)", async () => {
     const { storage, jobs, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
 
@@ -132,23 +132,20 @@ describe("finalize", () => {
     await storage.put(asset.r2Key, new Uint8Array(32 * 1024), { contentType: "image/jpeg" })
 
     const fin = await service.finalize({ uploadId: created.uploadId }, {})
-    expect(fin.status).toBe("validating")
     expect(fin.mediaId).toBe(asset.id)
 
-    const checks = jobs.jobsFor(MEDIA_CHECKS_JOB)
-    expect(checks).toHaveLength(1)
-    expect(checks[0]?.opts?.singletonKey).toBe(created.uploadId)
-    expect(checks[0]?.data).toMatchObject({
-      mediaId: asset.id,
-      uploadId: created.uploadId,
-      r2Key: asset.r2Key,
-      kind: "image",
-    })
+    // The media row is now READY -> servable to EVERYONE on GET /reports/:id with no worker step to wait
+    // on. (The FinalizeMediaResponse.status literal stays "validating" for contract compat; it is a
+    // vestigial field clients ignore -- the authoritative status is the row, asserted here.)
+    const finalized = await row(created.uploadId)
+    expect(finalized.status).toBe("ready")
+
+    // The async media.checks moderation/processing job is decommissioned: finalize enqueues nothing.
+    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
+    expect(jobs.enqueued).toHaveLength(0)
   })
 
-  it("is idempotent: a double finalize collapses to ONE active job per uploadId", async () => {
-    // The FakeJobs records each enqueue, but the singletonKey is the dedupe contract pg-boss enforces.
-    // We assert both enqueues carry the SAME singletonKey so the real queue collapses them.
+  it("is idempotent: a double finalize keeps the media ready and still enqueues nothing", async () => {
     const { storage, jobs, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
     const asset = await row(created.uploadId)
@@ -157,8 +154,8 @@ describe("finalize", () => {
     await service.finalize({ uploadId: created.uploadId }, {})
     await service.finalize({ uploadId: created.uploadId }, {})
 
-    const checks = jobs.jobsFor(MEDIA_CHECKS_JOB)
-    expect(checks.every((j) => j.opts?.singletonKey === created.uploadId)).toBe(true)
+    expect((await row(created.uploadId)).status).toBe("ready")
+    expect(jobs.enqueued).toHaveLength(0)
   })
 
   it("rejects finalize for an unknown uploadId (404) without enqueueing", async () => {

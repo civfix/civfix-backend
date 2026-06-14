@@ -4,7 +4,7 @@
  * FakeStorage/FakeJobs seams, then exercises the intake flow end-to-end through app.inject:
  *
  *   create   -> a media_assets row exists (status validating, report_id null, content-addressed key).
- *   finalize -> status validating + exactly one "media.checks" job enqueued (singletonKey = uploadId).
+ *   finalize -> status READY (moderation job decommissioned: nothing enqueued), servable immediately.
  *   getMedia -> a ready row renders a MediaDTO with a url; a validating row 404s on the public path.
  *
  * When Docker is unavailable the whole describe block SKIPS (describe.skipIf) so the local suite stays
@@ -66,7 +66,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(Number(rows[0]!.byte_size)).toBe(1024)
   })
 
-  it("finalize sets status validating and enqueues one media.checks job", async () => {
+  it("finalize sets status ready and enqueues NO moderation job", async () => {
     const createRes = await app.inject({
       method: "POST",
       url: "/v1/media/upload",
@@ -82,20 +82,22 @@ describe.skipIf(!pg)("media routes (integration)", () => {
 
     const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
     expect(finRes.statusCode).toBe(200)
+    // `status` in the response is a vestigial contract literal ("validating") clients ignore; the
+    // authoritative status is the media_assets row, now READY (servable immediately to everyone).
     expect(finRes.json().status).toBe("validating")
     expect(finRes.json().mediaId).toBe(row!.id)
 
     const [after] = await h.sql<{ status: string }[]>`
       SELECT status FROM media_assets WHERE upload_id = ${uploadId}
     `
-    expect(after!.status).toBe("validating")
+    expect(after!.status).toBe("ready")
 
+    // The async media.checks moderation/processing job is decommissioned: finalize enqueues nothing.
     const checks = jobs.jobsFor(MEDIA_CHECKS_JOB).filter((j) => {
       const d = j.data as { uploadId?: string }
       return d.uploadId === uploadId
     })
-    expect(checks).toHaveLength(1)
-    expect(checks[0]?.opts?.singletonKey).toBe(uploadId)
+    expect(checks).toHaveLength(0)
   })
 
   it("getMedia returns a ready row and 404s a validating row", async () => {

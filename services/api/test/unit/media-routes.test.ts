@@ -105,7 +105,7 @@ describe("POST /media/upload", () => {
 })
 
 describe("POST /media/:uploadId/finalize", () => {
-  it("finalizes after upload: enqueues the media.checks job and returns status validating", async () => {
+  it("finalizes after upload: marks the media ready and enqueues NO moderation job", async () => {
     const { app, repo, storage, jobs } = await makeHarness()
 
     const createRes = await app.inject({
@@ -121,12 +121,14 @@ describe("POST /media/:uploadId/finalize", () => {
     const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
     expect(finRes.statusCode).toBe(200)
     const fin = finRes.json()
+    // `status` in the response is a vestigial contract literal ("validating") that clients ignore; the
+    // authoritative status is the media row, which is now READY (servable immediately).
     expect(fin.status).toBe("validating")
     expect(fin.mediaId).toBe(row!.id)
+    expect((await repo.findByUploadId(uploadId))!.status).toBe("ready")
 
-    const checks = jobs.jobsFor(MEDIA_CHECKS_JOB)
-    expect(checks).toHaveLength(1)
-    expect(checks[0]?.opts?.singletonKey).toBe(uploadId)
+    // The async media.checks moderation job is decommissioned: finalize enqueues nothing.
+    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
   })
 
   it("404s when finalizing an unknown uploadId", async () => {
