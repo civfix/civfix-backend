@@ -300,6 +300,31 @@ describe("GET /reports/:id", () => {
     const res = await app.inject({ method: "GET", url: "/v1/reports/not-a-uuid" })
     expect(res.statusCode).toBe(422)
   })
+
+  it("serves only READY media (hides held/rejected/validating) in the report DTO", async () => {
+    let seededId = ""
+    let readyMediaId = ""
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        const report = repo.seedReport({
+          reporterUserId: "someone",
+          status: "published",
+          visibility: "public",
+        })
+        seededId = report.id
+        readyMediaId = repo.seedMedia({ reportId: report.id, status: "ready" }).id
+        // These must NOT be served: held/rejected leak moderated content; validating yields a broken
+        // URL (getMedia serves ready-only bytes).
+        repo.seedMedia({ reportId: report.id, status: "held" })
+        repo.seedMedia({ reportId: report.id, status: "rejected" })
+        repo.seedMedia({ reportId: report.id, status: "validating" })
+      },
+    })
+    const res = await app.inject({ method: "GET", url: `/v1/reports/${seededId}` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().media).toHaveLength(1)
+    expect(res.json().media[0].id).toBe(readyMediaId)
+  })
 })
 
 describe("GET /reports (my reports)", () => {
