@@ -353,6 +353,13 @@ export interface ReportServiceDeps {
    */
   resolveJurisdictionGeoid: (lat: number, lng: number) => Promise<string | null>
   /**
+   * Best-effort reverse geocoder: turn the report's pin into a one-line address when the reporter did
+   * not supply one, so every report carries a location label for the list/detail. OPTIONAL and nullable
+   * - a missing seam or a null result simply leaves `addr` empty (the prior behavior); it must never
+   * block creation. The real impl is a street-level Photon lookup with a local "City, ST" fallback.
+   */
+  reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
+  /**
    * Presign (or otherwise render) the URL pair for a media object. Wraps the Storage seam; returns a
    * url and an optional thumbUrl. Injected so the service stays free of the storage SDK and is fakeable.
    */
@@ -463,6 +470,13 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const publishedAt = now()
       const reportId = newId()
+      // When the client supplied no address, derive one from the pin (best-effort; null on any failure
+      // so it never blocks creation) so the list/detail always show a location label.
+      const addr = input.addr?.trim()
+        ? input.addr.trim()
+        : deps.reverseGeocode
+          ? await deps.reverseGeocode(input.lat, input.lng)
+          : null
 
       const result = await deps.repo.createReportTx({
         reportId,
@@ -475,7 +489,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         category: input.category,
         title: input.title ?? null,
         description: input.description ?? null,
-        addr: input.addr ?? null,
+        addr,
         // Authed pins publish immediately (plan 11.7): skip the hold.
         status: "published",
         visibility: "public",

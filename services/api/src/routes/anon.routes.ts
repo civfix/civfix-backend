@@ -43,10 +43,14 @@ import { RedisCounterStore } from "../abuse/counter-store.js"
 import { makeAnonService, type AnonService } from "../services/anon-service.js"
 import { makeDrizzleAnonReportRepository } from "../services/anon-repository.drizzle.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
 
 /** Response header carrying a freshly-issued anon token (mobile reads + re-sends it as anonToken). */
 export const ANON_TOKEN_HEADER = "x-anon-token"
+
+/** Shared street-level reverse geocoder (Photon); falls back to the local "City, ST" label per call. */
+const photonReverseGeocode = makePhotonReverseGeocode()
 
 /**
  * Optional injected anon-service (tests). When present the routes use it directly so the full HTTP
@@ -91,6 +95,10 @@ export async function registerAnonRoutes(
         const resolved = await jurisdiction.resolveForPoint(lat, lng)
         return resolved?.geoid ?? null
       },
+      // Derive an address from the pin when the reporter supplied none (street-level Photon, falling back
+      // to the local "City, ST" label). Best-effort: null leaves addr empty and never blocks the submit.
+      reverseGeocode: async (lat, lng) =>
+        (await photonReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
       // media-intake already enqueues media.checks at finalize (the worker dedupes on the uploadId
       // singletonKey), so anon-create does not re-enqueue. The seam stays available for a future path
       // that attaches not-yet-finalized media; left as the no-op default here.

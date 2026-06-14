@@ -44,8 +44,12 @@ import {
   type ReportServiceDeps,
 } from "../services/report-service.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
+import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
 import { BBoxQueryParam, CategoriesQueryParam } from "./query-encoding.js"
+
+/** Shared street-level reverse geocoder (Photon). Falls back to the local "City, ST" label per call. */
+const photonReverseGeocode = makePhotonReverseGeocode()
 
 /**
  * Optional injected report-service dependencies (tests). When present, the routes build the service
@@ -56,6 +60,7 @@ import { BBoxQueryParam, CategoriesQueryParam } from "./query-encoding.js"
 export interface ReportServiceOverrides {
   repo: ReportRepository
   resolveJurisdictionGeoid?: ReportServiceDeps["resolveJurisdictionGeoid"]
+  reverseGeocode?: ReportServiceDeps["reverseGeocode"]
   presignMedia?: ReportServiceDeps["presignMedia"]
   newId?: ReportServiceDeps["newId"]
   now?: ReportServiceDeps["now"]
@@ -108,6 +113,7 @@ export async function registerReportRoutes(
         resolveJurisdictionGeoid:
           overrides.resolveJurisdictionGeoid ?? (() => Promise.resolve(null)),
         presignMedia: overrides.presignMedia ?? defaultPresign(container),
+        ...(overrides.reverseGeocode !== undefined ? { reverseGeocode: overrides.reverseGeocode } : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
@@ -126,6 +132,10 @@ export async function registerReportRoutes(
         const resolved = await jurisdiction.resolveForPoint(lat, lng)
         return resolved?.geoid ?? null
       },
+      // Street-level Photon address, falling back to the local "City, ST" label so a report almost
+      // always gets a location text even when Photon is unreachable. Best-effort: null leaves addr empty.
+      reverseGeocode: async (lat, lng) =>
+        (await photonReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
       presignMedia: defaultPresign(container),
     })
   }

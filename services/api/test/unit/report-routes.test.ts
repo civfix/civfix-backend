@@ -35,6 +35,7 @@ async function makeHarness(
   reportOpts: {
     geoid?: string | null
     seed?: (repo: InMemoryReportRepository) => void
+    reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
   } = {},
 ): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
@@ -60,6 +61,7 @@ async function makeHarness(
     repo,
     resolveJurisdictionGeoid: () =>
       Promise.resolve("geoid" in reportOpts ? (reportOpts.geoid ?? null) : "0644000"),
+    ...(reportOpts.reverseGeocode ? { reverseGeocode: reportOpts.reverseGeocode } : {}),
     presignMedia: (r2Key, thumbKey) =>
       Promise.resolve(
         thumbKey === null
@@ -128,6 +130,49 @@ describe("POST /reports", () => {
     expect(dto.gov).toBe(false)
     expect(dto.timeline).toHaveLength(1)
     expect(repo.reports.size).toBe(1)
+  })
+
+  it("reverse-geocodes the pin into addr when the client supplies none", async () => {
+    const { app, token } = await makeHarness({
+      reverseGeocode: async () => "123 Imperial Hwy, Inglewood, CA",
+    })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "trash",
+        lat: 33.95,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().addr).toBe("123 Imperial Hwy, Inglewood, CA")
+  })
+
+  it("keeps a client-supplied addr instead of reverse-geocoding the pin", async () => {
+    const { app, token } = await makeHarness({
+      reverseGeocode: async () => "SHOULD NOT BE USED",
+    })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "trash",
+        addr: "NW corner by the bus stop",
+        lat: 33.95,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().addr).toBe("NW corner by the bus stop")
   })
 
   // Regression for the live mobile createReport 500 (api.civfix.org, stale deploy): submitReport.ts

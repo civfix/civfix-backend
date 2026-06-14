@@ -163,6 +163,12 @@ export interface AnonServiceDeps {
   anonTokenSigningKey: string
   /** Resolve a point to a jurisdiction geoid (nullable outside coverage). Wraps jurisdiction-service. */
   resolveJurisdictionGeoid: (lat: number, lng: number) => Promise<string | null>
+  /**
+   * Best-effort reverse geocoder: derive an address from the pin when the reporter supplied none, so the
+   * report list/detail show a location label. OPTIONAL; a missing seam or null result leaves `addr` empty
+   * and never blocks creation. Same street-level-Photon-with-local-fallback impl as the authed path.
+   */
+  reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
   /** Best-effort: raise an abuse_flag against a subject (honeypot/gps). Failure must not block the path. */
   raiseAbuseFlag?: (subjectType: "report" | "anon_token", subjectId: string, reason: AnonAbuseReason) => Promise<void>
   /** Enqueue the media.checks job for each attached media id (idempotent; no-op if already enqueued). */
@@ -277,6 +283,12 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const reportId = newId()
       const claimCode = newClaimCode()
+      // Derive an address from the pin when none was supplied (best-effort; null on failure).
+      const addr = input.addr?.trim()
+        ? input.addr.trim()
+        : deps.reverseGeocode
+          ? await deps.reverseGeocode(input.lat, input.lng)
+          : null
 
       const responseSnapshot: AnonReportResponse = {
         reportId,
@@ -295,7 +307,7 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         category: input.category,
         title: input.title ?? null,
         description: input.description ?? null,
-        addr: input.addr ?? null,
+        addr,
         h3Cell,
         mediaUploadIds: input.mediaUploadIds,
         claimCode,
