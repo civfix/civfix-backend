@@ -246,7 +246,13 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     },
 
     async findMediaForReport(reportId: string): Promise<ReportMediaView[]> {
-      return loadMedia(sql, reportId)
+      // PUBLIC read path (GET /reports/:id + my-reports): only `ready` media is servable. getMedia
+      // serves bytes for ready assets only, so a held(NSFW)/rejected/validating asset would yield a
+      // broken URL and, for held/rejected, leak moderated content (a moderation bypass). The create-tx
+      // snapshot reads loadMedia() DIRECTLY (unfiltered) so a new report's just-attached `validating`
+      // media still lands in its frozen idempotency snapshot.
+      const media = await loadMedia(sql, reportId)
+      return media.filter((m) => m.status === "ready")
     },
 
     async findTimelineForReport(reportId: string): Promise<ReportTimelineView[]> {
