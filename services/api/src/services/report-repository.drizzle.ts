@@ -245,14 +245,18 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return rows[0] ? toRecord(rows[0]) : null
     },
 
-    async findMediaForReport(reportId: string): Promise<ReportMediaView[]> {
-      // PUBLIC read path (GET /reports/:id + my-reports): only `ready` media is servable. getMedia
-      // serves bytes for ready assets only, so a held(NSFW)/rejected/validating asset would yield a
-      // broken URL and, for held/rejected, leak moderated content (a moderation bypass). The create-tx
-      // snapshot reads loadMedia() DIRECTLY (unfiltered) so a new report's just-attached `validating`
-      // media still lands in its frozen idempotency snapshot.
+    async findMediaForReport(reportId: string, ownerView = false): Promise<ReportMediaView[]> {
+      // PUBLIC read path (GET /reports/:id for a stranger): only `ready` media is shown. A held(NSFW)/
+      // rejected asset must stay hidden (showing it would leak moderated content - a moderation bypass),
+      // and a `validating` asset has not been processed/moderated yet.
+      // OWNER EXCEPTION (ownerView): when the viewer IS the report's owner, ALSO include their own
+      // in-flight `validating` uploads so they immediately see a photo they just attached, before the
+      // async media.checks worker flips it to `ready` (the presigned r2_key URL already resolves to the
+      // bytes the client PUT). `held`/`rejected` stay hidden even from the owner - those are deliberate
+      // moderation removals. The create-tx snapshot reads loadMedia() DIRECTLY (unfiltered) so a new
+      // report's just-attached `validating` media still lands in its frozen idempotency snapshot.
       const media = await loadMedia(sql, reportId)
-      return media.filter((m) => m.status === "ready")
+      return media.filter((m) => m.status === "ready" || (ownerView && m.status === "validating"))
     },
 
     async findTimelineForReport(reportId: string): Promise<ReportTimelineView[]> {

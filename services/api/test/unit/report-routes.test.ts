@@ -325,6 +325,37 @@ describe("GET /reports/:id", () => {
     expect(res.json().media).toHaveLength(1)
     expect(res.json().media[0].id).toBe(readyMediaId)
   })
+
+  it("shows the OWNER their own in-flight (validating) media but hides it from a stranger", async () => {
+    const { app, repo, token, userId } = await makeHarness()
+    // A public report OWNED by the signed-in user, with a ready item, an in-flight `validating` upload
+    // (worker has not promoted it yet), and a `held` item (a moderation removal).
+    const report = repo.seedReport({
+      reporterUserId: userId,
+      status: "published",
+      visibility: "public",
+    })
+    const readyId = repo.seedMedia({ reportId: report.id, status: "ready" }).id
+    const validatingId = repo.seedMedia({ reportId: report.id, status: "validating" }).id
+    repo.seedMedia({ reportId: report.id, status: "held" })
+
+    // The owner sees their ready AND their own in-flight validating media, but NOT the held one.
+    const ownerRes = await app.inject({
+      method: "GET",
+      url: `/v1/reports/${report.id}`,
+      headers: auth(token),
+    })
+    expect(ownerRes.statusCode).toBe(200)
+    const ownerIds = (ownerRes.json().media as { id: string }[]).map((m) => m.id)
+    expect(ownerIds).toContain(readyId)
+    expect(ownerIds).toContain(validatingId)
+    expect(ownerIds).toHaveLength(2)
+
+    // A stranger (anonymous) still sees only the ready item (validating/held stay hidden).
+    const strangerRes = await app.inject({ method: "GET", url: `/v1/reports/${report.id}` })
+    expect(strangerRes.statusCode).toBe(200)
+    expect((strangerRes.json().media as { id: string }[]).map((m) => m.id)).toEqual([readyId])
+  })
 })
 
 describe("GET /reports (my reports)", () => {

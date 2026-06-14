@@ -209,10 +209,13 @@ export class InMemoryReportRepository implements ReportRepository {
     return Promise.resolve(r ? { ...r } : null)
   }
 
-  findMediaForReport(reportId: string): Promise<ReportMediaView[]> {
-    // Public read path: only `ready` media is servable (mirrors the Drizzle impl). loadMedia stays
-    // unfiltered so the create-tx snapshot still captures just-attached `validating` media.
-    return this.loadMedia(reportId).then((rows) => rows.filter((m) => m.status === "ready"))
+  findMediaForReport(reportId: string, ownerView = false): Promise<ReportMediaView[]> {
+    // Public read path: only `ready` media is servable (mirrors the Drizzle impl). The OWNER (ownerView)
+    // also sees their own in-flight `validating` uploads; `held`/`rejected` stay hidden from everyone.
+    // loadMedia stays unfiltered so the create-tx snapshot still captures just-attached `validating` media.
+    return this.loadMedia(reportId).then((rows) =>
+      rows.filter((m) => m.status === "ready" || (ownerView && m.status === "validating")),
+    )
   }
 
   findTimelineForReport(reportId: string): Promise<ReportTimelineView[]> {

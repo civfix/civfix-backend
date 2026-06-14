@@ -202,8 +202,14 @@ export interface ReportRepository {
   createReportTx(args: CreateReportTxArgs): Promise<CreateReportTxResult>
   /** Load a report record by id (including soft-deleted, so the caller can 404 deleted ones). */
   findReportById(id: string): Promise<ReportRecord | null>
-  /** Media attached to a report, ordered by created_at. */
-  findMediaForReport(reportId: string): Promise<ReportMediaView[]>
+  /**
+   * Media attached to a report, ordered by created_at. By default returns only `ready` media (the public
+   * read path). Pass `ownerView: true` when the VIEWER is the report's owner to ALSO include their own
+   * in-flight `validating` uploads, so an owner immediately sees a photo they just attached - before the
+   * async media.checks worker promotes it to `ready`. `held`/`rejected` (moderation outcomes) stay hidden
+   * from everyone, including the owner.
+   */
+  findMediaForReport(reportId: string, ownerView?: boolean): Promise<ReportMediaView[]>
   /** Timeline entries for a report, ordered by created_at ascending. */
   findTimelineForReport(reportId: string): Promise<ReportTimelineView[]>
   /** Whether `userId` follows `reportId`. */
@@ -510,7 +516,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       }
 
       const [media, timeline, following] = await Promise.all([
-        deps.repo.findMediaForReport(record.id),
+        // The owner sees their own in-flight (`validating`) media too; strangers get `ready` only.
+        deps.repo.findMediaForReport(record.id, mine),
         deps.repo.findTimelineForReport(record.id),
         viewerId !== null ? deps.repo.isFollowing(viewerId, record.id) : Promise.resolve(false),
       ])
@@ -531,7 +538,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const items = await Promise.all(
         records.map(async (record) => {
           const [media, timeline, following] = await Promise.all([
-            deps.repo.findMediaForReport(record.id),
+            // "Your reports": the viewer is always the owner, so include their in-flight media too.
+            deps.repo.findMediaForReport(record.id, true),
             deps.repo.findTimelineForReport(record.id),
             deps.repo.isFollowing(userId, record.id),
           ])
