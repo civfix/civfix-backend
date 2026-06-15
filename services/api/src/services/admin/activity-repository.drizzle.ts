@@ -64,24 +64,30 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
         )
         UNION ALL
         (
-          SELECT 'report'::text AS source, r.id::text AS id, COALESCE(r.created_at, now()) AS ts,
+          SELECT 'report'::text AS source, r.id::text AS id, r.created_at AS ts,
                  ru.display_name AS who, j.name AS where_label,
                  NULL::text AS action, NULL::text AS event_type, r.category AS subject
           FROM reports r
           LEFT JOIN users ru ON ru.id = r.reporter_user_id
           LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
           WHERE r.deleted_at IS NULL AND r.visibility = 'public'
-          ORDER BY COALESCE(r.created_at, now()) DESC
+          -- reports.created_at is DEFAULT now() (effectively non-null on every row), so the COALESCE
+          -- fallback never fires; ordering on the bare column lets the (created_at DESC) index serve
+          -- the sort instead of a seq-scan+top-N heap sort. Output order is identical.
+          ORDER BY r.created_at DESC
           LIMIT ${n}
         )
         UNION ALL
         (
-          SELECT 'cleanup'::text AS source, c.id::text AS id, COALESCE(c.created_at, c.scheduled_at) AS ts,
+          SELECT 'cleanup'::text AS source, c.id::text AS id, c.created_at AS ts,
                  cu.display_name AS who, c.address AS where_label,
                  NULL::text AS action, NULL::text AS event_type, c.title AS subject
           FROM cleanups c
           LEFT JOIN users cu ON cu.id = c.organizer_user_id
-          ORDER BY COALESCE(c.created_at, c.scheduled_at) DESC
+          -- cleanups.created_at is DEFAULT now() (set on insert, effectively non-null), so the COALESCE
+          -- fallback to scheduled_at never fires; ordering on the bare column lets the (created_at DESC)
+          -- index serve the sort instead of a seq-scan+top-N heap sort. Output order is identical.
+          ORDER BY c.created_at DESC
           LIMIT ${n}
         )
         UNION ALL

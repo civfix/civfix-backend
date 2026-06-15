@@ -10,11 +10,12 @@
  *   - members    the cleanup member count;
  *   - unread     count of messages from OTHERS newer than the viewer's read watermark.
  *
- * READ WATERMARK (Phase 1): the watermark is max(joined_at, lastRead). lastRead comes from an injected
- * ChatReadState store updated by the WS `ack` frame. In Phase 1 the store is process-local (no
- * cleanup_members.last_read_at column yet), so unread resets to "since you joined" on restart; this is a
- * deliberate, documented limitation. unread NEVER counts the viewer's own messages (you cannot be
- * "unread" on what you wrote).
+ * READ WATERMARK: the watermark is max(joined_at, lastRead). In production the Drizzle repository folds
+ * unread into its single listThreadsFor query, reading lastRead from the durable cleanup_members
+ * .last_read_at column the WS `ack` frame stamps (one round-trip for the whole inbox, no per-thread
+ * fan-out). When a repository does NOT pre-compute unread (the in-memory test impl), the service falls
+ * back to an injected ChatReadState (process-local) + a per-thread countUnread, preserving identical
+ * results. unread NEVER counts the viewer's own messages (you cannot be "unread" on what you wrote).
  *
  * All DB access sits behind the ThreadsRepository seam (Drizzle impl + in-memory test impl), so the
  * service is unit-testable with no database.
@@ -24,13 +25,16 @@ import { relativeAgo, avatarGradient } from "@civfix/shared"
 import type { MessageThreadDTO, PersonDTO } from "@civfix/shared"
 
 // ---------------------------------------------------------------------------
-// Read-state store (injectable; process-local in Phase 1)
+// Read-state store (injectable; DB-backed in prod, in-memory in tests)
 // ---------------------------------------------------------------------------
 
 /**
- * Per-(user, cleanup) last-read timestamp store. Shared between the WS gateway's `ack` handler (writes)
- * and the threads service (reads). The Phase 1 impl is in-memory; a later migration can back it with a
- * cleanup_members.last_read_at column behind the same interface.
+ * Per-(user, cleanup) last-read timestamp store. The WS gateway's `ack` handler WRITES through it to the
+ * durable cleanup_members.last_read_at column. READS for the inbox unread count no longer go through this
+ * seam in production: listThreadsFor folds the unread count into its single Drizzle query off
+ * cleanup_members.last_read_at directly (see threads-repository.drizzle.ts), eliminating the former
+ * per-thread countUnread fan-out. This interface is retained for the in-memory test path and any ad-hoc
+ * single-thread read; the in-memory impl backs tests, the DB-backed impl backs production writes.
  */
 export interface ChatReadState {
   /** Record that `userId` has read `cleanupId` up to `at`. Monotonic: never moves the watermark back. */
@@ -67,6 +71,14 @@ export interface ThreadAggregate {
   /** When the viewer joined this cleanup (the unread baseline). */
   joinedAt: Date
   members: number
+  /**
+   * Pre-computed unread count (others' messages strictly after the viewer's max(joined_at, last_read_at)
+   * watermark), when the repository folds it into listThreadsFor in a single pass — the Drizzle impl does
+   * this so the inbox is ONE round-trip instead of an N+1 countUnread fan-out. Optional: when a repo omits
+   * it (the in-memory test impl, which carries no read-state), the service falls back to the
+   * ChatReadState + countUnread path below, so behavior is identical either way.
+   */
+  unread?: number
   /** The most-recent message, or null when the room is empty. */
   last: {
     body: string | null
@@ -181,13 +193,21 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
       // into one inbox (last message time, else the room/thread creation/join baseline).
       const cleanupEntries = await Promise.all(
         aggregates.map(async (agg): Promise<{ dto: MessageThreadDTO; activity: number }> => {
-          // Watermark = max(joinedAt, lastRead). unread counts others' messages strictly after it.
-          const lastRead = await deps.readState.lastReadAt(agg.cleanupId, userId)
-          const watermark =
-            lastRead !== null && lastRead.getTime() > agg.joinedAt.getTime()
-              ? lastRead
-              : agg.joinedAt
-          const unread = await deps.repo.countUnread(agg.cleanupId, userId, watermark)
+          // Unread = others' messages strictly after the viewer's watermark (max(joinedAt, lastRead)).
+          // When the repository already folded this into listThreadsFor (the Drizzle impl, reading the
+          // durable cleanup_members.last_read_at), use it directly — this is the single-round-trip path
+          // that eliminates the former per-thread countUnread fan-out. Otherwise (the in-memory test
+          // repo, which carries no read-state) fall back to the ChatReadState watermark + countUnread so
+          // the observable result is identical.
+          let unread = agg.unread
+          if (unread === undefined) {
+            const lastRead = await deps.readState.lastReadAt(agg.cleanupId, userId)
+            const watermark =
+              lastRead !== null && lastRead.getTime() > agg.joinedAt.getTime()
+                ? lastRead
+                : agg.joinedAt
+            unread = await deps.repo.countUnread(agg.cleanupId, userId, watermark)
+          }
 
           const lastFromMe = agg.last !== null && agg.last.senderId === userId
 

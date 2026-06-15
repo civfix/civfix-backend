@@ -36,6 +36,9 @@ export const jurisdictions = pgTable(
   (t) => [
     index("jurisdictions_layer_idx").on(t.layer),
     index("jurisdictions_population_idx").on(t.population),
+    // NOTE: a trigram GIN index `jurisdictions_name_trgm ON jurisdictions USING gin (name gin_trgm_ops)`
+    // backs the admin reports `j.name ILIKE '%q%'` search. It lives in drizzle/0014_search_trgm.sql and
+    // is intentionally NOT mirrored here (raw-SQL-only search; gin_trgm_ops opclass form).
   ],
 )
 

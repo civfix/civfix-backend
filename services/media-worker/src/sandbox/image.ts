@@ -92,6 +92,11 @@ function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): sharp.Sharp {
     limitInputPixels: limits.sharpPixelLimit,
     // Error (do not silently truncate) on a corrupt/partial stream.
     failOn: "error",
+    // Stream large progressive JPEG/TIFF inputs in one forward pass instead of libvips' random-access
+    // read, so we never keep more of the decoded surface resident than necessary. This caps peak RSS
+    // per concurrent job (a memory-bounded multi-tenant worker may decode up to `concurrency` large
+    // surfaces at once), reducing OOM risk under adversarial large-but-legal uploads.
+    sequentialRead: true,
     // sharp's own per-pipeline wall clock (seconds), as a second line under withTimeout.
     // (Rounded up so a sub-second config still yields >= 1s for libvips.)
   }).timeout({ seconds: Math.max(1, Math.ceil(limits.imageTimeoutMs / 1000)) })
@@ -168,30 +173,33 @@ export async function processImage(
   // 2) GPS from the original EXIF (pre-strip), for the report GPS cross-check note. Never throws.
   const exifGps = await readExifGps(bytes)
 
-  // 3) Stripped full image: auto-orient (bakes EXIF orientation into pixels), re-encode WITHOUT
-  //    withMetadata() so all EXIF/XMP/ICC-as-metadata is dropped. limitInputPixels still applies.
+  // 3+4) Stripped full image AND thumbnail from a SINGLE decode. Building a fresh guardedSharp() per
+  //    output runs an independent full libvips decode of the same bytes; on the CPU-bound worker that
+  //    roughly doubles per-image CPU and peak surface memory. Instead build one guarded pipeline, bake
+  //    the EXIF orientation into the pixels once (`.rotate()`), then `.clone()` it for each output —
+  //    sharp shares that one decoded surface across both branches. Neither output calls withMetadata(),
+  //    so all EXIF/XMP/ICC-as-metadata is dropped; limitInputPixels still applies on the shared decode.
   const out = chooseOutput(meta.format)
-  const strippedBytes = await withTimeout(
-    out.apply(guardedSharp(bytes, limits).rotate()).toBuffer(),
-    limits.imageTimeoutMs,
-    "strip",
-  )
-
-  // 4) Thumbnail: same guard, auto-oriented, longest edge <= thumbnailMaxEdge, JPEG, metadata-free.
-  const thumbnailBytes = await withTimeout(
-    guardedSharp(bytes, limits)
-      .rotate()
-      .resize({
-        width: limits.thumbnailMaxEdge,
-        height: limits.thumbnailMaxEdge,
-        fit: "inside",
-        withoutEnlargement: true,
-      })
-      .jpeg({ quality: 80 })
-      .toBuffer(),
-    limits.imageTimeoutMs,
-    "thumbnail",
-  )
+  const base = guardedSharp(bytes, limits).rotate()
+  const [strippedBytes, thumbnailBytes] = await Promise.all([
+    // Stripped full image: chosen output encoder, metadata-free.
+    withTimeout(out.apply(base.clone()).toBuffer(), limits.imageTimeoutMs, "strip"),
+    // Thumbnail: longest edge <= thumbnailMaxEdge, JPEG, metadata-free.
+    withTimeout(
+      base
+        .clone()
+        .resize({
+          width: limits.thumbnailMaxEdge,
+          height: limits.thumbnailMaxEdge,
+          fit: "inside",
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 80 })
+        .toBuffer(),
+      limits.imageTimeoutMs,
+      "thumbnail",
+    ),
+  ])
 
   return {
     meta: { width: meta.width, height: meta.height, format: meta.format },

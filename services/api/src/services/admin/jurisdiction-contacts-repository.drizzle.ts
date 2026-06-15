@@ -263,6 +263,34 @@ export function makeDrizzleJurisdictionContactsRepository(
       const after = anchor ? sql`AND j.geoid > ${anchor.id}` : sql``
       const limit = clampLimit(args.limit)
 
+      // Method facet pushed into the WHERE (was JS-only, post-LIMIT). directoryMethod is derivable from
+      // the already-joined columns, so mirroring its rule here keeps LIMIT counting only matching rows and
+      // the geoid cursor aligned (a sparse facet no longer yields near-empty pages -> a client refetch
+      // storm). The SQL must match jurisdiction-contacts-service.directoryMethod EXACTLY:
+      //   hasEmail = j.contact_emails has a non-blank entry OR a per-category jurisdiction_contacts row has
+      //              a non-blank email; 'email' = hasEmail; 'form' = !hasEmail AND a non-blank
+      //              report_form_url; 'none' = neither. (btrim(...) <> '' mirrors the JS .trim() !== "".)
+      const hasEmailExpr = sql`(
+        EXISTS (
+          SELECT 1 FROM unnest(COALESCE(j.contact_emails, '{}'::text[])) AS e(v)
+          WHERE btrim(e.v) <> ''
+        )
+        OR EXISTS (
+          SELECT 1 FROM jurisdiction_contacts mc
+          WHERE mc.geoid = j.geoid AND mc.category IS NOT NULL
+            AND mc.email IS NOT NULL AND btrim(mc.email) <> ''
+        )
+      )`
+      const hasFormExpr = sql`(j.report_form_url IS NOT NULL AND btrim(j.report_form_url) <> '')`
+      const methodFilter =
+        args.filter === "email"
+          ? sql`AND ${hasEmailExpr}`
+          : args.filter === "form"
+            ? sql`AND NOT ${hasEmailExpr} AND ${hasFormExpr}`
+            : args.filter === "none"
+              ? sql`AND NOT ${hasEmailExpr} AND NOT ${hasFormExpr}`
+              : sql``
+
       const rows = await sql<DirectoryRow[]>`
         SELECT
           j.geoid,
@@ -325,14 +353,16 @@ export function makeDrizzleJurisdictionContactsRepository(
         WHERE true
         ${search}
         ${after}
+        ${methodFilter}
         ORDER BY j.geoid ASC
         LIMIT ${limit + 1}
       `
 
       let records = rows.map(toRecord)
-      // The method facet is computed from the contact posture, so filter in JS after projection (the
-      // directory is small; one row per jurisdiction). Cursor paging stays on geoid. (N2: reuse the
-      // service's directoryMethod so the rule has one definition.)
+      // The method facet is now applied in SQL (the ${methodFilter} fragment above), so LIMIT counts only
+      // matching rows and the geoid cursor stays aligned. This JS pass is kept only as a belt-and-suspenders
+      // check that re-derives the facet from the projected record via the service's directoryMethod (one
+      // definition of the rule); against the SQL predicate it should be a no-op. (N2.)
       if (args.filter !== "all") {
         records = records.filter((r) => directoryMethod(r) === args.filter)
       }

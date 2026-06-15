@@ -176,12 +176,19 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       }
       if (args.q !== null) {
         const like = `%${args.q}%`
+        // The text branches (title/address/display_name/handle) are leading-wildcard ILIKEs the trigram
+        // indexes (0014_search_trgm.sql) serve. Mixing in `c.id::text ILIKE` — a leading-wildcard match on
+        // a uuid that can NEVER use an index — would force a seq scan for the whole OR, defeating those
+        // indexes. An id search means "this exact event", so add an exact `c.id = q::uuid` branch only when
+        // `q` parses as a uuid (the cast would otherwise raise an invalid-uuid error); else omit it.
+        // Mirrors admin-report-repository.drizzle.ts.
+        const idBranch = isUuid(args.q) ? sql`OR c.id = ${args.q}::uuid` : sql``
         conds.push(sql`AND (
           c.title ILIKE ${like}
           OR c.address ILIKE ${like}
-          OR c.id::text ILIKE ${like}
+          ${idBranch}
           OR u.display_name ILIKE ${like}
-          OR u.handle ILIKE ${like}
+          OR (u.handle::text) ILIKE ${like}
         )`)
       }
       if (anchor !== null) {
@@ -362,4 +369,9 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       })
     },
   }
+}
+
+/** Loose uuid shape check so a non-uuid `q` search never trips a Postgres cast error on `q::uuid`. */
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }

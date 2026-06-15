@@ -31,6 +31,9 @@ export async function perceptualHash(bytes: Uint8Array, limits: WorkerLimits): P
     raw = await sharp(Buffer.from(bytes), {
       limitInputPixels: limits.sharpPixelLimit,
       failOn: "error",
+      // Stream large progressive inputs in one forward pass (mirrors guardedSharp in image.ts) so the
+      // hash decode never keeps more of the surface resident than needed under the worker concurrency cap.
+      sequentialRead: true,
     })
       .timeout({ seconds: Math.max(1, Math.ceil(limits.imageTimeoutMs / 1000)) })
       // Grayscale, exact small size (ignore aspect so the grid is fixed), raw 1-channel pixels.

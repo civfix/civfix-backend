@@ -11,9 +11,13 @@
  *      Census GEOIDs are hierarchical and begin with the 2-digit state FIPS code: a state geoid IS
  *      that 2-digit code ("06" = California), a county geoid is state+county ("06037"), and a place
  *      geoid is state+place ("0644000"). So the leading two characters of ANY resolved geoid are the
- *      state FIPS, which STATE_FIPS_TO_USPS maps to the USPS abbreviation ("06" -> "CA"). We first try
- *      the explicitly-containing state row (authoritative); if no state polygon covers the point we
- *      fall back to the FIPS prefix of the locality geoid so a label is still produced.
+ *      state FIPS, which STATE_FIPS_TO_USPS maps to the USPS abbreviation ("06" -> "CA"). We derive the
+ *      abbreviation from the FIPS prefix of the already-resolved locality geoid directly (no extra
+ *      query) ONLY for the FIPS-hierarchical layers (place/county/state). federal/tribal jurisdictions are
+ *      not Census FIPS geoids — dev data uses alpha prefixes (NPS-, USFS-, BIA-) but production ingest can
+ *      carry numeric ids whose first two digits would be a valid-but-WRONG state FIPS — so for those layers
+ *      we skip the prefix and run the authoritative containing-state query, as we also do when the prefix
+ *      lookup yields nothing. Either way a label is still produced.
  *
  * Result shape: "Los Angeles, CA". When no jurisdiction contains the point at all, returns null (the
  * caller decides how to present "outside coverage"). When the state cannot be determined we return
@@ -137,21 +141,29 @@ export class TigerGeocoder implements Geocoder {
     const resolved = await resolveJurisdiction(sql, lng, lat)
     if (!resolved) return null
 
-    const usps = await this.stateAbbrFor(sql, lng, lat, resolved.geoid)
+    // Census geoids are hierarchical, so the leading 2 chars of a place/county/state geoid ARE the
+    // state FIPS (see file header) — derive the USPS from the already-resolved geoid first and avoid a
+    // second spatial round-trip. This shortcut is ONLY valid for the FIPS-hierarchical layers
+    // (place/county/state). federal/tribal jurisdictions are NOT Census FIPS geoids: dev data uses alpha
+    // prefixes (NPS-*, USFS-*, BIA-*) for which uspsFromGeoid returns null, but the production ingest CLI
+    // can carry NUMERIC ids (e.g. a BIA/ArcGIS GEOID/OBJECTID) whose first two digits are a valid-but-WRONG
+    // state FIPS — so for those layers we must NOT trust the prefix and instead run the authoritative
+    // containing-state query (the original behavior). When the prefix is unavailable/untrusted, fall back.
+    const fipsLayer =
+      resolved.layer === "place" || resolved.layer === "county" || resolved.layer === "state"
+    const usps =
+      (fipsLayer ? uspsFromGeoid(resolved.geoid) : null) ?? (await this.stateAbbrFor(sql, lng, lat))
     return formatCityStateLabel(resolved.name, usps)
   }
 
   /**
-   * Determine the USPS state abbreviation for the point. Prefer the geoid of the STATE-layer
-   * jurisdiction that actually contains the point (authoritative even across odd geoid schemes); fall
-   * back to the FIPS prefix of the already-resolved locality geoid when no state polygon covers it.
+   * Determine the USPS state abbreviation for the point from the STATE-layer jurisdiction that
+   * actually contains it (authoritative even across odd geoid schemes). This is only used as a
+   * fallback for points whose resolved locality geoid has a non-FIPS prefix (federal/tribal land);
+   * for ordinary place/county/state geoids the caller derives the USPS from the geoid prefix directly
+   * and never reaches this query. Returns null when no state polygon covers the point.
    */
-  private async stateAbbrFor(
-    sql: Sql,
-    lng: number,
-    lat: number,
-    localityGeoid: string,
-  ): Promise<string | null> {
+  private async stateAbbrFor(sql: Sql, lng: number, lat: number): Promise<string | null> {
     const rows = await sql<{ geoid: string }[]>`
       SELECT geoid
       FROM jurisdictions
@@ -159,8 +171,6 @@ export class TigerGeocoder implements Geocoder {
         AND ST_Contains(geom, ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326))
       LIMIT 1
     `
-    const stateGeoid = rows[0]?.geoid
-    if (stateGeoid) return uspsFromGeoid(stateGeoid)
-    return uspsFromGeoid(localityGeoid)
+    return uspsFromGeoid(rows[0]?.geoid ?? "") ?? null
   }
 }

@@ -21,5 +21,11 @@ export function makeRedis(redisUrl: string): RedisClient {
     lazyConnect: true,
     maxRetriesPerRequest: 2,
     enableReadyCheck: true,
+    // Coalesce independent commands issued within the same event-loop tick into one pipelined
+    // round-trip (e.g. the per-user PUBLISH fan-out in user-channel.redis.ts publishToUsers, which
+    // issues N concurrent publishes via Promise.all). ioredis auto-pipelining batches these without
+    // any call-site change; dependent awaited reads (e.g. the session get -> banned-marker get on the
+    // auth hot path, which needs the userId from the first read) stay sequential by necessity.
+    enableAutoPipelining: true,
   })
 }

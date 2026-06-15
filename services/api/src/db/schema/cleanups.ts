@@ -43,6 +43,11 @@ export const cleanups = pgTable(
     index("cleanups_scheduled_idx").on(t.scheduledAt),
     index("cleanups_status_idx").on(t.status),
     index("cleanups_organizer_idx").on(t.organizerUserId),
+    // Activity-feed cleanups branch ordering (created_at DESC). Added in drizzle/0013_perf_indexes.sql.
+    index("cleanups_created_idx").on(t.createdAt.desc()),
+    // NOTE: trigram GIN indexes `cleanups_title_trgm` / `cleanups_address_trgm`
+    // (USING gin (... gin_trgm_ops)) back the admin event-list ILIKE search; they live in
+    // drizzle/0014_search_trgm.sql and are intentionally NOT mirrored here (raw-SQL-only search).
   ],
 )
 

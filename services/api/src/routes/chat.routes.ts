@@ -149,11 +149,21 @@ export async function registerChatRoutes(
   // the room for safety; a foreign/unknown id falls back to now() so a stray ack still advances liveness.
   // In the all-fakes dev path (no DB) we cannot resolve it, so we use now() (unread precision is moot in
   // dev). Reads come off the lazily-created DB handle, so this opens no connection until an ack lands.
+  //
+  // PARTITION PRUNING: chat_messages is PARTITIONED BY RANGE (created_at), one partition per calendar
+  // month (drizzle/0002_chat_partitioning.sql). Without a created_at predicate the planner cannot prune,
+  // so this probes the PK index (id, created_at) in EVERY monthly partition (plus DEFAULT) on every ack —
+  // a cost that grows unbounded with calendar time. The `ack` frame carries only upToId (no created_at),
+  // but an ack is always for a very recently received message, so we bound the search to the last 90 days.
+  // That lets the planner prune to the few recent partitions while still always matching a real ack target;
+  // a stale/foreign id (older than the window or unknown) simply falls back to now() as before.
   const resolveReadAt: (cleanupId: string, upToId: string) => Promise<Date> = container.env.USE_FAKE_CHAT
     ? () => Promise.resolve(new Date())
     : async (cleanupId, upToId) => {
         const rows = await container.getDb().sql<{ created_at: Date }[]>`
-          SELECT created_at FROM chat_messages WHERE id = ${upToId} AND cleanup_id = ${cleanupId} LIMIT 1
+          SELECT created_at FROM chat_messages
+          WHERE id = ${upToId} AND cleanup_id = ${cleanupId} AND created_at >= now() - interval '90 days'
+          LIMIT 1
         `
         return rows[0]?.created_at ?? new Date()
       }

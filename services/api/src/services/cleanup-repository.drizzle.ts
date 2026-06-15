@@ -99,7 +99,12 @@ function toRecord(r: CleanupRowSelect): CleanupRecord {
 /**
  * The SELECT list shared by every cleanup read. `near` toggles a distance expression (metres via the
  * geography cast); when absent, dist is a literal NULL so the column shape stays stable. The going count
- * and organizer person fields are joined inline so a single round-trip builds the whole DTO.
+ * comes from the pre-aggregated `g` join (see `goingJoin`) rather than a correlated per-row subquery, so
+ * a list page computes the member count once per cleanup set-wise instead of N index probes. The organizer
+ * person fields are joined inline so a single round-trip builds the whole DTO.
+ *
+ * INVARIANT: every query selecting these columns MUST also include `goingJoin(sql)` so `g.going` resolves;
+ * COALESCE keeps cleanups with zero members at 0 (the LEFT JOIN yields NULL for them).
  */
 function cleanupColumns(sql: Queryable, near: NearPoint | null) {
   const distExpr =
@@ -119,12 +124,24 @@ function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.bring,
     c.address,
     c.created_at,
-    (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id) AS going,
+    COALESCE(g.going, 0) AS going,
     ${distExpr} AS dist,
     u.display_name AS org_display_name,
     u.handle AS org_handle,
     u.bio AS org_bio
   `
+}
+
+/**
+ * Pre-aggregated member-count join used by every query that selects `cleanupColumns`. Replaces the old
+ * correlated `(SELECT count(*) ... WHERE m.cleanup_id = c.id)` subquery: instead of one index probe per
+ * returned row, the member count is grouped once and joined by cleanup_id. For a single-row read this is
+ * equivalent work; for a list page it collapses N correlated counts into one aggregate scan.
+ */
+function goingJoin(sql: Queryable) {
+  return sql`LEFT JOIN (
+    SELECT cleanup_id, count(*)::int AS going FROM cleanup_members GROUP BY cleanup_id
+  ) g ON g.cleanup_id = c.id`
 }
 
 export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
@@ -138,6 +155,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       SELECT ${cleanupColumns(tag, near)}
       FROM cleanups c
       JOIN users u ON u.id = c.organizer_user_id
+      ${goingJoin(tag)}
       WHERE c.id = ${id}
       LIMIT 1
     `
@@ -205,6 +223,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           SELECT ${cleanupColumns(sql, near)}
           FROM cleanups c
           JOIN users u ON u.id = c.organizer_user_id
+          ${goingJoin(sql)}
           WHERE TRUE
             ${whenFilter}
             ${bboxFilter}
@@ -231,6 +250,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         SELECT ${cleanupColumns(sql, null)}
         FROM cleanups c
         JOIN users u ON u.id = c.organizer_user_id
+        ${goingJoin(sql)}
         WHERE TRUE
           ${whenFilter}
           ${bboxFilter}

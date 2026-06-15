@@ -97,6 +97,11 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       maxZoom: env.TILES_MAX_ZOOM,
       bounds: env.TILES_BOUNDS,
     }
+    // Cacheable: tileinfo is env-derived basemap metadata that only changes between deploys and is
+    // fetched on every client cold start. A 1h browser/edge TTL lets clients and Cloudflare reuse it
+    // instead of re-hitting the origin on every load. (Serving from the CF edge ALSO needs a cache rule
+    // for /v1/map/* — CF does not cache JSON API paths by default even with Cache-Control.)
+    reply.header("Cache-Control", "public, max-age=3600")
     reply.status(200).send(payload)
   })
 
@@ -138,6 +143,11 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
 
     const pins = await queryCleanupPins(container, bbox, when)
     const payload: MapCleanupsResponse = { pins }
+    // Anon-ok and identical across all viewers for a given bbox: a short shared TTL lets browsers and
+    // Cloudflare absorb repeated pans/loads without re-serializing the full pin set every time. Kept
+    // short (60s) because cleanup data is dynamic. (Edge caching also needs a CF cache rule for
+    // /v1/map/*; the origin header alone only buys browser-cache + revalidation.)
+    reply.header("Cache-Control", "public, max-age=60")
     reply.status(200).send(payload)
   })
 

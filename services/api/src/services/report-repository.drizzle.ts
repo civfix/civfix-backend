@@ -264,11 +264,14 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
 
           // 2) Attach media: set report_id ONLY when the asset is unattached or already ours. A foreign
           // asset (bound to another report) is left untouched - never stolen. Unknown ids no-op.
-          for (const uploadId of args.mediaUploadIds) {
+          // Set-based UPDATE over all upload ids in ONE round-trip (postgres-js array binding) instead of a
+          // per-id loop, so attaching N photos costs one statement inside the create tx rather than N.
+          // Skipped when there are no ids, since `IN ()` is invalid SQL. Semantics unchanged.
+          if (args.mediaUploadIds.length > 0) {
             await tx`
               UPDATE media_assets
               SET report_id = ${args.reportId}
-              WHERE upload_id = ${uploadId}
+              WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
             `
           }

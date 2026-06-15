@@ -95,22 +95,22 @@ export class RedisChatPresence implements ChatPresence {
     return `presence:${cleanupId}`
   }
 
-  /** Drop entries whose last-seen is older than the TTL window. */
-  private async prune(key: string, now: number): Promise<void> {
-    await this.redis.zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
-  }
-
-  private async members(key: string): Promise<string[]> {
-    return this.redis.zrange(key, 0, -1)
-  }
-
   async join(cleanupId: string, connId: string, userId: string): Promise<PresenceJoinResult> {
     const key = this.key(cleanupId)
     const now = Date.now()
-    await this.prune(key, now)
-    await this.redis.zadd(key, now, member(userId, connId))
-    await this.redis.expire(key, PRESENCE_KEY_TTL_SECONDS)
-    const members = await this.members(key)
+    // One MULTI instead of 4 serial round-trips (prune + zadd + expire + zrange): on a multi-worker
+    // deployment Redis is a network hop, so collapsing the join path to a single RTT removes ~4x the
+    // per-command latency from the connection-lifecycle path. MULTI also makes prune+write+read atomic,
+    // so the membership snapshot we read back can't be perturbed by an interleaving command.
+    const replies = await this.redis
+      .multi()
+      .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
+      .zadd(key, now, member(userId, connId))
+      .expire(key, PRESENCE_KEY_TTL_SECONDS)
+      .zrange(key, 0, -1)
+      .exec()
+    // The zrange reply is the LAST command in the MULTI; reply is [err, value] per command.
+    const members = (replies?.at(-1)?.[1] as string[]) ?? []
     // userJoined: this connection is the user's ONLY one in the room -> they just came online.
     const userConns = members.filter((m) => userOf(m) === userId).length
     return { online: distinctUsers(members), userJoined: userConns <= 1 }
@@ -119,24 +119,39 @@ export class RedisChatPresence implements ChatPresence {
   async leave(cleanupId: string, connId: string, userId: string): Promise<PresenceLeaveResult> {
     const key = this.key(cleanupId)
     const now = Date.now()
-    await this.redis.zrem(key, member(userId, connId))
-    await this.prune(key, now)
-    const members = await this.members(key)
+    // One MULTI instead of 3 serial round-trips (zrem + prune + zrange) -> 1 RTT, atomic snapshot.
+    const replies = await this.redis
+      .multi()
+      .zrem(key, member(userId, connId))
+      .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
+      .zrange(key, 0, -1)
+      .exec()
+    const members = (replies?.at(-1)?.[1] as string[]) ?? []
     const userGone = !members.some((m) => userOf(m) === userId)
     return { online: distinctUsers(members), userGone }
   }
 
   async refresh(cleanupId: string, connId: string, userId: string): Promise<void> {
     const key = this.key(cleanupId)
-    await this.redis.zadd(key, Date.now(), member(userId, connId))
-    await this.redis.expire(key, PRESENCE_KEY_TTL_SECONDS)
+    // One MULTI instead of 2 serial round-trips (zadd + expire) -> 1 RTT.
+    await this.redis
+      .multi()
+      .zadd(key, Date.now(), member(userId, connId))
+      .expire(key, PRESENCE_KEY_TTL_SECONDS)
+      .exec()
   }
 
   async online(cleanupId: string): Promise<string[]> {
     const key = this.key(cleanupId)
     const now = Date.now()
-    await this.prune(key, now)
-    return distinctUsers(await this.members(key))
+    // One MULTI instead of 2 serial round-trips (prune + zrange) -> 1 RTT, atomic snapshot.
+    const replies = await this.redis
+      .multi()
+      .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
+      .zrange(key, 0, -1)
+      .exec()
+    const members = (replies?.at(-1)?.[1] as string[]) ?? []
+    return distinctUsers(members)
   }
 
   close(): Promise<void> {

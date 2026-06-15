@@ -27,7 +27,14 @@ export const reportTimeline = pgTable(
     actorId: uuid("actor_id").references(() => users.id),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
-  (t) => [index("report_timeline_report_idx").on(t.reportId, t.createdAt)],
+  (t) => [
+    index("report_timeline_report_idx").on(t.reportId, t.createdAt),
+    // Partial index for the jurisdiction-directory last_routed_at subquery
+    // (MAX(created_at) WHERE status = 'acknowledged'). Added in drizzle/0013_perf_indexes.sql.
+    index("report_timeline_acknowledged_idx")
+      .on(t.reportId, t.createdAt)
+      .where(sql`status = 'acknowledged'`),
+  ],
 )
 
 export type ReportTimelineRow = typeof reportTimeline.$inferSelect

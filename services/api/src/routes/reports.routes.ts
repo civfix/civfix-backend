@@ -100,6 +100,78 @@ const MapReportsQuerySchema = z.object({
   zoom: ZoomQueryParam,
 })
 
+/**
+ * Compiled-serializer JSON Schema for the GET /map/reports 200 body (perf).
+ *
+ * This is the ONE genuinely array-heavy hot read path (clustered map pins on every pan/zoom), so we give
+ * Fastify a response schema for it. Fastify compiles `schema.response[200]` with fast-json-stringify,
+ * which serializes array/object payloads ~2-3x faster than the generic JSON.stringify fallback it uses
+ * for unschematized routes - measurable event-loop CPU on the 4-core box under map-panning traffic.
+ *
+ * It is a hand-written JSON Schema (not a zod-to-json-schema conversion) that mirrors the emitted shape
+ * EXACTLY - the shared `ReportClusterResponseSchema` (clusters[]/pins[]/optional counts) and the service's
+ * `listReportsInBBox` return. This matters: fast-json-stringify serializes ONLY what the schema declares
+ * and silently DROPS any property the schema omits, so a drift here would corrupt the payload. Fields:
+ *   - clusters: ReportClusterDTO  = { lat, lng, count }                          (grid clusters, low zoom)
+ *   - pins:     ReportPinDTO       = { id, category, lat, lng, status }          (individual pins, high zoom)
+ *   - counts:   Partial<Record<ReportCategory, number>>  (optional; the service omits it for an empty view)
+ * The two enums (category, status) are inlined from ReportCategorySchema / ReportStatusSchema; `counts`
+ * uses additionalProperties:number so the per-category integer values serialize through. The shape is
+ * exercised by the existing /map/reports route tests, which assert the full cluster/pin/counts payload.
+ */
+const MapReportsResponseJsonSchema = {
+  type: "object",
+  properties: {
+    clusters: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          lat: { type: "number" },
+          lng: { type: "number" },
+          count: { type: "integer" },
+        },
+        required: ["lat", "lng", "count"],
+      },
+    },
+    pins: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          category: {
+            type: "string",
+            enum: ["trash", "recycling", "graffiti", "hazard", "water", "other"],
+          },
+          lat: { type: "number" },
+          lng: { type: "number" },
+          status: {
+            type: "string",
+            enum: [
+              "submitted",
+              "held",
+              "published",
+              "acknowledged",
+              "in_progress",
+              "resolved",
+              "rejected",
+            ],
+          },
+        },
+        required: ["id", "category", "lat", "lng", "status"],
+      },
+    },
+    // Per-category pin counts (optional; absent for an empty view). Keys are ReportCategory values; the
+    // additionalProperties:number declaration is what lets fast-json-stringify emit the integer values.
+    counts: {
+      type: "object",
+      additionalProperties: { type: "number" },
+    },
+  },
+  required: ["clusters", "pins"],
+} as const
+
 export async function registerReportRoutes(
   app: FastifyInstance,
   container: Container,
@@ -176,7 +248,7 @@ export async function registerReportRoutes(
   // -------------------------------------------------------------------------
   // GET /map/reports  (anon-ok)
   // -------------------------------------------------------------------------
-  route(app, "mapReports", async (request, reply) => {
+  route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } } }, async (request, reply) => {
     // Decode the client's wire form (JSON bbox + repeated categories + scalar zoom).
     const q = parse(MapReportsQuerySchema, request.query)
     // Re-validate the assembled shape against the shared schema so the wire contract is the single
@@ -191,6 +263,12 @@ export async function registerReportRoutes(
       validated.categories ?? null,
       validated.zoom,
     )
+    // Anon-ok and identical across all viewers for a given bbox+zoom+categories: a short shared TTL lets
+    // browsers and Cloudflare absorb repeated pans/loads without re-running the spatial query + cluster
+    // serialization every time. Kept short (60s) because report data is dynamic — mirrors GET /map/cleanups.
+    // (Edge caching also needs a CF cache rule for /v1/map/*; the origin header alone only buys
+    // browser-cache + revalidation.)
+    reply.header("Cache-Control", "public, max-age=60")
     reply.status(200).send(payload)
   })
 

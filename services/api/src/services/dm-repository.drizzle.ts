@@ -289,8 +289,17 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
     },
 
     async resolveMessageCreatedAt(threadId: string, messageId: string): Promise<Date | null> {
+      // PARTITION PRUNING: dm_messages is PARTITIONED BY RANGE(created_at) per calendar month (0009).
+      // This resolves a DM read-ack watermark, and an ack is always for a very recently received message,
+      // so bounding to the last 90 days lets the planner prune to the few recent partitions instead of
+      // probing the PK index in EVERY monthly partition. (Unlike the history `before` cursor above — which
+      // may legitimately anchor on an old message and is therefore left unbounded — an ack target older
+      // than the 90-day window, or an unknown/foreign id, resolves to null here and the caller falls back
+      // to now(): the same accepted liveness-precision tradeoff as chat.routes.ts resolveReadAt.)
       const rows = await sql<{ created_at: Date }[]>`
-        SELECT created_at FROM dm_messages WHERE id = ${messageId} AND thread_id = ${threadId} LIMIT 1
+        SELECT created_at FROM dm_messages
+        WHERE id = ${messageId} AND thread_id = ${threadId} AND created_at >= now() - interval '90 days'
+        LIMIT 1
       `
       return rows[0]?.created_at ?? null
     },

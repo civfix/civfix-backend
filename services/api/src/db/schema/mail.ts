@@ -61,6 +61,13 @@ export const mailThreads = pgTable(
     index("mail_threads_unread_idx")
       .on(t.lastMessageAt.desc())
       .where(sql`${t.unread} = true`),
+    // NOTE: the inbox keyset index `mail_threads_inbox_keyset_idx ON mail_threads
+    // ((COALESCE(last_message_at, created_at)) DESC, id DESC)` lives in drizzle/0013_perf_indexes.sql.
+    // It is an EXPRESSION index over COALESCE(...) which Drizzle cannot cleanly express, so it is
+    // intentionally not mirrored here.
+    // NOTE: trigram GIN indexes `mail_threads_org_trgm` / `mail_threads_subject_trgm`
+    // (USING gin (... gin_trgm_ops)) back the inbox ILIKE search and live in
+    // drizzle/0014_search_trgm.sql; not mirrored here (raw-SQL-only search).
   ],
 )
 
@@ -106,6 +113,8 @@ export const mailEvents = pgTable(
   (t) => [
     index("mail_events_type_created_idx").on(t.type, t.createdAt.desc()),
     index("mail_events_thread_idx").on(t.threadId),
+    // Activity-feed mail_events branch: global newest-first scan. Added in drizzle/0013_perf_indexes.sql.
+    index("mail_events_created_idx").on(t.createdAt.desc()),
   ],
 )
 

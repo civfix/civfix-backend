@@ -51,6 +51,13 @@ export const users = pgTable(
     uniqueIndex("users_email_key")
       .on(t.email)
       .where(sql`${t.email} is not null`),
+    // Admin users list keyset (created_at DESC, id DESC). Added in drizzle/0013_perf_indexes.sql.
+    index("users_created_id_idx").on(t.createdAt.desc(), t.id.desc()),
+    // NOTE: trigram GIN indexes `users_handle_trgm ON users USING gin ((handle::text) gin_trgm_ops)`
+    // and `users_display_name_trgm ON users USING gin (display_name gin_trgm_ops)` back the
+    // @handle typeahead + people/admin ILIKE searches. They live in drizzle/0014_search_trgm.sql and
+    // are intentionally NOT mirrored here (raw-SQL-only; handle GIN is an expression index over a
+    // CITEXT cast that Drizzle cannot cleanly express).
   ],
 )
 

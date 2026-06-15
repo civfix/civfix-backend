@@ -11,7 +11,7 @@
  */
 
 import { sql } from "drizzle-orm"
-import { check, pgTable, timestamp, unique, uuid } from "drizzle-orm/pg-core"
+import { check, index, pgTable, timestamp, unique, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 
 export const dmThreads = pgTable(
@@ -31,6 +31,9 @@ export const dmThreads = pgTable(
   (t) => [
     unique("dm_threads_user_lo_user_hi_key").on(t.userLo, t.userHi),
     check("dm_threads_lo_lt_hi", sql`${t.userLo} < ${t.userHi}`),
+    // user_hi has no leftmost-prefix coverage from the UNIQUE(user_lo, user_hi); this standalone index
+    // lets the inbox `user_lo = X OR user_hi = X` filter BitmapOr both branches. See drizzle/0013.
+    index("dm_threads_user_hi_idx").on(t.userHi),
   ],
 )
 

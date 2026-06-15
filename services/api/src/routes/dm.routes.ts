@@ -102,14 +102,18 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     const repo = dmRepo()
     // Authorize: the viewer must be a participant AND not blocked either way. A single generic 403 so
     // "not a participant" and "blocked" are indistinguishable (no leak).
-    const isParticipant = await repo.isParticipant(id, userId)
-    if (!isParticipant) throw AppError.forbidden("You can't view this conversation.")
+    //
+    // Derive participation from the thread row itself instead of issuing a separate isParticipant query:
+    // getThread already returns user_lo/user_hi, and isParticipant's predicate
+    // (id = threadId AND (user_lo = userId OR user_hi = userId)) is exactly that membership test, so this
+    // is behavior-preserving while removing one redundant dm_threads PK seek (3 gating round-trips -> 2;
+    // the block check still needs its own round-trip, it hits a different table).
     const thread = await repo.getThread(id)
-    if (thread !== null) {
-      const peer = thread.userLo === userId ? thread.userHi : thread.userLo
-      if (await blocksRepo().isBlockedEitherWay(userId, peer)) {
-        throw AppError.forbidden("You can't view this conversation.")
-      }
+    const isParticipant = thread !== null && (thread.userLo === userId || thread.userHi === userId)
+    if (!isParticipant) throw AppError.forbidden("You can't view this conversation.")
+    const peer = thread.userLo === userId ? thread.userHi : thread.userLo
+    if (await blocksRepo().isBlockedEitherWay(userId, peer)) {
+      throw AppError.forbidden("You can't view this conversation.")
     }
 
     const limit = q.limit ?? DM_HISTORY_DEFAULT_LIMIT

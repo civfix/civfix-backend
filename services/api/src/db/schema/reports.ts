@@ -64,6 +64,27 @@ export const reports = pgTable(
     index("reports_anon_session_idx").on(t.anonSessionId),
     // Partial unique (WHERE claim_code IS NOT NULL): an active code resolves to exactly one report.
     uniqueIndex("reports_claim_code_key").on(t.claimCode).where(sql`claim_code IS NOT NULL`),
+    // --- Performance indexes added in drizzle/0013_perf_indexes.sql ---
+    // Admin reports list keyset (created_at DESC, id DESC) over non-deleted rows.
+    index("reports_created_id_idx")
+      .on(t.createdAt.desc(), t.id.desc())
+      .where(sql`deleted_at IS NULL`),
+    // Same list with the status facet leading.
+    index("reports_status_created_id_idx")
+      .on(t.status, t.createdAt.desc(), t.id.desc())
+      .where(sql`deleted_at IS NULL`),
+    // recentPins + activity report feed: newest public, non-deleted reports.
+    index("reports_public_recent_idx")
+      .on(t.createdAt.desc())
+      .where(sql`deleted_at IS NULL AND visibility = 'public'`),
+    // Held-anon release sweep: oldest-first held + anon + non-deleted reports.
+    index("reports_held_anon_created_idx")
+      .on(t.createdAt)
+      .where(sql`status = 'held' AND reporter_user_id IS NULL AND deleted_at IS NULL`),
+    // NOTE: a trigram GIN index `reports_title_trgm ON reports USING gin (title gin_trgm_ops)`
+    // for the admin `title ILIKE '%q%'` search lives in drizzle/0014_search_trgm.sql. It is
+    // intentionally NOT mirrored here: it only backs raw-SQL ILIKE searches and the gin_trgm_ops
+    // opclass form is not worth the brittle Drizzle expression.
   ],
 )
 

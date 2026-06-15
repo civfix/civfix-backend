@@ -46,6 +46,10 @@ export const chatMessages = pgTable(
     primaryKey({ columns: [t.id, t.createdAt] }),
     // Declared on the parent in SQL; mirrored here for query planning/introspection parity.
     index("chat_messages_cleanup_created_idx").on(t.cleanupId, t.createdAt.desc()),
+    // Admin "messages by sender" list (sender_id, created_at DESC, id DESC). Declared on the
+    // PARTITIONED PARENT in drizzle/0013_perf_indexes.sql (it propagates to every partition);
+    // mirrored here for query planning parity.
+    index("chat_messages_sender_created_idx").on(t.senderId, t.createdAt.desc(), t.id.desc()),
   ],
 )
 

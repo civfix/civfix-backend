@@ -130,30 +130,40 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
     },
 
     async listCandidateGeoids(): Promise<string[]> {
-      // Every geoid with a waiting report AND a usable contact (default/per-category/legacy). EXISTS
-      // guards keep it a single scan over jurisdictions with two correlated existence checks.
+      // Every geoid with a waiting report AND a usable contact (default/per-category/legacy).
+      //
+      // Drive from the SMALL side: anchoring on `jurisdictions` would seq-scan the whole boundary table
+      // (TIGER-derived, tens of thousands of rows for a national rollout) and run the reports EXISTS probe
+      // for every jurisdiction, even the vast majority with zero waiting reports — cost grows with the
+      // jurisdictions table, not the (much smaller) set that actually has open reports. Instead, the
+      // `candidate` CTE first collapses `reports` to the DISTINCT geoids that have a waiting report
+      // (scanned once and collapsed by DISTINCT — there is no dedicated index for the waiting filter yet;
+      // a partial index on reports WHERE deleted_at IS NULL AND status NOT IN ('rejected','resolved') would
+      // speed this up if the queue grows), then checks the usable-contact predicate only for that bounded
+      // set. Same result set, work bounded by jurisdictions-with-open-reports rather than the full table.
       const rows = await sql<{ geoid: string }[]>`
-        SELECT j.geoid
-        FROM jurisdictions j
+        WITH candidate AS (
+          SELECT DISTINCT r.jurisdiction_geoid AS geoid
+          FROM reports r
+          WHERE r.deleted_at IS NULL
+            AND r.status NOT IN ('rejected', 'resolved')
+            AND r.jurisdiction_geoid IS NOT NULL
+        )
+        SELECT c.geoid
+        FROM candidate c
         WHERE EXISTS (
-            SELECT 1 FROM reports r
-            WHERE r.jurisdiction_geoid = j.geoid
-              AND r.deleted_at IS NULL
-              AND r.status NOT IN ('rejected', 'resolved')
+            SELECT 1 FROM jurisdiction_contacts jc
+            WHERE jc.geoid = c.geoid AND jc.email IS NOT NULL AND jc.email <> ''
           )
-          AND (
-            EXISTS (
-              SELECT 1 FROM jurisdiction_contacts jc
-              WHERE jc.geoid = j.geoid AND jc.email IS NOT NULL AND jc.email <> ''
-            )
-            OR (
-              j.contact_emails IS NOT NULL
+          OR EXISTS (
+            SELECT 1 FROM jurisdictions j
+            WHERE j.geoid = c.geoid
+              AND j.contact_emails IS NOT NULL
               AND EXISTS (
                 SELECT 1 FROM unnest(j.contact_emails) AS e WHERE e <> ''
               )
-            )
           )
-        ORDER BY j.geoid ASC
+        ORDER BY c.geoid ASC
       `
       return rows.map((r) => r.geoid)
     },

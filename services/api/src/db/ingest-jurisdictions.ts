@@ -27,7 +27,7 @@
 
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import type { Sql } from "./client.js"
+import type { Queryable } from "./client.js"
 import { makeDb } from "./client.js"
 import { loadEnv } from "../env.js"
 
@@ -122,8 +122,11 @@ export function normalizeFeatures(
  * Upsert one normalized row. Refreshes name/layer/priority/geom/population by geoid; PRESERVES the
  * routing columns (contact_emails / report_form_url / notes / flagged_at) so re-ingesting authoritative
  * boundaries never wipes operator-mapped contacts. Returns true on insert/update.
+ *
+ * Accepts `Queryable` (Sql | TransactionSql) so the caller can run a whole ingest under one
+ * `sql.begin(...)` transaction — collapsing N per-row commits/fsyncs into a single commit.
  */
-export async function upsertJurisdiction(sql: Sql, row: IngestRow): Promise<void> {
+export async function upsertJurisdiction(sql: Queryable, row: IngestRow): Promise<void> {
   const geojson = JSON.stringify(row.geometry)
   await sql`
     INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population)
@@ -167,7 +170,14 @@ async function main(): Promise<void> {
   const env = loadEnv()
   const handle = makeDb(env.DATABASE_URL, { max: 1 })
   try {
-    for (const row of rows) await upsertJurisdiction(handle.sql, row)
+    // Run every upsert under ONE transaction: with the row-by-row loop each await was its own
+    // commit/fsync round-trip (rows x RTT, fully serialized on a max:1 pool). Wrapping in a single
+    // `begin` collapses those N commits into one, so the only remaining per-row cost is the
+    // ST_GeomFromGeoJSON parse (Postgres-side CPU, unchanged here). If any row fails the whole
+    // ingest rolls back, which is the right semantics for an authoritative boundary import.
+    await handle.sql.begin(async (tx) => {
+      for (const row of rows) await upsertJurisdiction(tx, row)
+    })
     console.log(`ingest: ${rows.length} jurisdictions upserted from ${file} (${skipped} features skipped)`)
   } finally {
     await handle.close()

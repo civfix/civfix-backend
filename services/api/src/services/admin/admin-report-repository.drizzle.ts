@@ -155,12 +155,18 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       }
       if (args.q !== null) {
         const like = `%${args.q}%`
+        // The text branches (title/jurisdiction/display_name/handle) are leading-wildcard ILIKEs the
+        // trigram indexes serve. The id branch is different: `r.id::text ILIKE %q%` is a leading-wildcard
+        // match on a uuid column that can never use an index and was never the intent (an id search means
+        // "this exact report"). Only add an exact `r.id = q::uuid` branch when `q` parses as a uuid (the
+        // cast would otherwise raise `invalid input syntax for type uuid`); otherwise omit the id branch.
+        const idBranch = isUuid(args.q) ? sql`OR r.id = ${args.q}::uuid` : sql``
         conds.push(sql`AND (
           r.title ILIKE ${like}
           OR j.name ILIKE ${like}
-          OR r.id::text ILIKE ${like}
+          ${idBranch}
           OR u.display_name ILIKE ${like}
-          OR u.handle ILIKE ${like}
+          OR (u.handle::text) ILIKE ${like}
         )`)
       }
       if (anchor !== null) {
@@ -404,4 +410,9 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       })
     },
   }
+}
+
+/** Loose uuid shape check so a non-uuid `q` search never trips a Postgres cast error on `q::uuid`. */
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }

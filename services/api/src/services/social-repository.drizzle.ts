@@ -127,7 +127,11 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       const viewerId = args.viewerId
       const qFilter =
         args.q !== null
-          ? sql`AND (u.handle ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
+          ? // handle is CITEXT; cast to text so the gin_trgm_ops index users_handle_trgm (an expression
+            // index on (handle::text), 0014_search_trgm.sql) can serve this ILIKE — a bare `handle ILIKE`
+            // would not match the index expression. ILIKE is case-insensitive on text, so matches are
+            // identical. display_name is plain text and uses users_display_name_trgm directly.
+            sql`AND ((u.handle::text) ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
           : sql``
       const selfFilter = viewerId !== null ? sql`AND u.id <> ${viewerId}` : sql``
       const cursorFilter =
@@ -224,9 +228,20 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
 
     async pastEventsFor(userId: string, limit: number): Promise<CleanupRecord[]> {
       // Cleanups the user organized OR was a member of, de-duplicated, most recent first. The organizer
-      // person + member count are joined inline so each row builds a full CleanupRecord. DISTINCT via the
-      // membership EXISTS (a user could both organize and be listed as a member -> one row regardless).
+      // person + member count are joined inline so each row builds a full CleanupRecord.
+      //
+      // Rather than `WHERE c.organizer_user_id = $1 OR EXISTS(member subquery)` — an OR between a
+      // sargable indexed column and a correlated EXISTS that Postgres can't satisfy with the organizer
+      // index, forcing a seq scan of cleanups + per-row EXISTS + sort — we gather the matching cleanup
+      // ids in a CTE that UNIONs two index-seekable arms: the organizer arm seeks cleanups_organizer_idx,
+      // the member arm seeks the cleanup_members PK / cleanup_members_user_idx. UNION (not UNION ALL)
+      // dedupes ids, so a user who both organizes AND is a member of a cleanup still yields one row.
       const rows = await sql<CleanupRowSelect[]>`
+        WITH ids AS (
+          SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}
+          UNION
+          SELECT cleanup_id FROM cleanup_members WHERE user_id = ${userId}
+        )
         SELECT
           c.id,
           c.organizer_user_id,
@@ -245,12 +260,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.handle AS org_handle,
           u.bio AS org_bio
         FROM cleanups c
+        JOIN ids ON ids.cleanup_id = c.id
         JOIN users u ON u.id = c.organizer_user_id
-        WHERE c.organizer_user_id = ${userId}
-           OR EXISTS (
-             SELECT 1 FROM cleanup_members m
-             WHERE m.cleanup_id = c.id AND m.user_id = ${userId}
-           )
         ORDER BY c.scheduled_at DESC, c.id DESC
         LIMIT ${limit}
       `
@@ -298,7 +309,10 @@ export async function searchByHandlePrefix(
       AND u.handle IS NOT NULL
       AND u.allow_direct_messages = true
       AND u.id <> ${viewerId}
-      AND u.handle ILIKE ${prefix} ESCAPE '\\'
+      -- handle is CITEXT; cast to text so the per-keystroke @handle prefix search can use the
+      -- gin_trgm_ops expression index users_handle_trgm on (handle::text) (0014_search_trgm.sql). ILIKE
+      -- is case-insensitive on text, so casting does not change which rows match.
+      AND (u.handle::text) ILIKE ${prefix} ESCAPE '\\'
       AND NOT EXISTS (
         SELECT 1 FROM user_blocks b
         WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)

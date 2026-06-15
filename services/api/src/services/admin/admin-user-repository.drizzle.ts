@@ -126,7 +126,11 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       if (args.flaggedOnly) conds.push(sql`AND COALESCE(um.flagged, false) = true`)
       if (args.q !== null) {
         const like = `%${args.q}%`
-        conds.push(sql`AND (u.display_name ILIKE ${like} OR u.handle ILIKE ${like})`)
+        // handle is CITEXT; cast to text so (u.handle::text) matches the gin_trgm_ops expression index
+        // users_handle_trgm (0014). A bare `u.handle ILIKE` disjunct can use no index and would force a
+        // seq scan for the whole OR; casting keeps both branches index-eligible. ILIKE is case-insensitive
+        // either way, so matches are identical.
+        conds.push(sql`AND (u.display_name ILIKE ${like} OR (u.handle::text) ILIKE ${like})`)
       }
       if (anchor !== null) {
         conds.push(sql`AND (u.created_at, u.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)

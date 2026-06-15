@@ -166,11 +166,16 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
           `
 
           // 3) Attach media (set report_id only when unattached or already ours; never steal a foreign).
-          for (const uploadId of args.mediaUploadIds) {
+          // Set-based UPDATE over all upload ids in ONE round-trip (postgres-js array binding) instead of
+          // a per-id loop, so attaching N photos doesn't lengthen the held-create tx by N statements while
+          // it holds the report + token row locks. Skipped when there are no ids, since `IN ()` is invalid
+          // SQL. Semantics are unchanged: each row's report_id is set only when unattached or already ours,
+          // foreign assets stay untouched, and unknown ids no-op.
+          if (args.mediaUploadIds.length > 0) {
             await tx`
               UPDATE media_assets
               SET report_id = ${args.reportId}
-              WHERE upload_id = ${uploadId}
+              WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
             `
           }
