@@ -271,6 +271,16 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
+  membersOf(cleanupIds: string[], userId: string): Promise<Set<string>> {
+    const ids = new Set(cleanupIds)
+    const joined = new Set(
+      this.members
+        .filter((m) => m.userId === userId && ids.has(m.cleanupId))
+        .map((m) => m.cleanupId),
+    )
+    return Promise.resolve(joined)
+  }
+
   listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
     // Insertion order mirrors the Drizzle impl's joined_at ASC (members are appended in join order).
     const ids = this.members

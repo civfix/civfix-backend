@@ -183,6 +183,12 @@ export interface CleanupRepository {
   /** Whether `userId` is a member of `cleanupId` (member or organizer). */
   isMember(cleanupId: string, userId: string): Promise<boolean>
   /**
+   * Batched membership probe: of the given cleanup ids, which is `userId` a member of? Returns the joined
+   * subset as a Set. An empty input yields an empty set (no query). Used by the list path to resolve
+   * `joined` for a whole page in one query instead of one isMember probe per row.
+   */
+  membersOf(cleanupIds: string[], userId: string): Promise<Set<string>>
+  /**
    * The user ids of a cleanup's members, capped at `limit` (a soft fan-out bound so a large cleanup does
    * not signal an unbounded set on every message). Used by the WS gateway to fan a thread-unread signal to
    * the room's members. Returns an empty list when the cleanup has no members.
@@ -349,10 +355,13 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       const { records, nextCursor } = await deps.repo.listCleanups(filters)
 
-      // Resolve `joined` per record for the viewer. Anonymous viewers are never joined (skip the probe).
-      const items = await Promise.all(
-        records.map(async (record) => toCleanupDTO(record, await viewerJoined(record.id, viewer))),
-      )
+      // Resolve `joined` for the WHOLE page in ONE membership query (was 1 isMember probe per row, an N+1).
+      // Anonymous viewers are never joined, so skip the probe entirely (matches viewerJoined's fast path).
+      const joinedIds =
+        viewer.userId !== null
+          ? await deps.repo.membersOf(records.map((r) => r.id), viewer.userId)
+          : new Set<string>()
+      const items = records.map((record) => toCleanupDTO(record, joinedIds.has(record.id)))
       return { items, nextCursor }
     },
 

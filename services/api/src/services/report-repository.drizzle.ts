@@ -155,6 +155,82 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     return rows.map((t) => ({ status: t.status, note: t.note, createdAt: t.created_at }))
   }
 
+  /**
+   * Batched media load for a page of report ids: one `report_id = ANY(...)` query (mirrors the
+   * notification repo's `ANY(${ids}::uuid[])` idiom), grouped into a Map<reportId, media[]>. Selecting
+   * report_id and ordering by (report_id, created_at) preserves the same per-report `created_at ASC`
+   * order as the single-report loadMedia. The returned views are UNFILTERED (status filtering is applied
+   * by the caller, exactly like loadMedia vs findMediaForReport).
+   */
+  async function loadMediaForReports(
+    reportIds: string[],
+  ): Promise<Map<string, ReportMediaView[]>> {
+    const grouped = new Map<string, ReportMediaView[]>()
+    if (reportIds.length === 0) return grouped
+    const rows = await sql<
+      {
+        report_id: string
+        id: string
+        kind: "image" | "video"
+        codec: string | null
+        r2_key: string
+        thumb_key: string | null
+        status: "validating" | "ready" | "rejected" | "held"
+        width: number | null
+        height: number | null
+      }[]
+    >`
+      SELECT report_id, id, kind, codec, r2_key, thumb_key, status, width, height
+      FROM media_assets
+      WHERE report_id = ANY(${reportIds}::uuid[])
+      ORDER BY report_id, created_at ASC
+    `
+    for (const m of rows) {
+      const view: ReportMediaView = {
+        id: m.id,
+        kind: m.kind,
+        codec: m.codec,
+        r2Key: m.r2_key,
+        thumbKey: m.thumb_key,
+        status: m.status,
+        width: m.width,
+        height: m.height,
+      }
+      const list = grouped.get(m.report_id)
+      if (list) list.push(view)
+      else grouped.set(m.report_id, [view])
+    }
+    return grouped
+  }
+
+  /**
+   * Batched timeline load for a page of report ids: one `report_id = ANY(...)` query grouped into a
+   * Map<reportId, timeline[]>. Ordering by (report_id, created_at ASC, id ASC) preserves the same
+   * per-report order as loadTimeline. report_timeline is NOT partitioned, so a flat ANY scan over
+   * report_timeline_report_idx (report_id, created_at) is the right access path.
+   */
+  async function loadTimelineForReports(
+    reportIds: string[],
+  ): Promise<Map<string, ReportTimelineView[]>> {
+    const grouped = new Map<string, ReportTimelineView[]>()
+    if (reportIds.length === 0) return grouped
+    const rows = await sql<
+      { report_id: string; status: ReportStatus; note: string | null; created_at: Date }[]
+    >`
+      SELECT report_id, status, note, created_at
+      FROM report_timeline
+      WHERE report_id = ANY(${reportIds}::uuid[])
+      ORDER BY report_id, created_at ASC, id ASC
+    `
+    for (const t of rows) {
+      const view: ReportTimelineView = { status: t.status, note: t.note, createdAt: t.created_at }
+      const list = grouped.get(t.report_id)
+      if (list) list.push(view)
+      else grouped.set(t.report_id, [view])
+    }
+    return grouped
+  }
+
   return {
     async findIdempotentSnapshot(key: string, scope: string): Promise<ReportDTO | null> {
       return readSnapshot(key, scope)
@@ -259,8 +335,29 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return media.filter((m) => m.status === "ready" || (ownerView && m.status === "validating"))
     },
 
+    async findMediaForReports(
+      reportIds: string[],
+      ownerView = false,
+    ): Promise<Map<string, ReportMediaView[]>> {
+      // Same status visibility as findMediaForReport, applied per group after the single batched read.
+      const grouped = await loadMediaForReports(reportIds)
+      for (const [id, media] of grouped) {
+        grouped.set(
+          id,
+          media.filter((m) => m.status === "ready" || (ownerView && m.status === "validating")),
+        )
+      }
+      return grouped
+    },
+
     async findTimelineForReport(reportId: string): Promise<ReportTimelineView[]> {
       return loadTimeline(sql, reportId)
+    },
+
+    async findTimelineForReports(
+      reportIds: string[],
+    ): Promise<Map<string, ReportTimelineView[]>> {
+      return loadTimelineForReports(reportIds)
     },
 
     async isFollowing(userId: string, reportId: string): Promise<boolean> {
@@ -270,6 +367,17 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         LIMIT 1
       `
       return rows.length > 0
+    },
+
+    async findFollowedReportIds(userId: string, reportIds: string[]): Promise<Set<string>> {
+      if (reportIds.length === 0) return new Set()
+      // One query for the whole page: which of these report ids does the user follow? Mirrors the
+      // single isFollowing probe (PK(user_id, report_id)) but batched over the page via ANY(uuid[]).
+      const rows = await sql<{ report_id: string }[]>`
+        SELECT report_id FROM report_follows
+        WHERE user_id = ${userId} AND report_id = ANY(${reportIds}::uuid[])
+      `
+      return new Set(rows.map((r) => r.report_id))
     },
 
     async listMyReports(

@@ -250,6 +250,17 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows.length > 0
     },
 
+    async membersOf(cleanupIds: string[], userId: string): Promise<Set<string>> {
+      if (cleanupIds.length === 0) return new Set()
+      // One query for the whole page: which of these cleanups is the user a member of? Mirrors the single
+      // isMember probe (PK(cleanup_id, user_id)) but batched over the page via ANY(uuid[]).
+      const rows = await sql<{ cleanup_id: string }[]>`
+        SELECT cleanup_id FROM cleanup_members
+        WHERE user_id = ${userId} AND cleanup_id = ANY(${cleanupIds}::uuid[])
+      `
+      return new Set(rows.map((r) => r.cleanup_id))
+    },
+
     async listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
       const rows = await sql<{ user_id: string }[]>`
         SELECT user_id FROM cleanup_members

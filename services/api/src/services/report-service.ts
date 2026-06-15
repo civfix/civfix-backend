@@ -210,10 +210,30 @@ export interface ReportRepository {
    * from everyone, including the owner.
    */
   findMediaForReport(reportId: string, ownerView?: boolean): Promise<ReportMediaView[]>
+  /**
+   * Batched form of findMediaForReport for a whole page of report ids (the list read path). Returns a map
+   * from reportId -> its visible media (same per-report ordering and `ownerView` filtering as the single
+   * form). Ids with no media are absent from the map. An empty input yields an empty map (no query).
+   */
+  findMediaForReports(
+    reportIds: string[],
+    ownerView?: boolean,
+  ): Promise<Map<string, ReportMediaView[]>>
   /** Timeline entries for a report, ordered by created_at ascending. */
   findTimelineForReport(reportId: string): Promise<ReportTimelineView[]>
+  /**
+   * Batched form of findTimelineForReport for a whole page of report ids. Returns a map from reportId ->
+   * its ordered timeline. Ids with no timeline are absent. An empty input yields an empty map (no query).
+   */
+  findTimelineForReports(reportIds: string[]): Promise<Map<string, ReportTimelineView[]>>
   /** Whether `userId` follows `reportId`. */
   isFollowing(userId: string, reportId: string): Promise<boolean>
+  /**
+   * Batched follow probe: of the given report ids, which does `userId` follow? Returns the followed subset
+   * as a Set. An empty input yields an empty set (no query). Used by the list path to resolve `following`
+   * for a whole page in one query instead of one per row.
+   */
+  findFollowedReportIds(userId: string, reportIds: string[]): Promise<Set<string>>
   /**
    * Page the caller's own (non-deleted) reports, newest first. `cursor` is an opaque keyset cursor; the
    * impl returns up to `limit` records plus the next cursor (null when exhausted).
@@ -547,18 +567,28 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const limit = pagination.limit ?? REPORTS_DEFAULT_LIMIT
       const { records, nextCursor } = await deps.repo.listMyReports(userId, cursor, limit)
 
-      // Each item is a full ReportDTO. The caller owns all of them (mine=true). following is resolved
-      // per row so the "my reports" list shows the follow state honestly.
+      // BATCHED reads: instead of 3 queries per row (the old 1+3N N+1), fetch media, timeline, and the
+      // followed-id set for the WHOLE page in one query each, then regroup in memory. The order/filtering
+      // of each item is unchanged: the page records keep their listMyReports order, and per-report media
+      // ordering + ownerView filtering and timeline ordering are preserved inside the batched repo calls.
+      // The caller owns all of them (mine=true); `following` comes from the per-page followed-id set.
+      const ids = records.map((r) => r.id)
+      const [mediaById, timelineById, followed] = await Promise.all([
+        // "Your reports": the viewer is always the owner, so include their in-flight media too.
+        deps.repo.findMediaForReports(ids, true),
+        deps.repo.findTimelineForReports(ids),
+        deps.repo.findFollowedReportIds(userId, ids),
+      ])
+
+      // toReportDTO is async (it signs media URLs), so build the page's DTOs in parallel. Promise.all
+      // preserves input order, so the page keeps its listMyReports (created_at DESC, id DESC) ordering.
       const items = await Promise.all(
-        records.map(async (record) => {
-          const [media, timeline, following] = await Promise.all([
-            // "Your reports": the viewer is always the owner, so include their in-flight media too.
-            deps.repo.findMediaForReport(record.id, true),
-            deps.repo.findTimelineForReport(record.id),
-            deps.repo.isFollowing(userId, record.id),
-          ])
-          return toReportDTO(record, media, timeline, { mine: true, following })
-        }),
+        records.map((record) =>
+          toReportDTO(record, mediaById.get(record.id) ?? [], timelineById.get(record.id) ?? [], {
+            mine: true,
+            following: followed.has(record.id),
+          }),
+        ),
       )
 
       return { items, nextCursor }

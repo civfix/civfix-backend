@@ -218,12 +218,39 @@ export class InMemoryReportRepository implements ReportRepository {
     )
   }
 
+  async findMediaForReports(
+    reportIds: string[],
+    ownerView = false,
+  ): Promise<Map<string, ReportMediaView[]>> {
+    // Batched mirror of findMediaForReport: same per-report ordering + status filtering, grouped by id.
+    const grouped = new Map<string, ReportMediaView[]>()
+    for (const id of reportIds) {
+      grouped.set(id, await this.findMediaForReport(id, ownerView))
+    }
+    return grouped
+  }
+
   findTimelineForReport(reportId: string): Promise<ReportTimelineView[]> {
     return this.loadTimeline(reportId)
   }
 
+  async findTimelineForReports(
+    reportIds: string[],
+  ): Promise<Map<string, ReportTimelineView[]>> {
+    const grouped = new Map<string, ReportTimelineView[]>()
+    for (const id of reportIds) {
+      grouped.set(id, await this.loadTimeline(id))
+    }
+    return grouped
+  }
+
   isFollowing(userId: string, reportId: string): Promise<boolean> {
     return Promise.resolve(this.follows.has(`${userId}:${reportId}`))
+  }
+
+  findFollowedReportIds(userId: string, reportIds: string[]): Promise<Set<string>> {
+    const followed = new Set(reportIds.filter((id) => this.follows.has(`${userId}:${id}`)))
+    return Promise.resolve(followed)
   }
 
   listMyReports(
