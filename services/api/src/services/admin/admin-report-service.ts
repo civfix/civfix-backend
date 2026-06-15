@@ -55,12 +55,16 @@ export interface AdminReporterRecord {
   joinedAt: Date | null
 }
 
-/** A media asset attached to a report (the real object-store url, resolved by the repo). */
+/**
+ * A media asset attached to a report, as the repo reads it back: the raw object-store keys. The service
+ * presigns these into client-usable URLs (see `get` below) — handing the browser a raw r2 key is the bug
+ * behind "the photo doesn't appear in the admin panel".
+ */
 export interface AdminReportMediaRecord {
   id: string
   kind: "image" | "video"
-  url: string
-  thumbUrl: string | null
+  r2Key: string
+  thumbKey: string | null
 }
 
 /** A report_timeline row as the repo reads it back (status transition + optional note + actor label). */
@@ -256,6 +260,13 @@ export interface AdminReportServiceDeps {
   repo: AdminReportRepository
   /** The outbound-mail service used for the follow-up to the routed city contact. */
   outboundMail: OutboundMailService
+  /**
+   * Resolve a media asset's stored object keys into client-usable URLs (presigned GET / CDN), mirroring the
+   * citizen report DTO's presign. The repo returns raw r2 keys; without this the admin detail hands the
+   * browser an unusable key and the photo never renders. Optional so unit tests can omit it — it then
+   * defaults to echoing the key unchanged.
+   */
+  presignMedia?: (r2Key: string, thumbKey: string | null) => Promise<{ url: string; thumbUrl?: string }>
   /** Injectable clock (defaults to () => new Date()) so the relative-age labels are deterministic. */
   now?: () => Date
 }
@@ -281,6 +292,13 @@ export interface AdminReportService {
 
 export function makeAdminReportService(deps: AdminReportServiceDeps): AdminReportService {
   const now = deps.now ?? (() => new Date())
+  // Default to echoing the key (tests / no Storage seam); production wires the Storage presigner in the route.
+  const presignMedia =
+    deps.presignMedia ??
+    (async (r2Key: string, thumbKey: string | null) => ({
+      url: r2Key,
+      ...(thumbKey !== null ? { thumbUrl: thumbKey } : {}),
+    }))
 
   /** Project a report record into the list-row DTO (the shape both the list + detail base share). */
   function toListItem(record: AdminReportRecord, ref: Date): AdminReportListItemDTO {
@@ -350,12 +368,17 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         contact: routing?.contact ?? null,
         routed: routing?.routed ?? false,
       }
-      const mediaDtos: ReportMedia[] = media.map((m) => ({
-        id: m.id,
-        kind: m.kind,
-        url: m.url,
-        thumbUrl: m.thumbUrl,
-      }))
+      const mediaDtos: ReportMedia[] = await Promise.all(
+        media.map(async (m) => {
+          const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
+          return {
+            id: m.id,
+            kind: m.kind,
+            url,
+            thumbUrl: thumbUrl ?? null,
+          }
+        }),
+      )
       return {
         ...base,
         desc: record.desc,

@@ -42,6 +42,7 @@ import {
   type OutboundMailService,
 } from "../../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../../services/admin/mail-repository.drizzle.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 
 /**
  * Optional injected admin-report dependencies (tests). When present the routes build the service from
@@ -85,7 +86,18 @@ export async function registerAdminReportsRoutes(
         MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
       },
     })
-    return makeAdminReportService({ repo, outboundMail })
+    return makeAdminReportService({
+      repo,
+      outboundMail,
+      // Presign each media key over the container's Storage seam so the admin detail returns real,
+      // browser-loadable photo URLs (the citizen report path presigns identically).
+      presignMedia: async (r2Key, thumbKey) => {
+        const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
+        if (thumbKey === null) return { url }
+        const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
+        return { url, thumbUrl }
+      },
+    })
   }
 
   // -------------------------------------------------------------------------
