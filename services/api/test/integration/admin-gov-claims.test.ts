@@ -39,15 +39,15 @@ function provisionerFromUserStore(store: UserStore): UserProvisioner {
   return {
     async findByEmail(email: string): Promise<ProvisionedUser | null> {
       const u = await store.findByEmail(email)
-      return u ? { id: u.id, email: u.email, role: u.role } : null
+      return u ? { id: u.id, email: u.email, role: u.role, emailVerified: u.emailVerified } : null
     },
     async create(email: string, displayName: string): Promise<ProvisionedUser> {
       const u = await store.create(email, { displayName, role: "gov_admin" })
-      return { id: u.id, email: u.email, role: u.role }
+      return { id: u.id, email: u.email, role: u.role, emailVerified: u.emailVerified }
     },
     async setRole(id: string, role: string): Promise<ProvisionedUser> {
       const u = await store.setRole(id, role as Parameters<UserStore["setRole"]>[1])
-      return { id: u.id, email: u.email, role: u.role }
+      return { id: u.id, email: u.email, role: u.role, emailVerified: u.emailVerified }
     },
   }
 }

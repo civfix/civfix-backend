@@ -72,17 +72,19 @@ function provisionerFromUserStore(store: UserStore): UserProvisioner {
   return {
     async findByEmail(email: string): Promise<ProvisionedUser | null> {
       const user = await store.findByEmail(email)
-      return user ? { id: user.id, email: user.email, role: user.role } : null
+      return user
+        ? { id: user.id, email: user.email, role: user.role, emailVerified: user.emailVerified }
+        : null
     },
     async create(email: string, displayName: string): Promise<ProvisionedUser> {
       const user = await store.create(email, { displayName, role: "gov_admin" })
-      return { id: user.id, email: user.email, role: user.role }
+      return { id: user.id, email: user.email, role: user.role, emailVerified: user.emailVerified }
     },
     async setRole(id: string, role: string): Promise<ProvisionedUser> {
       // The Phase 1 UserStore.setRole is typed to the Role union; the gov flow only ever passes
       // "gov_admin", which is a valid Role, so the cast is sound.
       const user = await store.setRole(id, role as Parameters<UserStore["setRole"]>[1])
-      return { id: user.id, email: user.email, role: user.role }
+      return { id: user.id, email: user.email, role: user.role, emailVerified: user.emailVerified }
     },
   }
 }

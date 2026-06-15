@@ -13,6 +13,7 @@
 import fastifyRateLimit from "@fastify/rate-limit"
 import type { FastifyInstance } from "fastify"
 import type { RedisClient } from "../adapters/redis.js"
+import { normalizeIp } from "../abuse/ip-rate-limit.js"
 
 export interface RateLimitOptions {
   /** Max requests per window per key. Default 300. */
@@ -34,8 +35,18 @@ export async function registerRateLimit(
     global: true,
     max: opts.max ?? 300,
     timeWindow: opts.timeWindow ?? "1 minute",
-    // Health/readiness checks must never be throttled.
-    allowList: ["/healthz", "/readyz"],
+    // SECURITY: key every bucket (global + route-level) on the NORMALIZED client IP. The plugin's default
+    // keyGenerator uses the full request.ip, so an IPv6 client could rotate the /64 host bits to mint a
+    // fresh bucket per request and bypass the limit entirely. normalizeIp collapses IPv6 to its /64
+    // prefix (IPv4 stays the full address), matching the anon abuse controls.
+    keyGenerator: (req) => normalizeIp(req.ip),
+    // Health/readiness checks must never be throttled. allowList as an ARRAY is matched against the
+    // keyGenerator value (the IP) — so path strings never matched and these were in fact being throttled.
+    // The function form receives the request, so match on the URL path (query string stripped).
+    allowList: (req) => {
+      const path = (req.url ?? "").split("?")[0]
+      return path === "/healthz" || path === "/readyz"
+    },
     // Use the shared Redis store when a client is supplied; otherwise the plugin's default in-memory LRU.
     ...(opts.redis ? { redis: opts.redis } : {}),
   })
