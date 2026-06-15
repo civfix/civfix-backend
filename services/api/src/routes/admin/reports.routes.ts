@@ -42,6 +42,19 @@ import {
   type OutboundMailService,
 } from "../../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../../services/admin/mail-repository.drizzle.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
+
+/** Build the default media presigner over the container's Storage seam (mirrors reports.routes.ts). */
+function defaultPresign(
+  container: Container,
+): (r2Key: string, thumbKey: string | null) => Promise<{ url: string; thumbUrl?: string }> {
+  return async (r2Key: string, thumbKey: string | null) => {
+    const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
+    if (thumbKey === null) return { url }
+    const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
+    return { url, thumbUrl }
+  }
+}
 
 /**
  * Optional injected admin-report dependencies (tests). When present the routes build the service from
@@ -51,6 +64,11 @@ import { makeDrizzleMailRepository } from "../../services/admin/mail-repository.
 export interface AdminReportRouteOverrides {
   repo: AdminReportRepository
   outboundMail: OutboundMailService
+  /** Optional media presigner (tests); defaults to the service's identity pass-through when omitted. */
+  presignMedia?: (
+    r2Key: string,
+    thumbKey: string | null,
+  ) => Promise<{ url: string; thumbUrl?: string }>
   now?: () => Date
 }
 
@@ -72,6 +90,7 @@ export async function registerAdminReportsRoutes(
       return makeAdminReportService({
         repo: overrides.repo,
         outboundMail: overrides.outboundMail,
+        ...(overrides.presignMedia !== undefined ? { presignMedia: overrides.presignMedia } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
     }
@@ -85,7 +104,7 @@ export async function registerAdminReportsRoutes(
         MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
       },
     })
-    return makeAdminReportService({ repo, outboundMail })
+    return makeAdminReportService({ repo, outboundMail, presignMedia: defaultPresign(container) })
   }
 
   // -------------------------------------------------------------------------

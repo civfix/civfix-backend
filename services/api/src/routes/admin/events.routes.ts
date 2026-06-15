@@ -20,6 +20,7 @@ import {
   CancelRequestSchema,
   FlagEventRequestSchema,
   PostMessageRequestSchema,
+  SetEventOutcomeRequestSchema,
   SetEventStatusRequestSchema,
   type AdminEventDTO,
   type AdminEventListResponse,
@@ -95,6 +96,17 @@ export async function registerAdminEventsRoutes(
     const { id } = idParam(request)
     const body = parse(SetEventStatusRequestSchema, { ...(request.body as object), id })
     await service().setStatus(id, { status: body.status, actorId: request.auth.userId })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/events/:id/outcome  [csrf]  — log bags collected (the only write path for cleanups.bags)
+  // -------------------------------------------------------------------------
+  route(app, "setEventOutcome", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(SetEventOutcomeRequestSchema, { ...(request.body as object), id })
+    await service().setOutcome(id, { bags: body.bags, actorId: request.auth.userId })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })

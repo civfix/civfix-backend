@@ -21,7 +21,9 @@ import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import type { OutreachStateRecord } from "./mail-repository.drizzle.js"
 import {
+  buildUnmappedRecord,
   directoryMethod,
+  shouldIncludeUnmapped,
   type JurisdictionContactsRepository,
   type JurisdictionDirectoryRecord,
   type ListDirectoryArgs,
@@ -306,13 +308,39 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       start = idx >= 0 ? idx + 1 : records.length
     }
     const slice = records.slice(start, start + limit + 1)
-    if (slice.length <= limit) {
-      return { records: slice, nextCursor: null }
-    }
-    const page = slice.slice(0, limit)
-    const last = page[page.length - 1]
+    const hasMore = slice.length > limit
+    const page = hasMore ? slice.slice(0, limit) : slice
+    const last = hasMore ? page[page.length - 1] : undefined
     const nextCursor = last ? encodeCursor({ createdAt: this.now, id: last.geoid }) : null
+
+    // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page (mirrors the Drizzle
+    // impl): waiting reports whose geoid is not a seeded jurisdiction (orphaned/unresolved) aggregate here.
+    if (shouldIncludeUnmapped(args)) {
+      const unmapped = this.unmappedAggregate()
+      if (unmapped.total > 0) {
+        return {
+          records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...page],
+          nextCursor,
+        }
+      }
+    }
     return { records: page, nextCursor }
+  }
+
+  /** Aggregate waiting reports whose geoid is not a seeded jurisdiction (the in-memory "unmapped" set). */
+  private unmappedAggregate(): {
+    total: number
+    perCategoryCounts: Partial<Record<ReportCategory, number>>
+  } {
+    const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
+    let total = 0
+    for (const r of this.reports) {
+      if (r.deletedAt === null && !NON_WAITING.has(r.status) && !this.jurisdictions.has(r.geoid)) {
+        total += 1
+        perCategoryCounts[r.category] = (perCategoryCounts[r.category] ?? 0) + 1
+      }
+    }
+    return { total, perCategoryCounts }
   }
 }
 

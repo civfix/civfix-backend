@@ -104,6 +104,24 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     expect(flagged.records.map((r) => r.id)).toEqual([u])
   })
 
+  it("search matches a user by the CITY (jurisdiction of their reports), not just name/handle", async () => {
+    // The Drizzle search must match the derived city via the reports->jurisdictions join, like the
+    // in-memory repo + the documented contract (it previously only matched name/handle — a divergence).
+    const inLa = await insertUser(h, { name: "Ada", handle: "ada" })
+    await insertReport(h, inLa) // resolves to LA_CITY
+    const elsewhere = await insertUser(h, { name: "Bo", handle: "bo" }) // no reports -> no city
+    const { records } = await repo.listUsers({
+      q: LA_CITY.name,
+      status: null,
+      flaggedOnly: false,
+      cursor: null,
+      limit: 25,
+    })
+    const ids = records.map((r) => r.id)
+    expect(ids).toContain(inLa)
+    expect(ids).not.toContain(elsewhere)
+  })
+
   it("getUser returns the role", async () => {
     const u = await insertUser(h, { role: "gov_admin" })
     expect((await repo.getUser(u))?.role).toBe("gov_admin")

@@ -20,8 +20,6 @@
  * the victim's next request, via re-auth).
  *
  * DERIVED FIELDS (enumeration 4.5):
- *   - trust: "Verified neighbor" when the account has a verified email or any oauth identity, else
- *     "Unverified" (never stored).
  *   - status: user_moderation.account_status, defaulting to "active" when no moderation row exists.
  *   - reports/cleanups: COUNTs over the user's reports / cleanup_members (not stored).
  *   - city: best-effort from the jurisdiction of the user's most recent report (no city column exists).
@@ -33,6 +31,7 @@
 
 import { AppError } from "@civfix/shared"
 import type {
+  AdminUserCounts,
   AdminUserDTO,
   AdminUserListItemDTO,
   AdminUserListQuery,
@@ -50,7 +49,7 @@ import type {
   AdminReportStatus,
   ReportCategory,
 } from "@civfix/shared"
-import { deriveTrust, toRelAbs } from "./admin-format.js"
+import { toRelAbs } from "./admin-format.js"
 
 // ---------------------------------------------------------------------------
 // Repository seam (structural records; faked in tests)
@@ -73,6 +72,8 @@ export interface AdminUserRecord {
   accountStatus: UserStatus
   reports: number
   cleanups: number
+  /** Count of the user's chat messages (the Messages tab badge); only computed on the detail read. */
+  messages: number
   removals: number
   strikes: number
   risk: Risk
@@ -124,6 +125,11 @@ export interface ListUsersArgs {
 export interface AdminUserRepository {
   /** Page the users list applying the search / status / flagged facet, newest-first keyset paged. */
   listUsers(args: ListUsersArgs): Promise<{ records: AdminUserRecord[]; nextCursor: string | null }>
+  /**
+   * Per-facet account totals for the filter chips, over the SEARCHED (q) set — accurate + stable across
+   * the facet instead of capped to the first keyset page.
+   */
+  countByFacet(args: { q: string | null }): Promise<AdminUserCounts>
   /** Load one user's full record (+ moderation + counts) by id, or null when absent. */
   getUser(id: string): Promise<AdminUserRecord | null>
   /** Page the user's own reports (newest first). */
@@ -251,7 +257,6 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       id: record.id,
       name: record.name,
       handle: record.handle ?? "",
-      trust: deriveTrust({ emailVerified: record.emailVerified, hasOauth: record.hasOauth }),
       city: record.city,
       joined: record.joinedAt ? toRelAbs(record.joinedAt, ref).abs : "-",
       status: record.accountStatus,
@@ -277,15 +282,20 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
-      const { records, nextCursor } = await deps.repo.listUsers(args)
-      return { items: records.map((r) => toListItem(r, ref)), nextCursor }
+      // Counts span the searched set but ignore the facet, so the chips stay accurate as the operator
+      // switches them (replaces the frontend's first-page-only client count).
+      const [{ records, nextCursor }, counts] = await Promise.all([
+        deps.repo.listUsers(args),
+        deps.repo.countByFacet({ q: args.q }),
+      ])
+      return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },
 
     async get(id: string): Promise<AdminUserDTO> {
       const ref = now()
       const record = await deps.repo.getUser(id)
       if (!record) throw AppError.notFound("User not found")
-      return { ...toListItem(record, ref), role: record.role }
+      return { ...toListItem(record, ref), role: record.role, messages: record.messages }
     },
 
     async getReports(query: UserSubListQuery): Promise<UserReportsResponse> {

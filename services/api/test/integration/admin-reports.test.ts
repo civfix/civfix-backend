@@ -104,7 +104,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     `
     const { records } = await repo.listReports({
       q: null,
-      status: null,
+      statuses: null,
       flaggedOnly: false,
       cursor: null,
       limit: 25,
@@ -120,7 +120,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     await repo.toggleFlag(id, { reason: "x", actorId: null })
     const flagged = await repo.listReports({
       q: null,
-      status: null,
+      statuses: null,
       flaggedOnly: true,
       cursor: null,
       limit: 25,

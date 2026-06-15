@@ -26,6 +26,7 @@
 
 import { AppError } from "@civfix/shared"
 import type {
+  AdminEventCounts,
   AdminEventDTO,
   AdminEventListItemDTO,
   AdminEventListQuery,
@@ -34,7 +35,7 @@ import type {
   EventStatus,
   EventTimelineItem,
 } from "@civfix/shared"
-import { deriveTrust, toRelAbs } from "./admin-format.js"
+import { toRelAbs } from "./admin-format.js"
 
 // ---------------------------------------------------------------------------
 // Repository seam (structural records; faked in tests)
@@ -109,6 +110,11 @@ export interface EventMemberRef {
  * offline tests pass an in-memory impl.
  */
 export interface AdminEventRepository {
+  /**
+   * Per-facet event totals for the filter chips, over the SEARCHED (q) set — accurate + stable across the
+   * facet instead of capped to the first keyset page.
+   */
+  countByBucket(args: { q: string | null }): Promise<AdminEventCounts>
   /** Page the events list applying the search / status / flagged facet, newest-first keyset paged. */
   listEvents(
     args: ListEventsArgs,
@@ -127,6 +133,12 @@ export interface AdminEventRepository {
     id: string,
     input: { status: EventStatus; note: string; actorId: string | null },
   ): Promise<boolean>
+  /**
+   * Log a cleanup's outcome: set cleanups.bags (the bags-collected count) + write the event.outcome_logged
+   * audit, in one transaction. The ONLY write path for cleanups.bags. Returns false when the cleanup is
+   * absent.
+   */
+  setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean>
   /**
    * Toggle the event's flagged state via cleanup_timeline (append a 'flag' row when not currently
    * flagged, else an 'unflag' row). Returns the resulting flagged state, or null when the cleanup does
@@ -242,6 +254,8 @@ export interface AdminEventService {
   list(query: AdminEventListQuery): Promise<AdminEventListResponse>
   get(id: string): Promise<AdminEventDTO>
   setStatus(id: string, input: { status: EventStatus; actorId: string | null }): Promise<void>
+  /** Log the cleanup's outcome (bags collected) — the only write path for cleanups.bags. */
+  setOutcome(id: string, input: { bags: number; actorId: string | null }): Promise<void>
   flag(id: string, input: { reason: string | null; actorId: string | null }): Promise<boolean>
   cancel(id: string, input: { reason: string | null; actorId: string | null }): Promise<void>
   /** Post an update to attendees; returns the number of members notified. */
@@ -267,9 +281,6 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         id: organizer?.id ?? "",
         name: organizer?.name ?? "Unknown",
         handle: organizer?.handle ?? "unknown",
-        trust: organizer
-          ? deriveTrust({ emailVerified: organizer.emailVerified, hasOauth: organizer.hasOauth })
-          : "Unverified",
         joined: organizer?.joinedAt ? toRelAbs(organizer.joinedAt, ref).abs : "-",
       },
       date: toRelAbs(record.scheduledAt, ref),
@@ -303,8 +314,13 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
-      const { records, nextCursor } = await deps.repo.listEvents(args)
-      return { items: records.map((r) => toListItem(r, ref)), nextCursor }
+      // Counts span the searched set but ignore the facet, so the chips stay accurate as the operator
+      // switches them (replaces the frontend's first-page-only client count).
+      const [{ records, nextCursor }, counts] = await Promise.all([
+        deps.repo.listEvents(args),
+        deps.repo.countByBucket({ q: args.q }),
+      ])
+      return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },
 
     async get(id: string): Promise<AdminEventDTO> {
@@ -334,6 +350,11 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         note: eventStatusNote(input.status),
         actorId: input.actorId,
       })
+      if (!ok) throw AppError.notFound("Event not found")
+    },
+
+    async setOutcome(id: string, input: { bags: number; actorId: string | null }): Promise<void> {
+      const ok = await deps.repo.setBags(id, input)
       if (!ok) throw AppError.notFound("Event not found")
     },
 

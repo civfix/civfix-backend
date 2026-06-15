@@ -93,7 +93,6 @@ describe("admin events list", () => {
     expect(row.capacity).toBe(30)
     expect(row.bags).toBe(4)
     expect(row.coords).toEqual([30.27, -97.74])
-    expect(row.organizer.trust).toBe("Verified neighbor") // hasOauth
     expect(row.date.rel).toBe("2h")
   })
 
@@ -114,6 +113,22 @@ describe("admin events list", () => {
     ])
     expect((await svc.list({ filter: "completed" })).items.map((i) => i.id)).toEqual(["c"])
     expect((await svc.list({ filter: "flagged" })).items.map((i) => i.id)).toEqual(["f"])
+  })
+
+  it("returns accurate per-facet counts (flagged orthogonal, spanning all statuses)", async () => {
+    const { repo, svc } = harness()
+    repo.seedEvent({ id: "u", status: "upcoming" })
+    repo.seedEvent({ id: "p", status: "in_progress" })
+    repo.seedEvent({ id: "c", status: "completed" })
+    repo.seedEvent({ id: "x", status: "cancelled" }) // in `all`, not in the visible chips
+    repo.seedEvent({
+      id: "f",
+      status: "upcoming",
+      timeline: [{ kind: "flag", note: null, who: "op", createdAt: NOW }],
+    })
+    // counts span ALL events (not the active facet) so the chips stay accurate.
+    const { counts } = await svc.list({ filter: "completed" })
+    expect(counts).toEqual({ all: 5, upcoming: 2, in_progress: 1, completed: 1, flagged: 1 })
   })
 
   // H1: a Phase-1 row stored as 'active'/'done' must surface as the Phase-2 EventStatus AND be caught by
@@ -208,6 +223,25 @@ describe("admin events mutations", () => {
       action: "event.status_changed",
       target: "cleanup:evt-1",
       meta: { status: "in_progress" },
+    })
+  })
+
+  it("setOutcome logs the bags collected (the only write path for cleanups.bags) + audits", async () => {
+    const { repo, svc } = harness()
+    repo.seedEvent({ id: "evt-1", status: "completed" })
+    await svc.setOutcome("evt-1", { bags: 42, actorId: "op-1" })
+    expect(repo.events.get("evt-1")?.record.bags).toBe(42)
+    expect(repo.audits.at(-1)).toMatchObject({
+      action: "event.outcome_logged",
+      target: "cleanup:evt-1",
+      meta: { bags: 42 },
+    })
+  })
+
+  it("setOutcome throws notFound for an unknown event", async () => {
+    const { svc } = harness()
+    await expect(svc.setOutcome("nope", { bags: 1, actorId: null })).rejects.toMatchObject({
+      httpStatus: 404,
     })
   })
 

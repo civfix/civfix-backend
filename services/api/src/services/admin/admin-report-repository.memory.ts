@@ -25,7 +25,7 @@ import type {
   ListReportsArgs,
   NotifyReporterInput,
 } from "./admin-report-service.js"
-import type { AdminReportStatus, ReportCategory } from "@civfix/shared"
+import type { AdminReportCounts, AdminReportStatus, ReportCategory } from "@civfix/shared"
 
 /** A recorded notification (the follow-up to the reporter), inspectable by tests. */
 export interface RecordedReportNotification {
@@ -133,8 +133,9 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
           (r.reporter?.name.toLowerCase().includes(needle) ?? false),
       )
     }
-    if (args.status !== null) {
-      rows = rows.filter((r) => r.status === args.status)
+    if (args.statuses !== null) {
+      const set = new Set(args.statuses)
+      rows = rows.filter((r) => set.has(r.status))
     }
     if (args.flaggedOnly) {
       rows = rows.filter((r) => r.flagged)
@@ -148,6 +149,41 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     })
 
     return pageByCursor(rows, args.cursor, args.limit)
+  }
+
+  async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
+    let rows = [...this.reports.values()].map((s) => s.record)
+    if (args.q !== null) {
+      const needle = args.q.toLowerCase()
+      rows = rows.filter(
+        (r) =>
+          r.title.toLowerCase().includes(needle) ||
+          r.place.toLowerCase().includes(needle) ||
+          r.id.toLowerCase().includes(needle) ||
+          (r.reporter?.name.toLowerCase().includes(needle) ?? false),
+      )
+    }
+    // Non-removed only (mirrors the Drizzle deleted_at IS NULL filter): a removed report is `rejected`.
+    rows = rows.filter((r) => r.status !== "rejected")
+    const SUBMITTED = new Set<AdminReportStatus>(["submitted", "held", "published"])
+    const IN_PROGRESS = new Set<AdminReportStatus>(["acknowledged", "in_progress"])
+    let submitted = 0
+    let inProgress = 0
+    let completed = 0
+    let flagged = 0
+    for (const r of rows) {
+      if (SUBMITTED.has(r.status)) submitted += 1
+      else if (IN_PROGRESS.has(r.status)) inProgress += 1
+      else if (r.status === "resolved") completed += 1
+      if (r.flagged) flagged += 1
+    }
+    return {
+      all: submitted + inProgress + completed,
+      submitted,
+      in_progress: inProgress,
+      completed,
+      flagged,
+    }
   }
 
   async getReport(id: string): Promise<AdminReportRecord | null> {

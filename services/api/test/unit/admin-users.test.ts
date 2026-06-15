@@ -96,7 +96,6 @@ describe("admin users list", () => {
     const page = await svc.list({})
     const row = page.items[0]!
     expect(row.name).toBe("Jane Neighbor")
-    expect(row.trust).toBe("Verified neighbor")
     expect(row.city).toBe("Austin")
     expect(row.status).toBe("active")
     expect(row.reports).toBe(7)
@@ -130,6 +129,17 @@ describe("admin users list", () => {
     expect((await svc.list({ q: "austin" })).items.map((i) => i.id)).toEqual(["u-2"])
   })
 
+  it("returns accurate per-facet counts (suspended is the explicit status; flagged orthogonal)", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "a1", accountStatus: "active" })
+    repo.seedUser({ id: "a2", accountStatus: "active", flagged: true })
+    repo.seedUser({ id: "s1", accountStatus: "suspended" })
+    repo.seedUser({ id: "b1", accountStatus: "banned" }) // in `all`, not in active/suspended
+    // counts span ALL accounts (not the active facet) so the chips stay accurate.
+    const { counts } = await svc.list({ filter: "suspended" })
+    expect(counts).toEqual({ all: 4, active: 2, suspended: 1, flagged: 1 })
+  })
+
   it("paginates with a cursor (no overlap)", async () => {
     const { repo, svc } = harness()
     for (let i = 0; i < 5; i++) {
@@ -144,11 +154,14 @@ describe("admin users list", () => {
 })
 
 describe("admin users detail + sub-lists", () => {
-  it("detail includes the role", async () => {
+  it("detail includes the role and the messages-tab count", async () => {
     const { repo, svc } = harness()
     repo.seedUser({ id: "u-1", role: "gov_admin" })
+    repo.seedMessage("u-1", { id: "m1", text: "hi", thread: "Cleanup", createdAt: hoursAgo(1) })
+    repo.seedMessage("u-1", { id: "m2", text: "yo", thread: "Cleanup", createdAt: hoursAgo(2) })
     const detail = await svc.get("u-1")
     expect(detail.role).toBe("gov_admin")
+    expect(detail.messages).toBe(2)
   })
 
   it("detail throws notFound for an unknown user", async () => {

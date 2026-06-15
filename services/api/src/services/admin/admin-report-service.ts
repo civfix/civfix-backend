@@ -26,6 +26,7 @@
 
 import { AppError } from "@civfix/shared"
 import type {
+  AdminReportCounts,
   AdminReportDTO,
   AdminReportListItemDTO,
   AdminReportListQuery,
@@ -37,7 +38,7 @@ import type {
   ReportTimelineItem,
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
-import { deriveTrust, toRelAbs } from "./admin-format.js"
+import { toRelAbs } from "./admin-format.js"
 
 // ---------------------------------------------------------------------------
 // Repository seam (structural records; faked in tests)
@@ -108,11 +109,16 @@ export interface AdminReportRecord {
   createdAt: Date
 }
 
-/** Normalized list arguments the repo consumes. `status` is the civfix status to match (null = any). */
+/** Normalized list arguments the repo consumes. `statuses` is the set of civfix statuses to match (null = any). */
 export interface ListReportsArgs {
   q: string | null
-  /** A specific civfix status to match (submitted|in_progress|resolved), or null for any. */
-  status: AdminReportStatus | null
+  /**
+   * The set of civfix statuses to match for the selected design bucket (null = any). A design bucket maps
+   * to MULTIPLE civfix statuses (see STATUS_BUCKETS): "Submitted" = submitted|held|published (a freshly
+   * published pin is live + awaiting city action, NOT done), "In progress" = acknowledged|in_progress,
+   * "Completed" = resolved. The repo matches with `= ANY(statuses)`, not a single equality.
+   */
+  statuses: AdminReportStatus[] | null
   /** When true, restrict to reports with an OPEN abuse_flag (the "Flagged" facet). */
   flaggedOnly: boolean
   cursor: string | null
@@ -138,6 +144,11 @@ export interface AdminReportRepository {
   listReports(
     args: ListReportsArgs,
   ): Promise<{ records: AdminReportRecord[]; nextCursor: string | null }>
+  /**
+   * Per-bucket totals for the filter chips, over the SEARCHED (q) non-removed set — so the chip numbers
+   * are accurate and stable across the status facet instead of being capped to the first keyset page.
+   */
+  countByBucket(args: { q: string | null }): Promise<AdminReportCounts>
   /** Load one report's base record by id, or null when it does not exist (or is deleted). */
   getReport(id: string): Promise<AdminReportRecord | null>
   /** Load the ordered timeline for a report (oldest first). */
@@ -190,26 +201,45 @@ export interface AdminReportRepository {
 // ---------------------------------------------------------------------------
 
 /**
+ * The canonical civfix-status -> design-bucket reconciliation (decisions 8 / enumeration 4.2). The design
+ * surface has only three live buckets (Submitted | In progress | Completed) plus the orthogonal Removed,
+ * but the civfix lifecycle has seven statuses: submitted -> held -> published -> acknowledged ->
+ * in_progress -> resolved (+ rejected). An authed pin is created `published` (live, visible, AWAITING city
+ * action), so published+held belong in the SUBMITTED bucket, NOT Completed. Only `resolved` is Completed.
+ *
+ * This is the single source of truth the list-filter facet builds its status SET from; the admin frontend
+ * keeps a matching map (src/lib/report-status.ts) so the pill labels and the filter never disagree.
+ */
+export const STATUS_BUCKETS: Record<
+  "submitted" | "in_progress" | "completed" | "removed",
+  AdminReportStatus[]
+> = {
+  submitted: ["submitted", "held", "published"],
+  in_progress: ["acknowledged", "in_progress"],
+  completed: ["resolved"],
+  removed: ["rejected"],
+}
+
+/**
  * Map the list `filter` facet to a repo query shape. The design facet (all|submitted|in_progress|
- * completed|flagged) reconciles to: a civfix status to match (completed -> resolved) and/or the
+ * completed|flagged) reconciles to a SET of civfix statuses to match (via STATUS_BUCKETS) and/or the
  * flagged-only marker. `all` matches everything.
  */
 export function resolveListFilter(filter: string | undefined): {
-  status: AdminReportStatus | null
+  statuses: AdminReportStatus[] | null
   flaggedOnly: boolean
 } {
   switch (filter) {
     case "submitted":
-      return { status: "submitted", flaggedOnly: false }
+      return { statuses: STATUS_BUCKETS.submitted, flaggedOnly: false }
     case "in_progress":
-      return { status: "in_progress", flaggedOnly: false }
+      return { statuses: STATUS_BUCKETS.in_progress, flaggedOnly: false }
     case "completed":
-      // Reconciliation: the design's "completed" bucket is the civfix resolved status.
-      return { status: "resolved", flaggedOnly: false }
+      return { statuses: STATUS_BUCKETS.completed, flaggedOnly: false }
     case "flagged":
-      return { status: null, flaggedOnly: true }
+      return { statuses: null, flaggedOnly: true }
     default:
-      return { status: null, flaggedOnly: false }
+      return { statuses: null, flaggedOnly: false }
   }
 }
 
@@ -256,6 +286,16 @@ export interface AdminReportServiceDeps {
   repo: AdminReportRepository
   /** The outbound-mail service used for the follow-up to the routed city contact. */
   outboundMail: OutboundMailService
+  /**
+   * Presign (or otherwise render) a media object's URL pair, wrapping the Storage seam — exactly like the
+   * citizen report service. The repo returns raw object-store KEYS (r2_key / thumb_key); without presigning
+   * those keys resolve against admin.civfix.org and 404 (the "reporter photo" box is always broken). When
+   * omitted (offline unit tests) it defaults to an identity pass-through, so a test still sees the raw key.
+   */
+  presignMedia?: (
+    r2Key: string,
+    thumbKey: string | null,
+  ) => Promise<{ url: string; thumbUrl?: string }>
   /** Injectable clock (defaults to () => new Date()) so the relative-age labels are deterministic. */
   now?: () => Date
 }
@@ -281,6 +321,12 @@ export interface AdminReportService {
 
 export function makeAdminReportService(deps: AdminReportServiceDeps): AdminReportService {
   const now = deps.now ?? (() => new Date())
+  // Default to an identity pass-through (raw keys) when no presigner is injected, so offline tests still
+  // see the seeded key; production wires the real Storage presigner so the photo box renders.
+  const presignMedia =
+    deps.presignMedia ??
+    (async (r2Key: string, thumbKey: string | null) =>
+      thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
 
   /** Project a report record into the list-row DTO (the shape both the list + detail base share). */
   function toListItem(record: AdminReportRecord, ref: Date): AdminReportListItemDTO {
@@ -296,9 +342,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         id: reporter?.id ?? "",
         name: reporter?.name ?? "Anonymous",
         handle: reporter?.handle ?? "anonymous",
-        trust: reporter
-          ? deriveTrust({ emailVerified: reporter.emailVerified, hasOauth: reporter.hasOauth })
-          : "Unverified",
         joined: reporter?.joinedAt ? toRelAbs(reporter.joinedAt, ref).abs : "-",
       },
       confirmations: record.confirmations,
@@ -322,16 +365,21 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
   return {
     async list(query: AdminReportListQuery): Promise<AdminReportListResponse> {
       const ref = now()
-      const { status, flaggedOnly } = resolveListFilter(query.filter)
+      const { statuses, flaggedOnly } = resolveListFilter(query.filter)
       const args: ListReportsArgs = {
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
-        status,
+        statuses,
         flaggedOnly,
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
-      const { records, nextCursor } = await deps.repo.listReports(args)
-      return { items: records.map((r) => toListItem(r, ref)), nextCursor }
+      // Counts span the SEARCHED set (q) but ignore the status/flagged facet, so the chips stay accurate +
+      // stable as the operator switches buckets (replaces the frontend's first-page-only client count).
+      const [{ records, nextCursor }, counts] = await Promise.all([
+        deps.repo.listReports(args),
+        deps.repo.countByBucket({ q: args.q }),
+      ])
+      return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },
 
     async get(id: string): Promise<AdminReportDTO> {
@@ -350,12 +398,13 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         contact: routing?.contact ?? null,
         routed: routing?.routed ?? false,
       }
-      const mediaDtos: ReportMedia[] = media.map((m) => ({
-        id: m.id,
-        kind: m.kind,
-        url: m.url,
-        thumbUrl: m.thumbUrl,
-      }))
+      // Presign each media object so the admin gets browser-loadable URLs (the repo returns raw r2 keys).
+      const mediaDtos: ReportMedia[] = await Promise.all(
+        media.map(async (m) => {
+          const { url, thumbUrl } = await presignMedia(m.url, m.thumbUrl)
+          return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
+        }),
+      )
       return {
         ...base,
         desc: record.desc,

@@ -25,10 +25,36 @@ import type {
   UserMessageRecord,
   UserReportRecord,
 } from "./admin-user-service.js"
-import type { AdminReportStatus, ReportCategory, Risk, Role, UserStatus } from "@civfix/shared"
+import type {
+  AdminReportStatus,
+  AdminUserCounts,
+  ReportCategory,
+  Risk,
+  Role,
+  UserStatus,
+} from "@civfix/shared"
 
 /** A composable SQL fragment (postgres.js Fragment). */
 type SqlFragment = postgres.Fragment
+
+/**
+ * The user-search predicate (display name / handle / CITY via the reports->jurisdictions join), shared by
+ * listUsers + countByFacet so the chip counts match the list exactly. Assumes the query selects `users u`.
+ * Empty fragment when q is null.
+ */
+function searchUsersFragment(sql: Queryable, q: string | null): SqlFragment {
+  if (q === null) return sql``
+  const like = `%${q}%`
+  return sql`AND (
+    u.display_name ILIKE ${like}
+    OR (u.handle::text) ILIKE ${like}
+    OR EXISTS (
+      SELECT 1 FROM reports r2
+      JOIN jurisdictions j2 ON j2.geoid = r2.jurisdiction_geoid
+      WHERE r2.reporter_user_id = u.id AND j2.name ILIKE ${like}
+    )
+  )`
+}
 
 /** A users list/detail row as selected back (moderation joined, counts + city + lastActive computed). */
 interface UserRowSelect {
@@ -44,6 +70,7 @@ interface UserRowSelect {
   account_status: UserStatus
   reports: string
   cleanups: string
+  messages: string
   removals: number
   strikes: number
   risk: Risk
@@ -66,6 +93,7 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     accountStatus: r.account_status,
     reports: Number(r.reports ?? "0"),
     cleanups: Number(r.cleanups ?? "0"),
+    messages: Number(r.messages ?? "0"),
     removals: r.removals,
     strikes: r.strikes,
     risk: r.risk,
@@ -98,6 +126,7 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
       COALESCE(um.account_status, 'active') AS account_status,
       (SELECT COUNT(*) FROM reports r WHERE r.reporter_user_id = u.id AND r.deleted_at IS NULL)::text AS reports,
       (SELECT COUNT(*) FROM cleanup_members cm WHERE cm.user_id = u.id)::text AS cleanups,
+      (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id AND msg.deleted_at IS NULL)::text AS messages,
       COALESCE(um.removals, 0) AS removals,
       COALESCE(um.strikes, 0) AS strikes,
       COALESCE(um.risk, 'low') AS risk,
@@ -124,14 +153,10 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         conds.push(sql`AND COALESCE(um.account_status, 'active') = ${args.status}`)
       }
       if (args.flaggedOnly) conds.push(sql`AND COALESCE(um.flagged, false) = true`)
-      if (args.q !== null) {
-        const like = `%${args.q}%`
-        // handle is CITEXT; cast to text so (u.handle::text) matches the gin_trgm_ops expression index
-        // users_handle_trgm (0014). A bare `u.handle ILIKE` disjunct can use no index and would force a
-        // seq scan for the whole OR; casting keeps both branches index-eligible. ILIKE is case-insensitive
-        // either way, so matches are identical.
-        conds.push(sql`AND (u.display_name ILIKE ${like} OR (u.handle::text) ILIKE ${like})`)
-      }
+      // Search by display name / handle (CITEXT cast to hit the users_handle_trgm index) / CITY (the
+      // jurisdiction name of the user's reports). Shared with countByFacet via searchUsersFragment so the
+      // chips and the list always agree.
+      if (args.q !== null) conds.push(searchUsersFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (u.created_at, u.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
@@ -148,6 +173,32 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           ? encodeKeyset({ createdAt: last.created_at, id: last.id })
           : null
       return { records, nextCursor }
+    },
+
+    async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
+      // One aggregate over the searched, non-deleted users: total + per-facet (active / suspended) + the
+      // orthogonal flagged count. `suspended` is the explicit suspended status (matching the facet).
+      const search = searchUsersFragment(sql, args.q)
+      const rows = await sql<
+        { all: string; active: string; suspended: string; flagged: string }[]
+      >`
+        SELECT
+          COUNT(*)::text AS all,
+          COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
+          COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'suspended')::text AS suspended,
+          COUNT(*) FILTER (WHERE COALESCE(um.flagged, false) = true)::text AS flagged
+        FROM users u
+        LEFT JOIN user_moderation um ON um.user_id = u.id
+        WHERE u.deleted_at IS NULL
+        ${search}
+      `
+      const r = rows[0]
+      return {
+        all: Number(r?.all ?? "0"),
+        active: Number(r?.active ?? "0"),
+        suspended: Number(r?.suspended ?? "0"),
+        flagged: Number(r?.flagged ?? "0"),
+      }
     },
 
     async getUser(id: string): Promise<AdminUserRecord | null> {

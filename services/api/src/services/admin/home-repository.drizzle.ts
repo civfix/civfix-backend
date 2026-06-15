@@ -47,16 +47,19 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
 
   return {
     async discoverySummary(): Promise<DiscoverySectionCounts> {
-      // A jurisdiction is in the discovery queue when it has waiting reports (submitted, not routed to a
-      // contact yet). We approximate "queue" as distinct jurisdictions with >=1 submitted report lacking
-      // any contact, "reportsWaiting" as the total such reports, "overSla" as the queue jurisdictions whose
-      // oldest waiting report is older than the SLA.
+      // A jurisdiction is in the discovery queue when it has waiting reports (open, not yet routed to a
+      // contact). "Waiting" is the SAME canonical predicate the jurisdiction directory uses (status NOT IN
+      // rejected/resolved/acknowledged/in_progress = submitted|held|published): an authed pin is created
+      // `published` (live, awaiting a city contact), so a literal `status = 'submitted'` filter would miss
+      // virtually every real report and report ~0 waiting. We approximate "queue" as distinct jurisdictions
+      // with >=1 waiting report lacking any contact, "reportsWaiting" as the total such reports, "overSla"
+      // as the queue jurisdictions whose oldest waiting report is older than the SLA.
       const rows = await sql<{ queue: string; reports_waiting: string; over_sla: string }[]>`
         WITH waiting AS (
           SELECT r.jurisdiction_geoid AS geoid, r.created_at
           FROM reports r
           WHERE r.deleted_at IS NULL
-            AND r.status = 'submitted'
+            AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
             AND r.jurisdiction_geoid IS NOT NULL
             AND NOT (
               EXISTS (

@@ -29,6 +29,19 @@ import type {
 /** The cron/queue job the outreach pipeline drains; enqueued (singletonKey=geoid) on save & route. */
 export const OUTREACH_DIGEST_JOB = "outreach.digest"
 
+/**
+ * Sentinel geoid for the synthetic "Unmapped / Unknown jurisdiction" directory row. It aggregates every
+ * WAITING report whose jurisdiction could not be resolved (jurisdiction_geoid IS NULL) OR whose geoid no
+ * longer exists in the jurisdictions table (orphaned). Without this row those reports are invisible: the
+ * directory is sourced FROM jurisdictions, so a report with no jurisdiction has no row to live under. The
+ * row is read-only triage (it is NOT a real jurisdiction, so Save & route / PATCH 404 on it); the admin
+ * special-cases this geoid to hide the routing controls and surface only the waiting backlog. The frontend
+ * keeps a matching constant (discovery-page.tsx UNMAPPED_GEOID).
+ */
+export const UNMAPPED_GEOID = "__unmapped__"
+/** Display name for the synthetic unmapped row. */
+export const UNMAPPED_NAME = "Unmapped / Unknown jurisdiction"
+
 // ---------------------------------------------------------------------------
 // Repository seam
 // ---------------------------------------------------------------------------
@@ -192,6 +205,49 @@ export function hasAnyContact(input: SaveContactsInput): boolean {
   if (input.defaultEmails.some((e) => e.trim() !== "")) return true
   if (input.formUrl !== null && input.formUrl.trim() !== "") return true
   return Object.values(input.contacts).some((e) => e !== null && e !== undefined && e.trim() !== "")
+}
+
+/**
+ * Build the synthetic "Unmapped / Unknown jurisdiction" directory record from the waiting-report totals
+ * (see UNMAPPED_GEOID). `layer` is a placeholder ("place"); the admin special-cases UNMAPPED_GEOID and
+ * never renders the type chip / routing controls for it. It always reads as method "none" (no contacts).
+ */
+export function buildUnmappedRecord(
+  total: number,
+  perCategoryCounts: Partial<Record<ReportCategory, number>>,
+): JurisdictionDirectoryRecord {
+  return {
+    geoid: UNMAPPED_GEOID,
+    name: UNMAPPED_NAME,
+    layer: "place",
+    population: null,
+    defaultEmails: [],
+    categoryContacts: [],
+    hasDefaultContact: false,
+    reportFormUrl: null,
+    reportsWaiting: total,
+    perCategoryCounts,
+    lastRoutedAt: null,
+    bounced: false,
+    contactUpdatedAt: null,
+    flaggedAt: null,
+  }
+}
+
+/**
+ * Whether the synthetic unmapped row should be included for these list args: only on the FIRST page (no
+ * cursor), only under a facet a contact-less row matches (all | none — its method is "none"), and only
+ * when a search term, if present, matches its name/geoid. The caller still suppresses it when its waiting
+ * total is 0.
+ */
+export function shouldIncludeUnmapped(args: ListDirectoryArgs): boolean {
+  if (args.cursor !== null) return false
+  if (args.filter !== "all" && args.filter !== "none") return false
+  if (args.q !== null) {
+    const q = args.q.toLowerCase()
+    return UNMAPPED_NAME.toLowerCase().includes(q) || UNMAPPED_GEOID.includes(q)
+  }
+  return true
 }
 
 // ---------------------------------------------------------------------------

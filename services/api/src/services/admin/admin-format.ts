@@ -7,24 +7,8 @@
  * this file.
  */
 
-import { relativeAgo, type TrustLabel } from "@civfix/shared"
+import { relativeAgo } from "@civfix/shared"
 import type { RelAbsTime } from "@civfix/shared"
-
-/**
- * The two canonical derived trust labels (decisions 3.3 / enumeration 4.5). DERIVED at read time from a
- * user's verification posture; never stored. A claimed account with a verified email OR any oauth
- * identity is a "verified neighbor"; an anon / unverified token is "Unverified".
- */
-export const TRUST_VERIFIED: TrustLabel = "Verified neighbor"
-export const TRUST_UNVERIFIED: TrustLabel = "Unverified"
-
-/**
- * Derive the trust label from the verification signals. `emailVerified` is users.email_verified; `hasOauth`
- * is whether any oauth_identities row links the account. Either makes a verified neighbor.
- */
-export function deriveTrust(input: { emailVerified: boolean; hasOauth: boolean }): TrustLabel {
-  return input.emailVerified || input.hasOauth ? TRUST_VERIFIED : TRUST_UNVERIFIED
-}
 
 /**
  * The absolute-timestamp formatter the design renders next to the relative one ("Jun 3, 2026, 4:12 PM").

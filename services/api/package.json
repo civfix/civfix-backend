@@ -23,6 +23,8 @@
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
     "start:migrate": "node dist/db/migrate.js",
+    "start:seed": "node dist/db/seed.js",
+    "start:ingest": "node dist/db/ingest-jurisdictions.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

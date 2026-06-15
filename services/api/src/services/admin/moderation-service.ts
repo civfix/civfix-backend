@@ -58,7 +58,6 @@ export interface ModerationUserSnapshot {
   handle: string
   name: string
   joined: string
-  trust: string
   priorReports: number
   priorRemovals: number
   strikes: number
@@ -187,7 +186,6 @@ export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
   handle: "",
   name: "Unknown",
   joined: "",
-  trust: "Unverified",
   priorReports: 0,
   priorRemovals: 0,
   strikes: 0,
@@ -201,7 +199,6 @@ function toUserDTO(snapshot: ModerationUserSnapshot | null): ModerationUser {
     handle: s.handle,
     name: s.name,
     joined: s.joined,
-    trust: s.trust,
     priorReports: s.priorReports,
     priorRemovals: s.priorRemovals,
     strikes: s.strikes,

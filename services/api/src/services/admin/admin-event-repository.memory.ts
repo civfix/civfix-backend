@@ -34,7 +34,7 @@ import type {
   EventMemberRef,
   ListEventsArgs,
 } from "./admin-event-service.js"
-import type { EventStatus } from "@civfix/shared"
+import type { AdminEventCounts, EventStatus } from "@civfix/shared"
 
 /** A recorded member notification (the message-attendees fan-out), inspectable by tests. */
 export interface RecordedMemberNotification {
@@ -184,6 +184,31 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     return { records, nextCursor }
   }
 
+  async countByBucket(args: { q: string | null }): Promise<AdminEventCounts> {
+    let rows = [...this.events.values()].map((s) => s.record)
+    if (args.q !== null) {
+      const needle = args.q.toLowerCase()
+      rows = rows.filter(
+        (r) =>
+          r.title.toLowerCase().includes(needle) ||
+          r.place.toLowerCase().includes(needle) ||
+          r.id.toLowerCase().includes(needle) ||
+          (r.organizer?.name.toLowerCase().includes(needle) ?? false),
+      )
+    }
+    let upcoming = 0
+    let inProgress = 0
+    let completed = 0
+    let flagged = 0
+    for (const r of rows) {
+      if (r.status === "upcoming") upcoming += 1
+      else if (r.status === "in_progress") inProgress += 1
+      else if (r.status === "completed") completed += 1
+      if (r.flagged) flagged += 1
+    }
+    return { all: rows.length, upcoming, in_progress: inProgress, completed, flagged }
+  }
+
   async getEvent(id: string): Promise<AdminEventRecord | null> {
     return this.events.get(id)?.record ?? null
   }
@@ -215,6 +240,18 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       action: "event.status_changed",
       target: `cleanup:${id}`,
       meta: { status: input.status },
+    })
+    return true
+  }
+
+  async setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean> {
+    const seeded = this.events.get(id)
+    if (!seeded) return false
+    seeded.record.bags = input.bags
+    this.audits.push({
+      action: "event.outcome_logged",
+      target: `cleanup:${id}`,
+      meta: { bags: input.bags },
     })
     return true
   }

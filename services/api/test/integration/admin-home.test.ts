@@ -77,10 +77,12 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
     await h.teardown()
   })
 
-  it("discoverySummary: counts unrouted submitted reports + over-SLA", async () => {
-    // Two submitted reports in an unrouted jurisdiction; one old (over SLA), one fresh.
+  it("discoverySummary: counts unrouted waiting reports (incl. published live pins) + over-SLA", async () => {
+    // Two waiting reports in an unrouted jurisdiction; one old (over SLA), one fresh. The fresh one is
+    // `published` — an authed pin's real status — to guard that the queue counts live-but-unrouted pins,
+    // not only literal `submitted` (which authed reports never have).
     await insertReport(h, { status: "submitted", createdAt: new Date(Date.now() - 30 * 3600 * 1000) })
-    await insertReport(h, { status: "submitted", createdAt: new Date() })
+    await insertReport(h, { status: "published", createdAt: new Date() })
 
     const d = await repo.discoverySummary()
     expect(d.queue).toBe(1) // one jurisdiction

@@ -125,7 +125,6 @@ describe("moderation detail", () => {
         handle: "@anon",
         name: "Anonymous",
         joined: "3d ago",
-        trust: "Unverified",
         priorReports: 1,
         priorRemovals: 0,
         strikes: 0,
@@ -160,7 +159,6 @@ describe("moderation detail", () => {
     repo.seedItem({ id: "MOD-1", user: null })
     const detail = await svc.getItem("MOD-1")
     expect(detail.user.name).toBe("Unknown")
-    expect(detail.user.trust).toBe("Unverified")
     expect(detail.user.strikes).toBe(0)
   })
 

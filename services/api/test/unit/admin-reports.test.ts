@@ -29,7 +29,12 @@ interface Harness {
   svc: AdminReportService
 }
 
-function harness(): Harness {
+function harness(opts?: {
+  presignMedia?: (
+    r2Key: string,
+    thumbKey: string | null,
+  ) => Promise<{ url: string; thumbUrl?: string }>
+}): Harness {
   const repo = new InMemoryAdminReportRepository()
   repo.now = NOW
   const mailRepo = new InMemoryMailRepository()
@@ -39,7 +44,12 @@ function harness(): Harness {
     mailer,
     env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
   })
-  const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+  const svc = makeAdminReportService({
+    repo,
+    outboundMail,
+    now: () => NOW,
+    ...(opts?.presignMedia !== undefined ? { presignMedia: opts.presignMedia } : {}),
+  })
   return { repo, mailRepo, mailer, svc }
 }
 
@@ -49,13 +59,20 @@ function hoursAgo(hours: number): Date {
 }
 
 describe("admin reports pure helpers", () => {
-  it("resolveListFilter maps the design facet to status + flaggedOnly (completed -> resolved)", () => {
-    expect(resolveListFilter("all")).toEqual({ status: null, flaggedOnly: false })
-    expect(resolveListFilter("submitted")).toEqual({ status: "submitted", flaggedOnly: false })
-    expect(resolveListFilter("in_progress")).toEqual({ status: "in_progress", flaggedOnly: false })
-    expect(resolveListFilter("completed")).toEqual({ status: "resolved", flaggedOnly: false })
-    expect(resolveListFilter("flagged")).toEqual({ status: null, flaggedOnly: true })
-    expect(resolveListFilter(undefined)).toEqual({ status: null, flaggedOnly: false })
+  it("resolveListFilter maps each design facet to its civfix status SET + flaggedOnly", () => {
+    // "Submitted" = a freshly published/held pin (live, awaiting city action) too, NOT just literal submitted.
+    expect(resolveListFilter("all")).toEqual({ statuses: null, flaggedOnly: false })
+    expect(resolveListFilter("submitted")).toEqual({
+      statuses: ["submitted", "held", "published"],
+      flaggedOnly: false,
+    })
+    expect(resolveListFilter("in_progress")).toEqual({
+      statuses: ["acknowledged", "in_progress"],
+      flaggedOnly: false,
+    })
+    expect(resolveListFilter("completed")).toEqual({ statuses: ["resolved"], flaggedOnly: false })
+    expect(resolveListFilter("flagged")).toEqual({ statuses: null, flaggedOnly: true })
+    expect(resolveListFilter(undefined)).toEqual({ statuses: null, flaggedOnly: false })
   })
 
   it("timelineKindForStatus maps civfix statuses to design timeline icon kinds", () => {
@@ -100,12 +117,11 @@ describe("admin reports list", () => {
     expect(row.confirmations).toBe(4)
     expect(row.coords).toEqual([34.05, -118.24])
     expect(row.hasPhoto).toBe(true)
-    expect(row.reporter.trust).toBe("Verified neighbor")
     expect(row.submitted.rel).toBe("3h")
     expect(row.submitted.abs).toContain("2026")
   })
 
-  it("derives Unverified trust for an unverified reporter and Anonymous for none", async () => {
+  it("projects a named reporter, and falls back to Anonymous for a report with no reporter", async () => {
     const { repo, svc } = harness()
     repo.seedReport({
       id: "a",
@@ -122,25 +138,50 @@ describe("admin reports list", () => {
     const items = (await svc.list({})).items
     const a = items.find((i) => i.id === "a")!
     const b = items.find((i) => i.id === "b")!
-    expect(a.reporter.trust).toBe("Unverified")
+    expect(a.reporter.name).toBe("Al")
     expect(b.reporter.name).toBe("Anonymous")
-    expect(b.reporter.trust).toBe("Unverified")
+    expect(b.reporter.handle).toBe("anonymous")
   })
 
-  it("filters by status and by flagged", async () => {
+  it("filters by status bucket and by flagged (published/held are Submitted, not Completed)", async () => {
     const { repo, svc } = harness()
     repo.seedReport({ id: "s", status: "submitted" })
+    // A live, just-published pin and a held one both belong in the Submitted bucket.
+    repo.seedReport({ id: "pub", status: "published" })
+    repo.seedReport({ id: "held", status: "held" })
+    repo.seedReport({ id: "ack", status: "acknowledged" })
     repo.seedReport({ id: "p", status: "in_progress" })
     repo.seedReport({ id: "r", status: "resolved" })
     repo.seedReport({ id: "f", status: "submitted", flagged: true })
 
     expect((await svc.list({ filter: "submitted" })).items.map((i) => i.id).sort()).toEqual([
       "f",
+      "held",
+      "pub",
       "s",
     ])
-    expect((await svc.list({ filter: "in_progress" })).items.map((i) => i.id)).toEqual(["p"])
+    expect((await svc.list({ filter: "in_progress" })).items.map((i) => i.id).sort()).toEqual([
+      "ack",
+      "p",
+    ])
+    // Only a resolved report is Completed — a published (live) one must NOT show here.
     expect((await svc.list({ filter: "completed" })).items.map((i) => i.id)).toEqual(["r"])
     expect((await svc.list({ filter: "flagged" })).items.map((i) => i.id)).toEqual(["f"])
+  })
+
+  it("returns accurate per-bucket counts (published/held=Submitted, rejected excluded, flagged orthogonal)", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "s", status: "submitted" })
+    repo.seedReport({ id: "pub", status: "published" })
+    repo.seedReport({ id: "held", status: "held" })
+    repo.seedReport({ id: "ack", status: "acknowledged" })
+    repo.seedReport({ id: "ip", status: "in_progress" })
+    repo.seedReport({ id: "res", status: "resolved" })
+    repo.seedReport({ id: "rej", status: "rejected" }) // removed -> excluded from every bucket
+    repo.seedReport({ id: "f", status: "published", flagged: true })
+    // counts span ALL statuses (not the active facet) so the chips are accurate regardless of the page.
+    const { counts } = await svc.list({ filter: "completed" })
+    expect(counts).toEqual({ all: 7, submitted: 4, in_progress: 2, completed: 1, flagged: 1 })
   })
 
   it("search matches title, place, id, and reporter name (case-insensitive)", async () => {
@@ -207,6 +248,29 @@ describe("admin reports detail", () => {
     ])
     expect(detail.timeline).toHaveLength(1)
     expect(detail.timeline[0]).toMatchObject({ what: "Report submitted", kind: "submit" })
+  })
+
+  it("presigns media keys into browser-loadable URLs (and carries a null thumb through)", async () => {
+    // The repo returns raw r2 keys; the service must run them through the injected presigner so the admin
+    // photo box gets a loadable URL, not a key that 404s.
+    const { repo, svc } = harness({
+      presignMedia: async (r2Key, thumbKey) =>
+        thumbKey === null
+          ? { url: `https://cdn.test/${r2Key}?sig=x` }
+          : { url: `https://cdn.test/${r2Key}?sig=x`, thumbUrl: `https://cdn.test/${thumbKey}?sig=x` },
+    })
+    repo.seedReport({
+      id: "rep-2",
+      media: [
+        { id: "m1", kind: "image", url: "photo.jpg", thumbUrl: "thumb.jpg" },
+        { id: "m2", kind: "video", url: "clip.mp4", thumbUrl: null },
+      ],
+    })
+    const detail = await svc.get("rep-2")
+    expect(detail.media).toEqual([
+      { id: "m1", kind: "image", url: "https://cdn.test/photo.jpg?sig=x", thumbUrl: "https://cdn.test/thumb.jpg?sig=x" },
+      { id: "m2", kind: "video", url: "https://cdn.test/clip.mp4?sig=x", thumbUrl: null },
+    ])
   })
 
   it("throws notFound for an unknown report", async () => {

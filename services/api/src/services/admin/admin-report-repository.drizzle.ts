@@ -31,10 +31,28 @@ import type {
   ListReportsArgs,
   NotifyReporterInput,
 } from "./admin-report-service.js"
-import type { AdminReportStatus, ReportCategory } from "@civfix/shared"
+import type { AdminReportCounts, AdminReportStatus, ReportCategory } from "@civfix/shared"
 
 /** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
 type SqlFragment = postgres.Fragment
+
+/**
+ * The report-search predicate (title / jurisdiction name / reporter display-name + handle, plus an exact
+ * id match when `q` is a uuid), shared by listReports + countByBucket so the chip counts match the list
+ * exactly. Assumes the query LEFT JOINs `jurisdictions j` and `users u`. Empty fragment when q is null.
+ */
+function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
+  if (q === null) return sql``
+  const like = `%${q}%`
+  const idBranch = isUuid(q) ? sql`OR r.id = ${q}::uuid` : sql``
+  return sql`AND (
+    r.title ILIKE ${like}
+    OR j.name ILIKE ${like}
+    ${idBranch}
+    OR u.display_name ILIKE ${like}
+    OR (u.handle::text) ILIKE ${like}
+  )`
+}
 
 /** Max media assets returned for a report detail. */
 const MEDIA_CAP = 20
@@ -120,7 +138,7 @@ function reportSelect(
       ST_Y(r.geom) AS lat,
       ST_X(r.geom) AS lng,
       (SELECT COUNT(*) FROM report_follows rf WHERE rf.report_id = r.id)::text AS confirmations,
-      EXISTS (SELECT 1 FROM media_assets m WHERE m.report_id = r.id) AS has_photo,
+      EXISTS (SELECT 1 FROM media_assets m WHERE m.report_id = r.id AND m.status = 'ready') AS has_photo,
       r.created_at,
       u.id AS reporter_id,
       u.display_name AS reporter_name,
@@ -146,29 +164,20 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const anchor = decodeCursor(args.cursor)
 
       const conds: SqlFragment[] = []
-      if (args.status !== null) conds.push(sql`AND r.status = ${args.status}`)
+      // A design bucket maps to a SET of civfix statuses (e.g. Submitted = submitted|held|published), so
+      // match with `= ANY(array)` rather than a single equality. postgres-js binds a JS string[] natively.
+      if (args.statuses !== null && args.statuses.length > 0) {
+        conds.push(sql`AND r.status = ANY(${args.statuses})`)
+      }
       if (args.flaggedOnly) {
         conds.push(sql`AND EXISTS (
           SELECT 1 FROM abuse_flags af
           WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
         )`)
       }
-      if (args.q !== null) {
-        const like = `%${args.q}%`
-        // The text branches (title/jurisdiction/display_name/handle) are leading-wildcard ILIKEs the
-        // trigram indexes serve. The id branch is different: `r.id::text ILIKE %q%` is a leading-wildcard
-        // match on a uuid column that can never use an index and was never the intent (an id search means
-        // "this exact report"). Only add an exact `r.id = q::uuid` branch when `q` parses as a uuid (the
-        // cast would otherwise raise `invalid input syntax for type uuid`); otherwise omit the id branch.
-        const idBranch = isUuid(args.q) ? sql`OR r.id = ${args.q}::uuid` : sql``
-        conds.push(sql`AND (
-          r.title ILIKE ${like}
-          OR j.name ILIKE ${like}
-          ${idBranch}
-          OR u.display_name ILIKE ${like}
-          OR (u.handle::text) ILIKE ${like}
-        )`)
-      }
+      // The search predicate (title/jurisdiction/reporter, + exact id on a uuid q) is shared with
+      // countByBucket via searchReportsFragment so the chips and the list always agree.
+      if (args.q !== null) conds.push(searchReportsFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
@@ -183,6 +192,35 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const nextCursor =
         hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null
       return { records, nextCursor }
+    },
+
+    async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
+      // One aggregate over the searched, non-removed reports: a count per design bucket + the orthogonal
+      // flagged count. Mirrors STATUS_BUCKETS (admin-report-service.ts) — keep the status sets in sync.
+      const search = searchReportsFragment(sql, args.q)
+      const rows = await sql<
+        { submitted: string; in_progress: string; completed: string; flagged: string }[]
+      >`
+        SELECT
+          COUNT(*) FILTER (WHERE r.status IN ('submitted', 'held', 'published'))::text AS submitted,
+          COUNT(*) FILTER (WHERE r.status IN ('acknowledged', 'in_progress'))::text AS in_progress,
+          COUNT(*) FILTER (WHERE r.status = 'resolved')::text AS completed,
+          COUNT(*) FILTER (WHERE EXISTS (
+            SELECT 1 FROM abuse_flags af
+            WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
+          ))::text AS flagged
+        FROM reports r
+        LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+        LEFT JOIN users u ON u.id = r.reporter_user_id
+        WHERE r.deleted_at IS NULL
+        ${search}
+      `
+      const row = rows[0]
+      const submitted = Number(row?.submitted ?? "0")
+      const inProgress = Number(row?.in_progress ?? "0")
+      const completed = Number(row?.completed ?? "0")
+      const flagged = Number(row?.flagged ?? "0")
+      return { all: submitted + inProgress + completed, submitted, in_progress: inProgress, completed, flagged }
     },
 
     async getReport(id: string): Promise<AdminReportRecord | null> {
@@ -268,15 +306,17 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       >`
         SELECT id, kind, r2_key, thumb_key
         FROM media_assets
-        WHERE report_id = ${id}
+        WHERE report_id = ${id} AND status = 'ready'
         ORDER BY created_at ASC
         LIMIT ${MEDIA_CAP}
       `
       return rows.map((m) => ({
         id: m.id,
         kind: m.kind,
-        // The object-store key is returned as the url; the API's media presign/CDN layer renders the real
-        // URL on the client side, matching how the citizen report DTO carries r2 keys.
+        // The repo returns the raw object-store KEYS; the admin report SERVICE presigns them (deps.presignMedia
+        // over the Storage seam) into browser-loadable URLs, exactly like the citizen report service. Only
+        // status='ready' media is returned (in-flight/held/rejected assets are excluded), so the detail's
+        // "reporter photo" box never points at a non-renderable asset.
         url: m.r2_key,
         thumbUrl: m.thumb_key,
       }))

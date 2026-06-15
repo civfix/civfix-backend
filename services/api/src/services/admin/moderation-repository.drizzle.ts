@@ -136,7 +136,6 @@ function parseMeta(raw: unknown): {
       handle: typeof u.handle === "string" ? u.handle : "",
       name: typeof u.name === "string" ? u.name : "Unknown",
       joined: typeof u.joined === "string" ? u.joined : "",
-      trust: typeof u.trust === "string" ? u.trust : "Unverified",
       priorReports: typeof u.priorReports === "number" ? u.priorReports : 0,
       priorRemovals: typeof u.priorRemovals === "number" ? u.priorRemovals : 0,
       strikes: typeof u.strikes === "number" ? u.strikes : 0,

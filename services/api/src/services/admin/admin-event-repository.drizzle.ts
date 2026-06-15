@@ -40,10 +40,41 @@ import type {
   AdminOrganizerRecord,
   ListEventsArgs,
 } from "./admin-event-service.js"
-import type { EventStatus } from "@civfix/shared"
+import type { AdminEventCounts, EventStatus } from "@civfix/shared"
 
 /** A composable SQL fragment (postgres.js Fragment). */
 type SqlFragment = postgres.Fragment
+
+/**
+ * The "is flagged" boolean: the most recent cleanup_timeline flag/unflag row is a 'flag'. Shared by the
+ * flagged facet + countByBucket so they always agree.
+ */
+function flaggedEventExpr(sql: Queryable): SqlFragment {
+  return sql`COALESCE((
+    SELECT ct.kind = 'flag'
+    FROM cleanup_timeline ct
+    WHERE ct.cleanup_id = c.id AND ct.kind IN ('flag', 'unflag')
+    ORDER BY ct.created_at DESC, ct.id DESC
+    LIMIT 1
+  ), false)`
+}
+
+/**
+ * The event-search predicate (title / address / organizer name+handle, + exact id on a uuid q), shared by
+ * listEvents + countByBucket. Assumes the query selects `cleanups c` LEFT JOIN `users u`. Empty when null.
+ */
+function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
+  if (q === null) return sql``
+  const like = `%${q}%`
+  const idBranch = isUuid(q) ? sql`OR c.id = ${q}::uuid` : sql``
+  return sql`AND (
+    c.title ILIKE ${like}
+    OR c.address ILIKE ${like}
+    ${idBranch}
+    OR u.display_name ILIKE ${like}
+    OR (u.handle::text) ILIKE ${like}
+  )`
+}
 
 /** Max chat messages returned for an event detail. */
 const MESSAGE_CAP = 100
@@ -165,32 +196,10 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         // catches stored 'done' and a mis-stored 'completed'.
         conds.push(sql`AND c.status = ANY(${storedVariantsForEventStatus(args.status)})`)
       }
-      if (args.flaggedOnly) {
-        conds.push(sql`AND COALESCE((
-          SELECT ct.kind = 'flag'
-          FROM cleanup_timeline ct
-          WHERE ct.cleanup_id = c.id AND ct.kind IN ('flag', 'unflag')
-          ORDER BY ct.created_at DESC, ct.id DESC
-          LIMIT 1
-        ), false)`)
-      }
-      if (args.q !== null) {
-        const like = `%${args.q}%`
-        // The text branches (title/address/display_name/handle) are leading-wildcard ILIKEs the trigram
-        // indexes (0014_search_trgm.sql) serve. Mixing in `c.id::text ILIKE` — a leading-wildcard match on
-        // a uuid that can NEVER use an index — would force a seq scan for the whole OR, defeating those
-        // indexes. An id search means "this exact event", so add an exact `c.id = q::uuid` branch only when
-        // `q` parses as a uuid (the cast would otherwise raise an invalid-uuid error); else omit it.
-        // Mirrors admin-report-repository.drizzle.ts.
-        const idBranch = isUuid(args.q) ? sql`OR c.id = ${args.q}::uuid` : sql``
-        conds.push(sql`AND (
-          c.title ILIKE ${like}
-          OR c.address ILIKE ${like}
-          ${idBranch}
-          OR u.display_name ILIKE ${like}
-          OR (u.handle::text) ILIKE ${like}
-        )`)
-      }
+      if (args.flaggedOnly) conds.push(sql`AND ${flaggedEventExpr(sql)}`)
+      // Search (title/address/organizer, + exact id on a uuid q) is shared with countByBucket via
+      // searchEventsFragment so the chips and the list always agree.
+      if (args.q !== null) conds.push(searchEventsFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (c.scheduled_at, c.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
@@ -205,6 +214,34 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       const nextCursor =
         hasMore && last ? encodeCursor({ createdAt: last.scheduled_at, id: last.id }) : null
       return { records, nextCursor }
+    },
+
+    async countByBucket(args: { q: string | null }): Promise<AdminEventCounts> {
+      // One aggregate over the searched cleanups: total + per-EventStatus (matching the stored Phase-1
+      // variants, H1) + the orthogonal flagged count (same derivation as the facet, via flaggedEventExpr).
+      const search = searchEventsFragment(sql, args.q)
+      const rows = await sql<
+        { all: string; upcoming: string; in_progress: string; completed: string; flagged: string }[]
+      >`
+        SELECT
+          COUNT(*)::text AS all,
+          COUNT(*) FILTER (WHERE c.status = ANY(${storedVariantsForEventStatus("upcoming")}))::text AS upcoming,
+          COUNT(*) FILTER (WHERE c.status = ANY(${storedVariantsForEventStatus("in_progress")}))::text AS in_progress,
+          COUNT(*) FILTER (WHERE c.status = ANY(${storedVariantsForEventStatus("completed")}))::text AS completed,
+          COUNT(*) FILTER (WHERE ${flaggedEventExpr(sql)})::text AS flagged
+        FROM cleanups c
+        LEFT JOIN users u ON u.id = c.organizer_user_id
+        WHERE true
+        ${search}
+      `
+      const r = rows[0]
+      return {
+        all: Number(r?.all ?? "0"),
+        upcoming: Number(r?.upcoming ?? "0"),
+        in_progress: Number(r?.in_progress ?? "0"),
+        completed: Number(r?.completed ?? "0"),
+        flagged: Number(r?.flagged ?? "0"),
+      }
     },
 
     async getEvent(id: string): Promise<AdminEventRecord | null> {
@@ -271,6 +308,27 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           action: "event.status_changed",
           target: `cleanup:${id}`,
           meta: { status: input.status },
+        })
+        return true
+      })
+    },
+
+    async setBags(
+      id: string,
+      input: { bags: number; actorId: string | null },
+    ): Promise<boolean> {
+      // The only write path for cleanups.bags. UPDATE + audit in one tx; no cleanup_timeline row (the
+      // timeline `kind` enum has no 'outcome' value, and the audit log captures the operator action).
+      return sql.begin(async (tx) => {
+        const updated = await tx<{ id: string }[]>`
+          UPDATE cleanups SET bags = ${input.bags} WHERE id = ${id} RETURNING id
+        `
+        if (updated.length === 0) return false
+        await writeAudit(tx, {
+          actorId: input.actorId,
+          action: "event.outcome_logged",
+          target: `cleanup:${id}`,
+          meta: { bags: input.bags },
         })
         return true
       })

@@ -25,7 +25,9 @@ import { decodeCursor, encodeCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { upsertJurisdictionContacts } from "./discovery-repository.drizzle.js"
 import {
+  buildUnmappedRecord,
   directoryMethod,
+  shouldIncludeUnmapped,
   type JurisdictionContactsRepository,
   type JurisdictionDirectoryRecord,
   type ListDirectoryArgs,
@@ -102,6 +104,58 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
     contactUpdatedAt: r.contact_updated_at,
     flaggedAt: r.flagged_at,
   }
+}
+
+/**
+ * Aggregate the WAITING reports whose jurisdiction did not resolve — jurisdiction_geoid IS NULL OR points
+ * at a geoid no longer in the jurisdictions table (orphaned) — for the synthetic Unmapped directory row.
+ * Uses the SAME "waiting" predicate as the directory's per-jurisdiction LATERAL (open + un-routed) so the
+ * counts are consistent. The LEFT JOIN ... WHERE j.geoid IS NULL covers both the NULL and orphaned cases.
+ */
+async function loadUnmappedAggregate(
+  sql: Sql,
+): Promise<{ total: number; perCategoryCounts: Partial<Record<ReportCategory, number>> }> {
+  const rows = await sql<
+    {
+      total: string
+      cat_trash: string
+      cat_recycling: string
+      cat_graffiti: string
+      cat_hazard: string
+      cat_water: string
+      cat_other: string
+    }[]
+  >`
+    SELECT
+      COUNT(*)::text AS total,
+      COUNT(*) FILTER (WHERE r.category = 'trash')::text AS cat_trash,
+      COUNT(*) FILTER (WHERE r.category = 'recycling')::text AS cat_recycling,
+      COUNT(*) FILTER (WHERE r.category = 'graffiti')::text AS cat_graffiti,
+      COUNT(*) FILTER (WHERE r.category = 'hazard')::text AS cat_hazard,
+      COUNT(*) FILTER (WHERE r.category = 'water')::text AS cat_water,
+      COUNT(*) FILTER (WHERE r.category = 'other')::text AS cat_other
+    FROM reports r
+    LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+    WHERE r.deleted_at IS NULL
+      AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
+      AND (r.jurisdiction_geoid IS NULL OR j.geoid IS NULL)
+  `
+  const r = rows[0]
+  const total = Number(r?.total ?? "0")
+  const waitingByCat: Record<ReportCategory, string | undefined> = {
+    trash: r?.cat_trash,
+    recycling: r?.cat_recycling,
+    graffiti: r?.cat_graffiti,
+    hazard: r?.cat_hazard,
+    water: r?.cat_water,
+    other: r?.cat_other,
+  }
+  const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
+  for (const c of CATEGORIES) {
+    const n = Number(waitingByCat[c] ?? "0")
+    if (n > 0) perCategoryCounts[c] = n
+  }
+  return { total, perCategoryCounts }
 }
 
 export function makeDrizzleJurisdictionContactsRepository(
@@ -366,12 +420,23 @@ export function makeDrizzleJurisdictionContactsRepository(
       if (args.filter !== "all") {
         records = records.filter((r) => directoryMethod(r) === args.filter)
       }
-      if (rows.length <= limit) {
-        return { records, nextCursor: null }
-      }
-      const page = records.slice(0, limit)
-      const last = rows[limit - 1]
+      const hasMore = rows.length > limit
+      const page = hasMore ? records.slice(0, limit) : records
+      const last = hasMore ? rows[limit - 1] : undefined
       const nextCursor = last ? encodeCursor({ createdAt: new Date(0), id: last.geoid }) : null
+
+      // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page so reports whose
+      // jurisdiction did not resolve (NULL or orphaned geoid) are visible + triageable. Suppressed when
+      // there are none waiting. (Not part of the keyset; it pins to the top of the first page.)
+      if (shouldIncludeUnmapped(args)) {
+        const unmapped = await loadUnmappedAggregate(sql)
+        if (unmapped.total > 0) {
+          return {
+            records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...page],
+            nextCursor,
+          }
+        }
+      }
       return { records: page, nextCursor }
     },
   }

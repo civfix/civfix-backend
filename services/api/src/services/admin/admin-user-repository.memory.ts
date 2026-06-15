@@ -23,7 +23,7 @@ import type {
   UserMessageRecord,
   UserReportRecord,
 } from "./admin-user-service.js"
-import type { Role, UserStatus } from "@civfix/shared"
+import type { AdminUserCounts, Role, UserStatus } from "@civfix/shared"
 
 /** A recorded audit row (mirrors the Drizzle impl's writeAudit), inspectable by tests. */
 export interface RecordedUserAudit {
@@ -77,6 +77,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       accountStatus: input.accountStatus ?? "active",
       reports: input.reports ?? 0,
       cleanups: input.cleanups ?? 0,
+      messages: 0, // recomputed from the seeded messages map in getUser (the detail's tab badge).
       removals: input.removals ?? 0,
       strikes: input.strikes ?? 0,
       risk: input.risk ?? "low",
@@ -154,7 +155,31 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
 
   async getUser(id: string): Promise<AdminUserRecord | null> {
     const r = this.users.get(id)
-    return r ? { ...r } : null
+    // Recompute the messages count from the seeded sub-activity (the detail's Messages tab badge), mirroring
+    // the Drizzle COUNT(chat_messages) so a test that seeds messages sees the badge count.
+    return r ? { ...r, messages: this.messages.get(id)?.length ?? 0 } : null
+  }
+
+  async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
+    let rows = [...this.users.values()]
+    if (args.q !== null) {
+      const needle = args.q.toLowerCase()
+      rows = rows.filter(
+        (r) =>
+          r.name.toLowerCase().includes(needle) ||
+          (r.handle?.toLowerCase().includes(needle) ?? false) ||
+          r.city.toLowerCase().includes(needle),
+      )
+    }
+    let active = 0
+    let suspended = 0
+    let flagged = 0
+    for (const r of rows) {
+      if (r.accountStatus === "active") active += 1
+      else if (r.accountStatus === "suspended") suspended += 1
+      if (r.flagged) flagged += 1
+    }
+    return { all: rows.length, active, suspended, flagged }
   }
 
   async listUserReports(

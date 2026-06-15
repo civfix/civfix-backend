@@ -401,6 +401,39 @@ describe("listDirectory", () => {
     expect(noneOnly.items.map((i) => i.geoid)).toEqual(["3"])
   })
 
+  it("surfaces a synthetic 'Unmapped' row for waiting reports whose jurisdiction did not resolve", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "1", name: "Mapped City", defaultEmails: ["311@city.gov"] })
+    // Reports whose geoid is NOT a seeded jurisdiction (unresolved/orphaned) and still waiting.
+    repo.seedReport({ geoid: "ZZZ-unknown", category: "trash", status: "published" })
+    repo.seedReport({ geoid: "ZZZ-unknown", category: "hazard", status: "submitted" })
+    // A resolved orphan must NOT count (not waiting); a mapped report must NOT leak into the bucket.
+    repo.seedReport({ geoid: "ZZZ-unknown", category: "water", status: "resolved" })
+    repo.seedReport({ geoid: "1", category: "trash", status: "published" })
+
+    const all = await svc.listDirectory({})
+    const unmapped = all.items.find((i) => i.geoid === "__unmapped__")!
+    expect(unmapped).toBeDefined()
+    expect(unmapped.org).toBe("Unmapped / Unknown jurisdiction")
+    expect(unmapped.reportsWaiting).toBe(2) // the published + submitted orphans; resolved excluded
+    expect(unmapped.perCategoryCounts).toEqual({ trash: 1, hazard: 1 })
+    expect(unmapped.method).toBe("none")
+    // It pins to the top of the first page.
+    expect(all.items[0]!.geoid).toBe("__unmapped__")
+    // It appears under the "none" facet (no contacts) but never under email/form.
+    expect((await svc.listDirectory({ filter: "none" })).items.some((i) => i.geoid === "__unmapped__")).toBe(true)
+    expect((await svc.listDirectory({ filter: "email" })).items.some((i) => i.geoid === "__unmapped__")).toBe(false)
+  })
+
+  it("suppresses the 'Unmapped' row when every report resolves to a known jurisdiction", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "1", name: "Mapped City" })
+    repo.seedReport({ geoid: "1", category: "trash", status: "published" })
+
+    const all = await svc.listDirectory({})
+    expect(all.items.some((i) => i.geoid === "__unmapped__")).toBe(false)
+  })
+
   it("surfaces the jurisdiction TYPE, population, waiting counts, contacts, and flag state", async () => {
     const { repo, svc } = harness()
     // A FEDERAL-land jurisdiction with an existing trash contact, a flag, and a mix of reports.
