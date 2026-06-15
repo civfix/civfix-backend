@@ -31,6 +31,7 @@ import type { PushSender, PushPayload, PushPlatform } from "@civfix/shared/inter
 import type { Db } from "../db/client.js"
 import { pushTokens } from "../db/schema/push_tokens.js"
 import { and, inArray, isNull } from "drizzle-orm"
+import { isIP } from "node:net"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -425,6 +426,18 @@ export function makeWebPushDispatcher(
           invalidTokens.push(token)
           return
         }
+        // SECURITY (SSRF): the endpoint is attacker-controlled (any authed user registers it) and
+        // web-push does a server-side POST to it. Refuse + prune endpoints that point at internal,
+        // loopback, link-local (incl. 169.254.169.254 cloud metadata) or otherwise non-public hosts so
+        // the API host cannot be used to probe/forge requests against the internal network.
+        if (!isSafePushEndpoint(subscription.endpoint)) {
+          logger.warn(
+            { endpoint: subscription.endpoint },
+            "push(webpush): refusing unsafe/internal endpoint; pruning",
+          )
+          invalidTokens.push(token)
+          return
+        }
         try {
           await wp.sendNotification(subscription, body)
         } catch (err) {
@@ -452,6 +465,59 @@ function stringifyData(data: Record<string, unknown>): Record<string, string> {
     out[k] = typeof v === "string" ? v : JSON.stringify(v)
   }
   return out
+}
+
+/**
+ * SSRF guard for a Web Push endpoint. The endpoint is fully attacker-controlled (any authed user can
+ * register one) and web-push POSTs to it server-side, so we must refuse anything that is not a public
+ * host. Deny-by-IP-range (vs an allowlist) keeps legitimate FCM/APNs/Mozilla/WNS endpoints — which are
+ * all public DNS names — working, while blocking internal/loopback/link-local/metadata targets. Pure,
+ * dependency-free, and never throws (any parse failure => unsafe). NOTE: this does not defend against
+ * DNS-rebinding (a public name that resolves to a private IP); that would require vetting the resolved
+ * address at connect time and is out of scope for this minimal fix.
+ */
+export function isSafePushEndpoint(endpoint: string): boolean {
+  try {
+    const u = new URL(endpoint)
+    if (u.protocol !== "https:") return false
+    let host = u.hostname.toLowerCase()
+    if (host.length === 0) return false
+    // Strip IPv6 brackets if URL kept them.
+    host = host.replace(/^\[|\]$/g, "")
+    if (host === "localhost" || host.endsWith(".localhost")) return false
+
+    const fam = isIP(host)
+    if (fam === 0) {
+      // A DNS name (the normal case for real push services). Block obvious internal suffixes; otherwise
+      // allow (DNS-rebind is out of scope — see doc comment).
+      if (host.endsWith(".internal") || host.endsWith(".local")) return false
+      return true
+    }
+    if (fam === 4) return isPublicIpv4(host)
+    // IPv6 literal: real push services never use bare IPv6 literals. Reject all to avoid the complexity
+    // of enumerating ULA/link-local/IPv4-mapped ranges.
+    return false
+  } catch {
+    return false
+  }
+}
+
+/** True only for a globally-routable IPv4 literal (blocks RFC1918/loopback/link-local/CGNAT/reserved). */
+function isPublicIpv4(host: string): boolean {
+  const parts = host.split(".")
+  if (parts.length !== 4) return false
+  const o = parts.map((p) => Number(p))
+  if (o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
+  const [a, b] = o as [number, number, number, number]
+  if (a === 0 || a === 127) return false // "this host" / loopback
+  if (a === 10) return false // RFC1918
+  if (a === 172 && b >= 16 && b <= 31) return false // RFC1918
+  if (a === 192 && b === 168) return false // RFC1918
+  if (a === 169 && b === 254) return false // link-local incl. 169.254.169.254 metadata
+  if (a === 100 && b >= 64 && b <= 127) return false // CGNAT 100.64/10
+  if (a === 192 && b === 0 && o[2] === 0) return false // IETF protocol assignments 192.0.0/24
+  if (a >= 224) return false // multicast 224/4 + reserved 240/4 + 255.255.255.255
+  return true
 }
 
 /** Parse a persisted Web Push subscription JSON string; null when malformed. */
