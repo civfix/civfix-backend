@@ -14,7 +14,7 @@ import { OUTBOUND_MAIL_TEMPLATE } from "../../src/services/admin/outbound-mail-s
 /**
  * Offline unit tests for the admin reports service over the in-memory AdminReportRepository (no DB, no
  * Docker). They cover the list (status + flagged facet, search, pagination), the detail projection
- * (timeline/routing/media/derived trust), status changes (timeline + audit), the flag toggle
+ * (timeline/routing/media), status changes (timeline + audit), the flag toggle
  * (abuse-flag marker + audit), remove (-> rejected + audit), and the follow-up paths: to the reporter
  * (notification + timeline) and to the city (OutboundMailService.sendToCity + timeline), plus the pure
  * helpers. Mirrors admin-discovery.test.ts conventions.
@@ -29,12 +29,7 @@ interface Harness {
   svc: AdminReportService
 }
 
-function harness(opts?: {
-  presignMedia?: (
-    r2Key: string,
-    thumbKey: string | null,
-  ) => Promise<{ url: string; thumbUrl?: string }>
-}): Harness {
+function harness(): Harness {
   const repo = new InMemoryAdminReportRepository()
   repo.now = NOW
   const mailRepo = new InMemoryMailRepository()
@@ -48,7 +43,11 @@ function harness(opts?: {
     repo,
     outboundMail,
     now: () => NOW,
-    ...(opts?.presignMedia !== undefined ? { presignMedia: opts.presignMedia } : {}),
+    // A deterministic presigner so the media test asserts the keys are resolved into client URLs.
+    presignMedia: async (r2Key, thumbKey) => ({
+      url: `https://media.test/${r2Key}`,
+      ...(thumbKey !== null ? { thumbUrl: `https://media.test/${thumbKey}` } : {}),
+    }),
   })
   return { repo, mailRepo, mailer, svc }
 }
@@ -85,7 +84,7 @@ describe("admin reports pure helpers", () => {
 })
 
 describe("admin reports list", () => {
-  it("projects a list row with derived trust, confirmations, coords, and rel+abs submitted", async () => {
+  it("projects a list row with confirmations, coords, and rel+abs submitted", async () => {
     const { repo, svc } = harness()
     repo.seedReport({
       id: "11111111-1111-1111-1111-111111111111",
@@ -233,7 +232,7 @@ describe("admin reports detail", () => {
         contact: "san@lacity.gov",
         routed: true,
       },
-      media: [{ id: "m1", kind: "image", url: "r2://photo.jpg", thumbUrl: "r2://thumb.jpg" }],
+      media: [{ id: "m1", kind: "image", r2Key: "r2://photo.jpg", thumbKey: "r2://thumb.jpg" }],
       timeline: [
         { status: "submitted", note: "Report submitted", who: "jane", createdAt: hoursAgo(5) },
       ],
@@ -244,33 +243,15 @@ describe("admin reports detail", () => {
     expect(detail.city.contact).toBe("san@lacity.gov")
     expect(detail.city.routed).toBe(true)
     expect(detail.media).toEqual([
-      { id: "m1", kind: "image", url: "r2://photo.jpg", thumbUrl: "r2://thumb.jpg" },
+      {
+        id: "m1",
+        kind: "image",
+        url: "https://media.test/r2://photo.jpg",
+        thumbUrl: "https://media.test/r2://thumb.jpg",
+      },
     ])
     expect(detail.timeline).toHaveLength(1)
     expect(detail.timeline[0]).toMatchObject({ what: "Report submitted", kind: "submit" })
-  })
-
-  it("presigns media keys into browser-loadable URLs (and carries a null thumb through)", async () => {
-    // The repo returns raw r2 keys; the service must run them through the injected presigner so the admin
-    // photo box gets a loadable URL, not a key that 404s.
-    const { repo, svc } = harness({
-      presignMedia: async (r2Key, thumbKey) =>
-        thumbKey === null
-          ? { url: `https://cdn.test/${r2Key}?sig=x` }
-          : { url: `https://cdn.test/${r2Key}?sig=x`, thumbUrl: `https://cdn.test/${thumbKey}?sig=x` },
-    })
-    repo.seedReport({
-      id: "rep-2",
-      media: [
-        { id: "m1", kind: "image", url: "photo.jpg", thumbUrl: "thumb.jpg" },
-        { id: "m2", kind: "video", url: "clip.mp4", thumbUrl: null },
-      ],
-    })
-    const detail = await svc.get("rep-2")
-    expect(detail.media).toEqual([
-      { id: "m1", kind: "image", url: "https://cdn.test/photo.jpg?sig=x", thumbUrl: "https://cdn.test/thumb.jpg?sig=x" },
-      { id: "m2", kind: "video", url: "https://cdn.test/clip.mp4?sig=x", thumbUrl: null },
-    ])
   })
 
   it("throws notFound for an unknown report", async () => {

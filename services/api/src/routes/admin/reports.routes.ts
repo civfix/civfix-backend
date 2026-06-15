@@ -44,7 +44,7 @@ import {
 import { makeDrizzleMailRepository } from "../../services/admin/mail-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 
-/** Build the default media presigner over the container's Storage seam (mirrors reports.routes.ts). */
+/** Build the default media presigner over the container's Storage seam (mirrors the citizen report path). */
 function defaultPresign(
   container: Container,
 ): (r2Key: string, thumbKey: string | null) => Promise<{ url: string; thumbUrl?: string }> {

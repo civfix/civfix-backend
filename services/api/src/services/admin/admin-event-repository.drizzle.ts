@@ -4,7 +4,7 @@
  * Written against the raw postgres-js tag (`Sql`) like the discovery/reports repos, because every read
  * decodes the cleanup geometry (ST_X/ST_Y) and the list aggregates attendees + the derived flagged state
  * with correlated subqueries. Reads touch cleanups + cleanup_members + cleanup_timeline + chat_messages
- * + users (+ oauth_identities for the derived trust). Mutations run as single transactions so a status
+ * + users (+ oauth_identities). Mutations run as single transactions so a status
  * change + its cleanup_timeline row never drift.
  *
  * STATUS (H1): cleanups.status is stored in the Phase-1 enum (upcoming|active|done|cancelled); the

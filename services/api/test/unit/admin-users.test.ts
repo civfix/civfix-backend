@@ -76,7 +76,7 @@ describe("admin users pure helpers", () => {
 })
 
 describe("admin users list", () => {
-  it("projects a list row with derived trust/status/counts and rel/abs labels", async () => {
+  it("projects a list row with status/counts and rel/abs labels", async () => {
     const { repo, svc } = harness()
     repo.seedUser({
       id: "u-1",

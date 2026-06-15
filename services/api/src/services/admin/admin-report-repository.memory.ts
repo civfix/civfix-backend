@@ -302,7 +302,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   }
 }
 
-/** Default seeded reporter: a verified-neighbor account so the trust label is exercised by default. */
+/** Default seeded reporter (a claimed account with a verified email + oauth). */
 function defaultReporter(): AdminReporterRecord {
   return {
     id: randomUUID(),

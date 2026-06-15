@@ -90,7 +90,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     await h.teardown()
   })
 
-  it("lists a report with confirmations, hasPhoto, derived trust, and the flagged facet", async () => {
+  it("lists a report with confirmations, hasPhoto, and the flagged facet", async () => {
     const reporter = await insertUser(h, { name: "Jane", handle: "jane", emailVerified: true })
     const id = await insertReport(h, { reporterId: reporter, title: "Overflowing bin" })
     // Two confirmations (report_follows).

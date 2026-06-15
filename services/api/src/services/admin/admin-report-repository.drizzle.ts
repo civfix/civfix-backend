@@ -5,7 +5,7 @@
  * decodes report geometry (ST_X/ST_Y) and the list aggregates flagged/confirmations/hasPhoto with
  * correlated EXISTS/COUNT subqueries that are clearest as hand-written SQL. Reads touch reports +
  * report_timeline + report_follows + media_assets + jurisdictions + jurisdiction_contacts + abuse_flags
- * + users (+ oauth_identities for the derived trust). Mutations run as single transactions so a status
+ * + users (+ oauth_identities). Mutations run as single transactions so a status
  * change + its report_timeline row never drift.
  *
  * FLAGGED: a report is "flagged" when it has an OPEN abuse_flag (subject_type 'report', resolved_at
@@ -313,12 +313,12 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       return rows.map((m) => ({
         id: m.id,
         kind: m.kind,
-        // The repo returns the raw object-store KEYS; the admin report SERVICE presigns them (deps.presignMedia
-        // over the Storage seam) into browser-loadable URLs, exactly like the citizen report service. Only
-        // status='ready' media is returned (in-flight/held/rejected assets are excluded), so the detail's
+        // Raw object-store KEYS; the admin report SERVICE presigns them (deps.presignMedia over the Storage
+        // seam) into browser-loadable URLs, exactly like the citizen report DTO's toMediaDTO. Only
+        // status='ready' media is returned (in-flight/held/rejected assets excluded), so the detail's
         // "reporter photo" box never points at a non-renderable asset.
-        url: m.r2_key,
-        thumbUrl: m.thumb_key,
+        r2Key: m.r2_key,
+        thumbKey: m.thumb_key,
       }))
     },
 

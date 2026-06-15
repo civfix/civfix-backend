@@ -2,7 +2,7 @@
  * Shared pure formatting helpers for the admin reports / events / users projections (Phase 2).
  *
  * Owned by the reports/events/users wave; imported by the three services so the relative+absolute
- * timestamp pair and the derived trust label render identically across every admin surface. Pure (no
+ * timestamp pair and labels render identically across every admin surface. Pure (no
  * IO, clock injected) so the projections stay unit-testable with no database. No sibling domain touches
  * this file.
  */

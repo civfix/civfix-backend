@@ -49,19 +49,23 @@ export interface AdminReporterRecord {
   id: string
   name: string
   handle: string | null
-  /** Whether the account's email is proven (drives the derived trust label). */
+  /** Whether the account's email is proven (retained on the record; the trust label was removed). */
   emailVerified: boolean
-  /** Whether any oauth identity links the account (also makes a verified neighbor). */
+  /** Whether any oauth identity links the account (retained on the record; the trust label was removed). */
   hasOauth: boolean
   joinedAt: Date | null
 }
 
-/** A media asset attached to a report (the real object-store url, resolved by the repo). */
+/**
+ * A media asset attached to a report, as the repo reads it back: the raw object-store keys. The service
+ * presigns these into client-usable URLs (see `get` below) — handing the browser a raw r2 key is the bug
+ * behind "the photo doesn't appear in the admin panel".
+ */
 export interface AdminReportMediaRecord {
   id: string
   kind: "image" | "video"
-  url: string
-  thumbUrl: string | null
+  r2Key: string
+  thumbKey: string | null
 }
 
 /** A report_timeline row as the repo reads it back (status transition + optional note + actor label). */
@@ -401,7 +405,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       // Presign each media object so the admin gets browser-loadable URLs (the repo returns raw r2 keys).
       const mediaDtos: ReportMedia[] = await Promise.all(
         media.map(async (m) => {
-          const { url, thumbUrl } = await presignMedia(m.url, m.thumbUrl)
+          const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
           return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
         }),
       )

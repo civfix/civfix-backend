@@ -46,10 +46,10 @@ import {
 /**
  * R2 public base for moderation media URLs. The moderation detail returns `${MEDIA_URL_PREFIX}<r2_key>`
  * (a relative `/media/...` path the dashboard rewrites via NEXT_PUBLIC_* to the real object-store/CDN
- * origin at render time). L5 NOTE: this DIFFERS from the report repo, which returns the raw `r2_key` as
- * the media url and relies on the same client-side rewrite. The two are reconciled at the dashboard
- * (both are client-rewritten), so do not "fix" one to match the other without updating the dashboard's
- * rewrite rule - that is the single place the media URL origin is resolved.
+ * origin at render time). NOTE: this DIFFERS from the admin REPORT path, which now SERVER-SIDE presigns
+ * its media keys into absolute URLs (admin-report-service.presignMedia over the Storage seam). If
+ * moderation media ever needs to render the same way, presign here too rather than relying on the
+ * dashboard rewrite.
  */
 const MEDIA_URL_PREFIX = "/media/"
 
@@ -118,7 +118,7 @@ function parseSimilar(raw: unknown): ModerationItemRecord["similar"] {
 /**
  * Parse the user-context snapshot + the row-shaping carry fields out of the item's `meta` jsonb. The
  * producer records `{ reporter, desc, user:{...} }` on meta; reporter/desc are read back for the row +
- * detail, and `user` is the trust/priors/device snapshot. Missing/malformed pieces degrade to null.
+ * detail, and `user` is the priors/device snapshot. Missing/malformed pieces degrade to null.
  */
 function parseMeta(raw: unknown): {
   reporter: string | null

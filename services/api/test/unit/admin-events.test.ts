@@ -12,7 +12,7 @@ import {
 /**
  * Offline unit tests for the admin events (cleanups) service over the in-memory AdminEventRepository (no
  * DB, no Docker). They cover the list (status + flagged facet, search, pagination), the detail (timeline
- * + messages + turnout + derived trust), status changes (cleanup_timeline + audit), the flag toggle
+ * + messages + turnout), status changes (cleanup_timeline + audit), the flag toggle
  * (cleanup_timeline-tracked + audit), cancel (-> cancelled + audit), and post-message (chat row +
  * notify each member + audit), plus the pure helpers.
  */
@@ -64,7 +64,7 @@ describe("admin events pure helpers", () => {
 })
 
 describe("admin events list", () => {
-  it("projects a list row with turnout, derived trust, date rel+abs, coords", async () => {
+  it("projects a list row with turnout, date rel+abs, coords", async () => {
     const { repo, svc } = harness()
     repo.seedEvent({
       id: "evt-1",
