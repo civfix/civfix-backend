@@ -16,6 +16,7 @@
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor, type CursorAnchor } from "./pagination.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
+import { likeContains } from "./like.js"
 
 /** An audit_log row as selected back (snake_case columns + the joined actor name). */
 interface AuditRowSelect {
@@ -56,15 +57,15 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
       const actorFilter =
         args.actor !== null
           ? (() => {
-              const like = `%${args.actor}%`
+              const like = likeContains(args.actor)
               const asUuid = isUuid(args.actor) ? args.actor : null
-              return sql`AND (${asUuid}::uuid IS NOT NULL AND a.actor_id = ${asUuid}::uuid OR u.display_name ILIKE ${like})`
+              return sql`AND (${asUuid}::uuid IS NOT NULL AND a.actor_id = ${asUuid}::uuid OR u.display_name ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
       const actionFilter =
-        args.action !== null ? sql`AND a.action ILIKE ${`%${args.action}%`}` : sql``
+        args.action !== null ? sql`AND a.action ILIKE ${likeContains(args.action)} ESCAPE '\\'` : sql``
       const targetFilter =
-        args.target !== null ? sql`AND a.target ILIKE ${`%${args.target}%`}` : sql``
+        args.target !== null ? sql`AND a.target ILIKE ${likeContains(args.target)} ESCAPE '\\'` : sql``
 
       const rows = await sql<AuditRowSelect[]>`
         SELECT a.id, a.actor_id, u.display_name AS actor_name, a.action, a.target, a.meta, a.created_at

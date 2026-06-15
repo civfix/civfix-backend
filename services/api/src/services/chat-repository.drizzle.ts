@@ -23,6 +23,9 @@ import { avatarGradient } from "@civfix/shared"
 import type { ChatMessageDTO, ChatMessageKind } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 
+/** Canonical UUID shape; the `before` cursor is validated against it before reaching a uuid-column bind. */
+const CHAT_CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
  * Persistence seam for chat: insert a message + page history. The production impl runs Drizzle/PostGIS;
  * the offline tests pass an in-memory implementation so the WsChatService persist/history paths are
@@ -139,7 +142,10 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
       // cursor can never seek into or leak another room's ordering. Scoping also lets the planner use the
       // (cleanup_id, created_at) access path instead of probing every partition by id alone.
       let anchor: { createdAt: Date; id: string } | null = null
-      if (before !== undefined) {
+      // Only look up the anchor when `before` is a well-formed UUID. The lookup binds it against the uuid
+      // `id` column, so a non-UUID value would raise a Postgres 22P02 cast error -> 500; a malformed
+      // cursor instead degrades to "newest page" (anchor stays null), matching the foreign-cursor handling.
+      if (before !== undefined && CHAT_CURSOR_UUID_RE.test(before)) {
         const rows = await sql<{ created_at: Date; id: string }[]>`
           SELECT created_at, id FROM chat_messages
           WHERE id = ${before} AND cleanup_id = ${cleanupId} AND deleted_at IS NULL

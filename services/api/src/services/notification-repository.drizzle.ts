@@ -34,7 +34,12 @@ import type {
   PushTokenUpsertOutcome,
 } from "./notification-service.js"
 import { DEFAULT_PREFS } from "./notification-service.js"
+import { AppError } from "@civfix/shared"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
+
+/** 24-hour HH:MM or HH:MM:SS. quietHours values are cast `::time`; an unvalidated bad string would raise
+ * a Postgres 22007 -> unhandled 500. We reject malformed input as a 400 before the cast. */
+const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 
 /** Shape of a notification row as selected back. */
 interface NotificationRowSelect {
@@ -184,6 +189,14 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       if (patch.quietHours !== undefined) {
         const start = patch.quietHours === null ? null : patch.quietHours.start
         const end = patch.quietHours === null ? null : patch.quietHours.end
+        // Validate the HH:MM(:SS) shape before the ::time cast so a malformed value is a clean 400, not a
+        // Postgres cast error surfacing as a 500.
+        if (
+          (start !== null && !QUIET_TIME_RE.test(start)) ||
+          (end !== null && !QUIET_TIME_RE.test(end))
+        ) {
+          throw AppError.validation({ quietHours: "invalid" }, "quietHours must be HH:MM (24-hour)")
+        }
         setFragments.push(sql`quiet_start = ${start}::time`)
         setFragments.push(sql`quiet_end = ${end}::time`)
       }
@@ -263,6 +276,9 @@ function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
   return acc
 }
 
+/** Canonical UUID shape; the cursor id is cast `${parsed.id}::uuid`, so a non-UUID would 22P02 -> 500. */
+const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** Parse an `${iso}|${id}` time cursor; null when absent/malformed. */
 function parseTimeCursor(cursor: string | null): { at: Date; id: string } | null {
   if (cursor === null) return null
@@ -271,6 +287,7 @@ function parseTimeCursor(cursor: string | null): { at: Date; id: string } | null
   const iso = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
   const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || id.length === 0) return null
+  // Reject a non-UUID id (cast ::uuid downstream -> 22P02 -> unhandled 500); degrade to first page.
+  if (Number.isNaN(at.getTime()) || !CURSOR_UUID_RE.test(id)) return null
   return { at, id }
 }

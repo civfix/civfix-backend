@@ -34,6 +34,7 @@ import {
   type SaveContactsInput,
 } from "./jurisdiction-contacts-service.js"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
+import { likeContains } from "./like.js"
 
 /** The 6 canonical categories (local copy; the directory record maps per-category contacts by these). */
 const CATEGORIES: readonly ReportCategory[] = [
@@ -311,7 +312,10 @@ export function makeDrizzleJurisdictionContactsRepository(
       // mail_events row for the geoid's thread). Keyset over (geoid) so the page is stable.
       const search =
         args.q !== null
-          ? sql`AND (j.name ILIKE ${"%" + args.q + "%"} OR j.geoid ILIKE ${"%" + args.q + "%"})`
+          ? (() => {
+              const like = likeContains(args.q)
+              return sql`AND (j.name ILIKE ${like} ESCAPE '\\' OR j.geoid ILIKE ${like} ESCAPE '\\')`
+            })()
           : sql``
       const anchor = decodeCursor(args.cursor)
       const after = anchor ? sql`AND j.geoid > ${anchor.id}` : sql``

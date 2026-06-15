@@ -23,6 +23,13 @@ export interface CursorAnchor {
   id: string
 }
 
+/**
+ * Canonical UUID shape. The decoded `id` is interpolated into `${anchor.id}::uuid` by the admin repos, so
+ * a non-UUID id would raise a Postgres 22P02 cast error -> unhandled 500. We validate the shape here and
+ * treat a malformed cursor as "from the start" (null), matching the documented malformed-cursor contract.
+ */
+const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** Encode a keyset anchor into the opaque "<iso>|<id>" cursor string. */
 export function encodeCursor(anchor: CursorAnchor): string {
   return `${anchor.createdAt.toISOString()}|${anchor.id}`
@@ -44,7 +51,9 @@ export function decodeCursor(cursor: string | null | undefined): CursorAnchor | 
   const iso = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
   const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || id.length === 0) return null
+  // Reject a malformed timestamp OR a non-UUID id (the id is cast ::uuid downstream; a bad value would
+  // otherwise raise a Postgres cast error -> 500). Degrade to "from the start" instead.
+  if (Number.isNaN(at.getTime()) || !CURSOR_UUID_RE.test(id)) return null
   return { createdAt: at, id }
 }
 

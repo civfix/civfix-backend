@@ -341,6 +341,11 @@ function parseNameCursor(cursor: string | null): { name: string; id: string } | 
   if (idx < 0) return null
   const name = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
-  if (id.length === 0) return null
+  // The id is cast `${cursor.id}::uuid` downstream; a non-UUID would raise a Postgres 22P02 -> 500. Treat
+  // a malformed cursor as "from the start" (null) instead.
+  if (!CURSOR_UUID_RE.test(id)) return null
   return { name, id }
 }
+
+/** Canonical UUID shape, validated before a cursor id reaches a `::uuid` cast. */
+const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

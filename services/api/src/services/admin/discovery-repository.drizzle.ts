@@ -32,6 +32,7 @@ import type { Queryable, Sql } from "../../db/client.js"
 type SqlFragment = postgres.Fragment
 import { decodeCursor, encodeCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
+import { likeContains } from "./like.js"
 import {
   DISCOVERY_CATEGORIES,
   type DiscoveryContactRecord,
@@ -174,7 +175,10 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       // keeps the facet logic (which depends on per-category contact state) in one place with the service.
       const search =
         args.q !== null
-          ? sql`AND (j.name ILIKE ${"%" + args.q + "%"} OR t.geoid ILIKE ${"%" + args.q + "%"})`
+          ? (() => {
+              const like = likeContains(args.q)
+              return sql`AND (j.name ILIKE ${like} ESCAPE '\\' OR t.geoid ILIKE ${like} ESCAPE '\\')`
+            })()
           : sql``
       const rows = await taskAggregateSql(sql, search)
       let records = rows.map(toTaskRecord)

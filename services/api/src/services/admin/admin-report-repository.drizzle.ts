@@ -32,6 +32,7 @@ import type {
   NotifyReporterInput,
 } from "./admin-report-service.js"
 import type { AdminReportCounts, AdminReportStatus, ReportCategory } from "@civfix/shared"
+import { likeContains } from "./like.js"
 
 /** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
 type SqlFragment = postgres.Fragment
@@ -43,14 +44,15 @@ type SqlFragment = postgres.Fragment
  */
 function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
-  const like = `%${q}%`
+  // SECURITY: escape LIKE metacharacters so %/_ in q match literally (wildcard injection / trigram DoS).
+  const like = likeContains(q)
   const idBranch = isUuid(q) ? sql`OR r.id = ${q}::uuid` : sql``
   return sql`AND (
-    r.title ILIKE ${like}
-    OR j.name ILIKE ${like}
+    r.title ILIKE ${like} ESCAPE '\\'
+    OR j.name ILIKE ${like} ESCAPE '\\'
     ${idBranch}
-    OR u.display_name ILIKE ${like}
-    OR (u.handle::text) ILIKE ${like}
+    OR u.display_name ILIKE ${like} ESCAPE '\\'
+    OR (u.handle::text) ILIKE ${like} ESCAPE '\\'
   )`
 }
 
@@ -176,7 +178,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         )`)
       }
       // The search predicate (title/jurisdiction/reporter, + exact id on a uuid q) is shared with
-      // countByBucket via searchReportsFragment so the chips and the list always agree.
+      // countByBucket via searchReportsFragment (which escapes LIKE metachars) so the chips and the list
+      // always agree AND both are protected against wildcard injection.
       if (args.q !== null) conds.push(searchReportsFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)

@@ -412,6 +412,9 @@ function paginate(
   return { records: page.map(toRecord), nextCursor }
 }
 
+/** Canonical UUID shape; cursor ids are validated before reaching a `${cursor.id}::uuid` cast. */
+const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** Parse a `${dist}|${id}` near cursor; null when absent/malformed. */
 function parseNearCursor(cursor: string | null): { dist: number; id: string } | null {
   if (cursor === null) return null
@@ -419,7 +422,8 @@ function parseNearCursor(cursor: string | null): { dist: number; id: string } | 
   if (idx <= 0) return null
   const dist = Number(cursor.slice(0, idx))
   const id = cursor.slice(idx + 1)
-  if (!Number.isFinite(dist) || id.length === 0) return null
+  // id is cast `${cursor.id}::uuid` downstream; reject a non-UUID (would 22P02 -> 500), degrade to start.
+  if (!Number.isFinite(dist) || !CURSOR_UUID_RE.test(id)) return null
   return { dist, id }
 }
 
@@ -432,6 +436,7 @@ function parseTimeCursor(cursor: string | null): { at: Date; id: string } | null
   const iso = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
   const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || id.length === 0) return null
+  // id is cast `${cursor.id}::uuid` downstream; reject a non-UUID (would 22P02 -> 500), degrade to start.
+  if (Number.isNaN(at.getTime()) || !CURSOR_UUID_RE.test(id)) return null
   return { at, id }
 }

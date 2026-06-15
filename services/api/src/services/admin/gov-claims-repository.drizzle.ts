@@ -30,6 +30,7 @@ import {
   type ListGovClaimsArgs,
 } from "./gov-claims-service.js"
 import type { GovCheckStatus, GovMethod, GovVerificationCheck } from "@civfix/shared"
+import { likeContains } from "./like.js"
 
 /** A gov_claims row (snake_case columns) as read from Postgres. */
 interface GovClaimRow {
@@ -101,7 +102,10 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
           : sql``
       const search =
         args.q !== null
-          ? sql`AND (name ILIKE ${"%" + args.q + "%"} OR COALESCE(org, '') ILIKE ${"%" + args.q + "%"})`
+          ? (() => {
+              const like = likeContains(args.q)
+              return sql`AND (name ILIKE ${like} ESCAPE '\\' OR COALESCE(org, '') ILIKE ${like} ESCAPE '\\')`
+            })()
           : sql``
       const keyset = anchor
         ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
