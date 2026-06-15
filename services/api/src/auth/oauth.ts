@@ -194,8 +194,12 @@ export class OAuthService {
       // Dangling identity (user removed): fall through and recreate.
     }
 
-    // 2) Link to an existing account that owns this verified email.
-    if (claims.email) {
+    // 2) Link to an existing account that owns this VERIFIED email. SECURITY (nOAuth / pre-account-
+    //    takeover): only an email the provider asserted as verified may match-and-link an existing
+    //    account. A provider that lets a user set an arbitrary UNVERIFIED email must not be able to take
+    //    over an account created via email-OTP or another provider that owns that address. An unverified
+    //    (or relay/absent) email falls through to branch 3 and gets a fresh, separate account instead.
+    if (claims.email && claims.emailVerified) {
       const byEmail = await this.users.findByEmail(claims.email)
       if (byEmail) {
         await this.oauthStore.linkIdentity(byEmail.id, provider, claims.sub)

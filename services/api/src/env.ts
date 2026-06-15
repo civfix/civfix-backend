@@ -340,9 +340,15 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (isProd) {
     if (SESSION_SIGNING_KEY.length === 0) {
       errors.push("SESSION_SIGNING_KEY: required [BOOT] variable is missing")
+    } else if (SESSION_SIGNING_KEY === DEV_SESSION_SIGNING_KEY) {
+      // SECURITY: refuse to boot prod with the publicly-known insecure dev default — an attacker who knows
+      // it could forge signed cookies. Forces a real, secret key in production.
+      errors.push("SESSION_SIGNING_KEY: must not be the insecure dev default in production")
     }
     if (ANON_TOKEN_SIGNING_KEY.length === 0) {
       errors.push("ANON_TOKEN_SIGNING_KEY: required [BOOT] variable is missing")
+    } else if (ANON_TOKEN_SIGNING_KEY === DEV_ANON_TOKEN_SIGNING_KEY) {
+      errors.push("ANON_TOKEN_SIGNING_KEY: must not be the insecure dev default in production")
     }
   } else {
     if (SESSION_SIGNING_KEY.length === 0) SESSION_SIGNING_KEY = DEV_SESSION_SIGNING_KEY
@@ -502,6 +508,15 @@ export const env: Env = new Proxy({} as Env, {
     return Object.getOwnPropertyDescriptor(cached, prop)
   },
 })
+
+/**
+ * True when the validated env reports production. Use this (NOT a raw `process.env.NODE_ENV` read) as the
+ * single source of truth for prod-only behavior such as the cookie `Secure` flag, so it tracks the same
+ * value the [BOOT] gating uses. Reads through the lazy `env` singleton.
+ */
+export function isProd(): boolean {
+  return env.NODE_ENV === "production"
+}
 
 /** Test/HMR helper: drop the cached singleton so the next access reloads from process.env. */
 export function resetEnvCache(): void {

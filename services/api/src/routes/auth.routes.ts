@@ -41,6 +41,7 @@ import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import { requireAuth } from "../auth/context.js"
+import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
 import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
 import {
@@ -135,7 +136,7 @@ export async function registerAuthRoutes(
       signed: true,
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: isProd(),
       path: "/",
       maxAge: OAUTH_STATE_TTL_SECONDS,
     })

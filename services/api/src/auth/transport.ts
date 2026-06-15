@@ -14,6 +14,7 @@
  */
 
 import type { FastifyReply, FastifyRequest } from "fastify"
+import { isProd } from "../env.js"
 
 /** httpOnly session cookie name (web transport). */
 export const SESSION_COOKIE = "civfix_session"
@@ -61,7 +62,9 @@ export function setSessionCookie(reply: FastifyReply, token: string, maxAgeSecon
   reply.setCookie(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    // Drive Secure from the validated env loader (single source of truth) rather than a raw process.env
+    // read. In prod this is always true (NODE_ENV is force-set by the Dockerfile + compose).
+    secure: isProd(),
     path: "/",
     maxAge: maxAgeSeconds,
   })

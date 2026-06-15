@@ -5,6 +5,7 @@
 
 import fastifyCookie from "@fastify/cookie"
 import type { FastifyInstance } from "fastify"
+import { isProd } from "../env.js"
 
 export async function registerCookie(app: FastifyInstance, signingKey: string): Promise<void> {
   await app.register(fastifyCookie, {
@@ -13,7 +14,8 @@ export async function registerCookie(app: FastifyInstance, signingKey: string): 
       httpOnly: true,
       sameSite: "lax",
       path: "/",
-      secure: process.env.NODE_ENV === "production",
+      // Validated env loader (not a raw process.env read) is the single source of truth for prod.
+      secure: isProd(),
     },
   })
 }

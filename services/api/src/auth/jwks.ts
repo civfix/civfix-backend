@@ -108,6 +108,10 @@ export class RemoteJwksVerifier implements JwksVerifier {
   private readonly cacheTtlMs: number
   private readonly now: () => number
   private readonly cache = new Map<string, CachedJwks>()
+  /** Last time we FORCE-refreshed each jwksUrl (unknown-kid path), to throttle fetch amplification. */
+  private readonly lastForceRefreshAtMs = new Map<string, number>()
+  /** Minimum spacing between forced refreshes per url (bounds unknown-kid DoS amplification). */
+  private static readonly FORCE_REFRESH_FLOOR_MS = 60 * 1000
 
   constructor(opts: RemoteJwksVerifierOptions = {}) {
     this.fetchImpl = opts.fetchImpl ?? defaultFetch
@@ -140,14 +144,22 @@ export class RemoteJwksVerifier implements JwksVerifier {
     return validateClaims(claims, params, this.now)
   }
 
-  /** Return the matching JWK for `kid`, fetching (and caching) the JWKS, with a one-shot refresh. */
+  /** Return the matching JWK for `kid`, fetching (and caching) the JWKS, with a THROTTLED refresh. */
   private async resolveKey(jwksUrl: string, kid: string): Promise<Jwk> {
     let keys = await this.getKeys(jwksUrl, false)
     let match = keys.find((k) => k.kid === kid)
     if (!match) {
-      // Key rotation: force a refresh once before giving up.
-      keys = await this.getKeys(jwksUrl, true)
-      match = keys.find((k) => k.kid === kid)
+      // Possible key rotation. SECURITY: an attacker can flood tokens carrying random unknown `kid`s; if
+      // every miss force-refreshed, that would amplify into unbounded outbound JWKS fetches (DoS on us and
+      // the provider). So force-refresh at most once per FORCE_REFRESH_FLOOR_MS per url. The FIRST miss for
+      // a url always refreshes (picking up ALL rotated keys in one fetch); rapid subsequent unknown-kid
+      // misses are rejected from cache without a new fetch.
+      const last = this.lastForceRefreshAtMs.get(jwksUrl)
+      if (last === undefined || this.now() - last >= RemoteJwksVerifier.FORCE_REFRESH_FLOOR_MS) {
+        this.lastForceRefreshAtMs.set(jwksUrl, this.now())
+        keys = await this.getKeys(jwksUrl, true)
+        match = keys.find((k) => k.kid === kid)
+      }
     }
     if (!match) {
       throw AppError.unauthorized("Identity token key not found.")

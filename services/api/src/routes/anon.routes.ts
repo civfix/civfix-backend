@@ -37,6 +37,7 @@ import { ZodError, z, type ZodTypeAny } from "zod"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { ANON_COOKIE } from "../auth/transport.js"
+import { isProd } from "../env.js"
 import { ANON_TOKEN_TTL_SECONDS } from "../abuse/anon-token.js"
 import { cfGeoFromTrustedEdge } from "../abuse/gps-sanity.js"
 import { RedisCounterStore } from "../abuse/counter-store.js"
@@ -194,7 +195,7 @@ function setAnonCookie(reply: FastifyReply, token: string): void {
   reply.setCookie(ANON_COOKIE, token, {
     httpOnly: false,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: isProd(),
     path: "/",
     maxAge: ANON_TOKEN_TTL_SECONDS,
   })
