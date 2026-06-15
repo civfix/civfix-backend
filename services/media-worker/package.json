@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@civfix/api": "workspace:*",
-    "@civfix/shared": "^0.3.0",
+    "@civfix/shared": "^0.5.0",
     "drizzle-orm": "^0.36.4",
     "execa": "^9.5.2",
     "exifr": "^7.1.3",
