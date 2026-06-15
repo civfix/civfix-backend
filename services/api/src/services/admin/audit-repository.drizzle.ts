@@ -48,7 +48,7 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
       args: ListAuditArgs,
     ): Promise<{ records: AuditRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
+      const anchor = decodeCursor(args.cursor, true)
       const cursorFilter =
         anchor !== null
           ? sql`AND (a.created_at, a.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`

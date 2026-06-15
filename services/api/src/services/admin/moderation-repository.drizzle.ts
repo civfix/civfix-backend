@@ -212,7 +212,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       args: ListModerationArgs,
     ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
+      const anchor = decodeCursor(args.cursor, true)
 
       // Facet: a kind narrows kind; "high" narrows priority; "all" no extra filter.
       const facet =

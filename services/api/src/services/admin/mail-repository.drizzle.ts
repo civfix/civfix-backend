@@ -515,7 +515,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
       const limit = clampLimit(input.limit)
-      const anchor = decodeCursor(input.cursor)
+      const anchor = decodeCursor(input.cursor, true)
       // Keyset over (last_message_at DESC, id DESC) using COALESCE(last_message_at, created_at) as the
       // sort key so a brand-new thread with no message still orders by its creation time. The cursor
       // anchor's createdAt is that same coalesced key.

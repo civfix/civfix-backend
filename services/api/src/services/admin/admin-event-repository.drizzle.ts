@@ -190,7 +190,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       args: ListEventsArgs,
     ): Promise<{ records: AdminEventRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
+      const anchor = decodeCursor(args.cursor, true)
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {

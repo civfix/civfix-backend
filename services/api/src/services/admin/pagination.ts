@@ -24,9 +24,11 @@ export interface CursorAnchor {
 }
 
 /**
- * Canonical UUID shape. The decoded `id` is interpolated into `${anchor.id}::uuid` by the admin repos, so
- * a non-UUID id would raise a Postgres 22P02 cast error -> unhandled 500. We validate the shape here and
- * treat a malformed cursor as "from the start" (null), matching the documented malformed-cursor contract.
+ * Canonical UUID shape. Repos that interpolate the decoded id into `${anchor.id}::uuid` opt into this
+ * validation (requireUuidId=true) so a malformed id degrades to "from the start" (null) instead of
+ * raising a Postgres 22P02 cast error -> unhandled 500. Repos keyed on a NON-uuid id (geoid: discovery,
+ * jurisdiction-contacts) and the in-memory test fakes use the default (no uuid check) — forcing it on
+ * them would wrongly reject every valid geoid/test cursor and break pagination.
  */
 const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -40,7 +42,10 @@ export function encodeCursor(anchor: CursorAnchor): string {
  * cursor (no "|id") is tolerated by anchoring at the maximum uuid for that instant, mirroring the Phase
  * 1 fallback so an older client cursor degrades to created_at-only paging rather than erroring.
  */
-export function decodeCursor(cursor: string | null | undefined): CursorAnchor | null {
+export function decodeCursor(
+  cursor: string | null | undefined,
+  requireUuidId = false,
+): CursorAnchor | null {
   if (cursor === null || cursor === undefined || cursor === "") return null
   const idx = cursor.indexOf("|")
   if (idx < 0) {
@@ -51,9 +56,10 @@ export function decodeCursor(cursor: string | null | undefined): CursorAnchor | 
   const iso = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
   const at = new Date(iso)
-  // Reject a malformed timestamp OR a non-UUID id (the id is cast ::uuid downstream; a bad value would
-  // otherwise raise a Postgres cast error -> 500). Degrade to "from the start" instead.
-  if (Number.isNaN(at.getTime()) || !CURSOR_UUID_RE.test(id)) return null
+  if (Number.isNaN(at.getTime()) || id.length === 0) return null
+  // Repos that cast `${id}::uuid` pass requireUuidId=true so a non-UUID id degrades to "from the start"
+  // (null) rather than raising a Postgres 22P02 -> 500. Non-uuid-keyed repos (geoid) leave it false.
+  if (requireUuidId && !CURSOR_UUID_RE.test(id)) return null
   return { createdAt: at, id }
 }
 

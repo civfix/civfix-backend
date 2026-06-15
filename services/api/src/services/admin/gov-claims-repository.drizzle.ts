@@ -92,7 +92,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
       args: ListGovClaimsArgs,
     ): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
+      const anchor = decodeCursor(args.cursor, true)
 
       // The pending queue is status='pending'; the facet narrows further (a non-"all"/"pending" facet
       // yields nothing, which is correct for the pending-only queue).

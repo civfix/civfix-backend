@@ -144,7 +144,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
 
     async list(query: InboxListQuery): Promise<InboxListResponse> {
       const limit = clampLimit(query.limit)
-      const anchor = decodeCursor(query.cursor)
+      const anchor = decodeCursor(query.cursor, true)
       const cursorFilter =
         anchor !== null
           ? sql`AND (received_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`

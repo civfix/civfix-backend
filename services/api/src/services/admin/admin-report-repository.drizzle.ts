@@ -163,7 +163,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       args: ListReportsArgs,
     ): Promise<{ records: AdminReportRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
+      const anchor = decodeCursor(args.cursor, true)
 
       const conds: SqlFragment[] = []
       // A design bucket maps to a SET of civfix statuses (e.g. Submitted = submitted|held|published), so

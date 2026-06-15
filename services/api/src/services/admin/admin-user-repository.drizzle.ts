@@ -425,7 +425,9 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
 // ---------------------------------------------------------------------------
 
 const clampKeyset = clampLimit
-const decodeKeyset = decodeCursor
+// All admin-user keysets cast ${anchor.id}::uuid (users + the report/event/message sub-lists), so opt
+// into UUID validation: a malformed cursor degrades to the first page instead of a 22P02 -> 500.
+const decodeKeyset = (cursor: string | null | undefined): CursorAnchor | null => decodeCursor(cursor, true)
 const encodeKeyset = encodeCursor
 
 /** Split a `limit + 1` row set into { records, nextCursor }, deriving the keyset anchor via `pick`. */
