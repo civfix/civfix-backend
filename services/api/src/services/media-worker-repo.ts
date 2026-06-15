@@ -16,7 +16,7 @@
  * (MAX_VIDEO_BYTES is 50 MB), so reading/writing it as a number is safe and matches the schema.
  */
 
-import { and, eq, isNull, lt, sql } from "drizzle-orm"
+import { and, eq, isNull, lt, ne, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import { abuseFlags } from "../db/schema/moderation.js"
 import { moderationItems } from "../db/schema/moderation_items.js"
@@ -85,6 +85,13 @@ export interface MediaWorkerRepo {
   findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]>
   /** Delete a media_assets row by id. Idempotent (deleting a missing id is a no-op). */
   deleteById(id: string): Promise<void>
+  /**
+   * True if ANY OTHER media_assets row references this exact r2_key. r2_key is content-addressed
+   * (uploads/yyyy/mm/<sha256>), so identical bytes dedupe to one physical object shared by many rows.
+   * The orphan sweep MUST consult this before deleting R2 objects: deleting the object for one orphan
+   * would otherwise destroy media still referenced by a committed report (or another pending row).
+   */
+  r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean>
   /**
    * Phase 2 MODERATION PRODUCER HOOK (optional). Enqueue a moderation_items row for a report whose media
    * the worker just HELD (NSFW score over threshold, or a near-duplicate cluster). The kind is "image"
@@ -193,6 +200,15 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
 
     async deleteById(id: string): Promise<void> {
       await db.delete(mediaAssets).where(eq(mediaAssets.id, id))
+    },
+
+    async r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean> {
+      const rows = await db
+        .select({ id: mediaAssets.id })
+        .from(mediaAssets)
+        .where(and(eq(mediaAssets.r2Key, r2Key), ne(mediaAssets.id, id)))
+        .limit(1)
+      return rows.length > 0
     },
 
     async enqueueHeldModerationItem(input: {
@@ -324,4 +340,4 @@ export { MEDIA_CHECKS_JOB } from "./media-intake-service.js"
 export type { MediaChecksJob } from "./media-intake-service.js"
 
 /** Re-export so the worker can build the structural where-clause helpers if it ever needs them. */
-export { and, eq, isNull, lt, sql }
+export { and, eq, isNull, lt, ne, sql }

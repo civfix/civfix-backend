@@ -42,6 +42,15 @@ export async function remuxStripMetadata(bytes: Uint8Array, limits: WorkerLimits
       "-loglevel",
       "error",
       "-nostdin",
+      // SECURITY: restrict input protocols to "file" (no http/tcp/rtmp/concat:/data) so a crafted body
+      // cannot make ffmpeg fetch remote URLs (SSRF). Additionally FORCE the input demuxer to the mov/mp4
+      // family (the only containers intake accepts and ffprobe has already confirmed) so an attacker body
+      // that is really an HLS playlist / ffconcat list cannot select a demuxer that reads arbitrary local
+      // files (file:) into the served output. Both options MUST precede -i to apply to the input.
+      "-protocol_whitelist",
+      "file",
+      "-f",
+      "mov",
       "-i",
       scratch.inputPath,
       // Drop ALL metadata (global + per-stream) and chapters: this is what removes GPS/location.
@@ -95,6 +104,12 @@ export async function grabFrameJpeg(
       "-loglevel",
       "error",
       "-nostdin",
+      // SECURITY: same input hardening as remux — restrict protocols to "file" (no SSRF) and force the
+      // mov/mp4 demuxer so a crafted HLS/ffconcat body cannot read arbitrary local files into the frame.
+      "-protocol_whitelist",
+      "file",
+      "-f",
+      "mov",
       // Input-side seek (fast) to the requested time.
       "-ss",
       seek,

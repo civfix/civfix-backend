@@ -81,6 +81,11 @@ export async function probeBytes(bytes: Uint8Array, limits: WorkerLimits): Promi
       "10000000", // 10s of stream time
       "-probesize",
       "10000000", // 10 MB
+      // SECURITY: restrict input protocols to "file" so a crafted body (e.g. an HLS playlist) cannot make
+      // ffprobe open remote URLs (SSRF / existence+timing oracle). Must precede the positional input path.
+      // (ffprobe must auto-detect the container, so we cannot force -f here; remux/thumbnail do force it.)
+      "-protocol_whitelist",
+      "file",
       scratch.inputPath,
     ]
     const res = await runTool("ffprobe", ffprobeBinary(), args, {

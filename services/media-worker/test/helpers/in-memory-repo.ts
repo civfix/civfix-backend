@@ -122,6 +122,13 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     return Promise.resolve()
   }
 
+  r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean> {
+    for (const row of this.byId.values()) {
+      if (row.id !== id && row.r2Key === r2Key) return Promise.resolve(true)
+    }
+    return Promise.resolve(false)
+  }
+
   enqueueHeldModerationItem(input: {
     reportId: string
     reason: string

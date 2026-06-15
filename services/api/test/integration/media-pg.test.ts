@@ -4,7 +4,8 @@
  * FakeStorage/FakeJobs seams, then exercises the intake flow end-to-end through app.inject:
  *
  *   create   -> a media_assets row exists (status validating, report_id null, content-addressed key).
- *   finalize -> status READY (moderation job decommissioned: nothing enqueued), servable immediately.
+ *   finalize -> status stays VALIDATING and a media.checks worker job is enqueued (the worker strips
+ *               EXIF/GPS + runs moderation, then promotes the row to ready).
  *   getMedia -> a ready row renders a MediaDTO with a url; a validating row 404s on the public path.
  *
  * When Docker is unavailable the whole describe block SKIPS (describe.skipIf) so the local suite stays
@@ -66,7 +67,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(Number(rows[0]!.byte_size)).toBe(1024)
   })
 
-  it("finalize sets status ready and enqueues NO moderation job", async () => {
+  it("finalize sets status validating and enqueues the media.checks worker job", async () => {
     const createRes = await app.inject({
       method: "POST",
       url: "/v1/media/upload",
@@ -82,22 +83,21 @@ describe.skipIf(!pg)("media routes (integration)", () => {
 
     const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
     expect(finRes.statusCode).toBe(200)
-    // `status` in the response is a vestigial contract literal ("validating") clients ignore; the
-    // authoritative status is the media_assets row, now READY (servable immediately to everyone).
     expect(finRes.json().status).toBe("validating")
     expect(finRes.json().mediaId).toBe(row!.id)
 
+    // The row stays VALIDATING until the worker strips EXIF/GPS + moderates, then promotes it to ready.
     const [after] = await h.sql<{ status: string }[]>`
       SELECT status FROM media_assets WHERE upload_id = ${uploadId}
     `
-    expect(after!.status).toBe("ready")
+    expect(after!.status).toBe("validating")
 
-    // The async media.checks moderation/processing job is decommissioned: finalize enqueues nothing.
+    // finalize enqueues exactly one media.checks job for this upload (deduped by uploadId singletonKey).
     const checks = jobs.jobsFor(MEDIA_CHECKS_JOB).filter((j) => {
       const d = j.data as { uploadId?: string }
       return d.uploadId === uploadId
     })
-    expect(checks).toHaveLength(0)
+    expect(checks).toHaveLength(1)
   })
 
   it("getMedia returns a ready row and 404s a validating row", async () => {
