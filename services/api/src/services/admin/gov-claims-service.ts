@@ -96,6 +96,8 @@ export interface ProvisionedUser {
   id: string
   email: string | null
   role: string
+  /** Whether the account's owner has proven control of `email` (e.g. via Email-OTP / verified OAuth). */
+  emailVerified: boolean
 }
 
 export interface UserProvisioner {
@@ -290,7 +292,20 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       // Find-or-create the user first (no privilege implication - this neither elevates nor is the grant),
       // then persist the claim transition + user<->jurisdiction link + audit (repo.approve, one tx).
       let user = await deps.users.findByEmail(email)
-      if (!user) {
+      if (user) {
+        // SECURITY (privilege escalation): a claim's contact_email is unverified free text typed into the
+        // form. Granting gov_admin to a PRE-EXISTING account whose email is not verified would let an
+        // operator (or a duped/compromised operator) elevate an ARBITRARY victim account by entering its
+        // address. Only elevate a pre-existing account whose owner has demonstrably controlled the address.
+        if (!user.emailVerified) {
+          throw AppError.validation(
+            { contactEmail: "unverified" },
+            "Cannot elevate an existing account whose email is not verified",
+          )
+        }
+      } else {
+        // No account yet: create a placeholder with an UNverified email. It has no sessions and only
+        // becomes usable when the real owner signs in via Email-OTP, which proves control of the address.
         user = await deps.users.create(email, claim.name)
       }
 

@@ -491,9 +491,13 @@ function parseMyReportsCursor(cursor: string | null): { createdAt: Date; id: str
   const iso = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
   const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || id.length === 0) return null
+  // id is cast `${anchor.id}::uuid` downstream; reject a non-UUID (would 22P02 -> 500), degrade to start.
+  if (Number.isNaN(at.getTime()) || !CURSOR_UUID_RE.test(id)) return null
   return { createdAt: at, id }
 }
+
+/** Canonical UUID shape, validated before a cursor id reaches a `::uuid` cast. */
+const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** True when a non-deleted report with this id exists. */
 async function reportExists(sql: Sql, reportId: string): Promise<boolean> {

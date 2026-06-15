@@ -14,6 +14,7 @@
 
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor, type CursorAnchor } from "./pagination.js"
+import { likeContains } from "./like.js"
 import type {
   InboundEmailDTO,
   InboundEmailListItemDTO,
@@ -143,7 +144,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
 
     async list(query: InboxListQuery): Promise<InboxListResponse> {
       const limit = clampLimit(query.limit)
-      const anchor = decodeCursor(query.cursor)
+      const anchor = decodeCursor(query.cursor, true)
       const cursorFilter =
         anchor !== null
           ? sql`AND (received_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
@@ -161,8 +162,8 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
       const qFilter =
         query.q !== undefined && query.q.trim().length > 0
           ? (() => {
-              const like = `%${query.q.trim()}%`
-              return sql`AND (from_addr ILIKE ${like} OR subject ILIKE ${like} OR recipient ILIKE ${like})`
+              const like = likeContains(query.q.trim())
+              return sql`AND (from_addr ILIKE ${like} ESCAPE '\\' OR subject ILIKE ${like} ESCAPE '\\' OR recipient ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
       const rows = await sql<InboundRowSelect[]>`

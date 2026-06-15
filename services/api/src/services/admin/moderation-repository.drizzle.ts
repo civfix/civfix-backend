@@ -34,6 +34,7 @@ import type { ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
 import { decodeCursor, clampLimit } from "./pagination.js"
+import { likeContains } from "./like.js"
 import {
   type CreateModerationItemInput,
   type ListModerationArgs,
@@ -211,7 +212,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       args: ListModerationArgs,
     ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
+      const anchor = decodeCursor(args.cursor, true)
 
       // Facet: a kind narrows kind; "high" narrows priority; "all" no extra filter.
       const facet =
@@ -222,11 +223,14 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             : sql``
       const search =
         args.q !== null
-          ? sql`AND (
-              COALESCE(flag, '') ILIKE ${"%" + args.q + "%"}
-              OR COALESCE(meta->>'reporter', '') ILIKE ${"%" + args.q + "%"}
-              OR COALESCE(reason, '') ILIKE ${"%" + args.q + "%"}
+          ? (() => {
+              const like = likeContains(args.q)
+              return sql`AND (
+              COALESCE(flag, '') ILIKE ${like} ESCAPE '\\'
+              OR COALESCE(meta->>'reporter', '') ILIKE ${like} ESCAPE '\\'
+              OR COALESCE(reason, '') ILIKE ${like} ESCAPE '\\'
             )`
+            })()
           : sql``
       // Keyset over (created_at DESC, id DESC): rows strictly before the anchor.
       const keyset = anchor

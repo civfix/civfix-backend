@@ -123,7 +123,7 @@ describe("createUpload", () => {
 })
 
 describe("finalize", () => {
-  it("marks the media READY immediately and enqueues NO media.checks job (moderation decommissioned)", async () => {
+  it("marks the media VALIDATING and enqueues the media.checks job (EXIF/GPS strip + NSFW/dedupe)", async () => {
     const { storage, jobs, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
 
@@ -134,18 +134,23 @@ describe("finalize", () => {
     const fin = await service.finalize({ uploadId: created.uploadId }, {})
     expect(fin.mediaId).toBe(asset.id)
 
-    // The media row is now READY -> servable to EVERYONE on GET /reports/:id with no worker step to wait
-    // on. (The FinalizeMediaResponse.status literal stays "validating" for contract compat; it is a
-    // vestigial field clients ignore -- the authoritative status is the row, asserted here.)
+    // The row stays VALIDATING (NOT yet public): serving the raw upload would leak the camera's EXIF/GPS.
+    // The worker promotes it to "ready" only after stripping metadata + running the abuse seams.
     const finalized = await row(created.uploadId)
-    expect(finalized.status).toBe("ready")
+    expect(finalized.status).toBe("validating")
 
-    // The async media.checks moderation/processing job is decommissioned: finalize enqueues nothing.
-    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
-    expect(jobs.enqueued).toHaveLength(0)
+    // Exactly one media.checks job is enqueued, carrying the handles the worker needs, deduped by uploadId.
+    const enqueued = jobs.jobsFor(MEDIA_CHECKS_JOB)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]?.data).toMatchObject({
+      uploadId: created.uploadId,
+      r2Key: asset.r2Key,
+      kind: "image",
+    })
+    expect(enqueued[0]?.opts?.singletonKey).toBe(created.uploadId)
   })
 
-  it("is idempotent: a double finalize keeps the media ready and still enqueues nothing", async () => {
+  it("is idempotent: a double finalize keeps the media validating and dedupes the checks job by uploadId", async () => {
     const { storage, jobs, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
     const asset = await row(created.uploadId)
@@ -154,8 +159,9 @@ describe("finalize", () => {
     await service.finalize({ uploadId: created.uploadId }, {})
     await service.finalize({ uploadId: created.uploadId }, {})
 
-    expect((await row(created.uploadId)).status).toBe("ready")
-    expect(jobs.enqueued).toHaveLength(0)
+    expect((await row(created.uploadId)).status).toBe("validating")
+    // singletonKey=uploadId dedupes in production (pg-boss); assert the checks job was enqueued.
+    expect(jobs.jobsFor(MEDIA_CHECKS_JOB).length).toBeGreaterThanOrEqual(1)
   })
 
   it("rejects finalize for an unknown uploadId (404) without enqueueing", async () => {

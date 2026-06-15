@@ -52,6 +52,7 @@ import type { ChatService, ChatConnection, UserChannel } from "@civfix/shared/in
 import type { SessionService } from "../auth/session-service.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import { presentedSessionToken, SESSION_COOKIE } from "../auth/transport.js"
+import { isProd } from "../env.js"
 import { randomUUID } from "node:crypto"
 
 /** Heartbeat interval (ms): ping idle sockets so dead connections are detected and reaped. */
@@ -86,8 +87,10 @@ export function isAllowedWsOrigin(
   webOrigins: readonly string[],
   hasSessionCookie = false,
 ): boolean {
-  // Dev-only: an empty allowlist disables the gate entirely (mirrors CORS).
-  if (webOrigins.length === 0) return true
+  // An empty allowlist disables the anti-CSWSH gate, so allow it ONLY outside production (dev convenience),
+  // matching the CORS plugin's fail-closed-in-prod behavior. In prod env.ts already requires WEB_ORIGINS
+  // to be non-empty at boot, so this is belt-and-suspenders against a regression that empties it.
+  if (webOrigins.length === 0) return !isProd()
   if (origin === undefined || origin === "") {
     // Allow a missing Origin ONLY for the cookie-less (bearer/native) path; the cookie path must carry
     // an allowlisted Origin so the gate is a real second factor against CSWSH.

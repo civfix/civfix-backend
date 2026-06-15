@@ -163,12 +163,20 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
 export class InMemoryUserProvisioner implements UserProvisioner {
   readonly users = new Map<string, ProvisionedUser>()
 
-  /** Seed an existing user (e.g. to test the find branch of approve). */
-  seedUser(input: { id?: string; email: string; role?: string }): ProvisionedUser {
+  /** Seed an existing user (e.g. to test the find branch of approve). Defaults to a VERIFIED email so the
+   * common "approve an existing account" test still elevates; pass emailVerified:false to exercise the
+   * unverified-rejection guard. */
+  seedUser(input: {
+    id?: string
+    email: string
+    role?: string
+    emailVerified?: boolean
+  }): ProvisionedUser {
     const user: ProvisionedUser = {
       id: input.id ?? randomUUID(),
       email: input.email.toLowerCase(),
       role: input.role ?? "citizen",
+      emailVerified: input.emailVerified ?? true,
     }
     this.users.set(user.id, user)
     return user
@@ -183,7 +191,12 @@ export class InMemoryUserProvisioner implements UserProvisioner {
   }
 
   async create(email: string, _displayName: string): Promise<ProvisionedUser> {
-    const user: ProvisionedUser = { id: randomUUID(), email: email.toLowerCase(), role: "citizen" }
+    const user: ProvisionedUser = {
+      id: randomUUID(),
+      email: email.toLowerCase(),
+      role: "citizen",
+      emailVerified: false,
+    }
     this.users.set(user.id, user)
     return { ...user }
   }

@@ -23,6 +23,15 @@ export interface CursorAnchor {
   id: string
 }
 
+/**
+ * Canonical UUID shape. Repos that interpolate the decoded id into `${anchor.id}::uuid` opt into this
+ * validation (requireUuidId=true) so a malformed id degrades to "from the start" (null) instead of
+ * raising a Postgres 22P02 cast error -> unhandled 500. Repos keyed on a NON-uuid id (geoid: discovery,
+ * jurisdiction-contacts) and the in-memory test fakes use the default (no uuid check) — forcing it on
+ * them would wrongly reject every valid geoid/test cursor and break pagination.
+ */
+const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** Encode a keyset anchor into the opaque "<iso>|<id>" cursor string. */
 export function encodeCursor(anchor: CursorAnchor): string {
   return `${anchor.createdAt.toISOString()}|${anchor.id}`
@@ -33,7 +42,10 @@ export function encodeCursor(anchor: CursorAnchor): string {
  * cursor (no "|id") is tolerated by anchoring at the maximum uuid for that instant, mirroring the Phase
  * 1 fallback so an older client cursor degrades to created_at-only paging rather than erroring.
  */
-export function decodeCursor(cursor: string | null | undefined): CursorAnchor | null {
+export function decodeCursor(
+  cursor: string | null | undefined,
+  requireUuidId = false,
+): CursorAnchor | null {
   if (cursor === null || cursor === undefined || cursor === "") return null
   const idx = cursor.indexOf("|")
   if (idx < 0) {
@@ -45,6 +57,9 @@ export function decodeCursor(cursor: string | null | undefined): CursorAnchor | 
   const id = cursor.slice(idx + 1)
   const at = new Date(iso)
   if (Number.isNaN(at.getTime()) || id.length === 0) return null
+  // Repos that cast `${id}::uuid` pass requireUuidId=true so a non-UUID id degrades to "from the start"
+  // (null) rather than raising a Postgres 22P02 -> 500. Non-uuid-keyed repos (geoid) leave it false.
+  if (requireUuidId && !CURSOR_UUID_RE.test(id)) return null
   return { createdAt: at, id }
 }
 

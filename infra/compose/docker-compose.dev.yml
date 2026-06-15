@@ -30,8 +30,11 @@ services:
       POSTGRES_USER: civfix
       POSTGRES_PASSWORD: civfix
       POSTGRES_DB: civfix
+    # SECURITY: bind to loopback only (mirrors the api port above) so the dev datastore is not reachable
+    # off the dev box — a 0.0.0.0 bind with the well-known civfix/civfix creds exposes it to the LAN / a
+    # routable cloud-VM IP. localhost (127.0.0.1) still satisfies the documented DATABASE_URL.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg-dev-data:/var/lib/postgresql/data
     healthcheck:
@@ -41,11 +44,17 @@ services:
       retries: 5
 
   redis:
-    image: redis:7
+    image: redis:7.4.9
     restart: unless-stopped
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    # SECURITY: loopback-only bind (dev datastore must not be exposed off the box). Dev redis stays
+    # passwordless for STANDALONE local dev (the documented `up -d` + REDIS_URL=redis://localhost:6379).
+    # CAVEAT: layering this file on docker-compose.yml (`-f docker-compose.yml -f docker-compose.dev.yml`)
+    # makes THIS passwordless command win over the prod redis's --requirepass, so the layered stack runs an
+    # UNAUTHENTICATED redis. Do NOT use the layered combo to validate the prod auth setup — to exercise
+    # prod redis auth, run the prod compose alone with REDIS_PASSWORD set (and the matching REDIS_URL).
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
 volumes:
   pg-dev-data:

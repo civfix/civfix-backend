@@ -28,6 +28,7 @@
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor, type CursorAnchor } from "./pagination.js"
 import { writeAudit, type AdminAuditAction } from "./audit.js"
+import { likeContains } from "./like.js"
 import type {
   MailAttachment,
   MailDirection,
@@ -514,7 +515,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
       const limit = clampLimit(input.limit)
-      const anchor = decodeCursor(input.cursor)
+      const anchor = decodeCursor(input.cursor, true)
       // Keyset over (last_message_at DESC, id DESC) using COALESCE(last_message_at, created_at) as the
       // sort key so a brand-new thread with no message still orders by its creation time. The cursor
       // anchor's createdAt is that same coalesced key.
@@ -538,8 +539,8 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const qFilter =
         input.q !== undefined && input.q.trim().length > 0
           ? (() => {
-              const like = `%${input.q.trim()}%`
-              return sql`AND (t.org ILIKE ${like} OR t.subject ILIKE ${like} OR lm.from_addr ILIKE ${like})`
+              const like = likeContains(input.q.trim())
+              return sql`AND (t.org ILIKE ${like} ESCAPE '\\' OR t.subject ILIKE ${like} ESCAPE '\\' OR lm.from_addr ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
       // Correlate each thread to its latest message via a LATERAL subquery (one row per thread).

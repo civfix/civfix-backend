@@ -105,7 +105,7 @@ describe("POST /media/upload", () => {
 })
 
 describe("POST /media/:uploadId/finalize", () => {
-  it("finalizes after upload: marks the media ready and enqueues NO moderation job", async () => {
+  it("finalizes after upload: marks the media validating and enqueues the media.checks worker job", async () => {
     const { app, repo, storage, jobs } = await makeHarness()
 
     const createRes = await app.inject({
@@ -121,14 +121,15 @@ describe("POST /media/:uploadId/finalize", () => {
     const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
     expect(finRes.statusCode).toBe(200)
     const fin = finRes.json()
-    // `status` in the response is a vestigial contract literal ("validating") that clients ignore; the
-    // authoritative status is the media row, which is now READY (servable immediately).
     expect(fin.status).toBe("validating")
     expect(fin.mediaId).toBe(row!.id)
-    expect((await repo.findByUploadId(uploadId))!.status).toBe("ready")
+    // The row stays VALIDATING until the worker strips EXIF/GPS + runs moderation, then promotes to ready.
+    expect((await repo.findByUploadId(uploadId))!.status).toBe("validating")
 
-    // The async media.checks moderation job is decommissioned: finalize enqueues nothing.
-    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
+    // finalize enqueues exactly one media.checks job (deduped by uploadId) for the worker to process.
+    const enqueued = jobs.jobsFor(MEDIA_CHECKS_JOB)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]?.data).toMatchObject({ uploadId })
   })
 
   it("404s when finalizing an unknown uploadId", async () => {

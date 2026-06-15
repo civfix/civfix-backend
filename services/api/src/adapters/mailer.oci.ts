@@ -62,6 +62,10 @@ export class OciMailer implements Mailer {
         port: this.config.port,
         // OCI Email Delivery uses STARTTLS on 587; `secure` is true only for implicit TLS (465).
         secure: this.config.port === 465,
+        // SECURITY: on the STARTTLS (587) path, REQUIRE the TLS upgrade. Without this, a STARTTLS-stripping
+        // MITM on the VPS->OCI egress could downgrade the connection and read credentials + OTP codes in
+        // cleartext. requireTLS makes the send FAIL rather than transmit unencrypted. (No-op for 465.)
+        requireTLS: true,
         auth: { user: this.config.user, pass: this.config.pass },
       })
     }

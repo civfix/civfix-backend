@@ -36,6 +36,14 @@ export const INBOUND_PENDING_KEY_RE = /^inbound\/pending\/[^/]+\.eml$/
 /** Max attachment size streamed into R2; larger is preserved by reference (flagged), not buffered. */
 export const INBOUND_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
+/**
+ * Hard cap on the raw .eml bytes that may reach the in-process mailparser. Slightly above Cloudflare
+ * Email Routing's 25 MiB platform limit (to allow header/encoding overhead) so a legitimate message is
+ * never rejected, while a crafted oversized object cannot exhaust API memory in simpleParser. An object
+ * over this cap is parked in inbound/failed/ (poison-message convention) rather than parsed.
+ */
+export const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
+
 export type ProcessOutcome = "threaded" | "inbox" | "replay" | "skipped" | "failed"
 
 export interface ProcessResult {
@@ -68,6 +76,14 @@ export async function processInboundObject(
   if (bytes === null) {
     // Already processed + deleted by the racing path (or never written). Nothing to do.
     return { outcome: "skipped", reason: "missing" }
+  }
+
+  // SECURITY (DoS): bound the raw bytes that ever reach the in-process mailparser. A crafted oversized
+  // .eml would otherwise be fully buffered + parsed in the API process. Park it in inbound/failed/ so the
+  // sweep does not loop on it (same poison-message handling as a parse failure below).
+  if (bytes.byteLength > INBOUND_OBJECT_MAX_BYTES) {
+    await moveToFailed(storage, key, bytes)
+    return { outcome: "failed", reason: "too-large" }
   }
 
   let mail: ParsedMail
@@ -162,6 +178,9 @@ async function routeInbox(
     recipient,
     subject: mail.subject ?? null,
     bodyText: mail.text ?? null,
+    // SECURITY: bodyHtml is UNTRUSTED raw HTML from an external (often spoofed) sender. It is stored
+    // verbatim and MUST NOT be rendered with dangerouslySetInnerHTML in the admin reader without
+    // sanitization (DOMPurify) — prefer rendering bodyText. Treat this column as attacker-controlled.
     bodyHtml: mail.html ?? null,
     headers: mail.headers,
     attachments,
@@ -192,7 +211,12 @@ async function streamAttachments(
       continue
     }
     const objKey = `${keyPrefix}/${index}-${sanitizeFilename(filename)}`
-    await storage.put(objKey, bytes, att.contentType !== undefined ? { contentType: att.contentType } : {})
+    // SECURITY (stored XSS / drive-by): the attachment's Content-Type is attacker-controlled (it comes
+    // from external email parsed by mailparser). If we stored it verbatim, the operator inbox's presigned
+    // GET would serve e.g. text/html or image/svg+xml INLINE and execute attacker script in the operator's
+    // browser. Store every inbound attachment as application/octet-stream so the browser DOWNLOADS it
+    // (never renders it); the original filename is preserved in the DB row for the operator to see.
+    await storage.put(objKey, bytes, { contentType: "application/octet-stream" })
     attachments.push({ key: objKey, filename, size: bytes.byteLength })
   }
   return { attachments, oversize }

@@ -41,6 +41,7 @@ import type {
   ListEventsArgs,
 } from "./admin-event-service.js"
 import type { AdminEventCounts, EventStatus } from "@civfix/shared"
+import { likeContains } from "./like.js"
 
 /** A composable SQL fragment (postgres.js Fragment). */
 type SqlFragment = postgres.Fragment
@@ -65,14 +66,15 @@ function flaggedEventExpr(sql: Queryable): SqlFragment {
  */
 function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
-  const like = `%${q}%`
+  // SECURITY: escape LIKE metacharacters so %/_ in q match literally (wildcard injection / trigram DoS).
+  const like = likeContains(q)
   const idBranch = isUuid(q) ? sql`OR c.id = ${q}::uuid` : sql``
   return sql`AND (
-    c.title ILIKE ${like}
-    OR c.address ILIKE ${like}
+    c.title ILIKE ${like} ESCAPE '\\'
+    OR c.address ILIKE ${like} ESCAPE '\\'
     ${idBranch}
-    OR u.display_name ILIKE ${like}
-    OR (u.handle::text) ILIKE ${like}
+    OR u.display_name ILIKE ${like} ESCAPE '\\'
+    OR (u.handle::text) ILIKE ${like} ESCAPE '\\'
   )`
 }
 
@@ -188,7 +190,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       args: ListEventsArgs,
     ): Promise<{ records: AdminEventRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
+      const anchor = decodeCursor(args.cursor, true)
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {
@@ -198,7 +200,8 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       }
       if (args.flaggedOnly) conds.push(sql`AND ${flaggedEventExpr(sql)}`)
       // Search (title/address/organizer, + exact id on a uuid q) is shared with countByBucket via
-      // searchEventsFragment so the chips and the list always agree.
+      // searchEventsFragment (which escapes LIKE metachars) so the chips + list agree AND both resist
+      // wildcard injection.
       if (args.q !== null) conds.push(searchEventsFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (c.scheduled_at, c.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)

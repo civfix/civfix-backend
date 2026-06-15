@@ -16,6 +16,7 @@ import { AppError } from "@civfix/shared"
 import type { FastifyReply, FastifyRequest } from "fastify"
 import { constantTimeStringEqual, generateToken } from "./crypto.js"
 import { CSRF_COOKIE, SESSION_COOKIE, bearerToken } from "./transport.js"
+import { isProd } from "../env.js"
 
 /** Header carrying the echoed CSRF token on state-changing cookie requests. */
 export const CSRF_HEADER = "x-csrf-token"
@@ -33,7 +34,7 @@ export function setCsrfCookie(reply: FastifyReply, token: string, maxAgeSeconds:
   reply.setCookie(CSRF_COOKIE, token, {
     httpOnly: false,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: isProd(),
     path: "/",
     maxAge: maxAgeSeconds,
   })

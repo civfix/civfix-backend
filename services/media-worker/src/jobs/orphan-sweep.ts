@@ -73,10 +73,19 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
   let errors = 0
   for (const o of orphans) {
     try {
-      // Delete objects first (idempotent), then the row. If the row delete fails, the next run retries.
-      // The derived keys for one orphan are independent of each other, so fire their R2 DELETEs in
-      // parallel instead of serially — this collapses the per-row latency from 4 round-trips to 1.
-      await Promise.all(derivedKeys(o).map((key) => deps.storage.delete(key)))
+      // SECURITY: r2_key is content-addressed (uploads/yyyy/mm/<sha256>), so identical bytes dedupe to a
+      // SINGLE physical object shared by every media row with that key. All derivedKeys() are derived from
+      // r2_key, so they are equally shared. Deleting them while ANOTHER row (e.g. a committed report's
+      // media) still references the key would destroy live media — an unauthenticated attacker could
+      // upload identical bytes, never commit, and let this sweep nuke the victim's object. So delete the
+      // R2 objects ONLY when no other row references the key; otherwise drop just the orphan DB row and
+      // leave the physical object for the surviving reference(s) to reclaim once it is the last one.
+      const shared = await deps.repo.r2KeyReferencedByOthers(o.id, o.r2Key)
+      if (!shared) {
+        // The derived keys for one orphan are independent of each other, so fire their R2 DELETEs in
+        // parallel instead of serially — this collapses the per-row latency from 4 round-trips to 1.
+        await Promise.all(derivedKeys(o).map((key) => deps.storage.delete(key)))
+      }
       await deps.repo.deleteById(o.id)
       deleted++
     } catch (err) {

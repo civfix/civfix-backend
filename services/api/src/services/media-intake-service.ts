@@ -271,20 +271,31 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
-      // Mark the media READY immediately on finalize. The async `media.checks` moderation/processing job
-      // is decommissioned (no longer enqueued), so there is no "validating -> ready" step to wait on: a
-      // finalized upload is servable at once. This is what makes uploaded photos/videos appear to EVERYONE
-      // on GET /reports/:id (findMediaForReport returns `ready` media) without a running media-worker.
-      // TRADE-OFF (deliberate): the worker also did EXIF/GPS stripping + web-normalization by overwriting
-      // r2_key; with it gone, the served object is the RAW client upload (EXIF/GPS metadata is no longer
-      // stripped). HEIC is still rejected at intake (ALLOWED_IMAGE_CONTENT_TYPES) so this does not bring
-      // back blank-HEIC-on-web. Re-add an inline strip here if metadata stripping is needed again.
-      const updated = await deps.repo.setStatusByUploadId(input.uploadId, "ready")
+      // SECURITY (privacy): do NOT mark media "ready" (publicly servable) from the raw client upload.
+      // The raw object carries the camera's EXIF/GPS metadata (exact capture location), so serving it to
+      // everyone via public report pins leaks the photographer's location. Instead flip to "validating"
+      // and enqueue the worker's untrusted-byte pipeline (media.checks): it strips EXIF/GPS + chapters,
+      // runs the NSFW/abuse + perceptual-dedupe seams, and ONLY THEN promotes the row to ready/held/
+      // rejected (overwriting r2_key in place with the stripped bytes). The media-worker is a deployed
+      // compose service, so this is the intended "validating -> worker -> ready" lifecycle (see header).
+      const updated = await deps.repo.setStatusByUploadId(input.uploadId, "validating")
       const mediaId = updated?.id ?? asset.id
 
-      // The `media.checks` job is intentionally NOT enqueued anymore. The FinalizeMediaResponse.status
-      // literal ("validating") is a vestigial contract field clients ignore (the @civfix/shared API client
-      // does not validate responses); the AUTHORITATIVE status is the media row set to "ready" above.
+      // Enqueue the single checks job. singletonKey=uploadId dedupes a double-finalize (and a redundant
+      // anon-side enqueue) to one job, matching the queue's "short" policy. asset already carries r2Key +
+      // kind, so no extra read is needed. Best-effort failure handling is left to pg-boss/the caller; a
+      // never-processed row stays "validating" (not public) and is swept by the worker cron.
+      await deps.jobs.enqueue(
+        MEDIA_CHECKS_JOB,
+        {
+          mediaId,
+          uploadId: input.uploadId,
+          r2Key: asset.r2Key,
+          kind: asset.kind,
+        } satisfies MediaChecksJob,
+        { singletonKey: input.uploadId },
+      )
+
       return { mediaId, status: "validating" }
     },
 

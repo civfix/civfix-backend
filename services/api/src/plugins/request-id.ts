@@ -11,12 +11,19 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 
 /**
- * Generate a request id. Honors an inbound `x-request-id` (trusted at the edge / reverse proxy)
- * when present and reasonable, otherwise mints a UUID.
+ * Safe charset for an inbound request id we are willing to echo: alphanumerics plus a few separators.
+ * This prevents reflecting hostile bytes (CRLF / control chars / log-injection payloads) from a
+ * client-supplied x-request-id back into logs and the x-request-id response header.
+ */
+const SAFE_REQUEST_ID = /^[A-Za-z0-9._-]{1,200}$/
+
+/**
+ * Generate a request id. Honors an inbound `x-request-id` (for edge/reverse-proxy trace stitching) ONLY
+ * when it matches the safe charset; anything else (including hostile or oversized values) mints a UUID.
  */
 export function genReqId(req: { headers: Record<string, unknown> }): string {
   const header = req.headers["x-request-id"]
-  if (typeof header === "string" && header.length > 0 && header.length <= 200) {
+  if (typeof header === "string" && SAFE_REQUEST_ID.test(header)) {
     return header
   }
   return randomUUID()

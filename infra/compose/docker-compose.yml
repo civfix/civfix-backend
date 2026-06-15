@@ -160,6 +160,13 @@ services:
         condition: service_healthy
     mem_limit: 1536m
     cpus: 2.0
+    # SECURITY: defense-in-depth container hardening. The app needs no Linux capabilities and never
+    # escalates privileges, so drop everything and forbid setuid escalation.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    pids_limit: 512
     healthcheck:
       # GET /healthz is pure (no DB/Redis). Node 22 global fetch -> no curl needed in the slim image.
       test:
@@ -198,17 +205,55 @@ services:
         condition: service_healthy
     mem_limit: 2560m
     cpus: 1.5
+    # SECURITY: this is the HIGHEST-risk container — it decodes fully attacker-controlled media bytes via
+    # native code (sharp/libvips + ffmpeg). Harden it the most: drop all caps, forbid privilege escalation,
+    # make the root filesystem read-only, and give it ONLY a writable tmpfs at /tmp (where the sandbox
+    # stages bytes via mkdtemp — see sandbox/tmp.ts). pids_limit bounds a fork-bomb from a popped ffmpeg
+    # child. If a future code path needs to write outside /tmp, add an explicit named volume rather than
+    # dropping read_only.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 512
 
   redis:
-    image: redis:7
+    # SECURITY: pin a PATCHED tag (not the floating `redis:7`) so a deploy can't pull an image still
+    # vulnerable to the Lua-scripting RCE class (CVE-2025-49844 "RediShell", CVE-2024-31449,
+    # CVE-2025-46817). 7.4.9 includes the fixes and matches the currently-deployed build (no downgrade).
+    image: redis:7.4.9
     restart: unless-stopped
-    command: ["redis-server", "--maxmemory", "768mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    # SECURITY: require a password. Redis is only on the internal compose network (no host port), but an
+    # unauthenticated Redis reachable from any compromised container (e.g. a worker popped via a native
+    # media-decode bug) is a direct data + Lua-RCE pivot. The password comes from a dedicated SOPS-encrypted
+    # secret (redis.env, decrypted into ../secrets by ops/deploy.sh) so it is NOT shared with any other
+    # service's env. The api/worker REDIS_URL MUST embed the same value: redis://:<REDIS_PASSWORD>@redis:6379.
+    env_file:
+      - ../secrets/redis.env
+    # `$$` escapes Compose interpolation so the CONTAINER shell expands $REDIS_PASSWORD from the env_file
+    # (a single `$` would be substituted by Compose at parse time, from the host env, instead).
+    command:
+      [
+        "sh",
+        "-c",
+        'exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 768mb --maxmemory-policy allkeys-lru --save ""',
+      ]
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     mem_limit: 1024m
     cpus: 1.0
+    pids_limit: 256
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Authenticated ping (PING returns NOAUTH without -a once requirepass is set). `$$` so the container
+      # shell expands the password from the env_file, not Compose at parse time.
+      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
       interval: 10s
       timeout: 3s
       retries: 5

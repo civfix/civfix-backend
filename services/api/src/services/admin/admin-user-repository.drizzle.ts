@@ -33,6 +33,7 @@ import type {
   Role,
   UserStatus,
 } from "@civfix/shared"
+import { likeContains } from "./like.js"
 
 /** A composable SQL fragment (postgres.js Fragment). */
 type SqlFragment = postgres.Fragment
@@ -44,14 +45,15 @@ type SqlFragment = postgres.Fragment
  */
 function searchUsersFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
-  const like = `%${q}%`
+  // SECURITY: escape LIKE metacharacters so %/_ in q match literally (wildcard injection / trigram DoS).
+  const like = likeContains(q)
   return sql`AND (
-    u.display_name ILIKE ${like}
-    OR (u.handle::text) ILIKE ${like}
+    u.display_name ILIKE ${like} ESCAPE '\\'
+    OR (u.handle::text) ILIKE ${like} ESCAPE '\\'
     OR EXISTS (
       SELECT 1 FROM reports r2
       JOIN jurisdictions j2 ON j2.geoid = r2.jurisdiction_geoid
-      WHERE r2.reporter_user_id = u.id AND j2.name ILIKE ${like}
+      WHERE r2.reporter_user_id = u.id AND j2.name ILIKE ${like} ESCAPE '\\'
     )
   )`
 }
@@ -154,8 +156,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       }
       if (args.flaggedOnly) conds.push(sql`AND COALESCE(um.flagged, false) = true`)
       // Search by display name / handle (CITEXT cast to hit the users_handle_trgm index) / CITY (the
-      // jurisdiction name of the user's reports). Shared with countByFacet via searchUsersFragment so the
-      // chips and the list always agree.
+      // jurisdiction name of the user's reports). Shared with countByFacet via searchUsersFragment (which
+      // escapes LIKE metachars) so the chips + list agree AND both resist wildcard injection.
       if (args.q !== null) conds.push(searchUsersFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (u.created_at, u.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
@@ -423,7 +425,9 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
 // ---------------------------------------------------------------------------
 
 const clampKeyset = clampLimit
-const decodeKeyset = decodeCursor
+// All admin-user keysets cast ${anchor.id}::uuid (users + the report/event/message sub-lists), so opt
+// into UUID validation: a malformed cursor degrades to the first page instead of a 22P02 -> 500.
+const decodeKeyset = (cursor: string | null | undefined): CursorAnchor | null => decodeCursor(cursor, true)
 const encodeKeyset = encodeCursor
 
 /** Split a `limit + 1` row set into { records, nextCursor }, deriving the keyset anchor via `pick`. */
