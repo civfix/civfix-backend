@@ -25,6 +25,7 @@
     "start:migrate": "node dist/db/migrate.js",
     "start:seed": "node dist/db/seed.js",
     "start:ingest": "node dist/db/ingest-jurisdictions.js",
+    "start:backfill": "node dist/db/backfill-jurisdictions.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
@@ -32,6 +33,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
     "db:ingest": "tsx src/db/ingest-jurisdictions.ts",
+    "db:backfill": "tsx src/db/backfill-jurisdictions.ts",
+    "db:prepare-boundaries": "tsx scripts/prepare-boundaries.ts",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {

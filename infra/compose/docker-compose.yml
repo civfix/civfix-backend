@@ -9,18 +9,27 @@
 # pnpm-workspace packages that need the root manifests + lockfile + shared/ submodule in the context (see
 # each service's Dockerfile header). `docker compose build` works from this file unchanged.
 #
-# DEPLOY SEQUENCE (enforced by depends_on conditions):
+# DEPLOY SEQUENCE (enforced by depends_on conditions): migrate -> ingest -> backfill -> api.
 #   1) `migrate` runs once (node dist/db/migrate.js): applies drizzle/0000..0005 in order, idempotently,
 #      then exits 0. It reuses the API image (which carries the runner + the drizzle SQL).
-#   2) `seed` runs once AFTER migrate (node dist/db/seed.js): populates the jurisdictions table (curated
-#      dev/federal/tribal set). WITHOUT this the table is empty, the spatial resolver returns null for
-#      every pin (jurisdiction_geoid = NULL), and the admin Jurisdictions directory reads empty. It is
-#      idempotent (ON CONFLICT DO NOTHING), so re-runs are no-ops. Swap its command to
-#      `node dist/db/ingest-jurisdictions.js <file> <layer>` to load real TIGER/PAD-US boundaries instead.
-#   3) `api` starts only AFTER seed completes successfully AND redis is healthy (so a seed failure blocks
-#      the API LOUDLY rather than serving an empty-jurisdiction backend silently). `media-worker` gates on
-#      migrate only (it processes bytes, independent of jurisdiction data).
-# Re-running `docker compose up` re-runs migrate + seed; both are no-ops when already applied.
+#   2) `ingest` runs once AFTER migrate (node dist/db/ingest-jurisdictions.js <file> <layer> [prefix]):
+#      loads REAL boundary data (TIGER states/counties/places + Census AIANNH + USGS PAD-US federal) into
+#      the jurisdictions table. WITHOUT coverage the table is empty, the spatial resolver returns null for
+#      every pin (jurisdiction_geoid = NULL -> everything "Unmapped"), and the admin Jurisdictions
+#      directory reads empty. Idempotent (ON CONFLICT), so re-runs refresh geometry/name and PRESERVE
+#      operator-mapped contacts. The command below is a TEMPLATE (one example file); real deployments run
+#      one ingest per layer over volume-mounted /data/boundaries/*.geojson — see the service comment.
+#   3) `backfill` runs once AFTER ingest (node dist/db/backfill-jurisdictions.js): re-resolves
+#      reports.jurisdiction_geoid for rows that are still NULL (the existing "Unmapped" backlog).
+#      Resolution happens ONCE at write time, so reports inserted before coverage existed do NOT self-heal
+#      — this one-off sweep clears them. Idempotent (WHERE jurisdiction_geoid IS NULL). NOTE: only `reports`
+#      is backfilled; the `cleanups` table has NO jurisdiction_geoid column (adding one + a write-time
+#      resolver is Design B, out of scope here).
+#   4) `api` starts only AFTER backfill completes successfully AND redis is healthy (so an ingest/backfill
+#      failure blocks the API LOUDLY rather than serving an empty-jurisdiction backend silently).
+#      `media-worker` gates on migrate only (it processes bytes, independent of jurisdiction data).
+# Re-running `docker compose up` re-runs migrate + ingest + backfill; all three are no-ops/idempotent when
+# already applied (migrate skips applied SQL, ingest upserts by geoid, backfill only touches NULL rows).
 #
 # EXPOSURE: ONLY `caddy` is host-published (80/443). `api` and `media-worker` are reachable solely on the
 # internal compose network; Caddy proxies to the API by service name (api:8080). This keeps every API
@@ -45,12 +54,28 @@ services:
     command: ["node", "dist/db/migrate.js"]
     # Migrations target the EXTERNAL Postgres (DATABASE_URL); they do not need redis.
 
-  # One-shot jurisdiction population (runs AFTER migrate, gates api). Reuses the API image. Idempotent
-  # (ON CONFLICT DO NOTHING), so re-running `docker compose up` is a no-op. Without this the jurisdictions
-  # table is empty -> resolver returns null for every pin -> the admin Jurisdictions directory is empty.
-  # To load REAL boundaries instead of the curated seed, change the command to:
-  #   ["node", "dist/db/ingest-jurisdictions.js", "/data/boundaries.geojson", "place"]
-  seed:
+  # One-shot REAL-boundary ingest (runs AFTER migrate, gates backfill -> api). Reuses the API image.
+  # Idempotent (ON CONFLICT upsert by geoid), so re-running `docker compose up` refreshes geometry/name and
+  # PRESERVES operator-mapped contacts. Without coverage the jurisdictions table is empty -> the resolver
+  # returns null for every pin -> the admin Jurisdictions directory is empty and everything buckets as
+  # "Unmapped".
+  #
+  # The `command` below is a single-file TEMPLATE. Real deployments run ONE ingest per layer over the
+  # volume-mounted boundary GeoJSON, with the optional 3rd `geoid-prefix` arg for the non-FIPS layers:
+  #   ["node","dist/db/ingest-jurisdictions.js","/data/boundaries/states.geojson","state"]
+  #   ["node","dist/db/ingest-jurisdictions.js","/data/boundaries/counties.geojson","county"]
+  #   ["node","dist/db/ingest-jurisdictions.js","/data/boundaries/places_<SS>.geojson","place"]  # per state
+  #   ["node","dist/db/ingest-jurisdictions.js","/data/boundaries/aiannh.geojson","tribal","AIANNH-"]
+  #   ["node","dist/db/ingest-jurisdictions.js","/data/boundaries/federal.geojson","federal","PADUS-"]
+  # The AIANNH-/PADUS- prefixes keep those geoids globally unique (no PK collision with a 5-char county
+  # geoid) and make the geocoder fall back to a spatial state query instead of a bogus FIPS shortcut.
+  #
+  # The real boundary GeoJSON is LARGE and EXTERNAL (whole-US TIGER + GB-scale PAD-US); it is NOT baked
+  # into the image. Mount it from a host volume or object storage at /data/boundaries (see the runbook in
+  # documents/20-jurisdiction-mapping.md §13). To orchestrate several per-layer ingests, either run an
+  # entrypoint script that loops the files, or define one `ingest-<layer>` service per file chaining via
+  # depends_on (each restart: "no", gating the next). The single-file form here is the minimal template.
+  ingest:
     build:
       context: ../..
       dockerfile: services/api/Dockerfile
@@ -58,11 +83,51 @@ services:
     restart: "no"
     env_file:
       - ../secrets/api.env
-    command: ["node", "dist/db/seed.js"]
+    # TEMPLATE: one example layer. Replace/extend per the per-layer list above for a real deployment.
+    command: ["node", "dist/db/ingest-jurisdictions.js", "/data/boundaries/places.geojson", "place"]
     depends_on:
       migrate:
         condition: service_completed_successfully
-    # Seeding targets the EXTERNAL Postgres (DATABASE_URL); it does not need redis.
+    # Ingest targets the EXTERNAL Postgres (DATABASE_URL); it does not need redis. Mount the boundary data:
+    # volumes:
+    #   - /srv/civfix/boundaries:/data/boundaries:ro
+
+  # One-shot backfill (runs AFTER ingest, gates api). Reuses the API image. Re-resolves
+  # reports.jurisdiction_geoid for rows still NULL (the "Unmapped" backlog) using the SAME canonical layer
+  # ranking the write-time resolver uses. Resolution happens once at insert time, so reports inserted
+  # before coverage existed do NOT self-heal — this sweep clears them. Idempotent (WHERE
+  # jurisdiction_geoid IS NULL), so re-runs are no-ops. NOTE: only `reports` is backfilled; the `cleanups`
+  # table has no jurisdiction_geoid column (Design B would add one).
+  backfill:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    image: civfix/api:latest
+    restart: "no"
+    env_file:
+      - ../secrets/api.env
+    command: ["node", "dist/db/backfill-jurisdictions.js"]
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+    # Backfill targets the EXTERNAL Postgres (DATABASE_URL); it does not need redis.
+
+  # LOCAL-DEV FALLBACK (commented out). The curated 6-feature dev/federal/tribal sample seed — useful for
+  # a local stack with no real boundary GeoJSON mounted. To use it instead of the real `ingest` above:
+  # comment out the `ingest` service, uncomment this `seed`, and point the `backfill` + `api` depends_on at
+  # `seed` instead of `ingest`. It is idempotent (ON CONFLICT DO NOTHING).
+  # seed:
+  #   build:
+  #     context: ../..
+  #     dockerfile: services/api/Dockerfile
+  #   image: civfix/api:latest
+  #   restart: "no"
+  #   env_file:
+  #     - ../secrets/api.env
+  #   command: ["node", "dist/db/seed.js"]
+  #   depends_on:
+  #     migrate:
+  #       condition: service_completed_successfully
 
   api:
     build:
@@ -90,10 +155,10 @@ services:
     expose:
       - "8080"
     depends_on:
-      # Gate on `seed` (which itself gates on `migrate`) so the API never serves an empty-jurisdiction
-      # backend: a seed failure blocks the API loudly instead of silently breaking resolution + the admin
-      # Jurisdictions directory.
-      seed:
+      # Gate on `backfill` (which chains migrate -> ingest -> backfill) so the API never serves an
+      # empty-jurisdiction backend: an ingest/backfill failure blocks the API loudly instead of silently
+      # breaking resolution + the admin Jurisdictions directory + leaving the "Unmapped" backlog unresolved.
+      backfill:
         condition: service_completed_successfully
       redis:
         condition: service_healthy

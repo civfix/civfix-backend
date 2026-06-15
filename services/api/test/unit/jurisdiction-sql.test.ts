@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { JURISDICTION_RESOLVE_SQL } from "../../src/db/sql/jurisdiction.js"
+import { JURISDICTION_LAYER_RANK_CASE, JURISDICTION_RESOLVE_SQL } from "../../src/db/sql/jurisdiction.js"
 
 describe("JURISDICTION_RESOLVE_SQL", () => {
   const sql = JURISDICTION_RESOLVE_SQL
@@ -31,5 +31,12 @@ describe("JURISDICTION_RESOLVE_SQL", () => {
 
   it("references the jurisdictions table", () => {
     expect(sql).toContain("FROM jurisdictions")
+  })
+
+  it("embeds the shared JURISDICTION_LAYER_RANK_CASE constant so the resolver and backfill can never drift", () => {
+    // The resolver and the Phase-5 backfill CLI both interpolate this one constant; asserting the
+    // RESOLVE_SQL contains it byte-for-byte proves the refactor preserved the SQL AND that there is a
+    // single ranking source of truth.
+    expect(JURISDICTION_RESOLVE_SQL).toContain(JURISDICTION_LAYER_RANK_CASE)
   })
 })

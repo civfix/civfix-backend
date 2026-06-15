@@ -4,10 +4,35 @@
  * boundaries (and could equally load TIGER place/county/state) at scale - the curated dev set in
  * data/federal-lands.ts is just a small offline sample of what this ingests.
  *
- *   pnpm db:ingest <path/to/boundaries.geojson> [layer]
+ *   pnpm db:ingest <path/to/boundaries.geojson> [layer] [geoid-prefix]
  *
  * `layer` (default "federal") is the fallback jurisdiction layer for features whose properties do not
  * carry one; pass "tribal" for a reservations export, etc.
+ *
+ * Prefix rule (the optional third arg `geoid-prefix`)
+ * --------------------------------------------------
+ * Census TIGER geoids are FIPS-hierarchical: the leading 2 chars of a place/county/state GEOID ARE the
+ * state FIPS, which the TIGER geocoder exploits as a shortcut (uspsFromGeoid -> "City, ST" without a
+ * second spatial round-trip; see geocoder.tiger.ts:152-155). That shortcut is ONLY safe when the geoid
+ * really is a Census FIPS id. Two non-FIPS layers break it:
+ *   - AIANNH (tribal) geoids are 5 chars (AIANNHCE + comptype) and can be NUMERICALLY EQUAL to a 5-char
+ *     county GEOID — a primary-key collision on jurisdictions.geoid AND a wrong-state FIPS shortcut.
+ *   - PAD-US (federal) OBJECTIDs are arbitrary integers whose first 2 digits can be a valid-but-WRONG
+ *     state FIPS, so trusting the prefix would mislabel the state.
+ * The fix is to namespace those layers at load time: pass "AIANNH-" for an AIANNH/tribal export and
+ * "PADUS-" for a PAD-US/federal export. An alpha-prefixed geoid (a) is globally unique so it can never
+ * collide with a numeric county PK, and (b) makes uspsFromGeoid() return null, so the geocoder correctly
+ * falls back to the authoritative spatial state query instead of trusting a bogus FIPS prefix. TIGER
+ * place/county/state ingests pass NO prefix and keep their raw Census GEOID (the FIPS shortcut stays
+ * valid). Curated dev federal data already carries alpha prefixes (NPS-/USFS-/BIA-) and is NOT
+ * re-prefixed.
+ *
+ * Prefixing happens ONLY here, in normalizeFeatures — NEVER at ogr2ogr conversion time (the boundary-prep
+ * manifest keeps the raw census ids). Applying it in exactly one place makes a double-prefix impossible,
+ * and because the prefix is deterministic, re-ingesting the SAME source with the SAME prefix is idempotent
+ * via ON CONFLICT (geoid) (the geoid is byte-identical on the re-run). normalizeFeatures stays PURE: it
+ * does not trim the prefix or guard against an operator passing it twice — that is operator discipline,
+ * documented in the runbook.
  *
  * Real, public-domain sources:
  *   - NPS unit boundaries (National Parks/Monuments/etc.):
@@ -85,10 +110,19 @@ const LAYER_RANK: Record<IngestRow["layer"], number> = {
  * Normalize a GeoJSON FeatureCollection into IngestRow[]. Features missing a geoid, name, or polygon
  * geometry are dropped (their geoids are returned in `skipped` for logging). `defaultLayer` fills in
  * features whose properties carry no layer/owner type.
+ *
+ * `geoidPrefix` (optional) is the load-time geoid namespace described in the file header. When it is a
+ * non-empty string it is prepended to the geoid read from the feature's properties, BEFORE the null/skip
+ * check, so the prefixed value flows into both the skip decision and the pushed row (an AIANNH/tribal
+ * export uses "AIANNH-", a PAD-US/federal export uses "PADUS-"). An empty/undefined prefix is a no-op, so
+ * existing callers (TIGER place/county/state, curated dev data) keep their raw geoids unchanged. This
+ * function stays PURE: it does not trim the prefix or detect a double application — the CLI main() owns
+ * arg parsing/trimming, and not re-prefixing already-prefixed data is operator discipline (file header).
  */
 export function normalizeFeatures(
   fc: GeoJsonFeatureCollection,
   defaultLayer: IngestRow["layer"],
+  geoidPrefix?: string,
 ): { rows: IngestRow[]; skipped: number } {
   const rows: IngestRow[] = []
   let skipped = 0
@@ -97,18 +131,21 @@ export function normalizeFeatures(
     const isPolygon =
       geometry !== null && (geometry.type === "Polygon" || geometry.type === "MultiPolygon")
     const geoid = pickString(f.properties, ["geoid", "GEOID", "UNIT_CODE", "unit_code", "id", "OBJECTID"])
+    // Apply the load-time prefix to the picked geoid (only when both a geoid and a non-empty prefix are
+    // present). Prefixing here — the single place a geoid is computed — guarantees it happens exactly once.
+    const prefixedGeoid = geoid !== null && geoidPrefix ? geoidPrefix + geoid : geoid
     const name = pickString(f.properties, ["name", "NAME", "UNIT_NAME", "unit_name", "Unit_Name"])
     const rawLayer = pickString(f.properties, ["layer", "LAYER", "owner_type", "Own_Type"])
     const layer =
       rawLayer && rawLayer.toLowerCase() in LAYER_RANK
         ? (rawLayer.toLowerCase() as IngestRow["layer"])
         : defaultLayer
-    if (!isPolygon || geoid === null || name === null) {
+    if (!isPolygon || prefixedGeoid === null || name === null) {
       skipped += 1
       continue
     }
     rows.push({
-      geoid,
+      geoid: prefixedGeoid,
       name,
       layer,
       population: pickNumber(f.properties, ["population", "POPULATION", "POP", "pop"]),
@@ -150,8 +187,12 @@ export async function upsertJurisdiction(sql: Queryable, row: IngestRow): Promis
 async function main(): Promise<void> {
   const file = process.argv[2]
   const defaultLayer = (process.argv[3] ?? "federal") as IngestRow["layer"]
+  // Optional load-time geoid namespace (see file header "Prefix rule"): "AIANNH-" for tribal/AIANNH,
+  // "PADUS-" for PAD-US/federal, empty for TIGER place/county/state. main() owns the trimming; the pure
+  // normalizeFeatures takes the value as-is.
+  const geoidPrefix = (process.argv[4] ?? "").trim()
   if (!file) {
-    console.error("usage: tsx src/db/ingest-jurisdictions.ts <boundaries.geojson> [layer]")
+    console.error("usage: tsx src/db/ingest-jurisdictions.ts <boundaries.geojson> [layer] [geoid-prefix]")
     process.exit(2)
   }
   if (!(defaultLayer in LAYER_RANK)) {
@@ -165,7 +206,7 @@ async function main(): Promise<void> {
     console.error("ingest: input is not a GeoJSON FeatureCollection")
     process.exit(2)
   }
-  const { rows, skipped } = normalizeFeatures(fc, defaultLayer)
+  const { rows, skipped } = normalizeFeatures(fc, defaultLayer, geoidPrefix)
 
   const env = loadEnv()
   const handle = makeDb(env.DATABASE_URL, { max: 1 })

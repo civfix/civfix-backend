@@ -7,16 +7,27 @@ export default defineConfig({
   //   `migrate` init service). It applies services/api/drizzle/0000..0005 in order, idempotently.
   // db/seed.ts + db/ingest-jurisdictions.ts: the jurisdiction-population CLIs, emitted so the production
   //   image can run `node dist/db/seed.js` (curated dev/federal/tribal set) or
-  //   `node dist/db/ingest-jurisdictions.js <file> <layer>` (real TIGER/PAD-US boundaries) WITHOUT tsx.
-  //   These run AFTER migrate in the deploy sequence (compose `seed` init service); without them the
-  //   jurisdictions table stays empty, the spatial resolver returns null for every pin, and the admin
-  //   Jurisdictions directory reads empty. Both are idempotent (ON CONFLICT), so re-runs are safe.
+  //   `node dist/db/ingest-jurisdictions.js <file> <layer> [geoid-prefix]` (real TIGER/PAD-US boundaries)
+  //   WITHOUT tsx. These run AFTER migrate in the deploy sequence (compose `ingest` init service);
+  //   without them the jurisdictions table stays empty, the spatial resolver returns null for every pin,
+  //   and the admin Jurisdictions directory reads empty. Both are idempotent (ON CONFLICT), so re-runs are
+  //   safe.
+  // db/backfill-jurisdictions.ts: the Phase-5 one-off, emitted so the production image runs
+  //   `node dist/db/backfill-jurisdictions.js` (the compose `backfill` init service, AFTER ingest) WITHOUT
+  //   tsx. It re-resolves `reports.jurisdiction_geoid` for existing NULL rows (the "Unmapped" backlog),
+  //   which DO NOT self-heal because resolution happens once at write time. Idempotent
+  //   (WHERE jurisdiction_geoid IS NULL), so re-running it is safe.
+  // NOTE the boundary-prep runner (scripts/prepare-boundaries.ts) and the manifest
+  //   (src/db/boundaries/manifest.ts) are deliberately NOT entries: the runner is a GDAL-dependent ops
+  //   tool run via tsx that never executes inside the production image, and the manifest is consumed only
+  //   by that tsx runner + the vitest unit suite.
   entry: [
     "src/main.ts",
     "src/server.ts",
     "src/db/migrate.ts",
     "src/db/seed.ts",
     "src/db/ingest-jurisdictions.ts",
+    "src/db/backfill-jurisdictions.ts",
   ],
   outDir: "dist",
   format: ["esm"],
