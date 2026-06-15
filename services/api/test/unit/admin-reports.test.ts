@@ -39,7 +39,16 @@ function harness(): Harness {
     mailer,
     env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
   })
-  const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+  const svc = makeAdminReportService({
+    repo,
+    outboundMail,
+    now: () => NOW,
+    // A deterministic presigner so the media test asserts the keys are resolved into client URLs.
+    presignMedia: async (r2Key, thumbKey) => ({
+      url: `https://media.test/${r2Key}`,
+      ...(thumbKey !== null ? { thumbUrl: `https://media.test/${thumbKey}` } : {}),
+    }),
+  })
   return { repo, mailRepo, mailer, svc }
 }
 
@@ -192,7 +201,7 @@ describe("admin reports detail", () => {
         contact: "san@lacity.gov",
         routed: true,
       },
-      media: [{ id: "m1", kind: "image", url: "r2://photo.jpg", thumbUrl: "r2://thumb.jpg" }],
+      media: [{ id: "m1", kind: "image", r2Key: "r2://photo.jpg", thumbKey: "r2://thumb.jpg" }],
       timeline: [
         { status: "submitted", note: "Report submitted", who: "jane", createdAt: hoursAgo(5) },
       ],
@@ -203,7 +212,12 @@ describe("admin reports detail", () => {
     expect(detail.city.contact).toBe("san@lacity.gov")
     expect(detail.city.routed).toBe(true)
     expect(detail.media).toEqual([
-      { id: "m1", kind: "image", url: "r2://photo.jpg", thumbUrl: "r2://thumb.jpg" },
+      {
+        id: "m1",
+        kind: "image",
+        url: "https://media.test/r2://photo.jpg",
+        thumbUrl: "https://media.test/r2://thumb.jpg",
+      },
     ])
     expect(detail.timeline).toHaveLength(1)
     expect(detail.timeline[0]).toMatchObject({ what: "Report submitted", kind: "submit" })

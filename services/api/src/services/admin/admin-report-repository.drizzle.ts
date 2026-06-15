@@ -275,10 +275,10 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       return rows.map((m) => ({
         id: m.id,
         kind: m.kind,
-        // The object-store key is returned as the url; the API's media presign/CDN layer renders the real
-        // URL on the client side, matching how the citizen report DTO carries r2 keys.
-        url: m.r2_key,
-        thumbUrl: m.thumb_key,
+        // Raw object-store keys; the admin report service presigns them into client-usable URLs, exactly
+        // like the citizen report DTO's toMediaDTO does.
+        r2Key: m.r2_key,
+        thumbKey: m.thumb_key,
       }))
     },
 
