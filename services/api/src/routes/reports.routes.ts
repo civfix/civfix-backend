@@ -200,6 +200,9 @@ export async function registerReportRoutes(
           sql,
           geocoder: container.geocoder,
           jobs: container.jobs,
+          // Write-time Census fallback: on a local resolver miss, self-map via the Census Geocoder so the
+          // report gets a non-null geoid instead of "Unmapped" (fake/no-op outside production).
+          jurisdictionLookup: container.jurisdictionLookup,
         })
         const resolved = await jurisdiction.resolveForPoint(lat, lng)
         return resolved?.geoid ?? null

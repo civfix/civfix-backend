@@ -1,0 +1,46 @@
+-- =============================================================================
+-- 0015_jurisdiction_geom_nullable.sql
+-- -----------------------------------------------------------------------------
+-- Make jurisdictions.geom NULLABLE so the WRITE-TIME Census fallback can lazily
+-- upsert API-sourced jurisdiction rows that carry geoid + name + layer but have
+-- NO polygon.
+--
+-- WHY: jurisdiction resolution runs once at report/anon write time via the local
+-- PostGIS resolver (ST_Contains over jurisdictions.geom). On a LOCAL MISS the
+-- service now consults the US Census Geographies/coordinates API and, on a hit,
+-- lazily upserts the most-specific place/county/state it returns so the report
+-- self-maps with zero ops (see src/adapters/jurisdiction-lookup.census.ts +
+-- src/services/jurisdiction-service.ts, documents/20-jurisdiction-mapping.md).
+-- The Census API returns an identity (GEOID + NAME) but NOT the boundary polygon,
+-- so these rows have geom = NULL. The original 0001_core.sql declared geom
+-- NOT NULL (every row was a self-hosted boundary), which would reject the lazy
+-- upsert — this migration drops that constraint.
+--
+-- WHY THIS IS SAFE for the resolver + index:
+--   * ST_Contains(NULL, point) is NULL (never true), so a NULL-geom row can NEVER
+--     match a spatial containment test. It does not participate in resolution and
+--     does not shadow a real boundary; it is only ever fetched by its OWN geoid
+--     (the report's stored jurisdiction_geoid FK, or a future by-geoid lookup).
+--   * The GiST(geom) index from 0001_core.sql is unaffected: GiST simply does not
+--     index NULL geometries, and the resolver's ranked ORDER BY is untouched.
+--   * No data migration: every EXISTING row already has a non-NULL geom (they were
+--     inserted under the old NOT NULL constraint), so dropping NOT NULL changes no
+--     existing data — it only PERMITS future NULL-geom (API-sourced) rows.
+--
+-- TRANSACTION NOTE: the runner (src/db/migrate.ts) wraps each file in ONE
+-- transaction, so the single ALTER below commits atomically.
+--
+-- SCOPE: a one-line column constraint relaxation. No new table, index, or column.
+-- The Drizzle schema mirror (src/db/schema/jurisdictions.ts) drops `.notNull()`
+-- on the geom column to match this DDL (which remains the source of truth).
+--
+-- IDEMPOTENCY: ALTER COLUMN ... DROP NOT NULL is naturally idempotent (a re-run on
+-- an already-nullable column is a no-op); regardless, the _civfix_migrations
+-- tracking in the runner applies this file exactly once.
+--
+-- Ordering rules:
+--   * Requires 0001_core.sql, which created the jurisdictions table WITH geom
+--     declared geometry(MultiPolygon,4326) NOT NULL and the GiST(geom) index.
+-- =============================================================================
+
+ALTER TABLE jurisdictions ALTER COLUMN geom DROP NOT NULL;

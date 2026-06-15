@@ -92,6 +92,9 @@ export async function registerAnonRoutes(
           sql,
           geocoder: container.geocoder,
           jobs: container.jobs,
+          // Write-time Census fallback: the anon path also self-maps on a local miss instead of "Unmapped"
+          // (fake/no-op outside production).
+          jurisdictionLookup: container.jurisdictionLookup,
         })
         const resolved = await jurisdiction.resolveForPoint(lat, lng)
         return resolved?.geoid ?? null

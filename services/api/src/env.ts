@@ -144,6 +144,22 @@ export interface Env {
   /** Map bounds [west, south, east, north] advertised by tileinfo. Defaults to TILES_BOUNDS_DEFAULT. */
   TILES_BOUNDS: [number, number, number, number]
 
+  // ----- jurisdiction lookup (US Census Geocoder write-time fallback) [OPT] -----
+  // When the local PostGIS resolver misses, the jurisdiction service optionally queries the US Census
+  // Geographies/coordinates API, lazily upserts the most-specific place/county/state it returns, and maps
+  // the report (see src/adapters/jurisdiction-lookup.census.ts). Both vars carry defaults (NOT [BOOT]), so
+  // a deploy with no Census config still boots and falls back to today's local-only behavior in non-prod.
+  /**
+   * Base URL of the US Census Geographies/coordinates geocoder used as the write-time jurisdiction
+   * fallback. Defaults to the public endpoint. [OPT]
+   */
+  CENSUS_GEOCODER_URL: string
+  /**
+   * AbortController timeout (ms) for the Census fallback call; kept short so a slow/down API never blocks
+   * report creation (the call is best-effort and falls through to null). Defaults to 2500. [OPT]
+   */
+  CENSUS_GEOCODER_TIMEOUT_MS: number
+
   // ----- mailer (OCI SMTP): [BOOT] unless USE_FAKE_MAILER -----
   OCI_EMAIL_SMTP_HOST: string
   OCI_EMAIL_SMTP_PORT: number
@@ -405,6 +421,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     TILES_MIN_ZOOM: parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT),
     TILES_MAX_ZOOM: parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT),
     TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),
+
+    // Jurisdiction lookup (US Census Geocoder write-time fallback). Both [OPT], both default: the empty-or-
+    // default idiom for the URL, parseIntOr for the timeout (a malformed value silently degrades to 2500).
+    CENSUS_GEOCODER_URL:
+      (source.CENSUS_GEOCODER_URL ?? "").trim() ||
+      "https://geocoding.geo.census.gov/geocoder/geographies/coordinates",
+    CENSUS_GEOCODER_TIMEOUT_MS: parseIntOr(source.CENSUS_GEOCODER_TIMEOUT_MS, 2500),
 
     OCI_EMAIL_SMTP_HOST,
     OCI_EMAIL_SMTP_PORT,

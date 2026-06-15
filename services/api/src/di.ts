@@ -13,6 +13,7 @@
  *   userChannel  REAL RedisUserChannel    unless env.USE_FAKE_USER_CHANNEL -> FakeUserChannel
  *   jobs         REAL PgBossJobs          unless env.USE_FAKE_JOBS         -> FakeJobs
  *   geocoder     REAL TigerGeocoder       (no flag; falls back to fake outside production)
+ *   jurisdictionLookup REAL CensusJurisdictionLookup (no flag; falls back to fake outside production)
  *   inboundMail  REAL CfInboundMail       (no flag; falls back to fake outside production)
  *   routing      REAL HttpRoutingProvider (no flag; falls back to fake outside production)
  *
@@ -58,6 +59,11 @@ import { R2Storage } from "./adapters/storage.r2.js"
 import { OciMailer } from "./adapters/mailer.oci.js"
 import { CfInboundMail } from "./adapters/inbound-mail.cf.js"
 import { TigerGeocoder } from "./adapters/geocoder.tiger.js"
+import {
+  CensusJurisdictionLookup,
+  FakeJurisdictionLookup,
+  type JurisdictionLookup,
+} from "./adapters/jurisdiction-lookup.census.js"
 import { WsChatService } from "./adapters/chat-service.ws.js"
 import { RedisChatPubSub } from "./adapters/chat-pubsub.js"
 import { RedisUserChannel } from "./adapters/user-channel.redis.js"
@@ -89,6 +95,11 @@ export interface Container {
   readonly mailer: Mailer
   readonly inboundMail: InboundMail
   readonly geocoder: Geocoder
+  /**
+   * Write-time jurisdiction fallback (US Census Geocoder) consulted on a local PostGIS miss; best-effort.
+   * Fake (returns null) outside production, so dev/test reproduce today's local-only behavior offline.
+   */
+  readonly jurisdictionLookup: JurisdictionLookup
   readonly chatService: ChatService
   /** Per-user realtime invalidate-signal channel (notifications / thread-unread). Best-effort. */
   readonly userChannel: UserChannel
@@ -211,6 +222,18 @@ export function buildContainer(env: Env): Container {
       ? new TigerGeocoder({ getSql: () => getDb().sql })
       : new FakeGeocoder()
 
+  // ----- jurisdiction lookup (no flag; fake outside production, mirrors the geocoder seam) -----
+  // Like the geocoder this reaches the network (the US Census Geographies API) on a local resolver miss;
+  // the fake returns null so dev/test reproduce today's local-only behavior offline (no network, no DB).
+  // Holds no resources (fetch + AbortController are per-call), so it needs no close() handling below.
+  const jurisdictionLookup: JurisdictionLookup =
+    env.NODE_ENV === "production"
+      ? new CensusJurisdictionLookup({
+          baseUrl: env.CENSUS_GEOCODER_URL,
+          timeoutMs: env.CENSUS_GEOCODER_TIMEOUT_MS,
+        })
+      : new FakeJurisdictionLookup()
+
   // ----- inbound mail (no flag; fake outside production) -----
   const inboundMail: InboundMail =
     env.NODE_ENV === "production"
@@ -322,6 +345,7 @@ export function buildContainer(env: Env): Container {
     mailer,
     inboundMail,
     geocoder,
+    jurisdictionLookup,
     chatService,
     userChannel,
     pushSender,

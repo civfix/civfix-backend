@@ -8,6 +8,15 @@
  * Drizzle ORM. The follow-up "is this jurisdiction healthy?" read selects only scalar columns
  * (contact_emails, contact_updated_at), so it is safe to run through the same `sql` tag.
  *
+ * Write-time Census fallback (OPTIONAL, best-effort, dep-gated): when the local resolver MISSES and a
+ * `jurisdictionLookup` dep is present, resolveForPoint queries the US Census Geocoder, lazily UPSERTS the
+ * most-specific place/county/state it returns as a NULL-geom jurisdiction row, and maps the report to it —
+ * so the common municipal case self-maps with zero ops instead of staying "Unmapped". The lookup is best-
+ * effort (it never throws and falls through to null on any failure), the upsert is idempotent and PRESERVES
+ * operator contacts, and the new row carries no polygon (geom NULL, 0015) so it only ever resolves for its
+ * own geoid. When the dep is ABSENT, behavior is exactly today's local-only resolution (backward
+ * compatible). See src/adapters/jurisdiction-lookup.census.ts + documents/20-jurisdiction-mapping.md.
+ *
  * Discovery-enqueue idempotency: the decision is the PURE function `needsDiscovery(row, now)` so it is
  * unit-testable with no DB. When it returns true we enqueue ONE job via the Jobs seam with
  * `singletonKey = geoid`; pg-boss collapses concurrent/duplicate enqueues for the same key into a
@@ -20,6 +29,11 @@ import type { JurisdictionDTO } from "@civfix/shared"
 import type { Geocoder, Jobs } from "@civfix/shared/interfaces"
 import type { Sql } from "../db/client.js"
 import { resolveJurisdiction } from "../db/sql/jurisdiction.js"
+import { formatCityStateLabel, uspsFromGeoid } from "../adapters/geocoder.tiger.js"
+import type {
+  JurisdictionLookup,
+  JurisdictionLookupResult,
+} from "../adapters/jurisdiction-lookup.census.js"
 
 /** Job name for the jurisdiction-discovery queue. The worker fills in contact info for a geoid. */
 export const JURISDICTION_DISCOVERY_JOB = "jurisdiction.discovery"
@@ -125,6 +139,12 @@ export interface JurisdictionServiceDeps {
   geocoder: Geocoder
   /** Jobs seam used to enqueue discovery tasks idempotently. */
   jobs: Jobs
+  /**
+   * OPTIONAL write-time fallback: when the local PostGIS resolver misses, query the US Census Geocoder,
+   * lazily upsert the most-specific match, and map the report. Absent -> today's local-only behavior
+   * (backward compatible). Best-effort: the lookup never throws and a miss/failure leaves the point null.
+   */
+  jurisdictionLookup?: JurisdictionLookup
   /** Injectable clock (defaults to Date.now) so staleness is deterministic in tests. */
   now?: () => Date
 }
@@ -145,7 +165,13 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
     async resolveForPoint(lat: number, lng: number): Promise<JurisdictionDTO | null> {
       // Canonical spatial query (place -> county -> state). Note (lng, lat) order.
       const resolved = await resolveJurisdiction(deps.sql, lng, lat)
-      if (!resolved) return null
+      if (!resolved) {
+        // Local MISS. If the optional write-time Census fallback is wired, try to self-map the point;
+        // otherwise (dep absent) preserve today's exact local-only behavior and return null ("Unmapped").
+        return deps.jurisdictionLookup
+          ? await resolveViaLookup(deps.sql, deps.jurisdictionLookup, lat, lng)
+          : null
+      }
 
       // Health read: scalar columns only, keyed by the geoid we just resolved.
       const health = await loadHealth(deps.sql, resolved.geoid)
@@ -167,6 +193,78 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
       }
     },
   }
+}
+
+/**
+ * Layer -> `priority` rank for an API-sourced upsert. Matches JURISDICTION_LAYER_RANK_CASE (the resolver's
+ * ordering CASE: place 2, county 3, state 4) so a NULL-geom API row sorts identically to a self-hosted one
+ * of the same layer. The lookup ONLY ever returns place/county/state (the Census API does not expose
+ * federal/tribal ownership), so this map is exhaustive for the values that can reach here.
+ */
+const LAYER_PRIORITY: Record<JurisdictionLookupResult["layer"], number> = {
+  place: 2,
+  county: 3,
+  state: 4,
+}
+
+/**
+ * Write-time Census fallback on a LOCAL MISS: query the lookup, and on a hit lazily upsert the returned
+ * jurisdiction (NULL geom) and map the report to it. Best-effort throughout — `lookup` never throws and a
+ * miss returns null (today's "Unmapped" behavior).
+ *
+ * The returned DTO is NOT routable: a brand-new contact-less row has no routing configured yet. We do NOT
+ * enqueue discovery here — the row simply lacks contacts, which is exactly the state `needsDiscovery` flags
+ * on the NEXT resolve of this geoid; keeping the enqueue on the existing health path avoids duplicating the
+ * idempotent-enqueue logic (and a fresh self-mapped report does not need its routing resolved synchronously).
+ */
+async function resolveViaLookup(
+  sql: Sql,
+  lookup: JurisdictionLookup,
+  lat: number,
+  lng: number,
+): Promise<JurisdictionDTO | null> {
+  const hit = await lookup.lookup(lat, lng)
+  if (!hit) return null
+
+  await upsertApiSourcedJurisdiction(sql, hit)
+
+  return {
+    geoid: hit.geoid,
+    name: hit.name,
+    layer: hit.layer,
+    // "Name, ST" via the FIPS prefix of the (place/county/state) geoid; bare name when the prefix is
+    // unknown. Reuses the TIGER geocoder's pure helpers so the label format matches the local-hit path.
+    cityStateLabel: formatCityStateLabel(hit.name, uspsFromGeoid(hit.geoid)),
+    // Not routable yet: a just-created contact-less row needs discovery before it can route.
+    routable: false,
+  }
+}
+
+/**
+ * Lazily upsert an API-sourced jurisdiction (geoid + name + layer, NO polygon). Idempotent by geoid.
+ *
+ * Geometry access rule: written through the raw `sql` tag like every other jurisdiction write — even though
+ * geom is NULL here so no PostGIS function appears (a plain insert), we keep the raw tag for consistency
+ * with the house geometry rule (NEVER the Drizzle insert builder for this table).
+ *
+ * PRESERVATION on conflict (CRITICAL): the ON CONFLICT SET list updates ONLY name + layer. It deliberately
+ * does NOT touch:
+ *   - geom: an existing self-hosted polygon row keeps its boundary (a later real ingest is never clobbered
+ *     by this null-geom fallback; and re-hitting an already-API-sourced row leaves its NULL geom as-is).
+ *   - contact_emails / contact_updated_at: operator-mapped / discovered routing is never wiped.
+ *   - priority: left as the existing row's value on update (only the fresh INSERT sets it from LAYER_PRIORITY).
+ */
+async function upsertApiSourcedJurisdiction(
+  sql: Sql,
+  hit: JurisdictionLookupResult,
+): Promise<void> {
+  await sql`
+    INSERT INTO jurisdictions (geoid, name, layer, priority, geom, contact_emails)
+    VALUES (${hit.geoid}, ${hit.name}, ${hit.layer}, ${LAYER_PRIORITY[hit.layer]}, NULL, NULL)
+    ON CONFLICT (geoid) DO UPDATE SET
+      name = EXCLUDED.name,
+      layer = EXCLUDED.layer
+  `
 }
 
 /**

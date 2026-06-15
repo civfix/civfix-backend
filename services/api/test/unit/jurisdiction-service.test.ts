@@ -8,6 +8,7 @@ import {
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionHealthRow,
 } from "../../src/services/jurisdiction-service.js"
+import { FakeJurisdictionLookup } from "../../src/adapters/jurisdiction-lookup.census.js"
 
 /**
  * Unit tests for the jurisdiction service. The pure `needsDiscovery` decision is tested directly; the
@@ -35,14 +36,30 @@ interface HealthDbRow {
   has_routing_contact?: boolean
 }
 
+/** One recorded tagged-template `sql\`...\`` invocation: the static string fragments + interpolated values. */
+interface TaggedCall {
+  strings: readonly string[]
+  values: unknown[]
+}
+
 /**
  * Build a fake postgres-js tag. It is callable as a tagged template (returns the queued health rows)
  * and exposes `.unsafe` (returns the queued resolver rows). Enough to drive the service offline.
+ *
+ * When `taggedCalls` is supplied, every tagged-template invocation (the health read AND the lazy
+ * API-sourced upsert) is pushed onto it, so a test can assert the upsert actually ran and inspect the
+ * values it interpolated.
  */
-function makeFakeSql(opts: { resolveRows: ResolvedRow[]; healthRows?: HealthDbRow[] }): Sql {
-  // Tagged-template invocation answers the scalar health read.
-  const fn = (_strings: TemplateStringsArray, ..._values: unknown[]) =>
-    Promise.resolve(opts.healthRows ?? [])
+function makeFakeSql(opts: {
+  resolveRows: ResolvedRow[]
+  healthRows?: HealthDbRow[]
+  taggedCalls?: TaggedCall[]
+}): Sql {
+  // Tagged-template invocation answers the scalar health read (and records the call, incl. the upsert).
+  const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    opts.taggedCalls?.push({ strings: [...strings], values })
+    return Promise.resolve(opts.healthRows ?? [])
+  }
   // `.unsafe(text, params)` answers the canonical resolver query (resolveJurisdiction). The real Sql
   // type has a heavily-overloaded `unsafe`; we only need this one call shape, so we attach it on an
   // `any` view and cast the whole stub to Sql (test-only seam).
@@ -290,6 +307,82 @@ describe("makeJurisdictionService.resolveForPoint", () => {
     })
     const dto = await service.resolveForPoint(34.1, -118.35)
     expect(dto?.routable).toBe(false)
+  })
+})
+
+/**
+ * Write-time Census fallback: on a LOCAL MISS (resolveRows: []), when the optional `jurisdictionLookup`
+ * dep is present the service consults the lookup, lazily upserts the hit, and maps the report. Absence of
+ * the dep is the backward-compatible local-only path (returns null).
+ */
+describe("resolveForPoint write-time Census fallback", () => {
+  it("local miss + lookup HIT -> upserts the API row and returns its DTO (routable:false)", async () => {
+    const taggedCalls: TaggedCall[] = []
+    const sql = makeFakeSql({ resolveRows: [], taggedCalls })
+    const lookup = new FakeJurisdictionLookup({
+      geoid: "0644000",
+      name: "Los Angeles",
+      layer: "place",
+    })
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs: new FakeJobs(),
+      jurisdictionLookup: lookup,
+      now: () => NOW,
+    })
+
+    const dto = await service.resolveForPoint(34.05, -118.25)
+
+    expect(dto).not.toBeNull()
+    expect(dto?.geoid).toBe("0644000")
+    expect(dto?.layer).toBe("place")
+    // cityStateLabel derived via uspsFromGeoid (FIPS prefix "06" -> "CA").
+    expect(dto?.cityStateLabel).toBe("Los Angeles, CA")
+    // A brand-new contact-less row is never routable yet.
+    expect(dto?.routable).toBe(false)
+
+    // The lazy upsert ran: exactly one tagged-template call (the INSERT ... ON CONFLICT), and it carries
+    // the geoid/name/layer/priority the lookup returned. (The health read is skipped on this path.)
+    expect(taggedCalls).toHaveLength(1)
+    const upsert = taggedCalls[0]!
+    expect(upsert.strings.join("")).toContain("INSERT INTO jurisdictions")
+    expect(upsert.strings.join("")).toContain("ON CONFLICT (geoid) DO UPDATE SET")
+    // VALUES (${geoid}, ${name}, ${layer}, ${priority}) — priority 2 is the 'place' rank.
+    expect(upsert.values).toEqual(["0644000", "Los Angeles", "place", 2])
+  })
+
+  it("local miss + lookup MISS -> returns null and does NOT upsert", async () => {
+    const taggedCalls: TaggedCall[] = []
+    const sql = makeFakeSql({ resolveRows: [], taggedCalls })
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs: new FakeJobs(),
+      // Default fake returns null (no hit).
+      jurisdictionLookup: new FakeJurisdictionLookup(),
+      now: () => NOW,
+    })
+
+    const dto = await service.resolveForPoint(40, -100)
+    expect(dto).toBeNull()
+    expect(taggedCalls).toHaveLength(0)
+  })
+
+  it("local miss + dep ABSENT -> local-only behavior unchanged (null, no upsert)", async () => {
+    const taggedCalls: TaggedCall[] = []
+    const sql = makeFakeSql({ resolveRows: [], taggedCalls })
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs: new FakeJobs(),
+      // No jurisdictionLookup dep: today's exact behavior.
+      now: () => NOW,
+    })
+
+    const dto = await service.resolveForPoint(40, -100)
+    expect(dto).toBeNull()
+    expect(taggedCalls).toHaveLength(0)
   })
 })
 
