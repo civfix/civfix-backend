@@ -9,9 +9,12 @@
  *   schedule("orphan.sweep", cron)            reap never-attached media (section 11).
  *   schedule("chat.partition.maintenance")    create next month's chat partition (section 7/12).
  *
- * The media.checks handler NEVER throws (see media-checks.ts), so a crafted upload can never crash the
- * worker or poison the queue: it records a terminal media_assets status + abuse_flag/log/GlitchTip and
- * the job completes. Concurrency on media.checks is capped (default 2) so CPU/memory stay bounded; the
+ * The media.checks handler NEVER throws on UNTRUSTED INPUT (see media-checks.ts), so a crafted upload can
+ * never crash the worker or poison the queue: it records a terminal media_assets status + abuse_flag/log/
+ * GlitchTip and the job completes. It MAY throw on an INFRA failure (storage/DB) - that throw PROPAGATES
+ * out of the handler so pg-boss fails + RETRIES the job (bounded retryLimit/retryBackoff set on the
+ * media.checks queue in registerHandlers), recovering the media once infra is healthy instead of
+ * silently rejecting it. Concurrency on media.checks is capped (default 2) so CPU/memory stay bounded; the
  * container additionally caps CPU per the infra compose. The per-tool timeouts are enforced inside the
  * sandbox wrappers, and the OVERALL per-job wall-clock budget (limits.jobTimeoutMs) is enforced by
  * runMediaChecksJob via withJobTimeout (see jobs/media-checks.ts), so a single job cannot run unbounded.
@@ -61,6 +64,12 @@ export interface Worker {
  * status (not just ready): a rejected/held media must also trigger a re-check so the report can settle
  * (the gate keeps it held). Enqueue is best-effort + idempotent (singletonKey = reportId): a transient
  * queue error is logged, never thrown, so the media.checks job still completes.
+ *
+ * INFRA-RETRY: runMediaChecksJob may THROW on an infra failure (storage/DB) to signal a pg-boss retry.
+ * We deliberately do NOT catch that throw - it must PROPAGATE out of the handler so pg-boss fails +
+ * retries the job. Because it short-circuits the await, the hold-release hook below runs ONLY after a
+ * non-throwing (terminal) completion, so we never release/re-check a report whose media is still
+ * pending a retry.
  */
 function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandler {
   return async (job) => {
@@ -75,6 +84,8 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       })
       return
     }
+    // An infra throw here is NOT caught: it propagates out of the handler so pg-boss retries the job, and
+    // (by short-circuiting) skips the hold-release hook below.
     await runMediaChecksJob(payload, {
       repo: seams.repo,
       storage: seams.storage,
@@ -87,8 +98,9 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       report: seams.report,
     })
 
-    // Hold-release hook: find the media's report and, when it is an anon held report, enqueue a
-    // release re-check. Best-effort; failures here must not fail the (already-complete) media job.
+    // Hold-release hook (reached ONLY on a terminal, non-throwing completion above): find the media's
+    // report and, when it is an anon held report, enqueue a release re-check. Best-effort; failures here
+    // must not fail the (already-complete) media job.
     try {
       const asset =
         (await seams.repo.findById(payload.mediaId)) ??
@@ -207,10 +219,20 @@ async function registerHandlers(
   limits: WorkerLimits,
 ): Promise<void> {
   // Ensure queues exist before work/schedule (pg-boss v10 requirement; no-op on the fake).
-  await jobs.createQueue(MEDIA_CHECKS_JOB)
+  // media.checks gets a BOUNDED retry policy: its handler now THROWS on an infra failure (storage/DB) to
+  // signal a retry, and pg-boss's default retryLimit is 0 (no retry) - without this an infra throw would
+  // dead-letter the job and the media would never recover. retryLimit 5 + exponential backoff retries a
+  // transient outage a handful of times with widening gaps, then gives up (the orphan/hold-release sweeps
+  // are the last-resort backstop). Bad-input rejections do NOT throw, so they never consume a retry.
+  // policy "short" MUST match the API (which creates this same queue with "short" so its enqueue's
+  // singletonKey dedups duplicate pending jobs); omitting it here would let the worker's updateQueue
+  // rewrite the policy to "standard" on boot and silently break that dedup.
+  await jobs.createQueue(MEDIA_CHECKS_JOB, { policy: "short", retryLimit: 5, retryBackoff: true })
   await jobs.createQueue(ORPHAN_SWEEP_JOB)
   await jobs.createQueue(CHAT_PARTITION_JOB)
-  await jobs.createQueue(ANON_HOLD_RELEASE_JOB)
+  // anon.hold.release is enqueued with singletonKey = reportId (post-media hook below), so it needs
+  // policy "short" for that dedup to actually fire (pg-boss's singletonKey index is "short"-only).
+  await jobs.createQueue(ANON_HOLD_RELEASE_JOB, { policy: "short" })
   await jobs.createQueue(ANON_HOLD_RELEASE_SWEEP_JOB)
 
   // media.checks: concurrency-capped untrusted-byte pipeline. Its post-success hook enqueues

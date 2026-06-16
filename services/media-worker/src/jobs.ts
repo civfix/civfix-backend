@@ -34,12 +34,38 @@ export interface WorkSettings {
   pollingIntervalSeconds?: number
 }
 
+/**
+ * Queue-level retry policy (pg-boss v10 createQueue options). Applied to every job on the queue, so it
+ * governs how a job whose handler THROWS is retried. This is the knob that makes media.checks' infra
+ * throws (MediaInfraError) recover instead of dead-lettering: without a retryLimit the default is 0 (no
+ * retry). Set on the WORKER's createQueue (the worker owns the work side); the fake ignores it.
+ */
+export interface QueueOptions {
+  /** Max retries before a job is marked failed for good (pg-boss default 0 = no retry). */
+  retryLimit?: number
+  /** Exponential backoff between retries (pg-boss spaces them out instead of retrying immediately). */
+  retryBackoff?: boolean
+  /**
+   * pg-boss queue policy. MUST be set explicitly for any queue the worker shares with another creator or
+   * relies on singletonKey dedup for: pg-boss `updateQueue` rewrites `policy` to its default ("standard")
+   * whenever it is omitted, which would silently CLOBBER a policy a different creator set. The API creates
+   * `media.checks` with policy "short" so its `enqueue(..., { singletonKey })` dedups duplicate pending
+   * jobs (the partial-unique index only fires under "short"); the worker also creates that queue, so it
+   * must pass the SAME "short" or its boot-time updateQueue would break the dedup on boot-order-dependent
+   * deploys. The worker likewise enqueues `anon.hold.release` with a singletonKey, so that queue needs it too.
+   */
+  policy?: PgBoss.Queue["policy"]
+}
+
 /** The worker's Jobs handle: the shared Jobs surface plus worker-only lifecycle + queue helpers. */
 export interface WorkerJobs extends Jobs {
   start(): Promise<void>
   stop(): Promise<void>
-  /** Ensure a queue exists (idempotent). Required by pg-boss v10 before send/work. */
-  createQueue(name: string): Promise<void>
+  /**
+   * Ensure a queue exists (idempotent). Required by pg-boss v10 before send/work. Optional retry policy
+   * is applied to the queue (so a throwing handler retries with bounded backoff rather than failing once).
+   */
+  createQueue(name: string, options?: QueueOptions): Promise<void>
   /** Register a handler with concurrency/poll settings (worker extension over Jobs.work). */
   workWithSettings(name: string, handler: JobHandler, settings?: WorkSettings): Promise<void>
 }
@@ -50,6 +76,17 @@ function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
   if (opts?.singletonKey !== undefined) out.singletonKey = opts.singletonKey
   if (opts?.startAfter !== undefined) out.startAfter = opts.startAfter
   if (opts?.retryLimit !== undefined) out.retryLimit = opts.retryLimit
+  return out
+}
+
+/** Map the worker QueueOptions onto the pg-boss queue policy/retry fields (only set the provided ones). */
+function toQueueOptions(
+  opts?: QueueOptions,
+): Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy"> {
+  const out: Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy"> = {}
+  if (opts?.retryLimit !== undefined) out.retryLimit = opts.retryLimit
+  if (opts?.retryBackoff !== undefined) out.retryBackoff = opts.retryBackoff
+  if (opts?.policy !== undefined) out.policy = opts.policy
   return out
 }
 
@@ -84,8 +121,20 @@ export class PgBossWorkerJobs implements WorkerJobs {
     return this.boss
   }
 
-  async createQueue(name: string): Promise<void> {
-    await this.requireBoss().createQueue(name)
+  async createQueue(name: string, options?: QueueOptions): Promise<void> {
+    const boss = this.requireBoss()
+    // Build the pg-boss queue policy from the optional retry knobs. createQueue is a no-op if the queue
+    // already exists, so updateQueue is what actually brings a previously-created (e.g. retryLimit=0)
+    // queue to the right policy. Both are idempotent (mirrors the API adapter's createQueue/updateQueue).
+    const queuePolicy: PgBoss.Queue = { name, ...toQueueOptions(options) }
+    await boss.createQueue(name, queuePolicy)
+    if (
+      options?.retryLimit !== undefined ||
+      options?.retryBackoff !== undefined ||
+      options?.policy !== undefined
+    ) {
+      await boss.updateQueue(name, queuePolicy)
+    }
   }
 
   async enqueue(name: string, data: unknown, opts?: EnqueueOptions): Promise<string> {
@@ -150,7 +199,7 @@ class FakeWorkerJobs extends FakeJobs implements WorkerJobs {
   stop(): Promise<void> {
     return Promise.resolve()
   }
-  createQueue(_name: string): Promise<void> {
+  createQueue(_name: string, _options?: QueueOptions): Promise<void> {
     return Promise.resolve()
   }
   workWithSettings(name: string, handler: JobHandler, _settings?: WorkSettings): Promise<void> {

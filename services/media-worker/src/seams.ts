@@ -7,6 +7,10 @@
  * capped byte downloader, and an error reporter. Real-vs-fake mirrors the API's rules:
  *
  *   storage      REAL R2Storage        unless USE_FAKE_STORAGE      -> FakeStorage
+ *                REQUIRED-REAL IN PRODUCTION: the worker reads the API's uploaded bytes from storage, so
+ *                a fake in-memory store in prod is ALWAYS empty -> every download misses -> media is lost.
+ *                buildSeams() throws on USE_FAKE_STORAGE in production (mirrors the API's required-creds
+ *                boot enforcement). USE_FAKE_ABUSE_NSFW stays togglable (intentional pre-launch state).
  *   abuseChecks  REAL RealAbuseChecks   unless USE_FAKE_ABUSE_NSFW   -> FakeAbuseChecks
  *   db / repo    created only when NOT all-fake (a real DB is required to persist results)
  *
@@ -70,6 +74,19 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
 
   const fakeStorage = useFake(source, "USE_FAKE_STORAGE")
   const fakeAbuse = useFake(source, "USE_FAKE_ABUSE_NSFW")
+
+  // PRODUCTION GUARD (mirrors the API's required-creds boot enforcement, and the DATABASE_URL throw
+  // below): the worker fetches the API's real uploaded bytes from storage. A fake in-memory store in
+  // production is ALWAYS empty, so every download misses -> the pipeline would treat real media as an
+  // infra failure and the upload could be lost. Fail boot LOUDLY rather than silently mis-process. Note:
+  // USE_FAKE_ABUSE_NSFW is deliberately NOT guarded - running the NSFW seam fake pre-launch is intended.
+  if (source.NODE_ENV === "production" && fakeStorage) {
+    throw new Error(
+      "media-worker: USE_FAKE_STORAGE must be 0 in production - the worker reads the API's uploaded " +
+        "bytes from R2; a fake in-memory store is empty in prod and would lose media. Provide the R2 " +
+        "credentials (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET).",
+    )
+  }
 
   // Error reporting (shared GlitchTip helper). Safe no-op when GLITCHTIP_DSN is unset.
   await initErrorReporting({
