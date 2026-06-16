@@ -162,12 +162,21 @@ importers:
 
   services/media-worker:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.700.0
+        version: 3.1057.0
+      '@aws-sdk/s3-request-presigner':
+        specifier: ^3.700.0
+        version: 3.1057.0
       '@civfix/api':
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
         specifier: ^0.5.0
         version: 0.5.0
+      '@sentry/node':
+        specifier: ^8.42.0
+        version: 8.55.2
       drizzle-orm:
         specifier: ^0.36.4
         version: 0.36.4(@opentelemetry/api@1.9.1)(@types/pg@8.6.1)(pg@8.21.0)(postgres@3.4.9)
