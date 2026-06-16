@@ -303,6 +303,7 @@ describe("createReport: idempotency replay", () => {
       gov: false,
       following: false,
       media: [],
+      mediaPending: 0,
       timeline: [],
     }
     repo.idempotency.set(`report_create:${VALID_UUID}`, {
