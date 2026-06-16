@@ -218,6 +218,13 @@ export class InMemoryReportRepository implements ReportRepository {
     )
   }
 
+  countValidatingMediaForReport(reportId: string): Promise<number> {
+    // Total in-flight (`validating`) media for the report, for all viewers (mirrors the Drizzle impl);
+    // backs the DTO's `mediaPending`. `held`/`rejected` are not counted.
+    const n = this.media.filter((m) => m.reportId === reportId && m.status === "validating").length
+    return Promise.resolve(n)
+  }
+
   async findMediaForReports(
     reportIds: string[],
     ownerView = false,
