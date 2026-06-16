@@ -211,6 +211,14 @@ export interface ReportRepository {
    */
   findMediaForReport(reportId: string, ownerView?: boolean): Promise<ReportMediaView[]>
   /**
+   * Count this report's media still in flight (status `validating`), for ALL viewers. Used to populate
+   * the DTO's `mediaPending` so a viewer who does NOT receive a `validating` tile (e.g. a non-owner, who
+   * only ever sees `ready` media) can still render a "Photos are still processing…" placeholder, without
+   * the server ever serving the unprocessed bytes/URL. `held`/`rejected` are NOT counted (those are
+   * moderation outcomes, deliberately hidden — never "pending").
+   */
+  countValidatingMediaForReport(reportId: string): Promise<number>
+  /**
    * Batched form of findMediaForReport for a whole page of report ids (the list read path). Returns a map
    * from reportId -> its visible media (same per-report ordering and `ownerView` filtering as the single
    * form). Ids with no media are absent from the map. An empty input yields an empty map (no query).
@@ -437,13 +445,15 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
   /**
    * Assemble a full ReportDTO from a record + its media/timeline, presigning media URLs. `mine`/
    * `following` are computed by the caller (they depend on the viewer). `gov` is always false in Phase
-   * 1 (no gov-authored reports yet).
+   * 1 (no gov-authored reports yet). `mediaPending` (default 0) is the count of in-flight media this
+   * viewer will see only as a "processing" placeholder (validating media NOT in the returned `media[]`),
+   * so a non-owner can render the placeholder without the unprocessed bytes being served.
    */
   async function toReportDTO(
     record: ReportRecord,
     media: ReportMediaView[],
     timeline: ReportTimelineView[],
-    flags: { mine: boolean; following: boolean },
+    flags: { mine: boolean; following: boolean; mediaPending?: number },
   ): Promise<ReportDTO> {
     const mediaDTOs = await Promise.all(media.map(toMediaDTO))
     return {
@@ -466,6 +476,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       gov: false,
       following: flags.following,
       media: mediaDTOs,
+      mediaPending: flags.mediaPending ?? 0,
       timeline: timeline.map(toTimelineDTO),
     }
   }
@@ -549,14 +560,23 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.notFound("Report not found")
       }
 
-      const [media, timeline, following] = await Promise.all([
+      const [media, timeline, following, validatingCount] = await Promise.all([
         // The owner sees their own in-flight (`validating`) media too; strangers get `ready` only.
         deps.repo.findMediaForReport(record.id, mine),
         deps.repo.findTimelineForReport(record.id),
         viewerId !== null ? deps.repo.isFollowing(viewerId, record.id) : Promise.resolve(false),
+        // Total in-flight (`validating`) media for the report — independent of the viewer's filter.
+        deps.repo.countValidatingMediaForReport(record.id),
       ])
 
-      return toReportDTO(record, media, timeline, { mine, following })
+      // `mediaPending` = validating media the viewer will see ONLY as a "processing" placeholder, i.e.
+      // those NOT already in the returned media[]. For the owner, their own validating tiles ARE in media[]
+      // (ownerView), so subtract them out (no double-count); a non-owner gets the full validating count
+      // since they receive no validating tiles. Clamp to >= 0 to be defensive against any read skew.
+      const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
+      const mediaPending = Math.max(0, validatingCount - validatingShown)
+
+      return toReportDTO(record, media, timeline, { mine, following, mediaPending })
     },
 
     async listMyReports(

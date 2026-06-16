@@ -338,6 +338,18 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return media.filter((m) => m.status === "ready" || (ownerView && m.status === "validating"))
     },
 
+    async countValidatingMediaForReport(reportId: string): Promise<number> {
+      // Total in-flight (`validating`) media for the report, for ALL viewers — backs the DTO's
+      // `mediaPending`. `held`/`rejected` are deliberately excluded (moderation outcomes, never "pending").
+      // Returns just a count, never the rows, so no unprocessed key/URL is ever read into the read path.
+      const rows = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n
+        FROM media_assets
+        WHERE report_id = ${reportId} AND status = 'validating'
+      `
+      return rows[0]?.n ?? 0
+    },
+
     async findMediaForReports(
       reportIds: string[],
       ownerView = false,
