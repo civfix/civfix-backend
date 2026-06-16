@@ -101,6 +101,7 @@ async function makeHarness(): Promise<Harness> {
       gov: false,
       following: false,
       media: [],
+      mediaPending: 0,
       timeline: [],
     })
   }

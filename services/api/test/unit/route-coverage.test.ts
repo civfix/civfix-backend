@@ -107,6 +107,7 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
       gov: false,
       following: false,
       media: [],
+      mediaPending: 0,
       timeline: [],
     })
   }

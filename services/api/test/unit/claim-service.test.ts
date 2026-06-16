@@ -31,6 +31,7 @@ function stubGetReport(store: InMemoryAnonStore) {
       gov: false,
       following: false,
       media: [],
+      mediaPending: 0,
       timeline: [],
     })
   }
