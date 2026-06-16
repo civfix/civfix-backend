@@ -2,8 +2,20 @@
  * media.checks job: the sandboxed, untrusted-byte processing pipeline.
  *
  * THIS is where the Phase-1 done-criterion "a crafted upload fails safely in the worker" is enforced.
- * The contract, in one sentence: NO input may crash the worker; every outcome is a row update plus an
- * abuse_flag/log/GlitchTip report, and the job always COMPLETES.
+ * The contract, in one sentence: NO UNTRUSTED INPUT may crash the worker; every outcome of processing
+ * attacker-controlled BYTES is a row update plus an abuse_flag/log/GlitchTip report, and the job
+ * COMPLETES. INFRA failures are the deliberate exception (see the never-throw nuance below).
+ *
+ * REJECT vs RETRY (the durable fix for issue #39): the pipeline distinguishes two failure classes and
+ * MUST NOT conflate them:
+ *   - BAD INPUT (undecodable/oversize/wrong-codec bytes, DownloadTooLargeError, a wall-clock overrun on
+ *     a crafted asset) -> PERMANENT "rejected". Retrying is futile; the bytes are out of policy.
+ *   - INFRA failure (cannot even FETCH the bytes: object-not-found, HTTP 5xx, presign/network failure ->
+ *     StorageUnavailableError; or a storage WRITE/DB persist failure) -> the media is NOT rejected. The
+ *     orchestrator re-throws a typed error so the pg-boss job FAILS and RETRIES with backoff, recovering
+ *     once infra is healthy. The asset row is LEFT in its current non-terminal status (validating) so it
+ *     is never silently lost. This is what stops a mis-pointed worker (e.g. fake-storage-in-prod, the
+ *     #39 root cause) from permanently rejecting real media.
  *
  * Two layers, split for testability:
  *
@@ -16,11 +28,11 @@
  *   runMediaChecksJob(job, deps)  ORCHESTRATOR the worker registers. Loads the asset (repo), downloads
  *     the source bytes under a hard size cap (deps.download), calls processMedia, then PERSISTS:
  *     writes the stripped/remuxed object + thumbnail to NEW storage keys, applies the result to the
- *     media_assets row, raises any abuse_flag, and reports rejections to GlitchTip. It also never
- *     throws: a failure to even load/download still results in status "rejected" and a completed job.
- *     The download+process span is bounded by an OVERALL per-job wall-clock budget (limits.jobTimeoutMs)
- *     via withJobTimeout, so the documented per-job budget is actually enforced (P2-1) on top of the
- *     individual per-tool timeouts - a wall-clock overrun is a safe "rejected".
+ *     media_assets row, raises any abuse_flag, and reports rejections to GlitchTip. The download is run
+ *     FIRST and its failure is CLASSIFIED (bad-input -> rejected; infra -> re-throw to retry) BEFORE the
+ *     bytes ever reach processMedia. processMedia + the persist block run under an OVERALL per-job
+ *     wall-clock budget (limits.jobTimeoutMs) via withJobTimeout, so the documented per-job budget is
+ *     enforced (P2-1) on top of the per-tool timeouts - a wall-clock overrun is a safe "rejected".
  *
  * Status mapping:
  *   ready     - decoded/validated clean, below NSFW threshold, not a near-duplicate.
@@ -50,6 +62,7 @@ import { processImage, type ExifGps } from "../sandbox/image.js"
 import { perceptualHash } from "../sandbox/phash.js"
 import { probeBytes } from "../sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../sandbox/ffmpeg-remux.js"
+import { DownloadTooLargeError } from "../download.js"
 
 /** A flag the pipeline decided to raise (subject is the media id; source defaults to "worker"). */
 export interface PipelineFlag {
@@ -332,6 +345,24 @@ export class JobTimeoutError extends Error {
 }
 
 /**
+ * Typed error runMediaChecksJob THROWS on an INFRA failure (storage download/write or DB persist) so the
+ * pg-boss handler fails the job and pg-boss RETRIES it with backoff (see the worker's media.checks queue
+ * retryLimit/retryBackoff). It deliberately does NOT persist a "rejected" row: the media is left in its
+ * current non-terminal status (validating) so it recovers once infra is healthy, never silently lost.
+ * Throwing this does NOT violate the never-throw-on-untrusted-input contract (only attacker-controlled
+ * BYTES are covered by never-throw); an infra throw is a controlled retry signal, not a worker crash -
+ * pg-boss isolates the failed job, retries it with bounded backoff, and the queue is never poisoned.
+ */
+export class MediaInfraError extends Error {
+  constructor(phase: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    super(`media.checks infra failure (${phase}, retryable): ${detail}`)
+    this.name = "MediaInfraError"
+    Object.setPrototypeOf(this, MediaInfraError.prototype)
+  }
+}
+
+/**
  * Race a promise against the per-job wall-clock budget (P2-1). The per-tool timeouts (ffprobe/ffmpeg/
  * image) bound each step; this bounds the SUM, so a crafted asset that chains many near-budget steps
  * cannot exceed the documented jobTimeoutMs. On expiry it rejects with JobTimeoutError; the orchestrator
@@ -403,9 +434,12 @@ export function parsePayload(data: unknown): MediaChecksPayload | null {
 }
 
 /**
- * Run the full media.checks job for one payload. NEVER throws (so a single bad asset can never crash
- * the worker or poison the queue); always resolves after recording a terminal status. Returns the
- * final status for observability/tests.
+ * Run the full media.checks job for one payload. NEVER throws on UNTRUSTED INPUT: a crafted/bad asset
+ * always resolves after recording a terminal "rejected"/"held" status, so attacker bytes can never crash
+ * the worker or poison the queue. It MAY throw a MediaInfraError on an INFRA failure (storage download/
+ * write or DB persist) - that is a controlled retry signal, not a crash: the media is LEFT non-terminal
+ * (validating) and the throw makes pg-boss retry the job with backoff so the media recovers once infra
+ * is healthy (never silently rejected). Returns the final terminal status on a non-throwing completion.
  */
 export async function runMediaChecksJob(
   payload: MediaChecksPayload,
@@ -421,44 +455,81 @@ export async function runMediaChecksJob(
     asset = await deps.repo.findById(payload.mediaId)
     if (!asset) asset = await deps.repo.findByUploadId(payload.uploadId)
   } catch (err) {
-    // A DB read failure is infra, not untrusted input: report and complete (pg-boss will not retry a
-    // completed job; the orphan sweep / a re-finalize covers a truly stuck row).
-    report(err, { job: "media.checks", phase: "load", uploadId: payload.uploadId })
-    log("media.checks: failed to load asset", { uploadId: payload.uploadId, err: String(err) })
-    return "rejected"
+    // A DB read failure is INFRA, not untrusted input. Re-throw so pg-boss retries (rather than reporting
+    // a misleading terminal "rejected" for a row we never even loaded); a transient DB blip recovers on
+    // retry. A genuinely-missing row is handled by the !asset branch below (a real terminal condition).
+    report(err, { job: "media.checks", phase: "load-infra", uploadId: payload.uploadId })
+    log("media.checks: failed to load asset, will retry", {
+      uploadId: payload.uploadId,
+      err: String(err),
+    })
+    throw new MediaInfraError("load", err)
   }
   if (!asset) {
     log("media.checks: asset not found (already swept?)", { uploadId: payload.uploadId })
     return "rejected"
   }
 
-  // Download + process under the OVERALL per-job wall-clock budget (P2-1). The download is capped by
-  // size and the per-tool steps inside processMedia have their own timeouts; this bounds their SUM so a
-  // crafted asset cannot chain near-budget steps past the documented jobTimeoutMs. A download failure or
-  // a wall-clock timeout is a safe "rejected" terminal status (the job still completes; never throws out).
+  // STEP 1 - download the source bytes (size-capped, AND wall-clock bounded so a wedged/never-settling
+  // fetch can never hang the job, P2-1). CLASSIFY the failure BEFORE the bytes ever reach processMedia,
+  // because the two failure classes have opposite outcomes (see the file header):
+  //   DownloadTooLargeError    -> BAD INPUT (over the byte cap) -> permanent "rejected" (unchanged).
+  //   StorageUnavailableError  -> INFRA (object-not-found / HTTP / presign / network) -> do NOT reject.
+  //   JobTimeoutError          -> the fetch wedged past the budget; a stalled fetch is INFRA, not bad
+  //                               input, so it is treated as retryable too (NOT a permanent reject).
+  // Every infra case re-throws MediaInfraError so pg-boss retries and the asset stays non-terminal
+  // (validating) so it recovers once storage is healthy. This is the #39 fix.
+  let bytes: Uint8Array
+  try {
+    bytes = await withJobTimeout(
+      deps.download(asset.r2Key, deps.limits.maxDownloadBytes),
+      deps.limits.jobTimeoutMs,
+    )
+  } catch (err) {
+    if (err instanceof DownloadTooLargeError) {
+      await persistRejection(asset, deps, errNote("download too large", err), report)
+      return "rejected"
+    }
+    // INFRA (NOT bad input): the bytes could not be FETCHED. This covers StorageUnavailableError (the
+    // explicit infra signal: object-not-found / HTTP / presign / network), a JobTimeoutError (the fetch
+    // wedged past the budget - a stalled fetch is infra too), and any OTHER download error (conservatively
+    // treated as infra rather than silently rejecting good media; genuine bad input is already typed as
+    // DownloadTooLargeError, handled above). All infra subtypes retry, so we do not branch on them: leave
+    // the row untouched (still validating) and re-throw so pg-boss fails + retries the job.
+    report(err, { job: "media.checks", phase: "download-infra", mediaId: asset.id })
+    log("media.checks: download infra failure, will retry", {
+      mediaId: asset.id,
+      r2Key: asset.r2Key,
+      err: String(err),
+    })
+    throw new MediaInfraError("download", err)
+  }
+
+  // STEP 2 - process the bytes under the OVERALL per-job wall-clock budget (P2-1). The per-tool steps
+  // inside processMedia have their own timeouts; this bounds their SUM so a crafted asset cannot chain
+  // near-budget steps past the documented jobTimeoutMs. processMedia never throws; a wall-clock overrun
+  // (JobTimeoutError) is the only throw here, and a crafted asset that wedges processing IS bad input ->
+  // a safe "rejected" terminal status (the job still completes; no infra retry for attacker bytes).
   let result: MediaProcessResult
   try {
     result = await withJobTimeout(
-      (async () => {
-        const bytes = await deps.download(asset.r2Key, deps.limits.maxDownloadBytes)
-        // Pass the asset id (selfAssetId) so the dedupe lookup excludes this asset's own row (P0-2), and
-        // forward the self-aware lookup so processMedia uses it over the plain isNearDuplicate.
-        return processMedia(
-          { bytes, kind: asset.kind, selfAssetId: asset.id },
-          {
-            abuseChecks: deps.abuseChecks,
-            limits: deps.limits,
-            ...(deps.findPhashDuplicate ? { findPhashDuplicate: deps.findPhashDuplicate } : {}),
-          },
-        )
-      })(),
+      // Pass the asset id (selfAssetId) so the dedupe lookup excludes this asset's own row (P0-2), and
+      // forward the self-aware lookup so processMedia uses it over the plain isNearDuplicate.
+      processMedia(
+        { bytes, kind: asset.kind, selfAssetId: asset.id },
+        {
+          abuseChecks: deps.abuseChecks,
+          limits: deps.limits,
+          ...(deps.findPhashDuplicate ? { findPhashDuplicate: deps.findPhashDuplicate } : {}),
+        },
+      ),
       deps.limits.jobTimeoutMs,
     )
   } catch (err) {
     if (err instanceof JobTimeoutError) {
       report(err, { job: "media.checks", phase: "timeout", mediaId: asset.id })
     }
-    await persistRejection(asset, deps, errNote("download/process failed", err), report)
+    await persistRejection(asset, deps, errNote("process failed", err), report)
     return "rejected"
   }
 
@@ -523,11 +594,17 @@ export async function runMediaChecksJob(
       }
     }
   } catch (err) {
-    // Persisting the SUCCESS path failed (storage/DB). Fall back to a rejection so the row is terminal
-    // and consistent, and report it.
+    // Persisting the result failed (storage PUT / DB applyResult). This is INFRA, not bad input: the
+    // media is good, the write just failed (e.g. a transient R2/DB blip). Do NOT reject good media -
+    // re-throw so pg-boss retries the whole job; a re-delivery re-downloads (the source object is
+    // unchanged on a write failure), re-processes, and re-persists once storage/DB is healthy. The asset
+    // is left in its current non-terminal status (validating) until then.
     report(err, { job: "media.checks", phase: "persist", mediaId: asset.id })
-    await persistRejection(asset, deps, errNote("persist failed", err), report)
-    return "rejected"
+    log("media.checks: persist infra failure, will retry", {
+      mediaId: asset.id,
+      err: String(err),
+    })
+    throw new MediaInfraError("persist", err)
   }
 
   if (result.status === "rejected") {

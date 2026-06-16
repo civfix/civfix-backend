@@ -13,13 +13,15 @@ import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { RealAbuseChecks } from "@civfix/api/adapters/abuse-checks"
 import exifr from "exifr"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
-import { makeDownloader } from "../../src/download.js"
+import { makeDownloader, DownloadTooLargeError, StorageUnavailableError } from "../../src/download.js"
 import { perceptualHash } from "../../src/sandbox/phash.js"
 import {
   processMedia,
   runMediaChecksJob,
   parsePayload,
+  MediaInfraError,
   type MediaChecksDeps,
+  type DownloadFn,
 } from "../../src/jobs/media-checks.js"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
 import * as fx from "../fixtures/make.js"
@@ -411,30 +413,93 @@ describe("media.checks orchestration robustness", () => {
     expect(status).toBe("rejected")
   })
 
-  it("persist failure on a good image falls back to rejected (and reports)", async () => {
+  it("persist failure on a good image THROWS (infra retry), leaving the row non-terminal (NOT rejected)", async () => {
+    // A persist (storage PUT / DB applyResult) failure is INFRA, not bad input. The job must NOT reject
+    // good media; it re-throws MediaInfraError so pg-boss retries. The asset row stays in its current
+    // non-terminal status (validating) - never silently flipped to rejected by a transient write blip.
     const env = makeDeps()
     const input = await fx.makeValidPng()
     const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
-    // Make the FIRST applyResult (the success write) throw; the fallback rejection write then succeeds.
-    let calls = 0
-    const original = env.repo.applyResult.bind(env.repo)
-    env.repo.applyResult = (rid, patch) => {
-      calls++
-      if (calls === 1) return Promise.reject(new Error("db down"))
-      return original(rid, patch)
-    }
+    // The (only) applyResult call is the success write; make it throw to simulate a DB outage.
+    env.repo.applyResult = () => Promise.reject(new Error("db down"))
+
+    await expect(
+      runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps),
+    ).rejects.toBeInstanceOf(MediaInfraError)
+    // Row left non-terminal (still validating) so it recovers on retry; never rejected.
+    expect(env.repo.get(id)!.status).toBe("validating")
+    expect(env.reports.length).toBeGreaterThan(0) // the infra failure was reported (phase "persist")
+  })
+
+  it("#39 infra: a StorageUnavailableError on download THROWS (retry), media NOT rejected", async () => {
+    // The #39 root cause: a worker pointed at empty/wrong storage cannot fetch the bytes. That is INFRA,
+    // not bad input - it must re-throw (so pg-boss retries) and leave the media non-terminal, never
+    // permanently rejected. (makeDownloader over an EMPTY FakeStorage produces exactly this error.)
+    const env = makeDeps()
+    const id = "media-missing-bytes"
+    const uploadId = "up-missing-bytes"
+    const r2Key = `uploads/2026/06/${id}`
+    // Seed the ROW but do NOT stage its bytes in storage -> download misses -> StorageUnavailableError.
+    env.repo.seed({ id, uploadId, kind: "image", r2Key })
+
+    await expect(
+      runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps),
+    ).rejects.toBeInstanceOf(MediaInfraError)
+    // The media row is untouched (still validating); NOT rejected, so it recovers once storage is healthy.
+    expect(env.repo.get(id)!.status).toBe("validating")
+    expect(env.reports.length).toBeGreaterThan(0) // reported with phase "download-infra"
+    // No processed bytes were written for an asset that never downloaded.
+    expect(env.storage.get(r2Key)).toBeNull()
+  })
+
+  it("bad input: a DownloadTooLargeError still -> rejected (unchanged), no throw", async () => {
+    // An over-cap object is BAD INPUT (out of policy), so it stays a PERMANENT rejection - the opposite
+    // of an infra download failure. A custom download throws DownloadTooLargeError to assert the split.
+    const env = makeDeps()
+    const id = "media-too-large"
+    const uploadId = "up-too-large"
+    const r2Key = `uploads/2026/06/${id}`
+    env.repo.seed({ id, uploadId, kind: "image", r2Key })
+    const download: DownloadFn = () => Promise.reject(new DownloadTooLargeError(limits.maxDownloadBytes))
+
     const status = await runMediaChecksJob(
       { mediaId: id, uploadId, r2Key, kind: "image" },
-      env.deps,
+      { ...env.deps, download },
     )
     expect(status).toBe("rejected")
+    expect(env.repo.get(id)!.status).toBe("rejected")
     expect(env.reports.length).toBeGreaterThan(0)
   })
 
-  it("P2-1: the per-job wall-clock budget rejects a wedged download/process (no hang)", async () => {
+  it("infra: an explicit StorageUnavailableError from the downloader THROWS (retry), not reject", async () => {
+    const env = makeDeps()
+    const id = "media-storage-5xx"
+    const uploadId = "up-storage-5xx"
+    const r2Key = `uploads/2026/06/${id}`
+    env.repo.seed({ id, uploadId, kind: "image", r2Key })
+    const download: DownloadFn = () =>
+      Promise.reject(new StorageUnavailableError(r2Key, "HTTP 503"))
+
+    await expect(
+      runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, { ...env.deps, download }),
+    ).rejects.toBeInstanceOf(MediaInfraError)
+    expect(env.repo.get(id)!.status).toBe("validating")
+  })
+
+  it("infra: a DB read (load) failure THROWS (retry) rather than reporting a misleading rejected", async () => {
+    const env = makeDeps()
+    env.repo.findById = () => Promise.reject(new Error("connection reset"))
+    env.repo.findByUploadId = () => Promise.reject(new Error("connection reset"))
+    await expect(
+      runMediaChecksJob({ mediaId: "x", uploadId: "y", r2Key: "uploads/x", kind: "image" }, env.deps),
+    ).rejects.toBeInstanceOf(MediaInfraError)
+  })
+
+  it("P2-1: the wall-clock budget bounds a wedged DOWNLOAD -> THROWS (infra retry, no hang)", async () => {
     // A download that never settles within the budget would otherwise hang the job indefinitely. With a
-    // tiny jobTimeoutMs the overall guard fires, the asset is marked rejected, the job completes, and a
-    // report is emitted. The test itself must finish quickly (proving the budget is enforced).
+    // tiny jobTimeoutMs the wall-clock guard fires. A stalled FETCH is INFRA (not bad input), so the job
+    // re-throws MediaInfraError (pg-boss retries) and leaves the row non-terminal - it does NOT reject
+    // good media. The test itself must finish quickly (proving the budget is enforced, no hang).
     const tightLimits: WorkerLimits = { ...limits, jobTimeoutMs: 50 }
     let downloadResolved = false
     const env = makeDeps({
@@ -452,14 +517,40 @@ describe("media.checks orchestration robustness", () => {
     const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
 
     const start = Date.now()
+    await expect(
+      runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps),
+    ).rejects.toBeInstanceOf(MediaInfraError)
+    const elapsed = Date.now() - start
+
+    expect(elapsed).toBeLessThan(2_000) // the budget fired well before the 5s download would settle
+    expect(downloadResolved).toBe(false)
+    expect(env.repo.get(id)?.status).toBe("validating") // non-terminal: recovers on retry, not rejected
+    expect(env.reports.length).toBeGreaterThan(0) // the timeout was reported (phase download-infra)
+  })
+
+  it("P2-1: the wall-clock budget REJECTS a wedged PROCESS (no hang, no infra throw for bad bytes)", async () => {
+    // Once the bytes are in hand, a crafted asset that wedges the SANDBOX pipeline past the budget is bad
+    // input -> a safe permanent "rejected" (NOT an infra retry - attacker bytes must never trigger one).
+    // We wedge the process step deterministically with a FakeAbuseChecks whose nsfwScore never settles
+    // (applyAbuseSeams awaits it), so the process-phase withJobTimeout fires and the job rejects + completes.
+    const tightLimits: WorkerLimits = { ...limits, jobTimeoutMs: 50 }
+    const env = makeDeps({ limits: tightLimits })
+    // Download returns instantly (valid bytes), so the wedge is in PROCESS, not download.
+    const input = await fx.makeValidPng()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+    // Override the seam's nsfwScore (applyAbuseSeams awaits it) with one that never settles. Cast because
+    // we are monkeypatching an instance method on the fake for this test only.
+    ;(env.abuse as { nsfwScore: (b: Uint8Array) => Promise<number> }).nsfwScore = () =>
+      new Promise<number>(() => {}) // never settles
+
+    const start = Date.now()
     const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
     const elapsed = Date.now() - start
 
-    expect(status).toBe("rejected")
-    expect(elapsed).toBeLessThan(2_000) // the budget fired well before the 5s download would settle
-    expect(downloadResolved).toBe(false)
-    expect(env.repo.get(id)?.status).toBe("rejected")
-    expect(env.reports.length).toBeGreaterThan(0) // the timeout was reported
+    expect(status).toBe("rejected") // a process-phase timeout is bad-input -> rejected, NOT a throw
+    expect(elapsed).toBeLessThan(2_000) // budget fired; no hang
+    expect(env.repo.get(id)!.status).toBe("rejected")
+    expect(env.reports.length).toBeGreaterThan(0) // the timeout was reported (phase timeout)
   })
 
   it("parsePayload rejects malformed payloads", () => {

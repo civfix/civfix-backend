@@ -193,9 +193,12 @@ services:
       - ../secrets/media-worker.env
     # Same rationale as the API: force production so a copied secrets file cannot demote the worker to
     # dev mode, where seams.ts/jobs.ts default every USE_FAKE_* ON and the untrusted-byte pipeline would
-    # silently run FAKE NSFW/abuse + dup checks and FAKE storage in production (a security gap). In
-    # production the real R2/abuse adapters are required (or explicitly toggled via USE_FAKE_* in the
-    # secrets file), and a missing DATABASE_URL fails the worker loudly.
+    # silently run FAKE NSFW/abuse + dup checks and FAKE storage in production (a security gap). STORAGE is
+    # now ENFORCED real in production: seams.ts buildSeams() THROWS on USE_FAKE_STORAGE in prod (a fake
+    # in-memory store is always empty, so the worker would fail to fetch the API's uploaded bytes and
+    # could permanently reject real media - the issue #39 regression). The real R2 + DB adapters are thus
+    # required (R2_* creds + DATABASE_URL); a missing one fails the worker loudly. USE_FAKE_ABUSE_NSFW
+    # stays explicitly toggleable in the secrets file (intentional pre-launch state - no NSFW model yet).
     environment:
       NODE_ENV: production
     depends_on:
