@@ -20,6 +20,7 @@
 import {
   ListPeopleRequestSchema,
   UserActivityListQuerySchema,
+  ConnectionsListQuerySchema,
   IdSchema,
   AppError,
   type ListPeopleResponse,
@@ -44,6 +45,7 @@ import { makeNotificationService } from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import { makeUserActivityService } from "../services/user-activity-service.js"
 import { makeDrizzleUserActivityRepository } from "../services/user-activity-repository.drizzle.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
 
 /**
@@ -94,12 +96,19 @@ export async function registerSocialRoutes(
     })
   }
 
-  /** Build the social service over the resolved repo + notifier. */
+  /** Build the social service over the resolved repo + notifier (+ the avatar presigner in production). */
   function service(): SocialService {
     const n = notifier()
+    // In production presign the uploaded avatar key over the Storage seam (avatars are public, served like
+    // any report image); in tests (overrides present) leave it unset so the service defaults to a
+    // pass-through. The repo returns the raw r2 key; the service maps it onto the profile's avatarUrl.
+    const presignAvatar = app.socialOverrides
+      ? undefined
+      : (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC)
     return makeSocialService({
       repo: repo(),
       ...(n !== undefined ? { notifier: n } : {}),
+      ...(presignAvatar !== undefined ? { presignAvatar } : {}),
     })
   }
 
@@ -176,6 +185,40 @@ export async function registerSocialRoutes(
       input.id,
       input.cursor ?? null,
       input.limit,
+    )
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /people/:id/followers  (anon-ok)  - the people who follow a user
+  // -------------------------------------------------------------------------
+  route(app, "listFollowers", async (request, reply) => {
+    // `id` is the path param; cursor/limit are the query. Merge so the shared query schema (which carries
+    // `id`) validates both at once, mirroring the listUserActivity route.
+    const input = parse(ConnectionsListQuerySchema, {
+      ...(request.query as object),
+      id: (request.params as { id?: unknown }).id,
+    })
+    const payload: ListPeopleResponse = await service().listFollowers(
+      input.id,
+      viewerOf(request),
+      input,
+    )
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /people/:id/following  (anon-ok)  - the people a user follows
+  // -------------------------------------------------------------------------
+  route(app, "listFollowing", async (request, reply) => {
+    const input = parse(ConnectionsListQuerySchema, {
+      ...(request.query as object),
+      id: (request.params as { id?: unknown }).id,
+    })
+    const payload: ListPeopleResponse = await service().listFollowing(
+      input.id,
+      viewerOf(request),
+      input,
     )
     reply.status(200).send(payload)
   })

@@ -100,6 +100,7 @@ describe("toPersonDTO", () => {
       followers: 3,
       following: 7,
       verified: false,
+      avatarR2Key: null,
     }
     const dto = toPersonDTO(view, true)
     expect(dto).toEqual({

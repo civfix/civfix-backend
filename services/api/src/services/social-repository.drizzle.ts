@@ -36,6 +36,8 @@ interface PersonRowSelect {
   followers: number
   following: number
   verified: boolean
+  /** The avatar media's r2 object key (LEFT JOIN media_assets on users.avatar_media_id), or null. */
+  avatar_r2_key: string | null
 }
 
 /** The same shape plus the per-row isFollowing flag for the directory list. */
@@ -53,6 +55,7 @@ function toPersonView(r: PersonRowSelect): PersonView {
     followers: Number(r.followers),
     following: Number(r.following),
     verified: r.verified,
+    avatarR2Key: r.avatar_r2_key,
   }
 }
 
@@ -110,6 +113,59 @@ function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (ch) => `\\${ch}`)
 }
 
+/**
+ * Page a follow-connection list (followers OR following) for a target user. Mirrors listPeople's row
+ * shape (the same followers/following/verified/avatar subqueries + isFollowing-relative-to-viewer flag +
+ * the (display_name, id) keyset cursor) but the candidate set comes from a JOIN against follows_people
+ * via the caller-supplied `joinPredicate` (which both filters by the target `id` AND ties `f` to `u`):
+ *   - followers:  `f.followee_id = ${id} AND f.follower_id = u.id`  (u is each follower),
+ *   - following:  `f.follower_id = ${id} AND f.followee_id = u.id`  (u is each followee).
+ * Soft-deleted users are excluded; results are ordered + cursored identically to the directory.
+ */
+async function connectionsPage(
+  sql: Sql,
+  args: { viewerId: string | null; cursor: string | null; limit: number },
+  joinPredicate: ReturnType<Sql>,
+): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
+  const cursor = parseNameCursor(args.cursor)
+  const viewerId = args.viewerId
+  const cursorFilter =
+    cursor !== null
+      ? sql`AND (u.display_name, u.id) > (${cursor.name}, ${cursor.id}::uuid)`
+      : sql``
+  const followingExpr =
+    viewerId !== null
+      ? sql`EXISTS (SELECT 1 FROM follows_people ff WHERE ff.follower_id = ${viewerId} AND ff.followee_id = u.id)`
+      : sql`FALSE`
+
+  const rows = await sql<PersonRowSelectWithFollow[]>`
+    SELECT
+      u.id,
+      u.display_name,
+      u.handle,
+      u.bio,
+      (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
+      (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
+      EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
+      am.r2_key AS avatar_r2_key,
+      ${followingExpr} AS is_following
+    FROM users u
+    JOIN follows_people f ON ${joinPredicate}
+    LEFT JOIN media_assets am ON am.id = u.avatar_media_id
+    WHERE u.deleted_at IS NULL
+      ${cursorFilter}
+    ORDER BY u.display_name ASC, u.id ASC
+    LIMIT ${args.limit + 1}
+  `
+
+  const hasMore = rows.length > args.limit
+  const page = hasMore ? rows.slice(0, args.limit) : rows
+  const last = page[page.length - 1]
+  const items = page.map((r) => ({ ...toPersonView(r), isFollowing: r.is_following }))
+  const nextCursor = hasMore && last ? `${last.display_name}|${last.id}` : null
+  return { items, nextCursor }
+}
+
 export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
   /** Whether a non-deleted user with this id exists. */
   async function userExists(id: string): Promise<boolean> {
@@ -156,8 +212,10 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
+          am.r2_key AS avatar_r2_key,
           ${followingExpr} AS is_following
         FROM users u
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.deleted_at IS NULL
           ${selfFilter}
           ${qFilter}
@@ -175,6 +233,24 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       return { items, nextCursor }
     },
 
+    async listFollowers(args): Promise<{
+      items: Array<PersonView & { isFollowing: boolean }>
+      nextCursor: string | null
+    }> {
+      // The people who follow `args.id`: join follows_people where THEY are the follower and `id` is the
+      // followee, then project each follower `u`.
+      return connectionsPage(sql, args, sql`f.followee_id = ${args.id} AND f.follower_id = u.id`)
+    },
+
+    async listFollowing(args): Promise<{
+      items: Array<PersonView & { isFollowing: boolean }>
+      nextCursor: string | null
+    }> {
+      // The people `args.id` follows: join follows_people where `id` is the follower and THEY are the
+      // followee, then project each followee `u`.
+      return connectionsPage(sql, args, sql`f.follower_id = ${args.id} AND f.followee_id = u.id`)
+    },
+
     async findPersonById(id: string): Promise<PersonView | null> {
       const rows = await sql<PersonRowSelect[]>`
         SELECT
@@ -184,8 +260,10 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.bio,
           (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
-          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified
+          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
+          am.r2_key AS avatar_r2_key
         FROM users u
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.id = ${id} AND u.deleted_at IS NULL
         LIMIT 1
       `

@@ -35,6 +35,13 @@ export const users = pgTable(
     bio: text("bio"),
     // Provider (Google) profile photo URL; NULL => clients render the solid-color + letter monogram.
     avatarUrl: text("avatar_url"),
+    // The media asset backing the user's uploaded profile picture (0019). Created via the normal
+    // presign -> PUT -> finalize pipeline; PUT /me/profile resolves the finalized upload id to this row.
+    // The FK -> media_assets(id) ON DELETE SET NULL lives in the canonical DDL (drizzle/0019_user_avatar.sql);
+    // it is NOT mirrored as a `.references()` here because a users -> media_assets -> reports -> users
+    // import cycle in the schema mirror makes drizzle's table-type inference collapse to `any`. NULL =>
+    // fall back to avatar_url / the monogram.
+    avatarMediaId: uuid("avatar_media_id"),
     // First-run registration gate: false until the user sets a username + name. Backfilled true for
     // pre-existing accounts in 0006 so only NEW users are forced through registration.
     profileComplete: boolean("profile_complete").notNull().default(false),

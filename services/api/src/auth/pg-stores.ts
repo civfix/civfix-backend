@@ -13,7 +13,7 @@
 
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
-import { emailOtps, oauthIdentities, sessions, users } from "../db/schema/index.js"
+import { emailOtps, mediaAssets, oauthIdentities, sessions, users } from "../db/schema/index.js"
 import type { Role } from "@civfix/shared"
 import type {
   AuthStores,
@@ -185,6 +185,17 @@ export class PgUserStore implements UserStore {
     // Only touch the bio when the caller supplied it (the bio editor); registration omits it. An empty
     // string clears the bio; trimming/length are already enforced by the shared UpdateProfileRequest.
     if (input.bio !== undefined) set.bio = input.bio === "" ? null : input.bio
+    // When the avatar picker sent a finalized upload id, resolve it to the media row and set avatar_media_id
+    // to that row's id (possessing the finalized upload id is the capability proof, like the report flow).
+    // An unknown upload id leaves the avatar unchanged rather than failing the rest of the profile update.
+    if (input.avatarUploadId !== undefined) {
+      const media = await this.db
+        .select({ id: mediaAssets.id })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.uploadId, input.avatarUploadId))
+        .limit(1)
+      if (media[0]) set.avatarMediaId = media[0].id
+    }
     const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.updateProfile: user not found")

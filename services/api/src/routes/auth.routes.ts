@@ -218,6 +218,7 @@ export async function registerAuthRoutes(
       handle: body.handle,
       displayName: body.displayName,
       ...(body.bio !== undefined ? { bio: body.bio } : {}),
+      ...(body.avatarUploadId !== undefined ? { avatarUploadId: body.avatarUploadId } : {}),
     })
     const payload: UpdateProfileResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)

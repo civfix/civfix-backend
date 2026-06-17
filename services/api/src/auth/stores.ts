@@ -147,6 +147,12 @@ export interface UpdateProfileInput {
    * an empty string clears the bio. Omitted (`undefined`) leaves the stored bio untouched.
    */
   bio?: string | null
+  /**
+   * A finalized media upload id (the avatar picker). When present, the store resolves it to the media row
+   * and sets the user's avatar_media_id to that row's id. Omitted (`undefined`) leaves the avatar
+   * unchanged. Possessing the finalized upload id is the capability proof (the report flow's model).
+   */
+  avatarUploadId?: string
 }
 
 export interface UserStore {
@@ -247,6 +253,9 @@ export class InMemoryUserStore implements UserStore {
   updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.updateProfile: user not found")
+    // `avatarUploadId` is accepted but a no-op here: the in-memory store has no media table to resolve it
+    // against, and UserRecord does not carry the avatar media id (the avatar is surfaced via the social
+    // read path, not the auth user record). The Pg store resolves + persists it.
     const next: UserRecord = {
       ...row,
       handle: input.handle,

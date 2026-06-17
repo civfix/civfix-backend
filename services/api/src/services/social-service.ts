@@ -26,6 +26,7 @@
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   CleanupDTO,
+  ConnectionsListQuery,
   ListPeopleRequest,
   ListPeopleResponse,
   PersonDTO,
@@ -67,6 +68,12 @@ export interface PersonView {
   following: number
   /** Whether the account is document-verified (drives the verified mark on profiles + person detail). */
   verified: boolean
+  /**
+   * The object-store key of the user's uploaded avatar (users.avatar_media_id -> media_assets.r2_key), or
+   * null when they have not set one. The service presigns it into a client-usable `avatarUrl` (avatars are
+   * public). Raw key only; the read path injects the presigner.
+   */
+  avatarR2Key: string | null
 }
 
 /** Aggregate stats shown on a profile: the user's report count + the count of cleanups they organized. */
@@ -89,6 +96,26 @@ export interface SocialRepository {
   listPeople(args: {
     viewerId: string | null
     q: string | null
+    cursor: string | null
+    limit: number
+  }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
+
+  /**
+   * Page the people who FOLLOW `id` (their followers), excluding soft-deleted users, ordered + cursored
+   * identically to listPeople (the (display_name, id) keyset). Each row carries `isFollowing` relative to
+   * `viewerId` so a Follow button renders the viewer's state. Returns up to `limit` rows + the next cursor.
+   */
+  listFollowers(args: {
+    id: string
+    viewerId: string | null
+    cursor: string | null
+    limit: number
+  }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
+
+  /** Page the people `id` FOLLOWS (their following). Same shape/ordering/cursor as listFollowers. */
+  listFollowing(args: {
+    id: string
+    viewerId: string | null
     cursor: string | null
     limit: number
   }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
@@ -159,10 +186,29 @@ export interface SocialServiceDeps {
    * succeeds: the notification is a best-effort side effect, never a precondition.
    */
   notifier?: SocialNotifier
+  /**
+   * Presign (or otherwise render) a user's avatar object key into a client-usable URL, wrapping the Storage
+   * seam exactly like cleanup-service.presignThumb. OPTIONAL: when omitted (offline tests) it defaults to an
+   * identity pass-through (returns the raw key), so a test still sees an avatar URL without a storage SDK.
+   * Avatars are public, so this presigns the same way report media is served.
+   */
+  presignAvatar?: (avatarKey: string) => Promise<string>
 }
 
 export interface SocialService {
   listPeople(req: ListPeopleRequest, viewer: SocialViewer): Promise<ListPeopleResponse>
+  /** The followers of a user (anon-ok), as a page of PersonDTO with the viewer's follow state. */
+  listFollowers(
+    id: string,
+    viewer: SocialViewer,
+    req: ConnectionsListQuery,
+  ): Promise<ListPeopleResponse>
+  /** The people a user follows (anon-ok), as a page of PersonDTO with the viewer's follow state. */
+  listFollowing(
+    id: string,
+    viewer: SocialViewer,
+    req: ConnectionsListQuery,
+  ): Promise<ListPeopleResponse>
   followPerson(
     viewerId: string,
     targetId: string,
@@ -191,6 +237,10 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
 }
 
 export function makeSocialService(deps: SocialServiceDeps): SocialService {
+  // Default to an identity pass-through (raw key) when no presigner is injected, so offline tests still see
+  // the avatar key as a URL; production wires the real Storage presigner so the uploaded photo renders.
+  const presignAvatar = deps.presignAvatar ?? ((avatarKey: string) => Promise.resolve(avatarKey))
+
   /** Resolve isFollowing for the viewer (false for anonymous viewers / self, cheaply). */
   async function viewerFollows(targetId: string, viewer: SocialViewer): Promise<boolean> {
     if (viewer.userId === null || viewer.userId === targetId) return false
@@ -210,12 +260,18 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     // pastEvents reuse the cleanups projection; `joined` here means "this profile's user attended", which
     // is true for every cleanup the query returns (they organized or were a member of each).
     const pastEvents: CleanupDTO[] = pastEventRecords.map((r) => toCleanupDTO(r, true))
+    // When the user uploaded an avatar, presign its object key into a client-usable URL and surface it as
+    // `avatarUrl` (avatars are public). Absent -> avatarUrl is omitted, so clients fall back to the
+    // provider photo / monogram. This OVERRIDES any stored avatar_url with the uploaded photo.
+    const avatarUrl =
+      view.avatarR2Key !== null ? await presignAvatar(view.avatarR2Key) : undefined
     return {
       id: view.id,
       name: view.displayName,
       handle: view.handle,
       bio: view.bio,
       avatar: avatarGradient(view.id),
+      ...(avatarUrl !== undefined ? { avatarUrl } : {}),
       followers: view.followers,
       following: view.following,
       isFollowing,
@@ -238,6 +294,34 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         items: items.map((it) => toPersonDTO(it, it.isFollowing)),
         nextCursor,
       }
+    },
+
+    async listFollowers(
+      id: string,
+      viewer: SocialViewer,
+      req: ConnectionsListQuery,
+    ): Promise<ListPeopleResponse> {
+      const { items, nextCursor } = await deps.repo.listFollowers({
+        id,
+        viewerId: viewer.userId,
+        cursor: req.cursor ?? null,
+        limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
+      })
+      return { items: items.map((it) => toPersonDTO(it, it.isFollowing)), nextCursor }
+    },
+
+    async listFollowing(
+      id: string,
+      viewer: SocialViewer,
+      req: ConnectionsListQuery,
+    ): Promise<ListPeopleResponse> {
+      const { items, nextCursor } = await deps.repo.listFollowing({
+        id,
+        viewerId: viewer.userId,
+        cursor: req.cursor ?? null,
+        limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
+      })
+      return { items: items.map((it) => toPersonDTO(it, it.isFollowing)), nextCursor }
     },
 
     async followPerson(

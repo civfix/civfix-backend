@@ -97,6 +97,9 @@ export class InMemorySocialRepository implements SocialRepository {
       followers: this.follows.filter((f) => f.followeeId === u.id).length,
       following: this.follows.filter((f) => f.followerId === u.id).length,
       verified: u.verified ?? false,
+      // The in-memory fake has no media table; an uploaded avatar is never exercised offline, so the
+      // avatar key is always null (the service then omits avatarUrl, falling back to the monogram).
+      avatarR2Key: null,
     }
   }
 
@@ -133,6 +136,68 @@ export class InMemorySocialRepository implements SocialRepository {
           })
         : all
 
+    const hasMore = after.length > args.limit
+    const page = hasMore ? after.slice(0, args.limit) : after
+    const last = page[page.length - 1]
+    const items = page.map((u) => ({
+      ...this.toView(u),
+      isFollowing:
+        args.viewerId !== null &&
+        this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id),
+    }))
+    const nextCursor = hasMore && last ? `${last.displayName}|${last.id}` : null
+    return Promise.resolve({ items, nextCursor })
+  }
+
+  listFollowers(args: {
+    id: string
+    viewerId: string | null
+    cursor: string | null
+    limit: number
+  }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
+    // The people who follow `args.id`: the followers of that user.
+    const followerIds = new Set(
+      this.follows.filter((f) => f.followeeId === args.id).map((f) => f.followerId),
+    )
+    return this.connectionsPage(followerIds, args)
+  }
+
+  listFollowing(args: {
+    id: string
+    viewerId: string | null
+    cursor: string | null
+    limit: number
+  }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
+    // The people `args.id` follows: the followees of that user.
+    const followeeIds = new Set(
+      this.follows.filter((f) => f.followerId === args.id).map((f) => f.followeeId),
+    )
+    return this.connectionsPage(followeeIds, args)
+  }
+
+  /**
+   * Page a set of connection ids (followers/following) into PersonViews + isFollowing flags, mirroring the
+   * Drizzle connectionsPage: soft-deleted users excluded, ordered by (display_name, id) ascending, keyset
+   * cursored on `${name}|${id}`. The viewer self is NOT excluded (a connections list legitimately includes
+   * the viewer); isFollowing is relative to `viewerId`.
+   */
+  private connectionsPage(
+    ids: ReadonlySet<string>,
+    args: { viewerId: string | null; cursor: string | null; limit: number },
+  ): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
+    let all = [...this.users.values()].filter((u) => u.deletedAt === null && ids.has(u.id))
+    all = all.sort((a, b) => {
+      if (a.displayName !== b.displayName) return a.displayName < b.displayName ? -1 : 1
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
+    const cursor = parseNameCursor(args.cursor)
+    const after =
+      cursor !== null
+        ? all.filter((u) => {
+            if (u.displayName !== cursor.name) return u.displayName > cursor.name
+            return u.id > cursor.id
+          })
+        : all
     const hasMore = after.length > args.limit
     const page = hasMore ? after.slice(0, args.limit) : after
     const last = page[page.length - 1]
