@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@civfix/shared': link:../civfix-shared/packages/shared
-
 importers:
 
   .:
@@ -45,8 +42,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: link:../../../civfix-shared/packages/shared
-        version: link:../../../civfix-shared/packages/shared
+        specifier: ^0.7.0
+        version: 0.7.0
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -175,8 +172,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
-        specifier: link:../../../civfix-shared/packages/shared
-        version: link:../../../civfix-shared/packages/shared
+        specifier: ^0.7.0
+        version: 0.7.0
       '@sentry/node':
         specifier: ^8.42.0
         version: 8.55.2
@@ -366,6 +363,10 @@ packages:
 
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
+
+  '@civfix/shared@0.7.0':
+    resolution: {integrity: sha512-5QuqnQ2F3Q4p6XVZbZVU/dvEpv48jCTZppAnj8rOLpozyiSuZAiYBhLyzzF616UlpyzoPJ4fu02b4jlBAUN2Zw==}
+    engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
     resolution: {integrity: sha512-F9rL9k9Xjf5blCz8HsJRO4diy111cayL2vkY2XE4r4t3n0yPXVYy3KD3nJ1qbrSn9743UWSXH4IwuCa/HWlGFw==}
@@ -4892,6 +4893,10 @@ snapshots:
   '@aws/lambda-invoke-store@0.2.4': {}
 
   '@balena/dockerignore@1.0.2': {}
+
+  '@civfix/shared@0.7.0':
+    dependencies:
+      zod: 3.25.76
 
   '@derhuerst/http-basic@8.2.4':
     dependencies:
