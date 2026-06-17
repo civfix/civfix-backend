@@ -135,8 +135,11 @@ describe("home map projection", () => {
       title: "Trash pile",
       place: "Los Angeles",
       attendees: null,
+      eventKind: null,
     })
     expect(reportPin).not.toHaveProperty("attendees")
+    // A report pin never carries an eventKind.
+    expect(reportPin).not.toHaveProperty("eventKind")
     expect(reportPin.category).toBe("trash")
     expect(reportPin.flagged).toBe(true)
 
@@ -151,9 +154,12 @@ describe("home map projection", () => {
       title: "Park cleanup",
       place: "Echo Park",
       attendees: 12,
+      eventKind: "cleanup",
     })
     expect(eventPin.attendees).toBe(12)
     expect(eventPin.category).toBeNull()
+    // An event pin diverges by kind so the live map can render distinct markers.
+    expect(eventPin.eventKind).toBe("cleanup")
   })
 
   it("map() projects the repo's recent pins", async () => {
@@ -170,6 +176,7 @@ describe("home map projection", () => {
         title: "Pothole",
         place: "LA",
         attendees: null,
+        eventKind: null,
       },
       {
         refType: "event",
@@ -182,11 +189,14 @@ describe("home map projection", () => {
         title: "Beach cleanup",
         place: "Venice",
         attendees: 30,
+        eventKind: "other_volunteer",
       },
     ]
     const res = await svc.map()
     expect(res.pins).toHaveLength(2)
     expect(res.pins[0]?.refType).toBe("report")
     expect(res.pins[1]?.attendees).toBe(30)
+    // The event pin's kind flows through so the live map can diverge markers.
+    expect(res.pins[1]?.eventKind).toBe("other_volunteer")
   })
 })

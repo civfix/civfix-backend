@@ -25,7 +25,7 @@ import type {
   ReportsSectionCounts,
   UsersSectionCounts,
 } from "./home-service.js"
-import type { ReportCategory } from "@civfix/shared"
+import type { EventKind, ReportCategory } from "@civfix/shared"
 
 // Re-export the shared event-status mapping under the name this module historically exported (H1: the
 // mapping now lives in one place, event-status.ts, used by both the home + admin-event repos).
@@ -219,13 +219,15 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
         ORDER BY r.created_at DESC NULLS LAST
         LIMIT ${half}
       `
-      // Recent events: pin per cleanup with attendees, status mapped to the EventStatus enum.
+      // Recent events: pin per cleanup with attendees, status mapped to the EventStatus enum, and the
+      // event_kind so the live map can diverge cleanup vs other_volunteer markers.
       const eventRows = await sql<
         {
           id: string
           lat: number
           lng: number
           status: string
+          event_kind: EventKind
           title: string
           place: string | null
           attendees: string
@@ -236,6 +238,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           ST_Y(c.geom) AS lat,
           ST_X(c.geom) AS lng,
           c.status AS status,
+          c.event_kind AS event_kind,
           c.title AS title,
           c.address AS place,
           (SELECT COUNT(*) FROM cleanup_members m WHERE m.cleanup_id = c.id)::text AS attendees
@@ -255,6 +258,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
         title: r.title ?? "",
         place: r.place ?? "",
         attendees: null,
+        eventKind: null,
       }))
       const eventPins: HomeMapPinRecord[] = eventRows.map((e) => ({
         refType: "event",
@@ -267,6 +271,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
         title: e.title,
         place: e.place ?? "",
         attendees: num(e.attendees),
+        eventKind: e.event_kind,
       }))
       return [...reportPins, ...eventPins]
     },

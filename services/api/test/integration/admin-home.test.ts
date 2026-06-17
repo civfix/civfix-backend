@@ -163,9 +163,13 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
     const event = pins.find((p) => p.refType === "event")
     expect(report).toBeDefined()
     expect(report?.lat).toBeCloseTo(34.1, 3)
+    // A report pin never carries an event kind.
+    expect(report?.eventKind).toBeNull()
     expect(event).toBeDefined()
     // 'done' maps to 'completed'.
     expect(event?.status).toBe("completed")
     expect(event?.attendees).toBe(0)
+    // The event pin carries the cleanup's kind (defaulting to 'cleanup' here) so the live map can diverge.
+    expect(event?.eventKind).toBe("cleanup")
   })
 })

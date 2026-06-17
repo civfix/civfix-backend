@@ -384,13 +384,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       const grouped = new Map<string, LinkedEventView[]>()
       if (reportIds.length === 0) return grouped
       // The events a report is linked to, with the organizer person + going count (pre-aggregated) +
-      // eventKind. Ordered by linked_at DESC so the newest links lead.
+      // eventKind + the cleanup's real lifecycle status. Ordered by linked_at DESC so the newest links lead.
       const rows = await sql<
         {
           report_id: string
           id: string
           title: string
           event_kind: EventKind
+          status: CleanupStatus
           scheduled_at: Date
           lng: number
           lat: number
@@ -407,6 +408,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           c.id,
           c.title,
           c.event_kind,
+          c.status,
           c.scheduled_at,
           ST_X(c.geom) AS lng,
           ST_Y(c.geom) AS lat,
@@ -431,6 +433,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           id: r.id,
           title: r.title,
           eventKind: r.event_kind,
+          status: r.status,
           scheduledAt: r.scheduled_at,
           lat: r.lat,
           lng: r.lng,

@@ -118,8 +118,9 @@ export interface LinkedReportView {
 
 /**
  * A cleanup (event) a report is linked to, as loadLinkedEventsForReports projects it. Carries the
- * organizer person fields + the going count + eventKind so the service can build the LinkedEventRef
- * (which embeds a full PersonDTO organizer). `reportId` lets a batched load regroup by report.
+ * organizer person fields + the going count + eventKind + the real cleanup lifecycle status so the
+ * service can build the LinkedEventRef (which embeds a full PersonDTO organizer). `reportId` lets a
+ * batched load regroup by report.
  */
 export interface LinkedEventView {
   /** The report this link belongs to (so a batched load can regroup by report). */
@@ -127,6 +128,8 @@ export interface LinkedEventView {
   id: string
   title: string
   eventKind: EventKind
+  /** The cleanup's real lifecycle status, so the report's "Cleanup events" gallery reads accurately. */
+  status: CleanupStatus
   scheduledAt: Date
   lat: number
   lng: number
@@ -426,6 +429,7 @@ export function toLinkedEventRef(view: LinkedEventView): LinkedEventRef {
     id: view.id,
     title: view.title,
     eventKind: view.eventKind,
+    status: view.status,
     scheduledAt: view.scheduledAt.toISOString(),
     lat: view.lat,
     lng: view.lng,

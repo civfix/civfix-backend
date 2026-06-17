@@ -367,6 +367,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
         id: c.id,
         title: c.title,
         eventKind: c.eventKind,
+        status: c.status,
         scheduledAt: c.scheduledAt,
         lat: c.lat,
         lng: c.lng,

@@ -19,6 +19,7 @@
 
 import type {
   AnalyticsCoverageResponse,
+  EventKind,
   EventStatus,
   HomeMapPin,
   HomeMapResponse,
@@ -81,6 +82,8 @@ export interface HomeMapPinRecord {
   title: string
   place: string
   attendees: number | null
+  /** For an event pin, which kind of event (so the live map can diverge markers); null for report pins. */
+  eventKind: EventKind | null
 }
 
 /**
@@ -151,7 +154,7 @@ export async function safeSection<T>(
   }
 }
 
-/** Map the wire map-pin record to the strict HomeMapPin DTO (attendees omitted when null). */
+/** Map the wire map-pin record to the strict HomeMapPin DTO (attendees + eventKind omitted when null). */
 export function toMapPin(record: HomeMapPinRecord): HomeMapPin {
   const base = {
     refType: record.refType,
@@ -163,6 +166,8 @@ export function toMapPin(record: HomeMapPinRecord): HomeMapPin {
     flagged: record.flagged,
     title: record.title,
     place: record.place,
+    // eventKind is meaningful only for event pins; null/omitted for report pins.
+    ...(record.eventKind !== null ? { eventKind: record.eventKind } : {}),
   }
   return record.attendees !== null ? { ...base, attendees: record.attendees } : base
 }

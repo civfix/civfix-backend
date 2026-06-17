@@ -191,6 +191,8 @@ describe("report service linkedEvents hydration", () => {
     expect(dto.linkedEvents[0]!.id).toBe(created.id)
     expect(dto.linkedEvents[0]!.title).toBe("Linked event")
     expect(dto.linkedEvents[0]!.eventKind).toBe("cleanup")
+    // The cleanup's real lifecycle status flows through (a freshly created cleanup is "upcoming").
+    expect(dto.linkedEvents[0]!.status).toBe("upcoming")
     expect(dto.linkedEvents[0]!.organizer.id).toBe(ORG)
     expect(typeof dto.linkedEvents[0]!.linkedAt).toBe("string")
   })
