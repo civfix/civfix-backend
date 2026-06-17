@@ -27,7 +27,7 @@ import type {
   PushTokenUpsertOutcome,
 } from "../../src/services/notification-service.js"
 import { DEFAULT_PREFS } from "../../src/services/notification-service.js"
-import type { PushPlatform } from "@civfix/shared"
+import type { NotificationType, PushPlatform } from "@civfix/shared"
 
 /** A stored push token row. */
 export interface StoredPushToken {
@@ -106,6 +106,17 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     const at = this.now()
     for (const n of this.notifications) {
       if (n.userId === userId && set.has(n.id) && n.readAt === null) {
+        n.readAt = at
+      }
+    }
+    return Promise.resolve()
+  }
+
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
+    // Mirror the Drizzle UPDATE: clear ONLY the user's own, still-unread rows of this (type, link).
+    const at = this.now()
+    for (const n of this.notifications) {
+      if (n.userId === userId && n.type === type && n.link === link && n.readAt === null) {
         n.readAt = at
       }
     }

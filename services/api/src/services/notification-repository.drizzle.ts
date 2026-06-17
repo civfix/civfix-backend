@@ -139,6 +139,20 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       `
     },
 
+    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
+      // Mirror markRead's style: only the user's own, still-unread rows of this (type, link) are cleared.
+      // Used to dismiss the bell for a conversation when it is read (e.g. type='dm' + '/messages/dm/<id>',
+      // or type='cleanup_chat' + '/cleanups/<id>'). The read_at IS NULL guard keeps already-read rows stable.
+      await sql`
+        UPDATE notifications
+        SET read_at = now()
+        WHERE user_id = ${userId}
+          AND type = ${type}
+          AND link = ${link}
+          AND read_at IS NULL
+      `
+    },
+
     async findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {
       const rows = await sql<PrefsRowSelect[]>`
         SELECT push, cleanup_chat, report_updates, follows, quiet_start, quiet_end

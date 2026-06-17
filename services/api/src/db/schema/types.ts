@@ -129,6 +129,7 @@ export const NOTIFICATION_TYPE_VALUES = [
   "cleanup_reminder",
   "new_follower",
   "claim_available",
+  "dm",
   "system",
 ] as const
 

@@ -159,6 +159,20 @@ export type ThreadRecipientsOf = (
 ) => Promise<string[]>
 
 /**
+ * Best-effort hook fired AFTER a dm message is persisted + broadcast + acked, when the recipient is NOT
+ * actively viewing that dm room (the gateway suppresses it via presence so a message the recipient is
+ * reading right now does not also raise a bell). Lets chat.routes wire the dm bell-notification creation
+ * (a `type:"dm"` notification row + the normal inline push) WITHOUT the gateway importing the notification
+ * service. `recipientId` is the peer (never the sender); `message` is the persisted ChatMessageDTO (carries
+ * the sender's handle/name in `from`, plus body/kind). A failure here MUST NEVER affect the send path.
+ */
+export type OnDmDelivered = (
+  threadId: string,
+  recipientId: string,
+  message: import("@civfix/shared").ChatMessageDTO,
+) => Promise<void>
+
+/**
  * The ChatService the gateway drives. Identical to the shared ChatService except `broadcast` accepts an
  * OPTIONAL excludeConnId so the gateway can keep the sender out of the broadcast fan-out (it learns
  * durability from the ack instead, P1-2). A 2-arg ChatService.broadcast is assignable here (fewer
@@ -188,6 +202,12 @@ export interface GatewayDeps {
   userChannel?: UserChannel | undefined
   /** Optional resolver for the message recipients to signal (excludes the sender). Wired in chat.routes. */
   threadRecipientsOf?: ThreadRecipientsOf | undefined
+  /**
+   * Optional dm bell-notification hook (chat.routes). Fired for a persisted dm message when the recipient
+   * is NOT actively viewing the dm room (presence-suppressed by the gateway). Best-effort; never blocks/
+   * breaks the send path.
+   */
+  onDmDelivered?: OnDmDelivered | undefined
 }
 
 /**
@@ -451,6 +471,26 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
           await userChannel.publishToUsers(recipients, { topic: "threads", id })
         })().catch(() => {})
       }
+      // Best-effort dm BELL notification: when a dm seam + the onDmDelivered hook are wired, create a
+      // `type:"dm"` notification (+ push) for the PEER — but ONLY when the peer is NOT actively viewing this
+      // dm room. ACTIVE-VIEWER SUPPRESSION (the literal #42 complaint): if the recipient currently has the
+      // room open (a live presence entry on the namespaced dm:<thread> key), they are reading the message
+      // right now, so a bell would be noise — skip it. peerOf excludes the sender (it returns the OTHER
+      // participant), so the sender is never notified. Fully fire-and-forget: it runs after the message is
+      // durably persisted + delivered + acked, so a presence/notify failure must NEVER affect the send path.
+      if (kind === "dm" && deps.dm && deps.onDmDelivered) {
+        const { dm, onDmDelivered, presence } = deps
+        void (async () => {
+          const peer = await dm.peerOf(id, userId)
+          if (peer === null) return
+          // Suppress when the recipient is actively connected to (subscribed to) this dm room.
+          if (presence) {
+            const online = await presence.online(roomKey)
+            if (online.includes(peer)) return
+          }
+          await onDmDelivered(id, peer, message)
+        })().catch(() => {})
+      }
       return
     }
 
@@ -653,6 +693,11 @@ export interface RegisterGatewayOptions {
   userChannel?: UserChannel | undefined
   /** Optional resolver for the thread-signal recipients (excludes the sender). See ThreadRecipientsOf. */
   threadRecipientsOf?: ThreadRecipientsOf | undefined
+  /**
+   * Optional dm bell-notification hook (chat.routes). Fired for a persisted dm message when the recipient
+   * is NOT actively viewing the dm room (presence-suppressed by the gateway). See OnDmDelivered.
+   */
+  onDmDelivered?: OnDmDelivered | undefined
   /** CORS/WS Origin allowlist (env.WEB_ORIGINS). Empty allows all (dev). See isAllowedWsOrigin. */
   webOrigins: readonly string[]
 }
@@ -698,6 +743,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           isBlockedEitherWay: opts.isBlockedEitherWay,
           userChannel: opts.userChannel,
           threadRecipientsOf: opts.threadRecipientsOf,
+          onDmDelivered: opts.onDmDelivered,
         },
       }
 
