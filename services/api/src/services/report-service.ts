@@ -42,6 +42,7 @@ import { AppError } from "@civfix/shared"
 import type {
   CreateReportRequest,
   GeomSource,
+  LinkedEventRef,
   ListMyReportsResponse,
   MediaDTO,
   PaginationQuery,
@@ -54,6 +55,7 @@ import type {
   ReportTimelineEntryDTO,
   ReportVisibility,
 } from "@civfix/shared"
+import { toLinkedEventRef, type LinkedEventView } from "./cleanup-service.js"
 
 // ---------------------------------------------------------------------------
 // Config constants
@@ -271,6 +273,22 @@ export interface BBox {
   north: number
 }
 
+/**
+ * Additive discussion/city meta for a report's DETAIL read. All fields map 1:1 onto the optional ReportDTO
+ * fields (discussionCount / cityHandle / cityName / canForwardToCity). Resolved from the report's
+ * jurisdiction + the discussion table by loadDiscussionMeta; absent => the fields are omitted from the DTO.
+ */
+export interface ReportDiscussionMeta {
+  /** Count of NON-deleted top-level discussion messages for the report. */
+  discussionCount: number
+  /** The report jurisdiction's effective handle (stored or derived), or null when Unmapped. */
+  cityHandle: string | null
+  /** The report jurisdiction's display name, or null when Unmapped. */
+  cityName: string | null
+  /** Whether the jurisdiction has at least one usable contact email (so a @city forward could deliver). */
+  canForwardToCity: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (no DB, no IO)
 // ---------------------------------------------------------------------------
@@ -395,6 +413,25 @@ export interface ReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
+  /**
+   * Load the events (cleanups) a set of reports is linked to, grouped by report id (the report's
+   * "linked events" gallery). OPTIONAL: wraps the cleanup repo's loadLinkedEventsForReports so the report
+   * service does not depend on the cleanup repo directly and stays fakeable. When omitted, linkedEvents is
+   * always [] (the additive DTO default), so an un-wired or offline path simply renders no gallery.
+   */
+  loadLinkedEventsForReports?: (
+    reportIds: string[],
+  ) => Promise<Map<string, LinkedEventView[]>>
+  /**
+   * Load the additive discussion/city meta for a single report's DETAIL (GET /reports/:id): the count of
+   * NON-deleted top-level discussion messages, the report's jurisdiction handle + name, and whether the
+   * jurisdiction has at least one contact email (so the client can offer "forward to city"). OPTIONAL:
+   * wraps a small discussion-repo read so the report service does not depend on the discussion repo
+   * directly and stays fakeable. When omitted (offline/un-wired paths) the four DTO fields are simply
+   * absent (they are all optional/additive). Best-effort: a thrown loader is swallowed by getReport so the
+   * core report read never fails because the discussion meta could not be loaded.
+   */
+  loadDiscussionMeta?: (reportId: string) => Promise<ReportDiscussionMeta>
   /** Injectable id factory (defaults to crypto.randomUUID) for deterministic tests. */
   newId?: () => string
   /** Injectable clock (defaults to Date.now) so published_at/created_at are deterministic in tests. */
@@ -453,9 +490,17 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     record: ReportRecord,
     media: ReportMediaView[],
     timeline: ReportTimelineView[],
-    flags: { mine: boolean; following: boolean; mediaPending?: number },
+    flags: {
+      mine: boolean
+      following: boolean
+      mediaPending?: number
+      linkedEvents?: LinkedEventRef[]
+      /** Additive discussion/city meta (DETAIL read only); absent => the four fields are omitted. */
+      discussionMeta?: ReportDiscussionMeta | null
+    },
   ): Promise<ReportDTO> {
     const mediaDTOs = await Promise.all(media.map(toMediaDTO))
+    const meta = flags.discussionMeta ?? null
     return {
       id: record.id,
       category: record.category,
@@ -478,6 +523,42 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       media: mediaDTOs,
       mediaPending: flags.mediaPending ?? 0,
       timeline: timeline.map(toTimelineDTO),
+      linkedEvents: flags.linkedEvents ?? [],
+      // Additive discussion/city meta (DETAIL only). Each field is emitted only when the meta was loaded, so
+      // the list/create paths (which pass no meta) keep their exact prior shape.
+      ...(meta !== null
+        ? {
+            discussionCount: meta.discussionCount,
+            cityHandle: meta.cityHandle,
+            cityName: meta.cityName,
+            canForwardToCity: meta.canForwardToCity,
+          }
+        : {}),
+    }
+  }
+
+  /**
+   * Load + project the events a single report is linked to (its "linked events" gallery). Empty when the
+   * loader is not wired (offline/un-wired paths). Used by getReport; listMyReports uses the batched form.
+   */
+  async function linkedEventsFor(reportId: string): Promise<LinkedEventRef[]> {
+    if (deps.loadLinkedEventsForReports === undefined) return []
+    const grouped = await deps.loadLinkedEventsForReports([reportId])
+    return (grouped.get(reportId) ?? []).map(toLinkedEventRef)
+  }
+
+  /**
+   * Load the additive discussion/city meta for a report (DETAIL only), or null when the loader is not wired
+   * OR the load fails. Best-effort: a thrown loader is swallowed (returns null) so the four optional DTO
+   * fields are simply omitted and the core report read never fails because the discussion meta was
+   * unavailable.
+   */
+  async function discussionMetaFor(reportId: string): Promise<ReportDiscussionMeta | null> {
+    if (deps.loadDiscussionMeta === undefined) return null
+    try {
+      return await deps.loadDiscussionMeta(reportId)
+    } catch {
+      return null
     }
   }
 
@@ -560,14 +641,22 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.notFound("Report not found")
       }
 
-      const [media, timeline, following, validatingCount] = await Promise.all([
-        // The owner sees their own in-flight (`validating`) media too; strangers get `ready` only.
-        deps.repo.findMediaForReport(record.id, mine),
-        deps.repo.findTimelineForReport(record.id),
-        viewerId !== null ? deps.repo.isFollowing(viewerId, record.id) : Promise.resolve(false),
-        // Total in-flight (`validating`) media for the report — independent of the viewer's filter.
-        deps.repo.countValidatingMediaForReport(record.id),
-      ])
+      const [media, timeline, following, validatingCount, linkedEvents, discussionMeta] =
+        await Promise.all([
+          // The owner sees their own in-flight (`validating`) media too; strangers get `ready` only.
+          deps.repo.findMediaForReport(record.id, mine),
+          deps.repo.findTimelineForReport(record.id),
+          viewerId !== null ? deps.repo.isFollowing(viewerId, record.id) : Promise.resolve(false),
+          // Total in-flight (`validating`) media for the report — independent of the viewer's filter.
+          deps.repo.countValidatingMediaForReport(record.id),
+          // The cleanup events this report is linked to (its "linked events" gallery; carries linkedAt so the
+          // client synthesizes the report-side "Linked to cleanup X" timeline node - no report_timeline write).
+          linkedEventsFor(record.id),
+          // Additive discussion/city meta (count + city handle/name + can-forward). Best-effort: a thrown
+          // loader resolves to null so the four optional DTO fields are simply omitted and the core report
+          // read never fails on it. Absent loader (offline/un-wired) => null => fields omitted.
+          discussionMetaFor(record.id),
+        ])
 
       // `mediaPending` = validating media the viewer will see ONLY as a "processing" placeholder, i.e.
       // those NOT already in the returned media[]. For the owner, their own validating tiles ARE in media[]
@@ -576,7 +665,13 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
       const mediaPending = Math.max(0, validatingCount - validatingShown)
 
-      return toReportDTO(record, media, timeline, { mine, following, mediaPending })
+      return toReportDTO(record, media, timeline, {
+        mine,
+        following,
+        mediaPending,
+        linkedEvents,
+        discussionMeta,
+      })
     },
 
     async listMyReports(
@@ -593,11 +688,15 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       // ordering + ownerView filtering and timeline ordering are preserved inside the batched repo calls.
       // The caller owns all of them (mine=true); `following` comes from the per-page followed-id set.
       const ids = records.map((r) => r.id)
-      const [mediaById, timelineById, followed] = await Promise.all([
+      const [mediaById, timelineById, followed, linkedEventsById] = await Promise.all([
         // "Your reports": the viewer is always the owner, so include their in-flight media too.
         deps.repo.findMediaForReports(ids, true),
         deps.repo.findTimelineForReports(ids),
         deps.repo.findFollowedReportIds(userId, ids),
+        // Linked events for the whole page in one batched query (empty map when the loader is not wired).
+        deps.loadLinkedEventsForReports !== undefined
+          ? deps.loadLinkedEventsForReports(ids)
+          : Promise.resolve(new Map<string, LinkedEventView[]>()),
       ])
 
       // toReportDTO is async (it signs media URLs), so build the page's DTOs in parallel. Promise.all
@@ -607,6 +706,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           toReportDTO(record, mediaById.get(record.id) ?? [], timelineById.get(record.id) ?? [], {
             mine: true,
             following: followed.has(record.id),
+            linkedEvents: (linkedEventsById.get(record.id) ?? []).map(toLinkedEventRef),
           }),
         ),
       )

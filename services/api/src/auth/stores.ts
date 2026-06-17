@@ -142,6 +142,11 @@ export interface CreateUserInput {
 export interface UpdateProfileInput {
   handle: string
   displayName: string
+  /**
+   * The free-text bio. Present only when the own-profile bio editor submits it (registration omits it);
+   * an empty string clears the bio. Omitted (`undefined`) leaves the stored bio untouched.
+   */
+  bio?: string | null
 }
 
 export interface UserStore {

@@ -234,7 +234,8 @@ function serverFrame(frame: WsServerMessage): string {
  * specific room) pass `room` so the frame carries the bare room id + roomKind: a client multiplexing
  * several rooms over ONE socket then applies the error (and any "stop re-joining this room" logic) only
  * to the matching room, never to a healthy sibling. Omit `room` for connection-level errors (auth /
- * malformed frame). roomKind is stamped only for dm (absent ⇒ cleanup), matching the other frames.
+ * malformed frame). roomKind is stamped for any NON-cleanup kind (absent ⇒ cleanup), matching the other
+ * frames, so a client multiplexing a dm / report-discussion room routes the error to the right room.
  */
 function sendError(
   conn: ChatConnection,
@@ -247,29 +248,55 @@ function sendError(
       type: "error",
       code,
       message,
-      ...(room ? { cleanupId: room.id, ...(room.kind === "dm" ? { roomKind: "dm" as const } : {}) } : {}),
+      ...(room ? { cleanupId: room.id, ...stampRoomKind(room.kind) } : {}),
     }),
   )
+}
+
+/**
+ * Stamp the optional `roomKind` discriminator on an outbound room-scoped frame. Cleanup is the implicit
+ * default (omitted for backward compatibility); dm and report_discussion are stamped explicitly so a
+ * client multiplexing several rooms over one socket routes the frame to the right room. Centralized so the
+ * presence/typing/error frames all agree on the convention as new room kinds are added.
+ */
+function stampRoomKind(kind: RoomKind): { roomKind: RoomKind } | Record<string, never> {
+  return kind === "cleanup" ? {} : { roomKind: kind }
 }
 
 /** Prefix that namespaces a dm thread's fan-out room key so dm and cleanup ids can never collide. */
 const DM_ROOM_PREFIX = "dm:"
 
 /**
- * Map a frame's (roomKind, id) to the internal fan-out room key. Cleanup ids stay bare (backward
- * compatible); dm ids are namespaced `dm:<id>` so the presence/pubsub key space is partitioned and a dm
- * thread id can never collide with a cleanup id. The presence adapter keys off whatever room id we pass,
- * so passing the namespaced key gives dm threads their own presence/typing space automatically.
+ * Prefix that namespaces a report-discussion room key so report-discussion ids cannot collide with cleanup
+ * or dm ids. A report discussion is a PUBLIC room (any authenticated user may join to receive the live
+ * {type:"discussion"} signal); its writes go over HTTP, never the socket (see the `send` switch + the
+ * discussion service's HTTP-side broadcast).
  */
-function roomKeyFor(kind: RoomKind, id: string): string {
-  return kind === "dm" ? `${DM_ROOM_PREFIX}${id}` : id
+const RD_ROOM_PREFIX = "rd:"
+
+/**
+ * Map a frame's (roomKind, id) to the internal fan-out room key. Cleanup ids stay bare (backward
+ * compatible); dm ids are namespaced `dm:<id>` and report-discussion ids `rd:<id>` so the presence/pubsub
+ * key space is partitioned and the three id spaces can never collide. The presence adapter keys off
+ * whatever room id we pass, so passing the namespaced key gives each kind its own presence/typing space
+ * automatically. EXPORTED so the discussion service can compute the SAME room key for its HTTP-side
+ * broadcastEvent fan-out (the single source of truth for the prefix lives here).
+ */
+export function roomKeyFor(kind: RoomKind, id: string): string {
+  if (kind === "dm") return `${DM_ROOM_PREFIX}${id}`
+  if (kind === "report_discussion") return `${RD_ROOM_PREFIX}${id}`
+  return id
 }
 
 /** Recover the (roomKind, bare id) a stored room key represents (the inverse of roomKeyFor). */
 function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
-  return roomKey.startsWith(DM_ROOM_PREFIX)
-    ? { kind: "dm", id: roomKey.slice(DM_ROOM_PREFIX.length) }
-    : { kind: "cleanup", id: roomKey }
+  if (roomKey.startsWith(DM_ROOM_PREFIX)) {
+    return { kind: "dm", id: roomKey.slice(DM_ROOM_PREFIX.length) }
+  }
+  if (roomKey.startsWith(RD_ROOM_PREFIX)) {
+    return { kind: "report_discussion", id: roomKey.slice(RD_ROOM_PREFIX.length) }
+  }
+  return { kind: "cleanup", id: roomKey }
 }
 
 /**
@@ -293,7 +320,7 @@ async function leaveRoomAndAnnounce(session: GatewaySession, roomKey: string): P
       await deps.chat.broadcastEvent?.(roomKey, {
         type: "presence",
         cleanupId: id,
-        ...(kind === "dm" ? { roomKind: kind } : {}),
+        ...stampRoomKind(kind),
         userId,
         state: "leave",
       })
@@ -306,7 +333,9 @@ async function leaveRoomAndAnnounce(session: GatewaySession, roomKey: string): P
  * with the error code/message to send. Cleanup: cleanup membership (existing isMember). DM: the user must
  * be a thread participant AND not blocked either way w.r.t. the peer (and the dm/block seams must be
  * wired). The dm failure message is intentionally the generic "no longer reach" copy so block and
- * not-a-participant are not distinguished. NOTE: cleanup group chat behavior is unchanged.
+ * not-a-participant are not distinguished. Report discussion: a PUBLIC room — ANY authenticated socket
+ * may join to receive the live {type:"discussion"} signal, so there is no membership check (the handshake
+ * already proved the socket is authenticated). NOTE: cleanup group chat behavior is unchanged.
  */
 async function authorizeRoom(
   deps: GatewayDeps,
@@ -317,6 +346,12 @@ async function authorizeRoom(
   if (kind === "cleanup") {
     const ok = await deps.isMember(id, userId)
     return ok ? { ok: true } : { ok: false, code: "FORBIDDEN", message: "You are not a member of this cleanup." }
+  }
+  if (kind === "report_discussion") {
+    // Public room: any authenticated socket may subscribe. No per-room membership gate (a report discussion
+    // is publicly readable; the discussion HTTP read enforces report visibility for the CONTENT, while this
+    // room only carries the lightweight "something changed" signal). The handshake guarantees authentication.
+    return { ok: true }
   }
   // dm
   if (!deps.dm) {
@@ -391,7 +426,7 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
           serverFrame({
             type: "presence_snapshot",
             cleanupId: id,
-            ...(kind === "dm" ? { roomKind: kind } : {}),
+            ...stampRoomKind(kind),
             userIds: online,
           }),
         )
@@ -401,7 +436,7 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
             {
               type: "presence",
               cleanupId: id,
-              ...(kind === "dm" ? { roomKind: kind } : {}),
+              ...stampRoomKind(kind),
               userId,
               state: "join",
             },
@@ -421,6 +456,19 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
     case "send": {
       const kind: RoomKind = frame.roomKind ?? "cleanup"
       const id = frame.cleanupId
+      // Report discussion is read-only over the socket: its writes (post / reply / react / delete) go over
+      // HTTP, and there is no persist seam here. Refuse a `send` for it EXPLICITLY (a room-scoped error
+      // frame) so it never falls through to the cleanup persist branch below. join/leave/typing/presence
+      // still work for the kind (the live signal + ephemeral presence are socket-delivered).
+      if (kind === "report_discussion") {
+        sendError(
+          conn,
+          "UNSUPPORTED",
+          "Discussion messages are posted over HTTP, not the socket.",
+          { kind, id },
+        )
+        return
+      }
       const auth = await authorizeRoom(deps, kind, id, userId)
       if (!auth.ok) {
         sendError(conn, auth.code, auth.message, { kind, id })
@@ -517,7 +565,7 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
         {
           type: "typing",
           cleanupId: id,
-          ...(kind === "dm" ? { roomKind: kind } : {}),
+          ...stampRoomKind(kind),
           userId,
         },
         { excludeConnId: conn.id },
@@ -544,6 +592,11 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
         id = decoded.id
       }
       if (id === undefined) return
+      if (kind === "report_discussion") {
+        // A report discussion has no per-user read-state (it is a public signal room, not an inbox), so an
+        // ack for it is a no-op — never route it into the cleanup read-state seam below.
+        return
+      }
       if (kind === "dm") {
         // Gate the write on participation: an ack carries an arbitrary thread id and the dm markRead is an
         // unconditional upsert, so without this any authenticated socket could write dm_read_state rows for

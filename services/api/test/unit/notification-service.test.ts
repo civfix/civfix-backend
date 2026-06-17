@@ -383,7 +383,7 @@ describe("onNewFollower", () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
     await service.onNewFollower({
       followeeId: U,
-      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0 },
+      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, verified: false },
     })
     expect(repo.notifications).toHaveLength(1)
     const n = repo.notifications[0]!

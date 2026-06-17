@@ -19,6 +19,7 @@
 
 import {
   CreateCleanupRequestSchema,
+  UpdateCleanupRequestSchema,
   ListCleanupsRequestSchema,
   ChatHistoryQuerySchema,
   IdSchema,
@@ -43,6 +44,7 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
 import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
 
@@ -54,6 +56,7 @@ import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
  */
 export interface CleanupServiceOverrides {
   repo: CleanupRepository
+  presignThumb?: CleanupServiceDeps["presignThumb"]
   newId?: CleanupServiceDeps["newId"]
   now?: CleanupServiceDeps["now"]
 }
@@ -103,6 +106,13 @@ export async function registerCleanupRoutes(
     const overrides = app.cleanupOverrides
     return makeCleanupService({
       repo: repo(),
+      // In production presign the linked-report gallery thumbs over the Storage seam (the repo returns raw
+      // object keys); in tests the override may inject its own (else the service defaults to a pass-through).
+      ...(overrides?.presignThumb !== undefined
+        ? { presignThumb: overrides.presignThumb }
+        : overrides
+          ? {}
+          : { presignThumb: (thumbKey: string) => container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC) }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
     })
@@ -116,6 +126,20 @@ export async function registerCleanupRoutes(
     const body = parse(CreateCleanupRequestSchema, request.body)
     const dto: CleanupDTO = await service().createCleanup(body, userId)
     reply.status(201).send(dto)
+  })
+
+  // -------------------------------------------------------------------------
+  // PATCH /cleanups/:id  [auth][csrf]  (organizer-only; the service enforces the host gate)
+  // -------------------------------------------------------------------------
+  // The host edits the event (scalars + the FULL desired linked-report set, which the service reconciles).
+  // The service throws FORBIDDEN (403) for a non-organizer and NOT_FOUND (404) for a missing event; the
+  // route only resolves the auth + validates the body.
+  route(app, "updateCleanup", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const body = parse(UpdateCleanupRequestSchema, request.body)
+    const dto: GetCleanupResponse = await service().updateCleanup(id, body, userId)
+    reply.status(200).send(dto)
   })
 
   // -------------------------------------------------------------------------

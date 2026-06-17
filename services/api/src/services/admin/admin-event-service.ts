@@ -31,10 +31,13 @@ import type {
   AdminEventListItemDTO,
   AdminEventListQuery,
   AdminEventListResponse,
+  EventKind,
   EventMessage,
   EventStatus,
   EventTimelineItem,
+  LinkedReportRef,
 } from "@civfix/shared"
+import { toLinkedReportRef, type LinkedReportView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 
 // ---------------------------------------------------------------------------
@@ -74,6 +77,8 @@ export interface AdminEventMessageRecord {
 export interface AdminEventRecord {
   id: string
   status: EventStatus
+  /** cleanup vs other_volunteer (0018); only 'cleanup' events may link reports / show the gallery. */
+  eventKind: EventKind
   /** Derived from cleanup_timeline (net flag/unflag toggles). */
   flagged: boolean
   title: string
@@ -161,6 +166,28 @@ export interface AdminEventRepository {
     id: string,
     input: { body: string; actorId: string | null },
   ): Promise<{ notified: number } | null>
+  /**
+   * Load the reports linked to an event (its cleanup-coverage gallery), only published+public ones. Reuses
+   * the same LinkedReportView the public cleanup read uses (geom decoded + ready-media thumb key).
+   */
+  loadLinkedReports(id: string): Promise<LinkedReportView[]>
+  /**
+   * Link reports to an event: cleanup_reports row + 'report_linked' cleanup_timeline row per newly-linked
+   * id + an event.reports_linked audit, in one transaction. Returns the newly-linked ids, or null when the
+   * event does not exist. Filters out ids that are not visible (published+public) so a held/hidden report
+   * cannot be linked.
+   */
+  linkReports(
+    id: string,
+    reportIds: string[],
+    actorId: string | null,
+  ): Promise<{ linked: string[] } | null>
+  /**
+   * Unlink ONE report from an event: delete the cleanup_reports row + a 'report_unlinked' timeline row + an
+   * event.report_unlinked audit, in one transaction. Returns true when a link existed (removed), false when
+   * there was none, or null when the event does not exist.
+   */
+  unlinkReport(id: string, reportId: string, actorId: string | null): Promise<boolean | null>
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +262,10 @@ export function eventTimelineKind(stored: string): EventTimelineItem["kind"] {
     case "unflag":
     case "warn":
       return "warn"
+    case "report_linked":
+      return "linked"
+    case "report_unlinked":
+      return "unlinked"
     default:
       return "status"
   }
@@ -246,6 +277,12 @@ export function eventTimelineKind(stored: string): EventTimelineItem["kind"] {
 
 export interface AdminEventServiceDeps {
   repo: AdminEventRepository
+  /**
+   * Presign a linked report's thumb object key into a client-usable URL (wrapping the Storage seam).
+   * OPTIONAL: defaults to an identity pass-through (raw key) when omitted, so offline tests still see a
+   * thumb without a storage SDK; production wires the real presigner.
+   */
+  presignThumb?: (thumbKey: string) => Promise<string>
   /** Injectable clock (defaults to () => new Date()) so the relative-age labels are deterministic. */
   now?: () => Date
 }
@@ -260,10 +297,22 @@ export interface AdminEventService {
   cancel(id: string, input: { reason: string | null; actorId: string | null }): Promise<void>
   /** Post an update to attendees; returns the number of members notified. */
   postMessage(id: string, input: { body: string; actorId: string | null }): Promise<number>
+  /**
+   * Link reports to an event (operator action). Rejects linking on a non-cleanup eventKind. Returns the
+   * newly-linked ids. 404 when the event is missing.
+   */
+  linkReports(
+    id: string,
+    reportIds: string[],
+    actorId: string | null,
+  ): Promise<{ linked: string[] }>
+  /** Unlink ONE report from an event (operator action). 404 when the event is missing. */
+  unlinkReport(id: string, reportId: string, actorId: string | null): Promise<void>
 }
 
 export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventService {
   const now = deps.now ?? (() => new Date())
+  const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
 
   /** Project an event record into the list-row DTO (shared by list + detail base). */
   function toListItem(record: AdminEventRecord, ref: Date): AdminEventListItemDTO {
@@ -271,6 +320,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
     return {
       id: record.id,
       status: record.status,
+      eventKind: record.eventKind,
       flagged: record.flagged,
       title: record.title,
       place: record.place,
@@ -327,10 +377,18 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       const ref = now()
       const record = await deps.repo.getEvent(id)
       if (!record) throw AppError.notFound("Event not found")
-      const [timeline, messages] = await Promise.all([
+      const [timeline, messages, linkedViews] = await Promise.all([
         deps.repo.listTimeline(id),
         deps.repo.listMessages(id),
+        // Only a 'cleanup' event has a linked-report gallery (cleanup-only linking).
+        record.eventKind === "cleanup" ? deps.repo.loadLinkedReports(id) : Promise.resolve([]),
       ])
+      const linkedReports: LinkedReportRef[] = await Promise.all(
+        linkedViews.map(async (v: LinkedReportView) => {
+          const thumbUrl = v.thumbKey !== null ? await presignThumb(v.thumbKey) : null
+          return toLinkedReportRef(v, thumbUrl)
+        }),
+      )
       const base = toListItem(record, ref)
       return {
         ...base,
@@ -338,6 +396,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         address: record.address,
         timeline: timeline.map((t) => toTimelineDTO(t, ref)),
         messages: messages.map((m) => toMessageDTO(m, ref)),
+        linkedReports,
       }
     },
 
@@ -388,6 +447,28 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       const result = await deps.repo.postMessage(id, input)
       if (result === null) throw AppError.notFound("Event not found")
       return result.notified
+    },
+
+    async linkReports(
+      id: string,
+      reportIds: string[],
+      actorId: string | null,
+    ): Promise<{ linked: string[] }> {
+      // CLEANUP-ONLY LINKING (decision 3): reject linking on a non-cleanup event before any write.
+      const record = await deps.repo.getEvent(id)
+      if (!record) throw AppError.notFound("Event not found")
+      if (record.eventKind !== "cleanup") {
+        throw AppError.validation({ reportIds: "only cleanup events can link reports" })
+      }
+      const result = await deps.repo.linkReports(id, reportIds, actorId)
+      if (result === null) throw AppError.notFound("Event not found")
+      return result
+    },
+
+    async unlinkReport(id: string, reportId: string, actorId: string | null): Promise<void> {
+      const result = await deps.repo.unlinkReport(id, reportId, actorId)
+      if (result === null) throw AppError.notFound("Event not found")
+      // result === false means there was no such link; the unlink is idempotent so that is still a success.
     },
   }
 }

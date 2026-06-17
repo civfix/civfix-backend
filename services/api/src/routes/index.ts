@@ -16,6 +16,7 @@ import { registerAuthRoutes } from "./auth.routes.js"
 import { registerMapRoutes } from "./map.routes.js"
 import { registerMediaRoutes } from "./media.routes.js"
 import { registerReportRoutes } from "./reports.routes.js"
+import { registerDiscussionRoutes } from "./discussion.routes.js"
 import { registerAnonRoutes } from "./anon.routes.js"
 import { registerClaimRoutes } from "./claim.routes.js"
 import { registerCleanupRoutes } from "./cleanups.routes.js"
@@ -23,6 +24,7 @@ import { registerChatRoutes } from "./chat.routes.js"
 import { registerDmRoutes } from "./dm.routes.js"
 import { registerUsersRoutes } from "./users.routes.js"
 import { registerSocialRoutes } from "./social.routes.js"
+import { registerVerificationRoutes } from "./verification.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
 import { registerAdminRoutes } from "./admin/index.js"
 import { registerInboundMailWebhook } from "./webhooks/inbound-mail.routes.js"
@@ -58,6 +60,13 @@ export async function registerRoutes(
   // CSRF (anonymous submissions go through /anon/reports); GET /reports/:id and GET /map/reports are
   // anon-ok. DB-backed handlers reach the database lazily via container.getDb().
   await registerReportRoutes(app, container)
+
+  // Report discussion: the per-report PUBLIC comment thread (top-level + one level of replies), emoji
+  // reactions, and author/operator soft-delete. Reads are anon-ok; POST/react/delete require auth + CSRF
+  // and carry a tighter per-IP write rate limit. Mount unconditionally (right after reports): DB-backed
+  // handlers reach the database lazily via container.getDb(), and the auth-gated writes 401 cleanly with
+  // no infra. Successful writes fan out a {type:"discussion"} signal over the report-discussion WS room.
+  await registerDiscussionRoutes(app, container)
 
   // Anon: the logged-out submit (POST /anon/reports, full abuse stack, held) + the claim-code-gated
   // status (GET /anon/reports/:id/status). Both public, so they mount unconditionally; the DB +
@@ -95,6 +104,12 @@ export async function registerRoutes(
   // container.getDb(), and a NEW follow fires a new_follower notification (which inline-pushes when the
   // followed user's prefs allow). The auth-gated routes 401 cleanly with no infra.
   await registerSocialRoutes(app, container)
+
+  // Verification ("verified neighbor"): the viewer's own status (GET /me/verification, auth), apply
+  // (POST /me/verification, auth + CSRF, tighter per-IP limit), and the owner-only signed URL for an
+  // uploaded document (auth). Mount unconditionally; DB-backed handlers reach the database lazily and the
+  // auth-gated routes 401 cleanly with no infra.
+  await registerVerificationRoutes(app, container)
 
   // Notifications: the in-app feed + mark-read (auth + CSRF) + prefs get/update (auth + CSRF) + push-token
   // registration (auth + CSRF). Mount unconditionally; DB-backed handlers reach the database lazily via

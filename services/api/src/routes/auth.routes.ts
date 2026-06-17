@@ -217,6 +217,7 @@ export async function registerAuthRoutes(
     const updated = await services.users.updateProfile(userId, {
       handle: body.handle,
       displayName: body.displayName,
+      ...(body.bio !== undefined ? { bio: body.bio } : {}),
     })
     const payload: UpdateProfileResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)

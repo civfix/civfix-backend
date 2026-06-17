@@ -33,6 +33,7 @@ function stubGetReport(store: InMemoryAnonStore) {
       media: [],
       mediaPending: 0,
       timeline: [],
+      linkedEvents: [],
     })
   }
 }

@@ -305,6 +305,7 @@ describe("createReport: idempotency replay", () => {
       media: [],
       mediaPending: 0,
       timeline: [],
+      linkedEvents: [],
     }
     repo.idempotency.set(`report_create:${VALID_UUID}`, {
       key: VALID_UUID,

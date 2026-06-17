@@ -217,13 +217,21 @@ async function queryCleanupPins(
         : sql`AND c.status <> 'cancelled'`
 
   const rows = await sql<
-    { id: string; lng: number; lat: number; scheduled_at: Date; going: number }[]
+    {
+      id: string
+      lng: number
+      lat: number
+      scheduled_at: Date
+      going: number
+      event_kind: CleanupPinDTO["eventKind"]
+    }[]
   >`
     SELECT
       c.id,
       ST_X(c.geom) AS lng,
       ST_Y(c.geom) AS lat,
       c.scheduled_at,
+      c.event_kind,
       (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id) AS going
     FROM cleanups c
     WHERE ST_Intersects(
@@ -241,6 +249,8 @@ async function queryCleanupPins(
     lng: r.lng,
     scheduledAt: r.scheduled_at.toISOString(),
     going: r.going,
+    // The map branches the marker by kind (cleanup vs other_volunteer); carried per-pin (0018).
+    eventKind: r.event_kind,
   }))
 }
 

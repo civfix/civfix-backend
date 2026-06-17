@@ -59,7 +59,58 @@ describe("admin events pure helpers", () => {
     expect(eventTimelineKind("cancel")).toBe("cancel")
     expect(eventTimelineKind("flag")).toBe("warn")
     expect(eventTimelineKind("unflag")).toBe("warn")
+    expect(eventTimelineKind("report_linked")).toBe("linked")
+    expect(eventTimelineKind("report_unlinked")).toBe("unlinked")
     expect(eventTimelineKind("mystery")).toBe("status")
+  })
+})
+
+describe("admin events linking", () => {
+  const R1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
+  const R2 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"
+  const HELD = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa9"
+
+  it("links visible reports + audits + hydrates the detail gallery; skips a held report", async () => {
+    const { repo, svc } = harness()
+    const ev = repo.seedEvent({ id: "ev-1", eventKind: "cleanup" })
+    repo.seedReport({ id: R1, title: "Bin", category: "trash", thumbKey: "t/r1.jpg" })
+    repo.seedReport({ id: R2, title: "Graffiti", category: "graffiti" })
+    repo.seedReport({ id: HELD, status: "held" })
+
+    const result = await svc.linkReports(ev.record.id, [R1, R2, HELD], "op-1")
+    // The held report is silently skipped (visibility gate), only the visible ones link.
+    expect(result.linked.sort()).toEqual([R1, R2].sort())
+    expect(repo.audits.some((a) => a.action === "event.reports_linked")).toBe(true)
+
+    const detail = await svc.get(ev.record.id)
+    expect(detail.linkedReports.map((r) => r.id).sort()).toEqual([R1, R2].sort())
+    expect(detail.linkedReports.find((r) => r.id === R1)?.thumbUrl).toBe("t/r1.jpg")
+  })
+
+  it("rejects linking on a non-cleanup event (other_volunteer)", async () => {
+    const { repo, svc } = harness()
+    const ev = repo.seedEvent({ id: "ev-ov", eventKind: "other_volunteer" })
+    repo.seedReport({ id: R1 })
+    await expect(svc.linkReports(ev.record.id, [R1], "op-1")).rejects.toMatchObject({
+      httpStatus: 422,
+    })
+  })
+
+  it("unlinks a report + audits; the detail gallery drops it", async () => {
+    const { repo, svc } = harness()
+    const ev = repo.seedEvent({ id: "ev-2", eventKind: "cleanup" })
+    repo.seedReport({ id: R1 })
+    await svc.linkReports(ev.record.id, [R1], "op-1")
+    await svc.unlinkReport(ev.record.id, R1, "op-1")
+    expect(repo.audits.some((a) => a.action === "event.report_unlinked")).toBe(true)
+    const detail = await svc.get(ev.record.id)
+    expect(detail.linkedReports).toEqual([])
+  })
+
+  it("404s link/unlink for an unknown event", async () => {
+    const { svc } = harness()
+    await expect(svc.linkReports("nope", [R1], "op-1")).rejects.toMatchObject({ httpStatus: 404 })
+    await expect(svc.unlinkReport("nope", R1, "op-1")).rejects.toMatchObject({ httpStatus: 404 })
   })
 })
 

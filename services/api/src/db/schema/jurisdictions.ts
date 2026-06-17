@@ -38,6 +38,10 @@ export const jurisdictions = pgTable(
     // Operator "flag for review" state (0012). Nullable; purely advisory (does not affect resolution).
     flaggedAt: timestamp("flagged_at", { withTimezone: true }),
     flagReason: text("flag_reason"),
+    // The @handle used to mention this jurisdiction in a report discussion, e.g. "@sf" (0017).
+    // Nullable; most jurisdictions have no handle. A PARTIAL UNIQUE index on lower(handle) keeps
+    // handles case-insensitively unique (see NOTE below).
+    handle: text("handle"),
   },
   // NOTE: the GiST(geom) index lives in 0001_core.sql. Only b-tree indexes are declared here.
   (t) => [
@@ -46,6 +50,10 @@ export const jurisdictions = pgTable(
     // NOTE: a trigram GIN index `jurisdictions_name_trgm ON jurisdictions USING gin (name gin_trgm_ops)`
     // backs the admin reports `j.name ILIKE '%q%'` search. It lives in drizzle/0014_search_trgm.sql and
     // is intentionally NOT mirrored here (raw-SQL-only search; gin_trgm_ops opclass form).
+    // NOTE: a partial UNIQUE index `jurisdictions_handle_lower_key ON jurisdictions (lower(handle))
+    // WHERE handle IS NOT NULL` enforces case-insensitive handle uniqueness. It lives in
+    // drizzle/0017_report_discussion.sql and is intentionally NOT mirrored here (the lower() functional
+    // expression + partial predicate is not worth the brittle Drizzle expression).
   ],
 )
 

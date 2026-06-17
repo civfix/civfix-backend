@@ -114,6 +114,9 @@ export const CLEANUP_TYPE_VALUES = ["site", "route"] as const
 /** cleanups.status. Mirrors shared CleanupStatusSchema. */
 export const CLEANUP_STATUS_VALUES = ["upcoming", "active", "done", "cancelled"] as const
 
+/** cleanups.event_kind. Mirrors shared EventKindSchema (EVENT_KIND_VALUES). */
+export const EVENT_KIND_VALUES = ["cleanup", "other_volunteer"] as const
+
 /** chat_messages.kind. Mirrors shared ChatMessageKindSchema. */
 export const CHAT_MESSAGE_KIND_VALUES = [
   "text",
@@ -171,6 +174,21 @@ export const GOV_METHOD_VALUES = ["email", "cold_outreach"] as const
 
 /** gov_claims.status. Mirrors shared GovClaimStatusSchema. */
 export const GOV_CLAIM_STATUS_VALUES = ["pending", "approved", "rejected"] as const
+
+/**
+ * user_verification.status. Mirrors shared VerificationStatusSchema. NOTE: 'unverified' is the resting
+ * state represented by the ABSENCE of a user_verification row — it is in the shared enum (so the tuple
+ * matches) but is never stored in the column (whose CHECK allows only pending|verified|rejected).
+ */
+export const VERIFICATION_STATUS_VALUES = [
+  "unverified",
+  "pending",
+  "verified",
+  "rejected",
+] as const
+
+/** media_assets.purpose. Mirrors shared MediaPurposeSchema. */
+export const MEDIA_PURPOSE_VALUES = ["report", "verification"] as const
 
 /** user_moderation.account_status. Mirrors shared UserStatusSchema. */
 export const USER_ACCOUNT_STATUS_VALUES = ["active", "suspended", "review", "banned"] as const

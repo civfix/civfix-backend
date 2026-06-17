@@ -32,12 +32,14 @@ import type {
   AdminReportListQuery,
   AdminReportListResponse,
   AdminReportStatus,
+  LinkedEventRef,
   ReportCategory,
   ReportMedia,
   ReportRouting,
   ReportTimelineItem,
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
+import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 
 // ---------------------------------------------------------------------------
@@ -300,6 +302,14 @@ export interface AdminReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
+  /**
+   * Load the events (cleanups) a report is linked to (the report detail's "linked events" section).
+   * OPTIONAL: when omitted, linkedEvents is always [] (the additive DTO default), so an un-wired/offline
+   * path simply renders no section. Wraps the cleanup repo's loadLinkedEventsForReports.
+   */
+  loadLinkedEventsForReports?: (
+    reportIds: string[],
+  ) => Promise<Map<string, LinkedEventView[]>>
   /** Injectable clock (defaults to () => new Date()) so the relative-age labels are deterministic. */
   now?: () => Date
 }
@@ -390,10 +400,13 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       const ref = now()
       const record = await deps.repo.getReport(id)
       if (!record) throw AppError.notFound("Report not found")
-      const [timeline, routing, media] = await Promise.all([
+      const [timeline, routing, media, linkedEventsMap] = await Promise.all([
         deps.repo.listTimeline(id),
         deps.repo.getRouting(id),
         deps.repo.listMedia(id),
+        deps.loadLinkedEventsForReports !== undefined
+          ? deps.loadLinkedEventsForReports([id])
+          : Promise.resolve(new Map<string, LinkedEventView[]>()),
       ])
       const base = toListItem(record, ref)
       const city: ReportRouting = {
@@ -409,12 +422,14 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
         }),
       )
+      const linkedEvents: LinkedEventRef[] = (linkedEventsMap.get(id) ?? []).map(toLinkedEventRef)
       return {
         ...base,
         desc: record.desc,
         timeline: timeline.map((t) => toTimelineDTO(t, ref)),
         city,
         media: mediaDtos,
+        linkedEvents,
       }
     },
 

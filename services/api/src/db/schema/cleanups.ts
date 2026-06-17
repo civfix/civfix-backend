@@ -9,10 +9,16 @@
 import { sql } from "drizzle-orm"
 import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
-import { geometry, type CLEANUP_STATUS_VALUES, type CLEANUP_TYPE_VALUES } from "./types.js"
+import {
+  geometry,
+  type CLEANUP_STATUS_VALUES,
+  type CLEANUP_TYPE_VALUES,
+  type EVENT_KIND_VALUES,
+} from "./types.js"
 
 type CleanupType = (typeof CLEANUP_TYPE_VALUES)[number]
 type CleanupStatus = (typeof CLEANUP_STATUS_VALUES)[number]
+type EventKind = (typeof EVENT_KIND_VALUES)[number]
 
 export const cleanups = pgTable(
   "cleanups",
@@ -24,6 +30,9 @@ export const cleanups = pgTable(
       .notNull()
       .references(() => users.id),
     type: text("type").$type<CleanupType>().notNull(),
+    // cleanup vs other_volunteer. Default 'cleanup' keeps existing rows + the create flow unchanged;
+    // only 'cleanup' events may link reports / show the gallery. Canonical DDL: 0018.
+    eventKind: text("event_kind").$type<EventKind>().notNull().default("cleanup"),
     title: text("title").notNull(),
     description: text("description"),
     geom: geometry("geom", { subtype: "Point", srid: 4326 }).notNull(),

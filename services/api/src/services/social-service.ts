@@ -65,6 +65,8 @@ export interface PersonView {
   bio: string | null
   followers: number
   following: number
+  /** Whether the account is document-verified (drives the verified mark on profiles + person detail). */
+  verified: boolean
 }
 
 /** Aggregate stats shown on a profile: the user's report count + the count of cleanups they organized. */
@@ -184,6 +186,7 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
     followers: view.followers,
     following: view.following,
     isFollowing,
+    verified: view.verified,
   }
 }
 
@@ -216,6 +219,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       followers: view.followers,
       following: view.following,
       isFollowing,
+      verified: view.verified,
       pastEvents,
       stats,
     }

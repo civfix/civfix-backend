@@ -19,11 +19,13 @@
 
 import {
   ListPeopleRequestSchema,
+  UserActivityListQuerySchema,
   IdSchema,
   AppError,
   type ListPeopleResponse,
   type FollowPersonResponse,
   type GetProfileResponse,
+  type UserActivityListResponse,
 } from "@civfix/shared"
 import { ZodError, z, type ZodTypeAny } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -40,6 +42,8 @@ import {
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeNotificationService } from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
+import { makeUserActivityService } from "../services/user-activity-service.js"
+import { makeDrizzleUserActivityRepository } from "../services/user-activity-repository.drizzle.js"
 import { route } from "../versioning/route.js"
 
 /**
@@ -152,6 +156,27 @@ export async function registerSocialRoutes(
   route(app, "myProfile", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: GetProfileResponse = await service().getMyProfile(userId)
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /people/:id/activity  (anon-ok)  - a person's PUBLIC activity history
+  // -------------------------------------------------------------------------
+  route(app, "listUserActivity", async (request, reply) => {
+    // `id` is the path param; cursor/limit are the query. Merge so the shared query schema (which carries
+    // `id`) validates both at once, mirroring the admin sub-list pattern.
+    const input = parse(UserActivityListQuerySchema, {
+      ...(request.query as object),
+      id: (request.params as { id?: unknown }).id,
+    })
+    const activity = makeUserActivityService({
+      repo: makeDrizzleUserActivityRepository(container.getDb().sql),
+    })
+    const payload: UserActivityListResponse = await activity.list(
+      input.id,
+      input.cursor ?? null,
+      input.limit,
+    )
     reply.status(200).send(payload)
   })
 }

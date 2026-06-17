@@ -7,7 +7,11 @@
   "type": "module",
   "packageManager": "pnpm@9.12.0",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "ffmpeg-static"]
+    "onlyBuiltDependencies": ["esbuild", "ffmpeg-static"],
+    "overridesNote": "TEMPORARY Phase-2 dev link: @civfix/shared is linked to the local built package at ../civfix-shared/packages/shared so the backend typechecks against the new discussion contract (0.6.0) before it is published. REMOVE this override at Phase-5 release once the contract ships to repo.civfix.org and bump the ^0.5.2 range in services/api + services/media-worker.",
+    "overrides": {
+      "@civfix/shared": "link:../civfix-shared/packages/shared"
+    }
   },
   "engines": {
     "node": ">=22"

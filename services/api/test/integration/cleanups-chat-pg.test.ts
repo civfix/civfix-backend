@@ -58,6 +58,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       {
         title: "Atomic sweep",
         type: "site",
+        eventKind: "cleanup",
         lat: 34.05,
         lng: -118.25,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
@@ -88,6 +89,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       {
         title: "Join sweep",
         type: "site",
+        eventKind: "cleanup",
         lat: 34.06,
         lng: -118.26,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
@@ -109,6 +111,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       {
         title: "Chat sweep",
         type: "site",
+        eventKind: "cleanup",
         lat: 34.07,
         lng: -118.27,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
@@ -165,6 +168,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         {
           title,
           type: "site",
+          eventKind: "cleanup",
           lat: 34.07,
           lng: -118.27,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
@@ -201,6 +205,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       {
         title: "Read sweep",
         type: "site",
+        eventKind: "cleanup",
         lat: 34.09,
         lng: -118.29,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
@@ -258,6 +263,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         {
           title: "Route sweep",
           type: "site",
+          eventKind: "cleanup",
           lat: 34.08,
           lng: -118.28,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),

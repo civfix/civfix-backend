@@ -109,6 +109,7 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
       media: [],
       mediaPending: 0,
       timeline: [],
+      linkedEvents: [],
     })
   }
   const claimService = makeClaimService({
@@ -207,15 +208,18 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 124 endpoints in the registry (no endpoint skipped)", () => {
-    // 47 Phase 1 + 67 Phase 2 admin (incl. setEventOutcome — log a cleanup's bags collected) + the
-    // DM/privacy surface (openDm, dmMessages, searchUsers, blockUser, unblockUser, listBlocks,
-    // updateSettings = 7) plus the inbound-mail surface (3) = 124. The admin OTP request/verify routes were
-    // replaced by the single Cloudflare Access exchange route (doc 16); the admin data routes mount under
-    // requireOperator (an unauthenticated inject returns 401, a wired route); the public Access exchange
-    // returns 503 when CF_ACCESS_* is unset (also wired, not a route-missing 404) - exactly what the
+  it("covers ALL 134 endpoints in the registry (no endpoint skipped)", () => {
+    // 124 base (47 Phase 1 + 67 Phase 2 admin incl. setEventOutcome + the 7-route DM/privacy surface + the
+    // 3-route inbound-mail surface) + the 7-route report-discussion surface (getReportDiscussion,
+    // getDiscussionReplies, postDiscussionMessage, toggleDiscussionReaction, deleteDiscussionMessage,
+    // getAdminReportDiscussion, removeDiscussionMessage) + the 3-route event<->report linking surface
+    // (updateCleanup [PATCH /cleanups/:id], linkEventReports [POST /admin/events/:id/link-reports],
+    // unlinkEventReport [DELETE /admin/events/:id/reports/:reportId]) = 134. The admin OTP request/verify
+    // routes were replaced by the single Cloudflare Access exchange route (doc 16); the admin data routes
+    // mount under requireOperator (an unauthenticated inject returns 401, a wired route); the public Access
+    // exchange returns 503 when CF_ACCESS_* is unset (also wired, not a route-missing 404) - exactly what the
     // per-endpoint assertions check.
-    expect(Object.keys(endpoints).length).toBe(124)
+    expect(Object.keys(endpoints).length).toBe(134)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

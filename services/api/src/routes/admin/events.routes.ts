@@ -19,13 +19,16 @@ import {
   AdminEventListQuerySchema,
   CancelRequestSchema,
   FlagEventRequestSchema,
+  LinkEventReportsRequestSchema,
   PostMessageRequestSchema,
   SetEventOutcomeRequestSchema,
   SetEventStatusRequestSchema,
+  IdSchema,
   type AdminEventDTO,
   type AdminEventListResponse,
   type AdminOkResponse,
 } from "@civfix/shared"
+import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
@@ -37,6 +40,7 @@ import {
   type AdminEventService,
 } from "../../services/admin/admin-event-service.js"
 import { makeDrizzleAdminEventRepository } from "../../services/admin/admin-event-repository.drizzle.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 
 /**
  * Optional injected admin-event dependencies (tests). When present the routes build the service from
@@ -44,6 +48,7 @@ import { makeDrizzleAdminEventRepository } from "../../services/admin/admin-even
  */
 export interface AdminEventRouteOverrides {
   repo: AdminEventRepository
+  presignThumb?: (thumbKey: string) => Promise<string>
   now?: () => Date
 }
 
@@ -64,11 +69,16 @@ export async function registerAdminEventsRoutes(
     if (overrides) {
       return makeAdminEventService({
         repo: overrides.repo,
+        ...(overrides.presignThumb !== undefined ? { presignThumb: overrides.presignThumb } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
     }
     const repo: AdminEventRepository = makeDrizzleAdminEventRepository(container.getDb().sql)
-    return makeAdminEventService({ repo })
+    // Presign the linked-report gallery thumbs over the Storage seam (the repo returns raw object keys).
+    return makeAdminEventService({
+      repo,
+      presignThumb: (thumbKey) => container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
+    })
   }
 
   // -------------------------------------------------------------------------
@@ -140,6 +150,32 @@ export async function registerAdminEventsRoutes(
     const { id } = idParam(request)
     const body = parse(PostMessageRequestSchema, { ...(request.body as object), id })
     await service().postMessage(id, { body: body.body, actorId: request.auth.userId })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/events/:id/link-reports  [csrf]  — link reports to an event
+  // -------------------------------------------------------------------------
+  // The audit (event.reports_linked) is written inside the service's repo transaction (atomic with the
+  // junction + timeline rows), using the operator userId resolved here from request.auth.userId.
+  route(app, "linkEventReports", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(LinkEventReportsRequestSchema, { ...(request.body as object), id })
+    await service().linkReports(id, body.reportIds, request.auth.userId)
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // DELETE /admin/events/:id/reports/:reportId  [csrf]  — unlink one report
+  // -------------------------------------------------------------------------
+  route(app, "unlinkEventReport", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id, reportId } = parse(
+      z.object({ id: IdSchema, reportId: IdSchema }).strict(),
+      request.params,
+    )
+    await service().unlinkReport(id, reportId, request.auth.userId)
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })

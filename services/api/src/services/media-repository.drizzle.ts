@@ -32,6 +32,7 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     width: row.width,
     height: row.height,
     byteSize: row.byteSize,
+    purpose: row.purpose,
   }
 }
 

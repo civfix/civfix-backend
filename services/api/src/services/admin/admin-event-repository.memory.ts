@@ -34,7 +34,8 @@ import type {
   EventMemberRef,
   ListEventsArgs,
 } from "./admin-event-service.js"
-import type { AdminEventCounts, EventStatus } from "@civfix/shared"
+import type { LinkedReportView } from "../cleanup-service.js"
+import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/shared"
 
 /** A recorded member notification (the message-attendees fan-out), inspectable by tests. */
 export interface RecordedMemberNotification {
@@ -60,6 +61,20 @@ export interface SeededEvent {
   members: EventMemberRef[]
 }
 
+/** A seeded report (the subset the link gallery + the visibility filter need). */
+export interface SeededAdminReport {
+  id: string
+  category: ReportCategory
+  title: string | null
+  status: LinkedReportView["status"]
+  visibility: "public" | "hidden"
+  lat: number
+  lng: number
+  addr: string | null
+  thumbKey: string | null
+  deleted: boolean
+}
+
 /** An in-memory AdminEventRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryAdminEventRepository implements AdminEventRepository {
   /** Seeded cleanups keyed by id (insertion order preserved for stable paging). */
@@ -72,6 +87,10 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   readonly notifications: RecordedMemberNotification[] = []
   /** Recorded audit rows. */
   readonly audits: RecordedEventAudit[] = []
+  /** Seeded reports keyed by id (for the link gallery + visibility filter). */
+  readonly reports = new Map<string, SeededAdminReport>()
+  /** cleanup_reports junction rows ({cleanupId, reportId, linkedAt}). */
+  readonly links: { cleanupId: string; reportId: string; linkedAt: Date }[] = []
 
   /** Deterministic clock for appended rows; each row advances by one millisecond. */
   now = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 0))
@@ -92,6 +111,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     status?: EventStatus
     /** Raw stored cleanups.status override (Phase-1 enum). Wins over `status` when provided. */
     storedStatus?: string
+    eventKind?: EventKind
     title?: string
     place?: string
     attendees?: number
@@ -114,6 +134,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       record: {
         id,
         status: toEventStatus(storedStatus),
+        eventKind: input.eventKind ?? "cleanup",
         flagged: flaggedFromTimeline(timeline.map((t) => t.kind)),
         title: input.title ?? "Park cleanup",
         place: input.place ?? "Somewhere",
@@ -134,6 +155,34 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     if (timeline.length > 0) this.timeline.set(id, [...timeline])
     if (input.messages) this.messages.set(id, [...input.messages])
     return seeded
+  }
+
+  /** Seed a report so the link gallery + visibility filter resolve. Defaults to visible (published+public). */
+  seedReport(over: Partial<SeededAdminReport> & { id?: string } = {}): SeededAdminReport {
+    const report: SeededAdminReport = {
+      id: over.id ?? randomUUID(),
+      category: over.category ?? "trash",
+      title: over.title ?? "Overflowing bin",
+      status: over.status ?? "published",
+      visibility: over.visibility ?? "public",
+      lat: over.lat ?? 0,
+      lng: over.lng ?? 0,
+      addr: over.addr ?? null,
+      thumbKey: over.thumbKey ?? null,
+      deleted: over.deleted ?? false,
+    }
+    this.reports.set(report.id, report)
+    return report
+  }
+
+  /** Seed a cleanup_reports link directly. */
+  seedLink(cleanupId: string, reportId: string): void {
+    this.links.push({ cleanupId, reportId, linkedAt: this.nextDate() })
+  }
+
+  /** True when a report is visible (published+public, not deleted) - mirrors the SQL filter. */
+  private reportVisible(r: SeededAdminReport | undefined): r is SeededAdminReport {
+    return r !== undefined && !r.deleted && r.status === "published" && r.visibility === "public"
   }
 
   async listEvents(
@@ -328,6 +377,83 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       meta: { members: seeded.members.length },
     })
     return { notified: seeded.members.length }
+  }
+
+  async loadLinkedReports(id: string): Promise<LinkedReportView[]> {
+    const ordered = [...this.links]
+      .filter((l) => l.cleanupId === id)
+      .sort((a, b) => b.linkedAt.getTime() - a.linkedAt.getTime())
+    const views: LinkedReportView[] = []
+    for (const link of ordered) {
+      const r = this.reports.get(link.reportId)
+      if (!this.reportVisible(r)) continue
+      views.push({
+        cleanupId: id,
+        id: r.id,
+        category: r.category,
+        title: r.title,
+        status: r.status,
+        lat: r.lat,
+        lng: r.lng,
+        addr: r.addr,
+        thumbKey: r.thumbKey,
+        linkedAt: link.linkedAt,
+      })
+    }
+    return views
+  }
+
+  async linkReports(
+    id: string,
+    reportIds: string[],
+    actorId: string | null,
+  ): Promise<{ linked: string[] } | null> {
+    if (!this.events.has(id)) return null
+    const linked: string[] = []
+    for (const reportId of reportIds) {
+      // Only visible reports may be linked; a held/hidden/missing id is skipped (mirrors the SQL filter).
+      if (!this.reportVisible(this.reports.get(reportId))) continue
+      if (this.links.some((l) => l.cleanupId === id && l.reportId === reportId)) continue
+      this.links.push({ cleanupId: id, reportId, linkedAt: this.nextDate() })
+      this.appendTimeline(id, {
+        kind: "report_linked",
+        note: `Linked report ${reportId}`,
+        who: "operator",
+        createdAt: this.nextDate(),
+      })
+      linked.push(reportId)
+    }
+    this.audits.push({
+      action: "event.reports_linked",
+      target: `cleanup:${id}`,
+      meta: { reportIds: linked },
+    })
+    void actorId
+    return { linked }
+  }
+
+  async unlinkReport(
+    id: string,
+    reportId: string,
+    actorId: string | null,
+  ): Promise<boolean | null> {
+    if (!this.events.has(id)) return null
+    const idx = this.links.findIndex((l) => l.cleanupId === id && l.reportId === reportId)
+    if (idx < 0) return false
+    this.links.splice(idx, 1)
+    this.appendTimeline(id, {
+      kind: "report_unlinked",
+      note: `Unlinked report ${reportId}`,
+      who: "operator",
+      createdAt: this.nextDate(),
+    })
+    this.audits.push({
+      action: "event.report_unlinked",
+      target: `cleanup:${id}`,
+      meta: { reportId },
+    })
+    void actorId
+    return true
   }
 
   private appendTimeline(id: string, row: AdminEventTimelineRecord): void {

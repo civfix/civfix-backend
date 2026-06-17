@@ -24,6 +24,7 @@
  * The `|` delimiter cannot appear in an ISO-8601 timestamp or a UUID, so splitting is unambiguous.
  */
 
+import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
 import type {
   AttendeeView,
@@ -32,17 +33,27 @@ import type {
   CleanupRecord,
   CleanupRepository,
   CreateCleanupTxArgs,
+  LinkedEventView,
+  LinkedReportView,
   ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
+  UpdateCleanupPatch,
 } from "./cleanup-service.js"
-import type { CleanupStatus, CleanupType } from "@civfix/shared"
+import type {
+  CleanupStatus,
+  CleanupType,
+  EventKind,
+  ReportCategory,
+  ReportStatus,
+} from "@civfix/shared"
 
 /** Shape of a cleanup row as selected back (geom decoded, organizer joined, going counted). */
 interface CleanupRowSelect {
   id: string
   organizer_user_id: string
   type: CleanupType
+  event_kind: EventKind
   title: string
   description: string | null
   lng: number
@@ -57,6 +68,7 @@ interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
+  org_verified: boolean
 }
 
 /** Shape of an attendee row selected for the roster (person fields + the viewer's follow flag). */
@@ -75,11 +87,13 @@ function toRecord(r: CleanupRowSelect): CleanupRecord {
     displayName: r.org_display_name,
     handle: r.org_handle,
     bio: r.org_bio,
+    verified: r.org_verified,
   }
   return {
     id: r.id,
     organizerUserId: r.organizer_user_id,
     type: r.type,
+    eventKind: r.event_kind,
     title: r.title,
     description: r.description,
     lat: r.lat,
@@ -115,6 +129,7 @@ function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.id,
     c.organizer_user_id,
     c.type,
+    c.event_kind,
     c.title,
     c.description,
     ST_X(c.geom) AS lng,
@@ -128,7 +143,11 @@ function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     ${distExpr} AS dist,
     u.display_name AS org_display_name,
     u.handle AS org_handle,
-    u.bio AS org_bio
+    u.bio AS org_bio,
+    EXISTS (
+      SELECT 1 FROM user_verification v
+      WHERE v.user_id = c.organizer_user_id AND v.status = 'verified'
+    ) AS org_verified
   `
 }
 
@@ -168,11 +187,13 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         // 1) Insert the cleanup. geom is built from the point in SQL; bring stays a text[].
         await tx`
           INSERT INTO cleanups (
-            id, organizer_user_id, type, title, description, geom, scheduled_at, status, bring, address
+            id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at, status,
+            bring, address
           ) VALUES (
             ${args.cleanupId},
             ${args.organizerUserId},
             ${args.type},
+            ${args.eventKind},
             ${args.title},
             ${args.description},
             ST_SetSRID(ST_MakePoint(${args.lng}, ${args.lat}), 4326),
@@ -190,12 +211,255 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
 
-        // 3) Read the persisted state back inside the tx (no `near` at create time -> dist NULL).
+        // 3) Link the initial reports (junction rows + a 'report_linked' cleanup_timeline row each), in
+        // the SAME tx so a rolled-back create leaves no orphan links. The service has already validated the
+        // ids are visible; ON CONFLICT DO NOTHING keeps a duplicate id idempotent.
+        await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
+
+        // 4) Read the persisted state back inside the tx (no `near` at create time -> dist NULL).
         const created = await readById(tx, args.cleanupId, null)
         // created cannot be null: we just inserted it within this same transaction.
         return created!
       })
       return record
+    },
+
+    async updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean> {
+      // Build the SET list from only the supplied fields. lat+lng (both present) rebuild geom; supplying
+      // neither leaves the position untouched. An empty patch still confirms existence (no-op UPDATE).
+      const sets: postgres.Fragment[] = []
+      if (patch.title !== undefined) sets.push(sql`title = ${patch.title}`)
+      if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
+      if (patch.eventKind !== undefined) sets.push(sql`event_kind = ${patch.eventKind}`)
+      if (patch.type !== undefined) sets.push(sql`type = ${patch.type}`)
+      if (patch.scheduledAt !== undefined) sets.push(sql`scheduled_at = ${patch.scheduledAt}`)
+      if (patch.lat !== undefined && patch.lng !== undefined) {
+        sets.push(sql`geom = ST_SetSRID(ST_MakePoint(${patch.lng}, ${patch.lat}), 4326)`)
+      }
+      if (patch.address !== undefined) sets.push(sql`address = ${patch.address}`)
+      if (patch.bring !== undefined) {
+        sets.push(sql`bring = ${patch.bring as unknown as string[] | null}`)
+      }
+
+      if (sets.length === 0) {
+        // No scalar change requested: just confirm the cleanup exists so the service can 404 a missing id.
+        const rows = await sql<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
+        return rows.length > 0
+      }
+      const setList = sets.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
+      const updated = await sql<{ id: string }[]>`
+        UPDATE cleanups SET ${setList} WHERE id = ${id} RETURNING id
+      `
+      return updated.length > 0
+    },
+
+    async linkReports(
+      cleanupId: string,
+      reportIds: string[],
+      actorId: string | null,
+    ): Promise<string[]> {
+      if (reportIds.length === 0) return []
+      return sql.begin((tx) => linkReportsInTx(tx, cleanupId, reportIds, actorId))
+    },
+
+    async unlinkReport(
+      cleanupId: string,
+      reportId: string,
+      actorId: string | null,
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const removed = await tx<{ id: string }[]>`
+          DELETE FROM cleanup_reports
+          WHERE cleanup_id = ${cleanupId} AND report_id = ${reportId}
+          RETURNING id
+        `
+        if (removed.length === 0) return false
+        await tx`
+          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+          VALUES (${cleanupId}, 'report_unlinked', ${`Unlinked report ${reportId}`}, ${actorId})
+        `
+        return true
+      })
+    },
+
+    async reconcileLinkedReports(
+      cleanupId: string,
+      desiredIds: string[],
+      actorId: string | null,
+    ): Promise<{ added: string[]; removed: string[] }> {
+      return sql.begin(async (tx) => {
+        const existing = await tx<{ report_id: string }[]>`
+          SELECT report_id FROM cleanup_reports WHERE cleanup_id = ${cleanupId}
+        `
+        const have = new Set(existing.map((r) => r.report_id))
+        const want = new Set(desiredIds)
+        const toAdd = desiredIds.filter((id) => !have.has(id))
+        const toRemove = [...have].filter((id) => !want.has(id))
+
+        const added = await linkReportsInTx(tx, cleanupId, toAdd, actorId)
+        for (const reportId of toRemove) {
+          await tx`
+            DELETE FROM cleanup_reports WHERE cleanup_id = ${cleanupId} AND report_id = ${reportId}
+          `
+          await tx`
+            INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+            VALUES (${cleanupId}, 'report_unlinked', ${`Unlinked report ${reportId}`}, ${actorId})
+          `
+        }
+        return { added, removed: toRemove }
+      })
+    },
+
+    async loadLinkedReportsForCleanups(
+      cleanupIds: string[],
+    ): Promise<Map<string, LinkedReportView[]>> {
+      const grouped = new Map<string, LinkedReportView[]>()
+      if (cleanupIds.length === 0) return grouped
+      // Only published+public, non-deleted reports leak into the gallery (held/hidden never). The thumb is
+      // the first ready media's thumb_key (or its r2_key) via a LATERAL pick, mirroring the report read's
+      // ready-only media rule. Ordered by linked_at DESC so the newest links lead.
+      const rows = await sql<
+        {
+          cleanup_id: string
+          id: string
+          category: ReportCategory
+          title: string | null
+          status: ReportStatus
+          lng: number
+          lat: number
+          addr: string | null
+          thumb_key: string | null
+          linked_at: Date
+        }[]
+      >`
+        SELECT
+          cr.cleanup_id,
+          r.id,
+          r.category,
+          r.title,
+          r.status,
+          ST_X(r.geom) AS lng,
+          ST_Y(r.geom) AS lat,
+          r.addr,
+          m.thumb_key,
+          cr.linked_at
+        FROM cleanup_reports cr
+        JOIN reports r ON r.id = cr.report_id
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(ma.thumb_key, ma.r2_key) AS thumb_key
+          FROM media_assets ma
+          WHERE ma.report_id = r.id AND ma.status = 'ready'
+          ORDER BY ma.created_at ASC
+          LIMIT 1
+        ) m ON true
+        WHERE cr.cleanup_id = ANY(${cleanupIds}::uuid[])
+          AND r.deleted_at IS NULL
+          AND r.status = 'published'
+          AND r.visibility = 'public'
+        ORDER BY cr.cleanup_id, cr.linked_at DESC, r.id
+      `
+      for (const r of rows) {
+        const view: LinkedReportView = {
+          cleanupId: r.cleanup_id,
+          id: r.id,
+          category: r.category,
+          title: r.title,
+          status: r.status,
+          lat: r.lat,
+          lng: r.lng,
+          addr: r.addr,
+          thumbKey: r.thumb_key,
+          linkedAt: r.linked_at,
+        }
+        const list = grouped.get(r.cleanup_id)
+        if (list) list.push(view)
+        else grouped.set(r.cleanup_id, [view])
+      }
+      return grouped
+    },
+
+    async loadLinkedEventsForReports(
+      reportIds: string[],
+    ): Promise<Map<string, LinkedEventView[]>> {
+      const grouped = new Map<string, LinkedEventView[]>()
+      if (reportIds.length === 0) return grouped
+      // The events a report is linked to, with the organizer person + going count (pre-aggregated) +
+      // eventKind. Ordered by linked_at DESC so the newest links lead.
+      const rows = await sql<
+        {
+          report_id: string
+          id: string
+          title: string
+          event_kind: EventKind
+          scheduled_at: Date
+          lng: number
+          lat: number
+          going: number
+          org_id: string
+          org_display_name: string
+          org_handle: string | null
+          org_bio: string | null
+          linked_at: Date
+        }[]
+      >`
+        SELECT
+          cr.report_id,
+          c.id,
+          c.title,
+          c.event_kind,
+          c.scheduled_at,
+          ST_X(c.geom) AS lng,
+          ST_Y(c.geom) AS lat,
+          COALESCE(g.going, 0) AS going,
+          u.id AS org_id,
+          u.display_name AS org_display_name,
+          u.handle AS org_handle,
+          u.bio AS org_bio,
+          cr.linked_at
+        FROM cleanup_reports cr
+        JOIN cleanups c ON c.id = cr.cleanup_id
+        JOIN users u ON u.id = c.organizer_user_id
+        LEFT JOIN (
+          SELECT cleanup_id, count(*)::int AS going FROM cleanup_members GROUP BY cleanup_id
+        ) g ON g.cleanup_id = c.id
+        WHERE cr.report_id = ANY(${reportIds}::uuid[])
+        ORDER BY cr.report_id, cr.linked_at DESC, c.id
+      `
+      for (const r of rows) {
+        const view: LinkedEventView = {
+          reportId: r.report_id,
+          id: r.id,
+          title: r.title,
+          eventKind: r.event_kind,
+          scheduledAt: r.scheduled_at,
+          lat: r.lat,
+          lng: r.lng,
+          going: r.going,
+          organizer: {
+            id: r.org_id,
+            displayName: r.org_display_name,
+            handle: r.org_handle,
+            bio: r.org_bio,
+          },
+          linkedAt: r.linked_at,
+        }
+        const list = grouped.get(r.report_id)
+        if (list) list.push(view)
+        else grouped.set(r.report_id, [view])
+      }
+      return grouped
+    },
+
+    async filterVisibleReportIds(reportIds: string[]): Promise<Set<string>> {
+      if (reportIds.length === 0) return new Set()
+      const rows = await sql<{ id: string }[]>`
+        SELECT id FROM reports
+        WHERE id = ANY(${reportIds}::uuid[])
+          AND deleted_at IS NULL
+          AND status = 'published'
+          AND visibility = 'public'
+      `
+      return new Set(rows.map((r) => r.id))
     },
 
     async findCleanupById(id: string, near: NearPoint | null): Promise<CleanupRecord | null> {
@@ -371,6 +635,42 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       }))
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Link helper (shared by createCleanupTx / linkReports / reconcileLinkedReports)
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a cleanup_reports row (ON CONFLICT DO NOTHING) + a 'report_linked' cleanup_timeline row for each
+ * report id that was NOT already linked, using the given tx tag (so it composes inside a larger
+ * transaction). Returns the ids that were newly linked (a duplicate id is skipped, keeping the link +
+ * its timeline row idempotent). An empty input is a no-op. The actor is recorded on both the junction
+ * (linked_by_user_id) and the timeline row.
+ */
+async function linkReportsInTx(
+  tx: Queryable,
+  cleanupId: string,
+  reportIds: string[],
+  actorId: string | null,
+): Promise<string[]> {
+  const newlyLinked: string[] = []
+  for (const reportId of reportIds) {
+    const inserted = await tx<{ id: string }[]>`
+      INSERT INTO cleanup_reports (cleanup_id, report_id, linked_by_user_id)
+      VALUES (${cleanupId}, ${reportId}, ${actorId})
+      ON CONFLICT (cleanup_id, report_id) DO NOTHING
+      RETURNING id
+    `
+    if (inserted.length > 0) {
+      newlyLinked.push(reportId)
+      await tx`
+        INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+        VALUES (${cleanupId}, 'report_linked', ${`Linked report ${reportId}`}, ${actorId})
+      `
+    }
+  }
+  return newlyLinked
 }
 
 // ---------------------------------------------------------------------------

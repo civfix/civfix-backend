@@ -25,16 +25,21 @@ import type {
   CleanupRecord,
   CleanupRepository,
   CreateCleanupTxArgs,
+  LinkedEventView,
+  LinkedReportView,
   ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
+  UpdateCleanupPatch,
 } from "../../src/services/cleanup-service.js"
+import type { EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 
 /** A stored cleanup (the persisted fields; geom is kept decoded as lat/lng). */
 interface StoredCleanup {
   id: string
   organizerUserId: string
   type: CleanupRecord["type"]
+  eventKind: EventKind
   title: string
   description: string | null
   lat: number
@@ -61,6 +66,28 @@ interface StoredUser {
   bio: string | null
 }
 
+/** A stored report (the subset the link galleries + visibility filter need). */
+interface StoredReport {
+  id: string
+  category: ReportCategory
+  title: string | null
+  status: ReportStatus
+  visibility: "public" | "hidden"
+  lat: number
+  lng: number
+  addr: string | null
+  thumbKey: string | null
+  deleted: boolean
+}
+
+/** A stored cleanup_reports junction row. */
+interface StoredLink {
+  cleanupId: string
+  reportId: string
+  linkedByUserId: string | null
+  linkedAt: Date
+}
+
 /**
  * Great-circle distance in metres between two lat/lng points (haversine). Used to mirror the Drizzle
  * impl's ST_Distance(geography) ordering for `near` listings closely enough for deterministic tests.
@@ -84,6 +111,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   readonly users = new Map<string, StoredUser>()
   /** Follow edges as "<followerId>:<followeeId>" so listAttendees can resolve isFollowing. */
   readonly follows = new Set<string>()
+  /** Reports seeded so the link galleries + the visibility filter resolve. */
+  readonly reports = new Map<string, StoredReport>()
+  /** cleanup_reports junction rows. */
+  readonly links: StoredLink[] = []
+  /** cleanup_timeline rows appended by link/unlink (kind + reportId + actor), inspectable by tests. */
+  readonly timeline: { cleanupId: string; kind: string; reportId: string; actorId: string | null }[] =
+    []
 
   /** Injectable clock so when-filters are deterministic. Defaults to real now. */
   now: () => Date = () => new Date()
@@ -105,12 +139,41 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     this.follows.add(`${followerId}:${followeeId}`)
   }
 
+  /** Test helper: seed a report so the link galleries + visibility filter resolve. Defaults to visible. */
+  seedReport(over: Partial<StoredReport> & { id?: string } = {}): StoredReport {
+    const report: StoredReport = {
+      id: over.id ?? randomUUID(),
+      category: over.category ?? "trash",
+      title: over.title ?? "Overflowing bin",
+      status: over.status ?? "published",
+      visibility: over.visibility ?? "public",
+      lat: over.lat ?? 34.0,
+      lng: over.lng ?? -118.49,
+      addr: over.addr ?? null,
+      thumbKey: over.thumbKey ?? null,
+      deleted: over.deleted ?? false,
+    }
+    this.reports.set(report.id, report)
+    return report
+  }
+
+  /** Test helper: seed a cleanup_reports link directly (bypassing the link path). */
+  seedLink(cleanupId: string, reportId: string, linkedByUserId: string | null = null): void {
+    this.links.push({ cleanupId, reportId, linkedByUserId, linkedAt: this.now() })
+  }
+
+  /** True when a report is visible (published+public, not deleted) - mirrors the SQL filter. */
+  private reportVisible(r: StoredReport | undefined): r is StoredReport {
+    return r !== undefined && !r.deleted && r.status === "published" && r.visibility === "public"
+  }
+
   /** Test helper: seed a cleanup directly (and optionally its organizer membership). */
   seedCleanup(over: Partial<StoredCleanup> & { id?: string }): StoredCleanup {
     const cleanup: StoredCleanup = {
       id: over.id ?? randomUUID(),
       organizerUserId: over.organizerUserId ?? randomUUID(),
       type: over.type ?? "site",
+      eventKind: over.eventKind ?? "cleanup",
       title: over.title ?? "Beach cleanup",
       description: over.description ?? null,
       lat: over.lat ?? 34.0,
@@ -152,6 +215,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       id: c.id,
       organizerUserId: c.organizerUserId,
       type: c.type,
+      eventKind: c.eventKind,
       title: c.title,
       description: c.description,
       lat: c.lat,
@@ -172,6 +236,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       id: args.cleanupId,
       organizerUserId: args.organizerUserId,
       type: args.type,
+      eventKind: args.eventKind,
       title: args.title,
       description: args.description,
       lat: args.lat,
@@ -188,12 +253,139 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!this.users.has(cleanup.organizerUserId)) {
       this.seedUser({ id: cleanup.organizerUserId })
     }
+    // Link the initial reports + record the 'report_linked' timeline rows (mirrors linkReportsInTx).
+    this.linkInner(cleanup.id, args.linkedReportIds, args.organizerUserId)
     return Promise.resolve(this.toRecord(cleanup, null))
   }
 
   findCleanupById(id: string, near: NearPoint | null): Promise<CleanupRecord | null> {
     const c = this.cleanups.get(id)
     return Promise.resolve(c ? this.toRecord(c, near) : null)
+  }
+
+  /** Link the given ids (skip already-linked) + record a 'report_linked' timeline row each. Returns added. */
+  private linkInner(cleanupId: string, reportIds: string[], actorId: string | null): string[] {
+    const added: string[] = []
+    for (const reportId of reportIds) {
+      const exists = this.links.some((l) => l.cleanupId === cleanupId && l.reportId === reportId)
+      if (exists) continue
+      this.links.push({ cleanupId, reportId, linkedByUserId: actorId, linkedAt: this.now() })
+      this.timeline.push({ cleanupId, kind: "report_linked", reportId, actorId })
+      added.push(reportId)
+    }
+    return added
+  }
+
+  updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean> {
+    const c = this.cleanups.get(id)
+    if (!c) return Promise.resolve(false)
+    if (patch.title !== undefined) c.title = patch.title
+    if (patch.description !== undefined) c.description = patch.description
+    if (patch.eventKind !== undefined) c.eventKind = patch.eventKind
+    if (patch.type !== undefined) c.type = patch.type
+    if (patch.scheduledAt !== undefined) c.scheduledAt = patch.scheduledAt
+    if (patch.lat !== undefined && patch.lng !== undefined) {
+      c.lat = patch.lat
+      c.lng = patch.lng
+    }
+    if (patch.address !== undefined) c.address = patch.address
+    if (patch.bring !== undefined) c.bring = patch.bring
+    return Promise.resolve(true)
+  }
+
+  linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]> {
+    return Promise.resolve(this.linkInner(cleanupId, reportIds, actorId))
+  }
+
+  unlinkReport(cleanupId: string, reportId: string, actorId: string | null): Promise<boolean> {
+    const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)
+    if (idx < 0) return Promise.resolve(false)
+    this.links.splice(idx, 1)
+    this.timeline.push({ cleanupId, kind: "report_unlinked", reportId, actorId })
+    return Promise.resolve(true)
+  }
+
+  reconcileLinkedReports(
+    cleanupId: string,
+    desiredIds: string[],
+    actorId: string | null,
+  ): Promise<{ added: string[]; removed: string[] }> {
+    const have = this.links.filter((l) => l.cleanupId === cleanupId).map((l) => l.reportId)
+    const want = new Set(desiredIds)
+    const toAdd = desiredIds.filter((id) => !have.includes(id))
+    const toRemove = have.filter((id) => !want.has(id))
+    const added = this.linkInner(cleanupId, toAdd, actorId)
+    for (const reportId of toRemove) {
+      const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)
+      if (idx >= 0) this.links.splice(idx, 1)
+      this.timeline.push({ cleanupId, kind: "report_unlinked", reportId, actorId })
+    }
+    return Promise.resolve({ added, removed: toRemove })
+  }
+
+  loadLinkedReportsForCleanups(cleanupIds: string[]): Promise<Map<string, LinkedReportView[]>> {
+    const ids = new Set(cleanupIds)
+    const grouped = new Map<string, LinkedReportView[]>()
+    // Newest links first (mirrors ORDER BY linked_at DESC).
+    const ordered = [...this.links]
+      .filter((l) => ids.has(l.cleanupId))
+      .sort((a, b) => b.linkedAt.getTime() - a.linkedAt.getTime())
+    for (const link of ordered) {
+      const r = this.reports.get(link.reportId)
+      // Only published+public, non-deleted reports leak into the gallery (held/hidden never).
+      if (!this.reportVisible(r)) continue
+      const view: LinkedReportView = {
+        cleanupId: link.cleanupId,
+        id: r.id,
+        category: r.category,
+        title: r.title,
+        status: r.status,
+        lat: r.lat,
+        lng: r.lng,
+        addr: r.addr,
+        thumbKey: r.thumbKey,
+        linkedAt: link.linkedAt,
+      }
+      const list = grouped.get(link.cleanupId)
+      if (list) list.push(view)
+      else grouped.set(link.cleanupId, [view])
+    }
+    return Promise.resolve(grouped)
+  }
+
+  loadLinkedEventsForReports(reportIds: string[]): Promise<Map<string, LinkedEventView[]>> {
+    const ids = new Set(reportIds)
+    const grouped = new Map<string, LinkedEventView[]>()
+    const ordered = [...this.links]
+      .filter((l) => ids.has(l.reportId))
+      .sort((a, b) => b.linkedAt.getTime() - a.linkedAt.getTime())
+    for (const link of ordered) {
+      const c = this.cleanups.get(link.cleanupId)
+      if (!c) continue
+      const view: LinkedEventView = {
+        reportId: link.reportId,
+        id: c.id,
+        title: c.title,
+        eventKind: c.eventKind,
+        scheduledAt: c.scheduledAt,
+        lat: c.lat,
+        lng: c.lng,
+        going: this.memberCountOf(c.id),
+        organizer: this.personView(c.organizerUserId),
+        linkedAt: link.linkedAt,
+      }
+      const list = grouped.get(link.reportId)
+      if (list) list.push(view)
+      else grouped.set(link.reportId, [view])
+    }
+    return Promise.resolve(grouped)
+  }
+
+  filterVisibleReportIds(reportIds: string[]): Promise<Set<string>> {
+    const visible = new Set(
+      reportIds.filter((id) => this.reportVisible(this.reports.get(id))),
+    )
+    return Promise.resolve(visible)
   }
 
   listCleanups(

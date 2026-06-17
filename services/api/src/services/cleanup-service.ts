@@ -32,8 +32,14 @@ import type {
   CleanupStatus,
   CleanupType,
   CreateCleanupRequest,
+  EventKind,
+  LinkedEventRef,
+  LinkedReportRef,
   ListCleanupsRequest,
   PersonDTO,
+  ReportCategory,
+  ReportStatus,
+  UpdateCleanupRequest,
 } from "@civfix/shared"
 
 // ---------------------------------------------------------------------------
@@ -71,6 +77,8 @@ export interface CleanupRecord {
   id: string
   organizerUserId: string
   type: CleanupType
+  /** cleanup vs other_volunteer (0018); only 'cleanup' events may link reports / show the gallery. */
+  eventKind: EventKind
   title: string
   description: string | null
   lat: number
@@ -88,12 +96,54 @@ export interface CleanupRecord {
   organizer: CleanupPersonView
 }
 
+/**
+ * A report linked to a cleanup, as loadLinkedReportsForCleanups projects it (geom decoded, the report's
+ * ready-media thumb resolved, the junction's linked_at carried). Only published+public reports are
+ * returned (held/hidden never leak). The service presigns `thumbKey` into the LinkedReportRef thumbUrl.
+ */
+export interface LinkedReportView {
+  /** The cleanup this link belongs to (so a batched load can regroup by cleanup). */
+  cleanupId: string
+  id: string
+  category: ReportCategory
+  title: string | null
+  status: ReportStatus
+  lat: number
+  lng: number
+  addr: string | null
+  /** The report's first ready-media thumb object key (or its r2 key), or null when no ready media. */
+  thumbKey: string | null
+  linkedAt: Date
+}
+
+/**
+ * A cleanup (event) a report is linked to, as loadLinkedEventsForReports projects it. Carries the
+ * organizer person fields + the going count + eventKind so the service can build the LinkedEventRef
+ * (which embeds a full PersonDTO organizer). `reportId` lets a batched load regroup by report.
+ */
+export interface LinkedEventView {
+  /** The report this link belongs to (so a batched load can regroup by report). */
+  reportId: string
+  id: string
+  title: string
+  eventKind: EventKind
+  scheduledAt: Date
+  lat: number
+  lng: number
+  going: number
+  organizer: CleanupPersonView
+  linkedAt: Date
+}
+
 /** The organizer's person fields as the read projects them (avatar gradient is derived in the service). */
 export interface CleanupPersonView {
   id: string
   displayName: string
   handle: string | null
   bio: string | null
+  /** Whether the organizer is document-verified (drives the event host's verified mark). Optional: a read
+   * that does not join user_verification leaves it undefined ⇒ rendered as not verified. */
+  verified?: boolean
 }
 
 /** An attendee row: the same person fields as the organizer view plus the viewer's follow relationship. */
@@ -121,6 +171,7 @@ export interface CreateCleanupTxArgs {
   cleanupId: string
   organizerUserId: string
   type: CleanupType
+  eventKind: EventKind
   title: string
   description: string | null
   lat: number
@@ -129,6 +180,26 @@ export interface CreateCleanupTxArgs {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
+  /**
+   * Report ids to link to the new event in the SAME create transaction. The repo inserts a cleanup_reports
+   * row + a cleanup_timeline 'report_linked' row per id (filtered to ids that exist; visibility is checked
+   * by the service before this call). Empty array = no links. Never set for a non-cleanup eventKind.
+   */
+  linkedReportIds: string[]
+}
+
+/** A scalar PATCH of an existing cleanup (only the supplied fields change). Geometry via lat+lng pair. */
+export interface UpdateCleanupPatch {
+  title?: string
+  description?: string | null
+  eventKind?: EventKind
+  type?: CleanupType
+  scheduledAt?: Date
+  /** lat+lng MUST be supplied together (the repo rebuilds geom only when both are present). */
+  lat?: number
+  lng?: number
+  address?: string | null
+  bring?: string[] | null
 }
 
 /** A point the caller can sort/measure distance from (for `near` listings). */
@@ -167,6 +238,47 @@ export interface CleanupRepository {
    * This is the atomicity guarantee that membership == chat membership from creation onward.
    */
   createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord>
+  /**
+   * Apply a scalar PATCH to an existing cleanup (only the supplied fields change). lat+lng (when both
+   * present) rebuild geom; supplying neither leaves the position untouched. Returns false when the cleanup
+   * does not exist. Does NOT touch links (the service reconciles those separately).
+   */
+  updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean>
+  /**
+   * Link reports to a cleanup: insert a cleanup_reports row (ON CONFLICT DO NOTHING) + a cleanup_timeline
+   * 'report_linked' row per id that did not already exist on the event, all in one transaction. Ignores
+   * ids already linked (idempotent). Returns the ids that were newly linked.
+   */
+  linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]>
+  /**
+   * Unlink ONE report from a cleanup: delete the cleanup_reports row + append a cleanup_timeline
+   * 'report_unlinked' row, in one transaction. Returns true when a link existed (and was removed), false
+   * when there was no such link (idempotent no-op).
+   */
+  unlinkReport(cleanupId: string, reportId: string, actorId: string | null): Promise<boolean>
+  /**
+   * Reconcile a cleanup's links to EXACTLY `desiredIds`: link the ids not yet linked, unlink the currently
+   * linked ids not in the desired set, each with its cleanup_timeline row. Returns the diff that was
+   * applied ({ added, removed }). The full-desired-set semantics back the PATCH `linkedReportIds`.
+   */
+  reconcileLinkedReports(
+    cleanupId: string,
+    desiredIds: string[],
+    actorId: string | null,
+  ): Promise<{ added: string[]; removed: string[] }>
+  /**
+   * Batched load of the reports linked to a set of cleanups, grouped by cleanup id. Only published+public
+   * (non-deleted) reports are returned (held/hidden never leak). An empty input yields an empty map.
+   */
+  loadLinkedReportsForCleanups(cleanupIds: string[]): Promise<Map<string, LinkedReportView[]>>
+  /**
+   * Batched load of the events (cleanups) a set of reports is linked to, grouped by report id. Carries the
+   * organizer person fields + going count + eventKind so the service builds the LinkedEventRef. An empty
+   * input yields an empty map.
+   */
+  loadLinkedEventsForReports(reportIds: string[]): Promise<Map<string, LinkedEventView[]>>
+  /** Which of the given report ids are visible (published+public, non-deleted)? Used to validate links. */
+  filterVisibleReportIds(reportIds: string[]): Promise<Set<string>>
   /**
    * Load a cleanup by id, decoding geom and joining the organizer + member count. `near` (when given)
    * adds the distance in metres. Returns null when the id does not exist.
@@ -241,6 +353,7 @@ export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolea
     followers: 0,
     following: 0,
     isFollowing,
+    ...(view.verified ? { verified: true } : {}),
   }
 }
 
@@ -257,12 +370,19 @@ export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
  * Project a CleanupRecord into the wire CleanupDTO. `joined` is supplied by the caller (it depends on the
  * viewer). `dist` is included only when the record carries a distance (a `near` listing). `address` is
  * echoed (null when never set). `bring` defaults to [] so the DTO's required array is always present.
+ * `linkedReports` (the cleanup-coverage gallery, default []) is supplied by the caller (hydrated only on
+ * the single-cleanup read; list rows omit it so the array default keeps them backward-compatible).
  */
-export function toCleanupDTO(record: CleanupRecord, joined: boolean): CleanupDTO {
+export function toCleanupDTO(
+  record: CleanupRecord,
+  joined: boolean,
+  linkedReports: LinkedReportRef[] = [],
+): CleanupDTO {
   return {
     id: record.id,
     title: record.title,
     type: record.type,
+    eventKind: record.eventKind,
     ...(record.description !== null ? { description: record.description } : {}),
     lat: record.lat,
     lng: record.lng,
@@ -274,6 +394,44 @@ export function toCleanupDTO(record: CleanupRecord, joined: boolean): CleanupDTO
     bring: record.bring ?? [],
     address: record.address,
     ...(record.dist !== null ? { dist: record.dist } : {}),
+    linkedReports,
+  }
+}
+
+/**
+ * Project a LinkedReportView into the wire LinkedReportRef. `thumbUrl` is the caller-resolved presigned
+ * URL for the report's thumb (or null/omitted when there is none). title falls back to a generic label so
+ * the ref's required `title` is always a string.
+ */
+export function toLinkedReportRef(
+  view: LinkedReportView,
+  thumbUrl: string | null,
+): LinkedReportRef {
+  return {
+    id: view.id,
+    category: view.category,
+    title: view.title ?? "Report",
+    status: view.status,
+    lat: view.lat,
+    lng: view.lng,
+    ...(view.addr !== null ? { addr: view.addr } : {}),
+    ...(thumbUrl !== null ? { thumbUrl } : {}),
+    linkedAt: view.linkedAt.toISOString(),
+  }
+}
+
+/** Project a LinkedEventView into the wire LinkedEventRef (organizer projected to a PersonDTO). */
+export function toLinkedEventRef(view: LinkedEventView): LinkedEventRef {
+  return {
+    id: view.id,
+    title: view.title,
+    eventKind: view.eventKind,
+    scheduledAt: view.scheduledAt.toISOString(),
+    lat: view.lat,
+    lng: view.lng,
+    going: view.going,
+    organizer: toOrganizerPerson(view.organizer),
+    linkedAt: view.linkedAt.toISOString(),
   }
 }
 
@@ -288,6 +446,12 @@ export interface CleanupViewer {
 
 export interface CleanupServiceDeps {
   repo: CleanupRepository
+  /**
+   * Presign (or otherwise render) a linked report's thumb object key into a client-usable URL, wrapping
+   * the Storage seam exactly like the report service. OPTIONAL: when omitted (offline tests), it defaults
+   * to an identity pass-through (returns the raw key) so a test still sees a thumb without a storage SDK.
+   */
+  presignThumb?: (thumbKey: string) => Promise<string>
   /** Injectable id factory (defaults to crypto.randomUUID) for deterministic tests. */
   newId?: () => string
   /** Injectable clock (defaults to Date.now) so created/scheduled comparisons are deterministic. */
@@ -296,6 +460,16 @@ export interface CleanupServiceDeps {
 
 export interface CleanupService {
   createCleanup(input: CreateCleanupRequest, organizerUserId: string): Promise<CleanupDTO>
+  /**
+   * Organizer edit (PATCH /cleanups/:id). HOST-GATED: the requester MUST be the organizer (else 403).
+   * Applies the scalar patch; when `linkedReportIds` is present it reconciles the link set (and rejects
+   * linking on a non-cleanup eventKind). Returns the updated CleanupDTO (hydrated linkedReports).
+   */
+  updateCleanup(
+    id: string,
+    patch: UpdateCleanupRequest,
+    requesterUserId: string,
+  ): Promise<CleanupDTO>
   listCleanups(
     req: ListCleanupsRequest,
     viewer: CleanupViewer,
@@ -310,6 +484,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const newId = deps.newId ?? (() => randomUUID())
   // `now` is reserved for future status transitions; reading it keeps the dep meaningful + lints clean.
   void (deps.now ?? (() => new Date()))
+  // Default to an identity pass-through (raw key) when no presigner is injected, so offline tests still
+  // see the seeded thumb key; production wires the real Storage presigner so the gallery thumb renders.
+  const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
 
   /** Resolve whether the viewer is a member of a cleanup (false for anonymous viewers, cheaply). */
   async function viewerJoined(cleanupId: string, viewer: CleanupViewer): Promise<boolean> {
@@ -317,18 +494,63 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return deps.repo.isMember(cleanupId, viewer.userId)
   }
 
+  /**
+   * Hydrate a single cleanup's linkedReports gallery (presigning each report's thumb). Empty for a
+   * non-cleanup eventKind (those carry no links). Used by getCleanup + updateCleanup.
+   */
+  async function hydrateLinkedReports(
+    cleanupId: string,
+    eventKind: EventKind,
+  ): Promise<LinkedReportRef[]> {
+    if (eventKind !== "cleanup") return []
+    const grouped = await deps.repo.loadLinkedReportsForCleanups([cleanupId])
+    const views = grouped.get(cleanupId) ?? []
+    return Promise.all(
+      views.map(async (v) => {
+        const thumbUrl = v.thumbKey !== null ? await presignThumb(v.thumbKey) : null
+        return toLinkedReportRef(v, thumbUrl)
+      }),
+    )
+  }
+
+  /**
+   * Validate that every requested link id is visible (published+public). Throws a VALIDATION error
+   * naming the offending ids otherwise, so a host cannot link a held/hidden/missing report.
+   */
+  async function assertReportsLinkable(reportIds: string[]): Promise<void> {
+    if (reportIds.length === 0) return
+    const visible = await deps.repo.filterVisibleReportIds(reportIds)
+    const bad = reportIds.filter((id) => !visible.has(id))
+    if (bad.length > 0) {
+      throw AppError.validation({ linkedReportIds: `not linkable: ${bad.join(", ")}` })
+    }
+  }
+
   return {
     async createCleanup(
       input: CreateCleanupRequest,
       organizerUserId: string,
     ): Promise<CleanupDTO> {
+      // CLEANUP-ONLY LINKING (decision 3): only a 'cleanup' event may carry linked reports; reject a
+      // create that asks to link reports on an other_volunteer event.
+      const linkedReportIds = input.linkedReportIds ?? []
+      if (input.eventKind !== "cleanup" && linkedReportIds.length > 0) {
+        throw AppError.validation({
+          linkedReportIds: "only cleanup events can link reports",
+        })
+      }
+      // Validate the requested links are visible (published+public) BEFORE the create tx so a bad id is a
+      // clean 422 rather than a silently-dropped link.
+      await assertReportsLinkable(linkedReportIds)
+
       const cleanupId = newId()
-      // Insert the cleanup + the organizer's membership in ONE transaction (membership == chat
-      // membership, atomic). status starts "upcoming". scheduledAt is the validated ISO string -> Date.
+      // Insert the cleanup + the organizer's membership + the junction rows + 'report_linked' timeline rows
+      // in ONE transaction (membership == chat membership, atomic). status starts "upcoming".
       const record = await deps.repo.createCleanupTx({
         cleanupId,
         organizerUserId,
         type: input.type,
+        eventKind: input.eventKind,
         title: input.title,
         description: input.description ?? null,
         lat: input.lat,
@@ -337,9 +559,78 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         status: "upcoming",
         bring: input.bring ?? null,
         address: input.address ?? null,
+        linkedReportIds,
       })
       // The organizer auto-joined, so joined=true. going reflects the freshly-counted membership (>=1).
-      return toCleanupDTO(record, true)
+      const linkedReports = await hydrateLinkedReports(cleanupId, record.eventKind)
+      return toCleanupDTO(record, true, linkedReports)
+    },
+
+    async updateCleanup(
+      id: string,
+      patch: UpdateCleanupRequest,
+      requesterUserId: string,
+    ): Promise<CleanupDTO> {
+      // HOST GATE: only the organizer may edit. Probe the organizer first so a missing cleanup 404s and a
+      // non-organizer 403s before any write.
+      const organizerId = await deps.repo.organizerOf(id)
+      if (organizerId === null) throw AppError.notFound("Cleanup not found")
+      if (organizerId !== requesterUserId) {
+        throw AppError.forbidden("Only the organizer can edit this event.")
+      }
+
+      // Resolve the effective eventKind AFTER the patch (the patch may change it) so the cleanup-only rule
+      // is enforced against the kind the event will have.
+      const current = await deps.repo.findCleanupById(id, null)
+      if (!current) throw AppError.notFound("Cleanup not found")
+      const effectiveKind = patch.eventKind ?? current.eventKind
+
+      // CLEANUP-ONLY LINKING (decision 3): reject a link reconcile on a non-cleanup event.
+      if (patch.linkedReportIds !== undefined && effectiveKind !== "cleanup") {
+        throw AppError.validation({
+          linkedReportIds: "only cleanup events can link reports",
+        })
+      }
+      // When the patch turns a cleanup INTO an other_volunteer event, its existing links must go (the
+      // gallery is cleanup-only). Reconcile to the empty set unless the caller is supplying their own.
+      const desiredLinks =
+        patch.linkedReportIds !== undefined
+          ? patch.linkedReportIds
+          : effectiveKind !== "cleanup"
+            ? []
+            : null
+
+      // Validate any newly desired links up front (clean 422 before the write).
+      if (desiredLinks !== null && desiredLinks.length > 0) {
+        await assertReportsLinkable(desiredLinks)
+      }
+
+      // Apply the scalar patch (the repo rebuilds geom only when both lat+lng are present).
+      const scalarPatch: UpdateCleanupPatch = {
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.description !== undefined ? { description: patch.description } : {}),
+        ...(patch.eventKind !== undefined ? { eventKind: patch.eventKind } : {}),
+        ...(patch.type !== undefined ? { type: patch.type } : {}),
+        ...(patch.scheduledAt !== undefined ? { scheduledAt: new Date(patch.scheduledAt) } : {}),
+        ...(patch.lat !== undefined ? { lat: patch.lat } : {}),
+        ...(patch.lng !== undefined ? { lng: patch.lng } : {}),
+        ...(patch.address !== undefined ? { address: patch.address } : {}),
+        ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
+      }
+      const updated = await deps.repo.updateCleanup(id, scalarPatch)
+      if (!updated) throw AppError.notFound("Cleanup not found")
+
+      // Reconcile links to the full desired set (when supplied or forced empty by a kind change).
+      if (desiredLinks !== null) {
+        await deps.repo.reconcileLinkedReports(id, desiredLinks, requesterUserId)
+      }
+
+      // Re-read the persisted state + hydrate the gallery for the response.
+      const record = await deps.repo.findCleanupById(id, null)
+      if (!record) throw AppError.notFound("Cleanup not found")
+      const joined = await deps.repo.isMember(id, requesterUserId)
+      const linkedReports = await hydrateLinkedReports(id, record.eventKind)
+      return toCleanupDTO(record, joined, linkedReports)
     },
 
     async listCleanups(
@@ -369,8 +660,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       // getCleanup has no `near` context, so distance is always null here.
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) throw AppError.notFound("Cleanup not found")
-      const joined = await viewerJoined(id, viewer)
-      return toCleanupDTO(record, joined)
+      const [joined, linkedReports] = await Promise.all([
+        viewerJoined(id, viewer),
+        hydrateLinkedReports(id, record.eventKind),
+      ])
+      return toCleanupDTO(record, joined, linkedReports)
     },
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {

@@ -99,6 +99,7 @@ describe("toPersonDTO", () => {
       bio: "hi",
       followers: 3,
       following: 7,
+      verified: false,
     }
     const dto = toPersonDTO(view, true)
     expect(dto).toEqual({
@@ -110,6 +111,7 @@ describe("toPersonDTO", () => {
       followers: 3,
       following: 7,
       isFollowing: true,
+      verified: false,
     })
   })
 })

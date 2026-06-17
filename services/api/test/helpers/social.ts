@@ -30,6 +30,8 @@ interface StoredUser {
   handle: string | null
   bio: string | null
   deletedAt: Date | null
+  /** Whether this user is document-verified (stand-in for a user_verification row with status='verified'). */
+  verified?: boolean
 }
 
 /** A stored follow edge. */
@@ -61,6 +63,7 @@ export class InMemorySocialRepository implements SocialRepository {
       handle: over.handle ?? null,
       bio: over.bio ?? null,
       deletedAt: over.deletedAt ?? null,
+      ...(over.verified !== undefined ? { verified: over.verified } : {}),
     }
     this.users.set(user.id, user)
     return user
@@ -93,6 +96,7 @@ export class InMemorySocialRepository implements SocialRepository {
       bio: u.bio,
       followers: this.follows.filter((f) => f.followeeId === u.id).length,
       following: this.follows.filter((f) => f.followerId === u.id).length,
+      verified: u.verified ?? false,
     }
   }
 
@@ -225,6 +229,7 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
     id,
     organizerUserId: over.organizerUserId,
     type: over.type ?? "site",
+    eventKind: over.eventKind ?? "cleanup",
     title: over.title ?? "Beach cleanup",
     description: over.description ?? null,
     lat: over.lat ?? 34.0,

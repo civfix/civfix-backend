@@ -93,11 +93,11 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
 
     // organizer creates two cleanups (different dates).
     const older = await cleanupService.createCleanup(
-      { title: "Older Sweep", type: "site", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z" },
+      { title: "Older Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z" },
       organizer,
     )
     const newer = await cleanupService.createCleanup(
-      { title: "Newer Sweep", type: "site", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z" },
+      { title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z" },
       organizer,
     )
     // attendee joins the older one.

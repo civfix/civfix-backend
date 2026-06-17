@@ -40,7 +40,14 @@ import type {
   AdminOrganizerRecord,
   ListEventsArgs,
 } from "./admin-event-service.js"
-import type { AdminEventCounts, EventStatus } from "@civfix/shared"
+import type { LinkedReportView } from "../cleanup-service.js"
+import type {
+  AdminEventCounts,
+  EventKind,
+  EventStatus,
+  ReportCategory,
+  ReportStatus,
+} from "@civfix/shared"
 import { likeContains } from "./like.js"
 
 /** A composable SQL fragment (postgres.js Fragment). */
@@ -86,6 +93,7 @@ interface EventRowSelect {
   id: string
   /** Raw stored cleanups.status (Phase-1 enum); mapped to EventStatus in toRecord. */
   status: string
+  event_kind: EventKind
   flagged: boolean
   title: string | null
   place: string | null
@@ -123,6 +131,7 @@ function toRecord(r: EventRowSelect): AdminEventRecord {
     // Map the stored Phase-1 cleanups.status -> the Phase-2 EventStatus DTO (H1); defensive so a legacy
     // active/done (or a previously-mis-stored Phase-2 value) never leaks an invalid EventStatus.
     status: toEventStatus(r.status),
+    eventKind: r.event_kind,
     flagged: r.flagged,
     title: r.title ?? "Cleanup",
     place: r.place ?? "",
@@ -153,6 +162,7 @@ function eventSelect(
     SELECT
       c.id,
       c.status,
+      c.event_kind,
       COALESCE((
         SELECT ct.kind = 'flag'
         FROM cleanup_timeline ct
@@ -427,6 +437,134 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           meta: { members: notified.length },
         })
         return { notified: notified.length }
+      })
+    },
+
+    async loadLinkedReports(id: string): Promise<LinkedReportView[]> {
+      // Only published+public, non-deleted reports leak into the gallery (held/hidden never). Same shape as
+      // the public cleanup read (geom decoded + first ready-media thumb key), newest links first.
+      const rows = await sql<
+        {
+          id: string
+          category: ReportCategory
+          title: string | null
+          status: ReportStatus
+          lng: number
+          lat: number
+          addr: string | null
+          thumb_key: string | null
+          linked_at: Date
+        }[]
+      >`
+        SELECT
+          r.id,
+          r.category,
+          r.title,
+          r.status,
+          ST_X(r.geom) AS lng,
+          ST_Y(r.geom) AS lat,
+          r.addr,
+          m.thumb_key,
+          cr.linked_at
+        FROM cleanup_reports cr
+        JOIN reports r ON r.id = cr.report_id
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(ma.thumb_key, ma.r2_key) AS thumb_key
+          FROM media_assets ma
+          WHERE ma.report_id = r.id AND ma.status = 'ready'
+          ORDER BY ma.created_at ASC
+          LIMIT 1
+        ) m ON true
+        WHERE cr.cleanup_id = ${id}
+          AND r.deleted_at IS NULL
+          AND r.status = 'published'
+          AND r.visibility = 'public'
+        ORDER BY cr.linked_at DESC, r.id
+      `
+      return rows.map((r) => ({
+        cleanupId: id,
+        id: r.id,
+        category: r.category,
+        title: r.title,
+        status: r.status,
+        lat: r.lat,
+        lng: r.lng,
+        addr: r.addr,
+        thumbKey: r.thumb_key,
+        linkedAt: r.linked_at,
+      }))
+    },
+
+    async linkReports(
+      id: string,
+      reportIds: string[],
+      actorId: string | null,
+    ): Promise<{ linked: string[] } | null> {
+      return sql.begin(async (tx) => {
+        const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
+        if (exists.length === 0) return null
+        // Only link visible (published+public, non-deleted) reports; a held/hidden/missing id is skipped.
+        const visible =
+          reportIds.length === 0
+            ? []
+            : (
+                await tx<{ id: string }[]>`
+                  SELECT id FROM reports
+                  WHERE id = ANY(${reportIds}::uuid[])
+                    AND deleted_at IS NULL AND status = 'published' AND visibility = 'public'
+                `
+              ).map((r) => r.id)
+        const linked: string[] = []
+        for (const reportId of visible) {
+          const inserted = await tx<{ id: string }[]>`
+            INSERT INTO cleanup_reports (cleanup_id, report_id, linked_by_user_id)
+            VALUES (${id}, ${reportId}, ${actorId})
+            ON CONFLICT (cleanup_id, report_id) DO NOTHING
+            RETURNING id
+          `
+          if (inserted.length > 0) {
+            linked.push(reportId)
+            await tx`
+              INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+              VALUES (${id}, 'report_linked', ${`Linked report ${reportId}`}, ${actorId})
+            `
+          }
+        }
+        await writeAudit(tx, {
+          actorId,
+          action: "event.reports_linked",
+          target: `cleanup:${id}`,
+          meta: { reportIds: linked },
+        })
+        return { linked }
+      })
+    },
+
+    async unlinkReport(
+      id: string,
+      reportId: string,
+      actorId: string | null,
+    ): Promise<boolean | null> {
+      return sql.begin(async (tx) => {
+        const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
+        if (exists.length === 0) return null
+        const removed = await tx<{ id: string }[]>`
+          DELETE FROM cleanup_reports
+          WHERE cleanup_id = ${id} AND report_id = ${reportId}
+          RETURNING id
+        `
+        if (removed.length === 0) return false
+        await tx`
+          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+          VALUES (${id}, 'report_unlinked', ${`Unlinked report ${reportId}`}, ${actorId})
+        `
+        await writeAudit(tx, {
+          actorId,
+          action: "event.report_unlinked",
+          target: `cleanup:${id}`,
+          meta: { reportId },
+        })
+        return true
       })
     },
   }

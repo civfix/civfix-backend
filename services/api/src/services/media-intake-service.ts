@@ -41,6 +41,7 @@ import type {
   FinalizeMediaResponse,
   MediaDTO,
   MediaKind,
+  MediaPurpose,
   MediaStatus,
 } from "@civfix/shared"
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
@@ -108,6 +109,12 @@ export interface MediaAssetView {
   width: number | null
   height: number | null
   byteSize: number | null
+  /**
+   * What this asset is FOR (0016). "verification" media is a SENSITIVE user-verification document that the
+   * public GET /media/:id path MUST refuse (it is reachable only via the authenticated owner / admin
+   * signed-URL routes). Optional so an in-memory test repo that omits it is treated as a normal "report".
+   */
+  purpose?: MediaPurpose
 }
 
 /** Fields inserted for a freshly-created upload row. */
@@ -304,6 +311,13 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
       // Visibility: only "ready" media is public. Not-yet-ready (validating/held/rejected) media has no
       // stored owner to authorize a preview against, so it is reported as not found (see file header).
       if (!asset || asset.status !== "ready") {
+        throw AppError.notFound("Media not found")
+      }
+      // SECURITY (0016): verification documents are SENSITIVE (ID scans / proof of residence) and must
+      // NEVER be served by the public media path, even once the worker promotes them to "ready". They are
+      // reachable only via the authenticated owner / admin signed-URL routes. 404 (not 403) keeps a
+      // verification media id indistinguishable from a non-existent one.
+      if (asset.purpose === "verification") {
         throw AppError.notFound("Media not found")
       }
 

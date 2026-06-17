@@ -177,11 +177,15 @@ export class PgUserStore implements UserStore {
   }
 
   async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
-    const updated = await this.db
-      .update(users)
-      .set({ handle: input.handle, displayName: input.displayName, profileComplete: true })
-      .where(eq(users.id, id))
-      .returning()
+    const set: Partial<typeof users.$inferInsert> = {
+      handle: input.handle,
+      displayName: input.displayName,
+      profileComplete: true,
+    }
+    // Only touch the bio when the caller supplied it (the bio editor); registration omits it. An empty
+    // string clears the bio; trimming/length are already enforced by the shared UpdateProfileRequest.
+    if (input.bio !== undefined) set.bio = input.bio === "" ? null : input.bio
+    const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.updateProfile: user not found")
     return toUserRecord(r)

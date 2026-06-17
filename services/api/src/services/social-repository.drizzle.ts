@@ -25,7 +25,7 @@ import type {
   SocialRepository,
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
-import type { CleanupStatus, CleanupType, UserSearchResultDTO } from "@civfix/shared"
+import type { CleanupStatus, CleanupType, EventKind, UserSearchResultDTO } from "@civfix/shared"
 
 /** Shape of a person row as selected for the directory/profile (counts joined inline). */
 interface PersonRowSelect {
@@ -35,6 +35,7 @@ interface PersonRowSelect {
   bio: string | null
   followers: number
   following: number
+  verified: boolean
 }
 
 /** The same shape plus the per-row isFollowing flag for the directory list. */
@@ -51,6 +52,7 @@ function toPersonView(r: PersonRowSelect): PersonView {
     bio: r.bio,
     followers: Number(r.followers),
     following: Number(r.following),
+    verified: r.verified,
   }
 }
 
@@ -59,6 +61,7 @@ interface CleanupRowSelect {
   id: string
   organizer_user_id: string
   type: CleanupType
+  event_kind: EventKind
   title: string
   description: string | null
   lng: number
@@ -86,6 +89,7 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     id: r.id,
     organizerUserId: r.organizer_user_id,
     type: r.type,
+    eventKind: r.event_kind,
     title: r.title,
     description: r.description,
     lat: r.lat,
@@ -151,6 +155,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.bio,
           (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
+          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
           ${followingExpr} AS is_following
         FROM users u
         WHERE u.deleted_at IS NULL
@@ -178,7 +183,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.handle,
           u.bio,
           (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
-          (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following
+          (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
+          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified
         FROM users u
         WHERE u.id = ${id} AND u.deleted_at IS NULL
         LIMIT 1
@@ -246,6 +252,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           c.id,
           c.organizer_user_id,
           c.type,
+          c.event_kind,
           c.title,
           c.description,
           ST_X(c.geom) AS lng,

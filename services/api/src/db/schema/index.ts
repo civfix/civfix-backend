@@ -25,9 +25,15 @@ export * from "./reports.js"
 export * from "./media.js"
 export * from "./timeline.js"
 
+// report discussion (threaded comments + reactions + city mentions). Canonical DDL:
+// drizzle/0017_report_discussion.sql.
+export * from "./discussion.js"
+
 // cleanups + chat
 export * from "./cleanups.js"
 export * from "./cleanup_members.js"
+// event <-> report junction (0018). The durable source of truth for an event<->report link.
+export * from "./cleanup_reports.js"
 export * from "./chat.js"
 
 // direct messages (1:1) + blocking (0009)
@@ -56,6 +62,7 @@ export * from "./audit.js"
 export * from "./jurisdiction_contacts.js"
 export * from "./gov_claims.js"
 export * from "./user_moderation.js"
+export * from "./user_verification.js"
 export * from "./moderation_items.js"
 export * from "./mail.js"
 export * from "./inbound_emails.js"

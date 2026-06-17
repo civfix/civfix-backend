@@ -44,6 +44,9 @@ import {
   type ReportServiceDeps,
 } from "../services/report-service.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
+import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
+import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
 import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
 import { BBoxQueryParam, CategoriesQueryParam } from "./query-encoding.js"
@@ -62,6 +65,8 @@ export interface ReportServiceOverrides {
   resolveJurisdictionGeoid?: ReportServiceDeps["resolveJurisdictionGeoid"]
   reverseGeocode?: ReportServiceDeps["reverseGeocode"]
   presignMedia?: ReportServiceDeps["presignMedia"]
+  loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
+  loadDiscussionMeta?: ReportServiceDeps["loadDiscussionMeta"]
   newId?: ReportServiceDeps["newId"]
   now?: ReportServiceDeps["now"]
 }
@@ -186,6 +191,12 @@ export async function registerReportRoutes(
           overrides.resolveJurisdictionGeoid ?? (() => Promise.resolve(null)),
         presignMedia: overrides.presignMedia ?? defaultPresign(container),
         ...(overrides.reverseGeocode !== undefined ? { reverseGeocode: overrides.reverseGeocode } : {}),
+        ...(overrides.loadLinkedEventsForReports !== undefined
+          ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
+          : {}),
+        ...(overrides.loadDiscussionMeta !== undefined
+          ? { loadDiscussionMeta: overrides.loadDiscussionMeta }
+          : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
@@ -193,8 +204,42 @@ export async function registerReportRoutes(
 
     const sql = container.getDb().sql
     const repo: ReportRepository = makeDrizzleReportRepository(sql)
+    // The cleanup repo backs the report's "linked events" gallery (loadLinkedEventsForReports). Reusing it
+    // keeps the event<->report link reads in one place; the report service stays decoupled via the seam.
+    const cleanupRepo = makeDrizzleCleanupRepository(sql)
+    // The discussion repo backs the report DETAIL's additive discussion/city meta (discussionCount +
+    // cityHandle/cityName + canForwardToCity). Reusing the SAME repo keeps the discussion reads in one
+    // place; the report service stays decoupled via the optional loadDiscussionMeta seam.
+    const discussionRepo = makeDrizzleDiscussionRepository(sql)
     return makeReportService({
       repo,
+      loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
+      // Additive discussion/city meta for GET /reports/:id. Best-effort (report-service swallows a throw):
+      // count the non-deleted top-level messages, and resolve the report's own jurisdiction handle/name +
+      // whether it has a contact email on file (so the client can offer "@city forward"). cityHandle uses
+      // the SAME effective-handle rule the discussion service uses (stored handle, else derived from name).
+      loadDiscussionMeta: async (reportId) => {
+        const [count, report] = await Promise.all([
+          discussionRepo.countTopLevel(reportId),
+          discussionRepo.findReportForDiscussion(reportId),
+        ])
+        const jurisdiction = report?.jurisdiction ?? null
+        return {
+          discussionCount: count,
+          cityHandle:
+            jurisdiction !== null
+              ? effectiveJurisdictionHandle({
+                  handle: jurisdiction.handle,
+                  name: jurisdiction.name,
+                })
+              : null,
+          cityName: jurisdiction?.name ?? null,
+          canForwardToCity:
+            jurisdiction !== null &&
+            jurisdiction.contactEmail !== null &&
+            jurisdiction.contactEmail !== "",
+        }
+      },
       resolveJurisdictionGeoid: async (lat, lng) => {
         const jurisdiction = makeJurisdictionService({
           sql,

@@ -25,7 +25,9 @@ function baseInput(over: Partial<CreateCleanupRequest> = {}): CreateCleanupReque
   return {
     title: over.title ?? "Beach cleanup",
     type: over.type ?? "site",
+    eventKind: over.eventKind ?? "cleanup",
     ...(over.description !== undefined ? { description: over.description } : {}),
+    ...(over.linkedReportIds !== undefined ? { linkedReportIds: over.linkedReportIds } : {}),
     lat: over.lat ?? 34.0,
     lng: over.lng ?? -118.49,
     scheduledAt: over.scheduledAt ?? new Date(Date.now() + 86_400_000).toISOString(),

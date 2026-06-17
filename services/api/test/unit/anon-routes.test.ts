@@ -103,6 +103,7 @@ async function makeHarness(): Promise<Harness> {
       media: [],
       mediaPending: 0,
       timeline: [],
+      linkedEvents: [],
     })
   }
   const claimService = makeClaimService({
