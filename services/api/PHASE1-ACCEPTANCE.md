@@ -200,7 +200,8 @@ The backend supports it via:
 ## 6. A crafted upload fails safely in the worker
 
 - The media.checks pipeline NEVER throws: any malformed/oversize/undecodable/unsupported input yields
-  `media_assets.status = rejected` (or `held` for an NSFW/near-duplicate policy hold) plus an
+  `media_assets.status = rejected` (or `held` for an NSFW policy hold; a near-duplicate is non-blocking,
+  see #43) plus an
   abuse_flag/log/GlitchTip event, and the job COMPLETES - a crafted upload cannot crash the worker or
   poison the queue. Code: `services/media-worker/src/jobs/media-checks.ts` (processMedia + the
   orchestrator), `src/sandbox/*` (execa args-array, hard timeouts, SIGKILL, maxBuffer; sharp

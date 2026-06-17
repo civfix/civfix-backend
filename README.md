@@ -134,7 +134,7 @@ The worker's `tsup` build inlines `@civfix/api` + `@civfix/shared` source into a
 
 Safe failure (Phase-1 done-criterion): `runMediaChecksJob` and the pure `processMedia` core NEVER
 throw. Any malformed/oversize/undecodable/unsupported input results in `media_assets.status =
-"rejected"` (or `held` for an NSFW/near-duplicate policy hold) plus an abuse_flag/log/GlitchTip event,
+"rejected"` (or `held` for an NSFW policy hold; a near-duplicate is non-blocking, see #43) plus an abuse_flag/log/GlitchTip event,
 and the job COMPLETES - a crafted upload can never crash the worker or poison the queue. This is proven
 by `services/media-worker/test/unit/media-checks.test.ts` running REAL sharp + REAL ffmpeg/ffprobe
 against crafted fixtures.
