@@ -475,6 +475,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       const near = filters.near ?? null
       const whenFilter = buildWhenFilter(sql, filters.when)
       const bboxFilter = buildBboxFilter(sql, filters.bbox)
+      const membershipFilter = buildMembershipFilter(sql, filters.when, filters.viewerId)
 
       if (near !== null) {
         // ----- near: order by distance ASC, id ASC; cursor is `${dist}:${id}` -----
@@ -493,6 +494,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ${goingJoin(sql)}
           WHERE TRUE
             ${whenFilter}
+            ${membershipFilter}
             ${bboxFilter}
             ${cursorFilter}
           ORDER BY dist ASC, c.id ASC
@@ -520,6 +522,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         ${goingJoin(sql)}
         WHERE TRUE
           ${whenFilter}
+          ${membershipFilter}
           ${bboxFilter}
           ${cursorFilter}
         ${order}
@@ -682,15 +685,30 @@ async function linkReportsInTx(
 
 /**
  * Time/status predicate fragment:
- *   - "upcoming": scheduled_at >= now() AND status <> 'cancelled'
+ *   - "upcoming" / "attending": scheduled_at >= now() AND status <> 'cancelled' (both are future windows;
+ *     "attending" adds a separate membership filter via buildMembershipFilter).
  *   - "past":     scheduled_at <  now()
  *   - omitted:    no time filter, but still excludes 'cancelled' (cancelled events are hidden).
  * Mirrors the GET /map/cleanups predicate so the list + map feeds agree.
  */
-function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | undefined) {
-  if (when === "upcoming") return sql`AND c.scheduled_at >= now() AND c.status <> 'cancelled'`
+function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending" | undefined) {
+  if (when === "upcoming" || when === "attending")
+    return sql`AND c.scheduled_at >= now() AND c.status <> 'cancelled'`
   if (when === "past") return sql`AND c.scheduled_at < now()`
   return sql`AND c.status <> 'cancelled'`
+}
+
+/**
+ * Viewer-membership predicate for `when: "attending"`: keep only events the viewer is a member of
+ * (organizer or RSVP'd member). Empty for every other `when`, and matches nothing when there is no viewer
+ * (a null user id makes the EXISTS clause false) - so an anonymous "attending" list comes back empty.
+ */
+function buildMembershipFilter(sql: Sql, when: string | undefined, viewerId: string | null | undefined) {
+  if (when !== "attending") return sql``
+  return sql`AND EXISTS (
+    SELECT 1 FROM cleanup_members cm
+    WHERE cm.cleanup_id = c.id AND cm.user_id = ${viewerId ?? null}
+  )`
 }
 
 /** Optional bbox intersection fragment (empty when no bbox). */

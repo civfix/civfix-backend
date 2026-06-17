@@ -220,6 +220,35 @@ describe("listCleanups filters", () => {
     expect(asBob.items.find((c) => c.id === created.id)?.joined).toBe(false)
   })
 
+  it("when=attending returns only the viewer's events (joined or hosted), soonest-first", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice", handle: "alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob", handle: "bob" })
+
+    // Hosted by BOB; ALICE RSVPs to it (the soonest of ALICE's events).
+    const rsvped = await service.createCleanup(
+      baseInput({ title: "RSVP", scheduledAt: new Date("2026-06-05T00:00:00.000Z").toISOString() }),
+      BOB,
+    )
+    await service.joinCleanup(rsvped.id, ALICE)
+    // Hosted by ALICE: the organizer auto-joins, so "attending" must include a hosted event too.
+    await service.createCleanup(
+      baseInput({ title: "Hosted", scheduledAt: new Date("2026-06-08T00:00:00.000Z").toISOString() }),
+      ALICE,
+    )
+    // Hosted by BOB, ALICE is NOT a member (and it is the soonest overall) -> must be excluded.
+    await service.createCleanup(
+      baseInput({ title: "Other", scheduledAt: new Date("2026-06-03T00:00:00.000Z").toISOString() }),
+      BOB,
+    )
+
+    const attending = await service.listCleanups({ when: "attending" }, { userId: ALICE })
+    expect(attending.items.map((c) => c.title)).toEqual(["RSVP", "Hosted"])
+
+    // Anonymous viewers have no memberships -> empty (short-circuited before any query).
+    const anon = await service.listCleanups({ when: "attending" }, { userId: null })
+    expect(anon.items).toEqual([])
+  })
+
   it("pages with a cursor (limit 1) over future cleanups", async () => {
     for (let i = 1; i <= 3; i++) {
       repo.seedCleanup({

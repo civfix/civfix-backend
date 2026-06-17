@@ -399,13 +399,20 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       c.lng >= bbox.west && c.lng <= bbox.east && c.lat >= bbox.south && c.lat <= bbox.north
 
     let all = [...this.cleanups.values()].filter((c) => {
-      // when filter (mirrors buildWhenFilter).
-      if (filters.when === "upcoming") {
+      // when filter (mirrors buildWhenFilter): "attending" shares the upcoming time window.
+      if (filters.when === "upcoming" || filters.when === "attending") {
         if (!(c.scheduledAt.getTime() >= nowMs && c.status !== "cancelled")) return false
       } else if (filters.when === "past") {
         if (!(c.scheduledAt.getTime() < nowMs)) return false
       } else if (c.status === "cancelled") {
         return false
+      }
+      // attending: keep only events the viewer is a member of (mirrors buildMembershipFilter). A null
+      // viewer matches nothing, so an anonymous "attending" list is empty.
+      if (filters.when === "attending") {
+        const viewerId = filters.viewerId ?? null
+        if (viewerId === null || !this.members.some((m) => m.cleanupId === c.id && m.userId === viewerId))
+          return false
       }
       // bbox filter.
       if (filters.bbox !== undefined && !inBox(c, filters.bbox)) return false

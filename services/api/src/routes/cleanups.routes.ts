@@ -82,7 +82,7 @@ const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 const ListCleanupsQuerySchema = z.object({
   bbox: BBoxQueryParam.optional(),
   near: LatLngQueryParam.optional(),
-  when: z.enum(["upcoming", "past"]).optional(),
+  when: z.enum(["upcoming", "past", "attending"]).optional(),
   cursor: z.string().optional(),
   limit: z.string().optional(),
 })

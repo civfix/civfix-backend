@@ -221,11 +221,17 @@ export interface CleanupBBox {
 
 /** Filters for listCleanups, resolved from ListCleanupsRequest by the service. */
 export interface ListCleanupsFilters {
-  when: "upcoming" | "past" | undefined
+  when: "upcoming" | "past" | "attending" | undefined
   bbox: CleanupBBox | undefined
   near: NearPoint | undefined
   cursor: string | null
   limit: number
+  /**
+   * The signed-in viewer (or null), used ONLY by `when: "attending"` to restrict the list to events the
+   * viewer is a member of (organizer or RSVP'd). Ignored for the other `when` values. Optional so existing
+   * non-attending callers/tests need not supply it; the service always sets it from the viewer.
+   */
+  viewerId?: string | null
 }
 
 /**
@@ -641,12 +647,18 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       req: ListCleanupsRequest,
       viewer: CleanupViewer,
     ): Promise<{ items: CleanupDTO[]; nextCursor: string | null }> {
+      // "attending" is viewer-scoped: an anonymous viewer has no memberships, so short-circuit to an empty
+      // page rather than issuing a membership query that can only return nothing.
+      if (req.when === "attending" && viewer.userId === null) {
+        return { items: [], nextCursor: null }
+      }
       const filters: ListCleanupsFilters = {
         when: req.when,
         bbox: req.bbox,
         near: req.near,
         cursor: req.cursor ?? null,
         limit: req.limit ?? CLEANUPS_DEFAULT_LIMIT,
+        viewerId: viewer.userId,
       }
       const { records, nextCursor } = await deps.repo.listCleanups(filters)
 
