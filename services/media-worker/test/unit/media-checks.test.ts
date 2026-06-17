@@ -211,7 +211,7 @@ describe("media.checks IMAGE path", () => {
     expect(env.repo.moderationEnqueues).toHaveLength(0)
   })
 
-  it("near-duplicate (repeated phash) -> held + abuse_flag reason phash_dup", async () => {
+  it("#43: a near-duplicate (repeated phash) is ALLOWED (ready, NOT held, no phash_dup flag)", async () => {
     // First upload: ready and its phash is now 'seen' by FakeAbuseChecks.
     const a = await fx.makeValidPng()
     const first = await seedAsset(env.storage, env.repo, "image", a)
@@ -221,18 +221,18 @@ describe("media.checks IMAGE path", () => {
     )
     expect(s1).toBe("ready")
 
-    // Second upload of the SAME bytes: identical phash -> FakeAbuseChecks reports a duplicate.
+    // Second upload of the SAME bytes: identical phash -> FakeAbuseChecks reports a duplicate. A
+    // near-duplicate is NON-BLOCKING (issue #43): the asset stays `ready` and visible (holding it hid
+    // legitimate report media and broke the gallery), and no phash_dup abuse_flag is raised (an open
+    // flag would also wedge anon-hold-release).
     const second = await seedAsset(env.storage, env.repo, "image", a)
     const s2 = await runMediaChecksJob(
       { mediaId: second.id, uploadId: second.uploadId, r2Key: second.r2Key, kind: "image" },
       env.deps,
     )
-    expect(s2).toBe("held")
-    expect(env.repo.flags).toContainEqual({
-      subjectId: second.id,
-      reason: "phash_dup",
-      source: "worker",
-    })
+    expect(s2).toBe("ready")
+    expect(env.repo.get(second.id)!.status).toBe("ready")
+    expect(env.repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
   })
 
   it("P0-2: re-processing the SAME asset does NOT mark it a near-duplicate of itself", async () => {
@@ -271,7 +271,10 @@ describe("media.checks IMAGE path", () => {
     expect(env.repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
   })
 
-  it("P0-2: a DIFFERENT asset with the same phash IS still held as a near-duplicate", async () => {
+  it("#43: a DIFFERENT (cross-report) asset with the same phash is ALLOWED, not held", async () => {
+    // The lookup STILL detects the cross-report match (its self-exclusion is for re-delivered jobs, P0-2)
+    // - but a near-duplicate no longer holds. The asset stays `ready`/visible and raises no phash_dup
+    // flag. This is the behavior change that makes a report's media reliably show (issue #43).
     const index = new Map<string, { phash: string; reportId: string | null }>()
     const findPhashDuplicate = (hash: string, opts?: { excludeAssetId?: string }) => {
       for (const [id, row] of index) {
@@ -294,20 +297,17 @@ describe("media.checks IMAGE path", () => {
     expect(s1).toBe("ready")
     index.set(first.id, { phash: env.repo.get(first.id)!.phash as string, reportId: "report-A" })
 
-    // Second, DISTINCT asset (different id, attached to report-B) with the SAME bytes -> same phash.
-    // Self-exclusion does not save it (it is a different row), so it is correctly held as a duplicate.
+    // Second, DISTINCT asset (different id, attached to report-B) with the SAME bytes -> same phash: a
+    // genuine cross-report near-duplicate. It is allowed through (ready) rather than held.
     const second = await seedAsset(env.storage, env.repo, "image", bytes)
     env.repo.get(second.id)!.reportId = "report-B"
     const s2 = await runMediaChecksJob(
       { mediaId: second.id, uploadId: second.uploadId, r2Key: second.r2Key, kind: "image" },
       env.deps,
     )
-    expect(s2).toBe("held")
-    expect(env.repo.flags).toContainEqual({
-      subjectId: second.id,
-      reason: "phash_dup",
-      source: "worker",
-    })
+    expect(s2).toBe("ready")
+    expect(env.repo.get(second.id)!.status).toBe("ready")
+    expect(env.repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
   })
 
   it("#43: a SIBLING asset with the same phash in the SAME report is NOT a near-duplicate", async () => {
@@ -361,19 +361,18 @@ describe("media.checks IMAGE path", () => {
     expect(env.repo.get(sibling.id)!.status).toBe("ready")
     expect(env.repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
 
-    // ...but the SAME bytes attached to a DIFFERENT report ARE still a cross-report duplicate -> held.
+    // ...and the SAME bytes attached to a DIFFERENT report (a genuine cross-report near-duplicate) is now
+    // ALSO allowed through rather than held (issue #43: near-duplicates are non-blocking). It is detected
+    // (the lookup returns dup:true) but stays ready/visible with no phash_dup flag.
     const other = await seedAsset(env.storage, env.repo, "image", bytes)
     env.repo.get(other.id)!.reportId = "report-other"
     const s3 = await runMediaChecksJob(
       { mediaId: other.id, uploadId: other.uploadId, r2Key: other.r2Key, kind: "image" },
       env.deps,
     )
-    expect(s3).toBe("held")
-    expect(env.repo.flags).toContainEqual({
-      subjectId: other.id,
-      reason: "phash_dup",
-      source: "worker",
-    })
+    expect(s3).toBe("ready")
+    expect(env.repo.get(other.id)!.status).toBe("ready")
+    expect(env.repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
   })
 
   it("each crafted bad image -> rejected row, no throw, GlitchTip notified", async () => {
@@ -729,7 +728,7 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     expect(repo.flags).toContainEqual({ subjectId: id, reason: "nsfw", source: "worker" })
   })
 
-  it("a near-duplicate (injected lookup reports dup) -> HELD + abuse_flag phash_dup", async () => {
+  it("#43: a near-duplicate (injected lookup reports dup) is ALLOWED (ready, no phash_dup flag)", async () => {
     const storage = new FakeStorage()
     const repo = new InMemoryWorkerRepo()
     const abuse = new RealAbuseChecks({
@@ -753,9 +752,11 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     repo.seed({ id, uploadId, kind: "image", r2Key })
     await storage.put(r2Key, Buffer.from(input), { contentType: "image/png" })
 
+    // Near-duplicates are non-blocking (issue #43): detected but allowed through as `ready`, no flag.
     const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
-    expect(status).toBe("held")
-    expect(repo.flags).toContainEqual({ subjectId: id, reason: "phash_dup", source: "worker" })
+    expect(status).toBe("ready")
+    expect(repo.get(id)!.status).toBe("ready")
+    expect(repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
   })
 })
 

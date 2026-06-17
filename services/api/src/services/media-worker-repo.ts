@@ -94,29 +94,14 @@ export interface MediaWorkerRepo {
   r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean>
   /**
    * Phase 2 MODERATION PRODUCER HOOK (optional). Enqueue a moderation_items row for a report whose media
-   * the worker just HELD (NSFW score over threshold, or a near-duplicate cluster). The kind is "image"
-   * for an NSFW hold and "duplicate" for a phash-duplicate hold; the report's media surfaces in the
-   * operator moderation detail. DEDUPED against an existing OPEN item for the report so a re-delivered
-   * job does not double-enqueue. Optional on the interface so the in-memory worker test fake need not
-   * implement it; the production impl below provides it.
-   *
-   * INTEGRATION POINT (documented, NOT auto-wired to keep the worker pipeline untouched): in
-   * services/media-worker/src/jobs/media-checks.ts, in the `result.status === "held"` branch of
-   * runMediaChecksJob (around the existing `log("media.checks: held", ...)` call), when the asset has a
-   * `reportId`, call:
-   *
-   *     if (asset.reportId && deps.repo.enqueueHeldModerationItem) {
-   *       await deps.repo
-   *         .enqueueHeldModerationItem({
-   *           reportId: asset.reportId,
-   *           reason: result.flags.some((f) => f.reason === "phash_dup")
-   *             ? "Near-duplicate cluster"
-   *             : "NSFW model over threshold",
-   *           kind: result.flags.some((f) => f.reason === "phash_dup") ? "duplicate" : "image",
-   *           note: result.note ?? null,
-   *         })
-   *         .catch((err) => log("media.checks: moderation enqueue failed (non-fatal)", { err: String(err) }))
-   *     }
+   * the worker just HELD. A `held` status now only ever means an NSFW policy hold (kind "image") - a
+   * perceptual near-duplicate is non-blocking and stays `ready`, so the worker no longer auto-enqueues a
+   * "duplicate" moderation item (issue #43; `kind: "duplicate"` remains a valid moderation kind for
+   * manual/operator use). The report's media surfaces in the operator moderation detail. DEDUPED against
+   * an existing OPEN item for the report so a re-delivered job does not double-enqueue. Optional on the
+   * interface so the in-memory worker test fake need not implement it; the production impl below provides
+   * it. It is wired in services/media-worker/src/jobs/media-checks.ts in the `result.status === "held"`
+   * branch of runMediaChecksJob.
    *
    * This is intentionally a best-effort, non-fatal call (a moderation-enqueue failure must not flip an
    * already-correct media hold into a job failure), mirroring the existing best-effort abuse_flag insert.

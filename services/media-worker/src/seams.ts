@@ -198,21 +198,27 @@ async function buildRealAbuseChecks(
  * a bounded Hamming distance. The query is read-only and fail-safe at the call site (the media pipeline
  * treats a dedupe error as "not a duplicate").
  *
+ * NON-BLOCKING CONSUMER (issue #43): the pipeline (applyAbuseSeams) now treats a near-duplicate as a
+ * NON-blocking signal - it is detected/logged but the asset is NOT held and no phash_dup flag is raised
+ * (auto-holding silently hid legitimate report media and broke the gallery). This lookup is unchanged
+ * and still reports `{ dup: true, ofReportId }`; the two exclusions below keep that REPORTED signal
+ * accurate (no self/sibling false positive) even though it no longer drives a hold.
+ *
  * SELF-EXCLUSION (P0-2): the asset being processed already has its OWN row (with a report_id set at
  * report-create) and, after its first run, its OWN persisted phash. A re-delivered/double-enqueued
  * media.checks job recomputes the identical phash; without excluding the current asset the lookup would
- * match the asset's own row and flag it a near-duplicate of itself - flipping a clean asset to held with
- * a bogus phash_dup flag (which, for an anon report, then blocks hold-release forever). `excludeAssetId`
- * (threaded from the processing asset's id) adds `AND id <> $selfId` so the asset can never be its own
- * duplicate; a genuinely different asset sharing the phash still matches.
+ * match the asset's own row and report it a near-duplicate of itself - a bogus self-match signal (and,
+ * back when a dup held the asset, a clean upload flipped to held forever). `excludeAssetId` (threaded
+ * from the processing asset's id) adds `AND id <> $selfId` so the asset can never be its own duplicate;
+ * a genuinely different asset sharing the phash still matches.
  *
  * CROSS-REPORT SCOPING (issue #43): a single report can carry MULTIPLE photos. Without scoping, two
- * SIBLING photos of the same report that happen to share a phash flag each other as duplicates, holding
- * all-but-one - and the report-detail read path only returns `ready` media, so the gallery shows just
- * one. `excludeReportId` (threaded from the processing asset's own report_id) adds
- * `AND report_id IS DISTINCT FROM $excludeReportId` so a sibling in the SAME report is never a duplicate;
- * a genuine CROSS-report duplicate still matches and is still held. When `excludeReportId` is omitted
- * (e.g. an unattached upload with a null report_id) the predicate is skipped and behavior is unchanged.
+ * SIBLING photos of the same report that happen to share a phash would each be reported as a duplicate
+ * of the other. `excludeReportId` (threaded from the processing asset's own report_id) adds
+ * `AND report_id IS DISTINCT FROM $excludeReportId` so a sibling in the SAME report is never reported as
+ * a duplicate; a genuine CROSS-report duplicate still matches (and is now allowed through by the
+ * non-blocking consumer above). When `excludeReportId` is omitted (e.g. an unattached upload with a null
+ * report_id) the predicate is skipped and behavior is unchanged.
  */
 function makePhashDuplicateLookup(dbHandle: DbHandle): FindPhashDuplicateFn {
   return async (

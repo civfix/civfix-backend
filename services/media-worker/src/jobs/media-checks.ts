@@ -35,9 +35,10 @@
  *     enforced (P2-1) on top of the per-tool timeouts - a wall-clock overrun is a safe "rejected".
  *
  * Status mapping:
- *   ready     - decoded/validated clean, below NSFW threshold, not a near-duplicate.
- *   held      - NSFW score >= threshold (policy hold; abuse_flag reason "nsfw"). Also used for a
- *               near-duplicate hold (abuse_flag reason "phash_dup").
+ *   ready     - decoded/validated clean, below NSFW threshold. A perceptual near-duplicate is ALLOWED
+ *               through (recorded in the result note, never held) - holding silently hid legitimate
+ *               report media and broke the gallery; see applyAbuseSeams + issue #43.
+ *   held      - NSFW score >= threshold (policy hold; abuse_flag reason "nsfw").
  *   rejected  - any unsafe/invalid input (undecodable, wrong magic, pixel bomb, oversize, unsupported
  *               codec/duration, ffprobe/ffmpeg/timeout failure).
  *
@@ -177,11 +178,25 @@ async function applyAbuseSeams(
     return { status: "held", flags: [{ reason: "nsfw" }], note: `nsfw score ${nsfw.toFixed(3)}` }
   }
 
-  // Near-duplicate: fail OPEN (a dedupe outage must not reject good uploads). Only consult the seam
-  // when we actually have a perceptual hash. Prefer the self-aware lookup (excludes THIS asset's own row
-  // so a re-delivered job is not a duplicate of itself, P0-2; and scopes to CROSS-report only so a
-  // sibling photo of the SAME report is not a duplicate, issue #43); fall back to the plain
-  // isNearDuplicate.
+  // Near-duplicate: NON-BLOCKING (issue #43). We DETECT a perceptual near-duplicate (for the log note,
+  // and so the persisted phash can later power a non-destructive "related reports" surface) but we NEVER
+  // hold the asset on it and NEVER raise the phash_dup abuse_flag. Rationale:
+  //   - On a civic-reporting platform a cross-report perceptual match is overwhelmingly LEGITIMATE: two
+  //     residents photograph the same hazard, one resident files related reports, the same public scene
+  //     is re-shot. It is not harmful content the way NSFW is.
+  //   - Auto-holding silently HID that media: a `held` row is stripped from the report read path for
+  //     EVERYONE (it is not `ready`, and `held`/`rejected` are never returned even to the owner), so the
+  //     report-detail gallery collapsed to an empty section with no feedback. That is exactly issue #43
+  //     ("gallery only showing 1 image even if multiple are uploaded" -> after the prior partial fix,
+  //     "2+ uploaded images show nothing at all"): siblings/cross-report matches were held -> never
+  //     `ready` -> invisible.
+  //   - It also wedged ANONYMOUS reports: an open phash_dup abuse_flag (or any held media) keeps an anon
+  //     report `held` forever via the anon-hold-release gate, with no path to release.
+  // So a near-duplicate falls through to `ready` like any clean upload. This is consistent with the
+  // dedupe-OUTAGE policy below (a dedupe issue must never block a legitimate upload) - we now apply the
+  // same fail-open stance to a dedupe HIT. NSFW above still fails CLOSED (held); a visual duplicate does
+  // not. Only consult the seam when we actually have a perceptual hash; prefer the self-aware lookup
+  // (excludes THIS asset's own row, P0-2, and scopes CROSS-report, #43) so the note is accurate.
   if (phash !== null) {
     try {
       const dup = deps.findPhashDuplicate
@@ -191,12 +206,7 @@ async function applyAbuseSeams(
           })
         : await deps.abuseChecks.isNearDuplicate(phash)
       if (dup.dup) {
-        flags.push({ reason: "phash_dup" })
-        return {
-          status: "held",
-          flags,
-          note: `near-duplicate of ${dup.ofReportId ?? "unknown"}`,
-        }
+        note = `near-duplicate of ${dup.ofReportId ?? "unknown"} (allowed, not held)`
       }
     } catch (err) {
       note = errNote("dedupe check failed (ignored)", err)
@@ -640,13 +650,15 @@ export async function runMediaChecksJob(
     // M3: surface the held MEDIA to the operator moderation queue. Best-effort + non-fatal (a
     // moderation-enqueue failure must not flip an already-correct media hold into a job failure), guarded
     // by the optional repo method + a present reportId, and deduped against an open item in the impl.
+    // A `held` status now only ever means an NSFW policy hold (a perceptual near-duplicate is
+    // non-blocking and stays `ready` - see applyAbuseSeams + issue #43), so the moderation item is the
+    // NSFW one. (`kind: "duplicate"` stays a valid moderation kind for manual/operator use.)
     if (asset.reportId && deps.repo.enqueueHeldModerationItem) {
-      const isDup = result.flags.some((f) => f.reason === "phash_dup")
       await deps.repo
         .enqueueHeldModerationItem({
           reportId: asset.reportId,
-          reason: isDup ? "Near-duplicate cluster" : "NSFW model over threshold",
-          kind: isDup ? "duplicate" : "image",
+          reason: "NSFW model over threshold",
+          kind: "image",
           note: result.note ?? null,
         })
         .catch((err) =>
