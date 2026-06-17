@@ -310,6 +310,72 @@ describe("media.checks IMAGE path", () => {
     })
   })
 
+  it("#43: a SIBLING asset with the same phash in the SAME report is NOT a near-duplicate", async () => {
+    // A single report can carry multiple photos. The production lookup is scoped CROSS-report (the asset's
+    // own report_id is threaded as excludeReportId and the query adds report_id IS DISTINCT FROM it), so
+    // two sibling photos of the SAME report sharing a phash must NOT flag each other -> both stay ready.
+    // Mirror makePhashDuplicateLookup exactly: honor BOTH excludeAssetId (P0-2) AND excludeReportId (#43).
+    const index = new Map<string, { phash: string; reportId: string | null }>()
+    const findPhashDuplicate = (
+      hash: string,
+      opts?: { excludeAssetId?: string; excludeReportId?: string },
+    ) => {
+      for (const [id, row] of index) {
+        if (
+          row.phash === hash &&
+          row.reportId !== null &&
+          id !== opts?.excludeAssetId &&
+          // CROSS-report scoping: a row in the SAME report as the processing asset is excluded.
+          row.reportId !== opts?.excludeReportId
+        ) {
+          return Promise.resolve({ dup: true, ofReportId: row.reportId })
+        }
+      }
+      return Promise.resolve({ dup: false })
+    }
+    const env = makeDeps({ findPhashDuplicate })
+
+    // First sibling (report-shared) processes ready and is recorded in the index.
+    const bytes = await fx.makeValidPng()
+    const first = await seedAsset(env.storage, env.repo, "image", bytes)
+    env.repo.get(first.id)!.reportId = "report-shared"
+    const s1 = await runMediaChecksJob(
+      { mediaId: first.id, uploadId: first.uploadId, r2Key: first.r2Key, kind: "image" },
+      env.deps,
+    )
+    expect(s1).toBe("ready")
+    index.set(first.id, {
+      phash: env.repo.get(first.id)!.phash as string,
+      reportId: "report-shared",
+    })
+
+    // Second, DISTINCT asset with the SAME bytes (-> same phash) but in the SAME report. CROSS-report
+    // scoping means it is NOT a duplicate of its sibling, so it must also be ready (the #43 gallery fix).
+    const sibling = await seedAsset(env.storage, env.repo, "image", bytes)
+    env.repo.get(sibling.id)!.reportId = "report-shared"
+    const s2 = await runMediaChecksJob(
+      { mediaId: sibling.id, uploadId: sibling.uploadId, r2Key: sibling.r2Key, kind: "image" },
+      env.deps,
+    )
+    expect(s2).toBe("ready")
+    expect(env.repo.get(sibling.id)!.status).toBe("ready")
+    expect(env.repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
+
+    // ...but the SAME bytes attached to a DIFFERENT report ARE still a cross-report duplicate -> held.
+    const other = await seedAsset(env.storage, env.repo, "image", bytes)
+    env.repo.get(other.id)!.reportId = "report-other"
+    const s3 = await runMediaChecksJob(
+      { mediaId: other.id, uploadId: other.uploadId, r2Key: other.r2Key, kind: "image" },
+      env.deps,
+    )
+    expect(s3).toBe("held")
+    expect(env.repo.flags).toContainEqual({
+      subjectId: other.id,
+      reason: "phash_dup",
+      source: "worker",
+    })
+  })
+
   it("each crafted bad image -> rejected row, no throw, GlitchTip notified", async () => {
     const bad: { name: string; bytes: Uint8Array }[] = [
       { name: "garbage", bytes: fx.makeGarbageImage() },

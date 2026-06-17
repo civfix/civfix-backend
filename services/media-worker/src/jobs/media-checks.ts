@@ -100,6 +100,13 @@ export interface ProcessInput {
    * Optional so pure-core unit tests that only assert decode/strip behavior can omit it.
    */
   selfAssetId?: string
+  /**
+   * The report the processing asset belongs to. Threaded into the near-duplicate lookup as
+   * excludeReportId so SIBLING photos of the SAME report are never flagged duplicates of each other
+   * (issue #43 - the dedupe is scoped to CROSS-report only). Optional/nullable: an unattached upload has
+   * no report yet, and pure-core unit tests may omit it.
+   */
+  selfReportId?: string | null
 }
 
 export interface ProcessDeps {
@@ -150,6 +157,7 @@ async function applyAbuseSeams(
   phash: string | null,
   deps: ProcessDeps,
   selfAssetId?: string,
+  selfReportId?: string | null,
 ): Promise<{ status: MediaStatus; flags: PipelineFlag[]; note: string | null }> {
   const flags: PipelineFlag[] = []
   let note: string | null = null
@@ -171,11 +179,16 @@ async function applyAbuseSeams(
 
   // Near-duplicate: fail OPEN (a dedupe outage must not reject good uploads). Only consult the seam
   // when we actually have a perceptual hash. Prefer the self-aware lookup (excludes THIS asset's own row
-  // so a re-delivered job is not a duplicate of itself, P0-2); fall back to the plain isNearDuplicate.
+  // so a re-delivered job is not a duplicate of itself, P0-2; and scopes to CROSS-report only so a
+  // sibling photo of the SAME report is not a duplicate, issue #43); fall back to the plain
+  // isNearDuplicate.
   if (phash !== null) {
     try {
       const dup = deps.findPhashDuplicate
-        ? await deps.findPhashDuplicate(phash, { excludeAssetId: selfAssetId })
+        ? await deps.findPhashDuplicate(phash, {
+            excludeAssetId: selfAssetId,
+            ...(selfReportId != null ? { excludeReportId: selfReportId } : {}),
+          })
         : await deps.abuseChecks.isNearDuplicate(phash)
       if (dup.dup) {
         flags.push({ reason: "phash_dup" })
@@ -198,6 +211,7 @@ async function processImageBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
   selfAssetId?: string,
+  selfReportId?: string | null,
 ): Promise<MediaProcessResult> {
   let img: Awaited<ReturnType<typeof processImage>>
   try {
@@ -214,7 +228,7 @@ async function processImageBytes(
     phash = null
   }
 
-  const seam = await applyAbuseSeams(bytes, phash, deps, selfAssetId)
+  const seam = await applyAbuseSeams(bytes, phash, deps, selfAssetId, selfReportId)
 
   return {
     status: seam.status,
@@ -319,7 +333,7 @@ export async function processMedia(
       )
     }
     if (input.kind === "image") {
-      return await processImageBytes(input.bytes, deps, input.selfAssetId)
+      return await processImageBytes(input.bytes, deps, input.selfAssetId, input.selfReportId)
     }
     return await processVideoBytes(input.bytes, deps)
   } catch (err) {
@@ -514,9 +528,11 @@ export async function runMediaChecksJob(
   try {
     result = await withJobTimeout(
       // Pass the asset id (selfAssetId) so the dedupe lookup excludes this asset's own row (P0-2), and
-      // forward the self-aware lookup so processMedia uses it over the plain isNearDuplicate.
+      // the asset's report (selfReportId) so the lookup is scoped CROSS-report and siblings of the same
+      // report are not flagged duplicates of each other (issue #43); forward the self-aware lookup so
+      // processMedia uses it over the plain isNearDuplicate.
       processMedia(
-        { bytes, kind: asset.kind, selfAssetId: asset.id },
+        { bytes, kind: asset.kind, selfAssetId: asset.id, selfReportId: asset.reportId },
         {
           abuseChecks: deps.abuseChecks,
           limits: deps.limits,
