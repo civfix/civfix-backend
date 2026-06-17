@@ -205,19 +205,29 @@ async function buildRealAbuseChecks(
  * a bogus phash_dup flag (which, for an anon report, then blocks hold-release forever). `excludeAssetId`
  * (threaded from the processing asset's id) adds `AND id <> $selfId` so the asset can never be its own
  * duplicate; a genuinely different asset sharing the phash still matches.
+ *
+ * CROSS-REPORT SCOPING (issue #43): a single report can carry MULTIPLE photos. Without scoping, two
+ * SIBLING photos of the same report that happen to share a phash flag each other as duplicates, holding
+ * all-but-one - and the report-detail read path only returns `ready` media, so the gallery shows just
+ * one. `excludeReportId` (threaded from the processing asset's own report_id) adds
+ * `AND report_id IS DISTINCT FROM $excludeReportId` so a sibling in the SAME report is never a duplicate;
+ * a genuine CROSS-report duplicate still matches and is still held. When `excludeReportId` is omitted
+ * (e.g. an unattached upload with a null report_id) the predicate is skipped and behavior is unchanged.
  */
 function makePhashDuplicateLookup(dbHandle: DbHandle): FindPhashDuplicateFn {
   return async (
     hash: string,
-    opts?: { excludeAssetId?: string },
+    opts?: { excludeAssetId?: string; excludeReportId?: string },
   ): Promise<NearDuplicateResult> => {
     const excludeId = opts?.excludeAssetId ?? null
+    const excludeReportId = opts?.excludeReportId ?? null
     const rows = await dbHandle.sql<{ report_id: string | null }[]>`
       SELECT report_id
       FROM media_assets
       WHERE phash = ${hash}
         AND report_id IS NOT NULL
         ${excludeId !== null ? dbHandle.sql`AND id <> ${excludeId}` : dbHandle.sql``}
+        ${excludeReportId !== null ? dbHandle.sql`AND report_id IS DISTINCT FROM ${excludeReportId}` : dbHandle.sql``}
       ORDER BY created_at ASC
       LIMIT 1
     `

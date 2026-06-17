@@ -33,12 +33,21 @@ export type PerceptualHashFn = (buffer: Uint8Array) => Promise<string>
 export type NsfwScoreFn = (buffer: Uint8Array) => Promise<number>
 
 /**
- * Options for a near-duplicate lookup. `excludeAssetId` is the id of the asset CURRENTLY being processed
- * so the query never matches the asset against its OWN persisted row (a job re-delivery recomputes the
- * same phash, and without this exclusion the asset would be flagged a near-duplicate of itself - P0-2).
+ * Options for a near-duplicate lookup.
+ *
+ * `excludeAssetId` is the id of the asset CURRENTLY being processed so the query never matches the asset
+ * against its OWN persisted row (a job re-delivery recomputes the same phash, and without this exclusion
+ * the asset would be flagged a near-duplicate of itself - P0-2).
+ *
+ * `excludeReportId` is the report the processing asset itself belongs to, so the lookup is scoped to
+ * CROSS-REPORT duplicates only: a sibling photo of the SAME report must never be flagged a duplicate of
+ * another photo in that report (issue #43 - sibling photos of one report share no phash collision policy;
+ * holding all-but-one made the report-detail gallery show only a single media). Omitted -> unchanged
+ * behavior (cross-report dedup still applies to assets with a null report_id, e.g. unattached uploads).
  */
 export interface FindPhashDuplicateOpts {
   excludeAssetId?: string
+  excludeReportId?: string
 }
 
 /** An injected near-duplicate lookup over an existing phash index (e.g. a media_assets query). */
