@@ -116,6 +116,14 @@ export interface NotificationRepository {
   /** Set read_at=now for the given ids that BELONG to the user (others are ignored). */
   markRead(userId: string, ids: string[]): Promise<void>
 
+  /**
+   * Clear (mark read) the user's still-unread notifications of a given type whose link matches exactly.
+   * Used to dismiss the bell for a conversation when its messages are read (e.g. type='dm' + the dm
+   * thread link, or type='cleanup_chat' + the cleanup link). The user_id + read_at IS NULL guards mirror
+   * markRead (only the user's own, still-unread rows are touched).
+   */
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
+
   /** Load a user's prefs row, or null when none exists yet. */
   findPrefs(userId: string): Promise<NotificationPrefsRecord | null>
 
@@ -297,6 +305,12 @@ export interface NotificationService extends SocialNotifier {
   registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }>
   /** Record a notification row + best-effort inline push. Returns the persisted row's DTO. */
   createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO>
+  /**
+   * Clear (mark read) the user's unread notifications of `type` whose `link` matches exactly, then fire the
+   * `{topic:"notifications"}` signal so an open bell refreshes. Best-effort on the signal (the rows are
+   * cleared regardless). Used by the read paths to dismiss the bell for a conversation that was just read.
+   */
+  clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
 }
 
 export function makeNotificationService(deps: NotificationServiceDeps): NotificationService {
@@ -455,6 +469,18 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
 
     createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO> {
       return doCreateNotification(userId, input)
+    },
+
+    async clearByTypeAndLink(
+      userId: string,
+      type: NotificationType,
+      link: string,
+    ): Promise<void> {
+      // Clear the matching unread rows (the in-app feed badge is authoritative; this dismisses the bell for
+      // a conversation that was just read), then fire the same realtime signal createNotification uses so an
+      // open bell refreshes now. The signal is best-effort (maybeSignalNotification swallows + logs).
+      await deps.repo.clearByTypeAndLink(userId, type, link)
+      await maybeSignalNotification(userId)
     },
 
     async onNewFollower(args: {

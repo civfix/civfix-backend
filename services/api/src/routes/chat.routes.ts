@@ -17,6 +17,7 @@ import fastifyWebsocket from "@fastify/websocket"
 import {
   PaginationQuerySchema,
   AppError,
+  type ChatMessageDTO,
   type ListThreadsResponse,
 } from "@civfix/shared"
 import { ZodError, type z, type ZodTypeAny } from "zod"
@@ -35,6 +36,8 @@ import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.dri
 import { THREAD_SIGNAL_MEMBER_CAP } from "../services/cleanup-service.js"
 import { makeDrizzleThreadsRepository } from "../services/threads-repository.drizzle.js"
 import { makeDrizzleChatReadState } from "../services/chat-read-state.drizzle.js"
+import { makeNotificationService, type NotificationService } from "../services/notification-service.js"
+import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import {
@@ -65,6 +68,12 @@ export interface ChatGatewayOverrides {
   dmRepo?: DmRepository
   /** Injected blocks repository (tests/dev): backs the gateway block check + the block routes. */
   blocksRepo?: BlocksRepository
+  /**
+   * Injected notification service (tests): backs the dm bell-notification + the cleanup/dm read clears, so
+   * the whole notify-on-dm path runs offline without a DB. When omitted in production the route builds the
+   * DB-backed service; in the all-fakes dev path (no DB) the notify path is a no-op (left undefined).
+   */
+  notificationService?: NotificationService
 }
 
 declare module "fastify" {
@@ -116,6 +125,24 @@ export async function registerChatRoutes(
   const blocksRepo: BlocksRepository = overrides?.blocksRepo ?? container.getBlocksRepo()
   const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
 
+  // The notification service backs the dm BELL notification (a `type:"dm"` row + the normal inline push)
+  // and the cleanup/dm read-path CLEARS. Built LOCALLY here (the same per-request construction pattern
+  // social.routes/notifications.routes use: a DB-backed notification repo + the container's push/userChannel
+  // seams + a logger), NOT lifted onto the DI Container. Tests inject it; in production it is the DB-backed
+  // service; in the all-fakes dev path (USE_FAKE_CHAT, no DB) there is no DB to read prefs/insert rows, so
+  // the notify path is a no-op (undefined) — DM bell parity in dev is moot. Built off the lazily-created DB
+  // handle, so merely registering the plugin opens no connection.
+  const notificationService: NotificationService | undefined =
+    overrides?.notificationService ??
+    (container.env.USE_FAKE_CHAT
+      ? undefined
+      : makeNotificationService({
+          repo: makeDrizzleNotificationRepository(container.getDb().sql),
+          pushSender: container.pushSender,
+          userChannel: container.userChannel,
+          logger: app.log,
+        }))
+
   // The DM read watermark resolves an acked message's created_at scoped to the thread (mirrors the cleanup
   // resolveReadAt below); a foreign/unknown id falls back to now() so a stray ack still advances liveness.
   const dmGatewayDeps: GatewayDmDeps = {
@@ -131,6 +158,17 @@ export async function registerChatRoutes(
     markRead: async (threadId, userId, upToId) => {
       const at = (await dmRepo.resolveMessageCreatedAt(threadId, upToId)) ?? new Date()
       await dmRepo.markRead(threadId, userId, at)
+      // (b) Cross-update: reading this dm conversation clears the reader's `dm` bell notifications that link
+      // to it (`/messages/dm/<threadId>`), then fires the {topic:"notifications"} signal (inside the service)
+      // so an open bell refreshes. The gateway already participation-gated this markRead (peerOf != null).
+      // Best-effort: a notify-clear failure must NEVER break the read/ack path.
+      if (notificationService) {
+        try {
+          await notificationService.clearByTypeAndLink(userId, "dm", `/messages/dm/${threadId}`)
+        } catch (err) {
+          app.log.warn({ err, threadId, userId }, "dm read: clear dm notifications failed (suppressed)")
+        }
+      }
     },
   }
   const isBlockedEitherWay: IsBlockedEitherWayFn = (a, b) => blocksRepo.isBlockedEitherWay(a, b)
@@ -196,6 +234,17 @@ export async function registerChatRoutes(
     markRead: async (cleanupId, userId, upToId) => {
       const at = await resolveReadAt(cleanupId, upToId)
       await readState.markRead(cleanupId, userId, at)
+      // (a) Cross-update: reading this cleanup conversation clears the reader's `cleanup_chat` bell
+      // notifications that link to it (the admin "Cleanup update" broadcasts link to `/cleanups/<id>`), then
+      // fires the {topic:"notifications"} signal (inside the service) so an open bell refreshes. The gateway
+      // already membership-gated this markRead. Best-effort: never break the read/ack path.
+      if (notificationService) {
+        try {
+          await notificationService.clearByTypeAndLink(userId, "cleanup_chat", `/cleanups/${cleanupId}`)
+        } catch (err) {
+          app.log.warn({ err, cleanupId, userId }, "cleanup read: clear notifications failed (suppressed)")
+        }
+      }
     },
     presence,
     // DM routing: the gateway uses these for `roomKind:"dm"` frames (participant + not-blocked gating,
@@ -206,6 +255,19 @@ export async function registerChatRoutes(
     // thread-unread signal to a new message's recipients (resolved above, sender excluded).
     userChannel: container.userChannel,
     threadRecipientsOf,
+    // (b) DM bell notification: when a dm message lands and the recipient is NOT actively viewing the room
+    // (the gateway suppresses via presence), create a `type:"dm"` notification (+ inline push) for the peer.
+    // The gateway resolves the peer (never the sender) and runs the presence check; this builds the copy.
+    onDmDelivered: notificationService
+      ? async (threadId, recipientId, message) => {
+          await notificationService.createNotification(recipientId, {
+            type: "dm",
+            title: dmNotificationTitle(message),
+            body: dmNotificationBody(message),
+            link: `/messages/dm/${threadId}`,
+          })
+        }
+      : undefined,
     // Anti-CSWSH: the gateway rejects a cross-site upgrade Origin not in the WEB_ORIGINS allowlist.
     webOrigins: container.env.WEB_ORIGINS,
   })
@@ -229,6 +291,34 @@ export async function registerChatRoutes(
     const payload: ListThreadsResponse = { items: result.items, nextCursor: result.nextCursor }
     reply.status(200).send(payload)
   })
+}
+
+/** Max chars of a text dm preview surfaced in the bell body (server-side truncation). */
+const DM_PREVIEW_MAX = 80
+
+/**
+ * Title for a dm bell notification: the sender's @handle if present, else their display name, else a
+ * generic phrase (mirrors the new_follower name fallback in notification-service).
+ */
+function dmNotificationTitle(message: ChatMessageDTO): string {
+  const from = message.from
+  if (from.handle) return `@${from.handle}`
+  if (from.name.trim() !== "") return from.name
+  return "New message"
+}
+
+/**
+ * Body for a dm bell notification: a server-truncated preview of a text message (~80 chars, ellipsized),
+ * or a generic "Sent you a message" for a non-text dm (share_pin / task_complete / rsvp_change / a body-less
+ * frame), so we never leak a structured payload as the preview.
+ */
+function dmNotificationBody(message: ChatMessageDTO): string {
+  const body = message.body
+  if (message.kind === "text" && typeof body === "string" && body.trim() !== "") {
+    const trimmed = body.trim()
+    return trimmed.length > DM_PREVIEW_MAX ? `${trimmed.slice(0, DM_PREVIEW_MAX - 1)}…` : trimmed
+  }
+  return "Sent you a message"
 }
 
 /**
