@@ -454,6 +454,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           category: ReportCategory
           status: ReportStatus
           title: string | null
+          description: string | null
           thumb_key: string | null
           r2_key: string | null
         }[]
@@ -465,6 +466,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           r.category,
           r.status,
           r.title,
+          r.description,
           m.thumb_key,
           m.r2_key
         FROM reports r
@@ -495,9 +497,104 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         category: r.category,
         status: r.status,
         title: r.title,
+        description: r.description,
         thumbKey: r.thumb_key,
         r2Key: r.r2_key,
       }))
+    },
+
+    async searchReports(args: {
+      q: string | null
+      categories: ReportCategory[] | null
+      cursor: string | null
+      limit: number
+    }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }> {
+      // Public report search. Same status/visibility gate as the map (published + public + not deleted) and
+      // the SAME first-visible-photo LATERAL preview. Two optional narrowings:
+      //   - q: a case-insensitive substring match on title OR address (ILIKE). The needle is escaped so a
+      //     user-typed % / _ is matched literally (not a wildcard), then wrapped in %…%.
+      //   - categories: an IN (...) over the report category.
+      // Keyset pagination reuses the EXACT (created_at DESC, id DESC) total order + "<iso>|<id>" row-value
+      // cursor as listMyReports, and fetches limit+1 to compute nextCursor without a second COUNT.
+      const anchor = parseMyReportsCursor(args.cursor)
+      const cursorFilter =
+        anchor !== null
+          ? sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          : sql``
+      const categoryFilter =
+        args.categories !== null && args.categories.length > 0
+          ? sql`AND r.category IN ${sql(args.categories)}`
+          : sql``
+      // ILIKE text filter on title OR addr. Escape the LIKE metacharacters (\, %, _) in the user needle so a
+      // literal % / _ does not act as a wildcard, then surround with %…% for a substring match. ESCAPE '\'
+      // makes the backslash the explicit escape char. Skipped entirely when q is null (no text narrowing).
+      const textFilter =
+        args.q !== null
+          ? (() => {
+              const needle = `%${args.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`
+              return sql`AND (r.title ILIKE ${needle} ESCAPE '\' OR r.addr ILIKE ${needle} ESCAPE '\')`
+            })()
+          : sql``
+      const rows = await sql<
+        {
+          id: string
+          lng: number
+          lat: number
+          category: ReportCategory
+          status: ReportStatus
+          title: string | null
+          description: string | null
+          thumb_key: string | null
+          r2_key: string | null
+          created_at: Date
+        }[]
+      >`
+        SELECT
+          r.id,
+          ST_X(r.geom) AS lng,
+          ST_Y(r.geom) AS lat,
+          r.category,
+          r.status,
+          r.title,
+          r.description,
+          m.thumb_key,
+          m.r2_key,
+          r.created_at
+        FROM reports r
+        LEFT JOIN LATERAL (
+          SELECT thumb_key, r2_key
+          FROM media_assets
+          WHERE report_id = r.id
+            AND kind = 'image'
+            AND status = 'ready'
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1
+        ) m ON true
+        WHERE r.status = 'published'
+          AND r.visibility = 'public'
+          AND r.deleted_at IS NULL
+          ${categoryFilter}
+          ${textFilter}
+          ${cursorFilter}
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT ${args.limit + 1}
+      `
+      const hasMore = rows.length > args.limit
+      const page = hasMore ? rows.slice(0, args.limit) : rows
+      const last = page[page.length - 1]
+      const nextCursor = hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
+      const points: ReportMapPoint[] = page.map((r) => ({
+        id: r.id,
+        lat: r.lat,
+        lng: r.lng,
+        category: r.category,
+        status: r.status,
+        title: r.title,
+        description: r.description,
+        thumbKey: r.thumb_key,
+        r2Key: r.r2_key,
+      }))
+      return { points, nextCursor }
     },
 
     async addFollow(userId: string, reportId: string): Promise<boolean> {

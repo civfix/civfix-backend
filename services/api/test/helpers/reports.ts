@@ -326,11 +326,78 @@ export class InMemoryReportRepository implements ReportRepository {
           category: r.category,
           status: r.status,
           title: r.title,
+          description: r.description,
           thumbKey: firstPhoto?.thumbKey ?? null,
           r2Key: firstPhoto?.r2Key ?? null,
         }
       })
     return Promise.resolve(rows)
+  }
+
+  searchReports(args: {
+    q: string | null
+    categories: ReportRecord["category"][] | null
+    cursor: string | null
+    limit: number
+  }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }> {
+    // Mirror the Drizzle impl: published + public + non-deleted, optional case-insensitive substring match
+    // on title OR addr, optional category filter, total order (created_at DESC, id DESC) with the SAME
+    // "<iso>|<id>" row-value keyset cursor as listMyReports, and limit+1 to compute nextCursor.
+    const needle = args.q !== null ? args.q.toLowerCase() : null
+    const matchesText = (r: ReportRecord): boolean => {
+      if (needle === null) return true
+      return (
+        (r.title !== null && r.title.toLowerCase().includes(needle)) ||
+        (r.addr !== null && r.addr.toLowerCase().includes(needle))
+      )
+    }
+    const anchor = parseCursor(args.cursor)
+    const isBefore = (r: ReportRecord): boolean => {
+      if (anchor === null) return true
+      const t = r.createdAt.getTime()
+      if (t !== anchor.at) return t < anchor.at
+      return r.id < anchor.id // tie on created_at -> id DESC means strictly less
+    }
+    const all = [...this.reports.values()]
+      .filter(
+        (r) =>
+          r.status === "published" &&
+          r.visibility === "public" &&
+          r.deletedAt === null &&
+          (args.categories === null || args.categories.includes(r.category)) &&
+          matchesText(r) &&
+          isBefore(r),
+      )
+      .sort((a, b) => {
+        const cmp = b.createdAt.getTime() - a.createdAt.getTime()
+        if (cmp !== 0) return cmp
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0 // id DESC tiebreak
+      })
+    const hasMore = all.length > args.limit
+    const page = hasMore ? all.slice(0, args.limit) : all
+    const last = page[page.length - 1]
+    const nextCursor = hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null
+    const points: ReportMapPoint[] = page.map((r) => {
+      // First VISIBLE (`ready`) image per report, ordered like the Drizzle LATERAL (created_at ASC, id ASC).
+      const firstPhoto = this.media
+        .filter((m) => m.reportId === r.id && m.kind === "image" && m.status === "ready")
+        .sort((a, b) => {
+          const cmp = a.createdAt.getTime() - b.createdAt.getTime()
+          return cmp !== 0 ? cmp : a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+        })[0]
+      return {
+        id: r.id,
+        lat: r.lat,
+        lng: r.lng,
+        category: r.category,
+        status: r.status,
+        title: r.title,
+        description: r.description,
+        thumbKey: firstPhoto?.thumbKey ?? null,
+        r2Key: firstPhoto?.r2Key ?? null,
+      }
+    })
+    return Promise.resolve({ points, nextCursor })
   }
 
   addFollow(userId: string, reportId: string): Promise<boolean> {

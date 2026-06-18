@@ -21,12 +21,14 @@
 import {
   CreateReportRequestSchema,
   ListReportsInBBoxRequestSchema,
+  ListReportsSearchRequestSchema,
   PaginationQuerySchema,
   IdSchema,
   AppError,
   type ReportDTO,
   type GetReportResponse,
   type ListMyReportsResponse,
+  type ListReportsSearchResponse,
   type ReportClusterResponse,
   type FollowReportResponse,
 } from "@civfix/shared"
@@ -106,6 +108,21 @@ const MapReportsQuerySchema = z.object({
 })
 
 /**
+ * Query schema for GET /reports/search, decoding EXACTLY what the shared client sends: a scalar `q`, a
+ * scalar `cursor`, a coerced scalar `limit`, and `categories` as repeated params (or a CSV) decoded via
+ * the SAME CategoriesQueryParam the map uses. We decode here, then re-validate the assembled shape against
+ * the shared ListReportsSearchRequestSchema below so the wire contract stays the single source of truth.
+ * NOT .strict(): a public GET may surface extra/unknown params from qs; the shared .strict() re-validation
+ * still rejects a malformed assembled body.
+ */
+const SearchReportsQuerySchema = z.object({
+  q: z.string().optional(),
+  categories: CategoriesQueryParam.optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(50).optional(),
+})
+
+/**
  * Compiled-serializer JSON Schema for the GET /map/reports 200 body (perf).
  *
  * This is the ONE genuinely array-heavy hot read path (clustered map pins on every pan/zoom), so we give
@@ -169,7 +186,10 @@ const MapReportsResponseJsonSchema = {
           // callout without a second detail fetch. Declared nullable so the serializer emits an explicit
           // null thumbUrl for a report with no media (title is omitted by the service when null). They are
           // NOT in `required`, keeping the prior {id,category,lat,lng,status} contract for any caller.
+          // NOTE: fast-json-stringify DROPS any property not declared here, so `description` MUST be listed
+          // for the map pin to actually carry it on the wire (the service's toMapPinDTO populates it).
           title: { type: "string", nullable: true },
+          description: { type: "string", nullable: true },
           thumbUrl: { type: "string", nullable: true },
         },
         required: ["id", "category", "lat", "lng", "status"],
@@ -325,6 +345,25 @@ export async function registerReportRoutes(
     // (Edge caching also needs a CF cache rule for /v1/map/*; the origin header alone only buys
     // browser-cache + revalidation.)
     reply.header("Cache-Control", "public, max-age=60")
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /reports/search  (anon-ok)
+  // -------------------------------------------------------------------------
+  route(app, "searchReports", async (request, reply) => {
+    // Decode the client's wire form (scalar q/cursor/limit + repeated categories), then re-validate the
+    // assembled shape against the shared schema so the wire contract is the single source of truth.
+    // q.categories is already a validated ReportCategory[] (or undefined = no filter); the others pass
+    // through. Mirrors GET /map/reports' decode-then-revalidate; public/optional-auth like the map read.
+    const decoded = parse(SearchReportsQuerySchema, request.query)
+    const validated = parse(ListReportsSearchRequestSchema, {
+      ...(decoded.q !== undefined ? { q: decoded.q } : {}),
+      ...(decoded.categories !== undefined ? { categories: decoded.categories } : {}),
+      ...(decoded.cursor !== undefined ? { cursor: decoded.cursor } : {}),
+      ...(decoded.limit !== undefined ? { limit: decoded.limit } : {}),
+    })
+    const payload: ListReportsSearchResponse = await service().searchReports(validated)
     reply.status(200).send(payload)
   })
 

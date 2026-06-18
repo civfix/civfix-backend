@@ -44,6 +44,7 @@ import type {
   GeomSource,
   LinkedEventRef,
   ListMyReportsResponse,
+  ListReportsSearchResponse,
   MediaDTO,
   PaginationQuery,
   ReportCategory,
@@ -90,6 +91,9 @@ export const CLUSTER_ZOOM_THRESHOLD = 13
 
 /** Default page size for listMyReports when the request omits `limit`. Matches the shared cap of 50. */
 export const REPORTS_DEFAULT_LIMIT = 20
+
+/** Default page size for the public report search when the request omits `limit` (same family as above). */
+export const REPORTS_SEARCH_DEFAULT_LIMIT = 20
 
 // ---------------------------------------------------------------------------
 // Repository seam (structural views; faked in tests)
@@ -149,6 +153,13 @@ export interface ReportMapPoint {
   status: ReportStatus
   /** The report's headline (null when it has none) — carried through onto an individual pin's preview. */
   title: string | null
+  /**
+   * The report's short body (null when it has none) — carried through onto an individual pin/search-row
+   * preview so a callout or a search result can show a line of context without a second detail fetch. It
+   * rides on the already-fetched report row (the map/search SELECT just adds `r.description`), so it is
+   * cheap. Clustered (zoomed-out) points ignore it; only individual pins / search rows render it.
+   */
+  description: string | null
   /**
    * Storage keys for the report's FIRST visible (`ready`) photo, used to presign the pin's `thumbUrl`
    * preview in the service (the repo never signs). `thumbKey` is the generated thumbnail when present;
@@ -270,6 +281,19 @@ export interface ReportRepository {
     categories: ReportCategory[] | null,
     cap: number,
   ): Promise<ReportMapPoint[]>
+  /**
+   * Public report SEARCH: page published + public + non-deleted reports newest-first, optionally narrowed
+   * by a free-text query (case-insensitive match on title/address) and/or a category set. `cursor` is the
+   * SAME "<iso>|<id>" keyset cursor shape as listMyReports (row-value (created_at, id) comparison); the
+   * impl returns up to `limit` points (each carries the SAME fields as a map pin PLUS the report's
+   * description for the result row) plus the next cursor (null when the page is the last).
+   */
+  searchReports(args: {
+    q: string | null
+    categories: ReportCategory[] | null
+    cursor: string | null
+    limit: number
+  }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }>
   /** Upsert a follow; returns true if the report exists (so the route can 404 a missing report). */
   addFollow(userId: string, reportId: string): Promise<boolean>
   /** Delete a follow; returns true if the report exists. */
@@ -282,6 +306,21 @@ export interface BBox {
   south: number
   east: number
   north: number
+}
+
+/**
+ * Input to the public report search. Declared structurally (like BBox above) so the service does not
+ * import the zod-inferred ListReportsSearchRequest type — whose `.default(30)` makes `limit` REQUIRED on
+ * the output type, which would force every caller (and test) to pass a limit. All fields are optional
+ * here; the service applies REPORTS_SEARCH_DEFAULT_LIMIT when `limit` is absent. The route still validates
+ * the wire query against the shared ListReportsSearchRequestSchema first, so the contract stays
+ * authoritative; the already-defaulted parsed request is assignable to this looser input.
+ */
+export interface ReportSearchInput {
+  q?: string | undefined
+  categories?: ReportCategory[] | undefined
+  cursor?: string | undefined
+  limit?: number | undefined
 }
 
 /**
@@ -340,6 +379,8 @@ export interface UnsignedReportPin {
   lng: number
   status: ReportStatus
   title: string | null
+  /** The report's short body (null when none); projected onto ReportPinDTO.description by toMapPinDTO. */
+  description: string | null
   thumbKey: string | null
   r2Key: string | null
 }
@@ -369,6 +410,7 @@ export function clusterByZoom(
       lng: p.lng,
       status: p.status,
       title: p.title,
+      description: p.description,
       thumbKey: p.thumbKey,
       r2Key: p.r2Key,
     }))
@@ -478,6 +520,11 @@ export interface ReportService {
     categories: ReportCategory[] | null,
     zoom: number,
   ): Promise<ReportClusterResponse>
+  /**
+   * Public report SEARCH: page published+public reports (newest-first, keyset-paginated) narrowed by an
+   * optional free-text query and/or category set, returning ReportPinDTOs WITH `description` populated.
+   */
+  searchReports(request: ReportSearchInput): Promise<ListReportsSearchResponse>
   followReport(userId: string, reportId: string): Promise<{ following: boolean }>
   unfollowReport(userId: string, reportId: string): Promise<{ following: boolean }>
 }
@@ -506,8 +553,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
    * thumbnail into `thumbUrl`. Mirrors how the report DETAIL derives a thumb: presignMedia(r2Key, thumbKey)
    * returns a `thumbUrl` when a generated thumbnail exists, else falls back to the original `url`. A pin
    * with no visible media (both keys null) carries `thumbUrl: null` and no presign call is made. `title` is
-   * carried through (null => omitted, matching how the DTO treats an absent title elsewhere). Additive: a
-   * pin without a title/thumb still serializes the prior {id,category,lat,lng,status} shape.
+   * carried through (null => omitted, matching how the DTO treats an absent title elsewhere). `description`
+   * is carried through as a value-or-null (mirrors thumbUrl: it is always emitted, null when the report has
+   * none) so a callout / search row can render a line of body. Additive: a pin without a title/desc/thumb
+   * still serializes the prior {id,category,lat,lng,status} shape (description/thumbUrl null, title omitted).
    */
   async function toMapPinDTO(pin: UnsignedReportPin): Promise<ReportPinDTO> {
     let thumbUrl: string | null = null
@@ -522,6 +571,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       lng: pin.lng,
       status: pin.status,
       ...(pin.title !== null ? { title: pin.title } : {}),
+      description: pin.description,
       thumbUrl,
     }
   }
@@ -794,6 +844,42 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         // Only include counts when there is at least one candidate, so an empty view omits the field.
         ...(Object.keys(counts).length > 0 ? { counts } : {}),
       }
+    },
+
+    async searchReports(request: ReportSearchInput): Promise<ListReportsSearchResponse> {
+      // Normalize the request into the repo's args: trim the free-text query (an empty/whitespace q is "no
+      // text filter"), pass categories through (undefined/empty => no category filter), and apply the
+      // shared default page size when limit is omitted. The repo does the keyset paging + filtering; here we
+      // only presign each result row's thumbnail and project ReportPinDTOs (WITH description) via the SAME
+      // toMapPinDTO path the map pins use — so a search row and a tapped pin render identically.
+      const q = request.q?.trim() ? request.q.trim() : null
+      const categories =
+        request.categories !== undefined && request.categories.length > 0 ? request.categories : null
+      const cursor = request.cursor ?? null
+      const limit = request.limit ?? REPORTS_SEARCH_DEFAULT_LIMIT
+
+      const { points, nextCursor } = await deps.repo.searchReports({ q, categories, cursor, limit })
+
+      // Each candidate point already carries the report's first-photo key pair + title + description; render
+      // it through toMapPinDTO (presigns the thumb, carries title/description). The clusterer is not involved
+      // (search is always an individual-row list), so we map the points to unsigned pins inline.
+      const items: ReportPinDTO[] = await Promise.all(
+        points.map((p) =>
+          toMapPinDTO({
+            id: p.id,
+            category: p.category,
+            lat: p.lat,
+            lng: p.lng,
+            status: p.status,
+            title: p.title,
+            description: p.description,
+            thumbKey: p.thumbKey,
+            r2Key: p.r2Key,
+          }),
+        ),
+      )
+
+      return { items, nextCursor }
     },
 
     async followReport(userId: string, reportId: string): Promise<{ following: boolean }> {

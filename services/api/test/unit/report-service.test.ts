@@ -90,10 +90,10 @@ describe("clusterByZoom", () => {
   // A small fixture: three points clumped near LA and one far away in NYC. "a" carries a title + a
   // first-photo thumb key pair so the carry-through onto the (unsigned) pin can be asserted.
   const pts: ReportMapPoint[] = [
-    { id: "a", lat: 34.10, lng: -118.350, category: "trash", status: "published", title: "Mattress dumped", thumbKey: "thumbs/a", r2Key: "uploads/a" },
-    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", status: "published", title: null, thumbKey: null, r2Key: null },
-    { id: "c", lat: 34.12, lng: -118.352, category: "trash", status: "published", title: null, thumbKey: null, r2Key: null },
-    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", status: "published", title: null, thumbKey: null, r2Key: null },
+    { id: "a", lat: 34.10, lng: -118.350, category: "trash", status: "published", title: "Mattress dumped", description: "blocking the sidewalk", thumbKey: "thumbs/a", r2Key: "uploads/a" },
+    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+    { id: "c", lat: 34.12, lng: -118.352, category: "trash", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
   ]
 
   it("at/above the threshold returns individual pins and no clusters", () => {
@@ -109,6 +109,7 @@ describe("clusterByZoom", () => {
       status: "published",
       lat: 34.1,
       title: "Mattress dumped",
+      description: "blocking the sidewalk",
       thumbKey: "thumbs/a",
       r2Key: "uploads/a",
     })
@@ -141,9 +142,9 @@ describe("clusterByZoom", () => {
 describe("countByCategory", () => {
   it("counts all candidates per category, omitting zero categories", () => {
     const pts: ReportMapPoint[] = [
-      { id: "a", lat: 0, lng: 0, category: "trash", status: "published", title: null, thumbKey: null, r2Key: null },
-      { id: "b", lat: 0, lng: 0, category: "trash", status: "published", title: null, thumbKey: null, r2Key: null },
-      { id: "c", lat: 0, lng: 0, category: "graffiti", status: "published", title: null, thumbKey: null, r2Key: null },
+      { id: "a", lat: 0, lng: 0, category: "trash", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+      { id: "b", lat: 0, lng: 0, category: "trash", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+      { id: "c", lat: 0, lng: 0, category: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
     ]
     expect(countByCategory(pts)).toEqual({ trash: 2, graffiti: 1 })
     expect(countByCategory([])).toEqual({})
@@ -532,9 +533,10 @@ describe("listReportsInBBox", () => {
     const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
 
     // (1) A report whose first ready photo has a generated thumbnail -> thumbUrl is the THUMB key signed.
+    // It also carries a description, which must ride onto the pin DTO (null for the others below).
     const withThumb = repo.seedReport({
       status: "published", visibility: "public", category: "trash",
-      lat: 34.10, lng: -118.35, title: "Mattress dumped",
+      lat: 34.10, lng: -118.35, title: "Mattress dumped", description: "blocking the sidewalk",
     })
     repo.seedMedia({ reportId: withThumb.id, status: "ready", r2Key: "uploads/a", thumbKey: "thumbs/a" })
 
@@ -561,9 +563,10 @@ describe("listReportsInBBox", () => {
     const high = await service.listReportsInBBox(bbox, null, 16)
     const byId = new Map(high.pins.map((p) => [p.id, p]))
 
-    expect(byId.get(withThumb.id)).toMatchObject({ title: "Mattress dumped", thumbUrl: "memory://thumbs/a" })
-    expect(byId.get(noThumb.id)).toMatchObject({ title: "Graffiti on the wall", thumbUrl: "memory://uploads/b" })
-    expect(byId.get(noMedia.id)).toMatchObject({ title: "Pothole", thumbUrl: null })
+    expect(byId.get(withThumb.id)).toMatchObject({ title: "Mattress dumped", description: "blocking the sidewalk", thumbUrl: "memory://thumbs/a" })
+    // description rides onto the pin as value-or-null (null when the report has none, mirroring thumbUrl).
+    expect(byId.get(noThumb.id)).toMatchObject({ title: "Graffiti on the wall", description: null, thumbUrl: "memory://uploads/b" })
+    expect(byId.get(noMedia.id)).toMatchObject({ title: "Pothole", description: null, thumbUrl: null })
 
     const pending = byId.get(pendingOnly.id)!
     expect(pending.thumbUrl).toBeNull()
@@ -589,5 +592,107 @@ describe("listReportsInBBox", () => {
     expect(empty.clusters).toHaveLength(0)
     expect(empty.pins).toHaveLength(0)
     expect(empty.counts).toBeUndefined()
+  })
+})
+
+describe("searchReports", () => {
+  it("returns only published+public+non-deleted reports as ReportPinDTOs with description carried", async () => {
+    const { repo, service } = makeHarness()
+    const pub = repo.seedReport({
+      status: "published", visibility: "public", category: "trash",
+      title: "Broken streetlight", description: "out for a week", addr: "5th Ave",
+    })
+    // Excluded: a held report, a hidden-visibility report, and a soft-deleted one.
+    repo.seedReport({ status: "held", visibility: "public", title: "Held one", publishedAt: null })
+    repo.seedReport({ status: "published", visibility: "hidden", title: "Hidden one" })
+    repo.seedReport({ status: "published", visibility: "public", title: "Deleted one", deletedAt: new Date() })
+
+    const res = await service.searchReports({})
+    expect(res.items).toHaveLength(1)
+    expect(res.items[0]!.id).toBe(pub.id)
+    // Carries the SAME pin fields PLUS the report's description.
+    expect(res.items[0]).toMatchObject({
+      id: pub.id,
+      category: "trash",
+      status: "published",
+      title: "Broken streetlight",
+      description: "out for a week",
+    })
+    expect(res.nextCursor).toBeNull()
+  })
+
+  it("carries thumbUrl from the first ready photo (presigned) and null when there is no media", async () => {
+    const { repo, service } = makeHarness()
+    const withPhoto = repo.seedReport({ status: "published", visibility: "public", title: "with photo" })
+    repo.seedMedia({ reportId: withPhoto.id, status: "ready", r2Key: "uploads/x", thumbKey: "thumbs/x" })
+    const noPhoto = repo.seedReport({ status: "published", visibility: "public", title: "no photo" })
+
+    const res = await service.searchReports({})
+    const byId = new Map(res.items.map((p) => [p.id, p]))
+    expect(byId.get(withPhoto.id)!.thumbUrl).toBe("memory://thumbs/x")
+    expect(byId.get(noPhoto.id)!.thumbUrl).toBeNull()
+  })
+
+  it("filters by free-text q (case-insensitive) over title OR address", async () => {
+    const { repo, service } = makeHarness()
+    const byTitle = repo.seedReport({ status: "published", visibility: "public", title: "Pothole on Main" })
+    const byAddr = repo.seedReport({ status: "published", visibility: "public", title: "Graffiti", addr: "12 POTHOLE Lane" })
+    repo.seedReport({ status: "published", visibility: "public", title: "Trash pile", addr: "9 Elm St" })
+
+    const res = await service.searchReports({ q: "pothole" })
+    const ids = new Set(res.items.map((p) => p.id))
+    expect(ids.has(byTitle.id)).toBe(true) // matched on title
+    expect(ids.has(byAddr.id)).toBe(true) // matched on address, case-insensitively
+    expect(res.items).toHaveLength(2)
+  })
+
+  it("filters by category set", async () => {
+    const { repo, service } = makeHarness()
+    const trash = repo.seedReport({ status: "published", visibility: "public", category: "trash", title: "t" })
+    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", title: "g" })
+
+    const res = await service.searchReports({ categories: ["trash"] })
+    expect(res.items).toHaveLength(1)
+    expect(res.items[0]!.id).toBe(trash.id)
+    expect(res.items[0]!.category).toBe("trash")
+  })
+
+  it("paginates newest-first by the keyset cursor without skipping or duplicating", async () => {
+    const { repo, service } = makeHarness()
+    const r1 = repo.seedReport({ status: "published", visibility: "public", title: "one" })
+    const r2 = repo.seedReport({ status: "published", visibility: "public", title: "two" })
+    const r3 = repo.seedReport({ status: "published", visibility: "public", title: "three" })
+
+    const page1 = await service.searchReports({ limit: 2 })
+    expect(page1.items.map((p) => p.id)).toEqual([r3.id, r2.id]) // newest-first
+    expect(page1.nextCursor).toBeTruthy()
+
+    const page2 = await service.searchReports({ limit: 2, cursor: page1.nextCursor! })
+    expect(page2.items.map((p) => p.id)).toEqual([r1.id])
+    expect(page2.nextCursor).toBeNull()
+  })
+
+  it("does not skip a row when two reports share the SAME created_at across a page boundary", async () => {
+    const { repo, service } = makeHarness()
+    const tie = new Date("2026-05-31T12:00:00.000Z")
+    const later = new Date("2026-05-31T12:00:01.000Z")
+    repo.seedReport({ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", status: "published", visibility: "public", title: "a", createdAt: tie })
+    repo.seedReport({ id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", status: "published", visibility: "public", title: "b", createdAt: tie })
+    repo.seedReport({ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", status: "published", visibility: "public", title: "c", createdAt: later })
+
+    const seen: string[] = []
+    let cursor: string | null | undefined = undefined
+    for (let guard = 0; guard < 10; guard++) {
+      const page: Awaited<ReturnType<typeof service.searchReports>> = await service.searchReports({
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      })
+      for (const item of page.items) seen.push(item.id)
+      if (page.nextCursor === null) break
+      cursor = page.nextCursor
+    }
+    expect(seen).toHaveLength(3)
+    expect(new Set(seen).size).toBe(3)
+    expect(seen[0]).toBe("cccccccc-cccc-cccc-cccc-cccccccccccc") // newest distinct created_at first
   })
 })
