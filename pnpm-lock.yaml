@@ -42,8 +42,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: ^0.9.0
-        version: 0.9.0
+        specifier: ^0.10.0
+        version: 0.10.0
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -364,12 +364,12 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.8.0':
-    resolution: {integrity: sha512-wwDxJW46n7fODQ890V08vWvhV483SDHjF269Md5XXudwkYj4qMVbC8mL9R+rglVyL6BO4JHGU2SnCymVhiU+ZQ==}
+  '@civfix/shared@0.10.0':
+    resolution: {integrity: sha512-PzamsWN4d/rqR+BAGiiVQNGtK6BaCSl0Gk/asDJh0GDpbTU/voiTzS2OiHsPJ3ZKMer7izNlstKNRUwdWHG+hw==}
     engines: {node: '>=20'}
 
-  '@civfix/shared@0.9.0':
-    resolution: {integrity: sha512-CfUwpbGZryY0yzz10qKz5UhZiSCYIds5tSbCmfK+vhMuOAPIQpGL/KKPnMx7sxlb5UvIWpcw5LpKHr2B3RgOxw==}
+  '@civfix/shared@0.8.0':
+    resolution: {integrity: sha512-wwDxJW46n7fODQ890V08vWvhV483SDHjF269Md5XXudwkYj4qMVbC8mL9R+rglVyL6BO4JHGU2SnCymVhiU+ZQ==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4898,11 +4898,11 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.8.0':
+  '@civfix/shared@0.10.0':
     dependencies:
       zod: 3.25.76
 
-  '@civfix/shared@0.9.0':
+  '@civfix/shared@0.8.0':
     dependencies:
       zod: 3.25.76
 
