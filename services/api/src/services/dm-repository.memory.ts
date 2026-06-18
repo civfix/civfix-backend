@@ -136,6 +136,27 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(dto)
   }
 
+  editMessage(
+    threadId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    // Mirror the Drizzle WHERE gate: the message must exist in THIS thread, be sent by `senderId`, and not be
+    // soft-deleted. Otherwise return null (not-found OR forbidden — indistinguishable, like the SQL no-op).
+    const stored = (this.log.get(threadId) ?? []).find(
+      (m) => m.dto.id === messageId && m.dto.from.id === senderId && !m.deleted,
+    )
+    if (!stored) return Promise.resolve(null)
+    const edited: ChatMessageDTO = {
+      ...stored.dto,
+      body,
+      editedAt: this.nextDate().toISOString(),
+    }
+    stored.dto = edited
+    return Promise.resolve(edited)
+  }
+
   history(threadId: string, before: string | undefined, limit: number): Promise<ChatHistoryPage> {
     const list = (this.log.get(threadId) ?? []).filter((m) => !m.deleted)
     const ordered = [...list].reverse().map((m) => m.dto)

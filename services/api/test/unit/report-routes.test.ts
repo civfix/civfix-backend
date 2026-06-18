@@ -501,6 +501,38 @@ describe("GET /map/reports", () => {
     expect(high.pins).toHaveLength(2)
   })
 
+  it("serializes the additive pin title + presigned thumbUrl through the response schema", async () => {
+    // fast-json-stringify drops any property the compiled response schema does not declare, so this
+    // guards the JSON-schema additions (title/thumbUrl) against silently disappearing from the wire.
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        const withPhoto = repo.seedReport({
+          status: "published", visibility: "public", category: "trash",
+          lat: 34.10, lng: -118.35, title: "Mattress dumped",
+        })
+        repo.seedMedia({ reportId: withPhoto.id, status: "ready", r2Key: "uploads/a", thumbKey: "thumbs/a" })
+        // A second report with no media -> thumbUrl null, title omitted (null).
+        repo.seedReport({
+          status: "published", visibility: "public", category: "graffiti",
+          lat: 34.11, lng: -118.34,
+        })
+      },
+    })
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}`,
+    })
+    expect(res.statusCode).toBe(200)
+    const pins = res.json().pins as { category: string; title?: string | null; thumbUrl: string | null }[]
+    const trash = pins.find((p) => p.category === "trash")!
+    expect(trash.title).toBe("Mattress dumped")
+    expect(trash.thumbUrl).toBe("memory://thumbs/a")
+    const graffiti = pins.find((p) => p.category === "graffiti")!
+    expect(graffiti.thumbUrl).toBeNull()
+    expect(graffiti.title ?? null).toBeNull()
+  })
+
   it("filters by categories sent as repeated params (the client's array encoding)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {

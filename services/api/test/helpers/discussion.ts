@@ -252,6 +252,49 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
     return Promise.resolve(this.toRecord(stored, args.authorUserId))
   }
 
+  editMessage(
+    reportId: string,
+    messageId: string,
+    authorId: string,
+    body: string,
+    editedAt: Date,
+    mediaUploadIds?: string[],
+  ): Promise<DiscussionMessageRecord | null> {
+    const m = this.messages.get(messageId)
+    // Match only this report's message authored by authorId and not soft-removed (else "no editable row").
+    if (
+      !m ||
+      m.reportId !== reportId ||
+      m.authorUserId !== authorId ||
+      m.deletedAt !== null
+    ) {
+      return Promise.resolve(null)
+    }
+    m.body = body
+    m.editedAt = editedAt
+
+    // Optional attachment REPLACEMENT (omit to leave the set untouched): detach the message's current
+    // attachments, then bind the given uploads under the same unattached/own + report-unbound + ready rule.
+    if (mediaUploadIds !== undefined) {
+      for (const asset of this.media) {
+        if (asset.discussionMessageId === messageId) asset.discussionMessageId = null
+      }
+      for (const uploadId of mediaUploadIds) {
+        const asset = this.media.find((a) => a.uploadId === uploadId)
+        if (
+          asset &&
+          (asset.discussionMessageId === null || asset.discussionMessageId === messageId) &&
+          asset.reportId === null &&
+          (asset.status === "ready" || asset.status === "validating")
+        ) {
+          asset.discussionMessageId = messageId
+        }
+      }
+    }
+
+    return Promise.resolve(this.toRecord(m, authorId))
+  }
+
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
     const idx = this.reactions.findIndex(
       (r) => r.messageId === messageId && r.userId === userId && r.emoji === emoji,

@@ -118,7 +118,8 @@ const MapReportsQuerySchema = z.object({
  * `listReportsInBBox` return. This matters: fast-json-stringify serializes ONLY what the schema declares
  * and silently DROPS any property the schema omits, so a drift here would corrupt the payload. Fields:
  *   - clusters: ReportClusterDTO  = { lat, lng, count }                          (grid clusters, low zoom)
- *   - pins:     ReportPinDTO       = { id, category, lat, lng, status }          (individual pins, high zoom)
+ *   - pins:     ReportPinDTO       = { id, category, lat, lng, status, title?, thumbUrl? }  (high zoom; the
+ *                                     additive nullable title/thumbUrl carry a tapped pin's preview)
  *   - counts:   Partial<Record<ReportCategory, number>>  (optional; the service omits it for an empty view)
  * The two enums (category, status) are inlined from ReportCategorySchema / ReportStatusSchema; `counts`
  * uses additionalProperties:number so the per-category integer values serialize through. The shape is
@@ -163,6 +164,13 @@ const MapReportsResponseJsonSchema = {
               "rejected",
             ],
           },
+          // Additive pin preview (mirrors the shared ReportPinDTOSchema's nullable-optional title/thumbUrl):
+          // the report's headline + a presigned thumbnail of its first photo, so a tapped pin can render a
+          // callout without a second detail fetch. Declared nullable so the serializer emits an explicit
+          // null thumbUrl for a report with no media (title is omitted by the service when null). They are
+          // NOT in `required`, keeping the prior {id,category,lat,lng,status} contract for any caller.
+          title: { type: "string", nullable: true },
+          thumbUrl: { type: "string", nullable: true },
         },
         required: ["id", "category", "lat", "lng", "status"],
       },

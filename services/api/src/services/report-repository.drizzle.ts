@@ -438,22 +438,54 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       // the area is denser than the cap, the newest reports are the ones sampled.
       const categoryFilter =
         categories !== null && categories.length > 0
-          ? sql`AND category IN ${sql(categories)}`
+          ? sql`AND r.category IN ${sql(categories)}`
           : sql``
+      // First-photo preview per pin: a LATERAL subquery picks the report's earliest VISIBLE (`ready`)
+      // media — the same status visibility the public detail read uses (held/rejected/validating stay
+      // hidden) — ordered exactly like findMediaForReport (created_at ASC, id ASC). We project its key
+      // pair (thumb_key, r2_key); the service presigns it into the pin's thumbUrl (the repo never signs).
+      // LEFT JOIN LATERAL so a report with no visible media still returns one row with null keys (no pin
+      // is dropped). title comes straight off the report row.
       const rows = await sql<
-        { id: string; lng: number; lat: number; category: ReportCategory; status: ReportStatus }[]
+        {
+          id: string
+          lng: number
+          lat: number
+          category: ReportCategory
+          status: ReportStatus
+          title: string | null
+          thumb_key: string | null
+          r2_key: string | null
+        }[]
       >`
-        SELECT id, ST_X(geom) AS lng, ST_Y(geom) AS lat, category, status
-        FROM reports
-        WHERE status = 'published'
-          AND visibility = 'public'
-          AND deleted_at IS NULL
+        SELECT
+          r.id,
+          ST_X(r.geom) AS lng,
+          ST_Y(r.geom) AS lat,
+          r.category,
+          r.status,
+          r.title,
+          m.thumb_key,
+          m.r2_key
+        FROM reports r
+        LEFT JOIN LATERAL (
+          SELECT thumb_key, r2_key
+          FROM media_assets
+          WHERE report_id = r.id
+            AND kind = 'image'
+            AND status = 'ready'
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1
+        ) m ON true
+        WHERE r.status = 'published'
+          AND r.visibility = 'public'
+          AND r.deleted_at IS NULL
           AND ST_Intersects(
-                geom,
+                r.geom,
                 ST_MakeEnvelope(${bbox.west}, ${bbox.south}, ${bbox.east}, ${bbox.north}, 4326)
               )
           ${categoryFilter}
-        ORDER BY created_at DESC
+        ORDER BY r.created_at DESC
         LIMIT ${cap}
       `
       return rows.map((r) => ({
@@ -462,6 +494,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         lng: r.lng,
         category: r.category,
         status: r.status,
+        title: r.title,
+        thumbKey: r.thumb_key,
+        r2Key: r.r2_key,
       }))
     },
 

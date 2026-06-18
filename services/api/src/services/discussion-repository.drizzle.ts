@@ -389,6 +389,66 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
       return record!
     },
 
+    async editMessage(
+      reportId: string,
+      messageId: string,
+      authorId: string,
+      body: string,
+      editedAt: Date,
+      mediaUploadIds?: string[],
+    ): Promise<DiscussionMessageRecord | null> {
+      const matched = await sql.begin(async (tx) => {
+        // 1) Update the body + stamp edited_at, but ONLY for this report's message authored by authorId and
+        // not already soft-removed (a tombstone is not editable). RETURNING tells us whether a row matched;
+        // when none did (wrong report / not the author / removed / missing) we bail with the tx untouched.
+        const updated = await tx<{ id: string }[]>`
+          UPDATE report_discussion_messages
+          SET body = ${body}, edited_at = ${editedAt}
+          WHERE id = ${messageId}
+            AND report_id = ${reportId}
+            AND author_user_id = ${authorId}
+            AND deleted_at IS NULL
+          RETURNING id
+        `
+        if (updated.length === 0) return false
+
+        // 2) Optional attachment REPLACEMENT: when the caller passed mediaUploadIds, swap the message's
+        // attachment set. First detach the message's CURRENT attachments (clear discussion_message_id), then
+        // bind the given uploads under the SAME unattached-or-own + report-unbound + ready/validating rule
+        // createMessage uses (never stealing a foreign asset). Passing [] therefore clears all attachments.
+        if (mediaUploadIds !== undefined) {
+          await tx`
+            UPDATE media_assets
+            SET discussion_message_id = NULL
+            WHERE discussion_message_id = ${messageId}
+          `
+          if (mediaUploadIds.length > 0) {
+            await tx`
+              UPDATE media_assets
+              SET discussion_message_id = ${messageId}
+              WHERE upload_id IN ${tx(mediaUploadIds)}
+                AND (discussion_message_id IS NULL OR discussion_message_id = ${messageId})
+                AND report_id IS NULL
+                AND status IN ('ready', 'validating')
+            `
+          }
+        }
+        return true
+      })
+      if (!matched) return null
+
+      // Read the freshly-edited message back as a record for the author (the viewer is the editor).
+      const rows = await sql<MessageRowSelect[]>`
+        SELECT ${messageColumns(sql)}
+        ${messageFrom(sql)}
+        WHERE m.id = ${messageId}
+        LIMIT 1
+      `
+      const [record] = await hydrate(sql, rows, authorId)
+      // The row was just updated in the committed transaction above, so it must still exist.
+      return record ?? null
+    },
+
     async toggleReaction(
       messageId: string,
       userId: string,

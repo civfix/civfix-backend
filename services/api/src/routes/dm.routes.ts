@@ -16,10 +16,12 @@
 import {
   OpenDmRequestSchema,
   DmHistoryQuerySchema,
+  EditChatMessageRequestSchema,
   IdSchema,
   AppError,
   type OpenDmResponse,
   type ChatHistoryResponse,
+  type ChatMessageDTO,
 } from "@civfix/shared"
 import { ZodError, z, type ZodTypeAny } from "zod"
 import type { FastifyInstance } from "fastify"
@@ -27,12 +29,16 @@ import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { route } from "../versioning/route.js"
+import { roomKeyFor } from "../ws/gateway.js"
 import { makeDmService, type DmService, type DmUserLookup } from "../services/dm-service.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 
 /** Path param schema for the routes that take a thread/user UUID in the URL. */
 const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+/** Path-param schema for the edit route (the `:threadId`/`:messageId` segments). */
+const DmEditParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema }).strict()
 
 /**
  * Tighter per-IP rate limit for opening a DM (P2-7 style): a real client opens a handful of threads; 20/min
@@ -121,6 +127,56 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     const payload: ChatHistoryResponse = { items: page.items, nextCursor: page.nextCursor }
     reply.status(200).send(payload)
   })
+
+  // -------------------------------------------------------------------------
+  // PATCH /dm/:threadId/messages/:messageId  [auth][csrf]  (sender-only)
+  // -------------------------------------------------------------------------
+  route(
+    app,
+    "editDmMessage",
+    { preHandler: csrfProtect, config: { rateLimit: DM_OPEN_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { threadId, messageId } = parse(DmEditParamsSchema, request.params)
+      // The body schema carries threadId/messageId (the typed client fills the path-param keys); the
+      // authoritative ids are the URL path, so stamp them before validating the non-empty, length-bounded body.
+      const body = parse(EditChatMessageRequestSchema, { ...(request.body as object), threadId, messageId })
+
+      const repo = dmRepo()
+      // Authorize the same way GET history does: the caller must be a thread participant AND not blocked
+      // either way. A single generic 403 so "not a participant" and "blocked" are indistinguishable (no leak).
+      // Derive participation from the thread row (getThread returns user_lo/user_hi) rather than a separate
+      // isParticipant probe — behavior-preserving, one fewer round-trip.
+      const thread = await repo.getThread(threadId)
+      const isParticipant = thread !== null && (thread.userLo === userId || thread.userHi === userId)
+      if (!isParticipant) throw AppError.forbidden("You can't edit this message.")
+      const peer = thread.userLo === userId ? thread.userHi : thread.userLo
+      if (await blocksRepo().isBlockedEitherWay(userId, peer)) {
+        throw AppError.forbidden("You can't edit this message.")
+      }
+
+      // Sender-only edit: the repo's WHERE gates on (id, thread_id, sender_id, not soft-deleted), so a null
+      // return means the message is missing OR not the caller's. Map both to a generic 403 (we already proved
+      // the caller is a participant of the thread above, so a wrong/foreign messageId is an authorization miss,
+      // not a route 404).
+      const updated: ChatMessageDTO | null = await repo.editMessage(threadId, messageId, userId, body.body)
+      if (updated === null) throw AppError.forbidden("You can't edit this message.")
+
+      // REALTIME: re-broadcast the edited message over the SAME dm room + SAME {type:"message"} frame the
+      // gateway's `send` uses to fan out a new DM (chatService.broadcast publishes {type:"message", message}).
+      // Connected clients already upsert incoming `message` frames by id, so they replace the old bubble with
+      // the edited body + editedAt — no new ws frame type. Unlike the gateway send we exclude NO connection:
+      // the editor's other devices (and the editor's current HTTP request has no socket here) should all see
+      // the update; the editor reconciles its own view from this 200 response. Best-effort + fire-and-forget:
+      // a fan-out failure must never fail the edit, so we void the broadcast and swallow errors (mirrors the
+      // discussion route's HTTP-side broadcast).
+      void Promise.resolve(
+        container.chatService.broadcast(roomKeyFor("dm", threadId), updated),
+      ).catch(() => {})
+
+      reply.status(200).send(updated)
+    },
+  )
 }
 
 /**

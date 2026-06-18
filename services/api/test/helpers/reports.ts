@@ -308,7 +308,28 @@ export class InMemoryReportRepository implements ReportRepository {
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, cap)
-      .map((r) => ({ id: r.id, lat: r.lat, lng: r.lng, category: r.category, status: r.status }))
+      .map((r) => {
+        // First VISIBLE (`ready`) image per report, ordered like the Drizzle LATERAL (created_at ASC, id
+        // ASC), projected to its key pair for the pin's thumbUrl. null keys => the pin carries a null thumb.
+        const firstPhoto = this.media
+          .filter(
+            (m) => m.reportId === r.id && m.kind === "image" && m.status === "ready",
+          )
+          .sort((a, b) => {
+            const cmp = a.createdAt.getTime() - b.createdAt.getTime()
+            return cmp !== 0 ? cmp : a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+          })[0]
+        return {
+          id: r.id,
+          lat: r.lat,
+          lng: r.lng,
+          category: r.category,
+          status: r.status,
+          title: r.title,
+          thumbKey: firstPhoto?.thumbKey ?? null,
+          r2Key: firstPhoto?.r2Key ?? null,
+        }
+      })
     return Promise.resolve(rows)
   }
 

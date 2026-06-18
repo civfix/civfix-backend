@@ -5,6 +5,7 @@
  *   GET    /reports/:id/discussion                            [anon-ok]      page top-level messages.
  *   GET    /reports/:id/discussion/:messageId/replies         [anon-ok]      page a message's replies.
  *   POST   /reports/:id/discussion                            [auth][csrf]   post a message (or a reply).
+ *   PATCH  /reports/:id/discussion/:messageId                 [auth][csrf]   author edits their message.
  *   POST   /reports/:id/discussion/:messageId/reactions       [auth][csrf]   toggle a reaction.
  *   DELETE /reports/:id/discussion/:messageId                 [auth][csrf]   author deletes their message.
  *
@@ -24,6 +25,7 @@
 
 import {
   CreateDiscussionMessageRequestSchema,
+  EditDiscussionMessageRequestSchema,
   DiscussionHistoryQuerySchema,
   ToggleReactionRequestSchema,
   IdSchema,
@@ -197,6 +199,32 @@ export async function registerDiscussionRoutes(
         ...(body.mediaUploadIds !== undefined ? { mediaUploadIds: body.mediaUploadIds } : {}),
       })
       reply.status(201).send(dto)
+    },
+  )
+
+  // -------------------------------------------------------------------------
+  // PATCH /reports/:id/discussion/:messageId  [auth][csrf]  (rate-limited)
+  // -------------------------------------------------------------------------
+  route(
+    app,
+    "editDiscussionMessage",
+    { preHandler: csrfProtect, config: { rateLimit: DISCUSSION_WRITE_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id, messageId } = parse(MessageParamsSchema, request.params)
+      // The body schema carries both path ids (the typed client fills them in); the authoritative ids are
+      // the URL path, so stamp them before validating. `body` (1..4000) is required; `mediaUploadIds`
+      // (optional) REPLACES the attachment set. The service enforces author-only (404 if not the author).
+      const body = parse(EditDiscussionMessageRequestSchema, {
+        ...(request.body as object),
+        id,
+        messageId,
+      })
+      const dto: DiscussionMessageDTO = await service().editMessage(id, messageId, userId, {
+        body: body.body,
+        ...(body.mediaUploadIds !== undefined ? { mediaUploadIds: body.mediaUploadIds } : {}),
+      })
+      reply.status(200).send(dto)
     },
   )
 

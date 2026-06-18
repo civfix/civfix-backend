@@ -206,6 +206,23 @@ export interface DiscussionRepository {
    */
   createMessage(args: CreateDiscussionMessageTxArgs): Promise<DiscussionMessageRecord>
   /**
+   * Edit a message's body (+ optionally REPLACE its media) and stamp edited_at = now, but ONLY when the
+   * message belongs to `reportId`, was authored by `authorId`, and is NOT soft-deleted (a tombstone is not
+   * editable). Returns the freshly-read record (for the author as the viewer), or null when no such
+   * editable row matched (wrong report / not the author / already removed / missing). When
+   * `mediaUploadIds` is provided it REPLACES the attachment set (detach the message's current attachments,
+   * then bind the given uploads under the SAME unattached-or-own rule createMessage uses); when omitted the
+   * existing attachments are left untouched. Mirrors createMessage's atomicity (a single transaction).
+   */
+  editMessage(
+    reportId: string,
+    messageId: string,
+    authorId: string,
+    body: string,
+    editedAt: Date,
+    mediaUploadIds?: string[] | undefined,
+  ): Promise<DiscussionMessageRecord | null>
+  /**
    * Toggle a reaction: insert (message,user,emoji) ON CONFLICT DO NOTHING, or DELETE it when already
    * present. Returns true when the reaction is now PRESENT (added), false when it was removed.
    */
@@ -333,6 +350,17 @@ export interface DiscussionService {
     messageId: string,
     userId: string,
     emoji: ReactionEmoji,
+  ): Promise<DiscussionMessageDTO>
+  /**
+   * Edit the body (+ optionally replace media) of the caller's OWN message; stamps editedAt and returns the
+   * updated message. Author-only (an operator does not edit citizen content); a missing / not-owned /
+   * already-removed message is a 404, never a 403 that would leak the message's existence to a non-author.
+   */
+  editMessage(
+    reportId: string,
+    messageId: string,
+    userId: string,
+    input: { body: string; mediaUploadIds?: string[] | undefined },
   ): Promise<DiscussionMessageDTO>
   /** Soft-delete a message (author or operator); returns the tombstoned message. */
   deleteMessage(
@@ -615,6 +643,57 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
         parentAuthorUserId,
         isReply,
       })
+      return dto
+    },
+
+    async editMessage(
+      reportId: string,
+      messageId: string,
+      userId: string,
+      input: { body: string; mediaUploadIds?: string[] | undefined },
+    ): Promise<DiscussionMessageDTO> {
+      // Gate on report visibility (the same 404-not-403 rule as the other author paths), then enforce
+      // author-only ownership BEFORE the write so a non-author cannot probe a message's existence: a missing
+      // message, a foreign message, or an already-removed (tombstoned) one all 404 identically.
+      await loadVisibleReport(reportId, userId)
+      const existing = await deps.repo.findMessage(reportId, messageId, userId)
+      if (!existing || existing.deletedAt !== null) {
+        throw AppError.notFound("Message not found")
+      }
+      const isAuthor = existing.authorUserId !== null && existing.authorUserId === userId
+      if (!isAuthor) {
+        // Author-only: an operator edits nothing here (they remove via the audited admin route). 404 (not
+        // 403) so a non-author cannot distinguish "not yours" from "does not exist".
+        throw AppError.notFound("Message not found")
+      }
+
+      const body = input.body.trim()
+      if (body === "") {
+        throw AppError.validation({ body: "Message body is required" })
+      }
+      // Optional attachment REPLACEMENT (omit to leave the current set untouched), same cap as create.
+      const mediaUploadIds =
+        input.mediaUploadIds !== undefined
+          ? input.mediaUploadIds.slice(0, DISCUSSION_MEDIA_MAX)
+          : undefined
+
+      const editedAt = now()
+      // The repo re-checks report + author + not-deleted under the UPDATE, so a concurrent delete that
+      // landed between the read above and here yields null -> 404 (idempotent with the pre-check).
+      const record = await deps.repo.editMessage(
+        reportId,
+        messageId,
+        userId,
+        body,
+        editedAt,
+        mediaUploadIds,
+      )
+      if (!record) throw AppError.notFound("Message not found")
+      const dto = await toMessageDTO(record, userId)
+      // Best-effort live fan-out over the SAME discussion frame: subscribers refetch + upsert the edited
+      // message by id. The body changed (the generic "message" change kind), so reuse that existing event;
+      // no new WS frame type is introduced for an edit.
+      fanOut(reportId, "message")
       return dto
     },
 

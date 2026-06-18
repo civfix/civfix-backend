@@ -87,21 +87,31 @@ describe("clusterCellSizeDeg", () => {
 })
 
 describe("clusterByZoom", () => {
-  // A small fixture: three points clumped near LA and one far away in NYC.
+  // A small fixture: three points clumped near LA and one far away in NYC. "a" carries a title + a
+  // first-photo thumb key pair so the carry-through onto the (unsigned) pin can be asserted.
   const pts: ReportMapPoint[] = [
-    { id: "a", lat: 34.10, lng: -118.350, category: "trash", status: "published" },
-    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", status: "published" },
-    { id: "c", lat: 34.12, lng: -118.352, category: "trash", status: "published" },
-    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", status: "published" },
+    { id: "a", lat: 34.10, lng: -118.350, category: "trash", status: "published", title: "Mattress dumped", thumbKey: "thumbs/a", r2Key: "uploads/a" },
+    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", status: "published", title: null, thumbKey: null, r2Key: null },
+    { id: "c", lat: 34.12, lng: -118.352, category: "trash", status: "published", title: null, thumbKey: null, r2Key: null },
+    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", status: "published", title: null, thumbKey: null, r2Key: null },
   ]
 
   it("at/above the threshold returns individual pins and no clusters", () => {
     const { clusters, pins } = clusterByZoom(pts, CLUSTER_ZOOM_THRESHOLD)
     expect(clusters).toHaveLength(0)
     expect(pins).toHaveLength(4)
-    // Pins carry the per-point identity + category + status.
+    // Pins carry the per-point identity + category + status + the preview fields (title + the first-photo
+    // key pair the service later presigns into thumbUrl).
     const a = pins.find((p) => p.id === "a")!
-    expect(a).toMatchObject({ id: "a", category: "trash", status: "published", lat: 34.1 })
+    expect(a).toMatchObject({
+      id: "a",
+      category: "trash",
+      status: "published",
+      lat: 34.1,
+      title: "Mattress dumped",
+      thumbKey: "thumbs/a",
+      r2Key: "uploads/a",
+    })
   })
 
   it("below the threshold snaps to a grid and emits clusters with correct counts", () => {
@@ -131,9 +141,9 @@ describe("clusterByZoom", () => {
 describe("countByCategory", () => {
   it("counts all candidates per category, omitting zero categories", () => {
     const pts: ReportMapPoint[] = [
-      { id: "a", lat: 0, lng: 0, category: "trash", status: "published" },
-      { id: "b", lat: 0, lng: 0, category: "trash", status: "published" },
-      { id: "c", lat: 0, lng: 0, category: "graffiti", status: "published" },
+      { id: "a", lat: 0, lng: 0, category: "trash", status: "published", title: null, thumbKey: null, r2Key: null },
+      { id: "b", lat: 0, lng: 0, category: "trash", status: "published", title: null, thumbKey: null, r2Key: null },
+      { id: "c", lat: 0, lng: 0, category: "graffiti", status: "published", title: null, thumbKey: null, r2Key: null },
     ]
     expect(countByCategory(pts)).toEqual({ trash: 2, graffiti: 1 })
     expect(countByCategory([])).toEqual({})
@@ -515,6 +525,49 @@ describe("listReportsInBBox", () => {
     const high = await service.listReportsInBBox(bbox, null, 16)
     expect(high.clusters).toHaveLength(0)
     expect(high.pins).toHaveLength(2)
+  })
+
+  it("enriches high-zoom pins with title + a presigned first-photo thumbUrl", async () => {
+    const { repo, service } = makeHarness()
+    const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
+
+    // (1) A report whose first ready photo has a generated thumbnail -> thumbUrl is the THUMB key signed.
+    const withThumb = repo.seedReport({
+      status: "published", visibility: "public", category: "trash",
+      lat: 34.10, lng: -118.35, title: "Mattress dumped",
+    })
+    repo.seedMedia({ reportId: withThumb.id, status: "ready", r2Key: "uploads/a", thumbKey: "thumbs/a" })
+
+    // (2) A report whose first ready photo has NO thumbnail -> thumbUrl FALLS BACK to the original key.
+    const noThumb = repo.seedReport({
+      status: "published", visibility: "public", category: "graffiti",
+      lat: 34.11, lng: -118.34, title: "Graffiti on the wall",
+    })
+    repo.seedMedia({ reportId: noThumb.id, status: "ready", r2Key: "uploads/b", thumbKey: null })
+
+    // (3) A report with NO visible media -> thumbUrl is null and title is still carried.
+    const noMedia = repo.seedReport({
+      status: "published", visibility: "public", category: "hazard",
+      lat: 34.12, lng: -118.33, title: "Pothole",
+    })
+
+    // (4) A report whose only media is still `validating` -> hidden, so thumbUrl stays null.
+    const pendingOnly = repo.seedReport({
+      status: "published", visibility: "public", category: "water",
+      lat: 34.13, lng: -118.32, title: null,
+    })
+    repo.seedMedia({ reportId: pendingOnly.id, status: "validating", r2Key: "uploads/d", thumbKey: "thumbs/d" })
+
+    const high = await service.listReportsInBBox(bbox, null, 16)
+    const byId = new Map(high.pins.map((p) => [p.id, p]))
+
+    expect(byId.get(withThumb.id)).toMatchObject({ title: "Mattress dumped", thumbUrl: "memory://thumbs/a" })
+    expect(byId.get(noThumb.id)).toMatchObject({ title: "Graffiti on the wall", thumbUrl: "memory://uploads/b" })
+    expect(byId.get(noMedia.id)).toMatchObject({ title: "Pothole", thumbUrl: null })
+
+    const pending = byId.get(pendingOnly.id)!
+    expect(pending.thumbUrl).toBeNull()
+    expect(pending.title).toBeUndefined() // null title is omitted from the DTO
   })
 
   it("filters by category when provided", async () => {

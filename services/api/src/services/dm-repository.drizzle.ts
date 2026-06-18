@@ -77,6 +77,19 @@ export interface DmRepository {
   isParticipant(threadId: string, userId: string): Promise<boolean>
   /** Insert a dm message and return it as a ChatMessageDTO (roomKind:"dm", cleanupId=threadId). */
   persist(input: DmPersistInput): Promise<ChatMessageDTO>
+  /**
+   * Edit a dm message's body and stamp edited_at = now(), returning the updated ChatMessageDTO. SENDER-ONLY
+   * + thread-scoped + not-soft-deleted: the UPDATE's WHERE gates on (id, thread_id, sender_id, deleted_at IS
+   * NULL), so it is a no-op (returns null) when the message is missing, belongs to another thread, was not
+   * sent by `senderId`, or is soft-deleted. A null return therefore means not-found OR forbidden — the
+   * caller maps it to a 404/403 without distinguishing them.
+   */
+  editMessage(
+    threadId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null>
   /** Page a thread's messages newest-first, before the given message id (cursor). roomKind:"dm". */
   history(threadId: string, before: string | undefined, limit: number): Promise<ChatHistoryPage>
   /** Record that `userId` read `threadId` up to `at`. Monotonic (never moves the watermark back). */
@@ -215,6 +228,50 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
         JOIN users u ON u.id = inserted.sender_id
       `
       return toMessageDTO(rows[0]!, input.clientId)
+    },
+
+    async editMessage(
+      threadId: string,
+      messageId: string,
+      senderId: string,
+      body: string,
+    ): Promise<ChatMessageDTO | null> {
+      // Sender-only, thread-scoped, not-soft-deleted edit. The WHERE is the authorization gate: it matches a
+      // row ONLY when (id, thread_id, sender_id) all line up and the message is live, so a non-sender / wrong
+      // thread / missing / soft-deleted target updates nothing and the CTE returns no row (→ null). Stamp
+      // edited_at = now() in the DB so the recomputed timestamp matches the persisted row exactly, then read
+      // back joined with the sender so `from` is populated (mirrors persist()).
+      //
+      // No created_at predicate: an edit targets an existing message whose created_at we do not carry, so we
+      // cannot prune partitions here. Editing is a rare, deliberate action (not a hot path like the ack
+      // watermark), so the unpruned PK seek on (id, created_at) + thread_id across partitions is acceptable.
+      const rows = await sql<DmRowSelect[]>`
+        WITH updated AS (
+          UPDATE dm_messages
+          SET body = ${body}, edited_at = now()
+          WHERE id = ${messageId}
+            AND thread_id = ${threadId}
+            AND sender_id = ${senderId}
+            AND deleted_at IS NULL
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at
+        )
+        SELECT
+          updated.id,
+          updated.thread_id,
+          updated.sender_id,
+          updated.body,
+          updated.kind,
+          updated.attachments,
+          updated.created_at,
+          updated.edited_at,
+          u.display_name AS sender_display_name,
+          u.handle AS sender_handle,
+          u.bio AS sender_bio
+        FROM updated
+        JOIN users u ON u.id = updated.sender_id
+      `
+      const row = rows[0]
+      return row ? toMessageDTO(row) : null
     },
 
     async history(

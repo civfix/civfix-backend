@@ -147,6 +147,17 @@ export interface ReportMapPoint {
   lng: number
   category: ReportCategory
   status: ReportStatus
+  /** The report's headline (null when it has none) — carried through onto an individual pin's preview. */
+  title: string | null
+  /**
+   * Storage keys for the report's FIRST visible (`ready`) photo, used to presign the pin's `thumbUrl`
+   * preview in the service (the repo never signs). `thumbKey` is the generated thumbnail when present;
+   * `r2Key` is the original, used as the fallback when there is no separate thumbnail. Both null when the
+   * report has no visible media — the pin then carries a null thumbUrl. Clustered (zoomed-out) points
+   * ignore these; only individual pins render a preview.
+   */
+  thumbKey: string | null
+  r2Key: string | null
 }
 
 /** Everything the create transaction needs to persist a report (jurisdiction + h3 already computed). */
@@ -318,28 +329,48 @@ export function clusterCellSizeDeg(zoom: number): number {
 }
 
 /**
+ * An individual pin BEFORE its thumbnail is presigned. clusterByZoom is a PURE/sync function and so
+ * cannot reach the (async) Storage seam; it therefore carries the report's first-media storage keys
+ * (thumbKey/r2Key) on each pin, and listReportsInBBox presigns them into the final ReportPinDTO.thumbUrl.
+ */
+export interface UnsignedReportPin {
+  id: string
+  category: ReportCategory
+  lat: number
+  lng: number
+  status: ReportStatus
+  title: string | null
+  thumbKey: string | null
+  r2Key: string | null
+}
+
+/**
  * PURE server-side clustering keyed by zoom.
  *
- *   - At/above CLUSTER_ZOOM_THRESHOLD: emit every point as an individual ReportPinDTO (no clusters).
+ *   - At/above CLUSTER_ZOOM_THRESHOLD: emit every point as an individual (unsigned) pin (no clusters).
  *   - Below it: snap each point to a grid cell (size from clusterCellSizeDeg(zoom)) and emit one
  *     ReportClusterDTO per non-empty cell, positioned at the centroid of the cell's points with the
  *     point count. No pins are returned in this mode.
  *
  * Deterministic (cells iterated in insertion order) so tests can assert exact output. No DB access:
  * callers fetch candidate points (capped) and pass them in. This backs the "60fps with 200 pins" goal
- * by keeping the rendered marker count bounded when zoomed out.
+ * by keeping the rendered marker count bounded when zoomed out. Pins are UNSIGNED (carry the first-media
+ * storage keys, not a presigned thumbUrl); listReportsInBBox presigns them — the clusterer stays pure.
  */
 export function clusterByZoom(
   points: ReportMapPoint[],
   zoom: number,
-): { clusters: ReportClusterDTO[]; pins: ReportPinDTO[] } {
+): { clusters: ReportClusterDTO[]; pins: UnsignedReportPin[] } {
   if (zoom >= CLUSTER_ZOOM_THRESHOLD) {
-    const pins: ReportPinDTO[] = points.map((p) => ({
+    const pins: UnsignedReportPin[] = points.map((p) => ({
       id: p.id,
       category: p.category,
       lat: p.lat,
       lng: p.lng,
       status: p.status,
+      title: p.title,
+      thumbKey: p.thumbKey,
+      r2Key: p.r2Key,
     }))
     return { clusters: [], pins }
   }
@@ -467,6 +498,31 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       width: view.width,
       height: view.height,
       status: view.status,
+    }
+  }
+
+  /**
+   * Render an individual (unsigned) map pin into its ReportPinDTO, presigning the report's first-photo
+   * thumbnail into `thumbUrl`. Mirrors how the report DETAIL derives a thumb: presignMedia(r2Key, thumbKey)
+   * returns a `thumbUrl` when a generated thumbnail exists, else falls back to the original `url`. A pin
+   * with no visible media (both keys null) carries `thumbUrl: null` and no presign call is made. `title` is
+   * carried through (null => omitted, matching how the DTO treats an absent title elsewhere). Additive: a
+   * pin without a title/thumb still serializes the prior {id,category,lat,lng,status} shape.
+   */
+  async function toMapPinDTO(pin: UnsignedReportPin): Promise<ReportPinDTO> {
+    let thumbUrl: string | null = null
+    if (pin.r2Key !== null) {
+      const signed = await deps.presignMedia(pin.r2Key, pin.thumbKey)
+      thumbUrl = signed.thumbUrl ?? signed.url
+    }
+    return {
+      id: pin.id,
+      category: pin.category,
+      lat: pin.lat,
+      lng: pin.lng,
+      status: pin.status,
+      ...(pin.title !== null ? { title: pin.title } : {}),
+      thumbUrl,
     }
   }
 
@@ -722,8 +778,15 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       // Fetch a capped candidate set (published + public + not deleted, inside the bbox). Clustering and
       // counting are pure functions over this set, so the heavy lifting is unit-testable without a DB.
       const points = await deps.repo.findMapCandidates(bbox, categories, MAP_REPORTS_CANDIDATE_CAP)
-      const { clusters, pins } = clusterByZoom(points, zoom)
+      const { clusters, pins: unsignedPins } = clusterByZoom(points, zoom)
       const counts = countByCategory(points)
+
+      // Presign each individual pin's thumbnail (clustered/zoomed-out views return no pins, so this only
+      // runs at pin zoom). title is carried through verbatim; thumbUrl is the report's first visible photo
+      // (its thumbKey, else the original r2Key), null when the report has no media. Both fields are
+      // additive on ReportPinDTO, so a pin without media still serializes the prior {id,category,lat,lng,
+      // status} shape (thumbUrl null, title omitted when null).
+      const pins: ReportPinDTO[] = await Promise.all(unsignedPins.map(toMapPinDTO))
 
       return {
         clusters,
