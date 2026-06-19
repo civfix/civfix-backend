@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
-import { OUTBOUND_MAIL_TEMPLATE } from "../../src/services/admin/outbound-mail-service.js"
 import {
   makeMailService,
   resolveCorrespondent,
@@ -107,8 +106,8 @@ describe("mail-service: compose", () => {
     expect(dto?.messages[0]?.dir).toBe("out")
     expect(mailer.sent).toHaveLength(1)
     expect(mailer.sent[0]?.to).toBe("mayor@city.gov")
-    expect(mailer.sent[0]?.template).toBe(OUTBOUND_MAIL_TEMPLATE)
-    expect(mailer.sent[0]?.vars?.from).toBe(FROM_OUTREACH)
+    // Delivery now goes through the first-class sendOutbound envelope (no template), From outreach.
+    expect(mailer.sent[0]?.outbound?.from).toBe(FROM_OUTREACH)
     expect(repo.events[0]?.type).toBe("sent")
     // H4: the mail.sent audit was written in-tx with the message insert (recorded on the audit sink).
     expect(repo.audits.at(-1)).toMatchObject({
@@ -135,7 +134,7 @@ describe("mail-service: reply", () => {
     expect(dto?.messages[1]?.body).toBe("Here is the answer.")
     // Delivered to the inbound correspondent, From outreach.
     expect(mailer.sent[0]?.to).toBe("clerk@city.gov")
-    expect(mailer.sent[0]?.vars?.from).toBe(FROM_OUTREACH)
+    expect(mailer.sent[0]?.outbound?.from).toBe(FROM_OUTREACH)
     // H4: the mail.replied audit was written in-tx with the OUT message insert.
     expect(repo.audits.at(-1)).toMatchObject({ action: "mail.replied", target: `mail:${t.id}` })
   })

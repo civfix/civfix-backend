@@ -4,18 +4,23 @@
  * seam (actually deliver), and nothing else - no Fastify, no DI container - so it is fully unit-testable
  * with the in-memory repo + FakeMailer.
  *
- * Three send paths, all From MAIL_FROM_OUTREACH (outreach@civfix.org):
- *   - sendToCity   the reports/events "send follow-up to city": find-or-create a thread for the
- *                  jurisdiction, append an OUT message, deliver, record a 'sent' event.
+ * Four send paths, all From MAIL_FROM_OUTREACH (outreach@civfix.org):
+ *   - sendToCity   the reports/events "send follow-up to city": find-or-create the jurisdiction's digest
+ *                  thread (by geoid), append an OUT message, deliver, record a 'sent' event.
+ *   - sendReportToJurisdiction  Approve & send THIS report: a per-report thread (by report_id) so the
+ *                  city's reply auto-routes back onto the report, with photo attachments + a stored
+ *                  Message-ID. Returns the thread + the Message-ID used.
  *   - compose      the Mail Compose modal: a brand-new outbound thread + first OUT message + deliver.
  *   - appendOutbound the Mail reply: append an OUT message to an existing thread + deliver.
- * Each returns the affected thread record so the caller can map it to a DTO (via getThread).
+ * Each returns the affected thread record (sendReportToJurisdiction also the Message-ID) so the caller
+ * can map it to a DTO (via getThread).
  *
- * Delivery uses `Mailer.sendTransactional(to, template, vars)` - the same vendor-neutral seam Phase 1
- * uses - with a generic template carrying { subject, message, replyTo }. The OCI adapter renders the
- * generic branch (subject + body); the FakeMailer captures the call for assertions. The reply-to address
- * is minted as reply+{threadToken}@{MAIL_REPLY_DOMAIN} so an inbound reply threads back (the inbound
- * webhook, owned by the mail agent, parses that token).
+ * Delivery uses `Mailer.sendOutbound(email)` - the first-class envelope seam - which HONORS the `from`
+ * (MAIL_FROM_OUTREACH) and `replyTo` and carries binary attachments + an explicit Message-ID (the two
+ * the old `sendTransactional` path silently dropped in production). The reply-to address is minted as
+ * reply+{threadToken}@{MAIL_REPLY_DOMAIN} so an inbound reply threads back (the inbound webhook, owned by
+ * the mail agent, parses that token); the returned Message-ID is stored on the OUT row for In-Reply-To
+ * correlation. The FakeMailer captures the full envelope for assertions.
  *
  * Audit note (H4): the operator audit (mail.sent / mail.replied / mail.resent) is written IN THE SAME
  * transaction as the message insert (repo.insertMessage's audit param), so a committed outbound message
@@ -24,7 +29,7 @@
  * thread). The deliverability mail_events 'sent' row is recorded separately as before.
  */
 
-import type { Mailer } from "@civfix/shared/interfaces"
+import type { Mailer, OutboundAttachment } from "@civfix/shared/interfaces"
 import type { MailAuditInput, MailRepository, MailThreadRecord } from "./mail-repository.drizzle.js"
 
 /** The env slice the service needs (the outbound From + the reply domain for threading). */
@@ -33,7 +38,11 @@ export interface OutboundMailEnv {
   MAIL_REPLY_DOMAIN: string
 }
 
-/** The template name handed to Mailer.sendTransactional for operator-originated outbound mail. */
+/**
+ * Legacy template name for operator-originated outbound mail. Delivery now goes through the first-class
+ * `Mailer.sendOutbound` envelope (no template), so this is retained only for the existing tests'
+ * import surface; it is no longer passed to the Mailer.
+ */
 export const OUTBOUND_MAIL_TEMPLATE = "admin_outbound"
 
 /** Optional report context the reports follow-up can thread into the message (for the operator trail). */
@@ -79,10 +88,38 @@ export interface AppendOutboundInput {
   audit?: OutboundAudit
 }
 
+/**
+ * sendReportToJurisdiction input: route THIS report's full packet to a jurisdiction contact on a
+ * per-report thread (so the city's reply auto-routes back onto the report). Carries the rendered
+ * subject/body + binary photo attachments; the service owns the thread, reply token, and Message-ID.
+ */
+export interface SendReportInput {
+  reportId: string
+  /** The report's jurisdiction GEOID (sets the thread's geoid + the 'sent' event meta), or null. */
+  geoid: string | null
+  /** Display label for the jurisdiction (the thread `org`). */
+  org?: string | null
+  /** The municipal contact address to deliver to (resolved contact or the per-send override). */
+  toAddr: string
+  subject: string
+  text: string
+  html?: string
+  /** Binary photo attachments (already loaded + capped by the caller). */
+  attachments?: OutboundAttachment[]
+}
+
 /** The OutboundMailService surface the reports/events + mail routers import. */
 export interface OutboundMailService {
   /** Reports/events "send follow-up to city": thread by jurisdiction, append OUT, deliver, record. */
   sendToCity(input: SendToCityInput): Promise<MailThreadRecord>
+  /**
+   * Approve & send THIS report to its jurisdiction: a per-report thread (find-or-create by report_id),
+   * an OUT message with attachments + a reply token + a stored Message-ID, and a 'sent' event. Returns
+   * the fresh thread + the Message-ID used (for reply/bounce correlation).
+   */
+  sendReportToJurisdiction(
+    input: SendReportInput,
+  ): Promise<{ thread: MailThreadRecord; messageId: string }>
   /** Mail Compose modal: new outbound thread + first message + deliver. */
   compose(input: ComposeInput): Promise<MailThreadRecord>
   /** Mail reply: append an OUT message to an existing thread + deliver. */
@@ -108,10 +145,20 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     return `reply+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
   }
 
+  /** The sending domain (after '@' of MAIL_FROM_OUTREACH), used to mint the OUT Message-ID. */
+  function fromDomain(): string {
+    const at = env.MAIL_FROM_OUTREACH.lastIndexOf("@")
+    const domain = at >= 0 ? env.MAIL_FROM_OUTREACH.slice(at + 1).trim() : ""
+    return domain.length > 0 ? domain : "civfix.org"
+  }
+
   /**
-   * Deliver one outbound message via the Mailer seam, then record the mail_events 'sent' row. The
-   * delivery happens BEFORE the event is recorded so a send failure (a thrown Mailer error) surfaces to
-   * the caller without leaving a misleading 'sent' event. The reply-to is the thread's minted address.
+   * Deliver one outbound message via the first-class `sendOutbound` seam, store the returned Message-ID
+   * on the OUT row, then record the mail_events 'sent' row. Delivery happens BEFORE the event is recorded
+   * so a send failure (a thrown Mailer error) surfaces to the caller without leaving a misleading 'sent'
+   * event. The From is MAIL_FROM_OUTREACH and the reply-to is the thread's minted address (so the city's
+   * reply threads back via the inbound pipeline). The OUT Message-ID is derived from the message row id
+   * (`<out-{id}@{fromDomain}>`) so an eventual reply/bounce can correlate by In-Reply-To/References.
    */
   async function deliverAndRecord(args: {
     threadId: string
@@ -120,32 +167,80 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     toAddr: string
     subject: string
     body: string
+    html?: string
+    inReplyTo?: string
+    attachments?: OutboundAttachment[]
     eventMeta?: Record<string, unknown>
-  }): Promise<void> {
-    await mailer.sendTransactional(args.toAddr, OUTBOUND_MAIL_TEMPLATE, {
-      subject: args.subject,
-      message: args.body,
+  }): Promise<string> {
+    const rfcMessageId = `<out-${args.messageId}@${fromDomain()}>`
+    const sent = await mailer.sendOutbound({
       from: env.MAIL_FROM_OUTREACH,
+      to: args.toAddr,
       replyTo: mintReplyAddress(args.threadToken),
+      subject: args.subject,
+      text: args.body,
+      ...(args.html !== undefined ? { html: args.html } : {}),
+      messageId: rfcMessageId,
+      ...(args.inReplyTo !== undefined ? { inReplyTo: args.inReplyTo } : {}),
+      ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
     })
+    // Persist the Message-ID actually used on the OUT row (so a later reply/bounce correlates).
+    await repo.setMessageMessageId(args.messageId, sent.messageId)
     await repo.recordEvent({
       threadId: args.threadId,
       messageId: args.messageId,
       type: "sent",
       meta: { from: env.MAIL_FROM_OUTREACH, to: args.toAddr, ...(args.eventMeta ?? {}) },
     })
+    return sent.messageId
   }
 
   return {
     mintReplyAddress,
 
+    async sendReportToJurisdiction(
+      input: SendReportInput,
+    ): Promise<{ thread: MailThreadRecord; messageId: string }> {
+      // Per-report thread: find-or-create by report_id (with a minted reply token) so the city's reply
+      // auto-routes back onto this report. The thread carries the report's geoid + org label.
+      const thread = await repo.findOrCreateReportThread(input.reportId, {
+        jurisdictionGeoid: input.geoid,
+        org: input.org ?? null,
+        subject: input.subject,
+        status: "sent",
+      })
+      const message = await repo.insertMessage({
+        threadId: thread.id,
+        direction: "out",
+        fromAddr: env.MAIL_FROM_OUTREACH,
+        toAddr: input.toAddr,
+        subject: input.subject,
+        body: input.text,
+      })
+      const messageId = await deliverAndRecord({
+        threadId: thread.id,
+        messageId: message.id,
+        threadToken: thread.threadToken,
+        toAddr: input.toAddr,
+        subject: input.subject,
+        body: input.text,
+        ...(input.html !== undefined ? { html: input.html } : {}),
+        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+        eventMeta: { reportId: input.reportId, ...(input.geoid != null ? { geoid: input.geoid } : {}) },
+      })
+      // Re-read so the returned record reflects the post-insert last_message_at.
+      const fresh = await repo.getThreadRecord(thread.id)
+      return { thread: fresh ?? thread, messageId }
+    },
+
     async sendToCity(input: SendToCityInput): Promise<MailThreadRecord> {
-      // A jurisdiction's outreach is ONE rolling thread, keyed by a deterministic token derived from the
-      // geoid so repeated follow-ups append to the same conversation. Non-jurisdiction sends (no geoid)
+      // A jurisdiction's digest outreach is ONE rolling thread per geoid (newest non-report thread,
+      // minted token) so repeated follow-ups append to the same conversation; the old `geo-{geoid}` token
+      // scheme is gone (it failed the real inbound reply-token regex). Non-jurisdiction sends (no geoid)
       // get a fresh thread each time (there is no natural conversation to append to).
       const thread =
         input.geoid != null && input.geoid.length > 0
-          ? await repo.upsertThreadByToken(`geo-${input.geoid}`, {
+          ? await repo.upsertThreadByGeoid(input.geoid, {
               jurisdictionGeoid: input.geoid,
               org: input.org ?? null,
               subject: input.subject,

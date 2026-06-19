@@ -207,6 +207,14 @@ export interface DiscoveryRepository {
       actorId: string | null
     },
   ): Promise<boolean>
+  /**
+   * Materialize (idempotently) an OPEN discovery task for a geoid: the `jurisdiction.discovery` worker
+   * calls this when a report's jurisdiction has no usable contact, so the operator's Discovery queue shows
+   * the un-onboarded jurisdiction. Inserts one row per geoid (ON CONFLICT (geoid) WHERE status <> 'done'
+   * DO NOTHING), wiring the population + a sample report. Returns whether a NEW task row was created (false
+   * when an open task already existed or the jurisdiction is unknown).
+   */
+  materializeDiscoveryTask(input: { geoid: string; population?: number | null }): Promise<boolean>
 }
 
 // ---------------------------------------------------------------------------

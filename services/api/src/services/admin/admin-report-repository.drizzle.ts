@@ -31,7 +31,13 @@ import type {
   ListReportsArgs,
   NotifyReporterInput,
 } from "./admin-report-service.js"
-import type { AdminReportCounts, AdminReportStatus, ReportCategory } from "@civfix/shared"
+import type {
+  AdminReportCounts,
+  AdminReportStatus,
+  ReportCategory,
+  ReportOutreachStatus,
+  ReportTimelineItem,
+} from "@civfix/shared"
 import { likeContains } from "./like.js"
 
 /** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
@@ -303,6 +309,70 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       }
     },
 
+    async getOutreach(id: string): Promise<{
+      status: ReportOutreachStatus
+      threadId: string | null
+      routedTo: string | null
+      routedAt: string | null
+    }> {
+      // The newest per-report mail thread (report_id = id) + its OUT-message aggregates (latest to_addr,
+      // earliest created_at) and whether any inbound reply has landed. One row (or none -> not_sent).
+      const rows = await sql<
+        {
+          thread_id: string
+          thread_status: string
+          has_inbound: boolean
+          routed_to: string | null
+          routed_at: Date | null
+        }[]
+      >`
+        SELECT
+          t.id AS thread_id,
+          t.status AS thread_status,
+          EXISTS (
+            SELECT 1 FROM mail_messages m WHERE m.thread_id = t.id AND m.direction = 'in'
+          ) AS has_inbound,
+          (
+            SELECT m.to_addr FROM mail_messages m
+            WHERE m.thread_id = t.id AND m.direction = 'out' AND m.to_addr IS NOT NULL AND m.to_addr <> ''
+            ORDER BY m.created_at DESC, m.id DESC LIMIT 1
+          ) AS routed_to,
+          (
+            SELECT MIN(m.created_at) FROM mail_messages m
+            WHERE m.thread_id = t.id AND m.direction = 'out'
+          ) AS routed_at
+        FROM mail_threads t
+        WHERE t.report_id = ${id}
+        ORDER BY t.created_at DESC, t.id DESC
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (!row) {
+        return { status: "not_sent", threadId: null, routedTo: null, routedAt: null }
+      }
+      return {
+        status: mapOutreachStatus(row.thread_status, row.has_inbound),
+        threadId: row.thread_id,
+        routedTo: row.routed_to,
+        routedAt: row.routed_at ? row.routed_at.toISOString() : null,
+      }
+    },
+
+    async appendSystemTimeline(
+      id: string,
+      input: { note: string; kind: ReportTimelineItem["kind"] },
+    ): Promise<void> {
+      // A non-transition system row at the report's CURRENT status, actor NULL, no audit (used by the
+      // inbound reply side-effects). `kind` is not persisted (report_timeline has no kind column); the DTO
+      // re-derives it from the note prefix / status, so it is intentionally unused here beyond the contract.
+      void input.kind
+      await sql`
+        INSERT INTO report_timeline (report_id, status, note, actor_id)
+        SELECT ${id}, r.status, ${input.note}, NULL
+        FROM reports r WHERE r.id = ${id}
+      `
+    },
+
     async listMedia(id: string): Promise<AdminReportMediaRecord[]> {
       const rows = await sql<
         { id: string; kind: "image" | "video"; r2_key: string; thumb_key: string | null }[]
@@ -453,6 +523,22 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       })
     },
   }
+}
+
+/**
+ * Map a per-report mail thread's status + whether an inbound reply landed onto the report's outreach
+ * status (§2.5). Precedence: bounced > replied (inbound message OR thread 'replied') > delivered
+ * (delivered/opened) > sent (any other live thread with an OUT send). Shared by the Drizzle + memory repos
+ * via re-implementation; keep the two in lockstep.
+ */
+export function mapOutreachStatus(
+  threadStatus: string,
+  hasInbound: boolean,
+): ReportOutreachStatus {
+  if (threadStatus === "bounced") return "bounced"
+  if (hasInbound || threadStatus === "replied") return "replied"
+  if (threadStatus === "delivered" || threadStatus === "opened") return "delivered"
+  return "sent"
 }
 
 /** Loose uuid shape check so a non-uuid `q` search never trips a Postgres cast error on `q::uuid`. */

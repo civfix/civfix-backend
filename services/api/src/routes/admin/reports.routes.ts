@@ -24,6 +24,7 @@ import {
   IdSchema,
   RemoveDiscussionMessageRequestSchema,
   RemoveReportRequestSchema,
+  RouteReportRequestSchema,
   SendFollowupRequestSchema,
   SetReportStatusRequestSchema,
   type AdminOkResponse,
@@ -31,6 +32,7 @@ import {
   type AdminReportListResponse,
   type DiscussionMessageDTO,
   type DiscussionPageResponse,
+  type RouteReportResponse,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
@@ -139,6 +141,8 @@ export async function registerAdminReportsRoutes(
       outboundMail,
       presignMedia: defaultPresign(container),
       loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
+      // Approve & send loads the report's media bytes (for binary photo attachments) over the Storage seam.
+      loadMediaBytes: (k) => container.storage.getObject(k),
     })
   }
 
@@ -243,6 +247,40 @@ export async function registerAdminReportsRoutes(
     const body = parse(SendFollowupRequestSchema, { ...(request.body as object), id })
     await service().sendFollowup(id, { to: body.to, body: body.body, actorId: request.auth.userId })
     const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/reports/:id/route  [csrf]  (Approve & send to jurisdiction)
+  // -------------------------------------------------------------------------
+  // Email THIS report's full packet (photos attached + signed links) to its jurisdiction contact (or a
+  // per-send override) on a per-report mail thread, advancing the report toward `acknowledged`. The
+  // service throws AppError.notRoutable (422) when neither a resolved contact nor an override is on file.
+  // Audited with `report.routed` (best-effort AFTER the send, since SMTP cannot join the DB tx) recording
+  // the address + the thread the city's reply will land in.
+  route(app, "routeReport", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(RouteReportRequestSchema, { ...(request.body as object), id })
+    const { threadId, routedTo } = await service().routeToJurisdiction(id, {
+      contactEmailOverride: body.contactEmailOverride ?? null,
+      note: body.note ?? null,
+      actorId: request.auth.userId,
+    })
+    // Audit the route (the send already happened; a routed report is loud, never silent). Best-effort: a
+    // post-send audit blip must not fail the ack of a successful send. Skipped under test overrides (no DB).
+    if (!app.adminReportOverrides) {
+      try {
+        await writeAudit(container.getDb().sql, {
+          actorId: request.auth.userId,
+          action: "report.routed",
+          target: `report:${id}`,
+          meta: { to: routedTo, threadId },
+        })
+      } catch {
+        // The send + status advance already committed; a missing audit row is logged elsewhere, not fatal.
+      }
+    }
+    const payload: RouteReportResponse = { ok: true, threadId, routedTo }
     reply.status(200).send(payload)
   })
 

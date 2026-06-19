@@ -38,6 +38,7 @@ export type AdminAuditAction =
   | "report.unflagged"
   | "report.removed"
   | "report.followup_sent"
+  | "report.routed"
   // events (cleanups)
   | "event.status_changed"
   | "event.flagged"

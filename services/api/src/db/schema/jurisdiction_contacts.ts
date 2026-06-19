@@ -28,6 +28,9 @@ export const jurisdictionContacts = pgTable(
     category: text("category"),
     email: text("email"),
     formUrl: text("form_url"),
+    // Per-contact bounce marker (0020): set when an outbound to this address hard-bounces, so the
+    // directory can surface a 'bounced' contact and re-open discovery. Nullable; NULL = no known bounce.
+    bouncedAt: timestamp("bounced_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

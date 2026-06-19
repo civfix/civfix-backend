@@ -78,6 +78,7 @@ describe("toThreadDTO", () => {
     const thread: MailThreadRecord = {
       id: "11111111-1111-1111-1111-111111111111",
       threadToken: "tok",
+      reportId: null,
       jurisdictionGeoid: "0644000",
       org: "City of LA",
       subject: "Pothole",

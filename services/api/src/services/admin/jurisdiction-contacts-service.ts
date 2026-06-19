@@ -131,6 +131,13 @@ export interface JurisdictionContactsRepository {
   getOutreachState(geoid: string): Promise<{ lastOutreachAt: Date | null; suppressed: boolean } | null>
   /** Page the directory rows (org/coverage/method derived by the service), filtered + searched. */
   listDirectory(args: ListDirectoryArgs): Promise<{ records: JurisdictionDirectoryRecord[]; nextCursor: string | null }>
+  /**
+   * Stamp `bounced_at = now()` on every jurisdiction_contacts row carrying this address: the inbound bounce
+   * handler (§2.7) calls this when an outbound to the address hard-bounces, so the directory surfaces a
+   * `bounced` contact (which takes precedence over verified/pending) and re-opens discovery. A re-saved
+   * contact clears the marker (saveAndRoute / patch null it). No-op when the address matches no contact.
+   */
+  markContactBounced(email: string): Promise<void>
 }
 
 // ---------------------------------------------------------------------------

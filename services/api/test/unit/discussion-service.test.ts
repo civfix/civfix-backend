@@ -40,6 +40,9 @@ class SpyOutboundMail implements OutboundMailService {
     if (this.shouldThrow) return Promise.reject(new Error("smtp boom"))
     return Promise.resolve(stubThread())
   }
+  sendReportToJurisdiction(): Promise<{ thread: MailThreadRecord; messageId: string }> {
+    return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
+  }
   compose(): Promise<MailThreadRecord> {
     return Promise.resolve(stubThread())
   }
@@ -55,6 +58,7 @@ function stubThread(): MailThreadRecord {
   return {
     id: "thread-1",
     threadToken: "geo-1",
+    reportId: null,
     jurisdictionGeoid: null,
     org: null,
     subject: null,

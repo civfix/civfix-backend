@@ -282,6 +282,16 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     return this.outreach.get(geoid) ?? null
   }
 
+  async markContactBounced(email: string): Promise<void> {
+    // Mark every seeded jurisdiction whose default OR per-category contact carries this address as bounced
+    // (mirrors the Drizzle UPDATE ... WHERE email = $1 stamping bounced_at, surfaced as the directory flag).
+    for (const j of this.jurisdictions.values()) {
+      const inDefault = j.defaultEmails.includes(email)
+      const inCategory = [...j.categoryContacts.values()].includes(email)
+      if (inDefault || inCategory) j.bounced = true
+    }
+  }
+
   async listDirectory(
     args: ListDirectoryArgs,
   ): Promise<{ records: JurisdictionDirectoryRecord[]; nextCursor: string | null }> {
@@ -346,6 +356,9 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
 
 /** Apply a contact-save input to a seeded jurisdiction (per-category + default + form mirror). */
 function applyContacts(j: SeededJurisdiction, input: SaveContactsInput): void {
+  // A re-entered address is presumed good: clear the bounce marker on any save (mirrors the Drizzle
+  // upsert nulling bounced_at). §2.9.
+  j.bounced = false
   for (const [category, email] of Object.entries(input.contacts) as [
     ReportCategory,
     string | null,

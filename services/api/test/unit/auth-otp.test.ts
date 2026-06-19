@@ -32,6 +32,9 @@ class FlakyMailer implements Mailer {
   sendTransactional(_to: string, _template: string, _vars: Record<string, unknown>): Promise<void> {
     return Promise.resolve()
   }
+  sendOutbound(): Promise<{ messageId: string }> {
+    return Promise.resolve({ messageId: "<flaky@civfix.test>" })
+  }
 }
 
 const EMAIL = "Jane.Doe@example.com"

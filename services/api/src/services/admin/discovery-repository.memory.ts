@@ -232,6 +232,40 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
     upsertContacts(seeded, input.contacts, input.defaultEmails)
     return true
   }
+
+  async materializeDiscoveryTask(input: {
+    geoid: string
+    population?: number | null
+  }): Promise<boolean> {
+    // Mirror the Drizzle ON CONFLICT (geoid) WHERE status <> 'done' DO NOTHING: at most one OPEN task per
+    // geoid. If one already exists (status <> 'done'), do nothing and report false; else create an open task.
+    for (const seeded of this.tasks.values()) {
+      if (seeded.task.geoid === input.geoid && seeded.task.status !== "done") return false
+    }
+    const id = randomUUID()
+    this.tasks.set(id, {
+      task: {
+        id,
+        geoid: input.geoid,
+        place: input.geoid,
+        layer: "place",
+        population: input.population ?? null,
+        status: "open",
+        perCategory: {},
+        total: 0,
+        oldestWaitingAt: null,
+        newestWaitingAt: null,
+        contactCategories: [],
+        hasDefaultContact: false,
+      },
+      contacts: [],
+      placeGeojson: null,
+      samplePins: [],
+      center: null,
+      zoom: null,
+    })
+    return true
+  }
 }
 
 /**

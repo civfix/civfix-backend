@@ -25,7 +25,14 @@ import type {
   ListReportsArgs,
   NotifyReporterInput,
 } from "./admin-report-service.js"
-import type { AdminReportCounts, AdminReportStatus, ReportCategory } from "@civfix/shared"
+import type {
+  AdminReportCounts,
+  AdminReportStatus,
+  ReportCategory,
+  ReportOutreachStatus,
+  ReportTimelineItem,
+} from "@civfix/shared"
+import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
 
 /** A recorded notification (the follow-up to the reporter), inspectable by tests. */
 export interface RecordedReportNotification {
@@ -43,11 +50,27 @@ export interface RecordedAudit {
   meta: Record<string, unknown>
 }
 
-/** A seeded report plus its detail extras (routing/media) held in one place. */
+/**
+ * The per-report outreach state the memory repo's getOutreach derives from (mirrors the per-report mail
+ * thread + its OUT/IN messages the Drizzle impl joins). A test seeds this to exercise the outreach status
+ * mapping; the default (no thread) yields `not_sent`.
+ */
+export interface SeededOutreach {
+  threadId: string | null
+  /** The mail thread status (sent|delivered|opened|replied|bounced|...), or null when no thread exists. */
+  threadStatus: string | null
+  /** Whether any inbound (city reply) message has landed on the thread. */
+  hasInbound: boolean
+  routedTo: string | null
+  routedAt: Date | null
+}
+
+/** A seeded report plus its detail extras (routing/media/outreach) held in one place. */
 export interface SeededReport {
   record: AdminReportRecord
   routing: AdminReportRoutingRecord | null
   media: AdminReportMediaRecord[]
+  outreach: SeededOutreach
 }
 
 /** An in-memory AdminReportRepository faithful to the Drizzle impl's observable behavior. */
@@ -89,6 +112,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     routing?: AdminReportRoutingRecord | null
     media?: AdminReportMediaRecord[]
     timeline?: AdminReportTimelineRecord[]
+    outreach?: Partial<SeededOutreach>
   }): SeededReport {
     const id = input.id ?? randomUUID()
     const seeded: SeededReport = {
@@ -110,6 +134,13 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       },
       routing: input.routing ?? null,
       media: input.media ?? [],
+      outreach: {
+        threadId: input.outreach?.threadId ?? null,
+        threadStatus: input.outreach?.threadStatus ?? null,
+        hasInbound: input.outreach?.hasInbound ?? false,
+        routedTo: input.outreach?.routedTo ?? null,
+        routedAt: input.outreach?.routedAt ?? null,
+      },
     }
     this.reports.set(id, seeded)
     if (input.timeline) this.timeline.set(id, [...input.timeline])
@@ -196,6 +227,42 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
 
   async getRouting(id: string): Promise<AdminReportRoutingRecord | null> {
     return this.reports.get(id)?.routing ?? null
+  }
+
+  async getOutreach(id: string): Promise<{
+    status: ReportOutreachStatus
+    threadId: string | null
+    routedTo: string | null
+    routedAt: string | null
+  }> {
+    const o = this.reports.get(id)?.outreach
+    if (!o || o.threadStatus === null) {
+      return { status: "not_sent", threadId: null, routedTo: null, routedAt: null }
+    }
+    return {
+      // Same mapping the Drizzle impl uses (shared mapOutreachStatus), so the two repos agree.
+      status: mapOutreachStatus(o.threadStatus, o.hasInbound),
+      threadId: o.threadId,
+      routedTo: o.routedTo,
+      routedAt: o.routedAt ? o.routedAt.toISOString() : null,
+    }
+  }
+
+  async appendSystemTimeline(
+    id: string,
+    input: { note: string; kind: ReportTimelineItem["kind"] },
+  ): Promise<void> {
+    const seeded = this.reports.get(id)
+    if (!seeded) return
+    // A system row at the report's current status, no actor, no audit (mirrors the Drizzle impl). `kind`
+    // is not persisted (the DTO re-derives it); it is part of the contract only.
+    void input.kind
+    this.appendTimeline(id, {
+      status: seeded.record.status,
+      note: input.note,
+      who: "system",
+      createdAt: this.nextDate(),
+    })
   }
 
   async listMedia(id: string): Promise<AdminReportMediaRecord[]> {

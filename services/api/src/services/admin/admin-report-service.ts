@@ -35,9 +35,12 @@ import type {
   LinkedEventRef,
   ReportCategory,
   ReportMedia,
+  ReportOutreach,
+  ReportOutreachStatus,
   ReportRouting,
   ReportTimelineItem,
 } from "@civfix/shared"
+import type { OutboundAttachment } from "@civfix/shared/interfaces"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
@@ -161,6 +164,30 @@ export interface AdminReportRepository {
   listTimeline(id: string): Promise<AdminReportTimelineRecord[]>
   /** Load the routing posture (department + resolved contact) for a report's jurisdiction. */
   getRouting(id: string): Promise<AdminReportRoutingRecord | null>
+  /**
+   * Resolve the report's outreach lifecycle (was it emailed to its jurisdiction, did it deliver / get a
+   * reply / bounce) + a deep-link to the per-report mail thread. Joins the newest per-report mail_threads
+   * row (report_id = id) with its latest OUT message + the thread status. Mapping (see §2.5):
+   *   no thread                                    -> not_sent
+   *   thread.status 'bounced'                      -> bounced
+   *   thread has any IN message OR status 'replied'-> replied
+   *   thread.status 'delivered' / 'opened'         -> delivered
+   *   otherwise (a thread with an OUT send)        -> sent
+   * `routedTo` = the latest OUT to_addr; `routedAt` = the earliest OUT created_at (ISO), both null when
+   * the thread carries no outbound message yet.
+   */
+  getOutreach(id: string): Promise<{
+    status: ReportOutreachStatus
+    threadId: string | null
+    routedTo: string | null
+    routedAt: string | null
+  }>
+  /**
+   * Append a SYSTEM report_timeline row at the report's CURRENT status (actor NULL, no audit). Used by the
+   * inbound reply side-effects (§2.7) to record a jurisdiction reply on the timeline without changing the
+   * report status. Unlike setStatus this is a non-transition row; unlike appendFollowup it writes no audit.
+   */
+  appendSystemTimeline(id: string, input: { note: string; kind: ReportTimelineItem["kind"] }): Promise<void>
   /** Load the media assets attached to a report (ordered). */
   listMedia(id: string): Promise<AdminReportMediaRecord[]>
   /**
@@ -266,6 +293,14 @@ export function statusChangeNote(status: AdminReportStatus): string {
 }
 
 /**
+ * The note prefix a jurisdiction-reply timeline row carries (written by the inbound side-effects, §2.7).
+ * The DTO maps a row with this prefix to the contract's `reply` timeline kind regardless of the row's
+ * status, since report_timeline has no `kind` column (the kind is derived). Keep in lockstep with the
+ * inbound processor's reply note.
+ */
+export const JURISDICTION_REPLY_NOTE_PREFIX = "Jurisdiction replied"
+
+/**
  * Map a civfix report status to the design's timeline icon kind. The detail timeline renders an icon per
  * row; the design kinds are submit|route|confirm|status|done|warn|followup|remove.
  */
@@ -310,6 +345,12 @@ export interface AdminReportServiceDeps {
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>
+  /**
+   * Load a media object's raw bytes for the Approve & send packet's photo attachments, wrapping the
+   * Storage seam (`Storage.getObject(r2Key)`). OPTIONAL: when omitted (offline unit tests) it defaults to
+   * returning null, so the routed email carries no binary attachments — only the presigned-link fallbacks.
+   */
+  loadMediaBytes?: (r2Key: string) => Promise<Uint8Array | null>
   /** Injectable clock (defaults to () => new Date()) so the relative-age labels are deterministic. */
   now?: () => Date
 }
@@ -319,6 +360,12 @@ export interface FollowupResult {
   to: "reporter" | "city"
   /** The destination address (city) or the reporter's user id (reporter). */
   destination: string
+}
+
+/** The outcome of an Approve & send: the per-report thread it landed in + the address it was sent to. */
+export interface RouteToJurisdictionResult {
+  threadId: string
+  routedTo: string
 }
 
 export interface AdminReportService {
@@ -331,6 +378,15 @@ export interface AdminReportService {
     id: string,
     input: { to: "reporter" | "city"; body: string; actorId: string | null },
   ): Promise<FollowupResult>
+  /**
+   * Approve & send THIS report to its jurisdiction: resolve the contact (override or the routing contact,
+   * else 422 NOT_ROUTABLE), build the full packet (photos attached + signed-link fallbacks), send it on a
+   * per-report mail thread, and advance the report toward `acknowledged`. Returns the thread + address.
+   */
+  routeToJurisdiction(
+    id: string,
+    input: { contactEmailOverride: string | null; note: string | null; actorId: string | null },
+  ): Promise<RouteToJurisdictionResult>
 }
 
 export function makeAdminReportService(deps: AdminReportServiceDeps): AdminReportService {
@@ -368,11 +424,17 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
 
   /** Project a timeline record into the wire DTO (relative "when" + icon kind). */
   function toTimelineDTO(record: AdminReportTimelineRecord, ref: Date): ReportTimelineItem {
+    // A jurisdiction-reply row (written at the report's current status by the inbound side-effects) carries
+    // the `reply` kind even though report_timeline has no kind column: we recognize it by its note prefix.
+    const kind: ReportTimelineItem["kind"] =
+      record.note?.startsWith(JURISDICTION_REPLY_NOTE_PREFIX) === true
+        ? "reply"
+        : timelineKindForStatus(record.status)
     return {
       who: record.who,
       what: record.note ?? statusChangeNote(record.status),
       when: toRelAbs(record.createdAt, ref).rel,
-      kind: timelineKindForStatus(record.status),
+      kind,
     }
   }
 
@@ -400,13 +462,14 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       const ref = now()
       const record = await deps.repo.getReport(id)
       if (!record) throw AppError.notFound("Report not found")
-      const [timeline, routing, media, linkedEventsMap] = await Promise.all([
+      const [timeline, routing, media, linkedEventsMap, outreach] = await Promise.all([
         deps.repo.listTimeline(id),
         deps.repo.getRouting(id),
         deps.repo.listMedia(id),
         deps.loadLinkedEventsForReports !== undefined
           ? deps.loadLinkedEventsForReports([id])
           : Promise.resolve(new Map<string, LinkedEventView[]>()),
+        deps.repo.getOutreach(id),
       ])
       const base = toListItem(record, ref)
       const city: ReportRouting = {
@@ -423,6 +486,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         }),
       )
       const linkedEvents: LinkedEventRef[] = (linkedEventsMap.get(id) ?? []).map(toLinkedEventRef)
+      const outreachDTO: ReportOutreach = {
+        status: outreach.status,
+        threadId: outreach.threadId,
+        routedTo: outreach.routedTo,
+        routedAt: outreach.routedAt,
+      }
       return {
         ...base,
         desc: record.desc,
@@ -430,6 +499,10 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         city,
         media: mediaDtos,
         linkedEvents,
+        // The report's resolved jurisdiction GEOID (deep-links the admin to its Jurisdictions row) + the
+        // outreach lifecycle (was it emailed, did the city reply/bounce) + a per-report mail-thread link.
+        geoid: routing?.geoid ?? null,
+        outreach: outreachDTO,
       }
     },
 
@@ -527,7 +600,194 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       })
       return { to: "city", destination: contact }
     },
+
+    async routeToJurisdiction(
+      id: string,
+      input: { contactEmailOverride: string | null; note: string | null; actorId: string | null },
+    ): Promise<RouteToJurisdictionResult> {
+      // 1. Load the report (404 when missing/removed).
+      const record = await deps.repo.getReport(id)
+      if (!record) throw AppError.notFound("Report not found")
+
+      // 2. Resolve the destination: the per-send override (operator-typed) wins, else the routing contact.
+      // With neither on file the report is not routable yet (422 NOT_ROUTABLE) — the city has no inbox.
+      const routing = await deps.repo.getRouting(id)
+      const override =
+        input.contactEmailOverride && input.contactEmailOverride.trim() !== ""
+          ? input.contactEmailOverride.trim()
+          : null
+      const toAddr = override ?? routing?.contact ?? null
+      if (toAddr === null || toAddr === "") {
+        throw AppError.notRoutable("No routing contact for this report's jurisdiction")
+      }
+
+      // 3. Load media: presign every asset for the HTML link list, and load the IMAGE bytes (skip
+      // null/oversize, cap N) for the binary attachments. A missing presigner / loader simply yields
+      // fewer attachments (link-only) — never an error, so an offline path still routes.
+      const media = await deps.repo.listMedia(id)
+      const mediaLinks: string[] = []
+      const attachments: OutboundAttachment[] = []
+      for (const m of media) {
+        const { url } = await presignMedia(m.r2Key, m.thumbKey)
+        mediaLinks.push(url)
+        if (m.kind !== "image") continue
+        if (attachments.length >= MAX_PACKET_ATTACHMENTS) continue
+        const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
+        if (bytes === null) continue
+        if (bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue
+        attachments.push({
+          filename: attachmentFilename(m.r2Key, attachments.length),
+          contentType: "image/jpeg",
+          content: bytes,
+        })
+      }
+
+      // 4. Build the full packet (subject + text/html body with the report facts, the operator note, the
+      // reporter label, and the photo links).
+      const packet = buildReportPacket(record, routing, mediaLinks, input.note)
+
+      // 5. Send it on the per-report thread (find-or-create by report_id, minted reply token, attachments).
+      const { thread } = await deps.outboundMail.sendReportToJurisdiction({
+        reportId: id,
+        geoid: routing?.geoid ?? null,
+        org: routing?.dept ?? null,
+        toAddr,
+        subject: packet.subject,
+        text: packet.text,
+        html: packet.html,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      })
+
+      // 6. Advance the report toward `acknowledged` — but only from a pre-acknowledged state, so re-routing
+      // a report already in_progress/resolved never DOWNGRADES it. When past acknowledged, record the send
+      // as a system timeline row instead (no status change, no audit).
+      if (ROUTABLE_FROM_STATUSES.has(record.status)) {
+        await deps.repo.setStatus(id, {
+          status: "acknowledged",
+          note: `Sent to jurisdiction (${toAddr})`,
+          actorId: input.actorId,
+        })
+      } else {
+        await deps.repo.appendSystemTimeline(id, {
+          note: `Sent to jurisdiction (${toAddr})`,
+          kind: "route",
+        })
+      }
+
+      // 7. Return the thread + the address routed to (the route audits + acks from this).
+      return { threadId: thread.id, routedTo: toAddr }
+    },
   }
+}
+
+/** Max binary photo attachments on a routed packet (the rest are linked). */
+const MAX_PACKET_ATTACHMENTS = 10
+/** Max bytes for ONE routed-packet attachment (larger images are linked, not buffered). */
+const MAX_PACKET_ATTACHMENT_BYTES = 10 * 1024 * 1024
+/**
+ * The report statuses from which Approve & send advances to `acknowledged`. A report already past
+ * acknowledged (in_progress/resolved/rejected) keeps its status — re-sending only records a timeline row.
+ */
+const ROUTABLE_FROM_STATUSES = new Set<AdminReportStatus>(["submitted", "held", "published"])
+
+/** Derive a safe image filename from an r2 key (last path segment), falling back to a numbered name. */
+function attachmentFilename(r2Key: string, index: number): string {
+  const tail = r2Key.split("/").pop() ?? ""
+  const cleaned = tail.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
+  if (cleaned.length > 0) return cleaned.slice(0, 120)
+  return `photo-${index + 1}.jpg`
+}
+
+/** The rendered outreach packet: subject + a plain-text body and an HTML body (links + the operator note). */
+export interface ReportPacket {
+  subject: string
+  text: string
+  html: string
+}
+
+/**
+ * Build the report packet emailed to a jurisdiction: a subject `civfix report: {title} [{id8}]` and a
+ * text + HTML body carrying the report's title, category, address, coordinates + a map link, description,
+ * the optional operator note, the reporter label (or "anonymous"), and the presigned photo links. Pure
+ * (no IO) so it is unit-testable; the HTML escapes every interpolated value (the body is attacker-adjacent
+ * — a report title/description is user content).
+ */
+export function buildReportPacket(
+  record: AdminReportRecord,
+  routing: AdminReportRoutingRecord | null,
+  mediaLinks: string[],
+  note: string | null,
+): ReportPacket {
+  const id8 = record.id.slice(0, 8)
+  const subject = `civfix report: ${record.title} [${id8}]`
+  const place = routing?.place ?? record.place
+  const address = record.address && record.address.trim() !== "" ? record.address : place
+  const mapLink = `https://www.openstreetmap.org/?mlat=${record.lat}&mlon=${record.lng}#map=18/${record.lat}/${record.lng}`
+  const reporter = record.reporter?.name ?? "anonymous"
+  const noteText = note && note.trim() !== "" ? note.trim() : null
+
+  const textLines = [
+    `A neighbor reported a ${record.category} issue in ${place} via civfix.`,
+    "",
+    `Title:       ${record.title}`,
+    `Category:    ${record.category}`,
+    `Location:    ${address}`,
+    `Coordinates: ${record.lat}, ${record.lng}`,
+    `Map:         ${mapLink}`,
+    "",
+    "Description:",
+    record.desc && record.desc.trim() !== "" ? record.desc.trim() : "(none provided)",
+    "",
+    `Reported by: ${reporter}`,
+  ]
+  if (noteText !== null) {
+    textLines.push("", "Note from the civfix operator:", noteText)
+  }
+  if (mediaLinks.length > 0) {
+    textLines.push("", "Photos:")
+    for (const link of mediaLinks) textLines.push(link)
+  }
+  textLines.push("", `Reference: ${record.id}`, "Reply to this email to respond on the report.")
+  const text = textLines.join("\n")
+
+  const photosHtml =
+    mediaLinks.length > 0
+      ? `<p><strong>Photos:</strong></p><ul>${mediaLinks
+          .map((l) => `<li><a href="${escapeHtmlValue(l)}">${escapeHtmlValue(l)}</a></li>`)
+          .join("")}</ul>`
+      : ""
+  const noteHtml =
+    noteText !== null
+      ? `<p><strong>Note from the civfix operator:</strong><br>${escapeHtmlValue(noteText)}</p>`
+      : ""
+  const html =
+    `<p>A neighbor reported a <strong>${escapeHtmlValue(record.category)}</strong> issue in ` +
+    `${escapeHtmlValue(place)} via civfix.</p>` +
+    `<table>` +
+    `<tr><td><strong>Title</strong></td><td>${escapeHtmlValue(record.title)}</td></tr>` +
+    `<tr><td><strong>Category</strong></td><td>${escapeHtmlValue(record.category)}</td></tr>` +
+    `<tr><td><strong>Location</strong></td><td>${escapeHtmlValue(address)}</td></tr>` +
+    `<tr><td><strong>Coordinates</strong></td><td>${record.lat}, ${record.lng} ` +
+    `(<a href="${escapeHtmlValue(mapLink)}">map</a>)</td></tr>` +
+    `<tr><td><strong>Reported by</strong></td><td>${escapeHtmlValue(reporter)}</td></tr>` +
+    `</table>` +
+    `<p><strong>Description:</strong><br>${escapeHtmlValue(
+      record.desc && record.desc.trim() !== "" ? record.desc.trim() : "(none provided)",
+    )}</p>` +
+    noteHtml +
+    photosHtml +
+    `<p>Reference: ${escapeHtmlValue(record.id)}<br>Reply to this email to respond on the report.</p>`
+  return { subject, text, html }
+}
+
+/** Escape the five HTML metacharacters so an interpolated report value cannot inject markup. */
+function escapeHtmlValue(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
 }
 
 /**

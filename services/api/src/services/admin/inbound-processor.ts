@@ -18,13 +18,23 @@
 
 import { createHash } from "node:crypto"
 import type { Container } from "../../di.js"
+import type { Sql } from "../../db/client.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/shared/interfaces"
 import type { MailAttachment } from "@civfix/shared"
-import { makeDrizzleMailRepository, type MailRepository } from "./mail-repository.drizzle.js"
+import {
+  makeDrizzleMailRepository,
+  type MailRepository,
+  type MailThreadRecord,
+} from "./mail-repository.drizzle.js"
 import {
   makeDrizzleInboundRepository,
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
+import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
+import {
+  JURISDICTION_DISCOVERY_JOB,
+  type JurisdictionDiscoveryJob,
+} from "../../services/jurisdiction-service.js"
 
 /** Prefix the Cloudflare Email Worker writes raw .eml objects under (the sweep's work queue). */
 export const INBOUND_PENDING_PREFIX = "inbound/pending/"
@@ -95,6 +105,25 @@ export async function processInboundObject(
   }
 
   const messageId = resolveMessageId(mail)
+
+  // BOUNCE DETECTION (best-effort, never throws): a DSN/bounce is filed in the Inbox for operator
+  // visibility (idempotent on message_id) AND, the FIRST time we see it, correlated to its outbound thread
+  // (by the original Message-ID, else the failed recipient) so the thread is flipped to 'bounced' + a
+  // 'bounced' event recorded + the contact flagged + discovery re-opened. The side-effects run ONLY when
+  // routeInbox actually inserted (outcome 'inbox', not 'replay'), so a re-delivered DSN (webhook+sweep
+  // race / MTA retry, same Message-ID) never double-records the 'bounced' event or re-stamps the contact —
+  // mirroring the messageExists() idempotency guard the threaded reply path uses. A detection/correlation
+  // miss degrades to a plain Inbox message.
+  const bounce = detectBounce(mail)
+  if (bounce.isBounce) {
+    const result = await routeInbox(storage, inboundRepo, key, mail, messageId)
+    if (result.outcome === "inbox") {
+      await handleBounce(container, mailRepo, bounce).catch(() => {})
+    }
+    if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
+    return result
+  }
+
   let token: string | null = null
   try {
     token = inboundMail.extractThreadToken(mail)
@@ -102,10 +131,22 @@ export async function processInboundObject(
     token = null
   }
 
-  const result =
-    token !== null && token.length > 0
-      ? await routeThreaded(storage, mailRepo, mail, token, messageId)
-      : await routeInbox(storage, inboundRepo, key, mail, messageId)
+  // TOKEN FALLBACK: when the plus-address reply token is absent (some clients strip it), try to correlate
+  // the reply to its outbound thread by the In-Reply-To / References headers it echoes back. If a thread is
+  // found we route as threaded into it; else the message falls through to the Inbox.
+  let fallbackThread: MailThreadRecord | null = null
+  if (token === null || token.length === 0) {
+    fallbackThread = await findThreadByReferences(mailRepo, mail).catch(() => null)
+  }
+
+  let result: ProcessResult
+  if (token !== null && token.length > 0) {
+    result = await routeThreaded(container, storage, mailRepo, mail, token, messageId, null)
+  } else if (fallbackThread !== null) {
+    result = await routeThreaded(container, storage, mailRepo, mail, null, messageId, fallbackThread)
+  } else {
+    result = await routeInbox(storage, inboundRepo, key, mail, messageId)
+  }
 
   if (result.outcome === "threaded" || result.outcome === "inbox" || result.outcome === "replay") {
     // Source-of-truth consumed: drop the pending object. Idempotent, so a webhook/sweep race is safe.
@@ -114,18 +155,27 @@ export async function processInboundObject(
   return result
 }
 
-/** Reply path: thread into mail_threads. Idempotent on message_id (skip a re-delivered reply). */
+/**
+ * Reply path: thread into mail_threads. Idempotent on message_id (skip a re-delivered reply). The thread
+ * is resolved EITHER by the plus-address `token` (the normal path) OR pre-resolved via the In-Reply-To
+ * fallback (`presolved`, token null). After a NON-replay insert, if the thread is a per-report outreach
+ * thread (reportId set), best-effort report side-effects fire (timeline + status + notify the reporter).
+ */
 async function routeThreaded(
+  container: Container,
   storage: Storage,
   mailRepo: MailRepository,
   mail: ParsedMail,
-  token: string,
+  token: string | null,
   messageId: string,
+  presolved: MailThreadRecord | null,
 ): Promise<ProcessResult> {
   if (await mailRepo.messageExists(messageId)) return { outcome: "replay" }
-  const thread = await mailRepo.upsertThreadByToken(token, {
-    subject: mail.subject ?? undefined,
-  })
+  const thread =
+    presolved ??
+    (await mailRepo.upsertThreadByToken(token as string, {
+      subject: mail.subject ?? undefined,
+    }))
   const { attachments, oversize } = await streamAttachments(storage, `inbound-mail/${thread.id}`, mail)
   const message = await mailRepo.insertMessage({
     threadId: thread.id,
@@ -149,7 +199,64 @@ async function routeThreaded(
       ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
     },
   })
+  // BEST-EFFORT report side-effects (a jurisdiction's reply -> report timeline + status + notify). Never
+  // throws to the caller, and runs only for a per-report thread; a miss can't break inbound processing or
+  // the pending-object delete that follows.
+  if (thread.reportId !== null) {
+    await onJurisdictionReply(container, mailRepo, thread, mail).catch(() => {})
+  }
   return { outcome: "threaded", id: message.id }
+}
+
+/**
+ * Best-effort side-effects when a jurisdiction reply lands on a per-report outreach thread (§2.7): post the
+ * reply to the report timeline (advancing published|acknowledged -> in_progress, else a system 'reply' row),
+ * notify the original reporter (in-app), and flip the thread status to 'replied'. STRICTLY best-effort: any
+ * failure is swallowed by the caller so inbound processing + the idempotency/delete flow are never broken.
+ */
+async function onJurisdictionReply(
+  container: Container,
+  mailRepo: MailRepository,
+  thread: MailThreadRecord,
+  mail: ParsedMail,
+): Promise<void> {
+  const reportId = thread.reportId
+  if (reportId === null) return
+  const reportRepo = makeDrizzleAdminReportRepository(container.getDb().sql)
+  const record = await reportRepo.getReport(reportId)
+  if (!record) return
+
+  const preview = replyPreview(mail.text ?? mail.html ?? "")
+  const note = `Jurisdiction replied — ${preview}`
+
+  // Timeline + status: advance a live (published/acknowledged) report to in_progress with the reply note;
+  // otherwise just record a system 'reply' timeline row (no status change, e.g. an already-resolved report).
+  if (record.status === "published" || record.status === "acknowledged") {
+    await reportRepo.setStatus(reportId, { status: "in_progress", note, actorId: null })
+  } else {
+    await reportRepo.appendSystemTimeline(reportId, { note, kind: "reply" })
+  }
+
+  // Notify the original reporter (in-app) when the report has a claimed account.
+  const reporterUserId = record.reporter?.id
+  if (reporterUserId && reporterUserId !== "") {
+    await reportRepo.notifyReporter({
+      reportId,
+      reporterUserId,
+      title: "Your report got a response",
+      body: preview,
+      link: `/reports/${reportId}`,
+    })
+  }
+
+  // Flag the thread as replied (the mailbox + the report outreach status both read this).
+  await mailRepo.setThreadStatus(thread.id, "replied")
+}
+
+/** First ~140 chars of an inbound reply body, whitespace-collapsed, for the timeline note + notification. */
+function replyPreview(body: string): string {
+  const collapsed = body.replace(/\s+/g, " ").trim()
+  return collapsed.length > 140 ? `${collapsed.slice(0, 140)}…` : collapsed
 }
 
 /** Catch-all path: insert into inbound_emails (admin Inbox). Idempotent on the UNIQUE message_id. */
@@ -233,6 +340,151 @@ async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): P
   } catch {
     // Leave the object in place if the move fails; a later sweep retries the move.
   }
+}
+
+/**
+ * Find a thread by the In-Reply-To / References headers an inbound reply echoes back (the fallback when the
+ * plus-address token is stripped). Collects In-Reply-To + every id in the References header and asks the
+ * mail repo for a thread carrying any of them as an OUTBOUND Message-ID. Returns null when none correlate.
+ */
+async function findThreadByReferences(
+  mailRepo: MailRepository,
+  mail: ParsedMail,
+): Promise<MailThreadRecord | null> {
+  const ids: string[] = []
+  if (mail.inReplyTo && mail.inReplyTo.length > 0) ids.push(mail.inReplyTo)
+  for (const ref of parseMessageIdList(mail.headers["references"])) ids.push(ref)
+  if (ids.length === 0) return null
+  return mailRepo.findThreadByOutboundMessageIds(ids)
+}
+
+/** Split a References-style header value into its angle-bracketed Message-IDs (`<a@x> <b@y>` -> [..]). */
+export function parseMessageIdList(value: string | undefined): string[] {
+  if (!value || value.length === 0) return []
+  const out: string[] = []
+  const re = /<[^>]+>/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(value)) !== null) out.push(m[0])
+  // A header may also carry bare (unbracketed) ids; if the bracket scan found nothing, fall back to splitting
+  // on whitespace so a single bare Message-ID still correlates.
+  if (out.length === 0) {
+    for (const token of value.split(/\s+/)) {
+      const t = token.trim()
+      if (t.length > 0) out.push(t)
+    }
+  }
+  return out
+}
+
+/** The result of bounce detection: whether the message is a DSN/bounce + the recovered correlation hints. */
+export interface BounceDetection {
+  isBounce: boolean
+  failedRecipient: string | null
+  originalMessageId: string | null
+}
+
+/**
+ * Detect a delivery-status notification / bounce and recover the failed recipient + the original Message-ID
+ * (best-effort, pure). A message is a bounce when its From is a mailer-daemon/postmaster, OR its
+ * Content-Type is a `report-type=delivery-status` multipart, OR it carries an X-Failed-Recipients header.
+ * The failed recipient comes from X-Failed-Recipients, else a `Final-Recipient:`/`To:` line in the body;
+ * the original Message-ID from an `Original-Message-ID:`/`Message-ID:` line in the body.
+ */
+export function detectBounce(mail: ParsedMail): BounceDetection {
+  const fromAddr = mail.from?.address ?? ""
+  const contentType = mail.headers["content-type"] ?? ""
+  const failedHeader = mail.headers["x-failed-recipients"] ?? ""
+  const isBounce =
+    /(mailer-daemon|postmaster)@/i.test(fromAddr) ||
+    /report-type=["']?delivery-status/i.test(contentType) ||
+    failedHeader.length > 0
+  if (!isBounce) {
+    return { isBounce: false, failedRecipient: null, originalMessageId: null }
+  }
+  const body = mail.text ?? mail.html ?? ""
+  const failedRecipient =
+    extractEmail(failedHeader) ??
+    extractEmail(matchLine(body, /^final-recipient:\s*(?:rfc822;)?\s*(.+)$/im)) ??
+    extractEmail(matchLine(body, /^to:\s*(.+)$/im))
+  const originalMessageId =
+    matchBracketId(matchLine(body, /^original-message-id:\s*(.+)$/im)) ??
+    matchBracketId(matchLine(body, /^message-id:\s*(.+)$/im))
+  return { isBounce: true, failedRecipient, originalMessageId }
+}
+
+/** Best-effort bounce side-effects: correlate the thread, record the bounce, flag the contact, re-open discovery. */
+async function handleBounce(
+  container: Container,
+  mailRepo: MailRepository,
+  bounce: BounceDetection,
+): Promise<void> {
+  // 1. Correlate to a thread: by the original Message-ID (the OUT message we sent), else skip the thread
+  // side-effects (we still flag the contact + file the bounce in the Inbox below).
+  let thread: MailThreadRecord | null = null
+  if (bounce.originalMessageId !== null) {
+    thread = await mailRepo
+      .findThreadByOutboundMessageIds([bounce.originalMessageId])
+      .catch(() => null)
+  }
+  if (thread !== null) {
+    await mailRepo
+      .recordEvent({
+        threadId: thread.id,
+        type: "bounced",
+        meta: { failedRecipient: bounce.failedRecipient },
+      })
+      .catch(() => {})
+    await mailRepo.setThreadStatus(thread.id, "bounced").catch(() => {})
+  }
+
+  // 2. Flag the contact + re-open discovery for its jurisdiction when the failed recipient is a known
+  // jurisdiction_contacts address. markContactBounced is a no-op for an unknown address; the discovery
+  // re-open enqueues the same `jurisdiction.discovery` job the report-create path uses (singletonKey =
+  // geoid, idempotent), keyed off the thread's jurisdiction when known.
+  if (bounce.failedRecipient !== null) {
+    const sql = container.getDb().sql
+    await markBouncedContact(sql, bounce.failedRecipient).catch(() => {})
+    const geoid = thread?.jurisdictionGeoid ?? (await geoidForContact(sql, bounce.failedRecipient))
+    if (geoid !== null) {
+      const data: JurisdictionDiscoveryJob = { geoid }
+      await container.jobs
+        .enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: geoid })
+        .catch(() => {})
+    }
+  }
+}
+
+/** Stamp bounced_at on every jurisdiction_contacts row carrying the address (the directory 'bounced' flag). */
+async function markBouncedContact(sql: Sql, email: string): Promise<void> {
+  await sql`UPDATE jurisdiction_contacts SET bounced_at = now() WHERE email = ${email}`
+}
+
+/** Resolve the geoid of a jurisdiction_contacts row by its email (to re-open discovery), or null. */
+async function geoidForContact(sql: Sql, email: string): Promise<string | null> {
+  const rows = await sql<{ geoid: string }[]>`
+    SELECT geoid FROM jurisdiction_contacts WHERE email = ${email} LIMIT 1
+  `
+  return rows[0]?.geoid ?? null
+}
+
+/** Pull the first email address out of a free-text fragment (a header value or a DSN line), or null. */
+function extractEmail(value: string | null): string | null {
+  if (value === null) return null
+  const m = value.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)
+  return m ? m[0] : null
+}
+
+/** Return the first capture group of a line-regex match against the body, or null. */
+function matchLine(body: string, re: RegExp): string | null {
+  const m = body.match(re)
+  return m && m[1] ? m[1].trim() : null
+}
+
+/** Extract a bracketed `<id@host>` Message-ID from a fragment (the value after a Message-ID: line), or null. */
+function matchBracketId(value: string | null): string | null {
+  if (value === null) return null
+  const m = value.match(/<[^>]+>/)
+  return m ? m[0] : value.trim().length > 0 ? value.trim() : null
 }
 
 /**
