@@ -217,12 +217,14 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     // unlinkEventReport [DELETE /admin/events/:id/reports/:reportId]) = 134, + the 9-route
     // profiles-verification surface (the /me/verification user routes + GET /people/:id/activity + the
     // /admin/verifications/* operator routes) = 143, + the 2-route connections surface
-    // (listFollowers [GET /people/:id/followers] + listFollowing [GET /people/:id/following]) = 145. The
+    // (listFollowers [GET /people/:id/followers] + listFollowing [GET /people/:id/following]) = 145, + the
+    // routeReport approve-and-send route (#40) and 3 endpoints already on main but unpublished until
+    // @civfix/shared 0.11.0 = 149. The
     // admin OTP request/verify routes were replaced by the single Cloudflare Access exchange route
     // (doc 16); the admin data routes mount under requireOperator (an unauthenticated inject returns 401, a
     // wired route); the public Access exchange returns 503 when CF_ACCESS_* is unset (also wired, not a
     // route-missing 404) - exactly what the per-endpoint assertions check.
-    expect(Object.keys(endpoints).length).toBe(145)
+    expect(Object.keys(endpoints).length).toBe(149)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

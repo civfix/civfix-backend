@@ -3,6 +3,7 @@ import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/shared/fakes"
 import type { InboundMail } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
 import {
   processInboundObject,
   resolveMessageId,
@@ -46,6 +47,7 @@ interface Ctx {
   storage: FakeStorage
   mailRepo: InMemoryMailRepository
   inboundRepo: InMemoryInboundRepository
+  adminReportRepo: InMemoryAdminReportRepository
   jobs: FakeJobs
   db: FakeSqlControl
 }
@@ -60,9 +62,10 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
   const storage = new FakeStorage()
   const mailRepo = new InMemoryMailRepository()
   const inboundRepo = new InMemoryInboundRepository()
+  const adminReportRepo = new InMemoryAdminReportRepository()
   const jobs = new FakeJobs()
   const db = makeFakeSql(sqlHandlers)
-  const deps: InboundProcessorDeps = { storage, inboundMail, mailRepo, inboundRepo }
+  const deps: InboundProcessorDeps = { storage, inboundMail, mailRepo, inboundRepo, adminReportRepo }
   const container = {
     env: {},
     storage,
@@ -71,55 +74,11 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
     jobs,
     getDb: () => ({ sql: db.sql }),
   } as unknown as Container
-  return { container, deps, storage, mailRepo, inboundRepo, jobs, db }
+  return { container, deps, storage, mailRepo, inboundRepo, adminReportRepo, jobs, db }
 }
 
 async function put(c: Ctx, key: string, eml: Buffer): Promise<void> {
   await c.storage.put(key, eml)
-}
-
-/** A scripted report SELECT row for the admin report repo's getReport (status + reporter configurable). */
-function reportRow(over: {
-  id: string
-  status: string
-  reporterId?: string | null
-}): Record<string, unknown> {
-  return {
-    id: over.id,
-    category: "trash",
-    status: over.status,
-    flagged: false,
-    title: "Pothole",
-    place: "City of LA",
-    address: "Main St",
-    description: "desc",
-    lat: 34,
-    lng: -118,
-    confirmations: "0",
-    has_photo: false,
-    created_at: new Date("2026-06-01T00:00:00Z"),
-    reporter_id: over.reporterId ?? null,
-    reporter_name: over.reporterId ? "Jane" : null,
-    reporter_handle: over.reporterId ? "jane" : null,
-    reporter_email_verified: true,
-    reporter_has_oauth: false,
-    reporter_joined: over.reporterId ? new Date("2025-01-01T00:00:00Z") : null,
-  }
-}
-
-/** The handlers that satisfy the admin report repo's getReport / setStatus / notify / timeline + audits. */
-function reportSqlHandlers(row: Record<string, unknown>): SqlHandler[] {
-  return [
-    // getReport's reportSelect: the only SELECT that reads FROM reports with an r.id predicate.
-    { match: /FROM\s+reports\s+r[\s\S]*r\.id\s*=\s*\?/i, rows: [row] },
-    // setStatus's UPDATE … RETURNING id (a non-empty result means the row was found + updated).
-    { match: /UPDATE\s+reports\s+SET\s+status/i, rows: [{ id: row["id"] }] },
-    // writeAudit's audit_log insert returns the new id.
-    { match: /INSERT\s+INTO\s+audit_log/i, rows: [{ id: "audit-1" }] },
-    // timeline + notification inserts return nothing.
-    { match: /INSERT\s+INTO\s+report_timeline/i, rows: [] },
-    { match: /INSERT\s+INTO\s+notifications/i, rows: [] },
-  ]
 }
 
 describe("processInboundObject: routing", () => {
@@ -204,8 +163,21 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
   it("advances a published report to in_progress, writes a timeline row, notifies the reporter, flips thread -> replied", async () => {
     const reportId = "report-1"
     const reporterId = "user-1"
-    const row = reportRow({ id: reportId, status: "published", reporterId })
-    const c = ctx(new FakeInboundMail(), reportSqlHandlers(row))
+    const c = ctx()
+    // Seed the report (published, claimed reporter) into the INJECTED in-memory report repo so the
+    // side-effects run against it — no fake-sql for the report path.
+    c.adminReportRepo.seedReport({
+      id: reportId,
+      status: "published",
+      reporter: {
+        id: reporterId,
+        name: "Jane",
+        handle: "jane",
+        emailVerified: true,
+        hasOauth: false,
+        joinedAt: new Date("2025-01-01T00:00:00Z"),
+      },
+    })
     // A per-report outreach thread (report_id set) on a 24-hex token.
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
 
@@ -228,49 +200,47 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     expect(c.mailRepo.messages).toHaveLength(1)
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
 
-    // The report was advanced to in_progress (setStatus UPDATE carried 'in_progress').
-    const update = c.db.statements.find((s) => /UPDATE\s+reports\s+SET\s+status/i.test(s.sql))
-    expect(update).toBeDefined()
-    expect(update?.values).toContain("in_progress")
-    // A timeline row was inserted carrying the reply preview note.
-    const timeline = c.db.statements.find((s) => /INSERT\s+INTO\s+report_timeline/i.test(s.sql))
-    expect(timeline).toBeDefined()
-    expect(timeline?.values.some((v) => typeof v === "string" && v.includes("Jurisdiction replied"))).toBe(
-      true,
-    )
-    // The reporter was notified (notifications insert bound to the reporter's user id + report link).
-    const notify = c.db.statements.find((s) => /INSERT\s+INTO\s+notifications/i.test(s.sql))
-    expect(notify).toBeDefined()
-    expect(notify?.values).toContain(reporterId)
-    expect(notify?.values).toContain(`/reports/${reportId}`)
+    // The report was advanced to in_progress.
+    expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
+    // A timeline row carrying the reply preview note was written.
+    expect(
+      (c.adminReportRepo.timeline.get(reportId) ?? []).some((t) =>
+        (t.note ?? "").includes("Jurisdiction replied"),
+      ),
+    ).toBe(true)
+    // The reporter was notified (bound to the reporter's user id + the report link).
+    expect(
+      c.adminReportRepo.notifications.some(
+        (n) => n.userId === reporterId && n.link === `/reports/${reportId}`,
+      ),
+    ).toBe(true)
   })
 
   it("records a system 'reply' timeline row WITHOUT a status change for an already-resolved report", async () => {
     const reportId = "report-2"
-    const row = reportRow({ id: reportId, status: "resolved", reporterId: null })
-    const c = ctx(new FakeInboundMail(), reportSqlHandlers(row))
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "resolved", reporter: null })
     c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
 
     const key = `${INBOUND_PENDING_PREFIX}reply2.eml`
     await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "Done." }))
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
 
-    // No reports UPDATE (resolved is past acknowledged) — only a system timeline INSERT … SELECT row.
-    expect(c.db.statements.some((s) => /UPDATE\s+reports\s+SET\s+status/i.test(s.sql))).toBe(false)
-    expect(c.db.statements.some((s) => /INSERT\s+INTO\s+report_timeline/i.test(s.sql))).toBe(true)
-    // No reporter to notify (reporter_id null) -> no notifications insert.
-    expect(c.db.statements.some((s) => /INSERT\s+INTO\s+notifications/i.test(s.sql))).toBe(false)
+    // Status unchanged (resolved is past acknowledged) — only a system 'reply' timeline row is added.
+    expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("resolved")
+    expect(
+      (c.adminReportRepo.timeline.get(reportId) ?? []).some((t) =>
+        (t.note ?? "").includes("Jurisdiction replied"),
+      ),
+    ).toBe(true)
+    // No reporter on the report -> no notification.
+    expect(c.adminReportRepo.notifications).toHaveLength(0)
   })
 
   it("a side-effect failure (report repo throws) never breaks routing / the delete", async () => {
-    // No SQL handlers + a getDb whose sql rejects: onJurisdictionReply throws internally and is swallowed.
+    // The injected report repo's getReport rejects: onJurisdictionReply throws internally and is swallowed.
     const c = ctx()
-    c.container = {
-      ...c.container,
-      getDb: () => ({
-        sql: () => Promise.reject(new Error("db down")),
-      }),
-    } as unknown as Container
+    c.adminReportRepo.getReport = () => Promise.reject(new Error("db down"))
     c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-x", status: "sent" })
     const key = `${INBOUND_PENDING_PREFIX}reply3.eml`
     await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "hi" }))

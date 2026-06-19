@@ -87,10 +87,10 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
   }
 
   it("threads an inbound reply onto an existing thread, marks unread, records an event", async () => {
-    const seeded = await makeDrizzleMailRepository(h.sql).createThread({ threadToken: "tok-la", subject: "Pothole" })
+    const seeded = await makeDrizzleMailRepository(h.sql).createThread({ threadToken: "0a0a0a0a0a0a0a0a0a0a0a0a", subject: "Pothole" })
     const key = `${INBOUND_PENDING_PREFIX}reply-1.eml`
     const res = await ingest(
-      rfc822({ from: "clerk@lacity.gov", to: "reply+tok-la@civfix.org", subject: "Re: Pothole", body: "We are on it." }),
+      rfc822({ from: "clerk@lacity.gov", to: "reply+0a0a0a0a0a0a0a0a0a0a0a0a@civfix.org", subject: "Re: Pothole", body: "We are on it." }),
       key,
     )
     expect(res.statusCode).toBe(202)

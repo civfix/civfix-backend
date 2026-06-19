@@ -99,8 +99,8 @@ describe("outreach digest: aggregation + send", () => {
     // Exactly ONE digest email was sent, From outreach, to the resolved contact.
     expect(mailer.sent).toHaveLength(1)
     expect(mailer.sent[0]?.to).toBe("clerk@lacity.gov")
-    expect(mailer.sent[0]?.vars?.from).toBe(FROM_OUTREACH)
-    expect(String(mailer.sent[0]?.vars?.subject)).toContain("3 reports")
+    expect(mailer.sent[0]?.outbound?.from).toBe(FROM_OUTREACH)
+    expect(String(mailer.sent[0]?.outbound?.subject)).toContain("3 reports")
 
     // An out thread/message + a 'sent' event were recorded on the per-geoid thread.
     expect(mailRepo.threads.size).toBe(1)

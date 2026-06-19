@@ -31,6 +31,7 @@ import {
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
+import type { AdminReportRepository } from "./admin-report-service.js"
 import {
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionDiscoveryJob,
@@ -70,6 +71,9 @@ export interface InboundProcessorDeps {
   inboundMail?: InboundMail
   mailRepo?: MailRepository
   inboundRepo?: InboundRepository
+  /** The admin-report repo for a jurisdiction-reply's report side-effects; injectable so tests can use the
+   *  in-memory impl (the side-effects are otherwise the only reason the processor touches the report repo). */
+  adminReportRepo?: AdminReportRepository
 }
 
 export async function processInboundObject(
@@ -81,6 +85,10 @@ export async function processInboundObject(
   const inboundMail = deps.inboundMail ?? container.inboundMail
   const mailRepo = deps.mailRepo ?? makeDrizzleMailRepository(container.getDb().sql)
   const inboundRepo = deps.inboundRepo ?? makeDrizzleInboundRepository(container.getDb().sql)
+  // The report repo (for a jurisdiction-reply's side-effects) is resolved LAZILY in onJurisdictionReply —
+  // only when a thread actually has a report_id — so a no-reply inbound never touches the report repo and a
+  // container without getDb() (e.g. the webhook unit harness) is never dereferenced on the common path.
+  const injectedReportRepo = deps.adminReportRepo
 
   const bytes = await storage.getObject(key)
   if (bytes === null) {
@@ -141,9 +149,9 @@ export async function processInboundObject(
 
   let result: ProcessResult
   if (token !== null && token.length > 0) {
-    result = await routeThreaded(container, storage, mailRepo, mail, token, messageId, null)
+    result = await routeThreaded(container, injectedReportRepo, storage, mailRepo, mail, token, messageId, null)
   } else if (fallbackThread !== null) {
-    result = await routeThreaded(container, storage, mailRepo, mail, null, messageId, fallbackThread)
+    result = await routeThreaded(container, injectedReportRepo, storage, mailRepo, mail, null, messageId, fallbackThread)
   } else {
     result = await routeInbox(storage, inboundRepo, key, mail, messageId)
   }
@@ -163,6 +171,7 @@ export async function processInboundObject(
  */
 async function routeThreaded(
   container: Container,
+  injectedReportRepo: AdminReportRepository | undefined,
   storage: Storage,
   mailRepo: MailRepository,
   mail: ParsedMail,
@@ -203,7 +212,7 @@ async function routeThreaded(
   // throws to the caller, and runs only for a per-report thread; a miss can't break inbound processing or
   // the pending-object delete that follows.
   if (thread.reportId !== null) {
-    await onJurisdictionReply(container, mailRepo, thread, mail).catch(() => {})
+    await onJurisdictionReply(container, injectedReportRepo, mailRepo, thread, mail).catch(() => {})
   }
   return { outcome: "threaded", id: message.id }
 }
@@ -216,13 +225,16 @@ async function routeThreaded(
  */
 async function onJurisdictionReply(
   container: Container,
+  injectedReportRepo: AdminReportRepository | undefined,
   mailRepo: MailRepository,
   thread: MailThreadRecord,
   mail: ParsedMail,
 ): Promise<void> {
   const reportId = thread.reportId
   if (reportId === null) return
-  const reportRepo = makeDrizzleAdminReportRepository(container.getDb().sql)
+  // Resolve the report repo lazily here (only reached for a per-report thread): use the injected one in
+  // tests, else build the Drizzle repo over the live sql.
+  const reportRepo = injectedReportRepo ?? makeDrizzleAdminReportRepository(container.getDb().sql)
   const record = await reportRepo.getReport(reportId)
   if (!record) return
 
