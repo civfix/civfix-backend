@@ -375,10 +375,20 @@ export function makeDrizzleJurisdictionContactsRepository(
             JOIN reports r ON r.id = rt.report_id
             WHERE r.jurisdiction_geoid = j.geoid AND rt.status = 'acknowledged'
           ) AS last_routed_at,
-          EXISTS (
-            SELECT 1 FROM mail_events me
-            JOIN mail_threads mt ON mt.id = me.thread_id
-            WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced'
+          (
+            -- A contact is 'bounced' when ANY of the geoid's contact rows has a bounce marker (the inbound
+            -- bounce handler stamps jurisdiction_contacts.bounced_at; this takes precedence over
+            -- verified/pending). The legacy mail_events signal is OR'd in for threads with no per-contact
+            -- row (e.g. a digest-only bounce), so an existing bounce never silently disappears.
+            EXISTS (
+              SELECT 1 FROM jurisdiction_contacts bc
+              WHERE bc.geoid = j.geoid AND bc.bounced_at IS NOT NULL
+            )
+            OR EXISTS (
+              SELECT 1 FROM mail_events me
+              JOIN mail_threads mt ON mt.id = me.thread_id
+              WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced'
+            )
           ) AS bounced,
           j.layer,
           j.population,
@@ -442,6 +452,16 @@ export function makeDrizzleJurisdictionContactsRepository(
         }
       }
       return { records: page, nextCursor }
+    },
+
+    async markContactBounced(email: string): Promise<void> {
+      // Stamp the bounce marker on every contact row carrying this address (the directory then surfaces
+      // 'bounced'). No-op when no row matches (the address is not on file as a contact).
+      await sql`
+        UPDATE jurisdiction_contacts
+        SET bounced_at = now()
+        WHERE email = ${email}
+      `
     },
   }
 }

@@ -365,6 +365,30 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         return true
       })
     },
+
+    async materializeDiscoveryTask(input: {
+      geoid: string
+      population?: number | null
+    }): Promise<boolean> {
+      // Idempotent insert keyed on the partial UNIQUE (geoid) WHERE status <> 'done' (0001_core): at most
+      // one OPEN task per geoid, so a re-run (or a racing report into the same un-onboarded jurisdiction)
+      // never spawns a duplicate. Wires the population (override -> the jurisdiction's own) + a newest
+      // waiting sample report for the detail mini-map. The FROM jurisdictions gate means an unknown geoid
+      // inserts nothing. RETURNING tells us whether a NEW row was created (empty on conflict / unknown geoid).
+      const rows = await sql<{ id: string }[]>`
+        INSERT INTO jurisdiction_discovery_tasks (geoid, population, sample_report_id)
+        SELECT
+          ${input.geoid},
+          COALESCE(${input.population ?? null}, j.population),
+          (SELECT r.id FROM reports r
+             WHERE r.jurisdiction_geoid = ${input.geoid} AND r.deleted_at IS NULL
+             ORDER BY r.created_at DESC LIMIT 1)
+        FROM jurisdictions j WHERE j.geoid = ${input.geoid}
+        ON CONFLICT (geoid) WHERE status <> 'done' DO NOTHING
+        RETURNING id
+      `
+      return rows.length > 0
+    },
   }
 }
 
@@ -472,11 +496,12 @@ export async function upsertJurisdictionContacts(
       `
       continue
     }
+    // A re-entered address is presumed good: clear any prior bounce marker on insert/update (§2.9).
     await tx`
-      INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at)
-      VALUES (${geoid}, ${category}, ${email}, now())
+      INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at, bounced_at)
+      VALUES (${geoid}, ${category}, ${email}, now(), NULL)
       ON CONFLICT (geoid, category) WHERE category IS NOT NULL
-      DO UPDATE SET email = EXCLUDED.email, updated_at = now()
+      DO UPDATE SET email = EXCLUDED.email, updated_at = now(), bounced_at = NULL
     `
   }
 
@@ -486,10 +511,10 @@ export async function upsertJurisdictionContacts(
   const form = formUrl && formUrl.trim() !== "" ? formUrl.trim() : null
   if (defaultEmail !== null || form !== null) {
     await tx`
-      INSERT INTO jurisdiction_contacts (geoid, category, email, form_url, updated_at)
-      VALUES (${geoid}, NULL, ${defaultEmail}, ${form}, now())
+      INSERT INTO jurisdiction_contacts (geoid, category, email, form_url, updated_at, bounced_at)
+      VALUES (${geoid}, NULL, ${defaultEmail}, ${form}, now(), NULL)
       ON CONFLICT (geoid) WHERE category IS NULL
-      DO UPDATE SET email = EXCLUDED.email, form_url = EXCLUDED.form_url, updated_at = now()
+      DO UPDATE SET email = EXCLUDED.email, form_url = EXCLUDED.form_url, updated_at = now(), bounced_at = NULL
     `
   }
 

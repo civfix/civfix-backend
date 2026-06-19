@@ -98,6 +98,7 @@ export class InMemoryMailRepository implements MailRepository {
       id: over.id ?? randomUUID(),
       threadToken: over.threadToken ?? mintThreadToken(),
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
+      reportId: over.reportId ?? null,
       org: over.org ?? null,
       subject: over.subject ?? null,
       status: over.status ?? "sent",
@@ -156,6 +157,7 @@ export class InMemoryMailRepository implements MailRepository {
     const record = this.seedThread({
       threadToken: token,
       jurisdictionGeoid: init.jurisdictionGeoid ?? null,
+      reportId: init.reportId ?? null,
       org: init.org ?? null,
       subject: init.subject ?? null,
       status: init.status ?? "sent",
@@ -168,12 +170,58 @@ export class InMemoryMailRepository implements MailRepository {
     const record = this.seedThread({
       threadToken: input.threadToken ?? mintThreadToken(),
       jurisdictionGeoid: input.jurisdictionGeoid ?? null,
+      reportId: input.reportId ?? null,
       org: input.org ?? null,
       subject: input.subject ?? null,
       status: input.status ?? "sent",
       unread: input.unread ?? false,
     })
     return Promise.resolve({ ...record })
+  }
+
+  findOrCreateReportThread(reportId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
+    // The newest existing per-report thread (report_id matches), else a freshly created one linked to
+    // the report with a minted token. Mirrors the Drizzle ORDER BY created_at DESC, id DESC.
+    let best: MailThreadRecord | null = null
+    for (const t of this.threads.values()) {
+      if (t.reportId !== reportId) continue
+      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+    }
+    if (best) return Promise.resolve({ ...best })
+    return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
+  }
+
+  upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
+    // The newest digest thread for the jurisdiction (report_id IS NULL so per-report threads are not
+    // reused), else a freshly created one with a minted token.
+    let best: MailThreadRecord | null = null
+    for (const t of this.threads.values()) {
+      if (t.jurisdictionGeoid !== geoid || t.reportId !== null) continue
+      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+    }
+    if (best) return Promise.resolve({ ...best })
+    return this.createThread({ ...init, jurisdictionGeoid: geoid, threadToken: mintThreadToken() })
+  }
+
+  findThreadByToken(token: string): Promise<MailThreadRecord | null> {
+    for (const t of this.threads.values()) {
+      if (t.threadToken === token) return Promise.resolve({ ...t })
+    }
+    return Promise.resolve(null)
+  }
+
+  findThreadByOutboundMessageIds(messageIds: string[]): Promise<MailThreadRecord | null> {
+    const ids = new Set(messageIds.filter((m) => typeof m === "string" && m.length > 0))
+    if (ids.size === 0) return Promise.resolve(null)
+    // The newest thread holding an OUT message whose message_id is in the set.
+    let best: MailThreadRecord | null = null
+    for (const m of this.messages) {
+      if (m.direction !== "out" || m.messageId === null || !ids.has(m.messageId)) continue
+      const t = this.threads.get(m.threadId)
+      if (!t) continue
+      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+    }
+    return Promise.resolve(best ? { ...best } : null)
   }
 
   insertMessage(input: InsertMessageInput): Promise<MailMessageRecord> {
@@ -203,6 +251,12 @@ export class InMemoryMailRepository implements MailRepository {
     // H4: mirror the in-tx audit so service/route tests can assert the send was recorded.
     this.recordAudit(input.audit)
     return Promise.resolve({ ...record })
+  }
+
+  setMessageMessageId(id: string, rfcMessageId: string): Promise<void> {
+    const message = this.messages.find((m) => m.id === id)
+    if (message) message.messageId = rfcMessageId
+    return Promise.resolve()
   }
 
   private recordAudit(audit: MailAuditInput | undefined): void {
@@ -383,6 +437,16 @@ export class InMemoryMailRepository implements MailRepository {
 
 /** Compare two messages by (created_at ASC, id ASC). Positive when `a` is newer. */
 function cmpCreated(a: MailMessageRecord, b: MailMessageRecord): number {
+  const d = a.createdAt.getTime() - b.createdAt.getTime()
+  if (d !== 0) return d
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
+/**
+ * Compare two threads by (created_at DESC, id DESC) "newest wins": positive when `a` is the newer of
+ * the pair, mirroring the Drizzle `ORDER BY created_at DESC, id DESC LIMIT 1` the find-* reads use.
+ */
+function cmpThreadNewest(a: MailThreadRecord, b: MailThreadRecord): number {
   const d = a.createdAt.getTime() - b.createdAt.getTime()
   if (d !== 0) return d
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0

@@ -9,7 +9,6 @@ import {
 } from "../../src/services/admin/admin-report-service.js"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
-import { OUTBOUND_MAIL_TEMPLATE } from "../../src/services/admin/outbound-mail-service.js"
 
 /**
  * Offline unit tests for the admin reports service over the in-memory AdminReportRepository (no DB, no
@@ -365,13 +364,17 @@ describe("admin reports mutations", () => {
       actorId: "op-1",
     })
     expect(result).toEqual({ to: "city", destination: "311@lacity.gov" })
-    // The mailer delivered to the city contact via the outbound template.
+    // The mailer delivered to the city contact via the first-class sendOutbound envelope From outreach.
     const sent = mailer.sent.find((m) => m.to === "311@lacity.gov")
     expect(sent).toBeDefined()
-    expect(sent?.template).toBe(OUTBOUND_MAIL_TEMPLATE)
-    // A jurisdiction thread (geo-<geoid>) was created with an OUT message.
-    const thread = [...mailRepo.threads.values()].find((t) => t.threadToken === "geo-0644000")
+    expect(sent?.outbound?.from).toBe("outreach@civfix.org")
+    // A jurisdiction (digest) thread was created with a MINTED 24-hex token (not geo-<geoid>) + an OUT
+    // message. The reply token must satisfy the real inbound regex, so it is no longer geo-prefixed.
+    const thread = [...mailRepo.threads.values()].find(
+      (t) => t.jurisdictionGeoid === "0644000" && t.reportId === null,
+    )
     expect(thread).toBeDefined()
+    expect(thread?.threadToken).toMatch(/^[0-9a-f]{24}$/)
     expect(mailRepo.messagesOf(thread!.id).some((m) => m.direction === "out")).toBe(true)
     expect(repo.audits.at(-1)).toMatchObject({
       action: "report.followup_sent",

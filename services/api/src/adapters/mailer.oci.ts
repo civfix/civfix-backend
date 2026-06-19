@@ -9,10 +9,16 @@
  * Two surfaces, both plain-text + minimal HTML, both sent From MAIL_FROM_NOREPLY:
  *   - sendOtp(to, code)                  the email sign-in passcode;
  *   - sendTransactional(to, template, vars)  a small set of named templates (report updates, etc.).
+ *
+ * A third surface, `sendOutbound(email)`, carries the envelope first-class (a `from` it MUST honor, a
+ * `replyTo` so a recipient's reply threads back via the inbound pipeline, an explicit Message-ID for
+ * In-Reply-To/References correlation, and binary attachments). It is the seam the operator outreach /
+ * report-routing path uses; unlike the two above it does NOT force From the no-reply mailbox.
  */
 
+import { randomUUID } from "node:crypto"
 import { AppError, ErrorCode } from "@civfix/shared"
-import type { Mailer } from "@civfix/shared/interfaces"
+import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import type { Transporter } from "nodemailer"
 
 export interface OciMailerConfig {
@@ -72,6 +78,36 @@ export class OciMailer implements Mailer {
     return this.transporter
   }
 
+  async sendOutbound(email: OutboundEmail): Promise<SentMail> {
+    const transporter = await this.getTransporter()
+    // Mint a Message-ID when the caller did not supply one, so the eventual reply/bounce can be
+    // correlated by In-Reply-To/References. Domain is taken from the From address (fallback civfix.org).
+    const messageId = email.messageId ?? `<${randomUUID()}@${domainOf(email.from)}>`
+    try {
+      await transporter.sendMail({
+        from: email.from,
+        to: email.to,
+        replyTo: email.replyTo,
+        subject: email.subject,
+        text: email.text,
+        // Fall back to an escaped plain-text rendering when the caller gives no HTML body.
+        html: email.html ?? `<p>${escapeHtml(email.text)}</p>`,
+        messageId,
+        inReplyTo: email.inReplyTo,
+        references: email.references,
+        attachments: email.attachments?.map((a) => ({
+          filename: a.filename,
+          content: Buffer.from(a.content),
+          contentType: a.contentType,
+        })),
+        headers: email.headers,
+      })
+    } catch (err) {
+      throw new AppError(ErrorCode.INTERNAL, "Failed to send email.", { cause: err })
+    }
+    return { messageId }
+  }
+
   private async send(to: string, body: Rendered): Promise<void> {
     const transporter = await this.getTransporter()
     try {
@@ -129,4 +165,21 @@ function renderTemplate(template: string, vars: Record<string, unknown>): Render
 function stringVar(vars: Record<string, unknown>, key: string, fallback: string): string {
   const v = vars[key]
   return typeof v === "string" && v.length > 0 ? v : fallback
+}
+
+/** The domain of an email address (the substring after '@'), falling back to civfix.org. */
+function domainOf(addr: string): string {
+  const at = addr.lastIndexOf("@")
+  const domain = at >= 0 ? addr.slice(at + 1).trim() : ""
+  return domain.length > 0 ? domain : "civfix.org"
+}
+
+/** Escape the five HTML-significant characters for the plain-text -> HTML body fallback. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
 }

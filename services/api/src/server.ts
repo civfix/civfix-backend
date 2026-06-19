@@ -38,6 +38,7 @@ import type { NotificationServiceOverrides } from "./routes/notifications.routes
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
+import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
@@ -270,6 +271,11 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     // Cloudflare Email Worker buffered to R2 while the API was down is drained immediately on startup.
     await registerInboundJobs(app.container)
     await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
+
+    // Jurisdiction-discovery worker: consume the `jurisdiction.discovery` jobs the report-create path
+    // already enqueues (an un-onboarded jurisdiction) and materialize the operator Discovery-queue task.
+    // Same gate as the inbound jobs (real pg-boss + a real DATABASE_URL).
+    await registerDiscoveryJobs(app.container)
   }
 
   async function shutdown(signal: string): Promise<void> {

@@ -48,6 +48,8 @@ export interface MailThreadRecord {
   id: string
   threadToken: string
   jurisdictionGeoid: string | null
+  /** The originating report (per-report outreach threads), or null for digest/compose threads. */
+  reportId: string | null
   org: string | null
   subject: string | null
   status: MailStatus
@@ -84,6 +86,8 @@ export interface OutreachStateRecord {
 /** Initializer for upsertThreadByToken when the thread does not yet exist. */
 export interface ThreadInit {
   jurisdictionGeoid?: string | null
+  /** Link the thread to its originating report (per-report outreach threads). */
+  reportId?: string | null
   org?: string | null
   subject?: string | null
   status?: MailStatus
@@ -94,6 +98,8 @@ export interface ThreadInit {
 export interface CreateThreadInput {
   threadToken?: string
   jurisdictionGeoid?: string | null
+  /** Link the thread to its originating report (per-report outreach threads). */
+  reportId?: string | null
   org?: string | null
   subject?: string | null
   status?: MailStatus
@@ -173,6 +179,12 @@ export interface MailRepository {
   createThread(input: CreateThreadInput): Promise<MailThreadRecord>
   /** Insert a message + bump the thread's last_message_at; an inbound message sets thread.unread. */
   insertMessage(input: InsertMessageInput): Promise<MailMessageRecord>
+  /**
+   * Stamp the RFC822 Message-ID on an existing mail_messages row (the OUT row just inserted). The
+   * outbound id is derived from the row id, so it can only be set after the insert; storing it lets an
+   * eventual reply or bounce correlate by In-Reply-To/References. No-op when the id is unknown.
+   */
+  setMessageMessageId(id: string, rfcMessageId: string): Promise<void>
   /** Keyset-paginated thread list mapped to MailThreadListItemDTO (newest first). */
   listThreads(input: ListThreadsInput): Promise<ListThreadsResult>
   /** A thread + its ordered messages mapped to MailThreadDTO, or null when the id is unknown. */
@@ -191,6 +203,27 @@ export interface MailRepository {
   setOutreachState(geoid: string, patch: OutreachStatePatch): Promise<OutreachStateRecord>
   /** Read a single thread record (no messages), or null. Used by the OutboundMailService. */
   getThreadRecord(id: string): Promise<MailThreadRecord | null>
+  /**
+   * The per-report outreach thread for a report: the newest thread WHERE report_id = $1, or a freshly
+   * created thread (with a minted token + `init`) when none exists. So a report's outreach is ONE
+   * conversation and a jurisdiction reply (via that thread's reply token) auto-routes back onto it.
+   */
+  findOrCreateReportThread(reportId: string, init?: ThreadInit): Promise<MailThreadRecord>
+  /**
+   * The digest/jurisdiction outreach thread for a geoid: the newest thread WHERE jurisdiction_geoid = $1
+   * AND report_id IS NULL, or a freshly created one with a minted token. Replaces the old `geo-{geoid}`
+   * token scheme (which failed the real inbound reply-token regex), keeping one rolling digest thread per
+   * jurisdiction while leaving the per-report threads (report_id set) untouched.
+   */
+  upsertThreadByGeoid(geoid: string, init?: ThreadInit): Promise<MailThreadRecord>
+  /** Read a thread by its reply token, or null. Used by the bounce/inbound correlation paths. */
+  findThreadByToken(token: string): Promise<MailThreadRecord | null>
+  /**
+   * The newest thread that has an OUTBOUND mail_messages.message_id in the given set, or null. The
+   * inbound fallback: a reply that stripped the plus-address token can still correlate to its thread via
+   * the In-Reply-To / References headers it echoes back. Bounded (empty set -> null).
+   */
+  findThreadByOutboundMessageIds(messageIds: string[]): Promise<MailThreadRecord | null>
   /**
    * The to_addr of the thread's most recent OUTBOUND message, or null when the thread has no outbound
    * message with a recipient. M1: this is the recipient for a reply/resend on an outbound-only thread
@@ -343,6 +376,7 @@ interface ThreadRowSelect {
   id: string
   thread_token: string
   jurisdiction_geoid: string | null
+  report_id: string | null
   org: string | null
   subject: string | null
   status: MailStatus
@@ -378,6 +412,7 @@ function toThreadRecord(r: ThreadRowSelect): MailThreadRecord {
     id: r.id,
     threadToken: r.thread_token,
     jurisdictionGeoid: r.jurisdiction_geoid,
+    reportId: r.report_id,
     org: r.org,
     subject: r.subject,
     status: r.status,
@@ -421,22 +456,23 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const status = init.status ?? "sent"
       const unread = init.unread ?? false
       const inserted = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, org, subject, status, unread)
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, org, subject, status, unread)
         VALUES (
           ${token},
           ${init.jurisdictionGeoid ?? null},
+          ${init.reportId ?? null},
           ${init.org ?? null},
           ${init.subject ?? null},
           ${status},
           ${unread}
         )
         ON CONFLICT (thread_token) DO NOTHING
-        RETURNING id, thread_token, jurisdiction_geoid, org, subject, status, unread,
+        RETURNING id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
                   last_message_at, created_at
       `
       if (inserted[0]) return toThreadRecord(inserted[0])
       const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE thread_token = ${token}
@@ -450,21 +486,84 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     async createThread(input: CreateThreadInput): Promise<MailThreadRecord> {
       const token = input.threadToken ?? mintThreadToken()
       const rows = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, org, subject, status, unread)
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, org, subject, status, unread)
         VALUES (
           ${token},
           ${input.jurisdictionGeoid ?? null},
+          ${input.reportId ?? null},
           ${input.org ?? null},
           ${input.subject ?? null},
           ${input.status ?? "sent"},
           ${input.unread ?? false}
         )
-        RETURNING id, thread_token, jurisdiction_geoid, org, subject, status, unread,
+        RETURNING id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
                   last_message_at, created_at
       `
       const row = rows[0]
       if (!row) throw new Error("createThread: insert returned no row")
       return toThreadRecord(row)
+    },
+
+    async findOrCreateReportThread(
+      reportId: string,
+      init: ThreadInit = {},
+    ): Promise<MailThreadRecord> {
+      // The newest existing per-report thread, or create one with a minted token linked to the report.
+      const existing = await sql<ThreadRowSelect[]>`
+        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+               last_message_at, created_at
+        FROM mail_threads
+        WHERE report_id = ${reportId}
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `
+      if (existing[0]) return toThreadRecord(existing[0])
+      return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
+    },
+
+    async upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
+      // The newest digest thread for the jurisdiction (report_id IS NULL so per-report threads are not
+      // reused), or create one with a minted token. Replaces the old `geo-{geoid}` token scheme.
+      const existing = await sql<ThreadRowSelect[]>`
+        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+               last_message_at, created_at
+        FROM mail_threads
+        WHERE jurisdiction_geoid = ${geoid} AND report_id IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `
+      if (existing[0]) return toThreadRecord(existing[0])
+      return this.createThread({ ...init, jurisdictionGeoid: geoid, threadToken: mintThreadToken() })
+    },
+
+    async findThreadByToken(token: string): Promise<MailThreadRecord | null> {
+      const rows = await sql<ThreadRowSelect[]>`
+        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+               last_message_at, created_at
+        FROM mail_threads
+        WHERE thread_token = ${token}
+        LIMIT 1
+      `
+      return rows[0] ? toThreadRecord(rows[0]) : null
+    },
+
+    async findThreadByOutboundMessageIds(
+      messageIds: string[],
+    ): Promise<MailThreadRecord | null> {
+      // Empty set -> no correlation. Join the OUT messages carrying any of the ids back to the newest
+      // thread (the In-Reply-To/References fallback for a reply that stripped the plus-address token).
+      const ids = messageIds.filter((m) => typeof m === "string" && m.length > 0)
+      if (ids.length === 0) return null
+      const rows = await sql<ThreadRowSelect[]>`
+        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.org, t.subject, t.status,
+               t.unread, t.last_message_at, t.created_at
+        FROM mail_threads t
+        JOIN mail_messages m ON m.thread_id = t.id
+        WHERE m.direction = 'out' AND m.message_id = ANY(${ids}::text[])
+        ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC, t.id DESC
+        LIMIT 1
+      `
+      return rows[0] ? toThreadRecord(rows[0]) : null
     },
 
     async insertMessage(input: InsertMessageInput): Promise<MailMessageRecord> {
@@ -513,6 +612,10 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       })
     },
 
+    async setMessageMessageId(id: string, rfcMessageId: string): Promise<void> {
+      await sql`UPDATE mail_messages SET message_id = ${rfcMessageId} WHERE id = ${id}`
+    },
+
     async listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
       const limit = clampLimit(input.limit)
       const anchor = decodeCursor(input.cursor, true)
@@ -551,8 +654,8 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           lm_body: string | null
         })[]
       >`
-        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.org, t.subject, t.status, t.unread,
-               t.last_message_at, t.created_at,
+        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.org, t.subject, t.status,
+               t.unread, t.last_message_at, t.created_at,
                lm.direction AS lm_direction, lm.from_addr AS lm_from_addr, lm.body AS lm_body
         FROM mail_threads t
         LEFT JOIN LATERAL (
@@ -600,7 +703,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async getThread(id: string): Promise<MailThreadDTO | null> {
       const threads = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE id = ${id}
@@ -620,7 +723,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async getThreadRecord(id: string): Promise<MailThreadRecord | null> {
       const rows = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE id = ${id}
