@@ -147,11 +147,11 @@ describe("inbound-mail webhook: authentication", () => {
 describe("inbound-mail webhook: reply threading (token present)", () => {
   it("threads onto an existing thread, marks unread, records an event, and deletes the pending object", async () => {
     const h = await harness()
-    const thread = h.mailRepo.seedThread({ threadToken: "tok-la", org: "City of LA" })
+    const thread = h.mailRepo.seedThread({ threadToken: "0a0a0a0a0a0a0a0a0a0a0a0a", org: "City of LA" })
     const { res, key } = await ingest(h, {
       eml: rfc822({
         from: "clerk@lacity.gov",
-        to: "reply+tok-la@civfix.org",
+        to: "reply+0a0a0a0a0a0a0a0a0a0a0a0a@civfix.org",
         subject: "Re: Pothole",
         body: "We are on it.",
         messageId: "<abc@lacity.gov>",
@@ -175,20 +175,20 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
   it("mints a fresh thread when the reply token is unknown (a stray inbound is not lost)", async () => {
     const h = await harness()
     const { res } = await ingest(h, {
-      eml: rfc822({ from: "x@city.gov", to: "reply+unknown-tok@civfix.org", body: "hi" }),
+      eml: rfc822({ from: "x@city.gov", to: "reply+0b0b0b0b0b0b0b0b0b0b0b0b@civfix.org", body: "hi" }),
     })
     expect(res.statusCode).toBe(202)
     expect(h.mailRepo.threads.size).toBe(1)
-    expect([...h.mailRepo.threads.values()][0]?.threadToken).toBe("unknown-tok")
+    expect([...h.mailRepo.threads.values()][0]?.threadToken).toBe("0b0b0b0b0b0b0b0b0b0b0b0b")
     await h.app.close()
   })
 
   it("is idempotent: a re-delivered reply (same message-id) does not insert a second message", async () => {
     const h = await harness()
-    h.mailRepo.seedThread({ threadToken: "tok-dup" })
+    h.mailRepo.seedThread({ threadToken: "0c0c0c0c0c0c0c0c0c0c0c0c" })
     const eml = rfc822({
       from: "c@city.gov",
-      to: "reply+tok-dup@civfix.org",
+      to: "reply+0c0c0c0c0c0c0c0c0c0c0c0c@civfix.org",
       body: "first",
       messageId: "<dup-1@city.gov>",
     })
@@ -206,8 +206,8 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
     const h = await harness({
       inboundMail: new InboundMailWithAttachments([{ filename: "notice.pdf", content: bytes, size: bytes.byteLength }]),
     })
-    h.mailRepo.seedThread({ threadToken: "tok-att" })
-    const { res } = await ingest(h, { eml: rfc822({ from: "c@city.gov", to: "reply+tok-att@civfix.org", body: "see attached" }) })
+    h.mailRepo.seedThread({ threadToken: "0d0d0d0d0d0d0d0d0d0d0d0d" })
+    const { res } = await ingest(h, { eml: rfc822({ from: "c@city.gov", to: "reply+0d0d0d0d0d0d0d0d0d0d0d0d@civfix.org", body: "see attached" }) })
     expect(res.statusCode).toBe(202)
     const att = (await h.mailRepo.getThread([...h.mailRepo.threads.values()][0]!.id))?.messages[0]?.attachments ?? []
     expect(att).toHaveLength(1)
@@ -220,8 +220,8 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
     const h = await harness({
       inboundMail: new InboundMailWithAttachments([{ filename: "huge.zip", size: INBOUND_ATTACHMENT_MAX_BYTES + 1 }]),
     })
-    h.mailRepo.seedThread({ threadToken: "tok-big" })
-    const { res } = await ingest(h, { eml: rfc822({ from: "c@city.gov", to: "reply+tok-big@civfix.org", body: "big" }) })
+    h.mailRepo.seedThread({ threadToken: "0e0e0e0e0e0e0e0e0e0e0e0e" })
+    const { res } = await ingest(h, { eml: rfc822({ from: "c@city.gov", to: "reply+0e0e0e0e0e0e0e0e0e0e0e0e@civfix.org", body: "big" }) })
     expect(res.statusCode).toBe(202)
     const dto = await h.mailRepo.getThread([...h.mailRepo.threads.values()][0]!.id)
     expect(dto?.messages[0]?.attachments).toHaveLength(0)
