@@ -108,6 +108,7 @@ function makeUnusedChatRepo() {
     history: () => Promise.resolve({ items: [], nextCursor: null }),
     findMessage: () => Promise.resolve(null),
     toggleReaction: () => Promise.reject(new Error("cleanup reaction not expected in dm tests")),
+    softDelete: () => Promise.reject(new Error("cleanup delete not expected in dm tests")),
   }
 }
 

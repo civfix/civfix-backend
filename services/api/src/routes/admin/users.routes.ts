@@ -22,9 +22,11 @@
 import {
   AdminUserListQuerySchema,
   FlagUserRequestSchema,
+  RemoveUserMessageRequestSchema,
   SetRoleRequestSchema,
   SetUserStatusRequestSchema,
   UserSubListQuerySchema,
+  IdSchema,
   type AdminOkResponse,
   type AdminUserDTO,
   type AdminUserListResponse,
@@ -32,6 +34,7 @@ import {
   type UserMessagesResponse,
   type UserReportsResponse,
 } from "@civfix/shared"
+import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
@@ -180,4 +183,22 @@ export async function registerAdminUsersRoutes(
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:id/messages/:messageId/remove  [csrf]   operator removes a user's message
+  // -------------------------------------------------------------------------
+  route(app, "removeUserMessage", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id, messageId } = MessageParamsSchema.parse(request.params)
+    // The body carries the path ids (the typed client fills them); the authoritative ids are the URL path.
+    const body = parse(RemoveUserMessageRequestSchema, { ...(request.body as object), id, messageId })
+    await service().removeMessage(id, messageId, {
+      reason: body.reason ?? null,
+      actorId: request.auth.userId,
+    })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
 }
+
+/** Path-param schema for the per-message remove route (the `:id`/`:messageId` segments). */
+const MessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()

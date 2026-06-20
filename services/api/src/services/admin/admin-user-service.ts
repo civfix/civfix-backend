@@ -79,6 +79,9 @@ export interface AdminUserRecord {
   risk: Risk
   flagged: boolean
   flagReason: string | null
+  /** When the user self-deleted (tombstoned) their account; null for a live account. Admin keeps the
+   *  real identity and only SEES the tombstone via this flag. */
+  deletedAt: Date | null
 }
 
 /** A row in the user's Reports tab. */
@@ -107,6 +110,9 @@ export interface UserMessageRecord {
   text: string
   thread: string
   createdAt: Date
+  /** When the user themselves deleted (tombstoned) this message; null when not user-deleted. The admin
+   *  still sees the original text, labeled via this flag. */
+  deletedAt: Date | null
 }
 
 /** Normalized list arguments the repo consumes. `status` is the account status to match (null = any). */
@@ -170,6 +176,17 @@ export interface AdminUserRepository {
   ): Promise<boolean>
   /** Record a user.role_changed audit row (the role itself is written via the injected SetUserRole). */
   recordRoleAudit(id: string, input: { role: Role; actorId: string | null }): Promise<void>
+  /**
+   * Operator soft-delete (tombstone) of one of a user's chat messages, scoped to the user as the sender.
+   * Audits "message.removed" in the same transaction. Returns true on success, false when the message does
+   * not exist for that user (or was already removed). Distinct from the citizen self-delete: an operator
+   * may remove ANY of the user's messages (not just their own), so it is keyed by (messageId, userId).
+   */
+  removeUserMessage(
+    userId: string,
+    messageId: string,
+    input: { reason: string | null; actorId: string | null },
+  ): Promise<boolean>
 }
 
 /**
@@ -246,6 +263,12 @@ export interface AdminUserService {
     input: { status: UserStatus; reason: string | null; actorId: string | null },
   ): Promise<{ revokedSessions: number }>
   setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void>
+  /** Operator removes (tombstones) one of a user's chat messages. 404 when the message does not exist. */
+  removeMessage(
+    userId: string,
+    messageId: string,
+    input: { reason: string | null; actorId: string | null },
+  ): Promise<void>
 }
 
 export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserService {
@@ -268,6 +291,9 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       lastActive: record.lastActiveAt ? toRelAbs(record.lastActiveAt, ref).rel : "-",
       flagged: record.flagged,
       flagReason: record.flagReason,
+      // Surface the tombstone so the admin UI can mark a self-deleted account (it still shows the real
+      // name/handle/email — admins keep the truth). Additive + optional in the contract.
+      deletedAt: record.deletedAt ? record.deletedAt.toISOString() : null,
     }
   }
 
@@ -349,6 +375,9 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         text: r.text,
         thread: r.thread,
         when: toRelAbs(r.createdAt, ref).rel,
+        // Surface a user-deleted message's tombstone so the admin UI can label it "[deleted by user]"
+        // while still showing the original text. Additive + optional in the contract.
+        deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
       }))
       return { items, nextCursor }
     },
@@ -389,6 +418,15 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       // the change (an operator demotion takes effect immediately; the victim must re-auth). Revoking on
       // every role change is the simplest correct policy and strictly safer than only-on-downgrade.
       await deps.sessions.revokeAll(id)
+    },
+
+    async removeMessage(
+      userId: string,
+      messageId: string,
+      input: { reason: string | null; actorId: string | null },
+    ): Promise<void> {
+      const ok = await deps.repo.removeUserMessage(userId, messageId, input)
+      if (!ok) throw AppError.notFound("Message not found")
     },
   }
 }

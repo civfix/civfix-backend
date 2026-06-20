@@ -225,6 +225,24 @@ export class PgUserStore implements UserStore {
     if (!r) throw new Error("PgUserStore.updateSettings: user not found")
     return toUserRecord(r)
   }
+
+  /**
+   * Self-service account deletion. SOFT delete: set deleted_at = now() (only when not already set, so a
+   * repeat delete keeps the original tombstone time) and turn DMs off, but KEEP display_name/handle/email
+   * intact so the admin panel keeps the real identity. The public author projections render "Deleted User"
+   * off the deleted_at tombstone; the users row + every content FK to it survive. The route additionally
+   * revokes the user's sessions (set deleted_at alone does NOT log a warm session out).
+   */
+  async softDeleteAndAnonymize(id: string): Promise<UserRecord> {
+    const updated = await this.db
+      .update(users)
+      .set({ deletedAt: sql`COALESCE(${users.deletedAt}, now())`, allowDirectMessages: false })
+      .where(eq(users.id, id))
+      .returning()
+    const r = updated[0]
+    if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+    return toUserRecord(r)
+  }
 }
 
 // ---------------------------------------------------------------------------

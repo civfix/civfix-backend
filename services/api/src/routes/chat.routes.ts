@@ -424,7 +424,34 @@ export async function registerChatRoutes(
       reply.status(200).send(updated)
     },
   )
+
+  // -------------------------------------------------------------------------
+  // DELETE /cleanups/:cleanupId/messages/:messageId  [auth][csrf]   author self-delete
+  // -------------------------------------------------------------------------
+  // Soft-delete (tombstone) one of the AUTHOR's own cleanup-chat messages. Membership-gated (cleanup
+  // membership == chat membership) + sender-only (the repo's WHERE gate). Returns the tombstoned
+  // ChatMessageDTO and re-broadcasts it over the SAME {type:"message"} frame the gateway's send uses, so
+  // connected clients upsert the blanked bubble by id (no new WS frame type). DELETE carries no body.
+  route(app, "deleteCleanupMessage", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { cleanupId, messageId } = parse(DeleteParamsSchema, request.params)
+    if (!(await isMember(cleanupId, userId))) {
+      throw AppError.forbidden("You can't delete this message.")
+    }
+    const chatRepo: ChatRepository =
+      overrides?.chatRepo ?? makeDrizzleChatRepository(container.getDb().sql)
+    const tombstone: ChatMessageDTO | null = await chatRepo.softDelete(cleanupId, messageId, userId)
+    if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
+    // REALTIME: re-broadcast the tombstoned message (fire-and-forget) so open rooms re-render it blanked.
+    void Promise.resolve(
+      container.chatService.broadcast(roomKeyFor("cleanup", cleanupId), tombstone),
+    ).catch(() => {})
+    reply.status(200).send(tombstone)
+  })
 }
+
+/** Path-param schema for the cleanup-message delete route (the `:cleanupId`/`:messageId` segments). */
+const DeleteParamsSchema = z.object({ cleanupId: IdSchema, messageId: IdSchema }).strict()
 
 /** Path-param schema for the reaction route (the `:cleanupId`/`:messageId` segments). */
 const ReactionParamsSchema = z.object({ cleanupId: IdSchema, messageId: IdSchema }).strict()

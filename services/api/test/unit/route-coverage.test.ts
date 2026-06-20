@@ -227,7 +227,12 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     // + the 3-route chat-reactions/@-mention surface (B1/B2): toggleCleanupMessageReaction
     // [POST /cleanups/:cleanupId/messages/:messageId/reactions], toggleDmMessageReaction
     // [POST /dm/:threadId/messages/:messageId/reactions], mentionSearch [GET /users/mention-search] = 152.
-    expect(Object.keys(endpoints).length).toBe(152)
+    // + the 6-route App-Store-audit remediation surface: reportContent [POST /content-reports],
+    // deleteAccount [DELETE /me], requestDataExport [POST /me/data-export], deleteDmMessage
+    // [DELETE /dm/:threadId/messages/:messageId], deleteCleanupMessage
+    // [DELETE /cleanups/:cleanupId/messages/:messageId], removeUserMessage
+    // [POST /admin/users/:id/messages/:messageId/remove] = 158.
+    expect(Object.keys(endpoints).length).toBe(158)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

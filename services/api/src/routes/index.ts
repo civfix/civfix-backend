@@ -23,6 +23,7 @@ import { registerCleanupRoutes } from "./cleanups.routes.js"
 import { registerChatRoutes } from "./chat.routes.js"
 import { registerDmRoutes } from "./dm.routes.js"
 import { registerUsersRoutes } from "./users.routes.js"
+import { registerReportContentRoutes } from "./report-content.routes.js"
 import { registerSocialRoutes } from "./social.routes.js"
 import { registerVerificationRoutes } from "./verification.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
@@ -98,6 +99,11 @@ export async function registerRoutes(
   // /users/:id/block, auth + CSRF) + the viewer's blocks (GET /me/blocks, auth) + privacy settings
   // (PUT /me/settings, auth + CSRF). Mount unconditionally; DB-backed handlers reach the database lazily.
   await registerUsersRoutes(app, container)
+
+  // Content reports: the user-facing "Report" button (POST /content-reports, auth + CSRF, tight per-IP
+  // limit). Enqueues a `user_report` moderation item that surfaces in the existing admin moderation queue.
+  // Mount unconditionally; the moderation repo is reached lazily via container.getDb().
+  await registerReportContentRoutes(app, container)
 
   // Social: people directory/search (auth, q required) + follow/unfollow (auth + CSRF) + public profile
   // + own profile (auth). Mount unconditionally; DB-backed handlers reach the database lazily via

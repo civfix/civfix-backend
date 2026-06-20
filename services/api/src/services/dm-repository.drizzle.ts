@@ -18,7 +18,7 @@
  */
 
 import type { Sql } from "../db/client.js"
-import { avatarGradient } from "@civfix/shared"
+import { publicAuthorIdentity } from "./public-author.js"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
@@ -98,6 +98,16 @@ export interface DmRepository {
     senderId: string,
     body: string,
   ): Promise<ChatMessageDTO | null>
+  /**
+   * Soft-delete (tombstone) a dm message by its author. SENDER-ONLY + thread-scoped + not-already-deleted
+   * (same WHERE gate as editMessage). Returns the tombstoned ChatMessageDTO, or null when the message is
+   * missing / belongs to another thread / was not sent by `senderId` / already deleted.
+   */
+  softDelete(
+    threadId: string,
+    messageId: string,
+    senderId: string,
+  ): Promise<ChatMessageDTO | null>
   /** Page a thread's messages newest-first, before the given message id (cursor). roomKind:"dm".
    *  `viewerUserId` (optional) resolves each message's reaction `mine` flag for the loader. */
   history(
@@ -144,9 +154,11 @@ interface DmRowSelect {
   attachments: unknown[] | null
   created_at: Date
   edited_at: Date | null
+  deleted_at: Date | null
   sender_display_name: string
   sender_handle: string | null
   sender_bio: string | null
+  sender_deleted_at: Date | null
 }
 
 /**
@@ -158,21 +170,31 @@ function toMessageDTO(
   r: DmRowSelect,
   reactions: ReactionSummaryDTO[],
   mentions: UserMentionDTO[],
+  viewerUserId?: string | null,
   clientId?: string,
 ): ChatMessageDTO {
+  // PUBLIC author identity: a deleted (tombstoned) sender renders "Deleted User" (no handle/avatar, deleted:true).
+  const author = publicAuthorIdentity({
+    id: r.sender_id,
+    displayName: r.sender_display_name,
+    handle: r.sender_handle,
+    deletedAt: r.sender_deleted_at,
+  })
   return {
     id: r.id,
     cleanupId: r.thread_id,
     roomKind: "dm",
     from: {
       id: r.sender_id,
-      name: r.sender_display_name,
-      handle: r.sender_handle,
-      bio: r.sender_bio,
-      avatar: avatarGradient(r.sender_id),
+      name: author.name,
+      handle: author.handle,
+      bio: author.deleted ? null : r.sender_bio,
+      avatar: author.avatar,
+      ...(author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
       followers: 0,
       following: 0,
       isFollowing: false,
+      ...(author.deleted ? { deleted: true } : {}),
     },
     ...(r.body !== null ? { body: r.body } : {}),
     kind: r.kind,
@@ -181,6 +203,8 @@ function toMessageDTO(
     mentions,
     createdAt: r.created_at.toISOString(),
     ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
+    ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
+    mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(clientId !== undefined ? { clientId } : {}),
   }
 }
@@ -250,7 +274,7 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
             ${kind},
             ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null}
           )
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
         )
         SELECT
           inserted.id,
@@ -261,15 +285,18 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
           inserted.attachments,
           inserted.created_at,
           inserted.edited_at,
+          inserted.deleted_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
-          u.bio AS sender_bio
+          u.bio AS sender_bio,
+          u.deleted_at AS sender_deleted_at
         FROM inserted
         JOIN users u ON u.id = inserted.sender_id
       `
       // A freshly-inserted message has no reactions/mentions persisted yet (the gateway projects a send's
       // resolved mentions onto its broadcast copy), so pass [] / [] rather than needless aggregate queries.
-      return toMessageDTO(rows[0]!, [], [], input.clientId)
+      // The sender is the viewer of their own just-sent message → mine:true.
+      return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId)
     },
 
     async editMessage(
@@ -295,7 +322,7 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
             AND thread_id = ${threadId}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
         )
         SELECT
           updated.id,
@@ -306,9 +333,11 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
           updated.attachments,
           updated.created_at,
           updated.edited_at,
+          updated.deleted_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
-          u.bio AS sender_bio
+          u.bio AS sender_bio,
+          u.deleted_at AS sender_deleted_at
         FROM updated
         JOIN users u ON u.id = updated.sender_id
       `
@@ -319,7 +348,49 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
         loadChatReactions(sql, row.id, senderId),
         loadChatMentions(sql, row.id),
       ])
-      return toMessageDTO(row, reactions, mentions)
+      return toMessageDTO(row, reactions, mentions, senderId)
+    },
+
+    async softDelete(
+      threadId: string,
+      messageId: string,
+      senderId: string,
+    ): Promise<ChatMessageDTO | null> {
+      // SENDER-ONLY, thread-scoped, not-already-deleted (mirror editMessage's WHERE gate exactly but SET
+      // deleted_at = now()). A 0-row update returns null → the route maps it to a generic 403. Read the
+      // tombstoned row back joined with the sender so the returned DTO is complete.
+      const rows = await sql<DmRowSelect[]>`
+        WITH updated AS (
+          UPDATE dm_messages
+          SET deleted_at = now()
+          WHERE id = ${messageId}
+            AND thread_id = ${threadId}
+            AND sender_id = ${senderId}
+            AND deleted_at IS NULL
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+        )
+        SELECT
+          updated.id,
+          updated.thread_id,
+          updated.sender_id,
+          updated.body,
+          updated.kind,
+          updated.attachments,
+          updated.created_at,
+          updated.edited_at,
+          updated.deleted_at,
+          u.display_name AS sender_display_name,
+          u.handle AS sender_handle,
+          u.bio AS sender_bio,
+          u.deleted_at AS sender_deleted_at
+        FROM updated
+        JOIN users u ON u.id = updated.sender_id
+      `
+      const row = rows[0]
+      if (!row) return null
+      // A tombstone carries no live reactions/mentions to recompute; the body is the deleted marker the
+      // client renders via deletedAt.
+      return toMessageDTO(row, [], [], senderId)
     },
 
     async history(
@@ -357,9 +428,11 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
           dm.attachments,
           dm.created_at,
           dm.edited_at,
+          dm.deleted_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
-          u.bio AS sender_bio
+          u.bio AS sender_bio,
+          u.deleted_at AS sender_deleted_at
         FROM dm_messages dm
         JOIN users u ON u.id = dm.sender_id
         WHERE dm.thread_id = ${threadId}
@@ -379,7 +452,7 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
             loadChatReactions(sql, r.id, viewerUserId),
             loadChatMentions(sql, r.id),
           ])
-          return toMessageDTO(r, reactions, mentions)
+          return toMessageDTO(r, reactions, mentions, viewerUserId)
         }),
       )
       const last = page[page.length - 1]
@@ -402,9 +475,11 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
           dm.attachments,
           dm.created_at,
           dm.edited_at,
+          dm.deleted_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
-          u.bio AS sender_bio
+          u.bio AS sender_bio,
+          u.deleted_at AS sender_deleted_at
         FROM dm_messages dm
         JOIN users u ON u.id = dm.sender_id
         WHERE dm.id = ${messageId} AND dm.thread_id = ${threadId} AND dm.deleted_at IS NULL
@@ -416,7 +491,7 @@ export function makeDrizzleDmRepository(sql: Sql): DmRepository {
         loadChatReactions(sql, row.id, viewerUserId),
         loadChatMentions(sql, row.id),
       ])
-      return toMessageDTO(row, reactions, mentions)
+      return toMessageDTO(row, reactions, mentions, viewerUserId)
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {

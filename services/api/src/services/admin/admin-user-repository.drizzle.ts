@@ -78,6 +78,7 @@ interface UserRowSelect {
   risk: Risk
   flagged: boolean
   flag_reason: string | null
+  deleted_at: Date | null
 }
 
 /** Project a selected user row into the structural record the service consumes. */
@@ -101,12 +102,16 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     risk: r.risk,
     flagged: r.flagged,
     flagReason: r.flag_reason,
+    deletedAt: r.deleted_at,
   }
 }
 
 /**
  * The shared user SELECT (moderation LEFT-joined with active/low/0 defaults, counts + city + lastActive
- * computed). The `extraWhere`/`orderLimit` clauses narrow it. Only non-deleted users are listed.
+ * computed). The `extraWhere`/`orderLimit` clauses narrow it. Tombstoned (self-deleted) users ARE listed
+ * so an operator keeps full visibility of the account's real identity + activity; `deleted_at` is surfaced
+ * so the admin UI can label it. The message count includes the user's OWN soft-deleted (user-deleted)
+ * messages for the same reason.
  */
 function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFragment): SqlFragment {
   return sql`
@@ -124,11 +129,12 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
       ) AS city,
       u.role,
       u.created_at,
+      u.deleted_at,
       (SELECT MAX(s.last_seen_at) FROM sessions s WHERE s.user_id = u.id) AS last_active_at,
       COALESCE(um.account_status, 'active') AS account_status,
       (SELECT COUNT(*) FROM reports r WHERE r.reporter_user_id = u.id AND r.deleted_at IS NULL)::text AS reports,
       (SELECT COUNT(*) FROM cleanup_members cm WHERE cm.user_id = u.id)::text AS cleanups,
-      (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id AND msg.deleted_at IS NULL)::text AS messages,
+      (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id)::text AS messages,
       COALESCE(um.removals, 0) AS removals,
       COALESCE(um.strikes, 0) AS strikes,
       COALESCE(um.risk, 'low') AS risk,
@@ -136,7 +142,7 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
       um.flag_reason
     FROM users u
     LEFT JOIN user_moderation um ON um.user_id = u.id
-    WHERE u.deleted_at IS NULL
+    WHERE TRUE
     ${extraWhere}
     ${orderLimit}
   `
@@ -191,7 +197,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           COUNT(*) FILTER (WHERE COALESCE(um.flagged, false) = true)::text AS flagged
         FROM users u
         LEFT JOIN user_moderation um ON um.user_id = u.id
-        WHERE u.deleted_at IS NULL
+        WHERE TRUE
         ${search}
       `
       const r = rows[0]
@@ -316,13 +322,22 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         anchor !== null
           ? sql`AND (m.created_at, m.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
           : sql``
+      // Include the user's OWN soft-deleted messages (NO `m.deleted_at IS NULL` filter) so an operator sees
+      // a message the user themselves removed (the original text is kept), labeled via the surfaced
+      // deletedAt. Admins keep full visibility of user activity.
       const rows = await sql<
-        { id: string; body: string | null; thread: string | null; created_at: Date }[]
+        {
+          id: string
+          body: string | null
+          thread: string | null
+          created_at: Date
+          deleted_at: Date | null
+        }[]
       >`
-        SELECT m.id, m.body, c.title AS thread, m.created_at
+        SELECT m.id, m.body, c.title AS thread, m.created_at, m.deleted_at
         FROM chat_messages m
         LEFT JOIN cleanups c ON c.id = m.cleanup_id
-        WHERE m.sender_id = ${id} AND m.deleted_at IS NULL
+        WHERE m.sender_id = ${id}
         ${cursorFilter}
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT ${lim + 1}
@@ -333,6 +348,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           text: r.body ?? "",
           thread: r.thread ?? "Cleanup chat",
           createdAt: r.created_at,
+          deletedAt: r.deleted_at,
         })),
         lim,
         (r) => ({ createdAt: r.createdAt, id: r.id }),
@@ -415,6 +431,31 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         action: "user.role_changed",
         target: `user:${id}`,
         meta: { role: input.role },
+      })
+    },
+
+    async removeUserMessage(
+      userId: string,
+      messageId: string,
+      input: { reason: string | null; actorId: string | null },
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        // Operator soft-delete by message id, scoped to the user as sender, not-already-deleted. A 0-row
+        // update → false (the service maps it to 404). Audit in the same tx as the effect.
+        const rows = await tx<{ id: string }[]>`
+          UPDATE chat_messages
+          SET deleted_at = now()
+          WHERE id = ${messageId} AND sender_id = ${userId} AND deleted_at IS NULL
+          RETURNING id
+        `
+        if (rows.length === 0) return false
+        await writeAudit(tx, {
+          actorId: input.actorId,
+          action: "message.removed",
+          target: `message:${messageId}`,
+          meta: { userId, reason: input.reason },
+        })
+        return true
       })
     },
   }

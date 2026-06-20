@@ -150,11 +150,26 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve(present)
   }
 
-  /** Test helper: soft-delete a message (so history excludes it). */
-  softDelete(cleanupId: string, messageId: string): void {
+  /**
+   * Soft-delete (tombstone) a cleanup message by its author. SENDER-ONLY + cleanup-scoped + not-already-
+   * deleted, mirroring the Drizzle gate. Returns the tombstoned DTO, or null when missing / not the
+   * sender's / already deleted.
+   */
+  softDelete(
+    cleanupId: string,
+    messageId: string,
+    senderId: string,
+  ): Promise<ChatMessageDTO | null> {
     const list = this.log.get(cleanupId)
     const found = list?.find((m) => m.dto.id === messageId)
-    if (found) found.deleted = true
+    if (!found || found.deleted || found.dto.from.id !== senderId) return Promise.resolve(null)
+    found.deleted = true
+    const tombstone: ChatMessageDTO = {
+      ...found.dto,
+      deletedAt: this.nextDate().toISOString(),
+      mine: true,
+    }
+    return Promise.resolve(tombstone)
   }
 
   /** Test helper: total persisted (non-deleted) messages for a cleanup. */

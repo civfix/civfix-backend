@@ -208,10 +208,26 @@ export const USER_ACCOUNT_STATUS_VALUES = ["active", "suspended", "review", "ban
 export const USER_RISK_VALUES = ["low", "watch", "elevated", "high"] as const
 
 /** moderation_items.kind. Mirrors shared ModerationKindSchema. */
-export const MODERATION_KIND_VALUES = ["image", "pattern", "appeal", "gps", "duplicate"] as const
+export const MODERATION_KIND_VALUES = [
+  "image",
+  "pattern",
+  "appeal",
+  "gps",
+  "duplicate",
+  "user_report",
+] as const
 
-/** moderation_items.subject_type. */
-export const MODERATION_SUBJECT_TYPE_VALUES = ["report", "user", "chat"] as const
+/** moderation_items.subject_type. Mirrors shared ModerationSubjectTypeSchema. */
+export const MODERATION_SUBJECT_TYPE_VALUES = [
+  "report",
+  "user",
+  "chat",
+  "comment",
+  "message",
+  "event",
+  "profile",
+  "photo",
+] as const
 
 /** moderation_items.priority. Mirrors shared PrioritySchema. */
 export const MODERATION_PRIORITY_VALUES = ["low", "med", "high"] as const

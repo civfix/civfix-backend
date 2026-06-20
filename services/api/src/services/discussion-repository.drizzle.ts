@@ -46,6 +46,7 @@ interface MessageRowSelect {
   deleted_at: Date | null
   author_display_name: string | null
   author_handle: string | null
+  author_deleted_at: Date | null
   reply_count: number
   mention_geoid: string | null
   mention_name: string | null
@@ -67,6 +68,7 @@ function messageColumns(tag: Queryable) {
     m.deleted_at,
     u.display_name AS author_display_name,
     u.handle AS author_handle,
+    u.deleted_at AS author_deleted_at,
     (
       SELECT count(*)::int FROM report_discussion_messages c
       WHERE c.parent_id = m.id AND c.deleted_at IS NULL
@@ -177,6 +179,7 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
               id: r.author_user_id,
               displayName: r.author_display_name,
               handle: r.author_handle,
+              deletedAt: r.author_deleted_at,
             }
           : null,
       body: r.body,

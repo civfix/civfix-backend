@@ -27,6 +27,7 @@ import { AppError, relativeAgo } from "@civfix/shared"
 import type {
   ModerationItemDTO,
   ModerationKind,
+  ModerationSubjectType,
   ModerationListQuery,
   ModerationListResponse,
   ModerationMedia,
@@ -81,7 +82,7 @@ export interface ModerationMediaRecord {
 export interface ModerationItemRecord {
   id: string
   kind: ModerationKind
-  subjectType: "report" | "user" | "chat"
+  subjectType: ModerationSubjectType
   subjectId: string
   flag: string | null
   reason: string | null
@@ -102,7 +103,7 @@ export interface ModerationItemRecord {
 /** What a producer supplies to enqueue a moderation item. Defaults fill the optional shaping fields. */
 export interface CreateModerationItemInput {
   kind: ModerationKind
-  subjectType: "report" | "user" | "chat"
+  subjectType: ModerationSubjectType
   subjectId: string
   flag?: string | null
   reason?: string | null
@@ -246,6 +247,9 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       age: relativeAgo(record.createdAt, ref),
       priority: record.priority,
       kind: record.kind,
+      // Surface the subject kind so the operator UI can label a citizen `user_report` (report|comment|
+      // message|event|profile|photo|user|chat). Additive + optional in the contract.
+      subjectType: record.subjectType,
     }
   }
 

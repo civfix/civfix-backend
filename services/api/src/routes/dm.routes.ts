@@ -45,6 +45,9 @@ const DmEditParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema })
 /** Path-param schema for the reaction route (the `:threadId`/`:messageId` segments). */
 const DmReactionParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema }).strict()
 
+/** Path-param schema for the delete route (the `:threadId`/`:messageId` segments). */
+const DmDeleteParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema }).strict()
+
 /**
  * Tighter per-IP rate limit for opening a DM (P2-7 style): a real client opens a handful of threads; 20/min
  * bounds automated thread-spinning while staying ample for normal use.
@@ -232,6 +235,43 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
         }),
       ).catch(() => {})
       reply.status(200).send(updated)
+    },
+  )
+
+  // -------------------------------------------------------------------------
+  // DELETE /dm/:threadId/messages/:messageId  [auth][csrf]   author self-delete
+  // -------------------------------------------------------------------------
+  // Soft-delete (tombstone) one of the AUTHOR's own DM messages. Authorized exactly like editDmMessage:
+  // the caller must be a thread participant AND not blocked either way, AND the repo's WHERE gate enforces
+  // sender-only. Returns the tombstoned ChatMessageDTO and re-broadcasts it over the SAME {type:"message"}
+  // dm frame the gateway/edit use, so connected clients upsert the blanked bubble by id. DELETE has no body.
+  route(
+    app,
+    "deleteDmMessage",
+    { preHandler: csrfProtect, config: { rateLimit: DM_OPEN_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { threadId, messageId } = parse(DmDeleteParamsSchema, request.params)
+
+      const repo = dmRepo()
+      const thread = await repo.getThread(threadId)
+      const isParticipant = thread !== null && (thread.userLo === userId || thread.userHi === userId)
+      if (!isParticipant) throw AppError.forbidden("You can't delete this message.")
+      const peer = thread.userLo === userId ? thread.userHi : thread.userLo
+      if (await blocksRepo().isBlockedEitherWay(userId, peer)) {
+        throw AppError.forbidden("You can't delete this message.")
+      }
+
+      // Sender-only delete: a null return means the message is missing OR not the caller's (we already
+      // proved participation), so map both to a generic 403.
+      const tombstone: ChatMessageDTO | null = await repo.softDelete(threadId, messageId, userId)
+      if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
+
+      void Promise.resolve(
+        container.chatService.broadcast(roomKeyFor("dm", threadId), tombstone),
+      ).catch(() => {})
+
+      reply.status(200).send(tombstone)
     },
   )
 }

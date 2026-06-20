@@ -62,6 +62,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     risk?: AdminUserRecord["risk"]
     flagged?: boolean
     flagReason?: string | null
+    deletedAt?: Date | null
   }): AdminUserRecord {
     const id = input.id ?? randomUUID()
     const record: AdminUserRecord = {
@@ -83,6 +84,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       risk: input.risk ?? "low",
       flagged: input.flagged ?? false,
       flagReason: input.flagReason ?? null,
+      deletedAt: input.deletedAt ?? null,
     }
     this.users.set(id, record)
     return record
@@ -102,10 +104,13 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     this.events.set(userId, list)
   }
 
-  /** Seed a row in a user's Messages tab. */
-  seedMessage(userId: string, row: UserMessageRecord): void {
+  /** Seed a row in a user's Messages tab. `deletedAt` defaults to null (a live message). */
+  seedMessage(
+    userId: string,
+    row: Omit<UserMessageRecord, "deletedAt"> & { deletedAt?: Date | null },
+  ): void {
     const list = this.messages.get(userId) ?? []
-    list.push(row)
+    list.push({ ...row, deletedAt: row.deletedAt ?? null })
     this.messages.set(userId, list)
   }
 
@@ -264,6 +269,23 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       target: `user:${id}`,
       meta: { role: input.role },
     })
+  }
+
+  async removeUserMessage(
+    userId: string,
+    messageId: string,
+    input: { reason: string | null; actorId: string | null },
+  ): Promise<boolean> {
+    const list = this.messages.get(userId)
+    const found = list?.find((m) => m.id === messageId && m.deletedAt === null)
+    if (!found) return false
+    found.deletedAt = new Date()
+    this.audits.push({
+      action: "message.removed",
+      target: `message:${messageId}`,
+      meta: { userId, reason: input.reason },
+    })
+    return true
   }
 }
 

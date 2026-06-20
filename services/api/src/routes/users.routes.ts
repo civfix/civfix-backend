@@ -23,16 +23,42 @@ import {
   type BlockUserResponse,
   type ListBlocksResponse,
   type UpdateSettingsResponse,
+  type DeleteAccountResponse,
+  type RequestDataExportResponse,
 } from "@civfix/shared"
 import { ZodError, z, type ZodTypeAny } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
+import { csrfProtect, clearCsrfCookie } from "../auth/csrf.js"
+import { clearSessionCookie } from "../auth/transport.js"
 import { searchByHandlePrefix, searchMentionable } from "../services/social-repository.drizzle.js"
 import { toUserDTO } from "../auth/auth-services.js"
+import { writeAudit } from "../services/admin/audit.js"
+import {
+  makeDataExportService,
+  type DataExportService,
+} from "../services/data-export-service.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { route } from "../versioning/route.js"
+
+/** Optional injected data-export service (tests) so the POST /me/data-export flow runs offline. */
+export interface DataExportOverride {
+  service: DataExportService
+}
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /** Injected data-export service override (tests). See DataExportOverride. */
+    dataExportOverride?: DataExportOverride
+  }
+}
+
+/**
+ * Tighter per-IP rate limit for the data-export request (each assembles + emails a full export; a real
+ * client needs at most a handful). Mirrors the verification apply limit shape.
+ */
+export const DATA_EXPORT_RATE_LIMIT = { max: 5, timeWindow: "1 hour" } as const
 
 /** Path param schema for the routes that take a user UUID in the URL. */
 const UserIdParamsSchema = z.object({ id: IdSchema }).strict()
@@ -148,6 +174,59 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     const payload: UpdateSettingsResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)
   })
+
+  // -------------------------------------------------------------------------
+  // DELETE /me  [auth][csrf]   self-service account deletion (soft delete)
+  // -------------------------------------------------------------------------
+  // SOFT delete: tombstone + DMs off (KEEP PII for admin truth), then REVOKE all sessions (set deleted_at
+  // alone does NOT log a warm Redis session out) + set the banned marker, clear the session + csrf cookies,
+  // and audit. The user's posts/reports/comments/events survive (the FKs reference the kept row); public
+  // projections render "Deleted User".
+  route(app, "deleteAccount", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const store = app.authServices?.users
+    const sessions = app.authServices?.sessions
+    if (!store || !sessions) throw AppError.unauthorized("Authentication required.")
+    await store.softDeleteAndAnonymize(userId)
+    // banUser revokes ALL durable sessions + cache entries AND sets the veto marker (so any warm session
+    // that slipped a revoke is rejected on its next request).
+    await sessions.banUser(userId)
+    clearSessionCookie(reply)
+    clearCsrfCookie(reply)
+    await writeAudit(container.getDb().sql, {
+      actorId: userId,
+      action: "account.deleted",
+      target: `user:${userId}`,
+    })
+    const payload: DeleteAccountResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /me/data-export  [auth][csrf]  (tight per-IP limit)   email me a copy of my data
+  // -------------------------------------------------------------------------
+  route(
+    app,
+    "requestDataExport",
+    { preHandler: csrfProtect, config: { rateLimit: DATA_EXPORT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const store = app.authServices?.users
+      if (!store) throw AppError.unauthorized("Authentication required.")
+      const service: DataExportService =
+        app.dataExportOverride?.service ??
+        makeDataExportService({
+          sql: container.getDb().sql,
+          mailer: container.mailer,
+          storage: container.storage,
+          users: store,
+          fromNoReply: container.env.MAIL_FROM_NOREPLY,
+        })
+      const result = await service.exportData(userId)
+      const payload: RequestDataExportResponse = { ok: true, email: result.email }
+      reply.status(200).send(payload)
+    },
+  )
 }
 
 /** Reject a block toward a missing/soft-deleted user with a 404 (validate the target exists). */

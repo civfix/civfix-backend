@@ -180,6 +180,15 @@ export interface UserStore {
    * written; omitted fields are left unchanged. Returns the updated user.
    */
   updateSettings(id: string, input: UpdateSettingsInput): Promise<UserRecord>
+  /**
+   * Self-service account deletion (App-Store-audit remediation). SOFT delete: set `deleted_at = now()`
+   * and turn DMs off (`allow_direct_messages = false`), but KEEP the PII columns
+   * (`display_name`/`handle`/`email`) so the ADMIN panel retains the real identity — only the PUBLIC
+   * author projections render "Deleted User" (branching on `deleted_at`). The users row and every FK to
+   * it survive, so the account's reports/comments/events/messages are kept. Idempotent: deleting an
+   * already-deleted account re-stamps harmlessly. Returns the tombstoned record.
+   */
+  softDeleteAndAnonymize(id: string): Promise<UserRecord>
 }
 
 /** Partial settings patch (PUT /me/settings). Only present fields are written. */
@@ -283,6 +292,20 @@ export class InMemoryUserStore implements UserStore {
       ...(input.allowDirectMessages !== undefined
         ? { allowDirectMessages: input.allowDirectMessages }
         : {}),
+    }
+    this.byId.set(id, next)
+    return Promise.resolve({ ...next })
+  }
+
+  softDeleteAndAnonymize(id: string): Promise<UserRecord> {
+    const row = this.byId.get(id)
+    if (!row) throw new Error("InMemoryUserStore.softDeleteAndAnonymize: user not found")
+    // SOFT delete: tombstone + turn DMs off, KEEP display_name/handle/email (admin truth). The public
+    // projectors branch on deletedAt to render "Deleted User".
+    const next: UserRecord = {
+      ...row,
+      deletedAt: row.deletedAt ?? new Date(),
+      allowDirectMessages: false,
     }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })

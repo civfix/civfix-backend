@@ -35,6 +35,8 @@ import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
 import type { SocialServiceOverrides } from "./routes/social.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
+import type { DataExportOverride } from "./routes/users.routes.js"
+import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.js"
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
@@ -104,6 +106,17 @@ export interface BuildServerOptions {
    * Left unset in production, where the notification routes build the Drizzle-backed repo lazily.
    */
   notificationOverrides?: NotificationServiceOverrides
+  /**
+   * Inject a data-export service override (tests): so POST /me/data-export runs offline against a FakeMailer
+   * + in-memory user store. Left unset in production, where the route builds the service from the container.
+   */
+  dataExportOverride?: DataExportOverride
+  /**
+   * Inject moderation-route overrides (tests): an in-memory ModerationRepository so the PUBLIC content-report
+   * route (POST /content-reports) AND the admin moderation queue run offline against the SAME repo. Left
+   * unset in production, where both build the Drizzle-backed repo lazily.
+   */
+  moderationOverrides?: ModerationRouteOverrides
 }
 
 /**
@@ -212,6 +225,15 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   }
   if (opts.notificationOverrides) {
     app.decorate("notificationOverrides", opts.notificationOverrides)
+  }
+
+  // Optional injected data-export + moderation overrides (tests). Left unset in production so the
+  // /me/data-export and /content-reports routes build their services from the container lazily.
+  if (opts.dataExportOverride) {
+    app.decorate("dataExportOverride", opts.dataExportOverride)
+  }
+  if (opts.moderationOverrides) {
+    app.decorate("moderationOverrides", opts.moderationOverrides)
   }
 
   // Auth context hook (resolves req.auth from the session, or anonymous).

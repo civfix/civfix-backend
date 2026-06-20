@@ -29,7 +29,7 @@
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
-import { avatarGradient } from "@civfix/shared"
+import { publicAuthorIdentity } from "./public-author.js"
 import type {
   DiscussionAuthorDTO,
   DiscussionMessageDTO,
@@ -61,6 +61,8 @@ export interface DiscussionAuthorView {
   id: string
   displayName: string
   handle: string | null
+  /** When the author's ACCOUNT is deleted (tombstoned); drives the public "Deleted User" rendering. */
+  deletedAt: Date | null
 }
 
 /** A media row attached to a discussion message (raw object-store keys; the service presigns them). */
@@ -493,13 +495,25 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
     }
   }
 
-  /** Project a resolved author view into the wire DiscussionAuthorDTO (avatar gradient derived from id). */
+  /**
+   * Project a resolved author view into the wire DiscussionAuthorDTO. When the author's ACCOUNT is deleted
+   * (tombstoned) the public projection renders DELETED_USER_LABEL with no handle + deleted:true (clients
+   * drop the profile link); the avatar monogram seed stays on the stable id. Distinct from a deleted
+   * MESSAGE (toMessageDTO nulls the author entirely for a removed comment).
+   */
   function toAuthorDTO(view: DiscussionAuthorView): DiscussionAuthorDTO {
-    return {
+    const author = publicAuthorIdentity({
       id: view.id,
       displayName: view.displayName,
       handle: view.handle,
-      avatar: avatarGradient(view.id),
+      deletedAt: view.deletedAt,
+    })
+    return {
+      id: view.id,
+      displayName: author.name,
+      handle: author.handle,
+      avatar: author.avatar,
+      ...(author.deleted ? { deleted: true } : {}),
     }
   }
 

@@ -163,6 +163,25 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(edited)
   }
 
+  softDelete(
+    threadId: string,
+    messageId: string,
+    senderId: string,
+  ): Promise<ChatMessageDTO | null> {
+    // Same WHERE gate as editMessage: exist in THIS thread, sent by `senderId`, not already deleted.
+    const stored = (this.log.get(threadId) ?? []).find(
+      (m) => m.dto.id === messageId && m.dto.from.id === senderId && !m.deleted,
+    )
+    if (!stored) return Promise.resolve(null)
+    stored.deleted = true
+    const tombstone: ChatMessageDTO = {
+      ...stored.dto,
+      deletedAt: this.nextDate().toISOString(),
+      mine: true,
+    }
+    return Promise.resolve(tombstone)
+  }
+
   history(
     threadId: string,
     before: string | undefined,

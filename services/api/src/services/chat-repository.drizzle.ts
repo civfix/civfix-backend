@@ -19,7 +19,7 @@
  */
 
 import type { Queryable, Sql } from "../db/client.js"
-import { avatarGradient } from "@civfix/shared"
+import { publicAuthorIdentity } from "./public-author.js"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
@@ -65,6 +65,16 @@ export interface ChatRepository {
    * true when the reaction is now PRESENT (added), false when removed. Mirrors discussion repo.toggleReaction.
    */
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
+  /**
+   * Soft-delete (tombstone) a cleanup message by its author. SENDER-ONLY + cleanup-scoped + not-already-
+   * deleted (the UPDATE's WHERE is the authorization gate). Returns the tombstoned ChatMessageDTO, or null
+   * when the message is missing / belongs to another cleanup / was not sent by `senderId` / already deleted.
+   */
+  softDelete(
+    cleanupId: string,
+    messageId: string,
+    senderId: string,
+  ): Promise<ChatMessageDTO | null>
 }
 
 /** A chat row joined with its sender's person fields, as selected for the DTO. */
@@ -77,9 +87,11 @@ interface ChatRowSelect {
   attachments: unknown[] | null
   created_at: Date
   edited_at: Date | null
+  deleted_at: Date | null
   sender_display_name: string
   sender_handle: string | null
   sender_bio: string | null
+  sender_deleted_at: Date | null
 }
 
 /**
@@ -91,20 +103,30 @@ function toMessageDTO(
   r: ChatRowSelect,
   reactions: ReactionSummaryDTO[],
   mentions: UserMentionDTO[],
+  viewerUserId?: string | null,
   clientId?: string,
 ): ChatMessageDTO {
+  // PUBLIC author identity: a deleted (tombstoned) sender renders "Deleted User" (no handle/avatar, deleted:true).
+  const author = publicAuthorIdentity({
+    id: r.sender_id,
+    displayName: r.sender_display_name,
+    handle: r.sender_handle,
+    deletedAt: r.sender_deleted_at,
+  })
   return {
     id: r.id,
     cleanupId: r.cleanup_id,
     from: {
       id: r.sender_id,
-      name: r.sender_display_name,
-      handle: r.sender_handle,
-      bio: r.sender_bio,
-      avatar: avatarGradient(r.sender_id),
+      name: author.name,
+      handle: author.handle,
+      bio: author.deleted ? null : r.sender_bio,
+      avatar: author.avatar,
+      ...(author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
       followers: 0,
       following: 0,
       isFollowing: false,
+      ...(author.deleted ? { deleted: true } : {}),
     },
     ...(r.body !== null ? { body: r.body } : {}),
     kind: r.kind,
@@ -113,6 +135,8 @@ function toMessageDTO(
     mentions,
     createdAt: r.created_at.toISOString(),
     ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
+    ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
+    mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(clientId !== undefined ? { clientId } : {}),
   }
 }
@@ -128,9 +152,11 @@ function chatColumns(sql: Queryable) {
     cm.attachments,
     cm.created_at,
     cm.edited_at,
+    cm.deleted_at,
     u.display_name AS sender_display_name,
     u.handle AS sender_handle,
-    u.bio AS sender_bio
+    u.bio AS sender_bio,
+    u.deleted_at AS sender_deleted_at
   `
 }
 
@@ -151,7 +177,7 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
             ${kind},
             ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null}
           )
-          RETURNING id, cleanup_id, sender_id, body, kind, attachments, created_at, edited_at
+          RETURNING id, cleanup_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
         )
         SELECT
           inserted.id,
@@ -162,15 +188,18 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
           inserted.attachments,
           inserted.created_at,
           inserted.edited_at,
+          inserted.deleted_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
-          u.bio AS sender_bio
+          u.bio AS sender_bio,
+          u.deleted_at AS sender_deleted_at
         FROM inserted
         JOIN users u ON u.id = inserted.sender_id
       `
       // A freshly-inserted message has no reactions/mentions persisted yet (the gateway projects a send's
       // resolved mentions onto its broadcast copy), so pass [] / [] rather than needless aggregate queries.
-      return toMessageDTO(rows[0]!, [], [], input.clientId)
+      // The sender is the viewer of their own just-sent message → mine:true.
+      return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId)
     },
 
     async history(
@@ -223,7 +252,7 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
             loadChatReactions(sql, r.id, viewerUserId),
             loadChatMentions(sql, r.id),
           ])
-          return toMessageDTO(r, reactions, mentions)
+          return toMessageDTO(r, reactions, mentions, viewerUserId)
         }),
       )
       const last = page[page.length - 1]
@@ -249,11 +278,54 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
         loadChatReactions(sql, row.id, viewerUserId),
         loadChatMentions(sql, row.id),
       ])
-      return toMessageDTO(row, reactions, mentions)
+      return toMessageDTO(row, reactions, mentions, viewerUserId)
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
       return toggleChatReaction(sql, messageId, userId, emoji)
+    },
+
+    async softDelete(
+      cleanupId: string,
+      messageId: string,
+      senderId: string,
+    ): Promise<ChatMessageDTO | null> {
+      // SENDER-ONLY, cleanup-scoped, not-already-deleted. The WHERE clause IS the authorization gate, so a
+      // non-sender / wrong cleanup / missing / already-deleted target updates nothing and returns null
+      // (the route maps that to a generic 403). Stamp deleted_at = now() and read the tombstoned row back
+      // joined with the sender so the returned DTO is complete (mirrors dm-repository.softDelete).
+      const rows = await sql<ChatRowSelect[]>`
+        WITH updated AS (
+          UPDATE chat_messages
+          SET deleted_at = now()
+          WHERE id = ${messageId}
+            AND cleanup_id = ${cleanupId}
+            AND sender_id = ${senderId}
+            AND deleted_at IS NULL
+          RETURNING id, cleanup_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+        )
+        SELECT
+          updated.id,
+          updated.cleanup_id,
+          updated.sender_id,
+          updated.body,
+          updated.kind,
+          updated.attachments,
+          updated.created_at,
+          updated.edited_at,
+          updated.deleted_at,
+          u.display_name AS sender_display_name,
+          u.handle AS sender_handle,
+          u.bio AS sender_bio,
+          u.deleted_at AS sender_deleted_at
+        FROM updated
+        JOIN users u ON u.id = updated.sender_id
+      `
+      const row = rows[0]
+      if (!row) return null
+      // A tombstone carries no live reactions/mentions to recompute; return [] / [] (the body is the
+      // deleted marker the client renders via deletedAt).
+      return toMessageDTO(row, [], [], senderId)
     },
   }
 }

@@ -81,6 +81,8 @@ export interface SeededDiscussionAuthor {
   id: string
   displayName: string
   handle: string | null
+  /** When the author's account is tombstoned (drives the public "Deleted User" projection). */
+  deletedAt?: Date | null
 }
 
 /** A seeded jurisdiction (name/handle/contact resolved for a report). */
@@ -117,6 +119,7 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
       id: over.id ?? randomUUID(),
       displayName: over.displayName ?? "Jane Neighbor",
       handle: over.handle ?? "jane",
+      deletedAt: over.deletedAt ?? null,
     }
     this.authors.set(author.id, author)
     return author
@@ -445,7 +448,12 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
       authorUserId: m.authorUserId,
       author:
         author !== null
-          ? { id: author.id, displayName: author.displayName, handle: author.handle }
+          ? {
+              id: author.id,
+              displayName: author.displayName,
+              handle: author.handle,
+              deletedAt: author.deletedAt ?? null,
+            }
           : null,
       body: m.body,
       forwardedToCity: m.forwardedToCity,
