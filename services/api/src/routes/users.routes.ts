@@ -222,7 +222,32 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
           users: store,
           fromNoReply: container.env.MAIL_FROM_NOREPLY,
         })
-      const result = await service.exportData(userId)
+
+      // ROBUSTNESS (privacy §7.2): the export used to be silently "ok:true" even when nothing was actually
+      // delivered — either because the account has no email (Apple / OTP-less / anon-claimed) or because
+      // the mailer threw mid-send. Both now surface a CLEAR, actionable error instead of a false success.
+      let result: { ok: true; email: string | null }
+      try {
+        result = await service.exportData(userId)
+      } catch (err) {
+        // Assembly/delivery failed (e.g. the mailer is down). Do NOT report success — surface a clear,
+        // retryable error. The 5/hr limit keeps a retrying client bounded. Log for diagnosis.
+        request.log.error({ err, userId }, "data-export: assembly/delivery failed")
+        throw AppError.internal(
+          "We couldn't send your data export right now. Please try again in a few minutes.",
+        )
+      }
+
+      // No email on file: the service skipped the send (email:null). Tell the user how to fix it rather
+      // than returning a misleading ok:true that implies an email was sent.
+      if (result.email === null) {
+        throw AppError.validation(
+          { email: "Add and verify an email address to your account first." },
+          "We can't email your data export because your account has no email address. " +
+            "Add and verify an email, then try again.",
+        )
+      }
+
       const payload: RequestDataExportResponse = { ok: true, email: result.email }
       reply.status(200).send(payload)
     },
