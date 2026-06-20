@@ -275,6 +275,13 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       // 1 row -> inserted or owner/same-device update. 0 rows -> a foreign-owned conflict left untouched.
       return rows.length > 0 ? "stored" : "conflict"
     },
+
+    async deletePushTokensForUser(userId: string): Promise<void> {
+      // Account erasure: hard-remove the user's device push tokens so no device identifier is left behind
+      // (and no further notifications reach a deleted account's devices). Unlike normal rotation, which
+      // soft-revokes via revoked_at for a device audit trail, erasure deletes the rows outright.
+      await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
+    },
   }
 }
 

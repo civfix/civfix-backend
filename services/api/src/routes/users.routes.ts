@@ -39,6 +39,7 @@ import {
   makeDataExportService,
   type DataExportService,
 } from "../services/data-export-service.js"
+import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { route } from "../versioning/route.js"
 
@@ -191,6 +192,10 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     // banUser revokes ALL durable sessions + cache entries AND sets the veto marker (so any warm session
     // that slipped a revoke is rejected on its next request).
     await sessions.banUser(userId)
+    // Erasure: hard-delete the user's device push tokens (a leftover device identifier) so no notifications
+    // are delivered to a deleted account's devices and no identifier is left behind. Built on-demand like
+    // the other notification touchpoints (see discussion.routes).
+    await makeDrizzleNotificationRepository(container.getDb().sql).deletePushTokensForUser(userId)
     clearSessionCookie(reply)
     clearCsrfCookie(reply)
     await writeAudit(container.getDb().sql, {

@@ -191,6 +191,15 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     })
     return Promise.resolve("stored")
   }
+
+  deletePushTokensForUser(userId: string): Promise<void> {
+    // Mirror the Drizzle DELETE: remove every push-token row owned by the user (erasure removes the
+    // device identifier outright, not a soft-revoke).
+    for (let i = this.pushTokens.length - 1; i >= 0; i--) {
+      if (this.pushTokens[i]!.userId === userId) this.pushTokens.splice(i, 1)
+    }
+    return Promise.resolve()
+  }
 }
 
 /** Parse an `${iso}|${id}` time cursor; null when absent/malformed. Mirrors the Drizzle impl. */

@@ -153,6 +153,14 @@ export interface NotificationRepository {
     token: string
     deviceId: string | null
   }): Promise<PushTokenUpsertOutcome>
+
+  /**
+   * Hard-DELETE every push token belonging to a user. Used by account erasure (DELETE /me): a push token
+   * (token + device_id) is a device identifier, so deletion removes it entirely rather than leaving it
+   * behind, and stops any further delivery to a deleted account's devices. This differs from normal token
+   * rotation, which SOFT-revokes (revoked_at) to keep a device audit trail. Idempotent (zero rows is fine).
+   */
+  deletePushTokensForUser(userId: string): Promise<void>
 }
 
 /** Outcome of upsertPushToken: stored (insert/owner-update) vs conflict (foreign-owned, untouched). */
