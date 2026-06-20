@@ -41,6 +41,7 @@ import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import { requireAuth } from "../auth/context.js"
+import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
 import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
@@ -208,6 +209,10 @@ export async function registerAuthRoutes(
   route(app, "updateProfile", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateProfileRequestSchema, request.body)
+    // Slur filter on the public profile text (App Store 1.2): a display name / bio is visible
+    // everywhere, so block a hate slur before it can be set. Slurs only - see abuse/slur-filter.
+    assertNoSlur(body.displayName, "displayName")
+    assertNoSlur(body.bio ?? null, "bio")
     // Reject a username already owned by someone else (the schema enforces the format; this is the
     // uniqueness gate, racing the partial-unique index for the rare concurrent-claim case).
     const existing = await services.users.findByHandle(body.handle)

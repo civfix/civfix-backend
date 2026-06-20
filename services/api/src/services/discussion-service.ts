@@ -29,6 +29,7 @@
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
+import { assertNoSlur } from "../abuse/slur-filter.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import type {
   DiscussionAuthorDTO,
@@ -669,6 +670,8 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       if (body === "") {
         throw AppError.validation({ body: "Message body is required" })
       }
+      // Hate-slur content gate (App Store 1.2). Slurs only; general profanity passes. See abuse/slur-filter.
+      assertNoSlur(body, "body")
 
       // A reply must target a TOP-LEVEL, non-deleted message of THIS report (one level deep, same report).
       const parentId = input.parentId ?? null
@@ -796,6 +799,8 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       if (body === "") {
         throw AppError.validation({ body: "Message body is required" })
       }
+      // Hate-slur content gate (App Store 1.2) on the edited body too. Slurs only; profanity passes.
+      assertNoSlur(body, "body")
       // Optional attachment REPLACEMENT (omit to leave the current set untouched), same cap as create.
       const mediaUploadIds =
         input.mediaUploadIds !== undefined

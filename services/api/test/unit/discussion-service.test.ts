@@ -115,6 +115,19 @@ describe("DiscussionService.createMessage", () => {
     })
   })
 
+  it("rejects a comment containing a hate slur (App Store 1.2 content gate)", async () => {
+    const { service } = makeHarness()
+    await expect(
+      service.createMessage(REPORT, AUTHOR, { body: "you are a faggot" }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+  })
+
+  it("allows general profanity (the gate is slurs only, not a profanity filter)", async () => {
+    const { service } = makeHarness()
+    const dto = await service.createMessage(REPORT, AUTHOR, { body: "this pothole is shit" })
+    expect(dto.body).toBe("this pothole is shit")
+  })
+
   it("404s on a non-existent report", async () => {
     const { service } = makeHarness()
     await expect(

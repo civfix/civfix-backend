@@ -39,6 +39,7 @@
 import { randomUUID } from "node:crypto"
 import { latLngToCell } from "h3-js"
 import { AppError } from "@civfix/shared"
+import { assertNoSlur } from "../abuse/slur-filter.js"
 import type {
   CreateReportRequest,
   GeomSource,
@@ -693,6 +694,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (input.honeypot !== undefined && input.honeypot.trim() !== "") {
         throw AppError.validation({ honeypot: "invalid" })
       }
+
+      // (a.1) Hate-slur content gate (App Store 1.2) on the free-text title/description. Slurs only;
+      // general profanity passes. Each is checked only when present (null/empty -> no-op). Placed with
+      // the other submit-time input gates, before any persistence. See abuse/slur-filter.
+      assertNoSlur(input.title ?? null, "title")
+      assertNoSlur(input.description ?? null, "description")
 
       // (b) Idempotency fast path: a stored snapshot for this key means a prior submit already created
       // the report. Replay it verbatim (no new row, no media attach, no R2 object). This is the
