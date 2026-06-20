@@ -116,6 +116,27 @@ describe("POST /content-reports", () => {
     expect([...repo.items.values()]).toHaveLength(1)
   })
 
+  it("files a report-subject content report (owner check degrades to false with no DB)", async () => {
+    // With no DATABASE_URL (all-fakes harness), reportOwnedBy() short-circuits to false, so a `report`
+    // subject is filed as an ordinary user_report (flag "User report"), never crashing on a DB query.
+    const { app, mailer, repo } = await harness()
+    const { token } = await signIn(app, mailer, "reporter@example.com")
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/content-reports",
+      headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      payload: { subjectType: "report", subjectId: SUBJECT, reason: "other", details: "remove please" },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const item = [...repo.items.values()][0]!
+    expect(item.kind).toBe("user_report")
+    expect(item.subjectType).toBe("report")
+    expect(item.flag).toBe("User report")
+    expect(item.priority).toBe("med")
+  })
+
   it("401s an unauthenticated report", async () => {
     const { app } = await harness()
     const res = await app.inject({

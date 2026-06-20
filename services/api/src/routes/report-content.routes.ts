@@ -23,6 +23,7 @@ import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { route } from "../versioning/route.js"
+import { writeAudit } from "../services/admin/audit.js"
 import {
   makeModerationService,
   type ModerationService,
@@ -78,25 +79,75 @@ export async function registerReportContentRoutes(
           ? `@${reporterUser.handle}`
           : (reporterUser?.displayName ?? "User")
 
-      // Enqueue a user-filed abuse report. subjectType maps 1:1 to moderation_items.subject_type (the
-      // CHECK was widened in 0024 to include comment|message|event|profile|photo). dedupeOpen keeps one
-      // open item per (subjectType, subjectId).
+      // OWNER TAKEDOWN PATH (privacy §7.2): a content report against a `report` subject the CALLER owns is
+      // not third-party abuse — it is the reporter asking to remove their OWN published report. `DELETE /me`
+      // soft-deletes the account but published reports survive; this is the channel to request removal of a
+      // single specific report. We detect ownership server-side, mark the moderation item distinctly (so an
+      // operator can fast-track an owner-consented removal), bump priority, and write an audit-log entry. No
+      // hard purge happens here (that is a product/counsel decision) — an admin actions the queue item.
+      const isOwnerTakedown =
+        body.subjectType === "report" &&
+        (await reportOwnedBy(app, container, body.subjectId, userId))
+
+      // Enqueue a user-filed report. subjectType maps 1:1 to moderation_items.subject_type (the CHECK was
+      // widened in 0024 to include comment|message|event|profile|photo). dedupeOpen keeps one open item per
+      // (subjectType, subjectId).
       await moderation().createItem({
         kind: "user_report",
         subjectType: body.subjectType,
         subjectId: body.subjectId,
-        flag: "User report",
+        flag: isOwnerTakedown ? "Owner takedown request" : "User report",
         reason: body.reason,
         reporter,
         desc: body.details ?? null,
-        priority: "med",
+        // An owner asking to remove their own report is consented + low-risk to action, so surface it
+        // higher in the queue; third-party reports stay at the default medium priority.
+        priority: isOwnerTakedown ? "high" : "med",
         dedupeOpen: true,
       })
+
+      // Audit the owner takedown REQUEST (the removal itself is audited when an operator actions the item).
+      if (isOwnerTakedown) {
+        await writeAudit(container.getDb().sql, {
+          actorId: userId,
+          action: "report.takedown_requested",
+          target: `report:${body.subjectId}`,
+          meta: { reason: body.reason, via: "content-reports" },
+        })
+      }
 
       const payload: ReportContentResponse = { ok: true }
       reply.status(200).send(payload)
     },
   )
+}
+
+/**
+ * Whether `reportId` is a (non-deleted) report whose reporter is `userId` — i.e. the caller owns it. Used
+ * to recognize an OWNER takedown request on POST /content-reports. DB-gated + fail-safe: when no
+ * DATABASE_URL is configured (offline/all-fakes boot, where there is no DB to query) it returns false, so
+ * the route degrades to the ordinary user-report path rather than attempting a connection. Any query error
+ * is swallowed to false for the same reason — a takedown that can't confirm ownership is just filed as a
+ * normal user report.
+ */
+async function reportOwnedBy(
+  app: FastifyInstance,
+  container: Container,
+  reportId: string,
+  userId: string,
+): Promise<boolean> {
+  if (!container.env.DATABASE_URL) return false
+  try {
+    const rows = await container.getDb().sql<{ reporter_user_id: string | null }[]>`
+      SELECT reporter_user_id FROM reports
+      WHERE id = ${reportId} AND deleted_at IS NULL
+      LIMIT 1
+    `
+    return rows[0]?.reporter_user_id === userId
+  } catch (err) {
+    app.log.warn({ err: String(err), reportId }, "content-reports: owner check failed (non-fatal)")
+    return false
+  }
 }
 
 /**
