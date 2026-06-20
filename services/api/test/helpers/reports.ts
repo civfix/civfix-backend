@@ -100,6 +100,7 @@ export class InMemoryReportRepository implements ReportRepository {
       reporterUserId: over.reporterUserId ?? null,
       anonSessionId: over.anonSessionId ?? null,
       category: over.category ?? "trash",
+      type: over.type ?? "dump",
       title: over.title ?? null,
       description: over.description ?? null,
       addr: over.addr ?? null,
@@ -135,6 +136,7 @@ export class InMemoryReportRepository implements ReportRepository {
       reporterUserId: args.reporterUserId,
       anonSessionId: null,
       category: args.category,
+      type: args.type,
       title: args.title,
       description: args.description,
       addr: args.addr,
@@ -293,6 +295,7 @@ export class InMemoryReportRepository implements ReportRepository {
   findMapCandidates(
     bbox: BBox,
     categories: ReportRecord["category"][] | null,
+    types: ReportRecord["type"][] | null,
     cap: number,
   ): Promise<ReportMapPoint[]> {
     const inBox = (r: ReportRecord): boolean =>
@@ -304,7 +307,8 @@ export class InMemoryReportRepository implements ReportRepository {
           r.visibility === "public" &&
           r.deletedAt === null &&
           inBox(r) &&
-          (categories === null || categories.includes(r.category)),
+          (categories === null || categories.includes(r.category)) &&
+          (types === null || types.includes(r.type)),
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, cap)
@@ -324,6 +328,7 @@ export class InMemoryReportRepository implements ReportRepository {
           lat: r.lat,
           lng: r.lng,
           category: r.category,
+          type: r.type,
           status: r.status,
           title: r.title,
           description: r.description,
@@ -337,6 +342,7 @@ export class InMemoryReportRepository implements ReportRepository {
   searchReports(args: {
     q: string | null
     categories: ReportRecord["category"][] | null
+    types: ReportRecord["type"][] | null
     cursor: string | null
     limit: number
   }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }> {
@@ -365,6 +371,7 @@ export class InMemoryReportRepository implements ReportRepository {
           r.visibility === "public" &&
           r.deletedAt === null &&
           (args.categories === null || args.categories.includes(r.category)) &&
+          (args.types === null || args.types.includes(r.type)) &&
           matchesText(r) &&
           isBefore(r),
       )
@@ -390,6 +397,7 @@ export class InMemoryReportRepository implements ReportRepository {
         lat: r.lat,
         lng: r.lng,
         category: r.category,
+        type: r.type,
         status: r.status,
         title: r.title,
         description: r.description,

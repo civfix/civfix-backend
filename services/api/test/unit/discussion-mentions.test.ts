@@ -10,7 +10,11 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { jurisdictionHandle, parseCityMention } from "../../src/services/discussion-mentions.js"
+import {
+  jurisdictionHandle,
+  parseCityMention,
+  parseUserMentions,
+} from "../../src/services/discussion-mentions.js"
 
 describe("jurisdictionHandle", () => {
   it("lowercases + collapses punctuation to single underscores", () => {
@@ -84,5 +88,40 @@ describe("parseCityMention", () => {
     expect(parseCityMention("tagging @san_francisco here", "san_francisco")).toBe("san_francisco")
     // A trailing word char after the underscore handle breaks the boundary.
     expect(parseCityMention("@san_franciscox", "san_francisco")).toBeNull()
+  })
+})
+
+describe("parseUserMentions", () => {
+  it("extracts every @handle token in the body", () => {
+    expect(parseUserMentions("hi @jane and @bob")).toEqual(["jane", "bob"])
+  })
+
+  it("returns [] when there is no @handle token", () => {
+    expect(parseUserMentions("no mentions here")).toEqual([])
+    expect(parseUserMentions("")).toEqual([])
+  })
+
+  it("respects the leading word-boundary: an email local-part is not a mention", () => {
+    expect(parseUserMentions("email me at user@host.com please")).toEqual([])
+  })
+
+  it("matches @handle wrapped in punctuation", () => {
+    expect(parseUserMentions("cc: (@jane), @bob!")).toEqual(["jane", "bob"])
+  })
+
+  it("treats an underscore handle as a single token", () => {
+    expect(parseUserMentions("ping @jane_doe now")).toEqual(["jane_doe"])
+  })
+
+  it("ignores a bare @ with no handle chars", () => {
+    expect(parseUserMentions("a @ b @@ c")).toEqual([])
+  })
+
+  it("de-dupes case-insensitively, preserving first-seen order + casing", () => {
+    expect(parseUserMentions("@Jane @jane @JANE @bob")).toEqual(["Jane", "bob"])
+  })
+
+  it("preserves the body's casing of each handle", () => {
+    expect(parseUserMentions("hey @JaneDoe")).toEqual(["JaneDoe"])
   })
 })

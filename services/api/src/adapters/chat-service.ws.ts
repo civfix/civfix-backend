@@ -164,13 +164,15 @@ export class WsChatService implements ChatService {
     return this.repo.insertMessage(input, this.newId())
   }
 
-  /** Page a cleanup's history newest-first before the cursor. Delegates to the persistence seam. */
+  /** Page a cleanup's history newest-first before the cursor. Delegates to the persistence seam.
+   *  Forwards `viewerUserId` so each message's reactions resolve the loader's own `mine` flag. */
   history(
     cleanupId: string,
     before: string | undefined,
     limit: number,
+    viewerUserId?: string | null,
   ): Promise<ChatHistoryPage> {
-    return this.repo.history(cleanupId, before, limit)
+    return this.repo.history(cleanupId, before, limit, viewerUserId)
   }
 
   /**

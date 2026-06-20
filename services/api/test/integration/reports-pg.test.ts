@@ -80,6 +80,7 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     return {
       idempotencyKey: over.idempotencyKey ?? randomUUID(),
       category: over.category ?? "trash",
+      type: over.type ?? "dump",
       lat: over.lat ?? PROBE_INSIDE_CITY.lat,
       lng: over.lng ?? PROBE_INSIDE_CITY.lng,
       geomSource: over.geomSource ?? "device",
@@ -195,17 +196,39 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
   it("a bbox query returns the inserted point (published + public)", async () => {
     const key = randomUUID()
     const created = await service.createReport(
-      createReq({ idempotencyKey: key, category: "water" }),
+      createReq({ idempotencyKey: key, category: "water", type: "infrastructure" }),
       { userId },
     )
+    // The fine-grained type (0021) round-trips through the create transaction onto the DTO.
+    expect(created.type).toBe("infrastructure")
 
     // Query the LA city bbox at high zoom (individual pins) and expect the new pin to be present.
     const [west, south, east, north] = LA_CITY.bbox
-    const res = await service.listReportsInBBox({ west, south, east, north }, null, 16)
+    const res = await service.listReportsInBBox({ west, south, east, north }, null, null, 16)
     const ids = res.pins.map((p) => p.id)
     expect(ids).toContain(created.id)
     const pin = res.pins.find((p) => p.id === created.id)!
     expect(pin.lat).toBeCloseTo(PROBE_INSIDE_CITY.lat, 6)
     expect(pin.lng).toBeCloseTo(PROBE_INSIDE_CITY.lng, 6)
+    // The pin carries the fine-grained type alongside category.
+    expect(pin.type).toBe("infrastructure")
+  })
+
+  it("the type filter narrows a bbox query to matching reports only (0021)", async () => {
+    // Two published+public reports at the same point with DIFFERENT fine types; the type filter narrows.
+    const dump = await service.createReport(
+      createReq({ idempotencyKey: randomUUID(), category: "trash", type: "dump" }),
+      { userId },
+    )
+    await service.createReport(
+      createReq({ idempotencyKey: randomUUID(), category: "graffiti", type: "graffiti" }),
+      { userId },
+    )
+
+    const [west, south, east, north] = LA_CITY.bbox
+    const res = await service.listReportsInBBox({ west, south, east, north }, null, ["dump"], 16)
+    const ids = res.pins.map((p) => p.id)
+    expect(ids).toContain(dump.id)
+    expect(res.pins.every((p) => p.type === "dump")).toBe(true)
   })
 })

@@ -18,7 +18,7 @@
  */
 
 import { z } from "zod"
-import { BBoxSchema, LatLngSchema, ReportCategorySchema } from "@civfix/shared"
+import { BBoxSchema, LatLngSchema, ReportCategorySchema, ReportTypeSchema } from "@civfix/shared"
 
 /**
  * A query param that is a JSON-encoded object, validated against `inner` after parsing. The client
@@ -74,3 +74,18 @@ export const CategoriesQueryParam = z
     return tokens.map((t) => t.trim()).filter((t) => t.length > 0)
   })
   .pipe(z.array(ReportCategorySchema).min(1))
+
+/**
+ * types as the client sends it (0021): the fine-grained-type analogue of CategoriesQueryParam. Repeated
+ * params (string[]) or a single CSV string, each token validated against ReportType (an unknown token is a
+ * 422, not a silent drop). The result is a non-empty ReportType[]; omit the key for "no type filter".
+ *
+ * Use inside a route schema like: `types: TypesQueryParam.optional()`.
+ */
+export const TypesQueryParam = z
+  .union([z.string(), z.array(z.string())])
+  .transform((value) => {
+    const tokens = Array.isArray(value) ? value.flatMap((v) => v.split(",")) : value.split(",")
+    return tokens.map((t) => t.trim()).filter((t) => t.length > 0)
+  })
+  .pipe(z.array(ReportTypeSchema).min(1))

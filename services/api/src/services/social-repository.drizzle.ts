@@ -25,7 +25,13 @@ import type {
   SocialRepository,
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
-import type { CleanupStatus, CleanupType, EventKind, UserSearchResultDTO } from "@civfix/shared"
+import type {
+  CleanupStatus,
+  CleanupType,
+  EventKind,
+  UserMentionDTO,
+  UserSearchResultDTO,
+} from "@civfix/shared"
 
 /** Shape of a person row as selected for the directory/profile (counts joined inline). */
 interface PersonRowSelect {
@@ -404,6 +410,124 @@ export async function searchByHandlePrefix(
            OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
       )
     ORDER BY u.handle ASC
+    LIMIT ${limit}
+  `
+  return rows.map((r) => ({
+    id: r.id,
+    handle: r.handle,
+    displayName: r.display_name,
+    avatar: avatarGradient(r.id),
+    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+  }))
+}
+
+/**
+ * Resolve a set of @handles to real, mentionable users for the USER @-mention path. EXACT (case-insensitive)
+ * handle match against non-deleted users with a non-null handle, EXCLUDING ONLY the author/self. Unlike
+ * searchByHandlePrefix (the DM-start search) this does NOT apply the DM-only exclusions (allow_direct_messages,
+ * blocks): ANYONE can be named in a comment/chat — blocks + prefs gate only the resulting NOTIFICATION, not
+ * who may be tagged. Returns the resolved { id, handle, displayName } (UserMentionDTO shape); unknown handles
+ * are simply absent. `handles` is matched as text (handle is citext, so the comparison is case-insensitive
+ * and uses the (handle::text) trgm-free equality path). De-duped by the IN clause; an empty input short-circuits.
+ */
+export async function resolveHandles(
+  sql: Sql,
+  handles: string[],
+  selfUserId: string,
+): Promise<UserMentionDTO[]> {
+  if (handles.length === 0) return []
+  // Lowercase + de-dupe the requested handles so the IN list is minimal; handle is citext so equality is
+  // already case-insensitive, but lowercasing keeps the bound list tidy and de-duped.
+  const lowered = [...new Set(handles.map((h) => h.toLowerCase()))]
+  const rows = await sql<{ id: string; handle: string; display_name: string }[]>`
+    SELECT u.id, u.handle, u.display_name
+    FROM users u
+    WHERE u.deleted_at IS NULL
+      AND u.handle IS NOT NULL
+      AND u.id <> ${selfUserId}
+      AND lower(u.handle::text) IN ${sql(lowered)}
+  `
+  return rows.map((r) => ({ id: r.id, handle: r.handle, displayName: r.display_name }))
+}
+
+/**
+ * Resolve a COMBINED set of @handles + explicit user ids to real, mentionable users (UserMentionDTO),
+ * EXCLUDING the author/self, for the USER @-mention persist path. Backs the discussion/chat services'
+ * injected `resolveMentions`. Both arms exclude self + soft-deleted + handle-less users; the result is
+ * de-duped by user id (first occurrence wins). Anyone may be named — blocks/DM-prefs gate only the
+ * resulting NOTIFICATION, not who can be tagged. An empty (handles + userIds) input short-circuits to [].
+ */
+export async function resolveMentionTargets(
+  sql: Sql,
+  input: { handles: string[]; userIds: string[]; authorUserId: string },
+): Promise<UserMentionDTO[]> {
+  const byHandle = await resolveHandles(sql, input.handles, input.authorUserId)
+  const byId =
+    input.userIds.length > 0
+      ? await resolveUserIdsToMentions(sql, input.userIds, input.authorUserId)
+      : []
+  // De-dupe by user id, preserving the handle-resolved order first (handles are the primary mention source).
+  const seen = new Set<string>()
+  const out: UserMentionDTO[] = []
+  for (const m of [...byHandle, ...byId]) {
+    if (seen.has(m.id)) continue
+    seen.add(m.id)
+    out.push(m)
+  }
+  return out
+}
+
+/**
+ * Resolve explicit user ids to mentionable UserMentionDTO rows, EXCLUDING self + soft-deleted + handle-less.
+ * The id list is bound via the postgres-js helper `sql(ids)`; a non-UUID id simply matches nothing. Used by
+ * resolveMentionTargets for the request's explicit mentionedUserIds.
+ */
+export async function resolveUserIdsToMentions(
+  sql: Sql,
+  userIds: string[],
+  selfUserId: string,
+): Promise<UserMentionDTO[]> {
+  if (userIds.length === 0) return []
+  const ids = [...new Set(userIds)].filter((id) => CURSOR_UUID_RE.test(id))
+  if (ids.length === 0) return []
+  const rows = await sql<{ id: string; handle: string; display_name: string }[]>`
+    SELECT u.id, u.handle, u.display_name
+    FROM users u
+    WHERE u.deleted_at IS NULL
+      AND u.handle IS NOT NULL
+      AND u.id <> ${selfUserId}
+      AND u.id IN ${sql(ids)}
+  `
+  return rows.map((r) => ({ id: r.id, handle: r.handle, displayName: r.display_name }))
+}
+
+/**
+ * @handle / display-name search for the @-mention picker (GET /users/mention-search). BROADER than
+ * searchByHandlePrefix: it does NOT exclude DM-disabled accounts or blocked users (anyone is taggable),
+ * excluding ONLY self + soft-deleted + handle-less users. Matches a prefix/substring on handle OR
+ * display_name (ILIKE %q%, the term escaped), ordered handle-first then name, capped. Returns the minimal
+ * UserSearchResultDTO (the SAME shape searchUsers returns) so the route reuses SearchUsersResponse.
+ */
+export async function searchMentionable(
+  sql: Sql,
+  q: string,
+  viewerId: string,
+  limit: number,
+): Promise<UserSearchResultDTO[]> {
+  const term = "%" + escapeLike(q) + "%"
+  const rows = await sql<
+    { id: string; handle: string; display_name: string; avatar_url: string | null }[]
+  >`
+    SELECT u.id, u.handle, u.display_name, u.avatar_url
+    FROM users u
+    WHERE u.deleted_at IS NULL
+      AND u.handle IS NOT NULL
+      AND u.id <> ${viewerId}
+      -- handle is CITEXT; cast to text so the gin_trgm_ops expression index users_handle_trgm on
+      -- (handle::text) (0014_search_trgm.sql) can serve the substring ILIKE. display_name uses
+      -- users_display_name_trgm directly.
+      AND ((u.handle::text) ILIKE ${term} ESCAPE '\\' OR u.display_name ILIKE ${term} ESCAPE '\\')
+    ORDER BY u.handle ASC, u.display_name ASC
     LIMIT ${limit}
   `
   return rows.map((r) => ({

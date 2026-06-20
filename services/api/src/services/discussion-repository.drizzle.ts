@@ -31,7 +31,7 @@ import type {
   DiscussionRepository,
   ReportJurisdictionView,
 } from "./discussion-service.js"
-import type { ReactionEmoji, ReportCategory } from "@civfix/shared"
+import type { ReactionEmoji, ReportCategory, UserMentionDTO } from "@civfix/shared"
 
 /** A discussion message row as selected back (author joined; counts/reactions/attachments loaded after). */
 interface MessageRowSelect {
@@ -142,11 +142,29 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
     return rows.map((r) => ({ emoji: r.emoji, count: r.count, mine: viewerUserId !== null && r.mine }))
   }
 
-  /** Project a selected row + its loaded attachments/reactions into the service's record shape. */
+  /** Load the resolved USER @-mentions on a message (report_message_user_mentions joined to users). */
+  async function loadUserMentions(
+    tag: Queryable,
+    messageId: string,
+  ): Promise<UserMentionDTO[]> {
+    const rows = await tag<{ id: string; handle: string | null; display_name: string }[]>`
+      SELECT u.id, u.handle, u.display_name
+      FROM report_message_user_mentions um
+      JOIN users u ON u.id = um.mentioned_user_id
+      WHERE um.message_id = ${messageId}
+      ORDER BY u.handle ASC, u.id ASC
+    `
+    // The UserMentionDTO handle is non-null; a mentioned user always has a handle in practice (mentions are
+    // resolved from @handles), but coalesce defensively so a NULL-handle row never breaks the contract.
+    return rows.map((r) => ({ id: r.id, handle: r.handle ?? "", displayName: r.display_name }))
+  }
+
+  /** Project a selected row + its loaded attachments/reactions/userMentions into the service's record shape. */
   function toRecord(
     r: MessageRowSelect,
     attachments: DiscussionMediaView[],
     reactions: DiscussionReactionView[],
+    userMentions: UserMentionDTO[],
   ): DiscussionMessageRecord {
     return {
       id: r.id,
@@ -169,6 +187,7 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
       replyCount: r.reply_count,
       attachments,
       reactions,
+      userMentions,
       mention:
         r.mention_geoid !== null
           ? {
@@ -189,11 +208,12 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
   ): Promise<DiscussionMessageRecord[]> {
     return Promise.all(
       rows.map(async (r) => {
-        const [attachments, reactions] = await Promise.all([
+        const [attachments, reactions, userMentions] = await Promise.all([
           loadAttachments(tag, r.id),
           loadReactions(tag, r.id, viewerUserId),
+          loadUserMentions(tag, r.id),
         ])
-        return toRecord(r, attachments, reactions)
+        return toRecord(r, attachments, reactions, userMentions)
       }),
     )
   }
@@ -375,6 +395,16 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
             ON CONFLICT (message_id, geoid) DO NOTHING
           `
         }
+
+        // 4) Record the resolved USER @-mentions (already de-duped + self-excluded by the service). The
+        // composite PK (message_id, mentioned_user_id) de-dupes; ON CONFLICT DO NOTHING keeps it idempotent.
+        for (const mentionedUserId of args.mentionedUserIds) {
+          await tx`
+            INSERT INTO report_message_user_mentions (message_id, mentioned_user_id)
+            VALUES (${args.messageId}, ${mentionedUserId})
+            ON CONFLICT (message_id, mentioned_user_id) DO NOTHING
+          `
+        }
       })
 
       // Read the freshly-created message back as a record for the author (the viewer is the creator).
@@ -395,7 +425,8 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
       authorId: string,
       body: string,
       editedAt: Date,
-      mediaUploadIds?: string[],
+      mediaUploadIds: string[] | undefined,
+      mentionedUserIds: string[],
     ): Promise<DiscussionMessageRecord | null> {
       const matched = await sql.begin(async (tx) => {
         // 1) Update the body + stamp edited_at, but ONLY for this report's message authored by authorId and
@@ -432,6 +463,19 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
                 AND status IN ('ready', 'validating')
             `
           }
+        }
+
+        // 3) REPLACE the USER @-mention set: delete the message's current rows, then insert the new resolved
+        // set (already de-duped + self-excluded). An edit that drops an @handle therefore drops its row.
+        await tx`
+          DELETE FROM report_message_user_mentions WHERE message_id = ${messageId}
+        `
+        for (const mentionedUserId of mentionedUserIds) {
+          await tx`
+            INSERT INTO report_message_user_mentions (message_id, mentioned_user_id)
+            VALUES (${messageId}, ${mentionedUserId})
+            ON CONFLICT (message_id, mentioned_user_id) DO NOTHING
+          `
         }
         return true
       })

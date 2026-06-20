@@ -35,6 +35,13 @@ export * from "./cleanup_members.js"
 // event <-> report junction (0018). The durable source of truth for an event<->report link.
 export * from "./cleanup_reports.js"
 export * from "./chat.js"
+// chat/dm message emoji reactions (0022). One table for BOTH cleanup chat + DM (message ids are uuids,
+// globally unique). NO FK into the partitioned message tables. Canonical DDL: drizzle/0022_chat_reactions.sql.
+export * from "./chat_reactions.js"
+// user @-mentions in discussion + chat/dm messages (0023). report_message_user_mentions FKs the discussion
+// message; chat_message_mentions is one table for BOTH cleanup chat + DM (no FK into the partitioned message
+// tables). Canonical DDL: drizzle/0023_message_mentions.sql.
+export * from "./message_mentions.js"
 
 // direct messages (1:1) + blocking (0009)
 export * from "./dm_threads.js"

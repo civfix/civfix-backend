@@ -39,6 +39,7 @@ import type {
   PersonDTO,
   ReportCategory,
   ReportStatus,
+  ReportType,
   UpdateCleanupRequest,
 } from "@civfix/shared"
 
@@ -106,6 +107,12 @@ export interface LinkedReportView {
   cleanupId: string
   id: string
   category: ReportCategory
+  /**
+   * The report's fine-grained issue type (0021); coexists with category. OPTIONAL on the view so the
+   * cleanup repo SELECT can populate it incrementally — when absent the additive LinkedReportRef.type is
+   * simply omitted (it is an optional contract field).
+   */
+  type?: ReportType
   title: string | null
   status: ReportStatus
   lat: number
@@ -419,6 +426,8 @@ export function toLinkedReportRef(
   return {
     id: view.id,
     category: view.category,
+    // Additive fine-grained type (0021): emitted only when the view carries it (optional contract field).
+    ...(view.type !== undefined ? { type: view.type } : {}),
     title: view.title ?? "Report",
     status: view.status,
     lat: view.lat,

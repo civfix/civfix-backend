@@ -217,7 +217,8 @@ export async function registerCleanupRoutes(
     if (!isMember) throw AppError.forbidden("You are not a member of this cleanup.")
 
     const limit = q.limit ?? HISTORY_DEFAULT_LIMIT
-    const page = await container.chatService.history(id, q.before, limit)
+    // Pass the viewer so each message's reactions resolve the viewer's own `mine` flag on the first page.
+    const page = await container.chatService.history(id, q.before, limit, userId)
     const payload: ChatHistoryResponse = { items: page.items, nextCursor: page.nextCursor }
     reply.status(200).send(payload)
   })

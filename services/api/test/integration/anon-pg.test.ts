@@ -87,6 +87,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
       idempotencyKey: over.idempotencyKey ?? randomUUID(),
       turnstileToken: "ok",
       category: over.category ?? "trash",
+      type: over.type ?? "dump",
       lat: over.lat ?? PROBE_INSIDE_CITY.lat,
       lng: over.lng ?? PROBE_INSIDE_CITY.lng,
       geomSource: "device",
@@ -134,7 +135,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
 
     // Absent from the public map candidates (a wide bbox around the point).
     const bbox = { west: PROBE_INSIDE_CITY.lng - 0.5, south: PROBE_INSIDE_CITY.lat - 0.5, east: PROBE_INSIDE_CITY.lng + 0.5, north: PROBE_INSIDE_CITY.lat + 0.5 }
-    const map = await reports.listReportsInBBox(bbox, null, 16)
+    const map = await reports.listReportsInBBox(bbox, null, null, 16)
     expect(map.pins.some((p) => p.id === response.reportId)).toBe(false)
 
     // 404 to a stranger via getReport.
@@ -168,7 +169,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     expect(row!.published_at).not.toBeNull()
     // Now it surfaces on the map.
     const bbox = { west: PROBE_INSIDE_CITY.lng - 0.5, south: PROBE_INSIDE_CITY.lat - 0.5, east: PROBE_INSIDE_CITY.lng + 0.5, north: PROBE_INSIDE_CITY.lat + 0.5 }
-    const map = await reports.listReportsInBBox(bbox, null, 16)
+    const map = await reports.listReportsInBBox(bbox, null, null, 16)
     expect(map.pins.some((p) => p.id === response.reportId)).toBe(true)
   })
 

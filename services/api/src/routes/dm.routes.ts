@@ -17,6 +17,7 @@ import {
   OpenDmRequestSchema,
   DmHistoryQuerySchema,
   EditChatMessageRequestSchema,
+  ToggleDmMessageReactionRequestSchema,
   IdSchema,
   AppError,
   type OpenDmResponse,
@@ -31,6 +32,7 @@ import { csrfProtect } from "../auth/csrf.js"
 import { route } from "../versioning/route.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import { makeDmService, type DmService, type DmUserLookup } from "../services/dm-service.js"
+import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 
@@ -39,6 +41,9 @@ const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 /** Path-param schema for the edit route (the `:threadId`/`:messageId` segments). */
 const DmEditParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema }).strict()
+
+/** Path-param schema for the reaction route (the `:threadId`/`:messageId` segments). */
+const DmReactionParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema }).strict()
 
 /**
  * Tighter per-IP rate limit for opening a DM (P2-7 style): a real client opens a handful of threads; 20/min
@@ -123,7 +128,8 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     }
 
     const limit = q.limit ?? DM_HISTORY_DEFAULT_LIMIT
-    const page = await repo.history(id, q.before, limit)
+    // Pass the viewer so each message's reactions resolve the viewer's own `mine` flag on the first page.
+    const page = await repo.history(id, q.before, limit, userId)
     const payload: ChatHistoryResponse = { items: page.items, nextCursor: page.nextCursor }
     reply.status(200).send(payload)
   })
@@ -174,6 +180,57 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
         container.chatService.broadcast(roomKeyFor("dm", threadId), updated),
       ).catch(() => {})
 
+      reply.status(200).send(updated)
+    },
+  )
+
+  // -------------------------------------------------------------------------
+  // POST /dm/:threadId/messages/:messageId/reactions  [auth][csrf]  (rate-limited)
+  // -------------------------------------------------------------------------
+  // Toggle an emoji reaction on a DM message. Mirrors the cleanup-chat reaction route + toggleDiscussionReaction:
+  // auth + csrf + a per-IP write rate limit; participant + not-blocked gated inside the service; returns the
+  // recomputed ChatMessageDTO and BROADCASTS a {type:"reaction"} frame (roomKind:"dm") to the thread.
+  route(
+    app,
+    "toggleDmMessageReaction",
+    { preHandler: csrfProtect, config: { rateLimit: DM_OPEN_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { threadId, messageId } = parse(DmReactionParamsSchema, request.params)
+      const body = parse(ToggleDmMessageReactionRequestSchema, {
+        ...(request.body as object),
+        threadId,
+        messageId,
+      })
+      const repo = dmRepo()
+      // DM-only build: the cleanup-chat deps are omitted (this route never toggles a cleanup reaction).
+      const reactions = makeChatReactionService({
+        dm: repo,
+        dmPeerOf: async (tid, uid) => {
+          const t = await repo.getThread(tid)
+          if (t === null) return null
+          if (t.userLo === uid) return t.userHi
+          if (t.userHi === uid) return t.userLo
+          return null
+        },
+        isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
+      })
+      const updated: ChatMessageDTO = await reactions.toggleDmReaction(
+        threadId,
+        messageId,
+        userId,
+        body.emoji,
+      )
+      // REALTIME: fan a {type:"reaction"} frame (roomKind:"dm") to the thread so connected sockets re-render
+      // the reactions without a refetch. Best-effort + fire-and-forget (mirrors the dm edit broadcast above).
+      void Promise.resolve(
+        container.chatService.broadcastEvent?.(roomKeyFor("dm", threadId), {
+          type: "reaction",
+          cleanupId: threadId,
+          roomKind: "dm",
+          message: updated,
+        }),
+      ).catch(() => {})
       reply.status(200).send(updated)
     },
   )

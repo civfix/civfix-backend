@@ -26,7 +26,7 @@ import type {
   DiscussionRepository,
 } from "../../src/services/discussion-service.js"
 import { jurisdictionHandle } from "../../src/services/discussion-service.js"
-import type { ReactionEmoji } from "@civfix/shared"
+import type { ReactionEmoji, UserMentionDTO } from "@civfix/shared"
 
 /** A stored discussion message (the raw row the fake holds). */
 interface StoredMessage {
@@ -70,6 +70,12 @@ interface StoredMention {
   forwardedAt: Date | null
 }
 
+/** A stored USER @-mention row (report_message_user_mentions). */
+interface StoredUserMention {
+  messageId: string
+  mentionedUserId: string
+}
+
 /** A seeded author (the users join the Drizzle impl performs). */
 export interface SeededDiscussionAuthor {
   id: string
@@ -91,6 +97,8 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
   readonly media: StoredDiscussionMedia[] = []
   readonly reactions: StoredReaction[] = []
   readonly mentions: StoredMention[] = []
+  /** Persisted USER @-mention rows (report_message_user_mentions). */
+  readonly userMentions: StoredUserMention[] = []
   /** Reports keyed by id (the visibility handle + resolved jurisdiction). */
   readonly reports = new Map<string, DiscussionReportView>()
   /** Authors keyed by id (the users join). */
@@ -249,6 +257,14 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
       }
     }
 
+    // Record the resolved USER @-mentions (composite PK de-dupes).
+    for (const mentionedUserId of args.mentionedUserIds) {
+      const exists = this.userMentions.some(
+        (x) => x.messageId === stored.id && x.mentionedUserId === mentionedUserId,
+      )
+      if (!exists) this.userMentions.push({ messageId: stored.id, mentionedUserId })
+    }
+
     return Promise.resolve(this.toRecord(stored, args.authorUserId))
   }
 
@@ -258,7 +274,8 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
     authorId: string,
     body: string,
     editedAt: Date,
-    mediaUploadIds?: string[],
+    mediaUploadIds: string[] | undefined,
+    mentionedUserIds: string[],
   ): Promise<DiscussionMessageRecord | null> {
     const m = this.messages.get(messageId)
     // Match only this report's message authored by authorId and not soft-removed (else "no editable row").
@@ -290,6 +307,17 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
           asset.discussionMessageId = messageId
         }
       }
+    }
+
+    // REPLACE the USER @-mention set: drop the message's current rows, then insert the new resolved set.
+    for (let i = this.userMentions.length - 1; i >= 0; i--) {
+      if (this.userMentions[i]!.messageId === messageId) this.userMentions.splice(i, 1)
+    }
+    for (const mentionedUserId of mentionedUserIds) {
+      const exists = this.userMentions.some(
+        (x) => x.messageId === messageId && x.mentionedUserId === mentionedUserId,
+      )
+      if (!exists) this.userMentions.push({ messageId, mentionedUserId })
     }
 
     return Promise.resolve(this.toRecord(m, authorId))
@@ -382,6 +410,19 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
     const reactions: DiscussionReactionView[] = [...byEmoji.entries()]
       .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
       .map(([emoji, v]) => ({ emoji, count: v.count, mine: v.mine }))
+    // Resolve the USER @-mentions to UserMentionDTO (handle/displayName from the seeded authors store; the
+    // Drizzle impl joins users). Ordered by handle then id, mirroring the SQL ORDER BY.
+    const userMentions: UserMentionDTO[] = this.userMentions
+      .filter((x) => x.messageId === m.id)
+      .map((x) => {
+        const u = this.authors.get(x.mentionedUserId)
+        return {
+          id: x.mentionedUserId,
+          handle: u?.handle ?? "",
+          displayName: u?.displayName ?? `User ${x.mentionedUserId.slice(0, 4)}`,
+        }
+      })
+      .sort((a, b) => (a.handle < b.handle ? -1 : a.handle > b.handle ? 1 : a.id < b.id ? -1 : 1))
     const mentionRow = this.mentions.find((x) => x.messageId === m.id) ?? null
     const report = this.reports.get(m.reportId)
     const jurisdiction =
@@ -414,6 +455,7 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
       replyCount,
       attachments,
       reactions,
+      userMentions,
       mention,
     }
   }

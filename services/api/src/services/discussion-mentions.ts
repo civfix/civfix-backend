@@ -58,6 +58,44 @@ const HANDLE_CHAR = /[a-z0-9_]/i
  * "@<handle>" is preceded by a non-handle char (or start of string) and followed by a non-handle char (or
  * end of string), preventing partial matches ("@sf" must not match "@sfo" or "user@sf.gov" local-parts).
  */
+/**
+ * Extract every distinct @handle token from a free-text body, for USER @-mentions (distinct from the
+ * single-handle parseCityMention, which targets one known jurisdiction handle). PURE: no DB, no network.
+ *
+ * Uses the SAME handle character rules as parseCityMention (HANDLE_CHAR = [a-z0-9_], word-boundary): a token
+ * is an "@" that is preceded by a boundary (start-of-string or a non-handle char) followed by one or more
+ * handle chars. So "@jane" matches in "hi @jane and (@bob)!" but the "@" inside "user@host" (preceded by a
+ * word char) does NOT start a token. The leading "@" is stripped; the returned handles preserve the body's
+ * casing (handles are matched case-insensitively downstream by the DB citext column, so casing is cosmetic).
+ *
+ * De-duplicated CASE-INSENSITIVELY, preserving first-seen order, so "@Jane ... @jane" yields a single
+ * "Jane". Returns [] when the body contains no @handle token. The caller resolves these to real users
+ * (resolveHandles) and combines them with any explicit mentionedUserIds.
+ */
+export function parseUserMentions(body: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "@") continue
+    // Boundary before the "@": start of string, or a non-handle char (so "user@x" is not a mention).
+    const before = i > 0 ? body[i - 1] : undefined
+    if (before !== undefined && HANDLE_CHAR.test(before)) continue
+    // Consume the run of handle chars after the "@".
+    let j = i + 1
+    while (j < body.length && HANDLE_CHAR.test(body[j]!)) j++
+    if (j === i + 1) continue // a bare "@" with no handle chars is not a mention.
+    const handle = body.slice(i + 1, j)
+    const key = handle.toLowerCase()
+    if (!seen.has(key)) {
+      seen.add(key)
+      out.push(handle)
+    }
+    // Advance past the consumed handle (the loop's i++ moves one more).
+    i = j - 1
+  }
+  return out
+}
+
 export function parseCityMention(body: string, cityHandle: string | null | undefined): string | null {
   if (cityHandle === null || cityHandle === undefined) return null
   const handle = cityHandle.trim()

@@ -76,13 +76,13 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
     // And it must actually reject duplicates: insert one report, then a second with the same key.
     const key = "11111111-1111-1111-1111-111111111111"
     await h.sql`
-      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell)
-      VALUES (${key}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'submitted', 'h0')
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
+      VALUES (${key}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', 'submitted', 'h0')
     `
     await expect(
       h.sql`
-        INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell)
-        VALUES (${key}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'submitted', 'h1')
+        INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
+        VALUES (${key}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', 'submitted', 'h1')
       `,
     ).rejects.toThrow()
   })
@@ -175,23 +175,23 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
     const a = "22222222-2222-2222-2222-222222222222"
     const b = "33333333-3333-3333-3333-333333333333"
     await h.sql`
-      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, claim_code)
-      VALUES (${a}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h0', 'shared-code')
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell, claim_code)
+      VALUES (${a}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', 'held', 'h0', 'shared-code')
     `
     await expect(
       h.sql`
-        INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, claim_code)
-        VALUES (${b}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h1', 'shared-code')
+        INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell, claim_code)
+        VALUES (${b}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', 'held', 'h1', 'shared-code')
       `,
     ).rejects.toThrow()
     // Two reports with a NULL claim code are fine (partial index excludes NULLs).
     await h.sql`
-      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell)
-      VALUES (${"44444444-4444-4444-4444-444444444444"}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h2')
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
+      VALUES (${"44444444-4444-4444-4444-444444444444"}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', 'held', 'h2')
     `
     await h.sql`
-      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell)
-      VALUES (${"55555555-5555-5555-5555-555555555555"}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'held', 'h3')
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
+      VALUES (${"55555555-5555-5555-5555-555555555555"}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', 'held', 'h3')
     `
   })
 

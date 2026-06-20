@@ -15,6 +15,7 @@
 
 import {
   SearchUsersRequestSchema,
+  MentionSearchRequestSchema,
   UpdateSettingsRequestSchema,
   IdSchema,
   AppError,
@@ -28,7 +29,7 @@ import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
-import { searchByHandlePrefix } from "../services/social-repository.drizzle.js"
+import { searchByHandlePrefix, searchMentionable } from "../services/social-repository.drizzle.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { route } from "../versioning/route.js"
@@ -69,6 +70,29 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
         term.length === 0
           ? []
           : await searchByHandlePrefix(container.getDb().sql, term, userId, limit)
+      const payload: SearchUsersResponse = { results }
+      reply.status(200).send(payload)
+    },
+  )
+
+  // -------------------------------------------------------------------------
+  // GET /users/mention-search  [auth]  (rate-limited @handle/name search for @-mention picker)
+  // -------------------------------------------------------------------------
+  // Broader than /users/search: it surfaces ANYONE taggable by @handle (no DM-off / blocked exclusion) so a
+  // commenter/chatter can @-mention any user; the server still excludes self / handle-less / soft-deleted.
+  // `q` is required (min length 1); a leading '@' is stripped so "@jane" and "jane" search identically.
+  route(
+    app,
+    "mentionSearch",
+    { config: { rateLimit: USER_SEARCH_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const q = parse(MentionSearchRequestSchema, request.query)
+      const term = q.q.startsWith("@") ? q.q.slice(1) : q.q
+      const results =
+        term.length === 0
+          ? []
+          : await searchMentionable(container.getDb().sql, term, userId, USER_SEARCH_DEFAULT_LIMIT)
       const payload: SearchUsersResponse = { results }
       reply.status(200).send(payload)
     },

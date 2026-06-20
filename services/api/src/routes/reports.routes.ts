@@ -51,7 +51,7 @@ import { makeDrizzleDiscussionRepository } from "../services/discussion-reposito
 import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
 import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
-import { BBoxQueryParam, CategoriesQueryParam } from "./query-encoding.js"
+import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
 
 /** Shared street-level reverse geocoder (Photon). Falls back to the local "City, ST" label per call. */
 const photonReverseGeocode = makePhotonReverseGeocode()
@@ -104,6 +104,8 @@ const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
 const MapReportsQuerySchema = z.object({
   bbox: BBoxQueryParam,
   categories: CategoriesQueryParam.optional(),
+  // Fine-grained type filter (0021): applied alongside categories. Same repeated-param/CSV wire form.
+  types: TypesQueryParam.optional(),
   zoom: ZoomQueryParam,
 })
 
@@ -118,6 +120,8 @@ const MapReportsQuerySchema = z.object({
 const SearchReportsQuerySchema = z.object({
   q: z.string().optional(),
   categories: CategoriesQueryParam.optional(),
+  // Fine-grained type filter (0021): applied alongside categories. Same repeated-param/CSV wire form.
+  types: TypesQueryParam.optional(),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(50).optional(),
 })
@@ -135,8 +139,8 @@ const SearchReportsQuerySchema = z.object({
  * `listReportsInBBox` return. This matters: fast-json-stringify serializes ONLY what the schema declares
  * and silently DROPS any property the schema omits, so a drift here would corrupt the payload. Fields:
  *   - clusters: ReportClusterDTO  = { lat, lng, count }                          (grid clusters, low zoom)
- *   - pins:     ReportPinDTO       = { id, category, lat, lng, status, title?, thumbUrl? }  (high zoom; the
- *                                     additive nullable title/thumbUrl carry a tapped pin's preview)
+ *   - pins:     ReportPinDTO       = { id, category, type, lat, lng, status, title?, thumbUrl? } (high zoom;
+ *                                     the additive nullable title/thumbUrl carry a tapped pin's preview)
  *   - counts:   Partial<Record<ReportCategory, number>>  (optional; the service omits it for an empty view)
  * The two enums (category, status) are inlined from ReportCategorySchema / ReportStatusSchema; `counts`
  * uses additionalProperties:number so the per-category integer values serialize through. The shape is
@@ -166,6 +170,13 @@ const MapReportsResponseJsonSchema = {
           category: {
             type: "string",
             enum: ["trash", "recycling", "graffiti", "hazard", "water", "other"],
+          },
+          // Fine-grained issue type (0021), inlined from ReportTypeSchema. fast-json-stringify DROPS any
+          // undeclared property, so `type` MUST be listed for the map pin to carry it on the wire (the
+          // service's toMapPinDTO populates it). Additive: NOT in `required`, preserving the prior contract.
+          type: {
+            type: "string",
+            enum: ["dump", "encampment", "graffiti", "infrastructure", "pavement", "vegetation", "other"],
           },
           lat: { type: "number" },
           lng: { type: "number" },
@@ -332,11 +343,13 @@ export async function registerReportRoutes(
     const validated = parse(ListReportsInBBoxRequestSchema, {
       bbox: q.bbox,
       ...(q.categories !== undefined ? { categories: q.categories } : {}),
+      ...(q.types !== undefined ? { types: q.types } : {}),
       zoom: q.zoom,
     })
     const payload: ReportClusterResponse = await service().listReportsInBBox(
       validated.bbox,
       validated.categories ?? null,
+      validated.types ?? null,
       validated.zoom,
     )
     // Anon-ok and identical across all viewers for a given bbox+zoom+categories: a short shared TTL lets
@@ -360,6 +373,7 @@ export async function registerReportRoutes(
     const validated = parse(ListReportsSearchRequestSchema, {
       ...(decoded.q !== undefined ? { q: decoded.q } : {}),
       ...(decoded.categories !== undefined ? { categories: decoded.categories } : {}),
+      ...(decoded.types !== undefined ? { types: decoded.types } : {}),
       ...(decoded.cursor !== undefined ? { cursor: decoded.cursor } : {}),
       ...(decoded.limit !== undefined ? { limit: decoded.limit } : {}),
     })

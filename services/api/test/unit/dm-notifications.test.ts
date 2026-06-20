@@ -105,6 +105,8 @@ function makeUnusedChatRepo() {
   return {
     insertMessage: () => Promise.reject(new Error("cleanup persist not expected here")),
     history: () => Promise.resolve({ items: [], nextCursor: null }),
+    findMessage: () => Promise.resolve(null),
+    toggleReaction: () => Promise.reject(new Error("cleanup reaction not expected here")),
   }
 }
 

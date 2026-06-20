@@ -64,6 +64,7 @@ function req(over: Partial<AnonReportRequest> = {}): AnonReportRequest {
     idempotencyKey: over.idempotencyKey ?? KEY_A,
     turnstileToken: over.turnstileToken ?? "ok-token",
     category: over.category ?? "trash",
+    type: over.type ?? "dump",
     lat: over.lat ?? 34.1,
     lng: over.lng ?? -118.35,
     geomSource: over.geomSource ?? "device",

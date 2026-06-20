@@ -37,8 +37,9 @@ import type {
   MediaDTO,
   ReactionEmoji,
   ReactionSummaryDTO,
+  UserMentionDTO,
 } from "@civfix/shared"
-import { jurisdictionHandle, parseCityMention } from "./discussion-mentions.js"
+import { jurisdictionHandle, parseCityMention, parseUserMentions } from "./discussion-mentions.js"
 import type { OutboundMailService } from "./admin/outbound-mail-service.js"
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,12 @@ export interface DiscussionMessageRecord {
   reactions: DiscussionReactionView[]
   /** The single @city mention on this message, or null. */
   mention: DiscussionMentionView | null
+  /**
+   * The resolved USER @-mentions on this message (report_message_user_mentions joined to users), in a stable
+   * order. Distinct from `mention` (the single @city/jurisdiction mention). Empty when none. The repo reads
+   * these; the service projects them straight into DiscussionMessageDTO.mentions.
+   */
+  userMentions: UserMentionDTO[]
 }
 
 /** The report's own jurisdiction routing the city-forward path needs (resolved from the report's geoid). */
@@ -158,6 +165,11 @@ export interface CreateDiscussionMessageTxArgs {
   } | null
   /** Set report_discussion_messages.forwarded_to_city (true only when the forward actually went out). */
   forwardedToCity: boolean
+  /**
+   * The resolved USER mention rows to persist into report_message_user_mentions (de-duped user ids). Already
+   * resolved + filtered by the service (real users, self excluded). Empty when the message names no one.
+   */
+  mentionedUserIds: string[]
 }
 
 /**
@@ -220,7 +232,13 @@ export interface DiscussionRepository {
     authorId: string,
     body: string,
     editedAt: Date,
-    mediaUploadIds?: string[] | undefined,
+    mediaUploadIds: string[] | undefined,
+    /**
+     * The resolved USER mention ids to REPLACE the message's report_message_user_mentions set with (already
+     * resolved + self-excluded by the service). Always provided on edit (an edit re-derives mentions from the
+     * new body + request); an empty array clears all user mentions.
+     */
+    mentionedUserIds: string[],
   ): Promise<DiscussionMessageRecord | null>
   /**
    * Toggle a reaction: insert (message,user,emoji) ON CONFLICT DO NOTHING, or DELETE it when already
@@ -283,6 +301,26 @@ export interface DiscussionServiceDeps {
    * so the hook can exclude self-notifications.
    */
   notifyOnMessage?: (input: DiscussionNotifyInput) => void
+  /**
+   * Resolve a combined set of @handles (parsed from the body) + explicit user ids (the request's
+   * mentionedUserIds) to REAL, mentionable users, EXCLUDING the author (self). Injected so the service stays
+   * DB-free: production wires resolveHandles + an id lookup over the social repo; tests pass a fake. Anyone
+   * can be named (no block/DM-pref filtering here — those gate only the NOTIFICATION). OPTIONAL: when unwired
+   * (offline tests that do not exercise mentions) the service records NO user mentions.
+   */
+  resolveMentions?: (input: {
+    handles: string[]
+    userIds: string[]
+    authorUserId: string
+  }) => Promise<UserMentionDTO[]>
+  /**
+   * Best-effort per-mentioned-user notification hook, fired AFTER a message create/edit persists, ONCE per
+   * resolved mentioned user (excluding the author). Lets the route wire the notification service (a row +
+   * inline push) WITHOUT the service importing it, mirroring notifyOnMessage. The hook itself applies the
+   * block + notification-pref gating (the route resolves blocks/prefs); the service only supplies WHO was
+   * mentioned. Fully fire-and-forget: a notify failure must never affect the HTTP response. Un-wired ⇒ skip.
+   */
+  notifyMention?: (input: DiscussionMentionNotifyInput) => void
   /** Injectable id factory (defaults to crypto.randomUUID) for deterministic tests. */
   newId?: () => string
   /** Injectable clock (defaults to () => new Date()) so created_at/forwarded_at are deterministic in tests. */
@@ -303,6 +341,15 @@ export interface DiscussionNotifyInput {
   parentAuthorUserId: string | null
   /** Whether this was a reply (true) or a top-level message (false). */
   isReply: boolean
+}
+
+/** Input to the best-effort per-mentioned-user notification hook (one fire per mentioned user). */
+export interface DiscussionMentionNotifyInput {
+  reportId: string
+  /** The author of the message doing the mentioning (excluded from the resolved set already). */
+  actorUserId: string
+  /** The mentioned user to notify (already self-excluded + resolved to a real user). */
+  mentionedUserId: string
 }
 
 /** Who is acting on a delete: the message author themselves, or an operator (moderation). */
@@ -342,7 +389,12 @@ export interface DiscussionService {
   createMessage(
     reportId: string,
     userId: string,
-    input: { body: string; parentId?: string | undefined; mediaUploadIds?: string[] | undefined },
+    input: {
+      body: string
+      parentId?: string | undefined
+      mediaUploadIds?: string[] | undefined
+      mentionedUserIds?: string[] | undefined
+    },
   ): Promise<DiscussionMessageDTO>
   /** Toggle one of the viewer's emoji reactions on a message; returns the updated message. */
   toggleReaction(
@@ -360,7 +412,11 @@ export interface DiscussionService {
     reportId: string,
     messageId: string,
     userId: string,
-    input: { body: string; mediaUploadIds?: string[] | undefined },
+    input: {
+      body: string
+      mediaUploadIds?: string[] | undefined
+      mentionedUserIds?: string[] | undefined
+    },
   ): Promise<DiscussionMessageDTO>
   /** Soft-delete a message (author or operator); returns the tombstoned message. */
   deleteMessage(
@@ -381,6 +437,45 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
    */
   function fanOut(reportId: string, event: DiscussionEvent): void {
     deps.broadcast?.(reportId, event)
+  }
+
+  /**
+   * Resolve the message's USER @-mentions: parse @handles from the body, combine with the request's explicit
+   * mentionedUserIds, and resolve to real, mentionable users (self excluded) via the injected resolver. When
+   * no resolver is wired (offline tests not exercising mentions) returns [] so no mention rows are recorded.
+   */
+  async function resolveUserMentions(
+    body: string,
+    mentionedUserIds: string[] | undefined,
+    authorUserId: string,
+  ): Promise<UserMentionDTO[]> {
+    if (!deps.resolveMentions) return []
+    const handles = parseUserMentions(body)
+    const userIds = mentionedUserIds ?? []
+    if (handles.length === 0 && userIds.length === 0) return []
+    return deps.resolveMentions({ handles, userIds, authorUserId })
+  }
+
+  /**
+   * Fire the best-effort per-mentioned-user notification hook once per resolved mention (author excluded).
+   * VISIBILITY GATE: a mention on a NON-public report (e.g. the owner posting on their own held/hidden/
+   * unpublished report) must not bell a user who would 404 the report on tap — so a bell is sent only when
+   * the report is public OR the mentioned user owns the report (mirroring loadVisibleReport's read rule). The
+   * mention row itself is still recorded regardless; this gates only the notification.
+   */
+  function notifyMentions(
+    reportId: string,
+    actorUserId: string,
+    mentions: UserMentionDTO[],
+    report: DiscussionReportView,
+  ): void {
+    if (!deps.notifyMention) return
+    const isPublic = report.status === "published" && report.visibility === "public"
+    for (const m of mentions) {
+      if (m.id === actorUserId) continue
+      if (!isPublic && m.id !== report.reporterUserId) continue
+      deps.notifyMention({ reportId, actorUserId, mentionedUserId: m.id })
+    }
   }
 
   /** Render a stored media view into a presigned MediaDTO (only `ready` media reaches here). */
@@ -447,6 +542,9 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       body: tombstoned ? "" : record.body,
       attachments,
       reactions: record.reactions.map(toReactionDTO),
+      // Resolved USER @-mentions (distinct from cityMention). A tombstone carries no mentions (its body is
+      // blanked), matching the no-content rule for a removed message.
+      mentions: tombstoned ? [] : record.userMentions,
       replyCount: record.replyCount,
       cityMention,
       forwardedToCity: record.forwardedToCity,
@@ -548,6 +646,7 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
         body: string
         parentId?: string | undefined
         mediaUploadIds?: string[] | undefined
+        mentionedUserIds?: string[] | undefined
       },
     ): Promise<DiscussionMessageDTO> {
       const report = await loadVisibleReport(reportId, userId)
@@ -578,6 +677,10 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       const mediaUploadIds = (input.mediaUploadIds ?? []).slice(0, DISCUSSION_MEDIA_MAX)
       const messageId = newId()
       const createdAt = now()
+
+      // USER @-mentions: parse @handles from the body + the explicit mentionedUserIds, resolve to real users
+      // (self excluded). Anyone can be named; blocks/prefs gate only the notification (in the route hook).
+      const userMentions = await resolveUserMentions(body, input.mentionedUserIds, userId)
 
       // CITY MENTION: only the report's OWN jurisdiction is mentionable/forwardable. Resolve its effective
       // handle (stored or derived) and check the body for "@handle". A mention with no contact on file is
@@ -630,6 +733,7 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
         mediaUploadIds,
         mention,
         forwardedToCity,
+        mentionedUserIds: userMentions.map((m) => m.id),
       })
       const dto = await toMessageDTO(record, userId)
       // Best-effort live fan-out (a reply vs a top-level message), then the best-effort owner/parent bell.
@@ -643,6 +747,9 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
         parentAuthorUserId,
         isReply,
       })
+      // Best-effort per-mentioned-user bell (one per resolved mention, author excluded; visibility-gated
+      // inside the helper). Fire-and-forget.
+      notifyMentions(reportId, userId, userMentions, report)
       return dto
     },
 
@@ -650,12 +757,16 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       reportId: string,
       messageId: string,
       userId: string,
-      input: { body: string; mediaUploadIds?: string[] | undefined },
+      input: {
+        body: string
+        mediaUploadIds?: string[] | undefined
+        mentionedUserIds?: string[] | undefined
+      },
     ): Promise<DiscussionMessageDTO> {
       // Gate on report visibility (the same 404-not-403 rule as the other author paths), then enforce
       // author-only ownership BEFORE the write so a non-author cannot probe a message's existence: a missing
       // message, a foreign message, or an already-removed (tombstoned) one all 404 identically.
-      await loadVisibleReport(reportId, userId)
+      const report = await loadVisibleReport(reportId, userId)
       const existing = await deps.repo.findMessage(reportId, messageId, userId)
       if (!existing || existing.deletedAt !== null) {
         throw AppError.notFound("Message not found")
@@ -677,6 +788,10 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
           ? input.mediaUploadIds.slice(0, DISCUSSION_MEDIA_MAX)
           : undefined
 
+      // Re-derive USER @-mentions from the EDITED body + the request's explicit ids; the repo REPLACES the
+      // message's user-mention set with these (an edit that drops an @handle drops the row). Self excluded.
+      const userMentions = await resolveUserMentions(body, input.mentionedUserIds, userId)
+
       const editedAt = now()
       // The repo re-checks report + author + not-deleted under the UPDATE, so a concurrent delete that
       // landed between the read above and here yields null -> 404 (idempotent with the pre-check).
@@ -687,9 +802,14 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
         body,
         editedAt,
         mediaUploadIds,
+        userMentions.map((m) => m.id),
       )
       if (!record) throw AppError.notFound("Message not found")
       const dto = await toMessageDTO(record, userId)
+      // Best-effort per-mentioned-user bell on edit too (a newly-added @mention should still notify), with
+      // the same visibility gate as create. Re-notifying a still-mentioned user on every edit is acceptable +
+      // bounded by the write rate limit. Fire-and-forget.
+      notifyMentions(reportId, userId, userMentions, report)
       // Best-effort live fan-out over the SAME discussion frame: subscribers refetch + upsert the edited
       // message by id. The body changed (the generic "message" change kind), so reuse that existing event;
       // no new WS frame type is introduced for an edit.

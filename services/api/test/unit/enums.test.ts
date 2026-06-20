@@ -33,6 +33,7 @@ import {
   RegisterPushTokenRequestSchema,
   ReportCategorySchema,
   ReportStatusSchema,
+  ReportTypeSchema,
   ReportVisibilitySchema,
   RiskSchema,
   RoleSchema,
@@ -65,6 +66,7 @@ import {
   PUSH_PLATFORM_VALUES,
   REPORT_CATEGORY_VALUES,
   REPORT_STATUS_VALUES,
+  REPORT_TYPE_VALUES,
   REPORT_VISIBILITY_VALUES,
   ROLE_VALUES,
   USER_ACCOUNT_STATUS_VALUES,
@@ -75,6 +77,7 @@ describe("schema enum tuples mirror @civfix/shared", () => {
   it.each([
     ["Role", ROLE_VALUES, RoleSchema.options],
     ["ReportCategory", REPORT_CATEGORY_VALUES, ReportCategorySchema.options],
+    ["ReportType", REPORT_TYPE_VALUES, ReportTypeSchema.options],
     ["ReportStatus", REPORT_STATUS_VALUES, ReportStatusSchema.options],
     ["GeomSource", GEOM_SOURCE_VALUES, GeomSourceSchema.options],
     ["ReportVisibility", REPORT_VISIBILITY_VALUES, ReportVisibilitySchema.options],

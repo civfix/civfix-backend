@@ -17,10 +17,12 @@ import {
   type GEOM_SOURCE_VALUES,
   type REPORT_CATEGORY_VALUES,
   type REPORT_STATUS_VALUES,
+  type REPORT_TYPE_VALUES,
   type REPORT_VISIBILITY_VALUES,
 } from "./types.js"
 
 type ReportCategory = (typeof REPORT_CATEGORY_VALUES)[number]
+type ReportType = (typeof REPORT_TYPE_VALUES)[number]
 type ReportStatus = (typeof REPORT_STATUS_VALUES)[number]
 type GeomSource = (typeof GEOM_SOURCE_VALUES)[number]
 type ReportVisibility = (typeof REPORT_VISIBILITY_VALUES)[number]
@@ -38,6 +40,10 @@ export const reports = pgTable(
     geomSource: text("geom_source").$type<GeomSource>().notNull(),
     jurisdictionGeoid: text("jurisdiction_geoid").references(() => jurisdictions.geoid),
     category: text("category").$type<ReportCategory>().notNull(),
+    // Fine-grained issue type (0021). Mirrors the shared ReportTypeSchema; coexists with `category`
+    // (each type maps to a category via REPORT_TYPE_TO_CATEGORY). text + NOT NULL, same storage approach
+    // as `category`. Backfilled for legacy rows from category via a representative inverse map in 0021.
+    type: text("type").$type<ReportType>().notNull(),
     title: text("title"),
     description: text("description"),
     // Reverse-geocoded street address for the point (0011). Display label echoed to the operator

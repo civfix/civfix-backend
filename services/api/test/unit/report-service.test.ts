@@ -55,6 +55,7 @@ function createReq(over: Partial<CreateReportRequest> = {}): CreateReportRequest
   return {
     idempotencyKey: over.idempotencyKey ?? VALID_UUID,
     category: over.category ?? "trash",
+    type: over.type ?? "dump",
     lat: over.lat ?? 34.1,
     lng: over.lng ?? -118.35,
     geomSource: over.geomSource ?? "device",
@@ -90,10 +91,10 @@ describe("clusterByZoom", () => {
   // A small fixture: three points clumped near LA and one far away in NYC. "a" carries a title + a
   // first-photo thumb key pair so the carry-through onto the (unsigned) pin can be asserted.
   const pts: ReportMapPoint[] = [
-    { id: "a", lat: 34.10, lng: -118.350, category: "trash", status: "published", title: "Mattress dumped", description: "blocking the sidewalk", thumbKey: "thumbs/a", r2Key: "uploads/a" },
-    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-    { id: "c", lat: 34.12, lng: -118.352, category: "trash", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+    { id: "a", lat: 34.10, lng: -118.350, category: "trash", type: "dump", status: "published", title: "Mattress dumped", description: "blocking the sidewalk", thumbKey: "thumbs/a", r2Key: "uploads/a" },
+    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+    { id: "c", lat: 34.12, lng: -118.352, category: "trash", type: "dump", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", type: "encampment", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
   ]
 
   it("at/above the threshold returns individual pins and no clusters", () => {
@@ -106,6 +107,7 @@ describe("clusterByZoom", () => {
     expect(a).toMatchObject({
       id: "a",
       category: "trash",
+      type: "dump",
       status: "published",
       lat: 34.1,
       title: "Mattress dumped",
@@ -142,9 +144,9 @@ describe("clusterByZoom", () => {
 describe("countByCategory", () => {
   it("counts all candidates per category, omitting zero categories", () => {
     const pts: ReportMapPoint[] = [
-      { id: "a", lat: 0, lng: 0, category: "trash", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-      { id: "b", lat: 0, lng: 0, category: "trash", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-      { id: "c", lat: 0, lng: 0, category: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+      { id: "a", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+      { id: "b", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+      { id: "c", lat: 0, lng: 0, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
     ]
     expect(countByCategory(pts)).toEqual({ trash: 2, graffiti: 1 })
     expect(countByCategory([])).toEqual({})
@@ -197,10 +199,12 @@ describe("createReport: happy path (authed publish-immediately)", () => {
   it("creates a published+public report with geom_source, jurisdiction, h3, timeline, mine=true", async () => {
     const { repo, service } = makeHarness({ geoid: "0644000" })
     const dto = await service.createReport(
-      createReq({ category: "graffiti", description: "tagging on the wall", geomSource: "device" }),
+      createReq({ category: "graffiti", type: "graffiti", description: "tagging on the wall", geomSource: "device" }),
       { userId: "u1" },
     )
 
+    // The fine-grained type (0021) round-trips through create onto the DTO + the persisted row.
+    expect(dto.type).toBe("graffiti")
     expect(dto.status).toBe("published")
     expect(dto.visibility).toBe("public")
     expect(dto.geomSource).toBe("device")
@@ -218,6 +222,8 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     // The report row + the H3 cell were persisted.
     const stored = repo.reports.get(dto.id)!
     expect(stored.status).toBe("published")
+    // The fine-grained type was persisted on the row too.
+    expect(stored.type).toBe("graffiti")
     // The snapshot is stored under the idempotency key.
     expect(repo.idempotency.size).toBe(1)
   })
@@ -304,6 +310,7 @@ describe("createReport: idempotency replay", () => {
     const seeded: ReportDTO = {
       id: "seeded-report-id",
       category: "water",
+      type: "infrastructure",
       status: "published",
       visibility: "public",
       lat: 1,
@@ -509,7 +516,7 @@ describe("listReportsInBBox", () => {
     repo.seedReport({ status: "held", visibility: "public", category: "trash", lat: 34.1, lng: -118.35 }) // held
 
     const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
-    const low = await service.listReportsInBBox(bbox, null, 3)
+    const low = await service.listReportsInBBox(bbox, null, null, 3)
     expect(low.pins).toHaveLength(0)
     expect(low.clusters.length).toBeGreaterThanOrEqual(1)
     const total = low.clusters.reduce((n, c) => n + c.count, 0)
@@ -523,7 +530,7 @@ describe("listReportsInBBox", () => {
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
 
     const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
-    const high = await service.listReportsInBBox(bbox, null, 16)
+    const high = await service.listReportsInBBox(bbox, null, null, 16)
     expect(high.clusters).toHaveLength(0)
     expect(high.pins).toHaveLength(2)
   })
@@ -560,7 +567,7 @@ describe("listReportsInBBox", () => {
     })
     repo.seedMedia({ reportId: pendingOnly.id, status: "validating", r2Key: "uploads/d", thumbKey: "thumbs/d" })
 
-    const high = await service.listReportsInBBox(bbox, null, 16)
+    const high = await service.listReportsInBBox(bbox, null, null, 16)
     const byId = new Map(high.pins.map((p) => [p.id, p]))
 
     expect(byId.get(withThumb.id)).toMatchObject({ title: "Mattress dumped", description: "blocking the sidewalk", thumbUrl: "memory://thumbs/a" })
@@ -579,7 +586,7 @@ describe("listReportsInBBox", () => {
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
 
     const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
-    const onlyTrash = await service.listReportsInBBox(bbox, ["trash"], 16)
+    const onlyTrash = await service.listReportsInBBox(bbox, ["trash"], null, 16)
     expect(onlyTrash.pins).toHaveLength(1)
     expect(onlyTrash.pins[0]!.category).toBe("trash")
     expect(onlyTrash.counts).toEqual({ trash: 1 })
@@ -588,7 +595,7 @@ describe("listReportsInBBox", () => {
   it("omits counts for an empty view", async () => {
     const { service } = makeHarness()
     const bbox = { west: -1, south: -1, east: 1, north: 1 }
-    const empty = await service.listReportsInBBox(bbox, null, 3)
+    const empty = await service.listReportsInBBox(bbox, null, null, 3)
     expect(empty.clusters).toHaveLength(0)
     expect(empty.pins).toHaveLength(0)
     expect(empty.counts).toBeUndefined()
@@ -655,6 +662,18 @@ describe("searchReports", () => {
     expect(res.items).toHaveLength(1)
     expect(res.items[0]!.id).toBe(trash.id)
     expect(res.items[0]!.category).toBe("trash")
+  })
+
+  it("filters by fine-grained type set (0021), alongside category", async () => {
+    const { repo, service } = makeHarness()
+    // Two trash-category reports with DIFFERENT fine types; the type filter narrows to one.
+    const dump = repo.seedReport({ status: "published", visibility: "public", category: "trash", type: "dump", title: "dumped mattress" })
+    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", type: "graffiti", title: "tag" })
+
+    const res = await service.searchReports({ types: ["dump"] })
+    expect(res.items).toHaveLength(1)
+    expect(res.items[0]!.id).toBe(dump.id)
+    expect(res.items[0]!.type).toBe("dump")
   })
 
   it("paginates newest-first by the keyset cursor without skipping or duplicating", async () => {

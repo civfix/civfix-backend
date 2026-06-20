@@ -47,6 +47,7 @@ import {
   type DiscussionServiceDeps,
 } from "../services/discussion-service.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
+import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
 import {
   makeOutboundMailService,
   type OutboundMailService,
@@ -79,6 +80,8 @@ export interface DiscussionServiceOverrides {
   presignMedia?: DiscussionServiceDeps["presignMedia"]
   broadcast?: DiscussionServiceDeps["broadcast"]
   notifyOnMessage?: DiscussionServiceDeps["notifyOnMessage"]
+  resolveMentions?: DiscussionServiceDeps["resolveMentions"]
+  notifyMention?: DiscussionServiceDeps["notifyMention"]
   newId?: DiscussionServiceDeps["newId"]
   now?: DiscussionServiceDeps["now"]
 }
@@ -105,6 +108,12 @@ export async function registerDiscussionRoutes(
         ...(overrides.broadcast !== undefined ? { broadcast: overrides.broadcast } : {}),
         ...(overrides.notifyOnMessage !== undefined
           ? { notifyOnMessage: overrides.notifyOnMessage }
+          : {}),
+        ...(overrides.resolveMentions !== undefined
+          ? { resolveMentions: overrides.resolveMentions }
+          : {}),
+        ...(overrides.notifyMention !== undefined
+          ? { notifyMention: overrides.notifyMention }
           : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
@@ -146,6 +155,16 @@ export async function registerDiscussionRoutes(
       ...(container.env.USE_FAKE_CHAT
         ? {}
         : { notifyOnMessage: makeDiscussionNotifier(container) }),
+      // USER @-mention resolution: combine parsed @handles + the request's mentionedUserIds into real users
+      // (self excluded). Anyone may be tagged; the resolver applies NO block/pref filtering (that gates the
+      // notification only). Runs over the lazily-created DB handle, so no connection opens until a write.
+      resolveMentions: (input) => resolveMentionTargets(sql, input),
+      // Best-effort per-mentioned-user bell (reuses the EXISTING `report_update` notification type — no
+      // contract change). Block-gated here (a mentioner the target blocked, or vice versa, raises no bell);
+      // pref-gated inside the notification service. Skipped in the all-fakes dev path (no notification store).
+      ...(container.env.USE_FAKE_CHAT
+        ? {}
+        : { notifyMention: makeMentionNotifier(container) }),
     })
   }
 
@@ -197,6 +216,7 @@ export async function registerDiscussionRoutes(
         body: body.body,
         ...(body.parentId !== undefined ? { parentId: body.parentId } : {}),
         ...(body.mediaUploadIds !== undefined ? { mediaUploadIds: body.mediaUploadIds } : {}),
+        ...(body.mentionedUserIds !== undefined ? { mentionedUserIds: body.mentionedUserIds } : {}),
       })
       reply.status(201).send(dto)
     },
@@ -223,6 +243,7 @@ export async function registerDiscussionRoutes(
       const dto: DiscussionMessageDTO = await service().editMessage(id, messageId, userId, {
         body: body.body,
         ...(body.mediaUploadIds !== undefined ? { mediaUploadIds: body.mediaUploadIds } : {}),
+        ...(body.mentionedUserIds !== undefined ? { mentionedUserIds: body.mentionedUserIds } : {}),
       })
       reply.status(200).send(dto)
     },
@@ -310,6 +331,40 @@ function makeDiscussionNotifier(
           body: input.isReply
             ? "Someone replied to your comment."
             : "Someone commented on your report.",
+          link: `/reports/${input.reportId}`,
+        })
+      })
+      .catch(() => {})
+  }
+}
+
+/**
+ * Build the best-effort per-mentioned-user notification hook (production). Reuses the EXISTING `report_update`
+ * notification type so NO @civfix/shared contract change (the frozen notification enum gains nothing). The
+ * mention bell is GATED: it is suppressed when the actor and the mentioned user blocked each other either way
+ * (so a block silences a mention ping), and the notification service then applies the user's notification
+ * prefs/quiet-hours to the push. Self is already excluded by the service. Fully fire-and-forget: a notify
+ * failure (or a blocks/DB hiccup) never affects the discussion HTTP response. Built off the lazily-created DB
+ * handle, the same per-request construction the chat/social/notification routes use.
+ */
+function makeMentionNotifier(
+  container: Container,
+): NonNullable<DiscussionServiceDeps["notifyMention"]> {
+  return (input) => {
+    void Promise.resolve()
+      .then(async () => {
+        // Block gate: do not raise a mention bell when either party blocked the other.
+        const blocks = container.getBlocksRepo()
+        if (await blocks.isBlockedEitherWay(input.actorUserId, input.mentionedUserId)) return
+        const notifications = makeNotificationService({
+          repo: makeDrizzleNotificationRepository(container.getDb().sql),
+          pushSender: container.pushSender,
+          userChannel: container.userChannel,
+        })
+        await notifications.createNotification(input.mentionedUserId, {
+          type: "report_update",
+          title: "You were mentioned",
+          body: "Someone mentioned you in a report discussion.",
           link: `/reports/${input.reportId}`,
         })
       })

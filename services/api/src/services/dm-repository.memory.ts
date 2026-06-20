@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto"
 import { avatarGradient } from "@civfix/shared"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
 import type {
   DmPersistInput,
@@ -52,6 +52,8 @@ export class InMemoryDmRepository implements DmRepository {
   private readonly log = new Map<string, StoredDmMessage[]>()
   /** `${threadId}:${userId}` -> last-read epoch ms. */
   private readonly reads = new Map<string, number>()
+  /** messageId -> set of `${userId}:${emoji}` reaction keys (mirrors the chat_message_reactions PK). */
+  private readonly reactions = new Map<string, Set<string>>()
   /** userId -> user fields, so `from`/`peer` resolve. */
   private readonly users = new Map<string, DmUser>()
   private tick = 0
@@ -126,6 +128,10 @@ export class InMemoryDmRepository implements DmRepository {
       body: input.body,
       kind: input.kind ?? "text",
       attachments: input.attachments ?? null,
+      reactions: [],
+      // No persisted mentions on a fresh insert; the gateway projects a send's resolved @-mentions onto its
+      // broadcast/ack copy (this in-memory repo keeps no mention store, the dev-path mention bell being moot).
+      mentions: [],
       createdAt: this.nextDate().toISOString(),
       editedAt: null,
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
@@ -157,9 +163,18 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(edited)
   }
 
-  history(threadId: string, before: string | undefined, limit: number): Promise<ChatHistoryPage> {
+  history(
+    threadId: string,
+    before: string | undefined,
+    limit: number,
+    viewerUserId: string | null = null,
+  ): Promise<ChatHistoryPage> {
     const list = (this.log.get(threadId) ?? []).filter((m) => !m.deleted)
-    const ordered = [...list].reverse().map((m) => m.dto)
+    // Recompute each item's reactions against the viewer so `mine` is resolved on the history page (the
+    // stored DTO's reactions were last computed for whoever toggled). Mirrors the drizzle history path.
+    const ordered = [...list]
+      .reverse()
+      .map((m) => ({ ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }))
     let start = 0
     if (before !== undefined) {
       const idx = ordered.findIndex((m) => m.id === before)
@@ -169,6 +184,50 @@ export class InMemoryDmRepository implements DmRepository {
     const nextIndex = start + limit
     const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
+  }
+
+  /** Aggregate a message's reactions into the wire summary, resolving `mine` for the viewer. */
+  private reactionsFor(messageId: string, viewerUserId: string | null): ReactionSummaryDTO[] {
+    const set = this.reactions.get(messageId)
+    if (!set || set.size === 0) return []
+    const counts = new Map<string, { count: number; mine: boolean }>()
+    for (const key of set) {
+      const sep = key.indexOf(":")
+      const uid = key.slice(0, sep)
+      const emoji = key.slice(sep + 1)
+      const cur = counts.get(emoji) ?? { count: 0, mine: false }
+      cur.count += 1
+      if (viewerUserId !== null && uid === viewerUserId) cur.mine = true
+      counts.set(emoji, cur)
+    }
+    return [...counts.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([emoji, v]) => ({ emoji: emoji as ReactionEmoji, count: v.count, mine: v.mine }))
+  }
+
+  findMessage(
+    threadId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
+    if (!stored) return Promise.resolve(null)
+    return Promise.resolve({ ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) })
+  }
+
+  toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
+    const set = this.reactions.get(messageId) ?? new Set<string>()
+    const key = `${userId}:${emoji}`
+    let present: boolean
+    if (set.has(key)) {
+      set.delete(key)
+      present = false
+    } else {
+      set.add(key)
+      present = true
+    }
+    this.reactions.set(messageId, set)
+    return Promise.resolve(present)
   }
 
   markRead(threadId: string, userId: string, at: Date): Promise<void> {

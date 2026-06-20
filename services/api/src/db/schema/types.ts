@@ -82,6 +82,17 @@ export const REPORT_CATEGORY_VALUES = [
   "other",
 ] as const
 
+/** reports.type (the fine-grained issue type). Mirrors shared ReportTypeSchema (REPORT_TYPE_VALUES). */
+export const REPORT_TYPE_VALUES = [
+  "dump",
+  "encampment",
+  "graffiti",
+  "infrastructure",
+  "pavement",
+  "vegetation",
+  "other",
+] as const
+
 /** reports.status / report_timeline.status. Mirrors shared ReportStatusSchema. */
 export const REPORT_STATUS_VALUES = [
   "submitted",

@@ -155,6 +155,7 @@ describe("anon submit abuse key is the real client IP (not a spoofed XFF)", () =
       idempotencyKey: "00000000-0000-4000-8000-000000000001",
       turnstileToken: "ok",
       category: "trash",
+      type: "dump",
       lat: 34.1,
       lng: -118.35,
       geomSource: "device",

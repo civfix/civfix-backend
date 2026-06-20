@@ -41,6 +41,7 @@ import type {
   GeomSource,
   LatLng,
   ReportCategory,
+  ReportType,
   ReportStatus,
 } from "@civfix/shared"
 import type { AbuseChecks } from "@civfix/shared/interfaces"
@@ -80,6 +81,7 @@ export interface CreateAnonReportTxArgs {
   geomSource: GeomSource
   jurisdictionGeoid: string | null
   category: ReportCategory
+  type: ReportType
   title: string | null
   description: string | null
   addr: string | null
@@ -305,6 +307,7 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         geomSource: input.geomSource,
         jurisdictionGeoid,
         category: input.category,
+        type: input.type,
         title: input.title ?? null,
         description: input.description ?? null,
         addr,

@@ -112,6 +112,7 @@ describe("POST /reports", () => {
       payload: {
         idempotencyKey: KEY_A,
         category: "graffiti",
+        type: "graffiti",
         description: "tag on the wall",
         lat: 34.1,
         lng: -118.35,
@@ -143,6 +144,7 @@ describe("POST /reports", () => {
       payload: {
         idempotencyKey: KEY_A,
         category: "trash",
+        type: "dump",
         lat: 33.95,
         lng: -118.35,
         geomSource: "device",
@@ -164,6 +166,7 @@ describe("POST /reports", () => {
       payload: {
         idempotencyKey: KEY_A,
         category: "trash",
+        type: "dump",
         addr: "NW corner by the bus stop",
         lat: 33.95,
         lng: -118.35,
@@ -199,6 +202,7 @@ describe("POST /reports", () => {
       payload: {
         idempotencyKey: KEY_A,
         category: "trash",
+        type: "dump",
         lat: 34.1,
         lng: -118.35,
         geomSource: "device",
@@ -225,6 +229,7 @@ describe("POST /reports", () => {
     const payload = {
       idempotencyKey: KEY_A,
       category: "trash",
+      type: "dump",
       lat: 34.1,
       lng: -118.35,
       geomSource: "device",
@@ -254,6 +259,7 @@ describe("POST /reports", () => {
       payload: {
         idempotencyKey: KEY_A,
         category: "trash",
+        type: "dump",
         lat: 34.1,
         lng: -118.35,
         geomSource: "device",
@@ -273,6 +279,7 @@ describe("POST /reports", () => {
       payload: {
         idempotencyKey: KEY_A,
         category: "not-a-category",
+        type: "dump",
         lat: 34.1,
         lng: -118.35,
         geomSource: "device",
@@ -292,6 +299,7 @@ describe("POST /reports", () => {
       payload: {
         idempotencyKey: KEY_A,
         category: "trash",
+        type: "dump",
         lat: 34.1,
         lng: -118.35,
         geomSource: "device",
@@ -418,6 +426,7 @@ describe("GET /reports (my reports)", () => {
         payload: {
           idempotencyKey: key,
           category: "trash",
+          type: "dump",
           lat: 34.1,
           lng: -118.35,
           geomSource: "device",

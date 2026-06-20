@@ -143,7 +143,7 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, anon_session_id, idempotency_key, geom, geom_source,
-              jurisdiction_geoid, category, title, description, addr, status, visibility, h3_cell,
+              jurisdiction_geoid, category, type, title, description, addr, status, visibility, h3_cell,
               claim_code, published_at
             ) VALUES (
               ${args.reportId},
@@ -154,6 +154,7 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
               ${args.geomSource},
               ${args.jurisdictionGeoid},
               ${args.category},
+              ${args.type},
               ${args.title},
               ${args.description},
               ${args.addr},

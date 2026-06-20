@@ -54,6 +54,7 @@ import type {
   ReportPinDTO,
   ReportStatus,
   ReportTimelineEntryDTO,
+  ReportType,
   ReportVisibility,
 } from "@civfix/shared"
 import { toLinkedEventRef, type LinkedEventView } from "./cleanup-service.js"
@@ -130,6 +131,8 @@ export interface ReportRecord {
   reporterUserId: string | null
   anonSessionId: string | null
   category: ReportCategory
+  /** Fine-grained issue type (0021); coexists with the coarser category. */
+  type: ReportType
   title: string | null
   description: string | null
   addr: string | null
@@ -150,6 +153,8 @@ export interface ReportMapPoint {
   lat: number
   lng: number
   category: ReportCategory
+  /** Fine-grained issue type (0021); carried onto the pin/search-row DTO alongside category. */
+  type: ReportType
   status: ReportStatus
   /** The report's headline (null when it has none) — carried through onto an individual pin's preview. */
   title: string | null
@@ -181,6 +186,8 @@ export interface CreateReportTxArgs {
   geomSource: GeomSource
   jurisdictionGeoid: string | null
   category: ReportCategory
+  /** Fine-grained issue type (0021), persisted alongside category on the report row. */
+  type: ReportType
   title: string | null
   description: string | null
   addr: string | null
@@ -279,6 +286,7 @@ export interface ReportRepository {
   findMapCandidates(
     bbox: BBox,
     categories: ReportCategory[] | null,
+    types: ReportType[] | null,
     cap: number,
   ): Promise<ReportMapPoint[]>
   /**
@@ -291,6 +299,7 @@ export interface ReportRepository {
   searchReports(args: {
     q: string | null
     categories: ReportCategory[] | null
+    types: ReportType[] | null
     cursor: string | null
     limit: number
   }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }>
@@ -319,6 +328,8 @@ export interface BBox {
 export interface ReportSearchInput {
   q?: string | undefined
   categories?: ReportCategory[] | undefined
+  /** Fine-grained type filter (0021); applied ALONGSIDE categories, not instead of it. */
+  types?: ReportType[] | undefined
   cursor?: string | undefined
   limit?: number | undefined
 }
@@ -375,6 +386,8 @@ export function clusterCellSizeDeg(zoom: number): number {
 export interface UnsignedReportPin {
   id: string
   category: ReportCategory
+  /** Fine-grained issue type (0021); projected onto ReportPinDTO.type by toMapPinDTO. */
+  type: ReportType
   lat: number
   lng: number
   status: ReportStatus
@@ -406,6 +419,7 @@ export function clusterByZoom(
     const pins: UnsignedReportPin[] = points.map((p) => ({
       id: p.id,
       category: p.category,
+      type: p.type,
       lat: p.lat,
       lng: p.lng,
       status: p.status,
@@ -518,6 +532,7 @@ export interface ReportService {
   listReportsInBBox(
     bbox: BBox,
     categories: ReportCategory[] | null,
+    types: ReportType[] | null,
     zoom: number,
   ): Promise<ReportClusterResponse>
   /**
@@ -567,6 +582,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     return {
       id: pin.id,
       category: pin.category,
+      type: pin.type,
       lat: pin.lat,
       lng: pin.lng,
       status: pin.status,
@@ -610,6 +626,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     return {
       id: record.id,
       category: record.category,
+      // Fine-grained type (0021): additive-optional on the DTO but always populated by the server.
+      type: record.type,
       ...(record.title !== null ? { title: record.title } : {}),
       ...(record.description !== null ? { description: record.description } : {}),
       ...(record.addr !== null ? { addr: record.addr } : {}),
@@ -705,6 +723,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         geomSource: input.geomSource,
         jurisdictionGeoid,
         category: input.category,
+        type: input.type,
         title: input.title ?? null,
         description: input.description ?? null,
         addr,
@@ -823,11 +842,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     async listReportsInBBox(
       bbox: BBox,
       categories: ReportCategory[] | null,
+      types: ReportType[] | null,
       zoom: number,
     ): Promise<ReportClusterResponse> {
       // Fetch a capped candidate set (published + public + not deleted, inside the bbox). Clustering and
       // counting are pure functions over this set, so the heavy lifting is unit-testable without a DB.
-      const points = await deps.repo.findMapCandidates(bbox, categories, MAP_REPORTS_CANDIDATE_CAP)
+      const points = await deps.repo.findMapCandidates(bbox, categories, types, MAP_REPORTS_CANDIDATE_CAP)
       const { clusters, pins: unsignedPins } = clusterByZoom(points, zoom)
       const counts = countByCategory(points)
 
@@ -855,10 +875,13 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const q = request.q?.trim() ? request.q.trim() : null
       const categories =
         request.categories !== undefined && request.categories.length > 0 ? request.categories : null
+      // Fine-grained type filter (0021): applied ALONGSIDE categories. undefined/empty => no type filter.
+      const types =
+        request.types !== undefined && request.types.length > 0 ? request.types : null
       const cursor = request.cursor ?? null
       const limit = request.limit ?? REPORTS_SEARCH_DEFAULT_LIMIT
 
-      const { points, nextCursor } = await deps.repo.searchReports({ q, categories, cursor, limit })
+      const { points, nextCursor } = await deps.repo.searchReports({ q, categories, types, cursor, limit })
 
       // Each candidate point already carries the report's first-photo key pair + title + description; render
       // it through toMapPinDTO (presigns the thumb, carries title/description). The clusterer is not involved
@@ -868,6 +891,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           toMapPinDTO({
             id: p.id,
             category: p.category,
+            type: p.type,
             lat: p.lat,
             lng: p.lng,
             status: p.status,

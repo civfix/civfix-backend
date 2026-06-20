@@ -54,6 +54,15 @@ import type { ChatPresence } from "../adapters/chat-presence.js"
 import { presentedSessionToken, SESSION_COOKIE } from "../auth/transport.js"
 import { isProd } from "../env.js"
 import { randomUUID } from "node:crypto"
+import { parseUserMentions } from "../services/discussion-mentions.js"
+
+/**
+ * Parse @handle tokens from a chat/dm send-frame body for USER @-mentions. Thin alias over the shared pure
+ * parser (discussion-mentions.parseUserMentions) so chat + discussion extract handles with IDENTICAL rules.
+ */
+function parseSendMentions(body: string): string[] {
+  return parseUserMentions(body)
+}
 
 /** Heartbeat interval (ms): ping idle sockets so dead connections are detected and reaped. */
 export const WS_HEARTBEAT_MS = 30_000
@@ -173,6 +182,33 @@ export type OnDmDelivered = (
 ) => Promise<void>
 
 /**
+ * The chat @-mention seam the gateway drives on a `send` frame, wired in chat.routes. Split into three
+ * optional hooks so the cleanup-only/legacy tests need not wire any of it (a `send` then simply carries no
+ * mentions, exactly as before B2). All run AFTER persist, so a mention failure can never block the message:
+ *
+ *   - resolveChatMentions: parse @handles (from the body) + the frame's mentionedUserIds → real users
+ *     (UserMentionDTO[]), self excluded. Anyone may be named; blocks/prefs gate only the NOTIFICATION.
+ *   - recordChatMentions: persist the resolved user ids to chat_message_mentions (the message id is a
+ *     globally-unique uuid across cleanup + dm, so one table serves both rooms).
+ *   - notifyChatMention: best-effort per-mentioned-user bell (block + pref gated by the wiring).
+ */
+export interface GatewayChatMentions {
+  resolveChatMentions(input: {
+    handles: string[]
+    userIds: string[]
+    authorUserId: string
+  }): Promise<import("@civfix/shared").UserMentionDTO[]>
+  recordChatMentions(messageId: string, mentionedUserIds: string[]): Promise<void>
+  notifyChatMention(input: {
+    kind: RoomKind
+    roomId: string
+    actorUserId: string
+    mentionedUserId: string
+    message: import("@civfix/shared").ChatMessageDTO
+  }): Promise<void>
+}
+
+/**
  * The ChatService the gateway drives. Identical to the shared ChatService except `broadcast` accepts an
  * OPTIONAL excludeConnId so the gateway can keep the sender out of the broadcast fan-out (it learns
  * durability from the ack instead, P1-2). A 2-arg ChatService.broadcast is assignable here (fewer
@@ -208,6 +244,12 @@ export interface GatewayDeps {
    * breaks the send path.
    */
   onDmDelivered?: OnDmDelivered | undefined
+  /**
+   * Optional chat @-mention seam (chat.routes). When wired, a `send` frame's @handles + mentionedUserIds are
+   * resolved, persisted to chat_message_mentions, projected onto the broadcast/ack ChatMessageDTO.mentions,
+   * and the mentioned users are notified (block/pref gated). Absent ⇒ no mention handling (legacy behavior).
+   */
+  chatMentions?: GatewayChatMentions | undefined
 }
 
 /**
@@ -498,6 +540,39 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
           clientId: frame.clientId,
         })
       }
+      // USER @-mentions (B2): parse the body's @handles + the frame's mentionedUserIds, resolve to real
+      // users (self excluded), persist them to chat_message_mentions, and PROJECT them onto the message DTO
+      // so the broadcast + ack already carry message.mentions (no refetch needed). All AFTER persist, so a
+      // mention failure can never block the message: the resolve/record is awaited (the persisted mentions
+      // must be on the broadcast copy), but it is wrapped so a failure degrades to "no mentions" rather than
+      // failing the send. The per-user bell is fired below (fire-and-forget). No-op when the seam is unwired.
+      let mentions: import("@civfix/shared").UserMentionDTO[] = []
+      if (deps.chatMentions) {
+        const { chatMentions } = deps
+        const handles = parseSendMentions(frame.body)
+        const userIds = frame.mentionedUserIds ?? []
+        if (handles.length > 0 || userIds.length > 0) {
+          try {
+            mentions = await chatMentions.resolveChatMentions({
+              handles,
+              userIds,
+              authorUserId: userId,
+            })
+            if (mentions.length > 0) {
+              await chatMentions.recordChatMentions(
+                message.id,
+                mentions.map((m) => m.id),
+              )
+            }
+          } catch {
+            mentions = []
+          }
+        }
+      }
+      // Project the resolved mentions onto the message so the broadcast + ack carry them (the persist seam
+      // returns an empty `mentions: []`, the B1 placeholder; this replaces it with the resolved set).
+      if (mentions.length > 0) message = { ...message, mentions }
+
       // Broadcast to the room EXCEPT this sender's socket (P1-2): the sender would otherwise get both the
       // broadcast {type:"message"} frame AND the {type:"ack"} below for the same id and render it twice.
       // excludeConnId keeps the sender out of the fan-out; the sender reconciles its optimistic bubble
@@ -507,6 +582,24 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
       // Ack the SENDER directly with the clientId so its optimistic bubble is reconciled. This is the
       // sender's ONLY copy of the message (exactly-once delivery to the sender).
       conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
+      // Best-effort per-mentioned-user bell (one fire per resolved mention, the author already excluded by
+      // the resolver). Fully fire-and-forget: it runs after the message is durably persisted + delivered +
+      // acked, so a notify failure must NEVER affect the send path. The wiring applies block + pref gating.
+      if (deps.chatMentions && mentions.length > 0) {
+        const { chatMentions } = deps
+        const captured = message
+        for (const m of mentions) {
+          void chatMentions
+            .notifyChatMention({
+              kind,
+              roomId: id,
+              actorUserId: userId,
+              mentionedUserId: m.id,
+              message: captured,
+            })
+            .catch(() => {})
+        }
+      }
       // Best-effort thread-unread signal: fire a {topic:"threads", id} invalidate-signal to the message
       // recipients (so a participant WITHOUT the room open gets an unread bump). Fully fire-and-forget —
       // it runs after the message is durably persisted + delivered + acked, so a resolver/publish failure
@@ -751,6 +844,8 @@ export interface RegisterGatewayOptions {
    * is NOT actively viewing the dm room (presence-suppressed by the gateway). See OnDmDelivered.
    */
   onDmDelivered?: OnDmDelivered | undefined
+  /** Optional chat @-mention seam: resolve/persist/notify on a `send` frame. See GatewayChatMentions. */
+  chatMentions?: GatewayChatMentions | undefined
   /** CORS/WS Origin allowlist (env.WEB_ORIGINS). Empty allows all (dev). See isAllowedWsOrigin. */
   webOrigins: readonly string[]
 }
@@ -797,6 +892,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           userChannel: opts.userChannel,
           threadRecipientsOf: opts.threadRecipientsOf,
           onDmDelivered: opts.onDmDelivered,
+          chatMentions: opts.chatMentions,
         },
       }
 

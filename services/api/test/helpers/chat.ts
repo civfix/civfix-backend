@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto"
 import { avatarGradient } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import type { ChatMessageDTO } from "@civfix/shared"
+import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
 import type { ChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 
@@ -38,6 +38,8 @@ export class InMemoryChatRepository implements ChatRepository {
   private readonly log = new Map<string, StoredMessage[]>()
   /** userId -> sender person fields, so `from` resolves. */
   private readonly senders = new Map<string, ChatSender>()
+  /** messageId -> set of `${userId}:${emoji}` reaction keys (mirrors the chat_message_reactions PK). */
+  private readonly reactions = new Map<string, Set<string>>()
   /** Monotonic clock so created_at ordering is deterministic across inserts. */
   private tick = 0
 
@@ -74,6 +76,11 @@ export class InMemoryChatRepository implements ChatRepository {
       ...(input.body !== undefined ? { body: input.body } : {}),
       kind: input.kind ?? "text",
       attachments: input.attachments ?? null,
+      reactions: [],
+      // No persisted mentions on a fresh insert; the gateway projects a send's resolved @-mentions onto its
+      // broadcast/ack copy. This in-memory repo keeps no mention store (mention reads are covered offline by
+      // the gateway test's injected chatMentions seam + the discussion fake; history mentions need the DB).
+      mentions: [],
       createdAt: this.nextDate().toISOString(),
       editedAt: null,
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
@@ -97,6 +104,50 @@ export class InMemoryChatRepository implements ChatRepository {
     const nextIndex = start + limit
     const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
+  }
+
+  /** Aggregate a message's reactions into the wire summary, resolving `mine` for the viewer. */
+  private reactionsFor(messageId: string, viewerUserId: string | null): ReactionSummaryDTO[] {
+    const set = this.reactions.get(messageId)
+    if (!set || set.size === 0) return []
+    const counts = new Map<string, { count: number; mine: boolean }>()
+    for (const key of set) {
+      const sep = key.indexOf(":")
+      const uid = key.slice(0, sep)
+      const emoji = key.slice(sep + 1)
+      const cur = counts.get(emoji) ?? { count: 0, mine: false }
+      cur.count += 1
+      if (viewerUserId !== null && uid === viewerUserId) cur.mine = true
+      counts.set(emoji, cur)
+    }
+    return [...counts.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([emoji, v]) => ({ emoji: emoji as ReactionEmoji, count: v.count, mine: v.mine }))
+  }
+
+  findMessage(
+    cleanupId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    const stored = (this.log.get(cleanupId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
+    if (!stored) return Promise.resolve(null)
+    return Promise.resolve({ ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) })
+  }
+
+  toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
+    const set = this.reactions.get(messageId) ?? new Set<string>()
+    const key = `${userId}:${emoji}`
+    let present: boolean
+    if (set.has(key)) {
+      set.delete(key)
+      present = false
+    } else {
+      set.add(key)
+      present = true
+    }
+    this.reactions.set(messageId, set)
+    return Promise.resolve(present)
   }
 
   /** Test helper: soft-delete a message (so history excludes it). */

@@ -46,6 +46,7 @@ import type {
   EventKind,
   ReportCategory,
   ReportStatus,
+  ReportType,
 } from "@civfix/shared"
 
 /** Shape of a cleanup row as selected back (geom decoded, organizer joined, going counted). */
@@ -323,6 +324,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           cleanup_id: string
           id: string
           category: ReportCategory
+          type: ReportType
           title: string | null
           status: ReportStatus
           lng: number
@@ -336,6 +338,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           cr.cleanup_id,
           r.id,
           r.category,
+          r.type,
           r.title,
           r.status,
           ST_X(r.geom) AS lng,
@@ -363,6 +366,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           cleanupId: r.cleanup_id,
           id: r.id,
           category: r.category,
+          type: r.type,
           title: r.title,
           status: r.status,
           lat: r.lat,

@@ -154,6 +154,7 @@ function anonPayload(over: Record<string, unknown> = {}): Record<string, unknown
     idempotencyKey: KEY_A,
     turnstileToken: "ok",
     category: "trash",
+    type: "dump",
     lat: 34.1,
     lng: -118.35,
     geomSource: "device",

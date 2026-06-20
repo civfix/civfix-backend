@@ -36,7 +36,7 @@ import type {
   ReportTimelineView,
 } from "./report-service.js"
 import { REPORT_CREATE_SCOPE } from "./report-service.js"
-import type { ReportDTO, ReportCategory, ReportStatus } from "@civfix/shared"
+import type { ReportDTO, ReportCategory, ReportStatus, ReportType } from "@civfix/shared"
 
 /** Postgres unique-violation SQLSTATE; surfaced on the idempotency-key race. */
 const PG_UNIQUE_VIOLATION = "23505"
@@ -47,6 +47,7 @@ interface ReportRowSelect {
   reporter_user_id: string | null
   anon_session_id: string | null
   category: ReportCategory
+  type: ReportType
   title: string | null
   description: string | null
   addr: string | null
@@ -68,6 +69,7 @@ function toRecord(r: ReportRowSelect): ReportRecord {
     reporterUserId: r.reporter_user_id,
     anonSessionId: r.anon_session_id,
     category: r.category,
+    type: r.type,
     title: r.title,
     description: r.description,
     addr: r.addr,
@@ -86,7 +88,7 @@ function toRecord(r: ReportRowSelect): ReportRecord {
 /** The SELECT list (with geom decoded) shared by every report read. */
 function reportColumns(sql: Queryable) {
   return sql`
-    id, reporter_user_id, anon_session_id, category, title, description, addr, status, visibility,
+    id, reporter_user_id, anon_session_id, category, type, title, description, addr, status, visibility,
     ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, jurisdiction_geoid,
     created_at, published_at, deleted_at
   `
@@ -243,7 +245,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, idempotency_key, geom, geom_source, jurisdiction_geoid,
-              category, title, description, addr, status, visibility, h3_cell, published_at
+              category, type, title, description, addr, status, visibility, h3_cell, published_at
             ) VALUES (
               ${args.reportId},
               ${args.reporterUserId},
@@ -252,6 +254,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
               ${args.geomSource},
               ${args.jurisdictionGeoid},
               ${args.category},
+              ${args.type},
               ${args.title},
               ${args.description},
               ${args.addr},
@@ -432,6 +435,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async findMapCandidates(
       bbox: BBox,
       categories: ReportCategory[] | null,
+      types: ReportType[] | null,
       cap: number,
     ): Promise<ReportMapPoint[]> {
       // Published + public + not deleted points inside the bbox envelope. ORDER BY recency so that when
@@ -440,6 +444,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         categories !== null && categories.length > 0
           ? sql`AND r.category IN ${sql(categories)}`
           : sql``
+      // Fine-grained type filter (0021): applied ALONGSIDE the category filter (AND), mirroring it.
+      const typeFilter =
+        types !== null && types.length > 0 ? sql`AND r.type IN ${sql(types)}` : sql``
       // First-photo preview per pin: a LATERAL subquery picks the report's earliest VISIBLE (`ready`)
       // media — the same status visibility the public detail read uses (held/rejected/validating stay
       // hidden) — ordered exactly like findMediaForReport (created_at ASC, id ASC). We project its key
@@ -452,6 +459,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           lng: number
           lat: number
           category: ReportCategory
+          type: ReportType
           status: ReportStatus
           title: string | null
           description: string | null
@@ -464,6 +472,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           ST_X(r.geom) AS lng,
           ST_Y(r.geom) AS lat,
           r.category,
+          r.type,
           r.status,
           r.title,
           r.description,
@@ -487,6 +496,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
                 ST_MakeEnvelope(${bbox.west}, ${bbox.south}, ${bbox.east}, ${bbox.north}, 4326)
               )
           ${categoryFilter}
+          ${typeFilter}
         ORDER BY r.created_at DESC
         LIMIT ${cap}
       `
@@ -495,6 +505,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         lat: r.lat,
         lng: r.lng,
         category: r.category,
+        type: r.type,
         status: r.status,
         title: r.title,
         description: r.description,
@@ -506,6 +517,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async searchReports(args: {
       q: string | null
       categories: ReportCategory[] | null
+      types: ReportType[] | null
       cursor: string | null
       limit: number
     }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }> {
@@ -525,6 +537,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         args.categories !== null && args.categories.length > 0
           ? sql`AND r.category IN ${sql(args.categories)}`
           : sql``
+      // Fine-grained type filter (0021): applied ALONGSIDE the category filter (AND), mirroring it.
+      const typeFilter =
+        args.types !== null && args.types.length > 0
+          ? sql`AND r.type IN ${sql(args.types)}`
+          : sql``
       // ILIKE text filter on title OR addr. Escape the LIKE metacharacters (\, %, _) in the user needle so a
       // literal % / _ does not act as a wildcard, then surround with %…% for a substring match. ESCAPE '\'
       // makes the backslash the explicit escape char. Skipped entirely when q is null (no text narrowing).
@@ -541,6 +558,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           lng: number
           lat: number
           category: ReportCategory
+          type: ReportType
           status: ReportStatus
           title: string | null
           description: string | null
@@ -554,6 +572,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           ST_X(r.geom) AS lng,
           ST_Y(r.geom) AS lat,
           r.category,
+          r.type,
           r.status,
           r.title,
           r.description,
@@ -574,6 +593,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           AND r.visibility = 'public'
           AND r.deleted_at IS NULL
           ${categoryFilter}
+          ${typeFilter}
           ${textFilter}
           ${cursorFilter}
         ORDER BY r.created_at DESC, r.id DESC
@@ -588,6 +608,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         lat: r.lat,
         lng: r.lng,
         category: r.category,
+        type: r.type,
         status: r.status,
         title: r.title,
         description: r.description,
