@@ -246,7 +246,29 @@ export async function registerChatRoutes(
     (container.env.USE_FAKE_CHAT || !notificationService
       ? undefined
       : {
-          resolveChatMentions: (input) => resolveMentionTargets(container.getDb().sql, input),
+          resolveChatMentions: async (input) => {
+            const resolved = await resolveMentionTargets(container.getDb().sql, {
+              handles: input.handles,
+              userIds: input.userIds,
+              authorUserId: input.authorUserId,
+            })
+            if (resolved.length === 0) return resolved
+            // ROOM SCOPE: you can only @-tag someone who is IN this room — a cleanup MEMBER for the group
+            // chat, or the PEER for a dm. A non-member handle resolves to a real user but is dropped here, so
+            // it is never persisted / projected onto the message / notified (the rendered mention chip stays
+            // honest). The notify hook also re-checks membership; this is the authoritative scope.
+            if (input.kind === "dm") {
+              const peer = await dmGatewayDeps.peerOf(input.roomId, input.authorUserId)
+              return peer !== null ? resolved.filter((m) => m.id === peer) : []
+            }
+            const memberIds = new Set(
+              await makeDrizzleCleanupRepository(container.getDb().sql).listMemberIds(
+                input.roomId,
+                THREAD_SIGNAL_MEMBER_CAP,
+              ),
+            )
+            return resolved.filter((m) => memberIds.has(m.id))
+          },
           recordChatMentions: async (messageId, mentionedUserIds) => {
             // One table for cleanup + dm (message id is a globally-unique uuid). Composite PK de-dupes; the
             // service already de-duped + self-excluded the ids.

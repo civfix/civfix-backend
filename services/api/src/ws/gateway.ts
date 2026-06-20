@@ -197,6 +197,10 @@ export interface GatewayChatMentions {
     handles: string[]
     userIds: string[]
     authorUserId: string
+    /** The room being posted to — so the resolver can SCOPE mentions to people IN that room (a cleanup
+     *  member for cleanup chat, the peer for a dm). A non-member @handle resolves to nothing. */
+    kind: RoomKind
+    roomId: string
   }): Promise<import("@civfix/shared").UserMentionDTO[]>
   recordChatMentions(messageId: string, mentionedUserIds: string[]): Promise<void>
   notifyChatMention(input: {
@@ -557,6 +561,8 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
               handles,
               userIds,
               authorUserId: userId,
+              kind,
+              roomId: id,
             })
             if (mentions.length > 0) {
               await chatMentions.recordChatMentions(
