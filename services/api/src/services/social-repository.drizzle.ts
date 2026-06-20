@@ -276,6 +276,27 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       return rows[0] ? toPersonView(rows[0]) : null
     },
 
+    async findPersonByHandle(handle: string): Promise<PersonView | null> {
+      // `handle` is CITEXT, so `u.handle = ${handle}` is case-insensitive at the DB. Backs the
+      // /people/<handle> deep link; same projection/filters as findPersonById (non-deleted only).
+      const rows = await sql<PersonRowSelect[]>`
+        SELECT
+          u.id,
+          u.display_name,
+          u.handle,
+          u.bio,
+          (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
+          (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
+          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
+          am.r2_key AS avatar_r2_key
+        FROM users u
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
+        WHERE u.handle = ${handle} AND u.deleted_at IS NULL
+        LIMIT 1
+      `
+      return rows[0] ? toPersonView(rows[0]) : null
+    },
+
     async isFollowing(followerId: string, followeeId: string): Promise<boolean> {
       const rows = await sql<{ one: number }[]>`
         SELECT 1 AS one FROM follows_people

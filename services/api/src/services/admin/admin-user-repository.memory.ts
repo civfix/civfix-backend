@@ -62,6 +62,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     risk?: AdminUserRecord["risk"]
     flagged?: boolean
     flagReason?: string | null
+    verified?: boolean
     deletedAt?: Date | null
   }): AdminUserRecord {
     const id = input.id ?? randomUUID()
@@ -84,6 +85,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       risk: input.risk ?? "low",
       flagged: input.flagged ?? false,
       flagReason: input.flagReason ?? null,
+      verified: input.verified ?? false,
       deletedAt: input.deletedAt ?? null,
     }
     this.users.set(id, record)
@@ -269,6 +271,21 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       target: `user:${id}`,
       meta: { role: input.role },
     })
+  }
+
+  async setVerified(
+    id: string,
+    input: { verified: boolean; actorId: string | null },
+  ): Promise<boolean> {
+    const r = this.users.get(id)
+    if (!r) return false
+    r.verified = input.verified
+    this.audits.push({
+      action: input.verified ? "user.verified" : "user.unverified",
+      target: `user:${id}`,
+      meta: {},
+    })
+    return true
   }
 
   async removeUserMessage(

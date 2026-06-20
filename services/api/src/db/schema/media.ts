@@ -40,6 +40,13 @@ export const mediaAssets = pgTable(
       () => reportDiscussionMessages.id,
       { onDelete: "set null" },
     ),
+    // Chat/DM-message attachment (0025). Holds a cleanup-chat OR dm message id (both globally-unique uuids;
+    // one column serves both kinds). Intentionally NOT a foreign key: chat_messages/dm_messages are
+    // RANGE-partitioned with a composite PK(id, created_at), so there is no single-column key to reference -
+    // same rationale as chat_message_reactions/mentions. App-level integrity; the attach UPDATE guards on it
+    // being unclaimed, and messages soft-delete (deleted_at) rather than hard-delete, so there is nothing to
+    // cascade. Do NOT overload report_id/discussion_message_id.
+    chatMessageId: uuid("chat_message_id"),
     uploadId: uuid("upload_id").notNull(),
     kind: text("kind").$type<MediaKind>().notNull(),
     codec: text("codec"),
@@ -60,6 +67,7 @@ export const mediaAssets = pgTable(
     uniqueIndex("media_assets_upload_id_key").on(t.uploadId),
     index("media_assets_report_idx").on(t.reportId),
     index("media_assets_discussion_message_idx").on(t.discussionMessageId),
+    index("media_assets_chat_message_idx").on(t.chatMessageId),
     index("media_assets_status_idx").on(t.status),
     index("media_assets_phash_idx").on(t.phash),
   ],

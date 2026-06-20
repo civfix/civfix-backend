@@ -12,7 +12,8 @@
  *   - `deleted_at` is a soft-delete tombstone; rows are not hard-deleted.
  *
  * The hand-authored SQL is the DDL source of truth: services/api/drizzle/0001_core.sql for the base
- * table and 0003_users_email.sql for the email columns + partial unique index added in this step.
+ * table, 0003_users_email.sql for the email columns + partial unique index, and 0026_user_handle_required.sql
+ * for the NOT NULL handle (with a format CHECK) + the `handle_changed_at` rename-cooldown clock.
  */
 
 import { sql } from "drizzle-orm"
@@ -29,7 +30,12 @@ export const users = pgTable(
       .default(sql`gen_random_uuid()`),
     role: text("role").$type<Role>().notNull().default("citizen"),
     displayName: text("display_name").notNull(),
-    handle: citext("handle"),
+    // CITEXT, uniquely indexed, and NOT NULL after 0026 (every account has a @handle: real signups choose
+    // one in first-run registration; pre-existing/placeholder rows are backfilled with 'user'+12 hex of id).
+    handle: citext("handle").notNull(),
+    // The rolling-30-day rename cooldown clock (0026). NULL => never renamed (changeable now). Stamped only
+    // by a rename made AFTER profile_complete=true; the handle chosen during first-run registration does NOT.
+    handleChangedAt: timestamp("handle_changed_at", { withTimezone: true }),
     email: citext("email"),
     emailVerified: boolean("email_verified").notNull().default(false),
     bio: text("bio"),

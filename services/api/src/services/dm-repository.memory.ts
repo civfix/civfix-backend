@@ -127,7 +127,9 @@ export class InMemoryDmRepository implements DmRepository {
       },
       body: input.body,
       kind: input.kind ?? "text",
-      attachments: input.attachments ?? null,
+      // The in-memory dev/test repo has no media_assets / presign pipeline, so it cannot resolve
+      // `input.mediaUploadIds` into real MediaDTOs - a media send over the offline path echoes with none.
+      attachments: null,
       reactions: [],
       // No persisted mentions on a fresh insert; the gateway projects a send's resolved @-mentions onto its
       // broadcast/ack copy (this in-memory repo keeps no mention store, the dev-path mention bell being moot).

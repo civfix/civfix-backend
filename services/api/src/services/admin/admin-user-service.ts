@@ -79,6 +79,8 @@ export interface AdminUserRecord {
   risk: Risk
   flagged: boolean
   flagReason: string | null
+  /** Whether the account is a "verified neighbor" (a user_verification row with status='verified'). */
+  verified: boolean
   /** When the user self-deleted (tombstoned) their account; null for a live account. Admin keeps the
    *  real identity and only SEES the tombstone via this flag. */
   deletedAt: Date | null
@@ -177,6 +179,15 @@ export interface AdminUserRepository {
   /** Record a user.role_changed audit row (the role itself is written via the injected SetUserRole). */
   recordRoleAudit(id: string, input: { role: Role; actorId: string | null }): Promise<void>
   /**
+   * Set the user's "verified neighbor" status (after a verification call). `verified:true` upserts a
+   * user_verification row with status='verified'; `verified:false` removes it. Audited in the same
+   * transaction. Returns false when the user does not exist.
+   */
+  setVerified(
+    id: string,
+    input: { verified: boolean; actorId: string | null },
+  ): Promise<boolean>
+  /**
    * Operator soft-delete (tombstone) of one of a user's chat messages, scoped to the user as the sender.
    * Audits "message.removed" in the same transaction. Returns true on success, false when the message does
    * not exist for that user (or was already removed). Distinct from the citizen self-delete: an operator
@@ -263,6 +274,8 @@ export interface AdminUserService {
     input: { status: UserStatus; reason: string | null; actorId: string | null },
   ): Promise<{ revokedSessions: number }>
   setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void>
+  /** Set the user's verified-neighbor status (true=verify, false=unverify). 404 when the user is absent. */
+  setVerified(id: string, input: { verified: boolean; actorId: string | null }): Promise<void>
   /** Operator removes (tombstones) one of a user's chat messages. 404 when the message does not exist. */
   removeMessage(
     userId: string,
@@ -321,7 +334,12 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       const ref = now()
       const record = await deps.repo.getUser(id)
       if (!record) throw AppError.notFound("User not found")
-      return { ...toListItem(record, ref), role: record.role, messages: record.messages }
+      return {
+        ...toListItem(record, ref),
+        role: record.role,
+        messages: record.messages,
+        verificationStatus: record.verified ? "verified" : "unverified",
+      }
     },
 
     async getReports(query: UserSubListQuery): Promise<UserReportsResponse> {
@@ -418,6 +436,14 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       // the change (an operator demotion takes effect immediately; the victim must re-auth). Revoking on
       // every role change is the simplest correct policy and strictly safer than only-on-downgrade.
       await deps.sessions.revokeAll(id)
+    },
+
+    async setVerified(
+      id: string,
+      input: { verified: boolean; actorId: string | null },
+    ): Promise<void> {
+      const ok = await deps.repo.setVerified(id, input)
+      if (!ok) throw AppError.notFound("User not found")
     },
 
     async removeMessage(

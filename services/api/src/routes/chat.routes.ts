@@ -31,6 +31,7 @@ import { route } from "../versioning/route.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { makeDrizzleChatRepository, type ChatRepository } from "../services/chat-repository.drizzle.js"
+import { makeMediaPresigner } from "../services/media-presign.js"
 import {
   registerChatGateway,
   type GatewayChatMentions,
@@ -136,6 +137,9 @@ export async function registerChatRoutes(
   // allowed (a test may inject only one); the other falls back to the container singleton.
   const blocksRepo: BlocksRepository = overrides?.blocksRepo ?? container.getBlocksRepo()
   const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
+  // Media presigner for the reaction/soft-delete repos below, so a recomputed/tombstoned message projects
+  // its attachments (the gateway's send path gets its presigner from the DI container's chat service).
+  const presignMedia = makeMediaPresigner(container.storage)
 
   // The notification service backs the dm BELL notification (a `type:"dm"` row + the normal inline push)
   // and the cleanup/dm read-path CLEARS. Built LOCALLY here (the same per-request construction pattern
@@ -396,7 +400,7 @@ export async function registerChatRoutes(
         messageId,
       })
       const chatRepo: ChatRepository =
-        overrides?.chatRepo ?? makeDrizzleChatRepository(container.getDb().sql)
+        overrides?.chatRepo ?? makeDrizzleChatRepository(container.getDb().sql, presignMedia)
       const reactions = makeChatReactionService({
         chat: chatRepo,
         dm: dmRepo,

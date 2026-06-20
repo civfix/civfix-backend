@@ -22,6 +22,7 @@ function userRecord(over: Partial<UserRecord> = {}): UserRecord {
     role: "citizen",
     displayName: "Jane Neighbor",
     handle: "jane",
+    handleChangedAt: null,
     email: "jane@example.com",
     emailVerified: true,
     avatarUrl: null,

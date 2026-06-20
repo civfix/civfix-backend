@@ -241,10 +241,21 @@ describe("GET /people/:id (profile)", () => {
     expect(res.statusCode).toBe(404)
   })
 
-  it("422s a non-UUID id", async () => {
+  it("resolves a non-UUID :id as an @handle (handle deep link)", async () => {
+    const { app } = await makeHarness((repo) => {
+      repo.seedUser({ id: OTHER, displayName: "Pro", handle: "pro_neighbor" })
+    })
+    // /people/<handle> resolves by handle (citext, case-insensitive); the UUID id stays a hidden key.
+    const res = await app.inject({ method: "GET", url: "/v1/people/Pro_Neighbor" })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().profile.handle).toBe("pro_neighbor")
+    expect(res.json().profile.id).toBe(OTHER)
+  })
+
+  it("404s an unknown @handle", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/v1/people/not-a-uuid" })
-    expect(res.statusCode).toBe(422)
+    const res = await app.inject({ method: "GET", url: "/v1/people/nobody_here" })
+    expect(res.statusCode).toBe(404)
   })
 })
 

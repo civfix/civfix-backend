@@ -710,3 +710,72 @@ describe("POST/DELETE /reports/:id/follow", () => {
     expect(res.statusCode).toBe(401)
   })
 })
+
+describe("POST /reports/:id/resolve", () => {
+  it("the owner marks their report resolved and gets back the updated ReportDTO", async () => {
+    // Seed AFTER the harness signs the user in, so the report is owned by the signed-in user's real id.
+    const { app, repo, token, userId } = await makeHarness()
+    const r = repo.seedReport({ reporterUserId: userId, status: "published" })
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/reports/${r.id}/resolve`,
+      headers: auth(token),
+      payload: { resolved: true },
+    })
+    expect(res.statusCode).toBe(200)
+    const dto = res.json()
+    expect(dto.status).toBe("resolved")
+    expect(dto.mine).toBe(true)
+    expect(repo.reports.get(r.id)!.status).toBe("resolved")
+  })
+
+  it("the owner reopens a resolved report (back to published)", async () => {
+    const { app, repo, token, userId } = await makeHarness()
+    const r = repo.seedReport({ reporterUserId: userId, status: "resolved" })
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/reports/${r.id}/resolve`,
+      headers: auth(token),
+      payload: { resolved: false },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().status).toBe("published")
+  })
+
+  it("403s when the caller does not own the report", async () => {
+    const { app, repo, token } = await makeHarness()
+    const r = repo.seedReport({ reporterUserId: "someone-else", status: "published" })
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/reports/${r.id}/resolve`,
+      headers: auth(token),
+      payload: { resolved: true },
+    })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it("404s resolving a missing report", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/reports/00000000-0000-0000-0000-000000000000/resolve",
+      headers: auth(token),
+      payload: { resolved: true },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("401s an anonymous resolve", async () => {
+    const { app, repo, userId } = await makeHarness()
+    const r = repo.seedReport({ reporterUserId: userId })
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/reports/${r.id}/resolve`,
+      payload: { resolved: true },
+    })
+    expect(res.statusCode).toBe(401)
+  })
+})

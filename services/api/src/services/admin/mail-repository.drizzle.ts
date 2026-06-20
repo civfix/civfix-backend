@@ -277,6 +277,7 @@ export function toThreadListItem(
     id: thread.id,
     dir: latest?.direction ?? "out",
     from: latest?.fromAddr ?? "",
+    to: latest?.toAddr ?? "",
     org: thread.org ?? "",
     subject: thread.subject ?? "",
     preview: latest?.body ?? "",
@@ -293,6 +294,9 @@ export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
     id: message.id,
     who: deriveWho(message.direction, message.fromAddr),
     from: message.fromAddr ?? "",
+    // The recipient address (the OUT row's to_addr). Empty for inbound (we are the recipient) or when
+    // unknown; it is what lets the admin reader name who an outbound-only thread was sent to.
+    to: message.toAddr ?? "",
     dir: message.direction,
     body: message.body ?? "",
     ts: message.createdAt.toISOString(),
@@ -651,15 +655,17 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         (ThreadRowSelect & {
           lm_direction: MailDirection | null
           lm_from_addr: string | null
+          lm_to_addr: string | null
           lm_body: string | null
         })[]
       >`
         SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.org, t.subject, t.status,
                t.unread, t.last_message_at, t.created_at,
-               lm.direction AS lm_direction, lm.from_addr AS lm_from_addr, lm.body AS lm_body
+               lm.direction AS lm_direction, lm.from_addr AS lm_from_addr, lm.to_addr AS lm_to_addr,
+               lm.body AS lm_body
         FROM mail_threads t
         LEFT JOIN LATERAL (
-          SELECT direction, from_addr, body
+          SELECT direction, from_addr, to_addr, body
           FROM mail_messages m
           WHERE m.thread_id = t.id
           ORDER BY m.created_at DESC, m.id DESC
@@ -685,7 +691,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
                 threadId: r.id,
                 direction: r.lm_direction,
                 fromAddr: r.lm_from_addr,
-                toAddr: null,
+                toAddr: r.lm_to_addr,
                 subject: null,
                 body: r.lm_body,
                 attachments: [],

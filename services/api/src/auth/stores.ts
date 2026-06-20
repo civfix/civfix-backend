@@ -13,7 +13,34 @@
  */
 
 import { randomUUID } from "node:crypto"
+import { AppError, HANDLE_REGEX } from "@civfix/shared"
 import type { Role } from "@civfix/shared"
+
+/** The rolling rename cooldown: a @handle changed AFTER profile completion locks for 30 days. */
+export const HANDLE_RENAME_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * Compute the next ISO timestamp a @handle may be changed, or null when it is changeable now. Shared by
+ * toUserDTO (the client-facing handleChangeableAt) and the store's cooldown enforcement. null when
+ * handle_changed_at is null (never renamed) OR the 30-day window has already elapsed.
+ */
+export function handleChangeableAtFrom(handleChangedAt: Date | null, now: Date): string | null {
+  if (handleChangedAt === null) return null
+  const next = new Date(handleChangedAt.getTime() + HANDLE_RENAME_COOLDOWN_MS)
+  return next.getTime() > now.getTime() ? next.toISOString() : null
+}
+
+/**
+ * Generate a unique placeholder @handle for a brand-new account that did not supply one (every OTP/OAuth
+ * signup gets one at create() time so the NOT-NULL column is satisfied; the user then picks their real
+ * handle in first-run registration). 'user' + the first 12 lowercase-hex chars of a UUID => 16 chars, all
+ * [a-z0-9], inside HANDLE_REGEX (3-20). Derived from `id` when available (matches the 0026 backfill), else
+ * a fresh random UUID. Unique because the source UUID is unique.
+ */
+export function generatePlaceholderHandle(id?: string): string {
+  const hex = (id ?? randomUUID()).replace(/-/g, "").slice(0, 12).toLowerCase()
+  return `user${hex}`
+}
 
 // ---------------------------------------------------------------------------
 // Session store
@@ -116,7 +143,14 @@ export interface UserRecord {
   id: string
   role: Role
   displayName: string
+  /** The @handle (NOT NULL after 0026; always present for a real account). citext server-side. */
   handle: string | null
+  /**
+   * The rolling-30-day rename cooldown clock. null => never renamed (changeable now). Stamped only by a
+   * rename made AFTER profileComplete=true; the handle chosen during first-run registration does NOT stamp
+   * it. toUserDTO derives the client-facing `handleChangeableAt` (handle_changed_at + 30 days) from this.
+   */
+  handleChangedAt: Date | null
   email: string | null
   emailVerified: boolean
   /** Provider (Google) profile photo URL; null => monogram avatar. */
@@ -203,6 +237,12 @@ export interface UpdateSettingsInput {
  */
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()
+  private readonly now: () => Date
+
+  /** `now` is injectable so tests can drive the rename-cooldown clock deterministically. */
+  constructor(opts: { now?: () => Date } = {}) {
+    this.now = opts.now ?? (() => new Date())
+  }
 
   findById(id: string): Promise<UserRecord | null> {
     const row = this.byId.get(id)
@@ -232,11 +272,15 @@ export class InMemoryUserStore implements UserStore {
         }
       }
     }
+    const id = randomUUID()
     const row: UserRecord = {
-      id: randomUUID(),
+      id,
       role: input.role ?? "citizen",
       displayName: input.displayName,
-      handle: null,
+      // Always set a handle so the NOT-NULL column is satisfied: a generated placeholder derived from the
+      // new id (the user picks their real handle in first-run registration). handle_changed_at stays null.
+      handle: generatePlaceholderHandle(id),
+      handleChangedAt: null,
       email: email === null ? null : email.toLowerCase(),
       emailVerified: email !== null && (input.emailVerified ?? false),
       avatarUrl: input.avatarUrl ?? null,
@@ -259,20 +303,51 @@ export class InMemoryUserStore implements UserStore {
     return Promise.resolve(null)
   }
 
-  updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+  async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.updateProfile: user not found")
     // `avatarUploadId` is accepted but a no-op here: the in-memory store has no media table to resolve it
     // against, and UserRecord does not carry the avatar media id (the avatar is surfaced via the social
     // read path, not the auth user record). The Pg store resolves + persists it.
+
+    // Decide the handle write by comparing lower(submitted) vs lower(current). The name/bio editors
+    // re-send the current handle every PUT, so an unchanged handle MUST be a no-op (no validation, no
+    // handle_changed_at stamp). A changed handle re-validates + (when a real rename) enforces the cooldown.
+    let handle = row.handle
+    let handleChangedAt = row.handleChangedAt
+    const changed = (row.handle ?? "").toLowerCase() !== input.handle.toLowerCase()
+    if (changed) {
+      if (!HANDLE_REGEX.test(input.handle.trim())) {
+        throw AppError.validation({ handle: "That username isn't a valid format." })
+      }
+      const taken = await this.findByHandle(input.handle)
+      if (taken !== null && taken.id !== id) {
+        throw AppError.conflict("That username is taken.")
+      }
+      if (row.profileComplete === true) {
+        // A real rename: enforce the rolling-30-day cooldown.
+        const next = handleChangeableAtFrom(row.handleChangedAt, this.now())
+        if (next !== null) {
+          throw AppError.rateLimited(`You can change your username again on ${next}.`)
+        }
+        handle = input.handle
+        handleChangedAt = this.now()
+      } else {
+        // Initial set during first-run completion: set the handle, leave the cooldown clock null.
+        handle = input.handle
+        handleChangedAt = null
+      }
+    }
+
     const next: UserRecord = {
       ...row,
-      handle: input.handle,
+      handle,
+      handleChangedAt,
       displayName: input.displayName,
       profileComplete: true,
     }
     this.byId.set(id, next)
-    return Promise.resolve({ ...next })
+    return { ...next }
   }
 
   setRole(id: string, role: Role): Promise<UserRecord> {

@@ -22,6 +22,7 @@ import {
   CreateReportRequestSchema,
   ListReportsInBBoxRequestSchema,
   ListReportsSearchRequestSchema,
+  ResolveReportRequestSchema,
   PaginationQuerySchema,
   IdSchema,
   AppError,
@@ -399,6 +400,19 @@ export async function registerReportRoutes(
     const { id } = parse(ReportIdParamsSchema, request.params)
     const payload: FollowReportResponse = await service().unfollowReport(userId, id)
     reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /reports/:id/resolve  [auth][csrf]  (the reporter marks their own report resolved / reopens it)
+  // -------------------------------------------------------------------------
+  route(app, "resolveReport", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(ReportIdParamsSchema, request.params)
+    // Merge the authoritative path id into the body before validating (the client also sends it in the
+    // body; the URL value wins) — mirrors the discussion routes' param+body reconciliation.
+    const body = parse(ResolveReportRequestSchema, { ...(request.body as object), id })
+    const dto: ReportDTO = await service().resolveReport(userId, id, body.resolved)
+    reply.status(200).send(dto)
   })
 }
 

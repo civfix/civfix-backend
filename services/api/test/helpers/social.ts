@@ -217,6 +217,16 @@ export class InMemorySocialRepository implements SocialRepository {
     return Promise.resolve(this.toView(u))
   }
 
+  findPersonByHandle(handle: string): Promise<PersonView | null> {
+    // handle is citext server-side; match case-insensitively. Excludes soft-deleted + handle-less users.
+    const needle = handle.toLowerCase()
+    for (const u of this.users.values()) {
+      if (u.deletedAt !== null) continue
+      if (u.handle !== null && u.handle.toLowerCase() === needle) return Promise.resolve(this.toView(u))
+    }
+    return Promise.resolve(null)
+  }
+
   isFollowing(followerId: string, followeeId: string): Promise<boolean> {
     return Promise.resolve(
       this.follows.some((f) => f.followerId === followerId && f.followeeId === followeeId),

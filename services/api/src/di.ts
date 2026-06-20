@@ -69,6 +69,7 @@ import { RedisChatPubSub } from "./adapters/chat-pubsub.js"
 import { RedisUserChannel } from "./adapters/user-channel.redis.js"
 import { makeDrizzleChatRepository } from "./services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository, type DmRepository } from "./services/dm-repository.drizzle.js"
+import { makeMediaPresigner } from "./services/media-presign.js"
 import {
   makeDrizzleBlocksRepository,
   type BlocksRepository,
@@ -170,7 +171,7 @@ export function buildContainer(env: Env): Container {
         const blocks = getBlocksRepo()
         dmRepo = new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b))
       } else {
-        dmRepo = makeDrizzleDmRepository(getDb().sql)
+        dmRepo = makeDrizzleDmRepository(getDb().sql, presignMedia)
       }
     }
     return dmRepo
@@ -186,6 +187,11 @@ export function buildContainer(env: Env): Container {
         bucket: env.R2_BUCKET,
         ...(env.R2_PUBLIC_BASE !== undefined ? { publicBase: env.R2_PUBLIC_BASE } : {}),
       })
+
+  // Media presigner over the storage seam, shared by the chat + dm repos so a message's attachments project
+  // as presigned, status-"ready" MediaDTOs (same signer the report/discussion read paths use). Declared
+  // after `storage`; `getDmRepo` (above) is lazy, so its closure over this resolves by call time.
+  const presignMedia = makeMediaPresigner(storage)
 
   // ----- inbound-mail storage (the catch-all email buffer) -----
   // The Cloudflare Email Worker writes raw .eml + extracted attachments to a (possibly DEDICATED) bucket;
@@ -282,7 +288,7 @@ export function buildContainer(env: Env): Container {
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
     : new WsChatService({
-        repo: makeDrizzleChatRepository(getDb().sql),
+        repo: makeDrizzleChatRepository(getDb().sql, presignMedia),
         pubsub: getSharedPubSub(),
       })
 

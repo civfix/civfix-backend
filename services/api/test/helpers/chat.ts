@@ -75,7 +75,8 @@ export class InMemoryChatRepository implements ChatRepository {
       },
       ...(input.body !== undefined ? { body: input.body } : {}),
       kind: input.kind ?? "text",
-      attachments: input.attachments ?? null,
+      // In-memory test repo: no media pipeline, so mediaUploadIds don't resolve to MediaDTOs.
+      attachments: null,
       reactions: [],
       // No persisted mentions on a fresh insert; the gateway projects a send's resolved @-mentions onto its
       // broadcast/ack copy. This in-memory repo keeps no mention store (mention reads are covered offline by

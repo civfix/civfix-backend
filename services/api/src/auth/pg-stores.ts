@@ -11,25 +11,28 @@
  *     idempotent upsert so a repeat sign-in does not error on the unique index.
  */
 
+import { randomUUID } from "node:crypto"
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import { emailOtps, mediaAssets, oauthIdentities, sessions, users } from "../db/schema/index.js"
-import type { Role } from "@civfix/shared"
-import type {
-  AuthStores,
-  CreateUserInput,
-  OAuthIdentityRecord,
-  OAuthIdentityStore,
-  OtpInsert,
-  OtpRecord,
-  OtpStore,
-  SessionInsert,
-  SessionRecord,
-  SessionStore,
-  UpdateProfileInput,
-  UpdateSettingsInput,
-  UserRecord,
-  UserStore,
+import { AppError, HANDLE_REGEX, type Role } from "@civfix/shared"
+import {
+  generatePlaceholderHandle,
+  handleChangeableAtFrom,
+  type AuthStores,
+  type CreateUserInput,
+  type OAuthIdentityRecord,
+  type OAuthIdentityStore,
+  type OtpInsert,
+  type OtpRecord,
+  type OtpStore,
+  type SessionInsert,
+  type SessionRecord,
+  type SessionStore,
+  type UpdateProfileInput,
+  type UpdateSettingsInput,
+  type UserRecord,
+  type UserStore,
 } from "./stores.js"
 
 // ---------------------------------------------------------------------------
@@ -115,7 +118,15 @@ export class PgSessionStore implements SessionStore {
  * provider links and no longer carries a synthetic "email" pseudo-provider row.
  */
 export class PgUserStore implements UserStore {
-  constructor(private readonly db: Db) {}
+  private readonly now: () => Date
+
+  /** `now` is injectable so tests can drive the rename-cooldown clock deterministically. */
+  constructor(
+    private readonly db: Db,
+    opts: { now?: () => Date } = {},
+  ) {
+    this.now = opts.now ?? (() => new Date())
+  }
 
   async findById(id: string): Promise<UserRecord | null> {
     const rows = await this.db.select().from(users).where(eq(users.id, id)).limit(1)
@@ -143,9 +154,16 @@ export class PgUserStore implements UserStore {
    */
   async create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
     const normalizedEmail = email === null ? null : email.toLowerCase()
+    // Generate the id app-side so the placeholder @handle is derived from it deterministically (matches the
+    // 0026 backfill: 'user'+12 hex of id). `handle` is NOT NULL, so every new account must carry one; the
+    // user picks their real handle in first-run registration. handle_changed_at stays null (the column
+    // default), so the placeholder choice is never treated as a rename.
+    const id = randomUUID()
     const inserted = await this.db
       .insert(users)
       .values({
+        id,
+        handle: generatePlaceholderHandle(id),
         displayName: input.displayName,
         role: input.role ?? "citizen",
         email: normalizedEmail,
@@ -177,10 +195,41 @@ export class PgUserStore implements UserStore {
   }
 
   async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+    // Load the current row so we can compare lower(submitted) vs lower(current) and read the rename-policy
+    // inputs (profile_complete + handle_changed_at). The name/bio editors re-send the CURRENT handle every
+    // PUT, so an unchanged handle MUST be a no-op for handle/handle_changed_at.
+    const current = await this.findById(id)
+    if (!current) throw new Error("PgUserStore.updateProfile: user not found")
+
     const set: Partial<typeof users.$inferInsert> = {
-      handle: input.handle,
       displayName: input.displayName,
       profileComplete: true,
+    }
+
+    const changed = (current.handle ?? "").toLowerCase() !== input.handle.toLowerCase()
+    if (changed) {
+      // Format + uniqueness re-validated here (the route also gates reserved/slur). uniqueness races the
+      // partial-unique index for the rare concurrent-claim case.
+      if (!HANDLE_REGEX.test(input.handle.trim())) {
+        throw AppError.validation({ handle: "That username isn't a valid format." })
+      }
+      const taken = await this.findByHandle(input.handle)
+      if (taken !== null && taken.id !== id) {
+        throw AppError.conflict("That username is taken.")
+      }
+      if (current.profileComplete === true) {
+        // A real rename: enforce the rolling-30-day cooldown, then stamp handle_changed_at = now.
+        const next = handleChangeableAtFrom(current.handleChangedAt, this.now())
+        if (next !== null) {
+          throw AppError.rateLimited(`You can change your username again on ${next}.`)
+        }
+        set.handle = input.handle
+        set.handleChangedAt = this.now()
+      } else {
+        // Initial set during first-run completion: set the handle, leave the cooldown clock null.
+        set.handle = input.handle
+        set.handleChangedAt = null
+      }
     }
     // Only touch the bio when the caller supplied it (the bio editor); registration omits it. An empty
     // string clears the bio; trimming/length are already enforced by the shared UpdateProfileRequest.
@@ -367,6 +416,7 @@ interface UserRowLike {
   role: Role
   displayName: string
   handle: string | null
+  handleChangedAt: Date | null
   email: string | null
   emailVerified: boolean
   avatarUrl: string | null
@@ -382,6 +432,7 @@ function toUserRecord(r: UserRowLike): UserRecord {
     role: r.role,
     displayName: r.displayName,
     handle: r.handle,
+    handleChangedAt: r.handleChangedAt,
     email: r.email,
     emailVerified: r.emailVerified,
     avatarUrl: r.avatarUrl,

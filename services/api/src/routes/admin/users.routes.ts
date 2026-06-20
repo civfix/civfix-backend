@@ -25,6 +25,7 @@ import {
   RemoveUserMessageRequestSchema,
   SetRoleRequestSchema,
   SetUserStatusRequestSchema,
+  SetUserVerifiedRequestSchema,
   UserSubListQuerySchema,
   IdSchema,
   type AdminOkResponse,
@@ -180,6 +181,17 @@ export async function registerAdminUsersRoutes(
     const { id } = idParam(request)
     const body = parse(SetRoleRequestSchema, { ...(request.body as object), id })
     await service().setRole(id, { role: body.role, actorId: request.auth.userId })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:id/verify  [csrf]   set "verified neighbor" status (after a verification call)
+  // -------------------------------------------------------------------------
+  route(app, "setUserVerified", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(SetUserVerifiedRequestSchema, { ...(request.body as object), id })
+    await service().setVerified(id, { verified: body.verified, actorId: request.auth.userId })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })

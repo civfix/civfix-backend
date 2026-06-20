@@ -123,6 +123,12 @@ export interface SocialRepository {
   /** Load one person view by id (null when missing or soft-deleted). */
   findPersonById(id: string): Promise<PersonView | null>
 
+  /**
+   * Load one person view by @handle, case-insensitively (handle is citext), null when missing or
+   * soft-deleted. Backs the /people/<handle> deep link: the route resolves a non-UUID :id param here.
+   */
+  findPersonByHandle(handle: string): Promise<PersonView | null>
+
   /** Whether `followerId` currently follows `followeeId`. */
   isFollowing(followerId: string, followeeId: string): Promise<boolean>
 
@@ -218,6 +224,8 @@ export interface SocialService {
     targetId: string,
   ): Promise<{ isFollowing: boolean; followers: number }>
   getProfile(id: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }>
+  /** Same as getProfile but resolves the target by @handle (the /people/<handle> deep link). */
+  getProfileByHandle(handle: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }>
   getMyProfile(viewerId: string): Promise<{ profile: UserProfileDTO }>
 }
 
@@ -369,6 +377,15 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
 
     async getProfile(id: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }> {
       const view = await deps.repo.findPersonById(id)
+      if (!view) throw AppError.notFound("Person not found")
+      return { profile: await buildProfile(view, viewer) }
+    },
+
+    async getProfileByHandle(
+      handle: string,
+      viewer: SocialViewer,
+    ): Promise<{ profile: UserProfileDTO }> {
+      const view = await deps.repo.findPersonByHandle(handle)
       if (!view) throw AppError.notFound("Person not found")
       return { profile: await buildProfile(view, viewer) }
     },

@@ -208,7 +208,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 152 endpoints in the registry (no endpoint skipped)", () => {
+  it("covers ALL 153 endpoints in the registry (no endpoint skipped)", () => {
     // 124 base (47 Phase 1 + 67 Phase 2 admin incl. setEventOutcome + the 7-route DM/privacy surface + the
     // 3-route inbound-mail surface) + the 7-route report-discussion surface (getReportDiscussion,
     // getDiscussionReplies, postDiscussionMessage, toggleDiscussionReaction, deleteDiscussionMessage,
@@ -232,7 +232,13 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     // [DELETE /dm/:threadId/messages/:messageId], deleteCleanupMessage
     // [DELETE /cleanups/:cleanupId/messages/:messageId], removeUserMessage
     // [POST /admin/users/:id/messages/:messageId/remove] = 158.
-    expect(Object.keys(endpoints).length).toBe(158)
+    // MINUS the verification document/review surface (applyForVerification, myVerificationDocumentUrl,
+    // listAdminVerifications, getAdminVerification, adminVerificationDocumentUrl, approveVerification,
+    // rejectVerification = 7) which was removed when verification became a "schedule a call with the
+    // founder" flow, PLUS setUserVerified [POST /admin/users/:id/verify] = 158 - 7 + 1 = 152.
+    // + the reporter-only resolveReport route [POST /reports/:id/resolve] (the owner marks their own
+    // report resolved / reopens it) = 153.
+    expect(Object.keys(endpoints).length).toBe(153)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

@@ -69,6 +69,15 @@ declare module "fastify" {
 /** Path param schema for the routes that take a person UUID in the URL. */
 const PersonIdParamsSchema = z.object({ id: IdSchema }).strict()
 
+/**
+ * Path param schema for GET /people/:id, which accepts EITHER a UUID (old deep links) OR an @handle (the
+ * /people/<handle> link). A bare non-empty string; the handler branches on whether it is a valid UUID.
+ */
+const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(40) }).strict()
+
+/** Canonical UUID shape: when the :id param matches this it is resolved by id, else by @handle. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function registerSocialRoutes(
   app: FastifyInstance,
   container: Container,
@@ -154,8 +163,14 @@ export async function registerSocialRoutes(
   // GET /people/:id  (anon-ok)
   // -------------------------------------------------------------------------
   route(app, "getProfile", async (request, reply) => {
-    const { id } = parse(PersonIdParamsSchema, request.params)
-    const payload: GetProfileResponse = await service().getProfile(id, viewerOf(request))
+    // Accept a UUID (old deep links) OR an @handle (/people/<handle>). Resolve by id when the param is a
+    // valid UUID, else by handle. Follow/block/DM-open stay UUID-keyed (their param schemas are unchanged);
+    // only this read resolves a handle -> profile at the boundary.
+    const { id } = parse(PersonRefParamsSchema, request.params)
+    const svc = service()
+    const payload: GetProfileResponse = UUID_RE.test(id)
+      ? await svc.getProfile(id, viewerOf(request))
+      : await svc.getProfileByHandle(id, viewerOf(request))
     reply.status(200).send(payload)
   })
 

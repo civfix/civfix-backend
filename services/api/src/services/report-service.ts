@@ -308,6 +308,20 @@ export interface ReportRepository {
   addFollow(userId: string, reportId: string): Promise<boolean>
   /** Delete a follow; returns true if the report exists. */
   removeFollow(userId: string, reportId: string): Promise<boolean>
+  /**
+   * OWNER status write — the reporter marking their OWN report resolved / reopened. Atomically verifies
+   * ownership + existence, sets reports.status, and appends a report_timeline row (actor = the reporter).
+   * Returns:
+   *   - "updated"   on success
+   *   - "not_found" when the report does not exist or is soft-deleted
+   *   - "forbidden" when the report is not owned by `userId`
+   * Only the owner can ever transition the status here; the admin path (set-status) is separate.
+   */
+  resolveByOwner(
+    reportId: string,
+    userId: string,
+    input: { status: ReportStatus; note: string },
+  ): Promise<"updated" | "not_found" | "forbidden">
 }
 
 /** Plain bbox (west/south/east/north) - re-declared structurally to avoid importing the zod type here. */
@@ -543,6 +557,13 @@ export interface ReportService {
   searchReports(request: ReportSearchInput): Promise<ListReportsSearchResponse>
   followReport(userId: string, reportId: string): Promise<{ following: boolean }>
   unfollowReport(userId: string, reportId: string): Promise<{ following: boolean }>
+  /**
+   * The reporter marks their OWN report resolved (`resolved: true`) or reopens it (`resolved: false` ->
+   * back to `published`, the live "not yet forwarded" state). 404s a missing report and 403s a report the
+   * caller does not own. Returns the freshly-updated ReportDTO (new status + timeline entry) so the client
+   * can replace its cached detail.
+   */
+  resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO>
 }
 
 export function makeReportService(deps: ReportServiceDeps): ReportService {
@@ -687,7 +708,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     }
   }
 
-  return {
+  const service: ReportService = {
     async createReport(input: CreateReportRequest, owner: { userId: string }): Promise<ReportDTO> {
       // (a) Honeypot: a non-empty value means a bot filled a hidden field. Reject silently-ish (a plain
       // VALIDATION envelope, no hint that it was the honeypot) and DO NOT create anything.
@@ -924,5 +945,21 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (!exists) throw AppError.notFound("Report not found")
       return { following: false }
     },
+
+    async resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO> {
+      // The reporter-only status toggle: resolve -> `resolved`; reopen -> `published` (the live, "not yet
+      // forwarded" state). The repo verifies ownership atomically and appends a report_timeline row.
+      const status: ReportStatus = resolved ? "resolved" : "published"
+      const note = resolved ? "Marked resolved by the reporter" : "Reopened by the reporter"
+      const outcome = await deps.repo.resolveByOwner(reportId, userId, { status, note })
+      if (outcome === "not_found") throw AppError.notFound("Report not found")
+      if (outcome === "forbidden") {
+        throw AppError.forbidden("You can only change the status of your own report")
+      }
+      // Re-read the report for the owner so the response carries the new status + the just-appended
+      // timeline entry (the client replaces its cached detail with this, no second fetch needed).
+      return service.getReport(reportId, { userId })
+    },
   }
+  return service
 }

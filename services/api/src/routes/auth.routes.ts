@@ -42,6 +42,7 @@ import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import { requireAuth } from "../auth/context.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
+import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserved-handles.js"
 import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
 import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
@@ -72,6 +73,18 @@ export async function registerAuthRoutes(
 ): Promise<void> {
   const services = app.authServices
   const webOrigins = container.env.WEB_ORIGINS
+
+  /**
+   * Whether a (format-valid) @handle is RESERVED: on the static blocklist, OR colliding with an existing
+   * jurisdictions.handle. The jurisdiction collision query runs only when a database is configured
+   * (production / integration); the offline auth harness injects in-memory stores with no DATABASE_URL, so
+   * there only the static blocklist applies. The static check alone is enough for those tests.
+   */
+  async function isReservedOrJurisdiction(handle: string): Promise<boolean> {
+    if (isReservedHandle(handle)) return true
+    if (!container.env.DATABASE_URL) return false
+    return handleCollidesWithJurisdiction(container.getDb().sql, handle)
+  }
 
   // -------------------------------------------------------------------------
   // Email OTP
@@ -197,11 +210,23 @@ export async function registerAuthRoutes(
       return
     }
     const existing = await services.users.findByHandle(handle.trim())
-    // Free if unclaimed, or already claimed by the asking user (idempotent re-check).
-    const available = existing === null || existing.id === userId
-    const payload: HandleAvailableResponse = available
-      ? { available: true, reason: null }
-      : { available: false, reason: "taken" }
+    // The caller's OWN current handle is always available (so the name/bio editor re-checking its own
+    // handle, including the generated placeholder, reports free) - checked before the reserved/taken gates.
+    if (existing !== null && existing.id === userId) {
+      const payload: HandleAvailableResponse = { available: true, reason: null }
+      reply.status(200).send(payload)
+      return
+    }
+    // Reserved (blocklist or a jurisdiction handle collision) reads as unavailable with reason 'reserved'.
+    if (await isReservedOrJurisdiction(handle.trim())) {
+      const payload: HandleAvailableResponse = { available: false, reason: "reserved" }
+      reply.status(200).send(payload)
+      return
+    }
+    const payload: HandleAvailableResponse =
+      existing === null
+        ? { available: true, reason: null }
+        : { available: false, reason: "taken" }
     reply.status(200).send(payload)
   })
 
@@ -213,12 +238,27 @@ export async function registerAuthRoutes(
     // everywhere, so block a hate slur before it can be set. Slurs only - see abuse/slur-filter.
     assertNoSlur(body.displayName, "displayName")
     assertNoSlur(body.bio ?? null, "bio")
-    // Reject a username already owned by someone else (the schema enforces the format; this is the
-    // uniqueness gate, racing the partial-unique index for the rare concurrent-claim case).
-    const existing = await services.users.findByHandle(body.handle)
-    if (existing !== null && existing.id !== userId) {
-      throw AppError.conflict("That username is taken.")
+
+    // The name/bio editors re-send the CURRENT handle every PUT, so an unchanged handle must be a no-op for
+    // the handle (no slur/reserved/uniqueness/cooldown gate). Compare lower(submitted) vs lower(current).
+    const current = await services.users.findById(userId)
+    const handleChanged =
+      current === null || (current.handle ?? "").toLowerCase() !== body.handle.toLowerCase()
+    if (handleChanged) {
+      // The @handle is public, so apply the same slur gate as the display name / bio.
+      assertNoSlur(body.handle, "handle")
+      // Block reserved system/role names + any collision with a jurisdiction handle.
+      if (await isReservedOrJurisdiction(body.handle.trim())) {
+        throw AppError.validation({ handle: "That username isn't available." })
+      }
+      // Reject a username already owned by someone else (racing the partial-unique index for the rare
+      // concurrent-claim case). The store re-checks uniqueness + enforces the rename cooldown.
+      const existing = await services.users.findByHandle(body.handle)
+      if (existing !== null && existing.id !== userId) {
+        throw AppError.conflict("That username is taken.")
+      }
     }
+
     const updated = await services.users.updateProfile(userId, {
       handle: body.handle,
       displayName: body.displayName,

@@ -146,6 +146,8 @@ export interface GatewayDmDeps {
     body: string
     kind?: import("@civfix/shared").ChatMessageKind
     clientId?: string
+    /** Finalized media upload ids to attach to the message (from the send frame's mediaUploadIds). */
+    mediaUploadIds?: string[]
   }): Promise<import("@civfix/shared").ChatMessageDTO>
   /** Record that `userId` read `threadId` up to message `upToId` (monotonic). */
   markRead(threadId: string, userId: string, upToId: string): Promise<void>
@@ -524,6 +526,9 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
       // Persist first so the broadcast + ack carry the durable id/createdAt (the optimistic client
       // reconciles its temporary clientId against the server message). Route persistence by kind:
       // cleanup → the chat seam; dm → the dm seam (the block re-check already ran in authorizeRoom).
+      // Finalized media uploads from the composer's attach pipeline; the persist seam binds them to the new
+      // message and returns the presigned attachments on the DTO (so the broadcast + ack already carry them).
+      const mediaUploadIds = frame.mediaUploadIds
       let message: import("@civfix/shared").ChatMessageDTO
       if (kind === "dm") {
         // dm seam must be wired (authorizeRoom already refused dm when it is absent).
@@ -533,6 +538,7 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
           body: frame.body,
           ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
           clientId: frame.clientId,
+          ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
         })
       } else {
         message = await deps.chat.persist({
@@ -542,6 +548,7 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
           body: frame.body,
           ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
           clientId: frame.clientId,
+          ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
         })
       }
       // USER @-mentions (B2): parse the body's @handles + the frame's mentionedUserIds, resolve to real

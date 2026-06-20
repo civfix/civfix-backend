@@ -420,6 +420,27 @@ export class InMemoryReportRepository implements ReportRepository {
     return Promise.resolve(true)
   }
 
+  resolveByOwner(
+    reportId: string,
+    userId: string,
+    input: { status: ReportRecord["status"]; note: string },
+  ): Promise<"updated" | "not_found" | "forbidden"> {
+    // Mirror the Drizzle impl: existence + ownership check, then flip status + append a timeline row.
+    // The map holds the record by reference, so mutating `r.status` updates the stored report (and
+    // findReportById, which returns a copy, then projects the new status).
+    const r = this.reports.get(reportId)
+    if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
+    if (r.reporterUserId !== userId) return Promise.resolve("forbidden")
+    r.status = input.status
+    this.timeline.push({
+      reportId,
+      status: input.status,
+      note: input.note,
+      createdAt: this.nextDate(),
+    })
+    return Promise.resolve("updated")
+  }
+
   private reportExists(reportId: string): boolean {
     const r = this.reports.get(reportId)
     return r !== undefined && r.deletedAt === null

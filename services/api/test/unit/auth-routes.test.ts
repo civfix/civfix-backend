@@ -507,11 +507,13 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     return res.json() as { token: string; user: { profileComplete: boolean; handle: string | null } }
   }
 
-  it("a fresh account is profileComplete:false with no handle (the gate trigger)", async () => {
+  it("a fresh account is profileComplete:false with a generated placeholder handle (the gate trigger)", async () => {
     harness = await makeAuthHarness()
     const { user } = await signIn(harness, "newbie@example.com")
+    // The gate trigger is profileComplete:false (NOT a null handle). The handle column is NOT NULL now, so a
+    // brand-new account carries a generated placeholder ('user' + 12 lowercase hex) until first-run picks one.
     expect(user.profileComplete).toBe(false)
-    expect(user.handle ?? null).toBeNull()
+    expect(user.handle).toMatch(/^user[0-9a-f]{12}$/)
   })
 
   it("GET /me/handle-available reports free / invalid / unauthorized", async () => {

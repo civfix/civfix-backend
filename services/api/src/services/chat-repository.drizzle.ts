@@ -23,6 +23,7 @@ import { publicAuthorIdentity } from "./public-author.js"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
+  MediaDTO,
   ReactionEmoji,
   ReactionSummaryDTO,
   UserMentionDTO,
@@ -30,6 +31,8 @@ import type {
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 import { loadChatReactions, toggleChatReaction } from "./chat-reactions.drizzle.js"
 import { loadChatMentions } from "./chat-mentions.drizzle.js"
+import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
+import type { PresignMedia } from "./media-presign.js"
 
 /** Canonical UUID shape; the `before` cursor is validated against it before reaching a uuid-column bind. */
 const CHAT_CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -105,6 +108,7 @@ function toMessageDTO(
   mentions: UserMentionDTO[],
   viewerUserId?: string | null,
   clientId?: string,
+  attachments: MediaDTO[] = [],
 ): ChatMessageDTO {
   // PUBLIC author identity: a deleted (tombstoned) sender renders "Deleted User" (no handle/avatar, deleted:true).
   const author = publicAuthorIdentity({
@@ -130,7 +134,9 @@ function toMessageDTO(
     },
     ...(r.body !== null ? { body: r.body } : {}),
     kind: r.kind,
-    ...(r.attachments !== null ? { attachments: r.attachments } : {}),
+    // Presigned, status-"ready" media from media_assets (NOT the vestigial chat_messages.attachments jsonb
+    // column, which predates real chat media and is no longer projected). Always an array.
+    attachments,
     reactions,
     mentions,
     createdAt: r.created_at.toISOString(),
@@ -160,13 +166,25 @@ function chatColumns(sql: Queryable) {
   `
 }
 
-export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
+/**
+ * @param presign OPTIONAL media presigner. When supplied, a message's attachments (media_assets bound by
+ *   `chat_message_id`, status "ready") are loaded + presigned into `attachments: MediaDTO[]` on every read,
+ *   and a send's `mediaUploadIds` are bound to the new message. Omit it (some offline tests) to skip media
+ *   entirely - attachments then project as `[]`.
+ */
+export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): ChatRepository {
   return {
     async insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO> {
       const kind: ChatMessageKind = input.kind ?? "text"
+      const uploadIds = input.mediaUploadIds ?? []
+      const wantsMedia = !!presign && uploadIds.length > 0
       // Insert, then read back joined with the sender so `from` is populated. created_at defaults to now()
-      // in the DB; we read it back rather than guessing so the DTO matches the persisted row exactly.
-      const rows = await sql<ChatRowSelect[]>`
+      // in the DB; we read it back rather than guessing so the DTO matches the persisted row exactly. When
+      // there are media uploads, the INSERT + the media-attach run in ONE transaction (mirroring the
+      // discussion create) so a failed attach rolls the message back too - otherwise a committed-message +
+      // failed-send would orphan a message and the client's retry would duplicate it. Presigning happens
+      // AFTER commit (a network round-trip must not hold the tx open).
+      const run = async (q: Queryable) => q<ChatRowSelect[]>`
         WITH inserted AS (
           INSERT INTO chat_messages (id, cleanup_id, sender_id, body, kind, attachments)
           VALUES (
@@ -196,10 +214,17 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
         FROM inserted
         JOIN users u ON u.id = inserted.sender_id
       `
-      // A freshly-inserted message has no reactions/mentions persisted yet (the gateway projects a send's
-      // resolved mentions onto its broadcast copy), so pass [] / [] rather than needless aggregate queries.
-      // The sender is the viewer of their own just-sent message → mine:true.
-      return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId)
+      const rows = wantsMedia
+        ? await sql.begin(async (tx) => {
+            const inserted = await run(tx)
+            await attachChatMedia(tx, id, uploadIds)
+            return inserted
+          })
+        : await run(sql)
+      // Hydrate the just-attached, ready (presigned) attachments for the returned DTO. A freshly-inserted
+      // message has no reactions/mentions persisted yet, so pass [] / []. The sender is the viewer → mine:true.
+      const attachments = wantsMedia ? (await loadChatAttachments(sql, [id], presign!)).get(id) ?? [] : []
+      return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId, attachments)
     },
 
     async history(
@@ -243,6 +268,10 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
+      // Batch-load the ready (presigned) attachments for the whole page in ONE query (vs one per message).
+      const attachmentsByMessage = presign
+        ? await loadChatAttachments(sql, page.map((r) => r.id), presign)
+        : new Map<string, MediaDTO[]>()
       // Hydrate each row's reaction summary (with `mine` resolved for the viewer). The history read is not
       // viewer-scoped here (it mirrors the existing signature), so `mine` is computed against no viewer
       // (false); the per-message read path (findMessage) carries the viewer for the toggle response.
@@ -252,7 +281,7 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
             loadChatReactions(sql, r.id, viewerUserId),
             loadChatMentions(sql, r.id),
           ])
-          return toMessageDTO(r, reactions, mentions, viewerUserId)
+          return toMessageDTO(r, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(r.id) ?? [])
         }),
       )
       const last = page[page.length - 1]
@@ -274,11 +303,12 @@ export function makeDrizzleChatRepository(sql: Sql): ChatRepository {
       `
       const row = rows[0]
       if (!row) return null
-      const [reactions, mentions] = await Promise.all([
+      const [reactions, mentions, attachmentsByMessage] = await Promise.all([
         loadChatReactions(sql, row.id, viewerUserId),
         loadChatMentions(sql, row.id),
+        presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
       ])
-      return toMessageDTO(row, reactions, mentions, viewerUserId)
+      return toMessageDTO(row, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(row.id) ?? [])
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {

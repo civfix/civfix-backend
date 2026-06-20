@@ -51,6 +51,8 @@ export type AdminAuditAction =
   | "user.status_changed"
   | "user.banned"
   | "user.role_changed"
+  | "user.verified"
+  | "user.unverified"
   // gov provisioning
   | "gov_claim.verified"
   | "gov_claim.approved"

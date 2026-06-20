@@ -42,9 +42,9 @@ describe("mail-service recipient-resolution helpers", () => {
   it("resolveCorrespondent picks the latest non-civfix from address, else null", () => {
     expect(resolveCorrespondent([], FROM_OUTREACH)).toBeNull()
     const msgs = [
-      { id: "a", who: "civfix", from: FROM_OUTREACH, dir: "out" as const, body: "hi", ts: "t", attachments: [] },
-      { id: "b", who: "clerk", from: "clerk@city.gov", dir: "in" as const, body: "re", ts: "t", attachments: [] },
-      { id: "c", who: "civfix", from: FROM_OUTREACH, dir: "out" as const, body: "ok", ts: "t", attachments: [] },
+      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "hi", ts: "t", attachments: [] },
+      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [] },
+      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [] },
     ]
     expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
     // Case-insensitive match against the outreach From -> still resolves the inbound party.
@@ -54,9 +54,9 @@ describe("mail-service recipient-resolution helpers", () => {
   it("latestOutbound returns the newest out message, else null", () => {
     expect(latestOutbound([])).toBeNull()
     const msgs = [
-      { id: "a", who: "civfix", from: FROM_OUTREACH, dir: "out" as const, body: "first", ts: "t", attachments: [] },
-      { id: "b", who: "clerk", from: "clerk@city.gov", dir: "in" as const, body: "re", ts: "t", attachments: [] },
-      { id: "c", who: "civfix", from: FROM_OUTREACH, dir: "out" as const, body: "last", ts: "t", attachments: [] },
+      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "first", ts: "t", attachments: [] },
+      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [] },
+      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "last", ts: "t", attachments: [] },
     ]
     expect(latestOutbound(msgs)?.body).toBe("last")
   })

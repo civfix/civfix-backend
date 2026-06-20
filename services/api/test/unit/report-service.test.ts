@@ -447,6 +447,58 @@ describe("follow toggle", () => {
   })
 })
 
+describe("resolveReport (owner status toggle)", () => {
+  it("the owner marks their report resolved (status flips + a timeline entry is appended)", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner" })
+
+    const dto = await service.resolveReport("owner", r.id, true)
+    expect(dto.status).toBe("resolved")
+    // The returned DTO carries the fresh timeline; the last entry is the owner's resolve.
+    const last = dto.timeline[dto.timeline.length - 1]!
+    expect(last.status).toBe("resolved")
+    expect(last.note).toBe("Marked resolved by the reporter")
+    // The underlying record was updated.
+    expect(repo.reports.get(r.id)!.status).toBe("resolved")
+  })
+
+  it("reopening a resolved report returns it to published with a 'Reopened' timeline entry", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "resolved" })
+
+    const dto = await service.resolveReport("owner", r.id, false)
+    expect(dto.status).toBe("published")
+    const last = dto.timeline[dto.timeline.length - 1]!
+    expect(last.status).toBe("published")
+    expect(last.note).toBe("Reopened by the reporter")
+    expect(repo.reports.get(r.id)!.status).toBe("published")
+  })
+
+  it("403s when the caller does not own the report (and leaves the status untouched)", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published" })
+    await expect(service.resolveReport("stranger", r.id, true)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    expect(repo.reports.get(r.id)!.status).toBe("published")
+  })
+
+  it("404s resolving a missing report", async () => {
+    const { service } = makeHarness()
+    await expect(
+      service.resolveReport("owner", "00000000-0000-0000-0000-000000000000", true),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("404s resolving a soft-deleted report", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", deletedAt: new Date() })
+    await expect(service.resolveReport("owner", r.id, true)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+})
+
 describe("listMyReports", () => {
   it("returns the caller's non-deleted reports newest-first and paginates by cursor", async () => {
     const { repo, service } = makeHarness()

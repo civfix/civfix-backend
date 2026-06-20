@@ -111,10 +111,10 @@ export async function registerRoutes(
   // followed user's prefs allow). The auth-gated routes 401 cleanly with no infra.
   await registerSocialRoutes(app, container)
 
-  // Verification ("verified neighbor"): the viewer's own status (GET /me/verification, auth), apply
-  // (POST /me/verification, auth + CSRF, tighter per-IP limit), and the owner-only signed URL for an
-  // uploaded document (auth). Mount unconditionally; DB-backed handlers reach the database lazily and the
-  // auth-gated routes 401 cleanly with no infra.
+  // Verification ("verified neighbor"): the viewer's own status (GET /me/verification, auth). There is no
+  // in-app application — a user gets verified by scheduling a call with the founder and an operator marks
+  // the account verified from the admin Users section (POST /admin/users/:id/verify). Mount
+  // unconditionally; the DB-backed handler reaches the database lazily and 401s cleanly with no infra.
   await registerVerificationRoutes(app, container)
 
   // Notifications: the in-app feed + mark-read (auth + CSRF) + prefs get/update (auth + CSRF) + push-token

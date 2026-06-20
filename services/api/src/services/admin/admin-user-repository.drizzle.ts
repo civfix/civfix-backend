@@ -78,6 +78,7 @@ interface UserRowSelect {
   risk: Risk
   flagged: boolean
   flag_reason: string | null
+  verified: boolean
   deleted_at: Date | null
 }
 
@@ -102,6 +103,7 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     risk: r.risk,
     flagged: r.flagged,
     flagReason: r.flag_reason,
+    verified: r.verified,
     deletedAt: r.deleted_at,
   }
 }
@@ -139,7 +141,10 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
       COALESCE(um.strikes, 0) AS strikes,
       COALESCE(um.risk, 'low') AS risk,
       COALESCE(um.flagged, false) AS flagged,
-      um.flag_reason
+      um.flag_reason,
+      EXISTS (
+        SELECT 1 FROM user_verification uv WHERE uv.user_id = u.id AND uv.status = 'verified'
+      ) AS verified
     FROM users u
     LEFT JOIN user_moderation um ON um.user_id = u.id
     WHERE TRUE
@@ -431,6 +436,41 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         action: "user.role_changed",
         target: `user:${id}`,
         meta: { role: input.role },
+      })
+    },
+
+    async setVerified(
+      id: string,
+      input: { verified: boolean; actorId: string | null },
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const exists = await tx<{ id: string }[]>`
+          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+        `
+        if (exists.length === 0) return false
+        if (input.verified) {
+          // Mark verified: upsert the row to status='verified' with the reviewer + time (a row's presence
+          // with status='verified' is what lights the verified mark everywhere). Any stale rejection is cleared.
+          await tx`
+            INSERT INTO user_verification (user_id, status, reviewed_by, reviewed_at, updated_at)
+            VALUES (${id}, 'verified', ${input.actorId}, now(), now())
+            ON CONFLICT (user_id) DO UPDATE SET
+              status = 'verified',
+              reviewed_by = ${input.actorId},
+              reviewed_at = now(),
+              rejection_reason = NULL,
+              updated_at = now()
+          `
+        } else {
+          // Unverify: remove the row entirely (absence = unverified).
+          await tx`DELETE FROM user_verification WHERE user_id = ${id}`
+        }
+        await writeAudit(tx, {
+          actorId: input.actorId,
+          action: input.verified ? "user.verified" : "user.unverified",
+          target: `user:${id}`,
+        })
+        return true
       })
     },
 

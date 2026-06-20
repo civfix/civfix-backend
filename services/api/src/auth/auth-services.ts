@@ -14,7 +14,7 @@ import { SessionService } from "./session-service.js"
 import { OtpService } from "./otp.js"
 import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
-import type { AuthStores, UserRecord, UserStore } from "./stores.js"
+import { handleChangeableAtFrom, type AuthStores, type UserRecord, type UserStore } from "./stores.js"
 import { PgAuthStores } from "./pg-stores.js"
 
 export interface AuthServices {
@@ -134,12 +134,18 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
   return config
 }
 
-/** Render a user row to the wire DTO. */
-export function toUserDTO(user: UserRecord): UserDTO {
+/**
+ * Render a user row to the wire DTO. The UUID `id` is carried as a HIDDEN internal key (cache/follow/DM);
+ * the user-facing identifier is `handle`. `handleChangeableAt` is the ISO timestamp the user may next
+ * change their @handle (null = changeable now), derived from handle_changed_at + 30 days. `now` is
+ * injectable so tests can drive that cooldown clock deterministically.
+ */
+export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
   return {
     id: user.id,
     displayName: user.displayName,
     handle: user.handle,
+    handleChangeableAt: handleChangeableAtFrom(user.handleChangedAt, now),
     email: user.email,
     avatarUrl: user.avatarUrl,
     profileComplete: user.profileComplete,
