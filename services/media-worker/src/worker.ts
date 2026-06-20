@@ -8,6 +8,7 @@
  *   work("media.checks", ...)                 the untrusted-byte pipeline (concurrency-capped).
  *   schedule("orphan.sweep", cron)            reap never-attached media (section 11).
  *   schedule("chat.partition.maintenance")    create next month's chat partition (section 7/12).
+ *   schedule("retention.sweep", cron)         delete expired OTP/anon-token/session rows (privacy §7.1).
  *
  * The media.checks handler NEVER throws on UNTRUSTED INPUT (see media-checks.ts), so a crafted upload can
  * never crash the worker or poison the queue: it records a terminal media_assets status + abuse_flag/log/
