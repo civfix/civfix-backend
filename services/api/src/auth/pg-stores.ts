@@ -12,9 +12,17 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm"
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
-import { emailOtps, mediaAssets, oauthIdentities, sessions, users } from "../db/schema/index.js"
+import {
+  cleanups,
+  emailOtps,
+  mediaAssets,
+  oauthIdentities,
+  reports,
+  sessions,
+  users,
+} from "../db/schema/index.js"
 import { AppError, HANDLE_REGEX, type Role } from "@civfix/shared"
 import {
   generatePlaceholderHandle,
@@ -283,14 +291,30 @@ export class PgUserStore implements UserStore {
    * revokes the user's sessions (set deleted_at alone does NOT log a warm session out).
    */
   async softDeleteAndAnonymize(id: string): Promise<UserRecord> {
-    const updated = await this.db
-      .update(users)
-      .set({ deletedAt: sql`COALESCE(${users.deletedAt}, now())`, allowDirectMessages: false })
-      .where(eq(users.id, id))
-      .returning()
-    const r = updated[0]
-    if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
-    return toUserRecord(r)
+    // One transaction: tombstone the user AND UNLIST (never delete) the content they authored, since a
+    // report is already forwarded to the city and a hard delete would orphan that pipeline item. Reports
+    // flip visibility 'public' -> 'hidden' (off the map / search / public detail; the row + city status
+    // are kept and the owner is gone). Still-active events ('upcoming' | 'active') flip status ->
+    // 'cancelled' (off the map + upcoming lists). Past ('done') events and already hidden/cancelled
+    // content are left untouched; anon reports (reporter_user_id NULL) never match.
+    return this.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(users)
+        .set({ deletedAt: sql`COALESCE(${users.deletedAt}, now())`, allowDirectMessages: false })
+        .where(eq(users.id, id))
+        .returning()
+      const r = updated[0]
+      if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+      await tx
+        .update(reports)
+        .set({ visibility: "hidden" })
+        .where(and(eq(reports.reporterUserId, id), eq(reports.visibility, "public")))
+      await tx
+        .update(cleanups)
+        .set({ status: "cancelled" })
+        .where(and(eq(cleanups.organizerUserId, id), inArray(cleanups.status, ["upcoming", "active"])))
+      return toUserRecord(r)
+    })
   }
 }
 
