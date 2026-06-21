@@ -337,6 +337,15 @@ export interface CleanupRepository {
    */
   leaveCleanup(cleanupId: string, userId: string): Promise<boolean>
   /**
+   * Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a cleanup_timeline 'cancel' row +
+   * fan out a notification row to EVERY cleanup_member (set-based INSERT ... SELECT). Returns false when
+   * the cleanup does not exist. The notification title/body carry the cancel + optional reason.
+   */
+  cancelCleanupTx(
+    id: string,
+    input: { note: string; reason: string | null; actorId: string },
+  ): Promise<boolean>
+  /**
    * The attendee roster for a cleanup: cleanup_members joined to their (non-deleted) user, with the
    * viewer's `isFollowing` per row. Ordered organizer-first then by join time. When `onlyFollowed` is
    * set, only attendees the viewer follows are returned. Capped at `limit`.
@@ -489,6 +498,13 @@ export interface CleanupService {
     patch: UpdateCleanupRequest,
     requesterUserId: string,
   ): Promise<CleanupDTO>
+  /**
+   * Cancel an event (POST /cleanups/:id/cancel). HOST-GATED: the requester MUST be the organizer (403);
+   * 404 when the cleanup is missing. Sets status 'cancelled', writes a cleanup_timeline 'cancel' row, and
+   * notifies every member, all in one repo transaction. Idempotent re-cancel is allowed (no-op timeline).
+   * Returns the updated CleanupDTO.
+   */
+  cancelCleanup(id: string, reason: string | null, requesterUserId: string): Promise<CleanupDTO>
   listCleanups(
     req: ListCleanupsRequest,
     viewer: CleanupViewer,
@@ -645,6 +661,35 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
 
       // Re-read the persisted state + hydrate the gallery for the response.
+      const record = await deps.repo.findCleanupById(id, null)
+      if (!record) throw AppError.notFound("Cleanup not found")
+      const joined = await deps.repo.isMember(id, requesterUserId)
+      const linkedReports = await hydrateLinkedReports(id, record.eventKind)
+      return toCleanupDTO(record, joined, linkedReports)
+    },
+
+    async cancelCleanup(
+      id: string,
+      reason: string | null,
+      requesterUserId: string,
+    ): Promise<CleanupDTO> {
+      // HOST GATE: only the organizer may cancel (same gate as updateCleanup/leaveCleanup).
+      const organizerId = await deps.repo.organizerOf(id)
+      if (organizerId === null) throw AppError.notFound("Cleanup not found")
+      if (organizerId !== requesterUserId) {
+        throw AppError.forbidden("Only the organizer can cancel this event.")
+      }
+      const trimmed = reason?.trim()
+      const note =
+        trimmed && trimmed.length > 0 ? `Event cancelled: ${trimmed}` : "Event cancelled"
+      const ok = await deps.repo.cancelCleanupTx(id, {
+        note,
+        reason: trimmed && trimmed.length > 0 ? trimmed : null,
+        actorId: requesterUserId,
+      })
+      if (!ok) throw AppError.notFound("Cleanup not found")
+
+      // Re-read + hydrate for the response (same as updateCleanup's tail).
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) throw AppError.notFound("Cleanup not found")
       const joined = await deps.repo.isMember(id, requesterUserId)

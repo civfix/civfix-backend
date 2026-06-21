@@ -162,6 +162,64 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     for (const raw of [...aConn.sent, ...bConn.sent]) assertServerFrame(raw)
   })
 
+  it("a slur in the send body is rejected with a BLOCKED error frame (no persist/broadcast/ack)", async () => {
+    const aConn = new MockConnection("A")
+    const bConn = new MockConnection("B")
+    const aSession = sessionFor(ALICE, aConn)
+    const bSession = sessionFor(BOB, bConn)
+    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+
+    await handleClientFrame(
+      aSession,
+      // A curated hate slur (App Store 1.2a gate). General profanity would pass; this does not.
+      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "you retard" }),
+    )
+
+    // Sender got a room-scoped BLOCKED error, NO ack, NO echoed message.
+    const errs = aConn.framesOfType("error")
+    expect(errs).toHaveLength(1)
+    expect((errs[0] as { code: string }).code).toBe("BLOCKED")
+    expect((errs[0] as { cleanupId?: string }).cleanupId).toBe(THREAD)
+    expect(aConn.framesOfType("ack")).toHaveLength(0)
+    expect(aConn.framesOfType("message")).toHaveLength(0)
+    // The peer received nothing, and nothing was persisted.
+    expect(bConn.framesOfType("message")).toHaveLength(0)
+    expect((await dmRepo.history(THREAD, undefined, 50)).items).toHaveLength(0)
+    for (const raw of [...aConn.sent, ...bConn.sent]) assertServerFrame(raw)
+  })
+
+  it("a slur in a CLEANUP (group) chat send is also BLOCKED — the gate is room-kind-agnostic", async () => {
+    // The slur gate sits in the shared `send` path BEFORE the dm/cleanup kind split and BEFORE
+    // authorizeRoom, so it fires for group chat exactly as for DMs (no join/membership needed to reach it).
+    const aConn = new MockConnection("A")
+    const aSession = sessionFor(ALICE, aConn)
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "cleanup", clientId: "c1", body: "you retard" }),
+    )
+    const errs = aConn.framesOfType("error")
+    expect(errs).toHaveLength(1)
+    expect((errs[0] as { code: string }).code).toBe("BLOCKED")
+    expect(aConn.framesOfType("ack")).toHaveLength(0)
+    expect(aConn.framesOfType("message")).toHaveLength(0)
+    for (const raw of aConn.sent) assertServerFrame(raw)
+  })
+
+  it("a clean send is unaffected by the slur gate (general profanity passes)", async () => {
+    const aConn = new MockConnection("A")
+    const aSession = sessionFor(ALICE, aConn)
+    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      // Slur-filter is slurs-only; everyday strong language is NOT blocked.
+      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "this is damn slow" }),
+    )
+    expect(aConn.framesOfType("error")).toHaveLength(0)
+    expect(aConn.framesOfType("ack")).toHaveLength(1)
+    expect((await dmRepo.history(THREAD, undefined, 50)).items).toHaveLength(1)
+  })
+
   it("a block (either way) rejects dm join AND send and persists nothing", async () => {
     // Bob blocks Alice.
     await blocks.block(BOB, ALICE)

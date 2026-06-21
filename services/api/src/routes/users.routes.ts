@@ -17,6 +17,7 @@ import {
   SearchUsersRequestSchema,
   MentionSearchRequestSchema,
   UpdateSettingsRequestSchema,
+  DeleteAccountRequestSchema,
   IdSchema,
   AppError,
   type SearchUsersResponse,
@@ -187,7 +188,31 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     const userId = requireAuth(request)
     const store = app.authServices?.users
     const sessions = app.authServices?.sessions
-    if (!store || !sessions) throw AppError.unauthorized("Authentication required.")
+    const otp = app.authServices?.otp
+    if (!store || !sessions || !otp) throw AppError.unauthorized("Authentication required.")
+
+    // EMAIL-OTP GATE: deleting an account requires re-proving control of the account email. The client
+    // first requests a one-time code (POST /auth/otp/request) and submits it here; we verify it BEFORE any
+    // destructive work, so an idle/stolen session cannot tombstone the account without the email inbox.
+    // A bad/expired code throws 401 from verifyOtp and nothing below runs. (We never issue the OTP's
+    // session — verifyOtp only proves the email; the existing session is used for this very request, so no
+    // session/CSRF rotation, unlike calling the sign-in /auth/otp/verify from the client.)
+    const { emailOtp } = parse(DeleteAccountRequestSchema, request.body)
+    const me = await store.findById(userId)
+    const email = me?.email ?? null
+    if (!email) {
+      throw AppError.validation(
+        { emailOtp: "Add and verify an email address to your account first." },
+        "We can't verify account deletion because your account has no email address.",
+      )
+    }
+    // verifyOtp consumes the single-use code and resolves the email to its account (the caller's own).
+    const verifiedUserId = await otp.verifyOtp(email, emailOtp, request.ip || null)
+    if (verifiedUserId !== userId) {
+      // Defensive: the code must belong to THIS account (it always does for the caller's own email).
+      throw AppError.unauthorized("That code could not be verified for this account.")
+    }
+
     await store.softDeleteAndAnonymize(userId)
     // banUser revokes ALL durable sessions + cache entries AND sets the veto marker (so any warm session
     // that slipped a revoke is rejected on its next request).

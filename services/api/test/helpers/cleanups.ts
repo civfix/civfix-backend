@@ -514,6 +514,20 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(true)
   }
 
+  cancelCleanupTx(
+    id: string,
+    input: { note: string; reason: string | null; actorId: string },
+  ): Promise<boolean> {
+    const c = this.cleanups.get(id)
+    if (!c) return Promise.resolve(false)
+    c.status = "cancelled"
+    // Mirror the Drizzle impl's observable timeline write so a service test can assert the 'cancel' row.
+    // The notification fan-out is NOT modeled here (the per-member INSERT...SELECT is covered by the
+    // PG integration test); the service test asserts the status flip + host gate + timeline 'cancel'.
+    this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", actorId: input.actorId })
+    return Promise.resolve(true)
+  }
+
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]> {
     const { cleanupId, viewerId, onlyFollowed, limit } = args
     const follows = (userId: string): boolean =>

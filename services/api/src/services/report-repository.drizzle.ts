@@ -36,7 +36,7 @@ import type {
   ReportTimelineView,
 } from "./report-service.js"
 import { REPORT_CREATE_SCOPE } from "./report-service.js"
-import type { ReportDTO, ReportCategory, ReportStatus, ReportType } from "@civfix/shared"
+import type { ReportDTO, ReportCategory, ReportStatus, ReportType, ReportVisibility } from "@civfix/shared"
 
 /** Postgres unique-violation SQLSTATE; surfaced on the idempotency-key race. */
 const PG_UNIQUE_VIOLATION = "23505"
@@ -662,6 +662,40 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         await tx`
           INSERT INTO report_timeline (report_id, status, note, actor_id)
           VALUES (${reportId}, ${input.status}, ${input.note}, ${userId})
+        `
+        return "updated"
+      })
+    },
+
+    async setVisibilityByOwner(
+      reportId: string,
+      userId: string,
+      input: { visibility: ReportVisibility; note: string },
+    ): Promise<"updated" | "not_found" | "forbidden"> {
+      // One transaction: lock + read the row to check ownership, then flip the visibility and append the
+      // timeline entry atomically. FOR UPDATE serializes concurrent owner toggles on the same report. The
+      // status is deliberately NOT changed (a visibility change is not a lifecycle transition), so the
+      // appended timeline row reuses the report's CURRENT status, read under the same lock.
+      return sql.begin(async (tx) => {
+        const rows = await tx<
+          { reporter_user_id: string | null; deleted_at: Date | null; status: ReportStatus }[]
+        >`
+          SELECT reporter_user_id, deleted_at, status
+          FROM reports
+          WHERE id = ${reportId}
+          LIMIT 1
+          FOR UPDATE
+        `
+        const row = rows[0]
+        // Missing OR soft-deleted -> not_found (a deleted report is gone for everyone, including the owner).
+        if (!row || row.deleted_at !== null) return "not_found"
+        // Only the human reporter who created it can hide/re-list it here.
+        if (row.reporter_user_id !== userId) return "forbidden"
+
+        await tx`UPDATE reports SET visibility = ${input.visibility} WHERE id = ${reportId}`
+        await tx`
+          INSERT INTO report_timeline (report_id, status, note, actor_id)
+          VALUES (${reportId}, ${row.status}, ${input.note}, ${userId})
         `
         return "updated"
       })

@@ -20,6 +20,7 @@
 import {
   CreateCleanupRequestSchema,
   UpdateCleanupRequestSchema,
+  CancelCleanupRequestSchema,
   ListCleanupsRequestSchema,
   ChatHistoryQuerySchema,
   IdSchema,
@@ -139,6 +140,24 @@ export async function registerCleanupRoutes(
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(UpdateCleanupRequestSchema, request.body)
     const dto: GetCleanupResponse = await service().updateCleanup(id, body, userId)
+    reply.status(200).send(dto)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /cleanups/:id/cancel  [auth][csrf]  (organizer-only; the service enforces the host gate)
+  // -------------------------------------------------------------------------
+  // The host cancels the event: the service flips status to 'cancelled', writes a 'cancel' timeline row,
+  // and fans out a notification to every attendee, then returns the updated CleanupDTO. The service throws
+  // FORBIDDEN (403) for a non-organizer and NOT_FOUND (404) for a missing event.
+  route(app, "cancelCleanup", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const body = parse(CancelCleanupRequestSchema, { ...(request.body as object), id })
+    const dto: GetCleanupResponse = await service().cancelCleanup(
+      id,
+      body.reason ?? null,
+      userId,
+    )
     reply.status(200).send(dto)
   })
 

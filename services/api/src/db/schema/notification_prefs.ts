@@ -15,6 +15,7 @@ export const notificationPrefs = pgTable("notification_prefs", {
   cleanupChat: boolean("cleanup_chat").notNull().default(true),
   reportUpdates: boolean("report_updates").notNull().default(true),
   follows: boolean("follows").notNull().default(true),
+  mentions: boolean("mentions").notNull().default(true),
   quietStart: time("quiet_start"),
   quietEnd: time("quiet_end"),
 })

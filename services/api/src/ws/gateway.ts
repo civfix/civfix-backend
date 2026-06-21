@@ -55,6 +55,7 @@ import { presentedSessionToken, SESSION_COOKIE } from "../auth/transport.js"
 import { isProd } from "../env.js"
 import { randomUUID } from "node:crypto"
 import { parseUserMentions } from "../services/discussion-mentions.js"
+import { containsSlur } from "../abuse/slur-filter.js"
 
 /**
  * Parse @handle tokens from a chat/dm send-frame body for USER @-mentions. Thin alias over the shared pure
@@ -515,6 +516,15 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
           "Discussion messages are posted over HTTP, not the socket.",
           { kind, id },
         )
+        return
+      }
+      // Hate-slur content gate (App Store 1.2a) for cleanup chat + 1:1 DMs. Slurs only; general profanity
+      // passes (see abuse/slur-filter). A hit REJECTS the send (never persisted/broadcast/acked) with a
+      // room-scoped error frame — the WS analogue of the discussion-service 422 (a thrown AppError here
+      // would be swallowed into a generic INTERNAL frame by the message-handler catch). Body-less media-only
+      // sends (body === "") pass: containsSlur returns false on empty.
+      if (containsSlur(frame.body)) {
+        sendError(conn, "BLOCKED", "This contains language that isn't allowed.", { kind, id })
         return
       }
       const auth = await authorizeRoom(deps, kind, id, userId)

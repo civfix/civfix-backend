@@ -64,7 +64,7 @@ describe("home summary assembly", () => {
       resolvedRatio: { current: 0.5, previous: 0.47 },
       cleanupsPlanned: { current: 8, previous: 7 },
       events: { current: 5, previous: 9 },
-      volunteers: { current: 64, previous: 60 },
+      newUsers: { current: 64, previous: 60 },
     }
     analytics.coverageValue = { mapped: 3, needsMapping: 1 }
     analytics.pinsByWeekValue = [{ weekStart: new Date("2026-06-15T00:00:00Z"), count: 11 }]
@@ -82,7 +82,7 @@ describe("home summary assembly", () => {
     expect(res.analytics.coveragePct).toBe(75)
     expect(res.analytics.cleanups).toBe(8)
     expect(res.analytics.eventsThisMonth).toBe(5)
-    expect(res.analytics.volunteers).toBe(64)
+    expect(res.analytics.newUsers).toBe(64)
     expect(res.analytics.pinsByWeek).toHaveLength(8)
     expect(res.analytics.pinsByWeek[7]).toBe(11)
   })

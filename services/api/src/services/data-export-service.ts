@@ -171,9 +171,12 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         revokedAt: t.revoked_at,
       }))
 
-      // verification status (the "verified neighbor" state; documents jsonb omitted as sensitive)
-      const verification = await sql<{ status: string; created_at: Date }[]>`
-        SELECT status, created_at FROM user_verification WHERE user_id = ${userId} LIMIT 1
+      // verification status (the "verified neighbor" state; documents jsonb omitted as sensitive).
+      // NOTE: user_verification has NO created_at column - the request timestamp is `applied_at` (see
+      // 0016_user_verification.sql). Selecting created_at here threw `column "created_at" does not exist`,
+      // which failed EVERY data-export with a 500. Use applied_at.
+      const verification = await sql<{ status: string; applied_at: Date }[]>`
+        SELECT status, applied_at FROM user_verification WHERE user_id = ${userId} LIMIT 1
       `
 
       const exportObject = {

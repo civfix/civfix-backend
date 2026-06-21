@@ -607,6 +607,35 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return true
     },
 
+    async cancelCleanupTx(
+      id: string,
+      input: { note: string; reason: string | null; actorId: string },
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const updated = await tx<{ id: string }[]>`
+          UPDATE cleanups SET status = 'cancelled' WHERE id = ${id} RETURNING id
+        `
+        if (updated.length === 0) return false
+        await tx`
+          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+          VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
+        `
+        // Set-based fan-out IN-TX (one statement regardless of member count), atomic with the status flip.
+        // The actor (the host) is EXCLUDED so they do not get their own "Event cancelled" bell. Body
+        // carries the optional reason.
+        const body = input.reason
+          ? `This event has been cancelled by the host. Reason: ${input.reason}`
+          : `This event has been cancelled by the host.`
+        await tx`
+          INSERT INTO notifications (user_id, type, title, body, link)
+          SELECT cm.user_id, 'cleanup_cancelled', 'Event cancelled', ${body}, ${`/cleanups/${id}`}
+          FROM cleanup_members cm
+          WHERE cm.cleanup_id = ${id} AND cm.user_id <> ${input.actorId}
+        `
+        return true
+      })
+    },
+
     async listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]> {
       const { cleanupId, viewerId, onlyFollowed, limit } = args
       // The viewer's follow edge per attendee. An anonymous viewer follows no one (FALSE). Mirrors the

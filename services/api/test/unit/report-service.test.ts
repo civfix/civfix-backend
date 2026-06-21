@@ -499,6 +499,60 @@ describe("resolveReport (owner status toggle)", () => {
   })
 })
 
+describe("unlistReport (owner visibility toggle)", () => {
+  it("the owner hides their report (visibility flips to hidden + a timeline entry, status untouched)", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published" })
+
+    const dto = await service.unlistReport("owner", r.id, true)
+    expect(dto.visibility).toBe("hidden")
+    // Status is deliberately unchanged (the city pipeline keeps the item).
+    expect(dto.status).toBe("published")
+    // The returned DTO carries the fresh timeline; the last entry is the owner's hide (status repeated).
+    const last = dto.timeline[dto.timeline.length - 1]!
+    expect(last.status).toBe("published")
+    expect(last.note).toBe("Hidden from the public map by the reporter")
+    // The underlying record was updated (visibility hidden, status intact).
+    expect(repo.reports.get(r.id)!.visibility).toBe("hidden")
+    expect(repo.reports.get(r.id)!.status).toBe("published")
+  })
+
+  it("re-listing a hidden report returns it to public with a 'Re-listed' timeline entry", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "hidden" })
+
+    const dto = await service.unlistReport("owner", r.id, false)
+    expect(dto.visibility).toBe("public")
+    const last = dto.timeline[dto.timeline.length - 1]!
+    expect(last.note).toBe("Re-listed by the reporter")
+    expect(repo.reports.get(r.id)!.visibility).toBe("public")
+  })
+
+  it("403s when the caller does not own the report (and leaves the visibility untouched)", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published" })
+    await expect(service.unlistReport("stranger", r.id, true)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    expect(repo.reports.get(r.id)!.visibility).toBe("public")
+  })
+
+  it("404s unlisting a missing report", async () => {
+    const { service } = makeHarness()
+    await expect(
+      service.unlistReport("owner", "00000000-0000-0000-0000-000000000000", true),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("404s unlisting a soft-deleted report", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", deletedAt: new Date() })
+    await expect(service.unlistReport("owner", r.id, true)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+})
+
 describe("listMyReports", () => {
   it("returns the caller's non-deleted reports newest-first and paginates by cursor", async () => {
     const { repo, service } = makeHarness()

@@ -441,6 +441,28 @@ export class InMemoryReportRepository implements ReportRepository {
     return Promise.resolve("updated")
   }
 
+  setVisibilityByOwner(
+    reportId: string,
+    userId: string,
+    input: { visibility: ReportRecord["visibility"]; note: string },
+  ): Promise<"updated" | "not_found" | "forbidden"> {
+    // Mirror the Drizzle impl: existence + ownership check, then flip visibility + append a timeline row.
+    // The status is deliberately NOT changed, so the appended row reuses the report's CURRENT status. The
+    // map holds the record by reference, so mutating `r.visibility` updates the stored report (and
+    // findReportById, which returns a copy, then projects the new visibility).
+    const r = this.reports.get(reportId)
+    if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
+    if (r.reporterUserId !== userId) return Promise.resolve("forbidden")
+    r.visibility = input.visibility
+    this.timeline.push({
+      reportId,
+      status: r.status,
+      note: input.note,
+      createdAt: this.nextDate(),
+    })
+    return Promise.resolve("updated")
+  }
+
   private reportExists(reportId: string): boolean {
     const r = this.reports.get(reportId)
     return r !== undefined && r.deletedAt === null

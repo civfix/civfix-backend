@@ -142,6 +142,7 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       cleanupChat: patch.cleanupChat ?? current.cleanupChat,
       reportUpdates: patch.reportUpdates ?? current.reportUpdates,
       follows: patch.follows ?? current.follows,
+      mentions: patch.mentions ?? current.mentions,
       quietStart:
         patch.quietHours === undefined
           ? current.quietStart

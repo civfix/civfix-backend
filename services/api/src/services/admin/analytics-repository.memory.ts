@@ -30,7 +30,7 @@ function zeroKpis(): KpiAggregates {
     resolvedRatio: { current: 0, previous: 0 },
     cleanupsPlanned: { current: 0, previous: 0 },
     events: { current: 0, previous: 0 },
-    volunteers: { current: 0, previous: 0 },
+    newUsers: { current: 0, previous: 0 },
   }
 }
 

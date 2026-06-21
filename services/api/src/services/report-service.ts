@@ -322,6 +322,16 @@ export interface ReportRepository {
     userId: string,
     input: { status: ReportStatus; note: string },
   ): Promise<"updated" | "not_found" | "forbidden">
+  /**
+   * OWNER visibility write — the reporter hiding/re-listing their OWN report. Atomically verifies ownership +
+   * existence, sets reports.visibility, and appends a report_timeline row (status unchanged, actor=reporter).
+   * Returns "updated" | "not_found" | "forbidden". Status is deliberately NOT changed (city pipeline intact).
+   */
+  setVisibilityByOwner(
+    reportId: string,
+    userId: string,
+    input: { visibility: ReportVisibility; note: string },
+  ): Promise<"updated" | "not_found" | "forbidden">
 }
 
 /** Plain bbox (west/south/east/north) - re-declared structurally to avoid importing the zod type here. */
@@ -564,6 +574,12 @@ export interface ReportService {
    * can replace its cached detail.
    */
   resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO>
+  /**
+   * The reporter hides their OWN report from the public map/lists (`unlisted: true` -> visibility 'hidden')
+   * or re-lists it (`unlisted: false` -> 'public'). 404s a missing report, 403s a report the caller does not
+   * own. NEVER deletes; status is untouched (the city pipeline keeps the item). Returns the updated ReportDTO.
+   */
+  unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO>
 }
 
 export function makeReportService(deps: ReportServiceDeps): ReportService {
@@ -957,6 +973,22 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.forbidden("You can only change the status of your own report")
       }
       // Re-read the report for the owner so the response carries the new status + the just-appended
+      // timeline entry (the client replaces its cached detail with this, no second fetch needed).
+      return service.getReport(reportId, { userId })
+    },
+
+    async unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO> {
+      // The reporter-only visibility toggle: hide -> 'hidden' (gone from the public map/search/detail, kept
+      // in the city pipeline with its real status); re-list -> 'public'. The repo verifies ownership
+      // atomically and appends a report_timeline row (status unchanged). NEVER deletes.
+      const visibility: ReportVisibility = unlisted ? "hidden" : "public"
+      const note = unlisted ? "Hidden from the public map by the reporter" : "Re-listed by the reporter"
+      const outcome = await deps.repo.setVisibilityByOwner(reportId, userId, { visibility, note })
+      if (outcome === "not_found") throw AppError.notFound("Report not found")
+      if (outcome === "forbidden") {
+        throw AppError.forbidden("You can only hide your own report")
+      }
+      // Re-read the report for the owner so the response carries the new visibility + the just-appended
       // timeline entry (the client replaces its cached detail with this, no second fetch needed).
       return service.getReport(reportId, { userId })
     },

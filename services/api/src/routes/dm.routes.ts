@@ -33,6 +33,7 @@ import { route } from "../versioning/route.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import { makeDmService, type DmService, type DmUserLookup } from "../services/dm-service.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
+import { assertNoSlur } from "../abuse/slur-filter.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 
@@ -150,6 +151,8 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       // The body schema carries threadId/messageId (the typed client fills the path-param keys); the
       // authoritative ids are the URL path, so stamp them before validating the non-empty, length-bounded body.
       const body = parse(EditChatMessageRequestSchema, { ...(request.body as object), threadId, messageId })
+      // Hate-slur content gate (App Store 1.2a) on the edited DM body — mirrors discussion-service.editMessage.
+      assertNoSlur(body.body, "body")
 
       const repo = dmRepo()
       // Authorize the same way GET history does: the caller must be a thread participant AND not blocked

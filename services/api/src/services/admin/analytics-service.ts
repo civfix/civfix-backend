@@ -85,7 +85,8 @@ export interface KpiAggregates {
   resolvedRatio: { current: number; previous: number }
   cleanupsPlanned: PeriodCount
   events: PeriodCount
-  volunteers: PeriodCount
+  /** New user accounts created this month vs last month. */
+  newUsers: PeriodCount
 }
 
 /** One weekly bucket: the ISO week-start date + the pin count in that week. */
@@ -264,10 +265,10 @@ export function buildKpis(agg: KpiAggregates): AnalyticsKpi[] {
       dir: deltaDir(agg.events.current, agg.events.previous),
     },
     {
-      label: "Volunteers",
-      num: agg.volunteers.current,
-      delta: countDeltaLabel(agg.volunteers.current, agg.volunteers.previous),
-      dir: deltaDir(agg.volunteers.current, agg.volunteers.previous),
+      label: "New users",
+      num: agg.newUsers.current,
+      delta: countDeltaLabel(agg.newUsers.current, agg.newUsers.previous),
+      dir: deltaDir(agg.newUsers.current, agg.newUsers.previous),
     },
   ]
 }

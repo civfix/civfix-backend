@@ -23,6 +23,7 @@ import {
   ListReportsInBBoxRequestSchema,
   ListReportsSearchRequestSchema,
   ResolveReportRequestSchema,
+  UnlistReportRequestSchema,
   PaginationQuerySchema,
   IdSchema,
   AppError,
@@ -412,6 +413,19 @@ export async function registerReportRoutes(
     // body; the URL value wins) — mirrors the discussion routes' param+body reconciliation.
     const body = parse(ResolveReportRequestSchema, { ...(request.body as object), id })
     const dto: ReportDTO = await service().resolveReport(userId, id, body.resolved)
+    reply.status(200).send(dto)
+  })
+
+  // -------------------------------------------------------------------------
+  // POST /reports/:id/unlist  [auth][csrf]  (the reporter hides their own report from the public map / re-lists it)
+  // -------------------------------------------------------------------------
+  route(app, "unlistReport", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(ReportIdParamsSchema, request.params)
+    // Merge the authoritative path id into the body before validating (the client also sends it in the
+    // body; the URL value wins) — mirrors the resolveReport route's param+body reconciliation.
+    const body = parse(UnlistReportRequestSchema, { ...(request.body as object), id })
+    const dto: ReportDTO = await service().unlistReport(userId, id, body.unlisted)
     reply.status(200).send(dto)
   })
 }

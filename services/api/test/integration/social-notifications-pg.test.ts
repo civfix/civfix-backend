@@ -168,6 +168,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       cleanupChat: true,
       reportUpdates: true,
       follows: true,
+      mentions: true,
       quietStart: null,
       quietEnd: null,
     })
@@ -176,6 +177,12 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const patched = await repo.upsertPrefs(user, { follows: false })
     expect(patched.follows).toBe(false)
     expect(patched.push).toBe(true)
+    expect(patched.mentions).toBe(true)
+
+    // The dedicated mentions toggle round-trips and survives a later unrelated upsert.
+    const muted = await repo.upsertPrefs(user, { mentions: false })
+    expect(muted.mentions).toBe(false)
+    expect((await repo.upsertPrefs(user, { push: true })).mentions).toBe(false)
 
     // Set quiet hours (the time columns round-trip as strings).
     const withQuiet = await repo.upsertPrefs(user, {

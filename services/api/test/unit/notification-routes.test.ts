@@ -163,6 +163,7 @@ describe("GET + PUT /notifications/prefs", () => {
       cleanupChat: true,
       reportUpdates: true,
       follows: true,
+      mentions: true,
     })
   })
 
@@ -178,7 +179,24 @@ describe("GET + PUT /notifications/prefs", () => {
     const body = res.json()
     expect(body.follows).toBe(false)
     expect(body.push).toBe(true)
+    expect(body.mentions).toBe(true)
     expect(body.quietHours).toEqual({ start: "22:00", end: "07:00" })
+  })
+
+  it("toggles the dedicated mentions preference off", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "PUT",
+      url: "/v1/notifications/prefs",
+      headers: auth(token),
+      payload: { mentions: false },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.mentions).toBe(false)
+    // Untouched toggles stay on.
+    expect(body.push).toBe(true)
+    expect(body.cleanupChat).toBe(true)
   })
 
   it("422s an unknown field (strict schema)", async () => {

@@ -6,7 +6,7 @@
  * six section lists): discovery (queue + reports waiting + over-SLA), reports (flagged / in progress /
  * completed), events (upcoming / live / attending), mail (unread / needs-action / bounce rate), users
  * (flagged / high-risk / suspended), an analytics MINI block (pins this month, resolved %, coverage %,
- * cleanups, events this month, volunteers, the 8-week pins spark), and live pins 24h.
+ * cleanups, events this month, new users, the 8-week pins spark), and live pins 24h.
  *
  * RESILIENCE (enumeration 2.A.6: "each card can fail independently"): every section is computed inside its
  * own guard (safeSection). A failing sub-aggregate degrades ONLY that section to a neutral zero block; it
@@ -118,7 +118,7 @@ interface AnalyticsMini {
   coveragePct: number
   cleanups: number
   eventsThisMonth: number
-  volunteers: number
+  newUsers: number
   pinsByWeek: number[]
 }
 
@@ -128,7 +128,7 @@ const ZERO_ANALYTICS_MINI: AnalyticsMini = {
   coveragePct: 0,
   cleanups: 0,
   eventsThisMonth: 0,
-  volunteers: 0,
+  newUsers: 0,
   pinsByWeek: new Array<number>(PINS_BY_WEEK_WEEKS).fill(0),
 }
 
@@ -225,7 +225,7 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
       coveragePct: coverage ? coverage.pct : 0,
       cleanups: kpis ? kpis.cleanupsPlanned.current : 0,
       eventsThisMonth: kpis ? kpis.events.current : 0,
-      volunteers: kpis ? kpis.volunteers.current : 0,
+      newUsers: kpis ? kpis.newUsers.current : 0,
       pinsByWeek,
     }
   }

@@ -287,8 +287,10 @@ export async function registerChatRoutes(
           notifyChatMention: async (input) => {
             // ROOM ELIGIBILITY: only notify a user who can actually see the room — a cleanup MEMBER for the
             // cleanup chat, or a thread PARTICIPANT for a dm. (A mention of a non-member is recorded but
-            // raises no bell.) BLOCK GATE: suppress when either party blocked the other. PREF gate is applied
-            // inside the notification service. Best-effort throughout; the gateway already swallows failures.
+            // raises no bell.) BLOCK GATE: suppress when either party blocked the other. MENTIONS MUTE: the
+            // dedicated `mentions` toggle is enforced HERE (the reused cleanup_chat type can't be told apart
+            // from a real cleanup-chat bell in typeAllowedByPrefs). The remaining PREF/quiet-hours gates are
+            // applied inside the notification service. Best-effort throughout; the gateway swallows failures.
             const { kind, roomId, actorUserId, mentionedUserId, message } = input
             // DM: skip the mention bell entirely. A 1:1 DM message IS already a direct message to the only
             // other participant, and the onDmDelivered path below already raises the (presence-suppressed)
@@ -298,6 +300,9 @@ export async function registerChatRoutes(
             if (kind === "dm") return
             if (!(await isMember(roomId, mentionedUserId))) return
             if (await blocksRepo.isBlockedEitherWay(actorUserId, mentionedUserId)) return
+            // Honor the dedicated `mentions` mute. The bell reuses the `cleanup_chat` type, so the per-type
+            // pref gate inside the service cannot distinguish a mention — enforce the mentions toggle here.
+            if (!(await notificationService.getPrefs(mentionedUserId)).mentions) return
             await notificationService.createNotification(mentionedUserId, {
               // Reuse the EXISTING cleanup-room notification type (no frozen-contract change). The title makes
               // it a mention; the body is the message author's name (mirrors the dm bell copy).

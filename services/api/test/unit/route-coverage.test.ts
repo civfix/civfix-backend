@@ -208,7 +208,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 153 endpoints in the registry (no endpoint skipped)", () => {
+  it("covers ALL 155 endpoints in the registry (no endpoint skipped)", () => {
     // 124 base (47 Phase 1 + 67 Phase 2 admin incl. setEventOutcome + the 7-route DM/privacy surface + the
     // 3-route inbound-mail surface) + the 7-route report-discussion surface (getReportDiscussion,
     // getDiscussionReplies, postDiscussionMessage, toggleDiscussionReaction, deleteDiscussionMessage,
@@ -238,7 +238,10 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     // founder" flow, PLUS setUserVerified [POST /admin/users/:id/verify] = 158 - 7 + 1 = 152.
     // + the reporter-only resolveReport route [POST /reports/:id/resolve] (the owner marks their own
     // report resolved / reopens it) = 153.
-    expect(Object.keys(endpoints).length).toBe(153)
+    // + the reporter-only unlistReport route [POST /reports/:id/unlist] (the owner hides / re-lists their
+    // own report from the public map) and the host-only cancelCleanup route [POST /cleanups/:id/cancel]
+    // (the organizer cancels their event + notifies attendees) = 155.
+    expect(Object.keys(endpoints).length).toBe(155)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

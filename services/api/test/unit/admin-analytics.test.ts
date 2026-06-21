@@ -90,7 +90,7 @@ describe("buildKpis", () => {
       resolvedRatio: { current: 0.5, previous: 0.47 },
       cleanupsPlanned: { current: 8, previous: 8 },
       events: { current: 5, previous: 9 },
-      volunteers: { current: 64, previous: 60 },
+      newUsers: { current: 64, previous: 60 },
     })
     expect(kpis).toHaveLength(6)
     expect(kpis[0]).toEqual({ label: "Pins this month", num: 120, delta: "+20", dir: "up" })
@@ -99,7 +99,7 @@ describe("buildKpis", () => {
     // Avg route time is the Phase 3 placeholder.
     expect(kpis[3]).toEqual({ label: "Avg. route time", num: 0, delta: "Phase 3", dir: "flat" })
     expect(kpis[4]).toEqual({ label: "Events this month", num: 5, delta: "-4", dir: "down" })
-    expect(kpis[5]).toEqual({ label: "Volunteers", num: 64, delta: "+4", dir: "up" })
+    expect(kpis[5]).toEqual({ label: "New users", num: 64, delta: "+4", dir: "up" })
   })
 })
 
@@ -268,7 +268,7 @@ describe("analytics service wiring", () => {
       resolvedRatio: { current: 0.5, previous: 0.5 },
       cleanupsPlanned: { current: 2, previous: 1 },
       events: { current: 3, previous: 3 },
-      volunteers: { current: 9, previous: 8 },
+      newUsers: { current: 9, previous: 8 },
     }
     const res = await svc.kpis()
     expect(res.kpis[0]).toMatchObject({ label: "Pins this month", num: 10, dir: "up" })

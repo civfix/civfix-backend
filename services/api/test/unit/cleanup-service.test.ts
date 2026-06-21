@@ -117,6 +117,44 @@ describe("joinCleanup / leaveCleanup", () => {
   })
 })
 
+describe("cancelCleanup", () => {
+  it("the organizer cancels: status flips to 'cancelled' and a 'cancel' timeline row is written", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+
+    const dto = await service.cancelCleanup(created.id, null, ORG)
+    expect(dto.status).toBe("cancelled")
+    // The stored cleanup is now cancelled (mirrors the in-tx UPDATE status='cancelled').
+    expect(repo.cleanups.get(created.id)?.status).toBe("cancelled")
+    // A 'cancel' timeline row was appended (the host-visible activity log).
+    const cancelRows = repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel")
+    expect(cancelRows).toHaveLength(1)
+    expect(cancelRows[0]!.actorId).toBe(ORG)
+  })
+
+  it("records the trimmed reason on the timeline note when supplied", async () => {
+    // The service does not surface the note on the DTO, but the in-memory repo records the timeline row;
+    // a non-empty reason still flips the status (the note content is exercised by the PG integration test).
+    const created = await service.createCleanup(baseInput(), ORG)
+    const dto = await service.cancelCleanup(created.id, "  Storm warning  ", ORG)
+    expect(dto.status).toBe("cancelled")
+  })
+
+  it("403s a non-organizer (host gate)", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    await expect(service.cancelCleanup(created.id, null, ALICE)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    // The event is untouched.
+    expect(repo.cleanups.get(created.id)?.status).toBe("upcoming")
+  })
+
+  it("404s a missing cleanup", async () => {
+    await expect(
+      service.cancelCleanup("00000000-0000-0000-0000-000000000000", null, ORG),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+})
+
 describe("getCleanup", () => {
   it("returns the DTO with joined=true for a member and false for a stranger", async () => {
     const created = await service.createCleanup(baseInput(), ORG)

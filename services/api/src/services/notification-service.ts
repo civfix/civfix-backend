@@ -83,6 +83,7 @@ export interface NotificationPrefsRecord {
   cleanupChat: boolean
   reportUpdates: boolean
   follows: boolean
+  mentions: boolean
   quietStart: string | null
   quietEnd: string | null
 }
@@ -93,6 +94,7 @@ export interface NotificationPrefsPatch {
   cleanupChat?: boolean
   reportUpdates?: boolean
   follows?: boolean
+  mentions?: boolean
   /** undefined leaves quiet hours unchanged; null clears them; an object sets both bounds. */
   quietHours?: QuietHours | null
 }
@@ -176,6 +178,7 @@ export const DEFAULT_PREFS: NotificationPrefsRecord = {
   cleanupChat: true,
   reportUpdates: true,
   follows: true,
+  mentions: true,
   quietStart: null,
   quietEnd: null,
 }
@@ -224,10 +227,14 @@ export function isWithinQuietHours(
 /**
  * Whether the user's prefs permit a push for `type`. Requires the master push switch AND the per-type
  * toggle. Type -> toggle mapping:
- *   - report_update, claim_available -> reportUpdates (report-related)
- *   - cleanup_chat, cleanup_reminder -> cleanupChat   (cleanup-related)
- *   - new_follower                   -> follows
- *   - system                          -> always allowed when push is on (operational messages)
+ *   - report_update, claim_available           -> reportUpdates (report-related)
+ *   - cleanup_chat, cleanup_reminder,
+ *     cleanup_cancelled                         -> cleanupChat   (cleanup-related)
+ *   - new_follower                             -> follows
+ *   - system                                    -> always allowed when push is on (operational messages)
+ * NOTE: the @-mention bell reuses report_update (discussion) / cleanup_chat (chat) types, so the dedicated
+ * `mentions` toggle CANNOT be enforced here (the type alone does not say "mention"). It is enforced where
+ * each mention notifier fires (it knows it is a mention) via getPrefs + a !mentions short-circuit.
  * PURE.
  */
 export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPrefsRecord): boolean {
@@ -238,6 +245,7 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
       return prefs.reportUpdates
     case "cleanup_chat":
     case "cleanup_reminder":
+    case "cleanup_cancelled":
       return prefs.cleanupChat
     case "new_follower":
       return prefs.follows
@@ -256,6 +264,7 @@ export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
     cleanupChat: row.cleanupChat,
     reportUpdates: row.reportUpdates,
     follows: row.follows,
+    mentions: row.mentions,
     ...(hasQuiet ? { quietHours: { start: row.quietStart!, end: row.quietEnd! } } : {}),
   }
 }
@@ -440,6 +449,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         ...(patch.cleanupChat !== undefined ? { cleanupChat: patch.cleanupChat } : {}),
         ...(patch.reportUpdates !== undefined ? { reportUpdates: patch.reportUpdates } : {}),
         ...(patch.follows !== undefined ? { follows: patch.follows } : {}),
+        ...(patch.mentions !== undefined ? { mentions: patch.mentions } : {}),
         ...("quietHours" in patch ? { quietHours: patch.quietHours ?? null } : {}),
       }
       return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))

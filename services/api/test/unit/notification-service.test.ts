@@ -119,6 +119,8 @@ describe("typeAllowedByPrefs", () => {
     expect(typeAllowedByPrefs("claim_available", { ...base, reportUpdates: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_chat", { ...base, cleanupChat: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_reminder", { ...base, cleanupChat: false })).toBe(false)
+    expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: false })).toBe(false)
+    expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: true })).toBe(true)
     // system rides on the master switch only.
     expect(typeAllowedByPrefs("system", base)).toBe(true)
   })
@@ -203,7 +205,13 @@ describe("getPrefs + updatePrefs", () => {
   it("creates all-true defaults (no quiet hours) on first read", async () => {
     const { repo, service } = makeHarness()
     const prefs = await service.getPrefs(U)
-    expect(prefs).toEqual({ push: true, cleanupChat: true, reportUpdates: true, follows: true })
+    expect(prefs).toEqual({
+      push: true,
+      cleanupChat: true,
+      reportUpdates: true,
+      follows: true,
+      mentions: true,
+    })
     // The default row was persisted.
     expect(repo.prefs.has(U)).toBe(true)
   })
@@ -216,6 +224,20 @@ describe("getPrefs + updatePrefs", () => {
     expect(updated.push).toBe(true)
     expect(updated.cleanupChat).toBe(true)
     expect(updated.reportUpdates).toBe(true)
+    expect(updated.mentions).toBe(true)
+  })
+
+  it("carries the dedicated mentions toggle through a partial update", async () => {
+    const { service } = makeHarness()
+    await service.getPrefs(U) // default-create
+    const muted = await service.updatePrefs(U, { mentions: false })
+    expect(muted.mentions).toBe(false)
+    // Other toggles untouched.
+    expect(muted.push).toBe(true)
+    expect(muted.cleanupChat).toBe(true)
+    // It survives a subsequent unrelated update.
+    const after = await service.updatePrefs(U, { follows: false })
+    expect(after.mentions).toBe(false)
   })
 
   it("sets and clears quiet hours", async () => {

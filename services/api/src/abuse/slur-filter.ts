@@ -2,11 +2,12 @@
  * SLUR-ONLY content filter for user-generated TEXT (App Store Guideline 1.2: keep objectionable
  * material from being posted). This is a deliberately NARROW, defensive content-moderation control:
  * it blocks a small, curated set of widely-recognized hate slurs (racial / ethnic / religious /
- * homophobic / transphobic / ableist) on the COMMENT, BIO, and REPORT TITLE/DESCRIPTION write paths.
+ * homophobic / transphobic / ableist) on the COMMENT, BIO, REPORT TITLE/DESCRIPTION, and — since the
+ * App Store 1.2a remediation — the CHAT/DM write paths (the WS `send` handler for both group chat and
+ * 1:1 DMs, plus the DM HTTP edit).
  *
  * EXPLICITLY OUT OF SCOPE:
  *   - General profanity (fuck, shit, damn, ass, bitch, ...) PASSES. This filter is slurs ONLY.
- *   - Private DMs and group chat are NOT filtered (product decision: don't police private speech).
  *   - Image / media / CSAM is handled by Cloudflare; this module never touches media.
  *
  * DESIGN: bias HARD toward PRECISION over recall.

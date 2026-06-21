@@ -141,6 +141,7 @@ export const NOTIFICATION_TYPE_VALUES = [
   "report_update",
   "cleanup_chat",
   "cleanup_reminder",
+  "cleanup_cancelled",
   "new_follower",
   "claim_available",
   "dm",

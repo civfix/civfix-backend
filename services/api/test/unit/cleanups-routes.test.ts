@@ -360,6 +360,84 @@ describe("POST /cleanups/:id/join and /leave", () => {
   })
 })
 
+describe("POST /cleanups/:id/cancel (host cancel)", () => {
+  it("the organizer cancels: 200 with status 'cancelled' and the event drops off the upcoming list", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(token),
+      payload: { reason: "Rained out" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().status).toBe("cancelled")
+
+    // The cancelled event is excluded from the upcoming list (unlisted automatically).
+    const list = await app.inject({ method: "GET", url: "/v1/cleanups?when=upcoming" })
+    expect((list.json().items as { id: string }[]).some((c) => c.id === id)).toBe(false)
+  })
+
+  it("cancels with no reason (empty body) -> 200", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().status).toBe("cancelled")
+  })
+
+  it("403s a non-organizer", async () => {
+    const { app, token, mailer } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const stranger = await signIn(app, mailer, "stranger@example.com")
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(stranger.token),
+      payload: {},
+    })
+    expect(res.statusCode).toBe(403)
+    expect(res.json().code).toBe("FORBIDDEN")
+  })
+
+  it("401s an anonymous cancel", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const res = await app.inject({ method: "POST", url: `/v1/cleanups/${id}/cancel`, payload: {} })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it("404s cancelling a missing cleanup", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups/00000000-0000-0000-0000-000000000000/cancel",
+      headers: auth(token),
+      payload: {},
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("422s an unknown body key (strict schema)", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(token),
+      payload: { nope: "x" },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+})
+
 describe("GET /cleanups/:id/messages (member-gated history)", () => {
   it("returns history to a member and 403s a non-member", async () => {
     const { app, token, userId, chat, mailer } = await makeHarness()

@@ -76,8 +76,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       const curResolved = num(r?.cur_resolved)
       const prevResolved = num(r?.prev_resolved)
 
-      // Cleanups planned + events (scheduled) per month, and volunteers (distinct members of cleanups
-      // scheduled in the month).
+      // Cleanups planned + events (scheduled) per month. (New users are counted separately below.)
       const cleanupRows = await sql<
         {
           cur_planned: string
@@ -106,19 +105,20 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       `
       const c = cleanupRows[0]
 
-      const volunteerRows = await sql<{ cur_vol: string; prev_vol: string }[]>`
+      // New users: accounts created this calendar month vs the previous one (soft-deleted excluded).
+      const newUserRows = await sql<{ cur_new: string; prev_new: string }[]>`
         SELECT
-          COUNT(DISTINCT m.user_id) FILTER (
-            WHERE cl.scheduled_at >= date_trunc('month', now())
-          )::text AS cur_vol,
-          COUNT(DISTINCT m.user_id) FILTER (
-            WHERE cl.scheduled_at >= date_trunc('month', now()) - interval '1 month'
-              AND cl.scheduled_at < date_trunc('month', now())
-          )::text AS prev_vol
-        FROM cleanup_members m
-        JOIN cleanups cl ON cl.id = m.cleanup_id
+          COUNT(*) FILTER (
+            WHERE created_at >= date_trunc('month', now())
+          )::text AS cur_new,
+          COUNT(*) FILTER (
+            WHERE created_at >= date_trunc('month', now()) - interval '1 month'
+              AND created_at < date_trunc('month', now())
+          )::text AS prev_new
+        FROM users
+        WHERE deleted_at IS NULL
       `
-      const v = volunteerRows[0]
+      const u = newUserRows[0]
 
       return {
         pins: { current: curTotal, previous: prevTotal },
@@ -128,7 +128,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
         },
         cleanupsPlanned: { current: num(c?.cur_planned), previous: num(c?.prev_planned) },
         events: { current: num(c?.cur_events), previous: num(c?.prev_events) },
-        volunteers: { current: num(v?.cur_vol), previous: num(v?.prev_vol) },
+        newUsers: { current: num(u?.cur_new), previous: num(u?.prev_new) },
       }
     },
 

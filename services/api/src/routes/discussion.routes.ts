@@ -342,8 +342,10 @@ function makeDiscussionNotifier(
  * Build the best-effort per-mentioned-user notification hook (production). Reuses the EXISTING `report_update`
  * notification type so NO @civfix/shared contract change (the frozen notification enum gains nothing). The
  * mention bell is GATED: it is suppressed when the actor and the mentioned user blocked each other either way
- * (so a block silences a mention ping), and the notification service then applies the user's notification
- * prefs/quiet-hours to the push. Self is already excluded by the service. Fully fire-and-forget: a notify
+ * (so a block silences a mention ping) AND when the mentioned user has muted the dedicated `mentions` pref
+ * (checked here because the reused `report_update` type cannot distinguish a mention in typeAllowedByPrefs),
+ * and the notification service then applies the user's notification prefs/quiet-hours to the push. Self is
+ * already excluded by the service. Fully fire-and-forget: a notify
  * failure (or a blocks/DB hiccup) never affects the discussion HTTP response. Built off the lazily-created DB
  * handle, the same per-request construction the chat/social/notification routes use.
  */
@@ -361,6 +363,10 @@ function makeMentionNotifier(
           pushSender: container.pushSender,
           userChannel: container.userChannel,
         })
+        // Honor the dedicated `mentions` mute. The bell reuses the `report_update` type, so the per-type
+        // pref gate inside the service cannot distinguish a mention — enforce the mentions toggle here.
+        const prefs = await notifications.getPrefs(input.mentionedUserId)
+        if (!prefs.mentions) return
         await notifications.createNotification(input.mentionedUserId, {
           type: "report_update",
           title: "You were mentioned",

@@ -524,10 +524,13 @@ export async function resolveUserIdsToMentions(
 
 /**
  * @handle / display-name search for the @-mention picker (GET /users/mention-search). BROADER than
- * searchByHandlePrefix: it does NOT exclude DM-disabled accounts or blocked users (anyone is taggable),
- * excluding ONLY self + soft-deleted + handle-less users. Matches a prefix/substring on handle OR
- * display_name (ILIKE %q%, the term escaped), ordered handle-first then name, capped. Returns the minimal
- * UserSearchResultDTO (the SAME shape searchUsers returns) so the route reuses SearchUsersResponse.
+ * searchByHandlePrefix in that it does NOT exclude DM-disabled accounts (anyone DM-reachable or not is
+ * taggable), but — like searchByHandlePrefix — it DOES exclude users blocked either way (a blocked user
+ * should never surface as a suggested mention target). Excludes self + soft-deleted + handle-less users.
+ * Matches a prefix/substring on handle OR display_name (ILIKE %q%, the term escaped), ordered handle-first
+ * then name, capped. Returns the minimal UserSearchResultDTO (the SAME shape searchUsers returns) so the
+ * route reuses SearchUsersResponse. NOTE: this hides a blocked user from the typeahead; a hand-typed
+ * @handle is still resolvable, but the resulting mention BELL is already block-gated in the notifiers.
  */
 export async function searchMentionable(
   sql: Sql,
@@ -548,6 +551,12 @@ export async function searchMentionable(
       -- (handle::text) (0014_search_trgm.sql) can serve the substring ILIKE. display_name uses
       -- users_display_name_trgm directly.
       AND ((u.handle::text) ILIKE ${term} ESCAPE '\\' OR u.display_name ILIKE ${term} ESCAPE '\\')
+      -- Hide users blocked either way from the mention typeahead (mirrors searchByHandlePrefix).
+      AND NOT EXISTS (
+        SELECT 1 FROM user_blocks b
+        WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
+           OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
+      )
     ORDER BY u.handle ASC, u.display_name ASC
     LIMIT ${limit}
   `

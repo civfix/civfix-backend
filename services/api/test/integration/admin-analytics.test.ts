@@ -6,7 +6,7 @@
  *
  * Proven here against the real schema (the queries that can only run on Postgres - date_trunc windows,
  * percentile_cont medians, ST_Centroid, the cohort math):
- *   - kpis: pins this/last month + resolved ratio + cleanups planned + events + volunteers;
+ *   - kpis: pins this/last month + resolved ratio + cleanups planned + events + new users;
  *   - pinsByWeek: weekly date_trunc buckets within the trailing window;
  *   - byCategory: grouped category counts (public, non-deleted only);
  *   - funnel: dropped / routed / acknowledged / resolved stage counts;
