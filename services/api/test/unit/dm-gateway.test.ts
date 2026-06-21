@@ -41,6 +41,8 @@ let dmRepo: InMemoryDmRepository
 let blocks: InMemoryBlocksRepository
 let dmMarks: Array<{ threadId: string; userId: string; upToId: string }>
 let cleanupMarks: Array<{ cleanupId: string; userId: string; upToId: string }>
+let openMarks: Array<{ kind: string; id: string; userId: string }>
+let signals: Array<{ userId: string; topic: string; id?: string | undefined }>
 
 /** Adapt the in-memory dm repo + blocks repo into the gateway's GatewayDmDeps (and capture markRead). */
 function dmDeps(): GatewayDmDeps {
@@ -65,6 +67,22 @@ function depsFor(): GatewayDeps {
     markRead: (cleanupId, userId, upToId) => {
       cleanupMarks.push({ cleanupId, userId, upToId })
       return Promise.resolve()
+    },
+    // Mark-read-on-open (#42): the gateway calls this on a cleanup/dm join. Capture the calls.
+    markReadOnOpen: (kind, id, userId) => {
+      openMarks.push({ kind, id, userId })
+      return Promise.resolve()
+    },
+    // Per-user signal channel: capture the {topic:"threads"} self-signals the gateway fires to the reader
+    // after a markRead (ack) / markReadOnOpen (join) so the unread badge refetches once the watermark lands.
+    userChannel: {
+      subscribeUser: () => Promise.resolve(async () => {}),
+      publishToUser: (userId, signal) => {
+        signals.push({ userId, topic: signal.topic, id: signal.id })
+        return Promise.resolve()
+      },
+      publishToUsers: () => Promise.resolve(),
+      close: () => Promise.resolve(),
     },
   }
 }
@@ -97,6 +115,8 @@ beforeEach(async () => {
   chat = new WsChatService({ repo: makeUnusedChatRepo(), pubsub })
   dmMarks = []
   cleanupMarks = []
+  openMarks = []
+  signals = []
   const thread = await dmRepo.openOrCreateThread(ALICE, BOB)
   THREAD = thread.id
 })
@@ -292,5 +312,54 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     )
     expect(dmMarks).toHaveLength(0)
     expect(cleanupMarks).toHaveLength(0)
+  })
+
+  it("opening (join) a dm marks the room read on open and self-signals the reader's threads (#42)", async () => {
+    // The robust backstop for the stuck unread badge: a quick/cold open can drop the client read-ack (no
+    // message id loaded yet to ack), but the `join` frame always fires — so the watermark advances here, and
+    // the reader's inbox is self-signaled so the badge refetches the decremented count.
+    const aConn = new MockConnection("A")
+    const aSession = sessionFor(ALICE, aConn)
+    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    expect(openMarks).toEqual([{ kind: "dm", id: THREAD, userId: ALICE }])
+    // The join self-signal is chained AFTER markReadOnOpen resolves (so the refetch can't race the write).
+    await new Promise((r) => setTimeout(r, 0))
+    expect(signals).toContainEqual({ userId: ALICE, topic: "threads", id: THREAD })
+  })
+
+  it("a dm ack self-signals the reader's threads so the badge refetches after the watermark (#42)", async () => {
+    const aConn = new MockConnection("A")
+    const aSession = sessionFor(ALICE, aConn)
+    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    signals.length = 0 // drop the join's open-signal; assert the ACK's signal specifically
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({
+        type: "ack",
+        upToId: "44444444-4444-4444-4444-444444444444",
+        cleanupId: THREAD,
+        roomKind: "dm",
+      }),
+    )
+    expect(dmMarks).toHaveLength(1)
+    expect(signals).toContainEqual({ userId: ALICE, topic: "threads", id: THREAD })
+  })
+
+  it("a NON-participant's dm ack neither marks read nor self-signals (the signal is gated too)", async () => {
+    // The threads self-signal lives INSIDE the participation-gated branch, so a non-participant's stray ack
+    // emits nothing — no read-state write AND no signal (it would otherwise leak that the thread exists).
+    const cConn = new MockConnection("C")
+    const cSession = sessionFor(CAROL, cConn)
+    await handleClientFrame(
+      cSession,
+      JSON.stringify({
+        type: "ack",
+        upToId: "44444444-4444-4444-4444-444444444444",
+        cleanupId: THREAD,
+        roomKind: "dm",
+      }),
+    )
+    expect(dmMarks).toHaveLength(0)
+    expect(signals).toHaveLength(0)
   })
 })

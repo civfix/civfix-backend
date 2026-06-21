@@ -159,6 +159,24 @@ export async function registerChatRoutes(
           logger: app.log,
         }))
 
+  // Clear the reader's bell notifications for a conversation they just READ (ack) or OPENED (join): the `dm`
+  // rows linking to /messages/dm/<id>, or the `cleanup_chat` rows linking to /cleanups/<id>. Shared by the
+  // ack markRead wrappers and the markReadOnOpen hook so the cross-update stays in one place. Best-effort: a
+  // notify-clear failure must NEVER break the read/ack/open path (the watermark is the source of truth).
+  const clearConversationBell = async (
+    kind: "dm" | "cleanup",
+    id: string,
+    userId: string,
+  ): Promise<void> => {
+    if (!notificationService) return
+    try {
+      if (kind === "dm") await notificationService.clearByTypeAndLink(userId, "dm", `/messages/dm/${id}`)
+      else await notificationService.clearByTypeAndLink(userId, "cleanup_chat", `/cleanups/${id}`)
+    } catch (err) {
+      app.log.warn({ err, kind, id, userId }, "read: clear conversation notifications failed (suppressed)")
+    }
+  }
+
   // The DM read watermark resolves an acked message's created_at scoped to the thread (mirrors the cleanup
   // resolveReadAt below); a foreign/unknown id falls back to now() so a stray ack still advances liveness.
   const dmGatewayDeps: GatewayDmDeps = {
@@ -174,17 +192,12 @@ export async function registerChatRoutes(
     markRead: async (threadId, userId, upToId) => {
       const at = (await dmRepo.resolveMessageCreatedAt(threadId, upToId)) ?? new Date()
       await dmRepo.markRead(threadId, userId, at)
-      // (b) Cross-update: reading this dm conversation clears the reader's `dm` bell notifications that link
-      // to it (`/messages/dm/<threadId>`), then fires the {topic:"notifications"} signal (inside the service)
-      // so an open bell refreshes. The gateway already participation-gated this markRead (peerOf != null).
-      // Best-effort: a notify-clear failure must NEVER break the read/ack path.
-      if (notificationService) {
-        try {
-          await notificationService.clearByTypeAndLink(userId, "dm", `/messages/dm/${threadId}`)
-        } catch (err) {
-          app.log.warn({ err, threadId, userId }, "dm read: clear dm notifications failed (suppressed)")
-        }
-      }
+      // Cross-update: reading this dm conversation clears the reader's `dm` bell notifications for it (which
+      // also fires the {topic:"notifications"} signal inside the service). The {topic:"threads"} self-signal
+      // that refreshes the reader's unread badge is fired by the gateway right after this awaited markRead so
+      // the inbox refetches the now-decremented count instead of racing the watermark write (#42). The
+      // gateway already participation-gated this markRead (peerOf != null).
+      await clearConversationBell("dm", threadId, userId)
     },
   }
   const isBlockedEitherWay: IsBlockedEitherWayFn = (a, b) => blocksRepo.isBlockedEitherWay(a, b)
@@ -324,17 +337,12 @@ export async function registerChatRoutes(
     markRead: async (cleanupId, userId, upToId) => {
       const at = await resolveReadAt(cleanupId, upToId)
       await readState.markRead(cleanupId, userId, at)
-      // (a) Cross-update: reading this cleanup conversation clears the reader's `cleanup_chat` bell
-      // notifications that link to it (the admin "Cleanup update" broadcasts link to `/cleanups/<id>`), then
-      // fires the {topic:"notifications"} signal (inside the service) so an open bell refreshes. The gateway
-      // already membership-gated this markRead. Best-effort: never break the read/ack path.
-      if (notificationService) {
-        try {
-          await notificationService.clearByTypeAndLink(userId, "cleanup_chat", `/cleanups/${cleanupId}`)
-        } catch (err) {
-          app.log.warn({ err, cleanupId, userId }, "cleanup read: clear notifications failed (suppressed)")
-        }
-      }
+      // Cross-update: reading this cleanup conversation clears the reader's `cleanup_chat` bell notifications
+      // for it (the admin "Cleanup update" broadcasts link to `/cleanups/<id>`; this also fires the
+      // {topic:"notifications"} signal inside the service). The {topic:"threads"} self-signal that refreshes
+      // the reader's unread badge is fired by the gateway right after this awaited markRead (#42). The gateway
+      // already membership-gated this markRead.
+      await clearConversationBell("cleanup", cleanupId, userId)
     },
     presence,
     // DM routing: the gateway uses these for `roomKind:"dm"` frames (participant + not-blocked gating,
@@ -358,6 +366,23 @@ export async function registerChatRoutes(
           })
         }
       : undefined,
+    // Mark-read-on-open (#42): when a user JOINs (opens) a conversation, advance their read watermark to NOW
+    // and clear its bell notifications — the robust backstop for a dropped client read-ack on a quick/cold
+    // open (the history, and so the newest message id to ack, has not loaded before the viewer taps back).
+    // The gateway calls this for cleanup + dm joins (never report_discussion) and self-signals the reader's
+    // inbox afterwards. Anchored to now (no acked message id), mirroring the ack markRead cross-update via the
+    // shared clearConversationBell helper. dmRepo.markRead / readState.markRead are monotonic upserts, so a
+    // redundant open (already read) is a harmless no-op.
+    markReadOnOpen: async (kind, id, userId) => {
+      const at = new Date()
+      if (kind === "dm") {
+        await dmRepo.markRead(id, userId, at)
+        await clearConversationBell("dm", id, userId)
+      } else if (kind === "cleanup") {
+        await readState.markRead(id, userId, at)
+        await clearConversationBell("cleanup", id, userId)
+      }
+    },
     // Chat @-mentions: resolve/persist/notify on a `send` frame (no-op when the seam is unwired).
     chatMentions,
     // Anti-CSWSH: the gateway rejects a cross-site upgrade Origin not in the WEB_ORIGINS allowlist.

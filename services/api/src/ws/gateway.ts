@@ -129,6 +129,16 @@ export type IsMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 export type MarkReadFn = (cleanupId: string, userId: string, upToId: string) => Promise<void>
 
 /**
+ * Optional "mark read on OPEN" updater: advance `userId`'s read watermark for a conversation up to NOW when
+ * they JOIN (open) it — distinct from the id-anchored `ack` markRead. A quick/cold open can drop the client
+ * read-ack (the conversation history, and so the newest message id to ack, has not loaded before the viewer
+ * taps back), which left the unread badge stuck (#42). The `join` frame is the reliable "opened this thread"
+ * signal (and is re-sent on auto-rejoin), so the watermark advances here regardless of client timing. Wired
+ * for cleanup + dm; report_discussion has no per-user read-state. No-op when omitted. Best-effort: a join
+ * must never fail on a read-state error. */
+export type MarkReadOnOpenFn = (kind: RoomKind, id: string, userId: string) => Promise<void>
+
+/**
  * The DM seam the gateway drives for `roomKind:"dm"` frames. It mirrors the cleanup seams but is
  * addressed by thread id: an isParticipant membership probe, a persist (returns the broadcastable DTO),
  * a markRead watermark, and a peerOf lookup (the OTHER participant) so block checks can run before a join
@@ -235,6 +245,8 @@ export interface GatewayDeps {
   chat: GatewayChatService
   isMember: IsMemberFn
   markRead?: MarkReadFn | undefined
+  /** Optional "mark read on open" updater: advances the joiner's read watermark to now on `join` (#42). */
+  markReadOnOpen?: MarkReadOnOpenFn | undefined
   /** Optional presence registry: tracks who is online per room and powers presence snapshots/deltas. */
   presence?: ChatPresence | undefined
   /** Optional DM seam: membership/persist/read-state for `roomKind:"dm"` frames. Absent ⇒ dm refused. */
@@ -493,6 +505,20 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
           )
         }
       }
+      // Mark-read-on-open (#42): opening a conversation advances the joiner's read watermark to now, then
+      // self-signals their inbox so the unread badge clears. This is the robust backstop for the stuck badge:
+      // the client read-ack can be dropped on a quick/cold open (the history — and so the newest message id to
+      // ack — has not loaded before the viewer taps back), but the `join` frame always fires on open (and on
+      // auto-rejoin). report_discussion has no per-user read-state, so it is skipped. Fully best-effort and
+      // fire-and-forget: the watermark write + signal must never break or delay the join. The signal is
+      // chained AFTER markReadOnOpen so the client refetches /threads only once the watermark is applied (a
+      // synchronous refetch would race the write and re-stick the stale count).
+      if (kind !== "report_discussion" && deps.markReadOnOpen) {
+        const { markReadOnOpen, userChannel } = deps
+        void markReadOnOpen(kind, id, userId)
+          .then(() => userChannel?.publishToUser(userId, { topic: "threads", id }))
+          .catch(() => {})
+      }
       return
     }
 
@@ -720,9 +746,15 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
         // null for a non-participant.
         if (deps.dm && (await deps.dm.peerOf(id, userId)) !== null) {
           await deps.dm.markRead(id, userId, frame.upToId)
+          // Self-signal the reader's inbox so the unread badge refetches AFTER the watermark is applied. The
+          // client's own post-ack /threads invalidation otherwise races this markRead and refetches the stale
+          // count, re-sticking the badge (#42). Mirrors the send-path {topic:"threads"} fan-out, aimed at the
+          // reader (not the recipients). Best-effort; runs only after the awaited markRead above.
+          void deps.userChannel?.publishToUser(userId, { topic: "threads", id }).catch(() => {})
         }
       } else if (deps.markRead) {
         await deps.markRead(id, userId, frame.upToId)
+        void deps.userChannel?.publishToUser(userId, { topic: "threads", id }).catch(() => {})
       }
       return
     }
@@ -847,6 +879,8 @@ export interface RegisterGatewayOptions {
   sessions: SessionService | undefined
   /** Optional read-state updater for the `ack` frame (cleanup chat). */
   markRead?: MarkReadFn | undefined
+  /** Optional "mark read on open" updater for the `join` frame (cleanup + dm). See MarkReadOnOpenFn. */
+  markReadOnOpen?: MarkReadOnOpenFn | undefined
   /** Optional presence registry: powers presence snapshots/deltas and is refreshed by the heartbeat. */
   presence?: ChatPresence | undefined
   /** Optional DM seam: membership/persist/read-state for `roomKind:"dm"` frames. */
@@ -909,6 +943,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           chat: opts.chat,
           isMember: opts.isMember,
           markRead: opts.markRead,
+          markReadOnOpen: opts.markReadOnOpen,
           presence: opts.presence,
           dm: opts.dm,
           isBlockedEitherWay: opts.isBlockedEitherWay,
