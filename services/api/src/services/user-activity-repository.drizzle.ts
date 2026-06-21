@@ -6,10 +6,10 @@
  *   - created_report   reports the user filed       (public, non-deleted, not held/rejected)
  *   - hosted_event     cleanups they organized      (not cancelled)
  *   - attended_event   cleanups they joined         (as a member, not organizer; not cancelled)
- *   - commented_event  cleanup chat messages        (text, non-deleted; the BODY is never selected)
  *   - followed_user    people they followed
  *
- * PRIVACY (intentional exclusions): DMs (dm_messages), blocks (user_blocks), anonymous reports
+ * PRIVACY (intentional exclusions): private messaging NEVER appears in a profile's activity — both DMs
+ * (dm_messages) AND group/cleanup chat (chat_messages) are excluded — plus blocks (user_blocks), anon reports
  * (reporter_user_id IS NULL), held/hidden/removed reports, cancelled cleanups, and ALL message bodies are
  * never selected — only the public action + a deep-link reference.
  *
@@ -68,9 +68,6 @@ export function makeDrizzleUserActivityRepository(sql: Sql): UserActivityReposit
       const joinCur = cursor
         ? sql`AND (m.joined_at, m.cleanup_id::text) < (${cursor.createdAt}, ${cursor.id})`
         : sql``
-      const chatCur = cursor
-        ? sql`AND (msg.created_at, msg.id::text) < (${cursor.createdAt}, ${cursor.id})`
-        : sql``
       const followCur = cursor
         ? sql`AND (fp.created_at, fp.followee_id::text) < (${cursor.createdAt}, ${cursor.id})`
         : sql``
@@ -113,20 +110,6 @@ export function makeDrizzleUserActivityRepository(sql: Sql): UserActivityReposit
             AND c.status <> 'cancelled'
             ${joinCur}
           ORDER BY m.joined_at DESC, m.cleanup_id DESC
-          LIMIT ${lim}
-        )
-        UNION ALL
-        (
-          SELECT 'commented_event'::text AS kind, msg.id::text AS id, msg.created_at AS at,
-                 c.title AS title, NULL::text AS subtitle,
-                 'event'::text AS ref_kind, c.id::text AS ref_id
-          FROM chat_messages msg
-          JOIN cleanups c ON c.id = msg.cleanup_id
-          WHERE msg.sender_id = ${userId}
-            AND msg.deleted_at IS NULL
-            AND msg.kind = 'text'
-            ${chatCur}
-          ORDER BY msg.created_at DESC, msg.id DESC
           LIMIT ${lim}
         )
         UNION ALL
