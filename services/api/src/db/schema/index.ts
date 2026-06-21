@@ -21,9 +21,6 @@ export * from "./sessions.js"
 
 // geo / reports
 export * from "./jurisdictions.js"
-// boundary-dataset vintage tracker for the automated jurisdiction.refresh cron (0028). Canonical DDL:
-// drizzle/0028_boundary_vintage.sql.
-export * from "./boundary_vintage.js"
 export * from "./reports.js"
 export * from "./media.js"
 export * from "./timeline.js"

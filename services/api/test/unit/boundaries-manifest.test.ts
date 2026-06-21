@@ -18,8 +18,6 @@ import {
   boundaryManifest,
   STATE_FIPS,
   DEFAULT_TIGER_VINTAGE,
-  PADUS_VERSION,
-  vintageTag,
 } from "../../src/db/boundaries/manifest.js"
 import { JURISDICTION_LAYER_VALUES } from "../../src/db/schema/types.js"
 
@@ -78,32 +76,12 @@ describe("boundaryManifest", () => {
     }
   })
 
-  it("scopes the PAD-US federal job to FEDERAL manager (via OGR -sql on the Fee layer)", () => {
+  it("scopes the PAD-US federal job to FEDERAL manager", () => {
     const federal = jobs.find((j) => j.layer === "federal")
     expect(federal).toBeDefined()
-    // Federal reads the version-named Fee feature class from the national GDB via the DEFAULT OGR SQL
-    // dialect (reliably carries geometry), filters Mang_Type='FED', and aliases the GDB's OBJECTID/Unit_Nm
-    // -> GEOID/NAME (so they land as GeoJSON properties the ingest CLI reads), promoting to MultiPolygon.
-    const i = argIndex(federal!.ogr2ogrArgs, "-sql")
+    const i = argIndex(federal!.ogr2ogrArgs, "-where")
     expect(i).toBeGreaterThanOrEqual(0)
-    const sql = federal!.ogr2ogrArgs[i + 1] ?? ""
-    expect(sql).toContain("Mang_Type='FED'")
-    expect(sql).toContain("AS GEOID")
-    expect(sql).toContain("AS NAME")
-    expect(sql).toContain("Fee")
-    expect(federal!.ogr2ogrArgs).toContain("PROMOTE_TO_MULTI")
-    // The federal source is the USGS ScienceBase GDB, and it extracts to a .gdb the runner reads.
-    expect(federal!.sourceUrl).toContain("sciencebase.gov")
-    expect(federal!.sourcePath).toMatch(/\.gdb$/)
-  })
-
-  it("declares a concrete sourcePath for every job (no basename heuristic)", () => {
-    for (const j of jobs) {
-      expect(j.sourcePath.length).toBeGreaterThan(0)
-      // TIGER/AIANNH jobs convert a like-named shapefile; only the federal job reads a geodatabase.
-      if (j.layer === "federal") expect(j.sourcePath).toMatch(/\.gdb$/)
-      else expect(j.sourcePath).toMatch(/\.shp$/)
-    }
+    expect(federal!.ogr2ogrArgs[i + 1]).toBe("Mang_Type='FED'")
   })
 
   it("records the AIANNH and PAD-US geoid prefixes as metadata", () => {
@@ -150,13 +128,5 @@ describe("boundaryManifest", () => {
 
   it("resolves 'latest' to the default vintage (no network probe)", () => {
     expect(boundaryManifest("latest")).toEqual(boundaryManifest(DEFAULT_TIGER_VINTAGE))
-  })
-})
-
-describe("vintageTag", () => {
-  it("is the canonical 'tiger<year>-padus<version>' identity shared by CI + the on-box cron", () => {
-    expect(vintageTag(2025, "4.1")).toBe("tiger2025-padus4.1")
-    // Defaults to the manifest's PAD-US version when omitted (the value CI + cron both derive).
-    expect(vintageTag(DEFAULT_TIGER_VINTAGE)).toBe(`tiger${DEFAULT_TIGER_VINTAGE}-padus${PADUS_VERSION}`)
   })
 })

@@ -6,8 +6,8 @@
 # too), run infra/compose/docker-compose.dev.yml alongside this file.
 #
 # BUILD: every image's build context is the REPO ROOT (../.. from infra/compose) because the services are
-# pnpm-workspace packages that need the root manifests + lockfile + .npmrc in the context (@civfix/shared
-# installs from the registry; there is no shared/ submodule). `docker compose build` works unchanged.
+# pnpm-workspace packages that need the root manifests + lockfile + shared/ submodule in the context (see
+# each service's Dockerfile header). `docker compose build` works from this file unchanged.
 #
 # DEPLOY SEQUENCE (enforced by depends_on conditions): migrate -> seed -> api  (the green-by-default path).
 #   1) `migrate` runs once (node dist/db/migrate.js): applies the drizzle SQL in order, idempotently, then
@@ -22,15 +22,12 @@
 #      migrate only (it processes bytes, independent of jurisdiction data).
 # Re-running `docker compose up` re-runs migrate + seed; both are no-ops when already applied.
 #
-# REAL boundaries are now loaded AUTOMATICALLY, not via these compose services. The "jurisdiction.refresh"
-# pg-boss cron in the API (services/api/src/services/admin/boundary-refresh-jobs.ts) pulls the nationwide
-# TIGER/PAD-US/AIANNH bundle the GitHub Actions workflow (.github/workflows/boundaries-refresh.yml)
-# publishes to R2, ingests it, and backfills NULL reports — at boot and on BOUNDARY_REFRESH_CRON, no-op
-# when already current. So `seed` stays the bootstrap default (the box is instantly bootable on the dev
-# sample) and the cron upgrades coverage to real boundaries a few seconds after boot, with no host volume
-# and no compose change. The commented one-shot `ingest`/`backfill` services below are kept only as a
-# manual fallback (e.g. an air-gapped load from a host-mounted /data/boundaries; see
-# documents/20-jurisdiction-mapping.md §13).
+# PRODUCTION upgrade to REAL boundaries (migrate -> ingest -> backfill -> api): once whole-US TIGER/PAD-US
+# GeoJSON is staged on a host volume at /data/boundaries (produce it with `pnpm db:prepare-boundaries`; see
+# documents/20-jurisdiction-mapping.md §13), swap `seed` for the commented `ingest` + `backfill` services
+# below and repoint `api.depends_on` at `backfill`. Do NOT enable them before the data is mounted: `ingest`
+# reads its input file at startup and exits non-zero if it is missing, which (via
+# service_completed_successfully) would block the WHOLE stack from starting.
 #
 # EXPOSURE: ONLY `caddy` is host-published (80/443). `api` and `media-worker` are reachable solely on the
 # internal compose network; Caddy proxies to the API by service name (api:8080). This keeps every API
