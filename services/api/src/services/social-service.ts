@@ -278,10 +278,13 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     // is true for every cleanup the query returns (they organized or were a member of each).
     const pastEvents: CleanupDTO[] = pastEventRecords.map((r) => toCleanupDTO(r, true))
     // When the user uploaded an avatar, presign its object key into a client-usable URL and surface it as
-    // `avatarUrl` (avatars are public). Absent -> avatarUrl is omitted, so clients fall back to the
-    // provider photo / monogram. This OVERRIDES any stored avatar_url with the uploaded photo.
+    // `avatarUrl` (avatars are public). When there's NO uploaded avatar, fall back to the canonical provider
+    // photo (`view.avatarUrl`, e.g. the Google photo) so clients still render a real picture instead of the
+    // monogram - matching toPersonDTO. Only when BOTH are absent is avatarUrl omitted (clients show monogram).
     const avatarUrl =
-      view.avatarR2Key !== null ? await presignAvatar(view.avatarR2Key) : undefined
+      view.avatarR2Key !== null
+        ? await presignAvatar(view.avatarR2Key)
+        : (view.avatarUrl ?? undefined)
     return {
       id: view.id,
       name: view.displayName,
