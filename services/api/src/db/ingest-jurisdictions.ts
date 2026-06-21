@@ -9,8 +9,9 @@
  *
  * The actual ingest LOGIC (normalizeFeatures / upsertJurisdiction / ingestGeoJsonFile, the geoid-prefix
  * rule, the contact-preserving upsert) lives in ./ingest-jurisdictions-core.ts — a side-effect-free module
- * with NO `main()` and NO CLI guard, so runtime code (the jurisdiction.refresh cron) can import it without
- * dragging in this file's `main()`. THIS file is ONLY the CLI shell: arg parsing + DB handle + main(). It
+ * with NO `main()` and NO CLI guard, so other code (the local refresh tool scripts/refresh-boundaries.ts)
+ * can import it without dragging in this file's `main()`. THIS file is ONLY the CLI shell: arg parsing +
+ * DB handle + main(). It
  * is also a tsup entry, emitted to dist/db/ingest-jurisdictions.js so the production image can run
  * `node dist/db/ingest-jurisdictions.js <file> <layer> [geoid-prefix]` without tsx.
  *

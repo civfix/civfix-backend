@@ -1,13 +1,12 @@
--- boundary_vintage: a single-row tracker for the active jurisdiction-boundary dataset currently loaded
--- into the `jurisdictions` table by the automated `jurisdiction.refresh` cron
--- (services/api/src/services/admin/boundary-refresh-jobs.ts).
+-- boundary_vintage: a single-row audit record of the jurisdiction-boundary dataset currently loaded into
+-- the `jurisdictions` table, stamped by the local refresh tool (services/api/scripts/refresh-boundaries.ts)
+-- after each successful nationwide load.
 --
 -- WHY. Real US boundaries (Census TIGER place/county/state + Census AIANNH tribal + USGS PAD-US federal)
--- are too large to bake into the image, so a scheduled GitHub Actions workflow converts them to GeoJSON
--- and publishes a vintage-tagged bundle to R2 (boundaries/<tag>/...), flipping boundaries/current.json
--- last. The on-box cron reads current.json, compares the published `vintageTag` against THIS row, and is
--- a no-op when they match. It stamps this row ONLY after a full nationwide ingest + report backfill
--- succeeds, so a failed/partial refresh leaves the recorded vintage unchanged and the next tick retries.
+-- are loaded on demand by running `pnpm db:boundaries:refresh` on a workstation (with GDAL) over an SSH
+-- tunnel to prod Postgres: it downloads the public-domain sources, converts them with ogr2ogr, ingests
+-- each layer (idempotent upsert), backfills NULL reports, then records WHAT was loaded (vintage + per-layer
+-- counts + when) in this row. Purely informational — the load itself is idempotent and doesn't depend on it.
 --
 -- SINGLETON. `id` is a boolean PK pinned true (CHECK id), so there is at most one row = the one active
 -- vintage. Upserts use `INSERT ... ON CONFLICT (id) DO UPDATE`.

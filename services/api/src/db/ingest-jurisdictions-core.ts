@@ -1,16 +1,15 @@
 /**
  * Ingest CORE: the pure, side-effect-free jurisdiction-ingest logic — GeoJSON normalization + the
- * upsert + the single-file loader. This module has NO `main()` and NO "run as CLI" guard, so it is safe
- * to import from long-running runtime code (the on-box `jurisdiction.refresh` cron in
- * services/admin/boundary-refresh-jobs.ts imports `ingestGeoJsonFile` from here).
+ * upsert + the single-file loader. This module has NO `main()` and NO "run as CLI" guard, so other code
+ * can import it freely: the CLI (ingest-jurisdictions.ts) and the local refresh tool
+ * (scripts/refresh-boundaries.ts) both import `ingestGeoJsonFile` from here.
  *
- * WHY this is split from ingest-jurisdictions.ts (the CLI): tsup builds with `splitting: false`, so an
- * import of a module INLINES that module's whole source into the importing entry's bundle. If the CLI
- * (which carries `if (import.meta.url === argv[1]) main()`) were imported by the API entry, esbuild would
- * rewrite the inlined `import.meta.url` to the API bundle's own URL — making the guard TRUE at API boot
- * and running the ingest CLI's `main()` (which exits(2) with a usage error → crash loop). Keeping the
- * importable logic here, guard-free, makes that impossible: the API only ever inlines this side-effect-
- * free core; the CLI's `main()`/guard live solely in the CLI entry.
+ * WHY this is split from ingest-jurisdictions.ts (the CLI): the CLI carries an
+ * `if (import.meta.url === argv[1]) main()` guard. tsup builds with `splitting: false`, so importing a
+ * module INLINES its whole source into the importing entry's bundle, and esbuild rewrites the inlined
+ * `import.meta.url` to that bundle's own URL — so if any tsup-bundled ENTRY (e.g. the API server) ever
+ * imported the CLI, the guard would fire at boot and run `main()` (a usage-error exit → crash loop). Hard
+ * rule, enforced by this split: bundled runtime code imports the guard-FREE core, never the CLI.
  *
  * See ingest-jurisdictions.ts for the full prose on the geoid-prefix rule, the upsert's contact-preserving
  * semantics, and the public-domain sources.
@@ -142,11 +141,11 @@ export async function upsertJurisdiction(sql: Queryable, row: IngestRow): Promis
  * and upserts every row (ON CONFLICT preserves operator-mapped contacts). Returns the upserted count, the
  * number of features SKIPPED (missing geoid/name/non-polygon), and the total `features` parsed.
  *
- * The on-box `jurisdiction.refresh` cron streams each layer's GeoJSON out of R2 and calls this once per
- * file. Takes a raw `Sql` tag because it owns the `sql.begin(...)` transaction; geometry flows only
- * through this raw tag (ST_GeomFromGeoJSON), never Drizzle. THROWS on invalid JSON or a non-FeatureCollection
- * payload — a truncated/corrupt download surfaces as an error so the caller aborts and never stamps a
- * partial vintage. `features` lets the cron cross-check the parsed count against the publish-time manifest.
+ * The local refresh tool (scripts/refresh-boundaries.ts) calls this once per converted layer file. Takes a
+ * raw `Sql` tag because it owns the `sql.begin(...)` transaction; geometry flows only through this raw tag
+ * (ST_GeomFromGeoJSON), never Drizzle. THROWS on invalid JSON or a non-FeatureCollection payload so the
+ * caller aborts rather than loading a corrupt file. `features` (vs `upserted`) lets a caller spot a layer
+ * whose geometry was dropped in conversion (features > 0 but upserted 0).
  */
 export async function ingestGeoJsonFile(
   sql: Sql,

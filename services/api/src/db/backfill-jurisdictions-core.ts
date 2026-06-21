@@ -1,13 +1,12 @@
 /**
  * Backfill CORE: the pure, side-effect-free `backfillReports` keyset loop (no `main()`, no CLI guard), so
- * runtime code can import it safely. The on-box `jurisdiction.refresh` cron
- * (services/admin/boundary-refresh-jobs.ts) calls `backfillReports` after a fresh boundary load to heal
- * NULL `reports.jurisdiction_geoid` rows.
+ * other code can import it safely. The CLI (backfill-jurisdictions.ts) and the local refresh tool
+ * (scripts/refresh-boundaries.ts) both call `backfillReports` after a fresh boundary load to heal NULL
+ * `reports.jurisdiction_geoid` rows.
  *
- * WHY split from backfill-jurisdictions.ts: tsup builds with `splitting: false`, so importing the CLI
- * would inline its `if (import.meta.url === argv[1]) main()` guard into the API bundle, where esbuild
- * rewrites `import.meta.url` to the API entry — firing the guard at API boot and running the backfill
- * CLI's `main()` unbidden. Keeping the importable loop here, guard-free, prevents that. See
+ * WHY split from backfill-jurisdictions.ts: the CLI carries an `import.meta.url === argv[1]` run-as-main
+ * guard, and tsup (`splitting: false`) would inline that guard into any bundled entry that imported it,
+ * firing it at boot. Keeping the importable loop here, guard-free, prevents that. See
  * ingest-jurisdictions-core.ts for the full bundling rationale.
  *
  * ONE RANKING, NEVER DRIFTS: the UPDATE orders candidate polygons by the SAME shared constant the
