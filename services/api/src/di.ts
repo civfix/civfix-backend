@@ -93,6 +93,8 @@ export interface Container {
   readonly storage: Storage
   /** Storage for the inbound-mail buffer (R2_INBOUND_BUCKET, else R2_BUCKET). See buildContainer. */
   readonly inboundStorage: Storage
+  /** Storage for the automated jurisdiction-boundary bundles (R2_BOUNDARIES_BUCKET, else R2_BUCKET). */
+  readonly boundaryStorage: Storage
   readonly mailer: Mailer
   readonly inboundMail: InboundMail
   readonly geocoder: Geocoder
@@ -206,6 +208,21 @@ export function buildContainer(env: Env): Container {
         accessKeyId: env.R2_ACCESS_KEY_ID,
         secretAccessKey: env.R2_SECRET_ACCESS_KEY,
         bucket: env.R2_INBOUND_BUCKET ?? env.R2_BUCKET,
+      })
+
+  // ----- boundary-bundle storage (the automated jurisdiction-boundary refresh) -----
+  // The CI publish workflow writes vintage-tagged GeoJSON bundles (boundaries/<tag>/*.geojson.gz +
+  // manifest.json + current.json) to a (possibly DEDICATED) bucket; the on-box `jurisdiction.refresh`
+  // cron LISTs/GETs from the SAME bucket. Defaults to R2_BUCKET when R2_BOUNDARIES_BUCKET is unset. Rides
+  // the existing USE_FAKE_STORAGE flag (default ON outside prod), so dev/test boot offline and the cron —
+  // which only registers under real pg-boss + DATABASE_URL anyway — never touches R2.
+  const boundaryStorage: Storage = env.USE_FAKE_STORAGE
+    ? storage
+    : new R2Storage({
+        accountId: env.R2_ACCOUNT_ID,
+        accessKeyId: env.R2_ACCESS_KEY_ID,
+        secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+        bucket: env.R2_BOUNDARIES_BUCKET ?? env.R2_BUCKET,
       })
 
   // ----- mailer -----
@@ -348,6 +365,7 @@ export function buildContainer(env: Env): Container {
     env,
     storage,
     inboundStorage,
+    boundaryStorage,
     mailer,
     inboundMail,
     geocoder,
