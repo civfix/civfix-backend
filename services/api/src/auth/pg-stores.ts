@@ -245,13 +245,25 @@ export class PgUserStore implements UserStore {
     // When the avatar picker sent a finalized upload id, resolve it to the media row and set avatar_media_id
     // to that row's id (possessing the finalized upload id is the capability proof, like the report flow).
     // An unknown upload id leaves the avatar unchanged rather than failing the rest of the profile update.
+    //
+    // CANONICALIZE avatar_url ON UPLOAD: in addition to avatar_media_id we presign the media's r2_key into
+    // the canonical public URL and PERSIST it into users.avatar_url, so avatar_url is the single source of
+    // truth every projection reads (toUserDTO/session/me, people lists, chat/dm/discussion authors, search,
+    // admin) — no per-request presign threading. The presigner is injected (production wires the Storage
+    // seam; the worker overwrites r2_key in place, so this is the processed copy). We select r2_key in the
+    // SAME lookup so resolving + persisting is one extra query, not two writes.
     if (input.avatarUploadId !== undefined) {
       const media = await this.db
-        .select({ id: mediaAssets.id })
+        .select({ id: mediaAssets.id, r2Key: mediaAssets.r2Key })
         .from(mediaAssets)
         .where(eq(mediaAssets.uploadId, input.avatarUploadId))
         .limit(1)
-      if (media[0]) set.avatarMediaId = media[0].id
+      if (media[0]) {
+        set.avatarMediaId = media[0].id
+        if (input.presignAvatar) {
+          set.avatarUrl = await input.presignAvatar(media[0].r2Key)
+        }
+      }
     }
     const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]

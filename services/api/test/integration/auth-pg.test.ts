@@ -11,6 +11,7 @@
  * PgSessionStore.findById is wrapped with a spy and asserted to be untouched on the cache hit).
  */
 
+import { randomUUID } from "node:crypto"
 import { afterAll, describe, expect, it, vi } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
@@ -151,6 +152,45 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     })
     const u2 = await svcApple.signInWithAppleIdToken("tok2", undefined)
     expect(u2.id).toBe(u1.id)
+  })
+
+  it("updateProfile with an avatarUploadId canonicalizes users.avatar_url (presigned r2_key) + returns it", async () => {
+    const users = new PgUserStore(h.db)
+    const user = await users.create("avatar.canon@example.com", { displayName: "Avatar Canon" })
+
+    // A finalized avatar media row (the presign -> PUT -> finalize pipeline's end state). Only the columns
+    // the resolution path reads (upload_id -> r2_key) matter here; the worker overwrites r2_key in place.
+    const uploadId = randomUUID()
+    const r2Key = "avatars/canon/processed.jpg"
+    await h.sql`
+      INSERT INTO media_assets (upload_id, kind, r2_key, status)
+      VALUES (${uploadId}, 'image', ${r2Key}, 'ready')
+    `
+
+    // Inject the canonical presigner the route wires from the Storage seam (R2_PUBLIC_BASE => stable URL).
+    const presignAvatar = (key: string): Promise<string> =>
+      Promise.resolve(`https://cdn.example.test/${key}`)
+    const expectedUrl = `https://cdn.example.test/${r2Key}`
+
+    // The RETURNED record (the PUT /me/profile response + session/me, via toUserDTO) carries the new URL.
+    const updated = await users.updateProfile(user.id, {
+      handle: user.handle ?? "avatar_canon",
+      displayName: "Avatar Canon",
+      avatarUploadId: uploadId,
+      presignAvatar,
+    })
+    expect(updated.avatarUrl).toBe(expectedUrl)
+
+    // And it is PERSISTED: a fresh read (every avatar_url reader) sees the canonical URL.
+    const reread = await users.findById(user.id)
+    expect(reread?.avatarUrl).toBe(expectedUrl)
+
+    // No presigner => avatar_url is left untouched (a name/bio edit must not clear the avatar).
+    const after = await users.updateProfile(user.id, {
+      handle: updated.handle ?? "avatar_canon",
+      displayName: "Avatar Canon Renamed",
+    })
+    expect(after.avatarUrl).toBe(expectedUrl)
   })
 
   it("P1-4: concurrent create for the same brand-new email resolves to ONE user (no unique-violation 500)", async () => {

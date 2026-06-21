@@ -79,6 +79,7 @@ interface UserRowSelect {
   flagged: boolean
   flag_reason: string | null
   verified: boolean
+  avatar_url: string | null
   deleted_at: Date | null
 }
 
@@ -104,6 +105,7 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     flagged: r.flagged,
     flagReason: r.flag_reason,
     verified: r.verified,
+    avatarUrl: r.avatar_url,
     deletedAt: r.deleted_at,
   }
 }
@@ -130,6 +132,7 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
         ORDER BY r.created_at DESC LIMIT 1
       ) AS city,
       u.role,
+      u.avatar_url,
       u.created_at,
       u.deleted_at,
       (SELECT MAX(s.last_seen_at) FROM sessions s WHERE s.user_id = u.id) AS last_active_at,

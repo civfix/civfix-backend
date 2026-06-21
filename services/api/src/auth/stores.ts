@@ -187,6 +187,14 @@ export interface UpdateProfileInput {
    * unchanged. Possessing the finalized upload id is the capability proof (the report flow's model).
    */
   avatarUploadId?: string
+  /**
+   * Presign (or otherwise render) an avatar object key into the CANONICAL public URL, wrapping the Storage
+   * seam's presignGet (in production R2_PUBLIC_BASE makes this a stable, no-expiry CDN URL). When supplied
+   * AND `avatarUploadId` resolves to a media row, the store presigns that row's r2_key and PERSISTS the
+   * result into users.avatar_url, so avatar_url becomes the single canonical avatar every reader projects.
+   * Omitted (the offline in-memory store, which has no media table) leaves avatar_url untouched.
+   */
+  presignAvatar?: (avatarKey: string) => Promise<string>
 }
 
 export interface UserStore {
@@ -306,9 +314,10 @@ export class InMemoryUserStore implements UserStore {
   async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.updateProfile: user not found")
-    // `avatarUploadId` is accepted but a no-op here: the in-memory store has no media table to resolve it
-    // against, and UserRecord does not carry the avatar media id (the avatar is surfaced via the social
-    // read path, not the auth user record). The Pg store resolves + persists it.
+    // `avatarUploadId` (and the `presignAvatar` canonicalizer) are accepted but a no-op here: the in-memory
+    // store has no media table to resolve the upload id against, so there is no r2_key to presign and
+    // avatar_url stays as-is. The Pg store resolves the media row, presigns its r2_key into the canonical
+    // public URL, and persists that into users.avatar_url.
 
     // Decide the handle write by comparing lower(submitted) vs lower(current). The name/bio editors
     // re-send the current handle every PUT, so an unchanged handle MUST be a no-op (no validation, no

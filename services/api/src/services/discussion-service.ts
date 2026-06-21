@@ -62,6 +62,8 @@ export interface DiscussionAuthorView {
   id: string
   displayName: string
   handle: string | null
+  /** The canonical avatar URL (users.avatar_url); null => the monogram fallback. Omitted for a deleted author. */
+  avatarUrl: string | null
   /** When the author's ACCOUNT is deleted (tombstoned); drives the public "Deleted User" rendering. */
   deletedAt: Date | null
 }
@@ -507,6 +509,7 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       id: view.id,
       displayName: view.displayName,
       handle: view.handle,
+      avatarUrl: view.avatarUrl,
       deletedAt: view.deletedAt,
     })
     return {
@@ -514,6 +517,8 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       displayName: author.name,
       handle: author.handle,
       avatar: author.avatar,
+      // publicAuthorIdentity drops the photo for a deleted author; carry it through for a live one.
+      ...(author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
       ...(author.deleted ? { deleted: true } : {}),
     }
   }

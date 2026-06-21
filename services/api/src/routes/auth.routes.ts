@@ -46,6 +46,7 @@ import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserv
 import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
 import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import {
   clientKind,
   bearerToken,
@@ -263,7 +264,16 @@ export async function registerAuthRoutes(
       handle: body.handle,
       displayName: body.displayName,
       ...(body.bio !== undefined ? { bio: body.bio } : {}),
-      ...(body.avatarUploadId !== undefined ? { avatarUploadId: body.avatarUploadId } : {}),
+      ...(body.avatarUploadId !== undefined
+        ? {
+            avatarUploadId: body.avatarUploadId,
+            // Presign the uploaded avatar's r2_key into the CANONICAL public URL and persist it into
+            // users.avatar_url inside the same profile update, so toUserDTO(updated) (this response +
+            // session/me) and every other avatar_url reader reflect the new photo with no extra presign.
+            // R2_PUBLIC_BASE makes this a stable no-expiry CDN URL in production; avatars are public.
+            presignAvatar: (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
+          }
+        : {}),
     })
     const payload: UpdateProfileResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)

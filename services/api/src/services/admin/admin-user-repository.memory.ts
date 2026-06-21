@@ -63,6 +63,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     flagged?: boolean
     flagReason?: string | null
     verified?: boolean
+    avatarUrl?: string | null
     deletedAt?: Date | null
   }): AdminUserRecord {
     const id = input.id ?? randomUUID()
@@ -86,6 +87,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       flagged: input.flagged ?? false,
       flagReason: input.flagReason ?? null,
       verified: input.verified ?? false,
+      avatarUrl: input.avatarUrl ?? null,
       deletedAt: input.deletedAt ?? null,
     }
     this.users.set(id, record)

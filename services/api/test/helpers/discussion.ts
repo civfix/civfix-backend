@@ -81,6 +81,8 @@ export interface SeededDiscussionAuthor {
   id: string
   displayName: string
   handle: string | null
+  /** The canonical avatar URL (users.avatar_url); null/absent => the monogram fallback. */
+  avatarUrl?: string | null
   /** When the author's account is tombstoned (drives the public "Deleted User" projection). */
   deletedAt?: Date | null
 }
@@ -119,6 +121,7 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
       id: over.id ?? randomUUID(),
       displayName: over.displayName ?? "Jane Neighbor",
       handle: over.handle ?? "jane",
+      avatarUrl: over.avatarUrl ?? null,
       deletedAt: over.deletedAt ?? null,
     }
     this.authors.set(author.id, author)
@@ -452,6 +455,7 @@ export class InMemoryDiscussionRepository implements DiscussionRepository {
               id: author.id,
               displayName: author.displayName,
               handle: author.handle,
+              avatarUrl: author.avatarUrl ?? null,
               deletedAt: author.deletedAt ?? null,
             }
           : null,

@@ -101,6 +101,7 @@ describe("toPersonDTO", () => {
       following: 7,
       verified: false,
       avatarR2Key: null,
+      avatarUrl: null,
     }
     const dto = toPersonDTO(view, true)
     expect(dto).toEqual({
@@ -114,6 +115,23 @@ describe("toPersonDTO", () => {
       isFollowing: true,
       verified: false,
     })
+    // avatarUrl is omitted when the canonical column is null (clients fall back to the monogram).
+    expect(dto.avatarUrl).toBeUndefined()
+  })
+
+  it("surfaces the canonical avatar_url directly (no presign) when set", () => {
+    const view: PersonView = {
+      id: A,
+      displayName: "Jane",
+      handle: "jane",
+      bio: null,
+      followers: 0,
+      following: 0,
+      verified: false,
+      avatarR2Key: null,
+      avatarUrl: "https://cdn.example.test/avatars/jane.jpg",
+    }
+    expect(toPersonDTO(view, false).avatarUrl).toBe("https://cdn.example.test/avatars/jane.jpg")
   })
 })
 
@@ -187,6 +205,17 @@ describe("listPeople", () => {
     repo.seedUser({ id: A, displayName: "Alice" })
     const res = await service.listPeople({ limit: 20 }, { userId: null })
     expect(res.items[0]!.avatar).toEqual(avatarGradient(A))
+  })
+
+  it("surfaces the canonical avatar_url on each list row (now that avatar_url is canonical)", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice", avatarUrl: "https://cdn.example.test/a.jpg" })
+    repo.seedUser({ id: B, displayName: "Bob" }) // no photo => omitted
+    const res = await service.listPeople({ limit: 20 }, { userId: null })
+    const alice = res.items.find((p) => p.id === A)!
+    const bob = res.items.find((p) => p.id === B)!
+    expect(alice.avatarUrl).toBe("https://cdn.example.test/a.jpg")
+    expect(bob.avatarUrl).toBeUndefined()
   })
 })
 

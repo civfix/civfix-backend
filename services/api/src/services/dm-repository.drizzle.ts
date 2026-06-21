@@ -163,6 +163,7 @@ interface DmRowSelect {
   sender_display_name: string
   sender_handle: string | null
   sender_bio: string | null
+  sender_avatar_url: string | null
   sender_deleted_at: Date | null
 }
 
@@ -184,6 +185,7 @@ function toMessageDTO(
     id: r.sender_id,
     displayName: r.sender_display_name,
     handle: r.sender_handle,
+    avatarUrl: r.sender_avatar_url,
     deletedAt: r.sender_deleted_at,
   })
   return {
@@ -307,6 +309,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
+          u.avatar_url AS sender_avatar_url,
           u.deleted_at AS sender_deleted_at
         FROM inserted
         JOIN users u ON u.id = inserted.sender_id
@@ -365,6 +368,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
+          u.avatar_url AS sender_avatar_url,
           u.deleted_at AS sender_deleted_at
         FROM updated
         JOIN users u ON u.id = updated.sender_id
@@ -413,6 +417,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
+          u.avatar_url AS sender_avatar_url,
           u.deleted_at AS sender_deleted_at
         FROM updated
         JOIN users u ON u.id = updated.sender_id
@@ -463,6 +468,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
+          u.avatar_url AS sender_avatar_url,
           u.deleted_at AS sender_deleted_at
         FROM dm_messages dm
         JOIN users u ON u.id = dm.sender_id
@@ -514,6 +520,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
+          u.avatar_url AS sender_avatar_url,
           u.deleted_at AS sender_deleted_at
         FROM dm_messages dm
         JOIN users u ON u.id = dm.sender_id

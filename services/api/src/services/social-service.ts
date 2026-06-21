@@ -70,10 +70,16 @@ export interface PersonView {
   verified: boolean
   /**
    * The object-store key of the user's uploaded avatar (users.avatar_media_id -> media_assets.r2_key), or
-   * null when they have not set one. The service presigns it into a client-usable `avatarUrl` (avatars are
+   * null when they have not set one. buildProfile presigns it into a client-usable `avatarUrl` (avatars are
    * public). Raw key only; the read path injects the presigner.
    */
   avatarR2Key: string | null
+  /**
+   * The CANONICAL avatar URL stored on users.avatar_url (the public URL persisted on upload; falls back to
+   * a provider photo). Used by the synchronous list projection (toPersonDTO), which has no presigner; the
+   * profile path still presigns avatarR2Key (same URL). null => no photo, clients render the monogram.
+   */
+  avatarUrl: string | null
 }
 
 /** Aggregate stats shown on a profile: the user's report count + the count of cleanups they organized. */
@@ -237,6 +243,9 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
     handle: view.handle,
     bio: view.bio,
     avatar: avatarGradient(view.id),
+    // Surface the canonical avatar_url directly (no presign needed — it already holds the public URL set on
+    // upload). Omitted when null so clients fall back to the monogram, matching the buildProfile shape.
+    ...(view.avatarUrl !== null ? { avatarUrl: view.avatarUrl } : {}),
     followers: view.followers,
     following: view.following,
     isFollowing,

@@ -29,7 +29,7 @@
  * with the operator userId the route resolves from request.auth.userId.
  */
 
-import { AppError } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   AdminUserCounts,
   AdminUserDTO,
@@ -81,6 +81,11 @@ export interface AdminUserRecord {
   flagReason: string | null
   /** Whether the account is a "verified neighbor" (a user_verification row with status='verified'). */
   verified: boolean
+  /**
+   * The canonical avatar URL (users.avatar_url; the public URL persisted on upload), or null. The service
+   * surfaces it on the admin DTO so an operator sees the SAME photo as web/mobile (no separate presign).
+   */
+  avatarUrl: string | null
   /** When the user self-deleted (tombstoned) their account; null for a live account. Admin keeps the
    *  real identity and only SEES the tombstone via this flag. */
   deletedAt: Date | null
@@ -295,6 +300,11 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       handle: record.handle ?? "",
       city: record.city,
       joined: record.joinedAt ? toRelAbs(record.joinedAt, ref).abs : "-",
+      // Mirror the web/mobile avatar so admin renders an IDENTICAL avatar: the deterministic gradient seed
+      // (same avatarGradient buildProfile uses) + the canonical avatar_url (omitted when null so the UI
+      // falls back to the monogram). Both additive in the contract.
+      avatar: avatarGradient(record.id),
+      ...(record.avatarUrl !== null ? { avatarUrl: record.avatarUrl } : {}),
       status: record.accountStatus,
       reports: record.reports,
       cleanups: record.cleanups,

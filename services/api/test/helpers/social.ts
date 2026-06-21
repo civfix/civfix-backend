@@ -32,6 +32,8 @@ interface StoredUser {
   deletedAt: Date | null
   /** Whether this user is document-verified (stand-in for a user_verification row with status='verified'). */
   verified?: boolean
+  /** The canonical avatar URL (stand-in for users.avatar_url); null/absent => the monogram fallback. */
+  avatarUrl?: string | null
 }
 
 /** A stored follow edge. */
@@ -64,6 +66,7 @@ export class InMemorySocialRepository implements SocialRepository {
       bio: over.bio ?? null,
       deletedAt: over.deletedAt ?? null,
       ...(over.verified !== undefined ? { verified: over.verified } : {}),
+      ...(over.avatarUrl !== undefined ? { avatarUrl: over.avatarUrl } : {}),
     }
     this.users.set(user.id, user)
     return user
@@ -97,9 +100,11 @@ export class InMemorySocialRepository implements SocialRepository {
       followers: this.follows.filter((f) => f.followeeId === u.id).length,
       following: this.follows.filter((f) => f.followerId === u.id).length,
       verified: u.verified ?? false,
-      // The in-memory fake has no media table; an uploaded avatar is never exercised offline, so the
-      // avatar key is always null (the service then omits avatarUrl, falling back to the monogram).
+      // The in-memory fake has no media table; an uploaded avatar's r2 key is never exercised offline, so the
+      // avatar key is always null (buildProfile then omits avatarUrl). The canonical avatar_url is seedable
+      // directly so the list/people projection (toPersonDTO) can be asserted offline.
       avatarR2Key: null,
+      avatarUrl: u.avatarUrl ?? null,
     }
   }
 

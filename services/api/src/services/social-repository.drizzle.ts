@@ -44,6 +44,8 @@ interface PersonRowSelect {
   verified: boolean
   /** The avatar media's r2 object key (LEFT JOIN media_assets on users.avatar_media_id), or null. */
   avatar_r2_key: string | null
+  /** The canonical avatar URL stored on users.avatar_url (the public URL persisted on upload), or null. */
+  avatar_url: string | null
 }
 
 /** The same shape plus the per-row isFollowing flag for the directory list. */
@@ -62,6 +64,7 @@ function toPersonView(r: PersonRowSelect): PersonView {
     following: Number(r.following),
     verified: r.verified,
     avatarR2Key: r.avatar_r2_key,
+    avatarUrl: r.avatar_url,
   }
 }
 
@@ -154,6 +157,7 @@ async function connectionsPage(
       (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
       EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
       am.r2_key AS avatar_r2_key,
+      u.avatar_url,
       ${followingExpr} AS is_following
     FROM users u
     JOIN follows_people f ON ${joinPredicate}
@@ -267,7 +271,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-          am.r2_key AS avatar_r2_key
+          am.r2_key AS avatar_r2_key,
+          u.avatar_url
         FROM users u
         LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.id = ${id} AND u.deleted_at IS NULL
@@ -288,7 +293,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-          am.r2_key AS avatar_r2_key
+          am.r2_key AS avatar_r2_key,
+          u.avatar_url
         FROM users u
         LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.handle = ${handle} AND u.deleted_at IS NULL

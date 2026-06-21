@@ -94,6 +94,7 @@ interface ChatRowSelect {
   sender_display_name: string
   sender_handle: string | null
   sender_bio: string | null
+  sender_avatar_url: string | null
   sender_deleted_at: Date | null
 }
 
@@ -115,6 +116,7 @@ function toMessageDTO(
     id: r.sender_id,
     displayName: r.sender_display_name,
     handle: r.sender_handle,
+    avatarUrl: r.sender_avatar_url,
     deletedAt: r.sender_deleted_at,
   })
   return {
@@ -162,6 +164,7 @@ function chatColumns(sql: Queryable) {
     u.display_name AS sender_display_name,
     u.handle AS sender_handle,
     u.bio AS sender_bio,
+    u.avatar_url AS sender_avatar_url,
     u.deleted_at AS sender_deleted_at
   `
 }
@@ -210,6 +213,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
+          u.avatar_url AS sender_avatar_url,
           u.deleted_at AS sender_deleted_at
         FROM inserted
         JOIN users u ON u.id = inserted.sender_id
@@ -347,6 +351,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
+          u.avatar_url AS sender_avatar_url,
           u.deleted_at AS sender_deleted_at
         FROM updated
         JOIN users u ON u.id = updated.sender_id

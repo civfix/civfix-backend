@@ -5,7 +5,7 @@ import {
   resolveUserFilter,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
-import type { Role } from "@civfix/shared"
+import { avatarGradient, type Role } from "@civfix/shared"
 
 /**
  * Offline unit tests for the admin users service over the in-memory AdminUserRepository (no DB, no
@@ -167,6 +167,18 @@ describe("admin users detail + sub-lists", () => {
   it("detail throws notFound for an unknown user", async () => {
     const { svc } = harness()
     await expect(svc.get("nope")).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("projects the avatar gradient + canonical avatar_url so admin matches web/mobile", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1", avatarUrl: "https://cdn.example.test/u1.jpg" })
+    repo.seedUser({ id: "u-2" }) // no photo => avatarUrl omitted, monogram via `avatar`
+    const withPhoto = await svc.get("u-1")
+    expect(withPhoto.avatar).toEqual(avatarGradient("u-1"))
+    expect(withPhoto.avatarUrl).toBe("https://cdn.example.test/u1.jpg")
+    const noPhoto = await svc.get("u-2")
+    expect(noPhoto.avatar).toEqual(avatarGradient("u-2"))
+    expect(noPhoto.avatarUrl).toBeUndefined()
   })
 
   it("getReports/getEvents/getMessages project the sub-activity rows", async () => {
