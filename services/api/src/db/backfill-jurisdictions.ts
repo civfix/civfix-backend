@@ -6,8 +6,9 @@
  *   pnpm db:backfill        (dev: tsx)   /   node dist/db/backfill-jurisdictions.js   (prod)
  *
  * The actual keyset loop lives in ./backfill-jurisdictions-core.ts — a side-effect-free module with NO
- * `main()`/guard, so runtime code (the jurisdiction.refresh cron) imports `backfillReports` from there
- * without dragging in this CLI's `main()`. THIS file is only the CLI shell (DB handle + main()), and a
+ * `main()`/guard, so other code (the local refresh tool scripts/refresh-boundaries.ts) imports
+ * `backfillReports` from there without dragging in this CLI's `main()`. THIS file is only the CLI shell
+ * (DB handle + main()), and a
  * tsup entry emitted to dist/db/backfill-jurisdictions.js for the production image. See
  * backfill-jurisdictions-core.ts for scope (reports only), the shared ranking constant, and termination.
  *

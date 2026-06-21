@@ -91,13 +91,10 @@ export const DEFAULT_TIGER_VINTAGE = 2025
 export const PADUS_VERSION = "4.1"
 
 /**
- * Canonical dataset identity for a (TIGER vintage, PAD-US version) pair, e.g. "tiger2025-padus4.1".
- * This is the SINGLE idempotency key shared end-to-end by the automated refresh: the CI publish workflow
- * uses it as the R2 key prefix (boundaries/<tag>/...) and writes it into boundaries/current.json; the
- * on-box `jurisdiction.refresh` cron compares it against boundary_vintage.vintage_tag and no-ops when
- * they match. Deriving it in one place (imported by both the cron and the prepare-boundaries CI runner)
- * guarantees the two sides can never compute a different tag for the same data. AIANNH shares the TIGER
- * vintage, so it does not appear in the tag.
+ * Canonical dataset identity for a (TIGER vintage, PAD-US version) pair, e.g. "tiger2025-padus4.1". The
+ * local refresh tool (scripts/refresh-boundaries.ts) stamps this into boundary_vintage after a load so an
+ * operator can see WHAT is loaded (a "-nofed" suffix records a run where PAD-US was skipped). AIANNH
+ * shares the TIGER vintage, so it does not appear in the tag.
  */
 export function vintageTag(tigerVintage: number, padusVersion: string = PADUS_VERSION): string {
   return `tiger${tigerVintage}-padus${padusVersion}`

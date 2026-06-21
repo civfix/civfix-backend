@@ -42,10 +42,6 @@ export const API_QUEUE_NAMES = [
   // Inbound-mail sweep: reconciles R2-buffered catch-all email (inbound/pending/) the API may have
   // missed while offline. Scheduled as a cron + enqueued once at boot by registerInboundJobs.
   "inbound.sweep",
-  // Jurisdiction-boundary refresh: loads a newly-published nationwide boundary bundle from R2 into the
-  // jurisdictions table + backfills NULL reports. Scheduled as a cron + enqueued once at boot by
-  // registerBoundaryRefreshJobs. No-op when the published vintage already matches what's loaded.
-  "jurisdiction.refresh",
 ] as const
 
 /** Map the shared EnqueueOptions onto pg-boss SendOptions (only set the fields that are provided). */

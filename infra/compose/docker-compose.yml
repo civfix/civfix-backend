@@ -22,15 +22,14 @@
 #      migrate only (it processes bytes, independent of jurisdiction data).
 # Re-running `docker compose up` re-runs migrate + seed; both are no-ops when already applied.
 #
-# REAL boundaries are now loaded AUTOMATICALLY, not via these compose services. The "jurisdiction.refresh"
-# pg-boss cron in the API (services/api/src/services/admin/boundary-refresh-jobs.ts) pulls the nationwide
-# TIGER/PAD-US/AIANNH bundle the GitHub Actions workflow (.github/workflows/boundaries-refresh.yml)
-# publishes to R2, ingests it, and backfills NULL reports — at boot and on BOUNDARY_REFRESH_CRON, no-op
-# when already current. So `seed` stays the bootstrap default (the box is instantly bootable on the dev
-# sample) and the cron upgrades coverage to real boundaries a few seconds after boot, with no host volume
-# and no compose change. The commented one-shot `ingest`/`backfill` services below are kept only as a
-# manual fallback (e.g. an air-gapped load from a host-mounted /data/boundaries; see
-# documents/20-jurisdiction-mapping.md §13).
+# REAL boundaries are loaded OUT OF BAND, not via these compose services. Run `pnpm db:boundaries:refresh`
+# on a workstation that has GDAL + SSH access to this box (services/api/scripts/refresh-boundaries.ts): it
+# opens an ssh -L tunnel to this Postgres, downloads the nationwide TIGER/AIANNH/PAD-US sources, converts
+# them with ogr2ogr, ingests each layer (idempotent upsert), and backfills NULL reports. So `seed` stays
+# the bootstrap default (the box is instantly bootable on the dev sample) and the operator upgrades to real
+# boundaries by running that script (re-run annually for new TIGER vintages). The commented one-shot
+# `ingest`/`backfill` services below remain only as an air-gapped fallback (host-mounted /data/boundaries;
+# see documents/20-jurisdiction-mapping.md).
 #
 # EXPOSURE: ONLY `caddy` is host-published (80/443). `api` and `media-worker` are reachable solely on the
 # internal compose network; Caddy proxies to the API by service name (api:8080). This keeps every API

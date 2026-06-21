@@ -1,11 +1,11 @@
 /**
- * boundary_vintage: single-row tracker for the active jurisdiction-boundary dataset loaded by the
- * automated `jurisdiction.refresh` cron (src/services/admin/boundary-refresh-jobs.ts). Canonical DDL:
+ * boundary_vintage: single-row audit record of the active jurisdiction-boundary dataset, stamped by the
+ * local refresh tool (scripts/refresh-boundaries.ts) after each successful nationwide load. Canonical DDL:
  * drizzle/0028_boundary_vintage.sql.
  *
- * Mirrors the hand-authored DDL for typed queries + drizzle-kit diff inspection only (the cron itself
- * reads/writes this row through raw `sql` like the other db/* scripts). The singleton CHECK (id) and the
- * jsonb default live in the SQL (drizzle-kit cannot model the CHECK), so they are NOT re-declared here.
+ * Mirrors the hand-authored DDL for typed queries + drizzle-kit diff inspection only (the refresh tool
+ * writes this row through raw `sql` like the other db/* scripts). The singleton CHECK (id) and the jsonb
+ * default live in the SQL (drizzle-kit cannot model the CHECK), so they are NOT re-declared here.
  */
 
 import { boolean, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core"

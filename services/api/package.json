@@ -35,6 +35,7 @@
     "db:ingest": "tsx src/db/ingest-jurisdictions.ts",
     "db:backfill": "tsx src/db/backfill-jurisdictions.ts",
     "db:prepare-boundaries": "tsx scripts/prepare-boundaries.ts",
+    "db:boundaries:refresh": "tsx scripts/refresh-boundaries.ts",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
