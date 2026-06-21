@@ -75,7 +75,7 @@ export function makeDrizzleUserActivityRepository(sql: Sql): UserActivityReposit
       const rows = await sql<ActivityRowSelect[]>`
         (
           SELECT 'created_report'::text AS kind, r.id::text AS id, r.created_at AS at,
-                 COALESCE(NULLIF(r.title, ''), r.category) AS title, r.addr AS subtitle,
+                 ('Reported ' || COALESCE(NULLIF(r.title, ''), r.category)) AS title, r.addr AS subtitle,
                  'report'::text AS ref_kind, r.id::text AS ref_id
           FROM reports r
           WHERE r.reporter_user_id = ${userId}
@@ -89,7 +89,7 @@ export function makeDrizzleUserActivityRepository(sql: Sql): UserActivityReposit
         UNION ALL
         (
           SELECT 'hosted_event'::text AS kind, c.id::text AS id, c.created_at AS at,
-                 c.title AS title, c.address AS subtitle,
+                 ('Hosted ' || c.title) AS title, c.address AS subtitle,
                  'event'::text AS ref_kind, c.id::text AS ref_id
           FROM cleanups c
           WHERE c.organizer_user_id = ${userId}
@@ -101,7 +101,7 @@ export function makeDrizzleUserActivityRepository(sql: Sql): UserActivityReposit
         UNION ALL
         (
           SELECT 'attended_event'::text AS kind, m.cleanup_id::text AS id, m.joined_at AS at,
-                 c.title AS title, c.address AS subtitle,
+                 ('Joined ' || c.title) AS title, c.address AS subtitle,
                  'event'::text AS ref_kind, c.id::text AS ref_id
           FROM cleanup_members m
           JOIN cleanups c ON c.id = m.cleanup_id
@@ -115,7 +115,8 @@ export function makeDrizzleUserActivityRepository(sql: Sql): UserActivityReposit
         UNION ALL
         (
           SELECT 'followed_user'::text AS kind, fp.followee_id::text AS id, fp.created_at AS at,
-                 fu.display_name AS title, ('@' || fu.handle) AS subtitle,
+                 ('Followed ' || COALESCE(NULLIF(fu.display_name, ''), '@' || fu.handle)) AS title,
+                 ('@' || fu.handle) AS subtitle,
                  'person'::text AS ref_kind, fp.followee_id::text AS ref_id
           FROM follows_people fp
           JOIN users fu ON fu.id = fp.followee_id
