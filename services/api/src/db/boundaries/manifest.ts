@@ -65,6 +65,14 @@ export interface BoundaryJob {
   /** Output GeoJSON filename (relative to the runner's outDir), e.g. "places_06.geojson". */
   outFile: string
   /**
+   * The dataset path (relative to <outDir>/sources/) that ogr2ogr reads — i.e. what the source archive
+   * extracts to. For TIGER/AIANNH shapefiles this is the like-named ".shp" (a single-layer dataset);
+   * for the PAD-US job it is the File Geodatabase directory "PADUS<v>Geodatabase.gdb" (the specific Fee
+   * feature class is selected by the job's ogr2ogr `-sql`, so no separate layer arg is needed). An
+   * explicit path — not a basename heuristic — so the GDB and the query-string PAD-US URL load correctly.
+   */
+  sourcePath: string
+  /**
    * The geoid prefix the INGEST CLI must apply to this file's features (METADATA ONLY — not used by the
    * conversion). null for the FIPS-hierarchical TIGER layers (place/county/state keep the raw GEOID);
    * "AIANNH-" for the tribal/AIANNH job; "PADUS-" for the federal/PAD-US job.
@@ -83,13 +91,40 @@ export const DEFAULT_TIGER_VINTAGE = 2025
 export const PADUS_VERSION = "4.1"
 
 /**
- * USGS PAD-US download entry point. PAD-US is distributed as a national geodatabase (not a single stable
- * direct-download URL the way TIGER is), so this is the human download page; the operator fetches the
- * national archive from here, then the runner/operator points the federal job at the extracted PADUS_Fee
- * layer. Kept as a constant so the manifest carries the canonical source for the runbook.
+ * Canonical dataset identity for a (TIGER vintage, PAD-US version) pair, e.g. "tiger2025-padus4.1".
+ * This is the SINGLE idempotency key shared end-to-end by the automated refresh: the CI publish workflow
+ * uses it as the R2 key prefix (boundaries/<tag>/...) and writes it into boundaries/current.json; the
+ * on-box `jurisdiction.refresh` cron compares it against boundary_vintage.vintage_tag and no-ops when
+ * they match. Deriving it in one place (imported by both the cron and the prepare-boundaries CI runner)
+ * guarantees the two sides can never compute a different tag for the same data. AIANNH shares the TIGER
+ * vintage, so it does not appear in the tag.
+ */
+export function vintageTag(tigerVintage: number, padusVersion: string = PADUS_VERSION): string {
+  return `tiger${tigerVintage}-padus${padusVersion}`
+}
+
+/**
+ * USGS PAD-US human download page — kept for the runbook/citation (DOI 10.5066/P96WBCHS). The machine
+ * fetch uses PADUS_GDB_URL below, not this page.
  */
 export const PADUS_DOWNLOAD_URL =
   "https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download"
+
+/**
+ * VERIFIED direct-download URL for the PAD-US 4.1 national File Geodatabase (~1.52 GB zip), used by the
+ * CI workflow's federal job. This is a ScienceBase asset whose item id (652d4fc5…) is SPECIFIC to the
+ * 4.1 release and is NOT derivable from the version number — so bumping PADUS_VERSION ALSO requires
+ * updating this URL (find the new "Full Inventory Database" item on ScienceBase). The only working fetch
+ * pattern is catalog/file/get/<itemId>?name=<exactFilename> on www.sciencebase.gov; the `manager/`
+ * download hosts serve an HTML shell, not the zip. NOTE: this endpoint ignores HTTP Range, so the full
+ * 1.52 GB is pulled each run (no resumable download).
+ */
+export const PADUS_GDB_URL =
+  "https://www.sciencebase.gov/catalog/file/get/652d4fc5d34e44db0e2ee45e?name=PADUS4_1Geodatabase.zip"
+
+/** PAD-US version with the dot replaced ("4.1" -> "4_1"), used to derive the GDB folder + Fee layer
+ *  names, which both embed the version (PADUS4_1Geodatabase.gdb / PADUS4_1Fee). */
+const PADUS_VERSION_NODOT = PADUS_VERSION.replace(/\./g, "_")
 
 /**
  * All 50 US state FIPS codes (2-digit, zero-padded), used to enumerate the per-state TIGER PLACE jobs.
@@ -131,6 +166,7 @@ export function boundaryManifest(
     layer: "state",
     ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326"],
     outFile: "states.geojson",
+    sourcePath: `tl_${year}_us_state.shp`,
     ingestGeoidPrefix: null,
   })
 
@@ -140,6 +176,7 @@ export function boundaryManifest(
     layer: "county",
     ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326"],
     outFile: "counties.geojson",
+    sourcePath: `tl_${year}_us_county.shp`,
     ingestGeoidPrefix: null,
   })
 
@@ -152,30 +189,51 @@ export function boundaryManifest(
       layer: "place",
       ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-where", "MTFCC='G4110'"],
       outFile: `places_${ss}.geojson`,
+      sourcePath: `tl_${year}_${ss}_place.shp`,
       ingestGeoidPrefix: null,
     })
   }
 
-  // (d) AIANNH (national tribal). The conversion keeps the RAW AIANNHCE/NAME properties (the ingest CLI
-  //     already reads GEOID/NAME etc.); the "AIANNH-" prefix that prevents a 5-char AIANNH geoid from
-  //     colliding with a 5-char county PK is applied by the INGEST step, recorded here as metadata only.
+  // (d) AIANNH (national tribal). TIGER AIANNH carries GEOID + NAME as real attributes (id field is
+  //     AIANNHCE, equal to GEOID), so the ingest CLI reads them directly. The "AIANNH-" prefix that
+  //     prevents a 5-char AIANNH geoid from colliding with a 5-char county PK is applied by the INGEST
+  //     step, recorded here as metadata only.
   jobs.push({
     sourceUrl: `${root}/AIANNH/tl_${year}_us_aiannh.zip`,
     layer: "tribal",
     ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326"],
     outFile: "aiannh.geojson",
+    sourcePath: `tl_${year}_us_aiannh.shp`,
     ingestGeoidPrefix: "AIANNH-",
   })
 
-  // (e) PAD-US federal. Scope to FEDERAL manager (AIANNH owns tribal). PAD-US ids are not Census FIPS,
-  //     so a numeric OBJECTID could look like a wrong state FIPS — the "PADUS-" prefix (applied at
-  //     ingest, metadata here) makes them globally unique AND makes the geocoder fall back to the
-  //     authoritative containing-state spatial query for these rows.
+  // (e) PAD-US federal (national File Geodatabase). Reads the Fee feature class and scopes to FEDERAL
+  //     manager (AIANNH owns tribal). Uses ogr2ogr's DEFAULT (OGR) SQL dialect — which reliably carries
+  //     the geometry through an attribute projection — to (1) select the version-named Fee layer,
+  //     (2) filter Mang_Type='FED', and (3) ALIAS the GDB's OBJECTID -> GEOID and Unit_Nm -> NAME so they
+  //     land as GeoJSON *properties* the ingest CLI reads. `-nlt PROMOTE_TO_MULTI` normalizes Polygon ->
+  //     MultiPolygon. (We deliberately avoid the SQLITE dialect here: with an explicit column projection
+  //     it can drop the geometry unless the geometry column is named, which silently yields 0 ingestable
+  //     features — the prepare-boundaries polygon-count guard would catch that, but the OGR dialect avoids
+  //     it outright.) The "PADUS-" prefix (applied at ingest, metadata here) makes the non-FIPS ids
+  //     globally unique AND makes the geocoder fall back to the authoritative containing-state query.
+  //     NOTE: PAD-US OBJECTIDs are not stable across PAD-US versions, so a version bump reshuffles these
+  //     geoids (old PADUS- rows linger, advisory-stale, since the load never deletes — see the cron).
   jobs.push({
-    sourceUrl: PADUS_DOWNLOAD_URL,
+    sourceUrl: PADUS_GDB_URL,
     layer: "federal",
-    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-where", "Mang_Type='FED'"],
+    ogr2ogrArgs: [
+      "-f",
+      "GeoJSON",
+      "-t_srs",
+      "EPSG:4326",
+      "-sql",
+      `SELECT OBJECTID AS GEOID, Unit_Nm AS NAME FROM PADUS${PADUS_VERSION_NODOT}Fee WHERE Mang_Type='FED'`,
+      "-nlt",
+      "PROMOTE_TO_MULTI",
+    ],
     outFile: "federal.geojson",
+    sourcePath: `PADUS${PADUS_VERSION_NODOT}Geodatabase.gdb`,
     ingestGeoidPrefix: "PADUS-",
   })
 
