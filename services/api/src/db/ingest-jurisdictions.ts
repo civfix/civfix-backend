@@ -52,7 +52,7 @@
 
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import type { Queryable } from "./client.js"
+import type { Queryable, Sql } from "./client.js"
 import { makeDb } from "./client.js"
 import { loadEnv } from "../env.js"
 
@@ -184,6 +184,47 @@ export async function upsertJurisdiction(sql: Queryable, row: IngestRow): Promis
   `
 }
 
+/**
+ * Ingest one GeoJSON FeatureCollection (already-read TEXT) into `jurisdictions` under a SINGLE
+ * transaction. Parses + validates the text, normalizes via normalizeFeatures (applying the optional
+ * load-time geoid prefix), and upserts every row (ON CONFLICT preserves operator-mapped contacts).
+ * Returns the upserted count, the number of features SKIPPED (missing geoid/name/non-polygon), and the
+ * total `features` parsed from the file.
+ *
+ * Factored out of main() so the on-box `jurisdiction.refresh` cron (services/admin/boundary-refresh-jobs.ts)
+ * and the Testcontainers integration harness drive the EXACT same load path the CLI uses: the cron streams
+ * each layer's GeoJSON out of R2 and calls this once per file. Takes a raw `Sql` tag (postgres-js) because
+ * it owns the `sql.begin(...)` transaction; geometry flows only through this raw tag (ST_GeomFromGeoJSON),
+ * never Drizzle.
+ *
+ * THROWS on invalid JSON or a non-FeatureCollection payload — a truncated/corrupt download surfaces as an
+ * error so the caller (cron) aborts the whole refresh and never stamps a partial vintage. `features` lets
+ * the cron cross-check the parsed count against the publish-time manifest count (a second truncation guard
+ * on top of JSON.parse already rejecting an incomplete file).
+ */
+export async function ingestGeoJsonFile(
+  sql: Sql,
+  geojsonText: string,
+  defaultLayer: IngestRow["layer"],
+  geoidPrefix?: string,
+): Promise<{ upserted: number; skipped: number; features: number }> {
+  const fc = JSON.parse(geojsonText) as GeoJsonFeatureCollection
+  if (fc.type !== "FeatureCollection" || !Array.isArray(fc.features)) {
+    throw new Error("ingest: input is not a GeoJSON FeatureCollection")
+  }
+  const features = fc.features.length
+  const { rows, skipped } = normalizeFeatures(fc, defaultLayer, geoidPrefix)
+  // Run every upsert under ONE transaction: with a row-by-row loop each await is its own commit/fsync
+  // round-trip (rows x RTT, fully serialized on a max:1 pool). Wrapping in a single `begin` collapses
+  // those N commits into one, so the only remaining per-row cost is the ST_GeomFromGeoJSON parse
+  // (Postgres-side CPU). If any row fails the whole file rolls back — the right semantics for an
+  // authoritative boundary import (a layer either lands fully or not at all).
+  await sql.begin(async (tx) => {
+    for (const row of rows) await upsertJurisdiction(tx, row)
+  })
+  return { upserted: rows.length, skipped, features }
+}
+
 async function main(): Promise<void> {
   const file = process.argv[2]
   const defaultLayer = (process.argv[3] ?? "federal") as IngestRow["layer"]
@@ -201,25 +242,11 @@ async function main(): Promise<void> {
   }
 
   const text = await readFile(file, "utf8")
-  const fc = JSON.parse(text) as GeoJsonFeatureCollection
-  if (fc.type !== "FeatureCollection" || !Array.isArray(fc.features)) {
-    console.error("ingest: input is not a GeoJSON FeatureCollection")
-    process.exit(2)
-  }
-  const { rows, skipped } = normalizeFeatures(fc, defaultLayer, geoidPrefix)
-
   const env = loadEnv()
   const handle = makeDb(env.DATABASE_URL, { max: 1 })
   try {
-    // Run every upsert under ONE transaction: with the row-by-row loop each await was its own
-    // commit/fsync round-trip (rows x RTT, fully serialized on a max:1 pool). Wrapping in a single
-    // `begin` collapses those N commits into one, so the only remaining per-row cost is the
-    // ST_GeomFromGeoJSON parse (Postgres-side CPU, unchanged here). If any row fails the whole
-    // ingest rolls back, which is the right semantics for an authoritative boundary import.
-    await handle.sql.begin(async (tx) => {
-      for (const row of rows) await upsertJurisdiction(tx, row)
-    })
-    console.log(`ingest: ${rows.length} jurisdictions upserted from ${file} (${skipped} features skipped)`)
+    const { upserted, skipped } = await ingestGeoJsonFile(handle.sql, text, defaultLayer, geoidPrefix)
+    console.log(`ingest: ${upserted} jurisdictions upserted from ${file} (${skipped} features skipped)`)
   } finally {
     await handle.close()
   }
