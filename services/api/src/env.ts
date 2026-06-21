@@ -125,6 +125,13 @@ export interface Env {
    * inbound pipeline shares R2_BUCKET. The Email Worker must bind THIS bucket. [OPT]
    */
   R2_INBOUND_BUCKET?: string
+  /**
+   * Optional R2 bucket holding the automated jurisdiction-boundary bundles (the CI publish workflow writes
+   * boundaries/<vintage-tag>/*.geojson.gz + manifest.json + current.json here; the on-box
+   * `jurisdiction.refresh` cron reads them). When unset, the cron reads from R2_BUCKET (single-bucket
+   * deploy). The cron NO-OPs when no bundle is published, so this being unset is harmless. [OPT]
+   */
+  R2_BOUNDARIES_BUCKET?: string
   R2_PUBLIC_BASE?: string
 
   // ----- map basemap (all [OPT]) -----
@@ -197,6 +204,13 @@ export interface Env {
    * LISTs R2 inbound/pending/ and processes anything the webhook missed). Defaults to every 5 minutes.
    */
   INBOUND_SWEEP_CRON: string
+  /**
+   * Cron expression for the automated jurisdiction-boundary refresh (the "jurisdiction.refresh" pg-boss
+   * job that compares R2 boundaries/current.json against boundary_vintage and, when a new vintage is
+   * published, ingests it nationwide + backfills NULL reports). Cheap no-op when already current, so a
+   * daily default is fine. Defaults to 06:30 daily. [OPT]
+   */
+  BOUNDARY_REFRESH_CRON: string
 
   // ----- admin auth: Cloudflare Access (Zero Trust) SSO (doc 16) [OPT] -----
   /**
@@ -412,6 +426,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...(optStr.parse(source.R2_INBOUND_BUCKET) !== undefined
       ? { R2_INBOUND_BUCKET: source.R2_INBOUND_BUCKET!.trim() }
       : {}),
+    ...(optStr.parse(source.R2_BOUNDARIES_BUCKET) !== undefined
+      ? { R2_BOUNDARIES_BUCKET: source.R2_BOUNDARIES_BUCKET!.trim() }
+      : {}),
     ...(optStr.parse(source.R2_PUBLIC_BASE) !== undefined
       ? { R2_PUBLIC_BASE: source.R2_PUBLIC_BASE!.trim() }
       : {}),
@@ -443,6 +460,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OUTREACH_THROTTLE_DAYS: parseIntOr(source.OUTREACH_THROTTLE_DAYS, 7),
     OUTREACH_DIGEST_CRON: (source.OUTREACH_DIGEST_CRON ?? "").trim() || "0 14 * * *",
     INBOUND_SWEEP_CRON: (source.INBOUND_SWEEP_CRON ?? "").trim() || "*/5 * * * *",
+    BOUNDARY_REFRESH_CRON: (source.BOUNDARY_REFRESH_CRON ?? "").trim() || "30 6 * * *",
 
     // Admin auth: Cloudflare Access (doc 16). Team domain + AUD are optional strings (the exchange route
     // self-gates on both being present). Service-token client IDs are parsed but not yet consumed.

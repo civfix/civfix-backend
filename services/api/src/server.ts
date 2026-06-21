@@ -41,6 +41,7 @@ import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
+import { registerBoundaryRefreshJobs, BOUNDARY_REFRESH_JOB } from "./services/admin/boundary-refresh-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
@@ -298,6 +299,12 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     // already enqueues (an un-onboarded jurisdiction) and materialize the operator Discovery-queue task.
     // Same gate as the inbound jobs (real pg-boss + a real DATABASE_URL).
     await registerDiscoveryJobs(app.container)
+
+    // Automated jurisdiction-boundary refresh: register the cron + worker, then enqueue ONE boot run so a
+    // freshly-deployed box pulls whatever nationwide boundary bundle CI has published to R2 (and backfills
+    // NULL reports). A no-op when the published vintage already matches what's loaded. Same gate as above.
+    await registerBoundaryRefreshJobs(app.container)
+    await app.container.jobs.enqueue(BOUNDARY_REFRESH_JOB, {})
   }
 
   async function shutdown(signal: string): Promise<void> {
