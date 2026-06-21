@@ -38,8 +38,11 @@
 
 import { gunzipSync } from "node:zlib"
 import type { Container } from "../../di.js"
-import { ingestGeoJsonFile, type IngestRow } from "../../db/ingest-jurisdictions.js"
-import { backfillReports } from "../../db/backfill-jurisdictions.js"
+// Import from the side-effect-free CORE modules, NOT the CLI files: the CLIs carry a "run as CLI" guard
+// that tsup (splitting:false) would inline into the API bundle and mis-fire at boot. See
+// ingest-jurisdictions-core.ts for the full rationale.
+import { ingestGeoJsonFile, type IngestRow } from "../../db/ingest-jurisdictions-core.js"
+import { backfillReports } from "../../db/backfill-jurisdictions-core.js"
 
 /** The cron job name for the automated jurisdiction-boundary refresh. */
 export const BOUNDARY_REFRESH_JOB = "jurisdiction.refresh"
