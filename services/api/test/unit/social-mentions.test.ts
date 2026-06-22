@@ -121,9 +121,6 @@ class SpyOutboundMail implements OutboundMailService {
   appendOutbound(): Promise<MailThreadRecord> {
     return Promise.resolve(stubThread())
   }
-  mintReplyAddress(token: string): string {
-    return `reply+${token}@civfix.org`
-  }
 }
 function stubThread(): MailThreadRecord {
   return {

@@ -1,14 +1,16 @@
 /**
  * OutboundMailService: the thin "send mail + record it" service the admin reports/events + mail routers
  * call. It composes the MailRepository (persist the thread/message/event) with the Mailer seam (deliver),
- * fully unit-testable with the in-memory repo + FakeMailer. Four send paths (sendToCity,
- * sendReportToJurisdiction, compose, appendOutbound), all From MAIL_FROM_OUTREACH; each returns the
- * affected thread record (sendReportToJurisdiction also the Message-ID) so the caller can map it to a DTO.
+ * fully unit-testable with the in-memory repo + FakeMailer. Five send paths (sendToCity,
+ * sendReportToJurisdiction, sendEventToJurisdiction, compose, appendOutbound); each returns the affected
+ * thread record (the per-report/-event paths also the Message-ID) so the caller can map it to a DTO.
  *
- * Delivery uses `Mailer.sendOutbound(email)` (the first-class envelope seam) which HONORS `from` +
- * `replyTo` and carries attachments + an explicit Message-ID (the two the old `sendTransactional` path
- * silently dropped in prod). The reply-to is minted reply+{threadToken}@{MAIL_REPLY_DOMAIN} so an inbound
- * reply threads back; the returned Message-ID is stored on the OUT row for In-Reply-To correlation.
+ * Delivery uses `Mailer.sendOutbound(email)` (the first-class envelope seam) which HONORS `from` and
+ * carries attachments + an explicit Message-ID (the two the old `sendTransactional` path silently dropped
+ * in prod). Mail is sent FROM the per-thread reply address {kind}-{threadToken}@{MAIL_REPLY_DOMAIN}
+ * (fromHeaderForThread) so a municipal reply threads straight back with no separate Reply-To; the
+ * returned Message-ID is stored on the OUT row for In-Reply-To correlation. The DB from_addr + event meta
+ * keep the canonical MAIL_FROM_OUTREACH identity (resolveCorrespondent + stats stay stable).
  *
  * Audit (H4): the operator audit (mail.sent / mail.replied / mail.resent) is written in the SAME tx as the
  * message insert (repo.insertMessage's audit param), so a committed outbound message can never lack its
@@ -142,8 +144,6 @@ export interface OutboundMailService {
   compose(input: ComposeInput): Promise<MailThreadRecord>
   /** Mail reply: append an OUT message to an existing thread + deliver. */
   appendOutbound(threadId: string, input: AppendOutboundInput): Promise<MailThreadRecord>
-  /** Mint the reply+{token}@{MAIL_REPLY_DOMAIN} address used for inbound threading. */
-  mintReplyAddress(threadToken: string): string
 }
 
 export interface OutboundMailServiceDeps {
@@ -159,19 +159,21 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
   const { repo, mailer, env } = deps
   const logger: OutboundMailLogger = deps.logger ?? console
 
-  /** reply+{token}@{MAIL_REPLY_DOMAIN}; the inbound webhook parses {token} back to the thread. */
-  function mintReplyAddress(threadToken: string): string {
-    return `reply+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
-  }
-
-  /** report+{token}@{MAIL_REPLY_DOMAIN}: the per-report Reply-To (D10); same token, typed local-part. */
-  function mintReportReply(threadToken: string): string {
-    return `report+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
-  }
-
-  /** event+{token}@{MAIL_REPLY_DOMAIN}: the per-event Reply-To (D10); same token, typed local-part. */
-  function mintEventReply(threadToken: string): string {
-    return `event+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
+  /**
+   * The wire `From` header for a thread's outbound mail: a friendly display name + a per-thread reply
+   * address `{kind}-{token}@{MAIL_REPLY_DOMAIN}` derived from the thread TYPE (report / event / generic),
+   * so a municipal recipient's reply goes straight back to the address that threads it — no separate
+   * Reply-To needed. The `kind` prefix is cosmetic (inbound routes by the token + the thread's
+   * report_id/cleanup_id), but kept consistent per thread so the city sees one stable sender address.
+   * Deliverability note: every per-thread address shares the civfix.org domain, so it is authorized by a
+   * single OCI approved-DOMAIN entry and stays DMARC-aligned via the domain's DKIM signature.
+   */
+  function fromHeaderForThread(thread: MailThreadRecord): string {
+    const domain = env.MAIL_REPLY_DOMAIN
+    const token = thread.threadToken
+    if (thread.reportId !== null) return `"civfix Reports" <report-${token}@${domain}>`
+    if (thread.cleanupId !== null) return `"civfix Cleanups" <event-${token}@${domain}>`
+    return `"civfix" <reply-${token}@${domain}>`
   }
 
   /**
@@ -181,17 +183,20 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
    * logged: once delivery succeeded the message IS out, so a write failure must not 500 the caller into a
    * duplicate re-send. The OUT Message-ID is `<out-{id}@{fromDomain}>` for In-Reply-To/References
    * correlation.
+   *
+   * The wire `from` is the per-thread reply address (see fromHeaderForThread) so a reply threads back with
+   * no separate Reply-To. The DB message from_addr + the 'sent'/'failed' event meta keep the canonical
+   * MAIL_FROM_OUTREACH identity (so resolveCorrespondent + deliverability stats stay stable); only the
+   * transport From differs.
    */
   async function deliverAndRecord(args: {
     threadId: string
     messageId: string
-    threadToken: string
+    fromHeader: string
     toAddr: string
     subject: string
     body: string
     html?: string
-    /** The Reply-To address; defaults to reply+{token}@ (digest/compose). Per-report/event pass report+/event+. */
-    replyAddress?: string
     attachments?: OutboundAttachment[]
     eventMeta?: Record<string, unknown>
   }): Promise<string> {
@@ -206,9 +211,8 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     let sent: { messageId: string }
     try {
       sent = await mailer.sendOutbound({
-        from: env.MAIL_FROM_OUTREACH,
+        from: args.fromHeader,
         to: args.toAddr,
-        replyTo: args.replyAddress ?? mintReplyAddress(args.threadToken),
         subject: args.subject,
         text: args.body,
         ...(args.html !== undefined ? { html: args.html } : {}),
@@ -269,8 +273,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
   }
 
   return {
-    mintReplyAddress,
-
     async sendReportToJurisdiction(
       input: SendReportInput,
     ): Promise<{ thread: MailThreadRecord; messageId: string }> {
@@ -293,12 +295,10 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       const messageId = await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        threadToken: thread.threadToken,
+        fromHeader: fromHeaderForThread(thread),
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
-        // D10: the per-report Reply-To is report+{token}@ (not the digest reply+). Same token.
-        replyAddress: mintReportReply(thread.threadToken),
         ...(input.html !== undefined ? { html: input.html } : {}),
         ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
         eventMeta: { reportId: input.reportId, ...(input.geoid != null ? { geoid: input.geoid } : {}) },
@@ -310,8 +310,8 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       input: SendEventInput,
     ): Promise<{ thread: MailThreadRecord; messageId: string }> {
       // Per-EVENT thread: find-or-create by cleanup_id (with a minted reply token) so the city's reply
-      // auto-routes back onto the event (onEventReply -> cleanup_timeline). From = the approved outreach
-      // sender (M7); Reply-To = event+{token}@ (OCI honors from + replyTo separately).
+      // auto-routes back onto the event (onEventReply -> cleanup_timeline). The wire From is the per-event
+      // reply address event-{token}@ (fromHeaderForThread), so a reply threads back with no Reply-To.
       const thread = await repo.findOrCreateEventThread(input.cleanupId, {
         jurisdictionGeoid: input.geoid,
         org: input.org ?? null,
@@ -329,11 +329,10 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       const messageId = await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        threadToken: thread.threadToken,
+        fromHeader: fromHeaderForThread(thread),
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
-        replyAddress: mintEventReply(thread.threadToken),
         ...(input.html !== undefined ? { html: input.html } : {}),
         eventMeta: {
           cleanupId: input.cleanupId,
@@ -378,7 +377,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        threadToken: thread.threadToken,
+        fromHeader: fromHeaderForThread(thread),
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.body,
@@ -401,7 +400,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        threadToken: thread.threadToken,
+        fromHeader: fromHeaderForThread(thread),
         toAddr: input.to,
         subject: input.subject,
         body: input.body,
@@ -427,7 +426,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        threadToken: thread.threadToken,
+        fromHeader: fromHeaderForThread(thread),
         toAddr: input.toAddr,
         subject,
         body: input.body,

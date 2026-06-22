@@ -244,12 +244,13 @@ export function buildContainer(env: Env): Container {
 
   const inboundMail: InboundMail =
     env.NODE_ENV === "production"
-      ? new CfInboundMail(
-          env.CF_EMAIL_WEBHOOK_SECRET !== undefined
+      ? new CfInboundMail({
+          replyDomain: env.MAIL_REPLY_DOMAIN,
+          ...(env.CF_EMAIL_WEBHOOK_SECRET !== undefined
             ? { webhookSecret: env.CF_EMAIL_WEBHOOK_SECRET }
-            : {},
-        )
-      : new FakeInboundMail()
+            : {}),
+        })
+      : new FakeInboundMail(env.MAIL_REPLY_DOMAIN)
 
   // Phase-2 scaffold (HttpRoutingProvider throws NOT_IMPL); nothing consumes it yet — kept for the seam
   // contract until a real routing seam lands (see the header note).

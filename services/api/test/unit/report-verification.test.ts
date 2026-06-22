@@ -383,10 +383,12 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
 
     await runAutoForwardWith(svc, "rep-1")
 
-    // The send actually happened: a message went out to the city contact from the outreach sender.
+    // The send actually happened: a message went out to the city contact, From the per-report reply
+    // address (report-{token}@), so the city's reply threads back onto the report. No Reply-To.
     const sent = mailer.sent.find((m) => m.to === "311@lacity.gov")
     expect(sent).toBeDefined()
-    expect(sent?.outbound?.from).toBe("outreach@civfix.org")
+    expect(sent?.outbound?.from).toMatch(/^"civfix Reports" <report-[a-z2-7]{12}@civfix\.org>$/)
+    expect(sent?.outbound?.replyTo).toBeUndefined()
     // It landed on a per-report mail thread (report_id = the report).
     const thread = [...mailRepo.threads.values()].find((t) => t.reportId === "rep-1")
     expect(thread).toBeDefined()

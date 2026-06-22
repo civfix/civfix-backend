@@ -5,24 +5,25 @@ import { mintThreadToken } from "../../src/services/admin/mail-repository.drizzl
 import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
 
 /**
- * Regression lock for the two production-only thread-token bugs (issue #40):
- *   - the outbound side mints `reply+{token}@` from a 24-hex `mintThreadToken()` value, and
+ * Regression lock for the thread-token round-trip (originally issue #40):
+ *   - the outbound side mints a token via `mintThreadToken()` and sends FROM `{kind}-{token}@`, and
  *   - BOTH the real CfInboundMail adapter AND the FakeInboundMail recover that exact token from the
- *     plus-address recipient, so a jurisdiction's reply threads back onto the report.
- * The old `sendToCity` minted `geo-{geoid}` tokens, which the real adapter's `^[0-9a-f]{24}$` shape gate
- * REJECTS — so replies never threaded in production while every fake-based test passed. This test asserts
- * the real adapter and the fake now AGREE on the same accept (24-hex) / reject (`geo-…`) behavior, so the
- * bug cannot silently return.
+ *     reply address, so a jurisdiction's reply threads back onto the report/event.
+ * The two adapters MUST agree on accept/reject — the original bug was the real adapter rejecting a token
+ * shape the fake accepted, so replies silently never threaded in prod while every fake-based test passed.
+ * This locks: the current 12-char base32 token round-trips through both, the legacy 24-hex token and the
+ * legacy `+` separator still parse (in-flight replies), and obvious junk is rejected by both.
  *
  * The real adapter only lazy-imports mailparser inside parse(); extractThreadToken() is pure, so it is
  * safe to call here without mailparser installed (we hand it a ParsedMail directly, never calling parse).
  */
 
-/** Build a minimal ParsedMail whose only `to` recipient is `addr` (the rest defaulted/empty). */
-function mailTo(addr: string, headers: Record<string, string> = {}): ParsedMail {
+/** Build a minimal ParsedMail whose `to` recipients are `addrs` (the rest defaulted/empty). */
+function mailTo(addrs: string | string[], headers: Record<string, string> = {}): ParsedMail {
+  const list = Array.isArray(addrs) ? addrs : [addrs]
   return {
     from: { address: "clerk@lacity.gov" },
-    to: [{ address: addr }],
+    to: list.map((address) => ({ address })),
     subject: "Re: civfix report",
     text: "Thanks, we'll take a look.",
     html: null,
@@ -32,25 +33,28 @@ function mailTo(addr: string, headers: Record<string, string> = {}): ParsedMail 
   }
 }
 
-describe("thread token round-trip (mint -> reply+{token}@ -> extract)", () => {
+describe("thread token round-trip (mint -> {kind}-{token}@ -> extract)", () => {
   const fake = new FakeInboundMail()
   const real = new CfInboundMail()
 
+  it("mints a 12-char lowercase base32 token", () => {
+    expect(mintThreadToken()).toMatch(/^[a-z2-7]{12}$/)
+  })
+
   it("a freshly minted token is recovered by BOTH the real adapter and the fake", () => {
     const token = mintThreadToken()
-    expect(token).toMatch(/^[0-9a-f]{24}$/)
-    const mail = mailTo(`reply+${token}@civfix.org`)
+    const mail = mailTo(`report-${token}@civfix.org`)
     expect(real.extractThreadToken(mail)).toBe(token)
     expect(fake.extractThreadToken(mail)).toBe(token)
   })
 
-  it("the legacy geo-{geoid} token is REJECTED by both (the bug, now locked closed)", () => {
-    const mail = mailTo("reply+geo-06037@civfix.org")
+  it("the legacy geo-{geoid} token is REJECTED by both", () => {
+    const mail = mailTo("reply-geo-06037@civfix.org")
     expect(real.extractThreadToken(mail)).toBeNull()
     expect(fake.extractThreadToken(mail)).toBeNull()
   })
 
-  it("an X-Thread-Token header carrying a 24-hex token is recovered by both", () => {
+  it("an X-Thread-Token header carrying a token is recovered by both", () => {
     const token = mintThreadToken()
     const mail = mailTo("clerk@lacity.gov", { "x-thread-token": token })
     expect(real.extractThreadToken(mail)).toBe(token)
@@ -63,18 +67,55 @@ describe("thread token round-trip (mint -> reply+{token}@ -> extract)", () => {
     expect(fake.extractThreadToken(mail)).toBeNull()
   })
 
-  // D10: the real adapter's local-part match widened to (reply|report|event)+, KEEPING the second-step
-  // 24-hex THREAD_TOKEN_RE gate. report+ (per-report) and event+ (per-event) carry the SAME token shape.
-  it("recovers the token from reply+ / report+ / event+ local-parts (real adapter)", () => {
+  it("recovers the token from reply- / report- / event- local-parts (both adapters)", () => {
     const token = mintThreadToken()
-    expect(real.extractThreadToken(mailTo(`reply+${token}@civfix.org`))).toBe(token)
-    expect(real.extractThreadToken(mailTo(`report+${token}@civfix.org`))).toBe(token)
-    expect(real.extractThreadToken(mailTo(`event+${token}@civfix.org`))).toBe(token)
+    for (const kind of ["reply", "report", "event"]) {
+      const mail = mailTo(`${kind}-${token}@civfix.org`)
+      expect(real.extractThreadToken(mail)).toBe(token)
+      expect(fake.extractThreadToken(mail)).toBe(token)
+    }
   })
 
-  it("rejects a garbage / non-24-hex token on a report+ / event+ address (real adapter)", () => {
-    expect(real.extractThreadToken(mailTo("report+not-a-token@civfix.org"))).toBeNull()
-    expect(real.extractThreadToken(mailTo("event+ZZZZ@civfix.org"))).toBeNull()
-    expect(real.extractThreadToken(mailTo("report+geo-06037@civfix.org"))).toBeNull()
+  it("still parses a legacy 24-hex token on the legacy + separator (in-flight replies)", () => {
+    const legacy = "0123456789abcdef01234567"
+    const mail = mailTo(`report+${legacy}@civfix.org`)
+    expect(real.extractThreadToken(mail)).toBe(legacy)
+    expect(fake.extractThreadToken(mail)).toBe(legacy)
+  })
+
+  it("rejects a garbage / malformed token on a report- / event- address (both adapters)", () => {
+    for (const addr of [
+      "report-not.a.token@civfix.org",
+      "event-ZZZZ@civfix.org",
+      "report-geo-06037@civfix.org",
+    ]) {
+      expect(real.extractThreadToken(mailTo(addr))).toBeNull()
+      expect(fake.extractThreadToken(mailTo(addr))).toBeNull()
+    }
+  })
+
+  it("ignores a typed prefix on a FOREIGN domain (no thread hijack), both adapters", () => {
+    // A city's own alias or a mailing-list decoy whose local-part happens to start report-/event-/reply-
+    // must NOT be read as a thread token — the token only ever lives on our reply domain.
+    for (const addr of [
+      "report-publicworks@city.gov",
+      "event-registration@constantcontact.com",
+      "reply-mailinglist1@example.com",
+    ]) {
+      expect(real.extractThreadToken(mailTo(addr))).toBeNull()
+      expect(fake.extractThreadToken(mailTo(addr))).toBeNull()
+    }
+  })
+
+  it("picks the real civfix.org token even when a foreign decoy is the FIRST recipient", () => {
+    const token = mintThreadToken()
+    const mail = mailTo(["event-registration@constantcontact.com", `report-${token}@civfix.org`])
+    expect(real.extractThreadToken(mail)).toBe(token)
+    expect(fake.extractThreadToken(mail)).toBe(token)
+  })
+
+  it("rejects a prefix that is mid-local-part, not anchored (both adapters)", () => {
+    expect(real.extractThreadToken(mailTo("noreply-newsletter@civfix.org"))).toBeNull()
+    expect(fake.extractThreadToken(mailTo("noreply-newsletter@civfix.org"))).toBeNull()
   })
 })

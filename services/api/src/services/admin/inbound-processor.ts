@@ -163,7 +163,7 @@ export async function processInboundObject(
 
 /**
  * Reply path: thread into mail_threads. Idempotent on message_id (skip a re-delivered reply). The thread
- * is resolved EITHER by the plus-address `token` (the normal path) OR pre-resolved via the In-Reply-To
+ * is resolved EITHER by the reply-address `token` (the normal path) OR pre-resolved via the In-Reply-To
  * fallback (`presolved`, token null). After a NON-replay insert, a per-report outreach thread fires
  * best-effort report side-effects (timeline + status + notify the reporter).
  */

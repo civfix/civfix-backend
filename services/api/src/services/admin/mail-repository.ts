@@ -167,8 +167,8 @@ export interface MailRepository {
   findOrCreateReportThread(reportId: string, init?: ThreadInit): Promise<MailThreadRecord>
   /**
    * The newest thread WHERE cleanup_id = $1, or a freshly created thread (minted token + `init`) when none
-   * exists (D10/D19). So an event's resource request is ONE conversation and a city reply (via that
-   * thread's event+ reply token) auto-routes back onto the cleanup (onEventReply -> cleanup_timeline).
+   * exists (D10/D19). So an event's resource request is ONE conversation and a city reply (to that
+   * thread's event-{token}@ From address) auto-routes back onto the cleanup (onEventReply -> cleanup_timeline).
    */
   findOrCreateEventThread(cleanupId: string, init?: ThreadInit): Promise<MailThreadRecord>
   /**

@@ -19,15 +19,34 @@ import type {
 } from "@civfix/shared/interfaces"
 import type { AddressObject, Attachment, EmailAddress } from "mailparser"
 
-/** Shape of a thread token as minted by mintThreadToken() (24 lowercase hex chars). */
-const THREAD_TOKEN_RE = /^[0-9a-f]{24}$/
+/**
+ * Shape gate for a thread token. Deliberately PERMISSIVE (lowercase alphanumeric, 8-40 chars) so it
+ * accepts both the current 12-char base32 token (mintThreadToken()) and the legacy 24-hex token, and so
+ * a future mint tweak needs no change here. The token's entropy + the UNIQUE thread_token lookup are the
+ * real protection; this gate just rejects obviously-malformed candidates (spaces, `@`, junk) early.
+ */
+const THREAD_TOKEN_RE = /^[a-z0-9]{8,40}$/
 
 export interface CfInboundMailConfig {
   // Carried for parity with the env wiring but intentionally unused HERE: the webhook HMAC is verified in
   // the route (against the exact raw bytes), which is the correct place. Kept so di.ts can pass it without
   // a special case; this adapter only parses already-authenticated bytes.
   webhookSecret?: string
+  // The domain our per-thread reply addresses live on (MAIL_REPLY_DOMAIN). extractThreadToken ONLY pulls
+  // a token from a `{kind}-{token}@{replyDomain}` recipient, so a city's own `report-*@city.gov`-style
+  // alias (or any foreign CC) can never be mis-read as a thread token. Defaults to civfix.org.
+  replyDomain?: string
 }
+
+const DEFAULT_REPLY_DOMAIN = "civfix.org"
+
+/**
+ * Anchored reply-address matcher: the local-part MUST START with a typed prefix (`reply`/`report`/`event`)
+ * + a `-` (current) or `+` (legacy) separator, then the token, then `@domain`. Anchoring both ends + the
+ * separate domain check (caller) stop a mid-string or foreign-domain false positive (e.g.
+ * `noreply-list@x.com`, `report-publicworks@city.gov`).
+ */
+const REPLY_ADDRESS_RE = /^(?:reply|report|event)[-+]([^@\s]+)@([^@\s]+)$/
 
 export class CfInboundMail implements InboundMail {
   private readonly config: CfInboundMailConfig
@@ -61,17 +80,19 @@ export class CfInboundMail implements InboundMail {
   }
 
   extractThreadToken(mail: ParsedMail): string | null {
-    // SECURITY: a thread token is the 24-hex-char value minted by mintThreadToken(). Shape-validate any
-    // candidate (from the spoofable X-Thread-Token header OR a sender-chosen reply+{x}@ address) before
-    // returning it so a junk/forged value can't create stray threads or probe the namespace. The token's
-    // entropy is the real protection; THREAD_TOKEN_RE just rejects obviously-malformed candidates early.
+    // SECURITY: a thread token only ever lives in a `{kind}-{token}@{replyDomain}` recipient WE minted, so
+    // we ONLY pull a token from a recipient on our reply domain whose local-part is anchored to a typed
+    // prefix. That stops a city's own `report-*@city.gov` alias or a foreign CC from being mis-read as a
+    // token. The X-Thread-Token header is a spoofable convenience path gated only by shape. In both cases
+    // THREAD_TOKEN_RE + the token's entropy + the UNIQUE thread_token lookup are the real protection.
+    const replyDomain = (this.config.replyDomain ?? DEFAULT_REPLY_DOMAIN).toLowerCase()
     const headerToken = mail.headers["x-thread-token"]
     if (headerToken && THREAD_TOKEN_RE.test(headerToken)) return headerToken
     for (const addr of mail.to) {
-      // The typed local-parts are reply+ (digest/compose), report+ (per-report), and event+ (per-event);
-      // all carry the SAME 24-hex token, so the second-step THREAD_TOKEN_RE.test() still gates the value.
-      const match = addr.address.match(/(?:reply|report|event)\+([^@]+)@/)
-      if (match && match[1] && THREAD_TOKEN_RE.test(match[1])) return match[1]
+      const match = addr.address.match(REPLY_ADDRESS_RE)
+      if (match && match[1] && match[2] && match[2].toLowerCase() === replyDomain) {
+        if (THREAD_TOKEN_RE.test(match[1])) return match[1]
+      }
     }
     return null
   }

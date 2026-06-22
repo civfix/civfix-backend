@@ -16,10 +16,12 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;")
 }
 
-// The domain of an email address (the substring after the last '@'), falling back when absent/empty.
+// The domain of an email address, falling back when absent/empty. Accepts a bare address OR a
+// display-name form ("Name <local@domain>") — the latter is the per-thread From we now send, so a
+// trailing '>' is trimmed off the extracted domain.
 export function domainOf(addr: string, fallback = "civfix.org"): string {
   const at = addr.lastIndexOf("@")
-  const domain = at >= 0 ? addr.slice(at + 1).trim() : ""
+  const domain = at >= 0 ? addr.slice(at + 1).replace(/>.*$/, "").trim() : ""
   return domain.length > 0 ? domain : fallback
 }
 

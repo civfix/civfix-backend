@@ -492,7 +492,6 @@ describe("requestResources (D19 event resource request)", () => {
         sendReportToJurisdiction: () => Promise.reject(new Error("unused")),
         compose: () => Promise.reject(new Error("unused")),
         appendOutbound: () => Promise.reject(new Error("unused")),
-        mintReplyAddress: (t) => `reply+${t}@civfix.org`,
       },
     })
     return { repo: r, svc, sends }

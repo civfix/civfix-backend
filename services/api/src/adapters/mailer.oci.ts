@@ -86,9 +86,12 @@ function classifyMailError(err: unknown, from: string): AppError {
   const isAuthCode = code === "EAUTH" || code === "EENVELOPE"
   if (isPermanentResponse || (isAuthCode && responseCode !== undefined && responseCode >= 500)) {
     const detail = response ? ` (${response})` : ""
+    const domain = domainOf(from)
     return new AppError(
       ErrorCode.CONFLICT,
-      `Email not sent: sender ${from} is not an approved sender. Configure OCI Approved Senders.${detail}`,
+      `Email not sent: the sending address is not an approved sender. In OCI Email Delivery, ` +
+        `add an Approved Sender for the whole domain (@${domain}) once DKIM is active — this covers ` +
+        `every per-thread reply address.${detail}`,
       { cause: err },
     )
   }

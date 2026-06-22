@@ -2,8 +2,9 @@
  * Mail (Phase 2): two-way mail with municipal contacts (outreach + replies) plus the OCI delivery event
  * feed — mail_threads, mail_messages, mail_events.
  *
- * GOTCHAS: mail_threads.thread_token is minted into reply+{token}@{MAIL_REPLY_DOMAIN} and is globally
- * UNIQUE (it routes inbound replies back to the thread). mail_events.thread_id / message_id are nullable
+ * GOTCHAS: mail_threads.thread_token is the per-thread routing key — the outbound From is
+ * {kind}-{token}@{MAIL_REPLY_DOMAIN} (kind = report/event/reply by thread type) and the token is globally
+ * UNIQUE (it routes an inbound reply back to the thread). mail_events.thread_id / message_id are nullable
  * because a delivery event can arrive before it is correlated to a thread/message.
  *
  * The status / direction / type CHECKs are enforced in 0007_admin_phase2.sql.

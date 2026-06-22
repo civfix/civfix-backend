@@ -364,17 +364,19 @@ describe("admin reports mutations", () => {
       actorId: "op-1",
     })
     expect(result).toEqual({ to: "city", destination: "311@lacity.gov" })
-    // The mailer delivered to the city contact via the first-class sendOutbound envelope From outreach.
+    // The mailer delivered to the city contact via the first-class sendOutbound envelope, From the
+    // per-thread reply- address (the digest path; no Reply-To).
     const sent = mailer.sent.find((m) => m.to === "311@lacity.gov")
     expect(sent).toBeDefined()
-    expect(sent?.outbound?.from).toBe("outreach@civfix.org")
+    expect(sent?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
+    expect(sent?.outbound?.replyTo).toBeUndefined()
     // A jurisdiction (digest) thread was created with a MINTED 24-hex token (not geo-<geoid>) + an OUT
     // message. The reply token must satisfy the real inbound regex, so it is no longer geo-prefixed.
     const thread = [...mailRepo.threads.values()].find(
       (t) => t.jurisdictionGeoid === "0644000" && t.reportId === null,
     )
     expect(thread).toBeDefined()
-    expect(thread?.threadToken).toMatch(/^[0-9a-f]{24}$/)
+    expect(thread?.threadToken).toMatch(/^[a-z2-7]{12}$/)
     expect(mailRepo.messagesOf(thread!.id).some((m) => m.direction === "out")).toBe(true)
     expect(repo.audits.at(-1)).toMatchObject({
       action: "report.followup_sent",

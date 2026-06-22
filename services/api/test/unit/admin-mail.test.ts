@@ -106,8 +106,10 @@ describe("mail-service: compose", () => {
     expect(dto?.messages[0]?.dir).toBe("out")
     expect(mailer.sent).toHaveLength(1)
     expect(mailer.sent[0]?.to).toBe("mayor@city.gov")
-    // Delivery now goes through the first-class sendOutbound envelope (no template), From outreach.
-    expect(mailer.sent[0]?.outbound?.from).toBe(FROM_OUTREACH)
+    // Delivery now goes through the first-class sendOutbound envelope (no template), From the
+    // per-thread reply- address (no Reply-To).
+    expect(mailer.sent[0]?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
+    expect(mailer.sent[0]?.outbound?.replyTo).toBeUndefined()
     expect(repo.events[0]?.type).toBe("sent")
     // H4: the mail.sent audit was written in-tx with the message insert (recorded on the audit sink).
     expect(repo.audits.at(-1)).toMatchObject({
@@ -132,9 +134,9 @@ describe("mail-service: reply", () => {
     expect(dto?.messages).toHaveLength(2)
     expect(dto?.messages[1]?.dir).toBe("out")
     expect(dto?.messages[1]?.body).toBe("Here is the answer.")
-    // Delivered to the inbound correspondent, From outreach.
+    // Delivered to the inbound correspondent, From the per-thread reply- address (no Reply-To).
     expect(mailer.sent[0]?.to).toBe("clerk@city.gov")
-    expect(mailer.sent[0]?.outbound?.from).toBe(FROM_OUTREACH)
+    expect(mailer.sent[0]?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
     // H4: the mail.replied audit was written in-tx with the OUT message insert.
     expect(repo.audits.at(-1)).toMatchObject({ action: "mail.replied", target: `mail:${t.id}` })
   })

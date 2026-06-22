@@ -18,11 +18,10 @@ import {
  */
 
 describe("mintThreadToken", () => {
-  it("produces a non-empty address-safe hex token, distinct per call", () => {
+  it("produces a 12-char lowercase base32 token, distinct per call", () => {
     const a = mintThreadToken()
     const b = mintThreadToken()
-    expect(a).toMatch(/^[0-9a-f]+$/)
-    expect(a.length).toBeGreaterThanOrEqual(16)
+    expect(a).toMatch(/^[a-z2-7]{12}$/)
     expect(a).not.toBe(b)
   })
 })
@@ -144,7 +143,7 @@ describe("InMemoryMailRepository: thread upsert", () => {
   it("createThread mints a token when none is provided", async () => {
     const repo = new InMemoryMailRepository()
     const t = await repo.createThread({ subject: "Compose" })
-    expect(t.threadToken).toMatch(/^[0-9a-f]+$/)
+    expect(t.threadToken).toMatch(/^[a-z2-7]{12}$/)
     expect(t.status).toBe("sent")
   })
 })

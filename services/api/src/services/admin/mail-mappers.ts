@@ -95,13 +95,20 @@ export function toOutreachRecord(r: OutreachRowSelect): OutreachStateRecord {
   }
 }
 
-/** Generate a thread token (used when a caller does not supply one). URL/address safe. */
+/** Lowercase base32 (RFC 4648) alphabet. 256 = 8x32, so `byte & 31` maps uniformly with no modulo bias. */
+const TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
+
+/**
+ * Generate a thread token (used when a caller does not supply one): 12 lowercase base32 chars (~60 bits).
+ * Address-safe + short enough to read socially in the per-thread From address ({kind}-{token}@domain) we
+ * send to municipal staff, while leaving collisions astronomically unlikely (the UNIQUE thread_token index
+ * is the backstop). Each char is drawn unbiased from the 32-char alphabet via `byte & 31`.
+ */
 export function mintThreadToken(): string {
-  // 24 hex chars: ample entropy, address-safe (only [0-9a-f]) for reply+{token}@domain.
   const bytes = new Uint8Array(12)
   globalThis.crypto.getRandomValues(bytes)
   let out = ""
-  for (const b of bytes) out += b.toString(16).padStart(2, "0")
+  for (const b of bytes) out += TOKEN_ALPHABET[b & 31]
   return out
 }
 
