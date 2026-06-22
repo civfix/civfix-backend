@@ -369,6 +369,11 @@ export function makeDrizzleJurisdictionContactsRepository(
                 ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
                 : sql``
 
+      // Type facet: narrow to one jurisdiction layer (state/county/place/federal/tribal). A different
+      // dimension than the routing-posture methodFilter, so it joins the list WHERE *and* the facet
+      // aggregate below (the chips count within the selected type). Hits jurisdictions_layer_idx.
+      const layerFilter = args.layer !== null ? sql`AND j.layer = ${args.layer}` : sql``
+
       // Whole-table sort (the page is a window into it). population (default) + reports are DESC with a
       // geoid tiebreak for a stable order across pages; name is A->Z. COALESCE so NULL population/no-reports
       // sort last under DESC instead of first.
@@ -452,6 +457,7 @@ export function makeDrizzleJurisdictionContactsRepository(
         WHERE true
         ${search}
         ${methodFilter}
+        ${layerFilter}
         ${orderBy}
         OFFSET ${offset}
         LIMIT ${limit + 1}
@@ -463,8 +469,9 @@ export function makeDrizzleJurisdictionContactsRepository(
       const page = (hasMore ? rows.slice(0, limit) : rows).map(toRecord)
       const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
 
-      // total + chip facets: computed ONLY on the first page (offset 0), scoped to the search but NOT the
-      // active filter (so the chips show how the whole search result splits routed-vs-unrouted).
+      // total + chip facets: computed ONLY on the first page (offset 0), scoped to the search + the active
+      // type (layer) but NOT the active routing filter (so the chips show how the typed search result
+      // splits routed-vs-unrouted within the selected type).
       let total: number | null = null
       let facets: { routed: number; unrouted: number } | null = null
       if (offset === 0) {
@@ -474,7 +481,7 @@ export function makeDrizzleJurisdictionContactsRepository(
             COUNT(*) FILTER (WHERE ${hasEmailExpr} OR ${hasFormExpr})::text AS routed,
             COUNT(*) FILTER (WHERE NOT (${hasEmailExpr} OR ${hasFormExpr}))::text AS unrouted
           FROM jurisdictions j
-          WHERE true ${search}
+          WHERE true ${search} ${layerFilter}
         `
         const a = agg[0]
         total = Number(a?.total ?? "0")

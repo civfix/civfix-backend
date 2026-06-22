@@ -317,8 +317,9 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
   async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
     const all = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))
 
-    // Search first (chip facets are search-scoped but filter-agnostic, mirroring the Drizzle aggregate).
-    const searched =
+    // Search + type (layer) first — both scope the chip facets, which stay routing-filter-agnostic
+    // (mirroring the Drizzle aggregate's `WHERE search AND layer`, but NOT the methodFilter).
+    const matched =
       args.q !== null
         ? (() => {
             const needle = args.q.toLowerCase()
@@ -327,6 +328,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
             )
           })()
         : all
+    const searched = args.layer !== null ? matched.filter((r) => r.layer === args.layer) : matched
 
     // Routing-posture facet ("routed" = any contact, i.e. method !== "none").
     let records =

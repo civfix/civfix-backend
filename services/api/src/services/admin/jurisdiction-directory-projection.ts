@@ -102,12 +102,14 @@ export function buildUnmappedRecord(
 
 /**
  * Whether the synthetic unmapped row should be included for these list args: only on the FIRST page (no
- * cursor), only under a facet a contact-less row matches (all | none — its method is "none"), and only
- * when a search term, if present, matches its name/geoid. The caller still suppresses it when its waiting
- * total is 0.
+ * cursor), never under a type (layer) filter (it has no real jurisdiction type — it's layer-less triage),
+ * only under a facet a contact-less row matches (all | none — its method is "none"), and only when a
+ * search term, if present, matches its name/geoid. The caller still suppresses it when its waiting total
+ * is 0.
  */
 export function shouldIncludeUnmapped(args: ListDirectoryArgs): boolean {
   if (args.cursor !== null) return false
+  if (args.layer !== null) return false
   if (args.filter !== "all" && args.filter !== "none") return false
   if (args.q !== null) {
     const q = args.q.toLowerCase()

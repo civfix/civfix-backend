@@ -71,6 +71,7 @@ export function makeJurisdictionContactsService(
       const { records, nextCursor, total, facets } = await deps.repo.listDirectory({
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
         filter: (query.filter ?? "all") as DirectoryFilter,
+        layer: query.layer ?? null,
         sort: (query.sort ?? "population") as DirectorySort,
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,

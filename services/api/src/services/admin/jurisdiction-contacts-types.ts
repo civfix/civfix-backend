@@ -48,10 +48,12 @@ export type DirectoryFilter = "all" | "email" | "form" | "none" | "routed"
 /** Directory sort key. "population" (default) and "reports" are DESC; "name" is A->Z. */
 export type DirectorySort = "population" | "reports" | "name"
 
-/** Normalized directory list arguments (search + method facet + sort + page window). */
+/** Normalized directory list arguments (search + method facet + type filter + sort + page window). */
 export interface ListDirectoryArgs {
   q: string | null
   filter: DirectoryFilter
+  /** Narrow to one jurisdiction TYPE (state/county/place/federal/tribal), or null for every type. */
+  layer: JurisdictionLayer | null
   sort: DirectorySort
   cursor: string | null
   limit: number

@@ -516,6 +516,41 @@ describe("listDirectory", () => {
     expect(row.flaggedAt).toBeNull()
   })
 
+  it("filters by jurisdiction TYPE (layer) and scopes total/facets to it", async () => {
+    const { repo, svc } = harness()
+    // A routed state, an unrouted county, and two cities (one routed, one not).
+    repo.seedJurisdiction({ geoid: "06", name: "California", layer: "state", defaultEmails: ["gov@ca.gov"] })
+    repo.seedJurisdiction({ geoid: "06037", name: "Los Angeles County", layer: "county" })
+    repo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles", layer: "place", defaultEmails: ["311@lacity.gov"] })
+    repo.seedJurisdiction({ geoid: "0666000", name: "San Diego", layer: "place" })
+
+    // Cities only: the two places, and total/facets count within the type (1 routed, 1 unrouted).
+    const cities = await svc.listDirectory({ layer: "place" })
+    expect(cities.items.map((i) => i.geoid).sort()).toEqual(["0644000", "0666000"])
+    expect(cities.total).toBe(2)
+    expect(cities.facets).toEqual({ routed: 1, unrouted: 1 })
+
+    // The type filter combines with the routing-posture filter (unrouted cities only -> San Diego).
+    const unroutedCities = await svc.listDirectory({ layer: "place", filter: "none" })
+    expect(unroutedCities.items.map((i) => i.geoid)).toEqual(["0666000"])
+
+    // Other single-type selections resolve to their one match.
+    expect((await svc.listDirectory({ layer: "state" })).items.map((i) => i.geoid)).toEqual(["06"])
+    expect((await svc.listDirectory({ layer: "county" })).items.map((i) => i.geoid)).toEqual(["06037"])
+  })
+
+  it("suppresses the synthetic 'Unmapped' row under a type filter (it has no jurisdiction type)", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles", layer: "place" })
+    // An orphaned waiting report would surface the unmapped row under "all", but never under a layer filter.
+    repo.seedReport({ geoid: "ZZZ-unknown", category: "trash", status: "submitted" })
+
+    expect((await svc.listDirectory({})).items.some((i) => i.geoid === "__unmapped__")).toBe(true)
+    expect(
+      (await svc.listDirectory({ layer: "place" })).items.some((i) => i.geoid === "__unmapped__"),
+    ).toBe(false)
+  })
+
   it("searches org/geoid and paginates", async () => {
     const { repo, svc } = harness()
     repo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles" })

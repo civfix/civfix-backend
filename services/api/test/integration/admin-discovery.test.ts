@@ -250,6 +250,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
       q: null,
       filter: "all",
       sort: "population",
+      layer: null,
       cursor: null,
       limit: 25,
     })
@@ -264,6 +265,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
       q: null,
       filter: "all",
       sort: "population",
+      layer: null,
       cursor: null,
       limit: 25,
     })
@@ -284,6 +286,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
       q: null,
       filter: "routed",
       sort: "population",
+      layer: null,
       cursor: null,
       limit: 100,
     })
@@ -292,6 +295,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
       q: null,
       filter: "none",
       sort: "population",
+      layer: null,
       cursor: null,
       limit: 100,
     })
