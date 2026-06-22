@@ -2,25 +2,10 @@
  * Social service: the people-directory / follow-graph / public-profile half of the social domain.
  *
  * All DB access sits behind a SocialRepository seam (Drizzle impl in social-repository.drizzle.ts; an
- * in-memory impl in the offline tests), mirroring the reports/cleanups pattern so the service is
- * unit-testable with no database and no Docker.
- *
- * FOLLOW + new_follower HOOK (plan section 14): followPerson is idempotent (re-following is a no-op) and
- * cannot target yourself (a VALIDATION error). On a NEW follow only (not an idempotent replay) the service
- * fires a `new_follower` notification to the followed user via the injected Notifier. The Notifier call is
- * best-effort and never blocks/breaks the follow (the notification-service already swallows push failures;
- * the recording of the row is awaited so the follow + notification stay consistent in the happy path, but
- * a notifier rejection is caught here so a follow still succeeds).
- *
- * AVATAR GRADIENT: avatarGradient(seed) is a PURE function that maps a stable hash of the seed (a user id
- * or handle) to two distinct colors drawn from the brand palette scales (bloom/moss/sun/sky/lilac). It is
- * deterministic (same seed -> same pair) so a person renders the same gradient on the list card, the
- * profile header, and inside a CleanupDTO.organizer. Unit-tested for determinism + palette membership.
- *
- * PROFILE: getProfile assembles a UserProfileDTO with followers/following counts, isFollowing (relative to
- * the viewer), pastEvents (cleanups the user organized or attended, most recent first, projected as the
- * shared CleanupDTO), and stats {reports, cleanups}. pastEvents reuses the same CleanupRecord -> CleanupDTO
- * projection as the cleanups domain so the shapes never drift.
+ * in-memory impl in the offline tests). On a NEW follow only (not an idempotent re-follow) followPerson
+ * fires a best-effort `new_follower` notification — a notifier rejection is caught so the follow still
+ * succeeds. getProfile assembles a UserProfileDTO whose pastEvents reuse the cleanups domain's
+ * CleanupRecord -> CleanupDTO projection so the shapes never drift.
  */
 
 import { AppError, avatarGradient } from "@civfix/shared"
@@ -34,29 +19,11 @@ import type {
 } from "@civfix/shared"
 import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
 
-// ---------------------------------------------------------------------------
-// Config constants
-// ---------------------------------------------------------------------------
-
 /** Default page size for listPeople when the request omits `limit`. Matches the shared cap of 50. */
 export const PEOPLE_DEFAULT_LIMIT = 20
 
 /** Max past-events surfaced on a profile. Bounds the payload; recent-first so the newest are kept. */
 export const PROFILE_PAST_EVENTS_LIMIT = 20
-
-// ---------------------------------------------------------------------------
-// Avatar gradient
-// ---------------------------------------------------------------------------
-// The deterministic initials-avatar gradient (AVATAR_PALETTE / stableHash / avatarGradient) now lives in
-// @civfix/shared as the single source of truth (palette derived from tokens.color.brand). The shared
-// algorithm is byte-identical to the one that previously lived here, so PersonDTO.avatar /
-// UserProfileDTO.avatar are unchanged; the organizer and chat avatars now derive from this SAME function,
-// so a person renders one consistent gradient across the people list, their profile, a CleanupDTO
-// organizer, and the chat. avatarGradient is imported above.
-
-// ---------------------------------------------------------------------------
-// Repository seam (structural views; faked in tests)
-// ---------------------------------------------------------------------------
 
 /** A person row as the directory/profile reads project it (avatar gradient is derived in the service). */
 export interface PersonView {
@@ -164,10 +131,6 @@ export interface SocialRepository {
   statsFor(userId: string): Promise<ProfileStats>
 }
 
-// ---------------------------------------------------------------------------
-// Notifier seam (the new_follower hook; implemented by the notification service)
-// ---------------------------------------------------------------------------
-
 /**
  * The minimal notifier surface the social service depends on. The notification service implements this
  * (its createNotification records a row and best-effort inline-sends a push). Declared structurally here so
@@ -181,10 +144,6 @@ export interface SocialNotifier {
     follower: PersonView
   }): Promise<void>
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 /** A viewer context for read endpoints (a signed-in user, or anonymous). */
 export interface SocialViewer {
@@ -205,6 +164,8 @@ export interface SocialServiceDeps {
    * Avatars are public, so this presigns the same way report media is served.
    */
   presignAvatar?: (avatarKey: string) => Promise<string>
+  /** Optional logger for diagnostics (e.g. a new follow whose follower row vanished before the notify). */
+  logger?: { warn(obj: unknown, msg: string): void }
 }
 
 export interface SocialService {
@@ -264,13 +225,36 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     return deps.repo.isFollowing(viewer.userId, targetId)
   }
 
-  /** Build the full UserProfileDTO for a person view + viewer. Shared by getProfile/getMyProfile. */
+  // Build a page of PersonDTO for the followers/following lists (identical projection + cursor; only the
+  // repo method differs).
+  async function pageConnections(
+    fn: (args: {
+      id: string
+      viewerId: string | null
+      cursor: string | null
+      limit: number
+    }) => Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>,
+    id: string,
+    viewer: SocialViewer,
+    req: ConnectionsListQuery,
+  ): Promise<ListPeopleResponse> {
+    const { items, nextCursor } = await fn({
+      id,
+      viewerId: viewer.userId,
+      cursor: req.cursor ?? null,
+      limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
+    })
+    return { items: items.map((it) => toPersonDTO(it, it.isFollowing)), nextCursor }
+  }
+
+  /** Build the full UserProfileDTO for a person view. `isSelf` skips the isFollowing lookup (own profile). */
   async function buildProfile(
     view: PersonView,
     viewer: SocialViewer,
+    isSelf: boolean,
   ): Promise<UserProfileDTO> {
     const [isFollowing, pastEventRecords, stats] = await Promise.all([
-      viewerFollows(view.id, viewer),
+      isSelf ? Promise.resolve(false) : viewerFollows(view.id, viewer),
       deps.repo.pastEventsFor(view.id, PROFILE_PAST_EVENTS_LIMIT),
       deps.repo.statsFor(view.id),
     ])
@@ -318,13 +302,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       viewer: SocialViewer,
       req: ConnectionsListQuery,
     ): Promise<ListPeopleResponse> {
-      const { items, nextCursor } = await deps.repo.listFollowers({
-        id,
-        viewerId: viewer.userId,
-        cursor: req.cursor ?? null,
-        limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
-      })
-      return { items: items.map((it) => toPersonDTO(it, it.isFollowing)), nextCursor }
+      return pageConnections((a) => deps.repo.listFollowers(a), id, viewer, req)
     },
 
     async listFollowing(
@@ -332,13 +310,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       viewer: SocialViewer,
       req: ConnectionsListQuery,
     ): Promise<ListPeopleResponse> {
-      const { items, nextCursor } = await deps.repo.listFollowing({
-        id,
-        viewerId: viewer.userId,
-        cursor: req.cursor ?? null,
-        limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
-      })
-      return { items: items.map((it) => toPersonDTO(it, it.isFollowing)), nextCursor }
+      return pageConnections((a) => deps.repo.listFollowing(a), id, viewer, req)
     },
 
     async followPerson(
@@ -364,6 +336,10 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
           } catch {
             // Swallowed: the follow already succeeded; the notification is a side effect.
           }
+        } else {
+          // The follower row vanished between the write and the lookup — the follow stands, only the
+          // notification is dropped. Log so the dropped new_follower bell is diagnosable.
+          deps.logger?.warn({ viewerId, targetId }, "social: new follower row missing, notification skipped")
         }
       }
 
@@ -387,7 +363,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     async getProfile(id: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }> {
       const view = await deps.repo.findPersonById(id)
       if (!view) throw AppError.notFound("Person not found")
-      return { profile: await buildProfile(view, viewer) }
+      return { profile: await buildProfile(view, viewer, viewer.userId === id) }
     },
 
     async getProfileByHandle(
@@ -396,15 +372,14 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     ): Promise<{ profile: UserProfileDTO }> {
       const view = await deps.repo.findPersonByHandle(handle)
       if (!view) throw AppError.notFound("Person not found")
-      return { profile: await buildProfile(view, viewer) }
+      return { profile: await buildProfile(view, viewer, viewer.userId === view.id) }
     },
 
     async getMyProfile(viewerId: string): Promise<{ profile: UserProfileDTO }> {
       const view = await deps.repo.findPersonById(viewerId)
       // A signed-in user whose row vanished (soft-deleted mid-session) is treated as not found.
       if (!view) throw AppError.notFound("Person not found")
-      // The viewer is themselves; isFollowing is meaningless (false) for one's own profile.
-      return { profile: await buildProfile(view, { userId: null }) }
+      return { profile: await buildProfile(view, { userId: viewerId }, true) }
     },
   }
 }

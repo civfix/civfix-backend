@@ -10,8 +10,8 @@
  *
  * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
  * applied by routes/admin/index.ts (this whole router runs inside the guarded child context); mutations
- * additionally carry csrfProtect. The acting operator's userId comes from request.auth.userId and is
- * recorded on every audit write (status/flag/remove/message). The service is built lazily from the
+ * additionally carry csrfProtect. The acting operator's userId comes from requireOperator(request) (the
+ * non-null id the scope hook resolved) and is recorded on every audit write. The service is built lazily from the
  * container (Drizzle report repo + the OutboundMailService over the Drizzle mail repo + container.mailer)
  * or from a per-instance test override (in-memory repos), mirroring the Phase 1 lazy-construct pattern.
  */
@@ -52,7 +52,7 @@ import {
 } from "../../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../../services/admin/mail-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.drizzle.js"
-import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
+import { makeMediaPresigner } from "../../services/media-presign.js"
 import {
   makeDiscussionService,
   type DiscussionRepository,
@@ -61,18 +61,6 @@ import {
 import { makeDrizzleDiscussionRepository } from "../../services/discussion-repository.drizzle.js"
 import { roomKeyFor } from "../../ws/gateway.js"
 import { writeAudit } from "../../services/admin/audit.js"
-
-/** Build the default media presigner over the container's Storage seam (mirrors the citizen report path). */
-function defaultPresign(
-  container: Container,
-): (r2Key: string, thumbKey: string | null) => Promise<{ url: string; thumbUrl?: string }> {
-  return async (r2Key: string, thumbKey: string | null) => {
-    const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
-    if (thumbKey === null) return { url }
-    const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
-    return { url, thumbUrl }
-  }
-}
 
 /**
  * Optional injected admin-report dependencies (tests). When present the routes build the service from
@@ -139,7 +127,7 @@ export async function registerAdminReportsRoutes(
     return makeAdminReportService({
       repo,
       outboundMail,
-      presignMedia: defaultPresign(container),
+      presignMedia: makeMediaPresigner(container.storage),
       loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
       // Approve & send loads the report's media bytes (for binary photo attachments) over the Storage seam.
       loadMediaBytes: (k) => container.storage.getObject(k),
@@ -171,7 +159,7 @@ export async function registerAdminReportsRoutes(
     return makeDiscussionService({
       repo,
       outboundMail,
-      presignMedia: defaultPresign(container),
+      presignMedia: makeMediaPresigner(container.storage),
       // Live fan-out of the operator removal over the report-discussion WS room (best-effort). roomKeyFor
       // is the single source of truth for the "rd:" prefix; a fan-out failure must NEVER affect the response.
       broadcast: (reportId, event) => {
@@ -186,92 +174,75 @@ export async function registerAdminReportsRoutes(
     })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /admin/reports
-  // -------------------------------------------------------------------------
   route(app, "listAdminReports", async (request, reply) => {
     const query = parse(AdminReportListQuerySchema, request.query)
     const payload: AdminReportListResponse = await service().list(query)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/reports/:id
-  // -------------------------------------------------------------------------
   route(app, "getAdminReport", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminReportDTO = await service().get(id)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/reports/:id/status  [csrf]
-  // -------------------------------------------------------------------------
   // Each mutation is audited inside the service's repo transaction (atomic with the effect + timeline),
-  // using the operator userId resolved here from request.auth.userId. See admin-report-repository.drizzle.
+  // using the operator userId. requireOperator returns the non-null id (the scope hook already gated this
+  // route), so the audit actor is never the nullable request.auth.userId on a future guard loosening.
   route(app, "setReportStatus", { preHandler: csrfProtect }, async (request, reply) => {
+    const operatorId = requireOperator(request)
     const { id } = idParam(request)
     const body = parse(SetReportStatusRequestSchema, { ...(request.body as object), id })
-    await service().setStatus(id, { status: body.status, actorId: request.auth.userId })
+    await service().setStatus(id, { status: body.status, actorId: operatorId })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/reports/:id/flag  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "flagReport", { preHandler: csrfProtect }, async (request, reply) => {
+    const operatorId = requireOperator(request)
     const { id } = idParam(request)
     const body = parse(FlagReportRequestSchema, { ...(request.body as object), id })
-    await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
+    await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/reports/:id/remove  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "removeReport", { preHandler: csrfProtect }, async (request, reply) => {
+    const operatorId = requireOperator(request)
     const { id } = idParam(request)
     const body = parse(RemoveReportRequestSchema, { ...(request.body as object), id })
-    await service().remove(id, { reason: body.reason ?? null, actorId: request.auth.userId })
+    await service().remove(id, { reason: body.reason ?? null, actorId: operatorId })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/reports/:id/message  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "sendReportFollowup", { preHandler: csrfProtect }, async (request, reply) => {
+    const operatorId = requireOperator(request)
     const { id } = idParam(request)
     const body = parse(SendFollowupRequestSchema, { ...(request.body as object), id })
-    await service().sendFollowup(id, { to: body.to, body: body.body, actorId: request.auth.userId })
+    await service().sendFollowup(id, { to: body.to, body: body.body, actorId: operatorId })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/reports/:id/route  [csrf]  (Approve & send to jurisdiction)
-  // -------------------------------------------------------------------------
-  // Email THIS report's full packet (photos attached + signed links) to its jurisdiction contact (or a
-  // per-send override) on a per-report mail thread, advancing the report toward `acknowledged`. The
-  // service throws AppError.notRoutable (422) when neither a resolved contact nor an override is on file.
-  // Audited with `report.routed` (best-effort AFTER the send, since SMTP cannot join the DB tx) recording
-  // the address + the thread the city's reply will land in.
+  // Approve & send: email THIS report's packet (photos attached + signed links) to its jurisdiction contact
+  // (or a per-send override) on a per-report mail thread, advancing it toward `acknowledged`. The service
+  // throws AppError.notRoutable (422) when neither a resolved contact nor an override is on file.
   route(app, "routeReport", { preHandler: csrfProtect }, async (request, reply) => {
+    const operatorId = requireOperator(request)
     const { id } = idParam(request)
     const body = parse(RouteReportRequestSchema, { ...(request.body as object), id })
     const { threadId, routedTo } = await service().routeToJurisdiction(id, {
       contactEmailOverride: body.contactEmailOverride ?? null,
       note: body.note ?? null,
-      actorId: request.auth.userId,
+      actorId: operatorId,
     })
     // Audit the route (the send already happened; a routed report is loud, never silent). Best-effort: a
     // post-send audit blip must not fail the ack of a successful send. Skipped under test overrides (no DB).
     if (!app.adminReportOverrides) {
       try {
         await writeAudit(container.getDb().sql, {
-          actorId: request.auth.userId,
+          actorId: operatorId,
           action: "report.routed",
           target: `report:${id}`,
           meta: { to: routedTo, threadId },
@@ -284,9 +255,6 @@ export async function registerAdminReportsRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/reports/:id/discussion  (operator)
-  // -------------------------------------------------------------------------
   // The operator view of a report's public discussion. Same DTO + paging as the citizen read, but it
   // INCLUDES soft-removed (tombstoned) messages so moderation can see what was removed (the service still
   // tombstones a removed row's body/author when projecting, so removed content never leaks). No
@@ -302,9 +270,6 @@ export async function registerAdminReportsRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/reports/:id/discussion/:messageId/remove  [csrf]  (operator soft-delete moderation)
-  // -------------------------------------------------------------------------
   // Operator soft-delete of a discussion message (moderation). Audited like the other admin report
   // mutations: a `moderation.removed` audit_log row recording the acting operator + the target message +
   // the optional reason. The service tombstones the message (body blanked, author nulled) so the subtree +

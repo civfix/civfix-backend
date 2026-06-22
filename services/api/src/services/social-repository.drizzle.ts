@@ -1,39 +1,39 @@
 /**
- * Postgres-backed SocialRepository (the production implementation of the social persistence seam).
+ * Postgres-backed SocialRepository (the production implementation of the social persistence seam) — plus
+ * a thin re-export of the user-search / mention-resolver reads that used to live here (so external
+ * importers and the offline tests keep resolving `searchByHandlePrefix`/`searchMentionable`/
+ * `resolveHandles`/`resolveMentionTargets`/`resolveUserIdsToMentions` from this path).
  *
  * ALL people/follow/profile access flows through here so the social service stays infra-free and
- * unit-testable with an in-memory repo. Written against the raw postgres-js tag (`Sql`) to match the rest
- * of the backend; the follower/following counts and isFollowing flags are computed inline so a single
- * round-trip builds each list page.
+ * unit-testable with an in-memory repo. The follower/following counts and isFollowing flags are computed
+ * inline (correlated subqueries bounded by the page LIMIT) so a single round-trip builds each list page.
  *
- * DIRECTORY (listPeople): excludes the viewer and soft-deleted users (deleted_at IS NULL). The optional
- * `q` filters case-insensitively on handle OR display_name (ILIKE with the term escaped + wrapped in
- * %...%). Pagination is keyset on (display_name, id) ascending with a `${name}|${id}` cursor; the id
- * tiebreak keeps a total order when names collide, and `|` cannot appear in a UUID so the split is
- * unambiguous (display_name MAY contain `|`, so we split on the LAST delimiter for the cursor parse).
- *
- * PAST EVENTS (pastEventsFor): the cleanups the user organized OR was a member of, most recent first
- * (scheduled_at DESC), projected into the SAME CleanupRecord shape the cleanups domain uses (geom decoded,
- * organizer joined, going counted) so toCleanupDTO renders them identically. `dist` is always null here.
+ * DIRECTORY (listPeople) and the follower/following lists (connectionsPage) share one row projection +
+ * keyset: keyset on (display_name, id) ascending with a `${name}|${id}` cursor; `|` cannot appear in a
+ * UUID, and display_name MAY contain `|`, so the cursor parse splits on the LAST `|` (parseNameCursor).
  */
 
 import type { Sql } from "../db/client.js"
-import { avatarGradient } from "@civfix/shared"
 import type {
   PersonView,
   ProfileStats,
   SocialRepository,
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
-import type {
-  CleanupStatus,
-  CleanupType,
-  EventKind,
-  UserMentionDTO,
-  UserSearchResultDTO,
-} from "@civfix/shared"
+import type { CleanupStatus, CleanupType, EventKind } from "@civfix/shared"
+import { parseNameCursor } from "../db/cursor-helpers.js"
+import { escapeLike } from "./admin/like.js"
 
-/** Shape of a person row as selected for the directory/profile (counts joined inline). */
+export {
+  searchByHandlePrefix,
+  searchMentionable,
+} from "./user-search.drizzle.js"
+export {
+  resolveHandles,
+  resolveMentionTargets,
+  resolveUserIdsToMentions,
+} from "./mention-resolver.drizzle.js"
+
 interface PersonRowSelect {
   id: string
   display_name: string
@@ -42,18 +42,15 @@ interface PersonRowSelect {
   followers: number
   following: number
   verified: boolean
-  /** The avatar media's r2 object key (LEFT JOIN media_assets on users.avatar_media_id), or null. */
   avatar_r2_key: string | null
-  /** The canonical avatar URL stored on users.avatar_url (the public URL persisted on upload), or null. */
   avatar_url: string | null
 }
 
-/** The same shape plus the per-row isFollowing flag for the directory list. */
+/** The same shape plus the per-row isFollowing flag for the directory/connection lists. */
 interface PersonRowSelectWithFollow extends PersonRowSelect {
   is_following: boolean
 }
 
-/** Project a selected person row into the structural PersonView the service consumes. */
 function toPersonView(r: PersonRowSelect): PersonView {
   return {
     id: r.id,
@@ -68,7 +65,19 @@ function toPersonView(r: PersonRowSelect): PersonView {
   }
 }
 
-/** Shape of a cleanup row as selected for pastEvents (geom decoded, organizer joined, going counted). */
+/** Split the keyset page (rows fetched with limit+1) into items + the `${name}|${id}` next cursor. */
+function pagePeople(
+  rows: PersonRowSelectWithFollow[],
+  limit: number,
+): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
+  const hasMore = rows.length > limit
+  const page = hasMore ? rows.slice(0, limit) : rows
+  const last = page[page.length - 1]
+  const items = page.map((r) => ({ ...toPersonView(r), isFollowing: r.is_following }))
+  const nextCursor = hasMore && last ? `${last.display_name}|${last.id}` : null
+  return { items, nextCursor }
+}
+
 interface CleanupRowSelect {
   id: string
   organizer_user_id: string
@@ -89,7 +98,6 @@ interface CleanupRowSelect {
   org_bio: string | null
 }
 
-/** Project a selected cleanup row into the structural CleanupRecord (dist always null for pastEvents). */
 function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
   const organizer: CleanupPersonView = {
     id: r.organizer_user_id,
@@ -117,19 +125,12 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
   }
 }
 
-/** Escape an ILIKE search term so %, _ and \ are treated literally inside the %...% wrapper. */
-function escapeLike(term: string): string {
-  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`)
-}
-
 /**
  * Page a follow-connection list (followers OR following) for a target user. Mirrors listPeople's row
- * shape (the same followers/following/verified/avatar subqueries + isFollowing-relative-to-viewer flag +
- * the (display_name, id) keyset cursor) but the candidate set comes from a JOIN against follows_people
- * via the caller-supplied `joinPredicate` (which both filters by the target `id` AND ties `f` to `u`):
+ * shape + (display_name, id) keyset, but the candidate set comes from a JOIN against follows_people via
+ * the caller-supplied `joinPredicate` (which ties `f` to `u` AND filters by the target `id`):
  *   - followers:  `f.followee_id = ${id} AND f.follower_id = u.id`  (u is each follower),
  *   - following:  `f.follower_id = ${id} AND f.followee_id = u.id`  (u is each followee).
- * Soft-deleted users are excluded; results are ordered + cursored identically to the directory.
  */
 async function connectionsPage(
   sql: Sql,
@@ -167,17 +168,10 @@ async function connectionsPage(
     ORDER BY u.display_name ASC, u.id ASC
     LIMIT ${args.limit + 1}
   `
-
-  const hasMore = rows.length > args.limit
-  const page = hasMore ? rows.slice(0, args.limit) : rows
-  const last = page[page.length - 1]
-  const items = page.map((r) => ({ ...toPersonView(r), isFollowing: r.is_following }))
-  const nextCursor = hasMore && last ? `${last.display_name}|${last.id}` : null
-  return { items, nextCursor }
+  return pagePeople(rows, args.limit)
 }
 
 export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
-  /** Whether a non-deleted user with this id exists. */
   async function userExists(id: string): Promise<boolean> {
     const rows = await sql<{ one: number }[]>`
       SELECT 1 AS one FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
@@ -191,16 +185,14 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       nextCursor: string | null
     }> {
       const cursor = parseNameCursor(args.cursor)
-      // viewerId for the isFollowing correlated subquery + the self-exclusion. NULL-safe via a sentinel:
-      // when there is no viewer, `viewerId` is null and both `u.id <> viewerId` (NULL) and the EXISTS
-      // subquery collapse to "no exclusion / never following".
+      // viewerId drives the isFollowing subquery + the self-exclusion. NULL-safe: with no viewer both the
+      // `u.id <> viewerId` filter and the EXISTS subquery collapse to "no exclusion / never following".
       const viewerId = args.viewerId
       const qFilter =
         args.q !== null
-          ? // handle is CITEXT; cast to text so the gin_trgm_ops index users_handle_trgm (an expression
-            // index on (handle::text), 0014_search_trgm.sql) can serve this ILIKE — a bare `handle ILIKE`
-            // would not match the index expression. ILIKE is case-insensitive on text, so matches are
-            // identical. display_name is plain text and uses users_display_name_trgm directly.
+          ? // handle is CITEXT; cast to text so the gin_trgm_ops expression index users_handle_trgm on
+            // (handle::text) (0014_search_trgm.sql) can serve this ILIKE. display_name uses
+            // users_display_name_trgm directly.
             sql`AND ((u.handle::text) ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
           : sql``
       const selfFilter = viewerId !== null ? sql`AND u.id <> ${viewerId}` : sql``
@@ -223,6 +215,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
           am.r2_key AS avatar_r2_key,
+          u.avatar_url,
           ${followingExpr} AS is_following
         FROM users u
         LEFT JOIN media_assets am ON am.id = u.avatar_media_id
@@ -233,22 +226,13 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         ORDER BY u.display_name ASC, u.id ASC
         LIMIT ${args.limit + 1}
       `
-
-      const hasMore = rows.length > args.limit
-      const page = hasMore ? rows.slice(0, args.limit) : rows
-      const last = page[page.length - 1]
-      const items = page.map((r) => ({ ...toPersonView(r), isFollowing: r.is_following }))
-      const nextCursor =
-        hasMore && last ? `${last.display_name}|${last.id}` : null
-      return { items, nextCursor }
+      return pagePeople(rows, args.limit)
     },
 
     async listFollowers(args): Promise<{
       items: Array<PersonView & { isFollowing: boolean }>
       nextCursor: string | null
     }> {
-      // The people who follow `args.id`: join follows_people where THEY are the follower and `id` is the
-      // followee, then project each follower `u`.
       return connectionsPage(sql, args, sql`f.followee_id = ${args.id} AND f.follower_id = u.id`)
     },
 
@@ -256,8 +240,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       items: Array<PersonView & { isFollowing: boolean }>
       nextCursor: string | null
     }> {
-      // The people `args.id` follows: join follows_people where `id` is the follower and THEY are the
-      // followee, then project each followee `u`.
       return connectionsPage(sql, args, sql`f.follower_id = ${args.id} AND f.followee_id = u.id`)
     },
 
@@ -282,8 +264,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     },
 
     async findPersonByHandle(handle: string): Promise<PersonView | null> {
-      // `handle` is CITEXT, so `u.handle = ${handle}` is case-insensitive at the DB. Backs the
-      // /people/<handle> deep link; same projection/filters as findPersonById (non-deleted only).
+      // handle is CITEXT, so `u.handle = ${handle}` is case-insensitive at the DB. Same projection/filters
+      // as findPersonById (non-deleted only); backs the /people/<handle> deep link.
       const rows = await sql<PersonRowSelect[]>`
         SELECT
           u.id,
@@ -317,8 +299,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       followeeId: string,
     ): Promise<{ exists: boolean; created: boolean }> {
       if (!(await userExists(followeeId))) return { exists: false, created: false }
-      // Idempotent upsert: re-following collides on PK(follower_id, followee_id) -> DO NOTHING. The
-      // RETURNING clause yields a row ONLY when a new edge was actually inserted, so `created` is exact.
+      // Idempotent upsert: re-following collides on PK(follower_id, followee_id) -> DO NOTHING. RETURNING
+      // yields a row ONLY when a new edge was actually inserted, so `created` is exact.
       const inserted = await sql<{ follower_id: string }[]>`
         INSERT INTO follows_people (follower_id, followee_id)
         VALUES (${followerId}, ${followeeId})
@@ -344,15 +326,10 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     },
 
     async pastEventsFor(userId: string, limit: number): Promise<CleanupRecord[]> {
-      // Cleanups the user organized OR was a member of, de-duplicated, most recent first. The organizer
-      // person + member count are joined inline so each row builds a full CleanupRecord.
-      //
-      // Rather than `WHERE c.organizer_user_id = $1 OR EXISTS(member subquery)` — an OR between a
-      // sargable indexed column and a correlated EXISTS that Postgres can't satisfy with the organizer
-      // index, forcing a seq scan of cleanups + per-row EXISTS + sort — we gather the matching cleanup
-      // ids in a CTE that UNIONs two index-seekable arms: the organizer arm seeks cleanups_organizer_idx,
-      // the member arm seeks the cleanup_members PK / cleanup_members_user_idx. UNION (not UNION ALL)
-      // dedupes ids, so a user who both organizes AND is a member of a cleanup still yields one row.
+      // Cleanups the user organized OR was a member of, de-duplicated, most recent first. Gather the
+      // matching ids in a CTE that UNIONs two index-seekable arms (organizer index; cleanup_members PK /
+      // user index) rather than `WHERE organizer = $1 OR EXISTS(member subquery)` — the OR would force a
+      // seq scan + per-row EXISTS. UNION (not UNION ALL) dedupes a user who both organizes AND is a member.
       const rows = await sql<CleanupRowSelect[]>`
         WITH ids AS (
           SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}
@@ -399,198 +376,3 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     },
   }
 }
-
-/**
- * @handle PREFIX search for starting a DM (GET /users/search). Returns the minimal, privacy-conscious
- * UserSearchResultDTO (no email/bio/follower counts). Matches `handle ILIKE <prefix>%` case-insensitively
- * (handle is citext) with the prefix escaped so %/_/\ are literal. Exclusions (the locked product rules):
- *   - self (u.id <> viewerId);
- *   - soft-deleted users (deleted_at IS NOT NULL);
- *   - users with NULL handle (not searchable);
- *   - users with allow_direct_messages = false (DM-disabled accounts are hidden from search);
- *   - users blocked either way w.r.t. the viewer (NOT EXISTS over user_blocks in both directions).
- * `q` is the raw query with a leading `@` already stripped by the route. Ordered by handle asc, capped.
- */
-export async function searchByHandlePrefix(
-  sql: Sql,
-  q: string,
-  viewerId: string,
-  limit: number,
-): Promise<UserSearchResultDTO[]> {
-  const prefix = escapeLike(q) + "%"
-  const rows = await sql<
-    { id: string; handle: string; display_name: string; avatar_url: string | null }[]
-  >`
-    SELECT u.id, u.handle, u.display_name, u.avatar_url
-    FROM users u
-    WHERE u.deleted_at IS NULL
-      AND u.handle IS NOT NULL
-      AND u.allow_direct_messages = true
-      AND u.id <> ${viewerId}
-      -- handle is CITEXT; cast to text so the per-keystroke @handle prefix search can use the
-      -- gin_trgm_ops expression index users_handle_trgm on (handle::text) (0014_search_trgm.sql). ILIKE
-      -- is case-insensitive on text, so casting does not change which rows match.
-      AND (u.handle::text) ILIKE ${prefix} ESCAPE '\\'
-      AND NOT EXISTS (
-        SELECT 1 FROM user_blocks b
-        WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
-           OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
-      )
-    ORDER BY u.handle ASC
-    LIMIT ${limit}
-  `
-  return rows.map((r) => ({
-    id: r.id,
-    handle: r.handle,
-    displayName: r.display_name,
-    avatar: avatarGradient(r.id),
-    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-  }))
-}
-
-/**
- * Resolve a set of @handles to real, mentionable users for the USER @-mention path. EXACT (case-insensitive)
- * handle match against non-deleted users with a non-null handle, EXCLUDING ONLY the author/self. Unlike
- * searchByHandlePrefix (the DM-start search) this does NOT apply the DM-only exclusions (allow_direct_messages,
- * blocks): ANYONE can be named in a comment/chat — blocks + prefs gate only the resulting NOTIFICATION, not
- * who may be tagged. Returns the resolved { id, handle, displayName } (UserMentionDTO shape); unknown handles
- * are simply absent. `handles` is matched as text (handle is citext, so the comparison is case-insensitive
- * and uses the (handle::text) trgm-free equality path). De-duped by the IN clause; an empty input short-circuits.
- */
-export async function resolveHandles(
-  sql: Sql,
-  handles: string[],
-  selfUserId: string,
-): Promise<UserMentionDTO[]> {
-  if (handles.length === 0) return []
-  // Lowercase + de-dupe the requested handles so the IN list is minimal; handle is citext so equality is
-  // already case-insensitive, but lowercasing keeps the bound list tidy and de-duped.
-  const lowered = [...new Set(handles.map((h) => h.toLowerCase()))]
-  const rows = await sql<{ id: string; handle: string; display_name: string }[]>`
-    SELECT u.id, u.handle, u.display_name
-    FROM users u
-    WHERE u.deleted_at IS NULL
-      AND u.handle IS NOT NULL
-      AND u.id <> ${selfUserId}
-      AND lower(u.handle::text) IN ${sql(lowered)}
-  `
-  return rows.map((r) => ({ id: r.id, handle: r.handle, displayName: r.display_name }))
-}
-
-/**
- * Resolve a COMBINED set of @handles + explicit user ids to real, mentionable users (UserMentionDTO),
- * EXCLUDING the author/self, for the USER @-mention persist path. Backs the discussion/chat services'
- * injected `resolveMentions`. Both arms exclude self + soft-deleted + handle-less users; the result is
- * de-duped by user id (first occurrence wins). Anyone may be named — blocks/DM-prefs gate only the
- * resulting NOTIFICATION, not who can be tagged. An empty (handles + userIds) input short-circuits to [].
- */
-export async function resolveMentionTargets(
-  sql: Sql,
-  input: { handles: string[]; userIds: string[]; authorUserId: string },
-): Promise<UserMentionDTO[]> {
-  const byHandle = await resolveHandles(sql, input.handles, input.authorUserId)
-  const byId =
-    input.userIds.length > 0
-      ? await resolveUserIdsToMentions(sql, input.userIds, input.authorUserId)
-      : []
-  // De-dupe by user id, preserving the handle-resolved order first (handles are the primary mention source).
-  const seen = new Set<string>()
-  const out: UserMentionDTO[] = []
-  for (const m of [...byHandle, ...byId]) {
-    if (seen.has(m.id)) continue
-    seen.add(m.id)
-    out.push(m)
-  }
-  return out
-}
-
-/**
- * Resolve explicit user ids to mentionable UserMentionDTO rows, EXCLUDING self + soft-deleted + handle-less.
- * The id list is bound via the postgres-js helper `sql(ids)`; a non-UUID id simply matches nothing. Used by
- * resolveMentionTargets for the request's explicit mentionedUserIds.
- */
-export async function resolveUserIdsToMentions(
-  sql: Sql,
-  userIds: string[],
-  selfUserId: string,
-): Promise<UserMentionDTO[]> {
-  if (userIds.length === 0) return []
-  const ids = [...new Set(userIds)].filter((id) => CURSOR_UUID_RE.test(id))
-  if (ids.length === 0) return []
-  const rows = await sql<{ id: string; handle: string; display_name: string }[]>`
-    SELECT u.id, u.handle, u.display_name
-    FROM users u
-    WHERE u.deleted_at IS NULL
-      AND u.handle IS NOT NULL
-      AND u.id <> ${selfUserId}
-      AND u.id IN ${sql(ids)}
-  `
-  return rows.map((r) => ({ id: r.id, handle: r.handle, displayName: r.display_name }))
-}
-
-/**
- * @handle / display-name search for the @-mention picker (GET /users/mention-search). BROADER than
- * searchByHandlePrefix in that it does NOT exclude DM-disabled accounts (anyone DM-reachable or not is
- * taggable), but — like searchByHandlePrefix — it DOES exclude users blocked either way (a blocked user
- * should never surface as a suggested mention target). Excludes self + soft-deleted + handle-less users.
- * Matches a prefix/substring on handle OR display_name (ILIKE %q%, the term escaped), ordered handle-first
- * then name, capped. Returns the minimal UserSearchResultDTO (the SAME shape searchUsers returns) so the
- * route reuses SearchUsersResponse. NOTE: this hides a blocked user from the typeahead; a hand-typed
- * @handle is still resolvable, but the resulting mention BELL is already block-gated in the notifiers.
- */
-export async function searchMentionable(
-  sql: Sql,
-  q: string,
-  viewerId: string,
-  limit: number,
-): Promise<UserSearchResultDTO[]> {
-  const term = "%" + escapeLike(q) + "%"
-  const rows = await sql<
-    { id: string; handle: string; display_name: string; avatar_url: string | null }[]
-  >`
-    SELECT u.id, u.handle, u.display_name, u.avatar_url
-    FROM users u
-    WHERE u.deleted_at IS NULL
-      AND u.handle IS NOT NULL
-      AND u.id <> ${viewerId}
-      -- handle is CITEXT; cast to text so the gin_trgm_ops expression index users_handle_trgm on
-      -- (handle::text) (0014_search_trgm.sql) can serve the substring ILIKE. display_name uses
-      -- users_display_name_trgm directly.
-      AND ((u.handle::text) ILIKE ${term} ESCAPE '\\' OR u.display_name ILIKE ${term} ESCAPE '\\')
-      -- Hide users blocked either way from the mention typeahead (mirrors searchByHandlePrefix).
-      AND NOT EXISTS (
-        SELECT 1 FROM user_blocks b
-        WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
-           OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
-      )
-    ORDER BY u.handle ASC, u.display_name ASC
-    LIMIT ${limit}
-  `
-  return rows.map((r) => ({
-    id: r.id,
-    handle: r.handle,
-    displayName: r.display_name,
-    avatar: avatarGradient(r.id),
-    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-  }))
-}
-
-/**
- * Parse a `${display_name}|${id}` keyset cursor. display_name may itself contain `|`, but a UUID cannot,
- * so the id is the substring after the LAST `|` and the name is everything before it. Returns null when
- * absent/malformed (no `|`, or an empty id).
- */
-function parseNameCursor(cursor: string | null): { name: string; id: string } | null {
-  if (cursor === null) return null
-  const idx = cursor.lastIndexOf("|")
-  if (idx < 0) return null
-  const name = cursor.slice(0, idx)
-  const id = cursor.slice(idx + 1)
-  // The id is cast `${cursor.id}::uuid` downstream; a non-UUID would raise a Postgres 22P02 -> 500. Treat
-  // a malformed cursor as "from the start" (null) instead.
-  if (!CURSOR_UUID_RE.test(id)) return null
-  return { name, id }
-}
-
-/** Canonical UUID shape, validated before a cursor id reaches a `::uuid` cast. */
-const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

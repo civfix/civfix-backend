@@ -28,7 +28,7 @@ import {
   type GetProfileResponse,
   type UserActivityListResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -47,6 +47,7 @@ import { makeUserActivityService } from "../services/user-activity-service.js"
 import { makeDrizzleUserActivityRepository } from "../services/user-activity-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 
 /**
  * Optional injected social-service dependencies (tests). When present the routes build the service from
@@ -91,8 +92,8 @@ export async function registerSocialRoutes(
 
   /**
    * Resolve the new_follower notifier. Tests may inject one; otherwise build the notification service over
-   * the DB-backed notification repo + the container's push seam (so a follow fires + inline-pushes for
-   * real). The notifier is optional (a follow still succeeds without it).
+   * the DB-backed notification repo + the container's push seam. Built ONLY on the follow path (read-only
+   * GETs never notify, so they skip this construction).
    */
   function notifier(): SocialNotifier | undefined {
     const overrides = app.socialOverrides
@@ -105,33 +106,38 @@ export async function registerSocialRoutes(
     })
   }
 
-  /** Build the social service over the resolved repo + notifier (+ the avatar presigner in production). */
-  function service(): SocialService {
-    const n = notifier()
-    // In production presign the uploaded avatar key over the Storage seam (avatars are public, served like
-    // any report image); in tests (overrides present) leave it unset so the service defaults to a
-    // pass-through. The repo returns the raw r2 key; the service maps it onto the profile's avatarUrl.
+  /**
+   * Build the social service. `withNotifier` (the follow path) additionally wires the new_follower
+   * notifier; read-only paths pass false so the notifier (a notification service over the push seam) is
+   * never constructed. In production the avatar key is presigned over the Storage seam; in tests
+   * (overrides present) it is left unset so the service defaults to a pass-through.
+   */
+  function service(withNotifier = false): SocialService {
+    const n = withNotifier ? notifier() : undefined
     const presignAvatar = app.socialOverrides
       ? undefined
       : (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC)
     return makeSocialService({
       repo: repo(),
+      logger: app.log,
       ...(n !== undefined ? { notifier: n } : {}),
       ...(presignAvatar !== undefined ? { presignAvatar } : {}),
     })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /people  [auth]  (requires a non-empty `q` — never enumerates all users)
-  // -------------------------------------------------------------------------
+  /** Merge the `:id` path param into the query so a shared query schema (which carries `id`) validates both. */
+  function mergeIdParam<S extends z.ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> {
+    return parse(schema, {
+      ...(request.query as object),
+      id: (request.params as { id?: unknown }).id,
+    })
+  }
+
+  // GET /people  [auth] — require a non-empty `q`: there is deliberately no list-everyone form (the server
+  // never enumerates all users), so a missing/blank query is a 422, not a full dump.
   route(app, "listPeople", async (request, reply) => {
-    // Auth-required now (privacy: the directory must not be browsable logged-out).
     const userId = requireAuth(request)
-    // The shared request schema (q + cursor + coerced limit) is the single source of truth; the query
-    // string is validated directly against it.
     const validated = parse(ListPeopleRequestSchema, request.query)
-    // REQUIRE a non-empty `q`: there is deliberately no list-everyone form (the server never enumerates
-    // all users). A missing/blank query is a 422, not a full dump.
     if (validated.q === null || validated.q === undefined || validated.q.trim().length === 0) {
       throw AppError.validation({ q: "A non-empty search query is required." })
     }
@@ -139,19 +145,13 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /people/:id/follow  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "followPerson", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PersonIdParamsSchema, request.params)
-    const payload: FollowPersonResponse = await service().followPerson(userId, id)
+    const payload: FollowPersonResponse = await service(true).followPerson(userId, id)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // DELETE /people/:id/follow  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "unfollowPerson", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PersonIdParamsSchema, request.params)
@@ -159,13 +159,9 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /people/:id  (anon-ok)
-  // -------------------------------------------------------------------------
+  // GET /people/:id  (anon-ok) — accepts a UUID (old deep links) OR an @handle (/people/<handle>). Resolve
+  // by id when the param is a valid UUID, else by handle; follow/block/DM-open stay UUID-keyed.
   route(app, "getProfile", async (request, reply) => {
-    // Accept a UUID (old deep links) OR an @handle (/people/<handle>). Resolve by id when the param is a
-    // valid UUID, else by handle. Follow/block/DM-open stay UUID-keyed (their param schemas are unchanged);
-    // only this read resolves a handle -> profile at the boundary.
     const { id } = parse(PersonRefParamsSchema, request.params)
     const svc = service()
     const payload: GetProfileResponse = UUID_RE.test(id)
@@ -174,25 +170,14 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /me/profile  [auth]
-  // -------------------------------------------------------------------------
   route(app, "myProfile", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: GetProfileResponse = await service().getMyProfile(userId)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /people/:id/activity  (anon-ok)  - a person's PUBLIC activity history
-  // -------------------------------------------------------------------------
   route(app, "listUserActivity", async (request, reply) => {
-    // `id` is the path param; cursor/limit are the query. Merge so the shared query schema (which carries
-    // `id`) validates both at once, mirroring the admin sub-list pattern.
-    const input = parse(UserActivityListQuerySchema, {
-      ...(request.query as object),
-      id: (request.params as { id?: unknown }).id,
-    })
+    const input = mergeIdParam(UserActivityListQuerySchema, request)
     const activity = makeUserActivityService({
       repo: makeDrizzleUserActivityRepository(container.getDb().sql),
     })
@@ -204,16 +189,8 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /people/:id/followers  (anon-ok)  - the people who follow a user
-  // -------------------------------------------------------------------------
   route(app, "listFollowers", async (request, reply) => {
-    // `id` is the path param; cursor/limit are the query. Merge so the shared query schema (which carries
-    // `id`) validates both at once, mirroring the listUserActivity route.
-    const input = parse(ConnectionsListQuerySchema, {
-      ...(request.query as object),
-      id: (request.params as { id?: unknown }).id,
-    })
+    const input = mergeIdParam(ConnectionsListQuerySchema, request)
     const payload: ListPeopleResponse = await service().listFollowers(
       input.id,
       viewerOf(request),
@@ -222,14 +199,8 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /people/:id/following  (anon-ok)  - the people a user follows
-  // -------------------------------------------------------------------------
   route(app, "listFollowing", async (request, reply) => {
-    const input = parse(ConnectionsListQuerySchema, {
-      ...(request.query as object),
-      id: (request.params as { id?: unknown }).id,
-    })
+    const input = mergeIdParam(ConnectionsListQuerySchema, request)
     const payload: ListPeopleResponse = await service().listFollowing(
       input.id,
       viewerOf(request),
@@ -242,24 +213,4 @@ export async function registerSocialRoutes(
 /** Derive the viewer context (signed-in user id, or null) from the resolved auth on the request. */
 function viewerOf(request: FastifyRequest): SocialViewer {
   return { userId: request.auth?.userId ?? null }
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on
- * failure so the canonical envelope is returned instead of a generic 500. Mirrors the other routes.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
-  }
 }

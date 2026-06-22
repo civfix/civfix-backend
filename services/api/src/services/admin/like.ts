@@ -8,8 +8,8 @@
  * CPU/DoS lever for any authenticated operator. Escaping makes the term match LITERALLY.
  *
  * Always pair the escaped value with `ESCAPE '\\'` in the SQL (PostgreSQL defaults the LIKE escape to
- * backslash, but stating it is explicit and future-proof). Mirrors the long-standing helper in
- * social-repository.drizzle.ts; centralized here so every admin repo shares one definition.
+ * backslash, but stating it is explicit and future-proof). The one shared definition for every repo that
+ * does operator search.
  */
 
 /** Escape %, _ and \ in a term so they are treated literally inside a LIKE/ILIKE pattern. */

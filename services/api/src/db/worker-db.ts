@@ -15,4 +15,4 @@
 
 export * as schema from "./schema/index.js"
 export { makeDb } from "./client.js"
-export type { Db, Sql, DbHandle } from "./client.js"
+export type { Db, Sql, DbHandle, TransactionSql, Queryable } from "./client.js"

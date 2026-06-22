@@ -23,12 +23,18 @@ import { readdir, readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Sql } from "./client.js"
-import { makeDb } from "./client.js"
-import { loadEnv } from "../env.js"
+import { runDbCli, runIfMain } from "./cli.js"
 import { orderMigrationFiles } from "./migrate-files.js"
 
 /** Absolute path to services/api/drizzle, resolved relative to this module (cwd-independent). */
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle")
+
+/**
+ * Fixed advisory-lock key so two instances/CI jobs booting concurrently serialize the apply loop instead
+ * of racing the same file (a non-IF-NOT-EXISTS statement applied twice would abort the deploy, and deploys
+ * are NOT health-gated). Arbitrary constant, unique to this runner.
+ */
+const MIGRATE_ADVISORY_LOCK_KEY = 4747120626
 
 /** Ensure the bookkeeping table exists. Idempotent. */
 async function ensureBookkeeping(sql: Sql): Promise<void> {
@@ -50,51 +56,55 @@ async function appliedSet(sql: Sql): Promise<Set<string>> {
  * Apply all pending migrations from `dir` using `sql`. Returns the list of files that were applied
  * (in order). Exported for reuse by the Testcontainers harness so tests apply the EXACT same SQL the
  * runner does.
+ *
+ * Concurrency: a reserved (connection-pinned) session-level `pg_advisory_lock` serializes the whole
+ * read-applied -> apply-pending sequence, so two instances booting at once don't both try to apply the
+ * same file. The lock + every per-file transaction run on the SAME reserved connection.
+ *
+ * GOTCHA: each file is one `tx.unsafe(text)` in a transaction, so a large-table `CREATE INDEX`
+ * (non-CONCURRENTLY — CONCURRENTLY can't run in a tx) takes a SHARE lock that blocks writes on
+ * reports/chat_messages during the deploy. For a big table, add the index out-of-band with
+ * `CREATE INDEX CONCURRENTLY` BEFORE the migration and make the migration's `CREATE INDEX ... IF NOT
+ * EXISTS` a no-op.
  */
 export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): Promise<string[]> {
-  await ensureBookkeeping(sql)
-  const already = await appliedSet(sql)
+  const reserved = await sql.reserve()
+  try {
+    await reserved`SELECT pg_advisory_lock(${MIGRATE_ADVISORY_LOCK_KEY})`
+    await ensureBookkeeping(reserved)
+    const already = await appliedSet(reserved)
 
-  const entries = await readdir(dir)
-  const ordered = orderMigrationFiles(entries)
+    const entries = await readdir(dir)
+    const ordered = orderMigrationFiles(entries)
 
-  const applied: string[] = []
-  for (const name of ordered) {
-    if (already.has(name)) continue
-    const text = await readFile(join(dir, name), "utf8")
-    // Transaction-per-file: the DDL and its bookkeeping row commit together or not at all.
-    await sql.begin(async (tx) => {
-      await tx.unsafe(text)
-      await tx`INSERT INTO _civfix_migrations (name) VALUES (${name})`
-    })
-    applied.push(name)
+    const applied: string[] = []
+    for (const name of ordered) {
+      if (already.has(name)) continue
+      const text = await readFile(join(dir, name), "utf8")
+      // Transaction-per-file: the DDL and its bookkeeping row commit together or not at all.
+      await reserved.begin(async (tx) => {
+        await tx.unsafe(text)
+        await tx`INSERT INTO _civfix_migrations (name) VALUES (${name})`
+      })
+      applied.push(name)
+    }
+    return applied
+  } finally {
+    await reserved`SELECT pg_advisory_unlock(${MIGRATE_ADVISORY_LOCK_KEY})`.catch(() => {})
+    reserved.release()
   }
-  return applied
 }
 
 async function main(): Promise<void> {
-  const env = loadEnv()
-  const handle = makeDb(env.DATABASE_URL, { max: 1 })
-  try {
-    const applied = await applyMigrations(handle.sql)
+  await runDbCli(async (_db, sql) => {
+    const applied = await applyMigrations(sql)
     if (applied.length === 0) {
       console.log("migrate: up to date, nothing to apply")
     } else {
       console.log(`migrate: applied ${applied.length} migration(s):`)
       for (const name of applied) console.log(`  - ${name}`)
     }
-  } finally {
-    await handle.close()
-  }
-}
-
-// Run only when executed directly (tsx src/db/migrate.ts), not when imported by the harness/tests.
-const invokedDirectly =
-  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]
-if (invokedDirectly) {
-  main().catch((err: unknown) => {
-    console.error("migrate: failed")
-    console.error(err)
-    process.exit(1)
   })
 }
+
+runIfMain(import.meta.url, "migrate", main)

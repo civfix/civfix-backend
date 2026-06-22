@@ -62,10 +62,9 @@ describe("parseTimeOfDayMinutes", () => {
 // Pure: isWithinQuietHours (wrap-around)
 // ---------------------------------------------------------------------------
 
-/** Build a Date at a local HH:MM (date part irrelevant; only hours/minutes are read). */
+/** Build a Date at a UTC HH:MM (quiet hours are evaluated in UTC, independent of the host TZ). */
 function at(hh: number, mm = 0): Date {
-  const d = new Date(2025, 0, 1, hh, mm, 0, 0)
-  return d
+  return new Date(Date.UTC(2025, 0, 1, hh, mm, 0, 0))
 }
 
 describe("isWithinQuietHours", () => {

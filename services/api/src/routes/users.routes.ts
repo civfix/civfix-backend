@@ -27,7 +27,7 @@ import {
   type DeleteAccountResponse,
   type RequestDataExportResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -43,6 +43,7 @@ import {
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 
 /** Optional injected data-export service (tests) so the POST /me/data-export flow runs offline. */
 export interface DataExportOverride {
@@ -79,9 +80,8 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     return app.chatOverrides?.blocksRepo ?? container.getBlocksRepo()
   }
 
-  // -------------------------------------------------------------------------
-  // GET /users/search  [auth]  (rate-limited @handle prefix search)
-  // -------------------------------------------------------------------------
+  // GET /users/search  [auth] — @handle PREFIX search to start a DM. Strip a single leading '@' so
+  // "@jane" and "jane" search identically; a bare "@" reduces to "" → empty (never match everyone).
   route(
     app,
     "searchUsers",
@@ -89,11 +89,8 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     async (request, reply) => {
       const userId = requireAuth(request)
       const q = parse(SearchUsersRequestSchema, request.query)
-      // Strip a single leading '@' so "@jane" and "jane" search identically.
       const term = q.q.startsWith("@") ? q.q.slice(1) : q.q
       const limit = q.limit ?? USER_SEARCH_DEFAULT_LIMIT
-      // An empty term after stripping the '@' yields no results (the schema already requires min length 1,
-      // but a bare "@" reduces to "" — return empty rather than matching everyone).
       const results =
         term.length === 0
           ? []
@@ -103,12 +100,10 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     },
   )
 
-  // -------------------------------------------------------------------------
-  // GET /users/mention-search  [auth]  (rate-limited @handle/name search for @-mention picker)
-  // -------------------------------------------------------------------------
-  // Broader than /users/search: it surfaces ANYONE taggable by @handle (no DM-off / blocked exclusion) so a
-  // commenter/chatter can @-mention any user; the server still excludes self / handle-less / soft-deleted.
-  // `q` is required (min length 1); a leading '@' is stripped so "@jane" and "jane" search identically.
+  // GET /users/mention-search  [auth] — broader than /users/search: surfaces ANYONE taggable by @handle
+  // (no DM-off exclusion), still excluding self / handle-less / soft-deleted / blocked-either-way. The
+  // page size is fixed at USER_SEARCH_DEFAULT_LIMIT: MentionSearchRequestSchema is `.strict()` and carries
+  // no `limit`, so there is no client-supplied page size to honor.
   route(
     app,
     "mentionSearch",
@@ -126,9 +121,6 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     },
   )
 
-  // -------------------------------------------------------------------------
-  // POST /users/:id/block  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "blockUser", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(UserIdParamsSchema, request.params)
@@ -139,9 +131,6 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // DELETE /users/:id/block  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "unblockUser", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(UserIdParamsSchema, request.params)
@@ -150,9 +139,6 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /me/blocks  [auth]
-  // -------------------------------------------------------------------------
   route(app, "listBlocks", async (request, reply) => {
     const userId = requireAuth(request)
     const blocked = await blocksRepo().listBlocked(userId)
@@ -160,9 +146,6 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // PUT /me/settings  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "updateSettings", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateSettingsRequestSchema, request.body)
@@ -177,13 +160,10 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // DELETE /me  [auth][csrf]   self-service account deletion (soft delete)
-  // -------------------------------------------------------------------------
-  // SOFT delete: tombstone + DMs off (KEEP PII for admin truth), then REVOKE all sessions (set deleted_at
-  // alone does NOT log a warm Redis session out) + set the banned marker, clear the session + csrf cookies,
-  // and audit. The user's posts/reports/comments/events survive (the FKs reference the kept row); public
-  // projections render "Deleted User".
+  // DELETE /me  [auth][csrf] — SOFT delete: tombstone + DMs off (KEEP PII for admin truth), then REVOKE all
+  // sessions (set deleted_at alone does NOT log a warm Redis session out) + set the banned marker, clear
+  // the session + csrf cookies, and audit. The user's posts/reports/comments/events survive (the FKs
+  // reference the kept row); public projections render "Deleted User".
   route(app, "deleteAccount", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const store = app.authServices?.users
@@ -232,9 +212,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /me/data-export  [auth][csrf]  (tight per-IP limit)   email me a copy of my data
-  // -------------------------------------------------------------------------
+  // POST /me/data-export  [auth][csrf] (tight per-IP limit) — email me a copy of my data.
   route(
     app,
     "requestDataExport",
@@ -290,24 +268,4 @@ async function assertUserExists(app: FastifyInstance, userId: string): Promise<v
   if (!store) throw AppError.unauthorized("Authentication required.")
   const u = await store.findById(userId)
   if (!u || u.deletedAt !== null) throw AppError.notFound("User not found")
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on failure
- * so the canonical envelope is returned instead of a generic 500. Mirrors the other route plugins.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
-  }
 }

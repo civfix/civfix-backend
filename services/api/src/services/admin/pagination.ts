@@ -1,16 +1,19 @@
 /**
- * Shared cursor/pagination helpers for the admin (Phase 2) list endpoints.
+ * Admin (Phase 2) list-endpoint pagination helpers — thin aliases over the shared cursor primitives in
+ * db/cursor-helpers.ts. The admin layer keeps its own limit defaults + a {createdAt,id}-shaped anchor
+ * (the admin repos read/write that shape); the cursor encode/decode itself is the one shared core.
  *
- * Phase 1 keyset cursors are encoded inline per-repository as "<iso>|<id>" (see
- * report-repository.drizzle.ts parseMyReportsCursor). There is no centralized helper, so this module
- * provides ONE for the many admin list routers wave 2 will write, keeping the cursor format consistent
- * across domains. The shared @civfix/shared exports (PaginationQuerySchema, CursorSchema, pageResponse)
- * remain the WIRE contract; these helpers are the server-side encode/decode + limit clamp around them.
- *
- * Cursor format: "<createdAtIso>|<id>" - the same created_at DESC, id-tiebreak keyset Phase 1 uses, so
- * a row-value comparison `(created_at, id) < (anchorCreatedAt, anchorId)` pages newest-first stably. A
- * malformed cursor decodes to null (treated as "from the start") rather than throwing, matching Phase 1.
+ * The shared @civfix/shared exports (PaginationQuerySchema, CursorSchema, pageResponse) remain the WIRE
+ * contract; these are the server-side encode/decode + limit clamp around them.
  */
+
+import {
+  CURSOR_UUID_RE,
+  encodeTimeCursor,
+  parseTimeCursor,
+} from "../../db/cursor-helpers.js"
+
+export { CURSOR_UUID_RE, paginate } from "../../db/cursor-helpers.js"
 
 /** Default page size when the request omits `limit`. */
 export const ADMIN_DEFAULT_LIMIT = 25
@@ -23,50 +26,31 @@ export interface CursorAnchor {
   id: string
 }
 
-/**
- * Canonical UUID shape. Repos that interpolate the decoded id into `${anchor.id}::uuid` opt into this
- * validation (requireUuidId=true) so a malformed id degrades to "from the start" (null) instead of
- * raising a Postgres 22P02 cast error -> unhandled 500. Repos keyed on a NON-uuid id (geoid: discovery,
- * jurisdiction-contacts) and the in-memory test fakes use the default (no uuid check) — forcing it on
- * them would wrongly reject every valid geoid/test cursor and break pagination.
- */
-const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
 /** Encode a keyset anchor into the opaque "<iso>|<id>" cursor string. */
 export function encodeCursor(anchor: CursorAnchor): string {
-  return `${anchor.createdAt.toISOString()}|${anchor.id}`
+  return encodeTimeCursor({ at: anchor.createdAt, id: anchor.id })
 }
 
 /**
- * Decode a "<iso>|<id>" cursor into its anchor, or null when absent/malformed. A legacy timestamp-only
- * cursor (no "|id") is tolerated by anchoring at the maximum uuid for that instant, mirroring the Phase
- * 1 fallback so an older client cursor degrades to created_at-only paging rather than erroring.
+ * Decode a "<iso>|<id>" cursor into its anchor, or null when absent/malformed. Repos that cast
+ * `${id}::uuid` pass requireUuidId=true so a non-UUID id degrades to "from the start" (null) rather than
+ * raising a Postgres 22P02 -> 500. Non-uuid-keyed repos (geoid: discovery, jurisdiction-contacts) and the
+ * in-memory test fakes leave it false. A legacy timestamp-only cursor anchors at the max uuid for that
+ * instant (created_at-only paging) instead of erroring.
  */
 export function decodeCursor(
   cursor: string | null | undefined,
   requireUuidId = false,
 ): CursorAnchor | null {
-  if (cursor === null || cursor === undefined || cursor === "") return null
-  const idx = cursor.indexOf("|")
-  if (idx < 0) {
-    const at = new Date(cursor)
-    if (Number.isNaN(at.getTime())) return null
-    return { createdAt: at, id: "ffffffff-ffff-ffff-ffff-ffffffffffff" }
-  }
-  const iso = cursor.slice(0, idx)
-  const id = cursor.slice(idx + 1)
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || id.length === 0) return null
-  // Repos that cast `${id}::uuid` pass requireUuidId=true so a non-UUID id degrades to "from the start"
-  // (null) rather than raising a Postgres 22P02 -> 500. Non-uuid-keyed repos (geoid) leave it false.
-  if (requireUuidId && !CURSOR_UUID_RE.test(id)) return null
-  return { createdAt: at, id }
+  const parsed = parseTimeCursor(cursor, { requireUuid: requireUuidId })
+  if (parsed === null) return null
+  return { createdAt: parsed.at, id: parsed.id }
 }
 
 /**
  * Clamp a requested page limit into [1, ADMIN_MAX_LIMIT], defaulting to ADMIN_DEFAULT_LIMIT when
- * undefined/invalid. The shared AdminListQuerySchema already coerces + caps on the wire; this is the
- * defensive server-side clamp so a repo never receives a 0 / negative / huge LIMIT.
+ * undefined/invalid. The wire schema already coerces + caps; this is the defensive server-side clamp so a
+ * repo never receives a 0 / negative / huge LIMIT.
  */
 export function clampLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return ADMIN_DEFAULT_LIMIT
@@ -74,25 +58,4 @@ export function clampLimit(limit: number | undefined): number {
   if (n < 1) return 1
   if (n > ADMIN_MAX_LIMIT) return ADMIN_MAX_LIMIT
   return n
-}
-
-/**
- * Given the rows fetched with `limit + 1`, split off the extra row used as the has-more probe and
- * derive { items, nextCursor }. `pick` extracts the keyset anchor from a row. When fewer than `limit`
- * rows came back there is no next page (nextCursor = null). Keeps every admin list endpoint's
- * "fetch one extra to know if there is a next page" logic identical.
- */
-export function paginate<T>(
-  rows: readonly T[],
-  limit: number,
-  pick: (row: T) => CursorAnchor,
-): { items: T[]; nextCursor: string | null } {
-  if (rows.length <= limit) {
-    return { items: [...rows], nextCursor: null }
-  }
-  const items = rows.slice(0, limit)
-  const last = items[items.length - 1]
-  // items is non-empty here (rows.length > limit >= 1), so `last` is defined.
-  const nextCursor = last !== undefined ? encodeCursor(pick(last)) : null
-  return { items, nextCursor }
 }

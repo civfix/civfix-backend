@@ -15,6 +15,8 @@
  * semantics, and the public-domain sources.
  */
 
+import { createReadStream } from "node:fs"
+import { createInterface } from "node:readline"
 import type { Queryable, Sql } from "./client.js"
 
 /** A loosely-typed GeoJSON feature (we only read `properties` + `geometry`). */
@@ -68,10 +70,43 @@ export const LAYER_RANK: Record<IngestRow["layer"], number> = {
 }
 
 /**
- * Normalize a GeoJSON FeatureCollection into IngestRow[]. Features missing a geoid, name, or polygon
- * geometry are dropped (counted in `skipped`). `defaultLayer` fills features whose properties carry no
- * layer/owner type. `geoidPrefix` (optional, non-empty) is the load-time geoid namespace (AIANNH-/PADUS-)
- * prepended to the picked geoid BEFORE the null/skip check; an empty/undefined prefix is a no-op. PURE.
+ * Normalize ONE GeoJSON feature into an IngestRow, or null if it must be dropped (missing geoid or name, or
+ * a non-polygon geometry). `defaultLayer` fills a feature whose properties carry no layer/owner type.
+ * `geoidPrefix` (optional, non-empty) is the load-time geoid namespace (AIANNH-/PADUS-) prepended to the
+ * picked geoid BEFORE the null check; an empty/undefined prefix is a no-op. PURE.
+ */
+export function normalizeFeature(
+  f: GeoJsonFeature,
+  defaultLayer: IngestRow["layer"],
+  geoidPrefix?: string,
+): IngestRow | null {
+  const geometry = f.geometry
+  const isPolygon =
+    geometry !== null && (geometry.type === "Polygon" || geometry.type === "MultiPolygon")
+  const geoid = pickString(f.properties, ["geoid", "GEOID", "UNIT_CODE", "unit_code", "id", "OBJECTID"])
+  // Apply the load-time prefix to the picked geoid (only when both a geoid and a non-empty prefix are
+  // present). Prefixing here — the single place a geoid is computed — guarantees it happens exactly once.
+  const prefixedGeoid = geoid !== null && geoidPrefix ? geoidPrefix + geoid : geoid
+  const name = pickString(f.properties, ["name", "NAME", "UNIT_NAME", "unit_name", "Unit_Name"])
+  const rawLayer = pickString(f.properties, ["layer", "LAYER", "owner_type", "Own_Type"])
+  const layer =
+    rawLayer && rawLayer.toLowerCase() in LAYER_RANK
+      ? (rawLayer.toLowerCase() as IngestRow["layer"])
+      : defaultLayer
+  if (!isPolygon || prefixedGeoid === null || name === null) return null
+  return {
+    geoid: prefixedGeoid,
+    name,
+    layer,
+    population: pickNumber(f.properties, ["population", "POPULATION", "POP", "pop"]),
+    geometry,
+  }
+}
+
+/**
+ * Normalize a GeoJSON FeatureCollection into IngestRow[]. Features dropped by normalizeFeature (missing
+ * geoid/name or non-polygon geometry) are counted in `skipped`. See normalizeFeature for the per-feature
+ * rules (geoid pick + prefix, name pick, layer fallback). PURE.
  */
 export function normalizeFeatures(
   fc: GeoJsonFeatureCollection,
@@ -81,30 +116,9 @@ export function normalizeFeatures(
   const rows: IngestRow[] = []
   let skipped = 0
   for (const f of fc.features ?? []) {
-    const geometry = f.geometry
-    const isPolygon =
-      geometry !== null && (geometry.type === "Polygon" || geometry.type === "MultiPolygon")
-    const geoid = pickString(f.properties, ["geoid", "GEOID", "UNIT_CODE", "unit_code", "id", "OBJECTID"])
-    // Apply the load-time prefix to the picked geoid (only when both a geoid and a non-empty prefix are
-    // present). Prefixing here — the single place a geoid is computed — guarantees it happens exactly once.
-    const prefixedGeoid = geoid !== null && geoidPrefix ? geoidPrefix + geoid : geoid
-    const name = pickString(f.properties, ["name", "NAME", "UNIT_NAME", "unit_name", "Unit_Name"])
-    const rawLayer = pickString(f.properties, ["layer", "LAYER", "owner_type", "Own_Type"])
-    const layer =
-      rawLayer && rawLayer.toLowerCase() in LAYER_RANK
-        ? (rawLayer.toLowerCase() as IngestRow["layer"])
-        : defaultLayer
-    if (!isPolygon || prefixedGeoid === null || name === null) {
-      skipped += 1
-      continue
-    }
-    rows.push({
-      geoid: prefixedGeoid,
-      name,
-      layer,
-      population: pickNumber(f.properties, ["population", "POPULATION", "POP", "pop"]),
-      geometry,
-    })
+    const row = normalizeFeature(f, defaultLayer, geoidPrefix)
+    if (row === null) skipped += 1
+    else rows.push(row)
   }
   return { rows, skipped }
 }
@@ -166,6 +180,45 @@ export async function ingestGeoJsonFile(
     for (const row of rows) await upsertJurisdiction(tx, row)
   })
   return { upserted: rows.length, skipped, features }
+}
+
+/**
+ * Ingest a GeoJSON Text Sequence file (RFC 8142 — ONE GeoJSON Feature per line, the `-f GeoJSONSeq` ogr2ogr
+ * output), STREAMING it line by line so the file is never materialized as a single JS string. This is the
+ * loader for layers too large for ingestGeoJsonFile: the PAD-US federal export is >512 MB, which exceeds
+ * Node's max string length, so `readFileSync(path, "utf8")` on it throws ERR_STRING_TOO_LONG.
+ *
+ * Same semantics as ingestGeoJsonFile otherwise — ONE transaction for the whole file (a layer lands fully
+ * or not at all), the optional load-time geoid prefix, the contact-preserving upsert, and the same
+ * {upserted, skipped, features} return. Tolerates a leading RS (0x1e) byte (RFC 8142) and blank lines.
+ * THROWS on a malformed line (JSON.parse) so the caller can roll the layer back rather than load it partly.
+ */
+export async function ingestGeoJsonSeqFile(
+  sql: Sql,
+  filePath: string,
+  defaultLayer: IngestRow["layer"],
+  geoidPrefix?: string,
+): Promise<{ upserted: number; skipped: number; features: number }> {
+  let features = 0
+  let skipped = 0
+  let upserted = 0
+  await sql.begin(async (tx) => {
+    const lines = createInterface({ input: createReadStream(filePath, "utf8"), crlfDelay: Infinity })
+    for await (const raw of lines) {
+      // RFC 8142 may prefix each record with an RS (0x1e) byte; drop it before parsing.
+      const line = (raw.charCodeAt(0) === 0x1e ? raw.slice(1) : raw).trim()
+      if (line === "") continue
+      features += 1
+      const row = normalizeFeature(JSON.parse(line) as GeoJsonFeature, defaultLayer, geoidPrefix)
+      if (row === null) {
+        skipped += 1
+        continue
+      }
+      await upsertJurisdiction(tx, row)
+      upserted += 1
+    }
+  })
+  return { upserted, skipped, features }
 }
 
 export type { GeoJsonFeature, GeoJsonFeatureCollection }

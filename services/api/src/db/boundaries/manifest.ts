@@ -56,8 +56,9 @@ export interface BoundaryJob {
   /** civfix `layer` this file maps to (drift-guarded against JURISDICTION_LAYER_VALUES). */
   layer: BoundaryLayer
   /**
-   * Exact `ogr2ogr` arguments for the conversion: always GeoJSON output reprojected to EPSG:4326, plus
-   * a source `-where` filter for places (G4110) and federal (Mang_Type='FED'). NEVER contains a geoid
+   * Exact `ogr2ogr` arguments for the conversion: GeoJSON output (GeoJSONSeq for the oversized federal
+   * layer) reprojected to EPSG:4326, plus a source filter for places (`-where` G4110) and federal
+   * (`-sql` Mang_Type='FED'). NEVER contains a geoid
    * prefix string — prefixing happens at ingest time (see file header). The runner appends the output
    * path and the (already-downloaded) source path after these args.
    */
@@ -215,13 +216,17 @@ export function boundaryManifest(
   //     it outright.) The "PADUS-" prefix (applied at ingest, metadata here) makes the non-FIPS ids
   //     globally unique AND makes the geocoder fall back to the authoritative containing-state query.
   //     NOTE: PAD-US OBJECTIDs are not stable across PAD-US versions, so a version bump reshuffles these
-  //     geoids (old PADUS- rows linger, advisory-stale, since the load never deletes — see the cron).
+  //     geoids (old PADUS- rows linger, advisory-stale, since the load never deletes).
+  //     OUTPUT FORMAT: GeoJSONSeq (`.geojsonl`, one Feature per line), NOT a single FeatureCollection. The
+  //     federal export is >512 MB, which exceeds Node's max string length — so the refresh tool STREAMS it
+  //     (ingestGeoJsonSeqFile) instead of readFileSync, which would throw ERR_STRING_TOO_LONG. The small
+  //     TIGER layers stay on plain GeoJSON. ogr2ogr `-t_srs`/`-sql`/`-nlt` are format-independent.
   jobs.push({
     sourceUrl: PADUS_GDB_URL,
     layer: "federal",
     ogr2ogrArgs: [
       "-f",
-      "GeoJSON",
+      "GeoJSONSeq",
       "-t_srs",
       "EPSG:4326",
       "-sql",
@@ -229,7 +234,7 @@ export function boundaryManifest(
       "-nlt",
       "PROMOTE_TO_MULTI",
     ],
-    outFile: "federal.geojson",
+    outFile: "federal.geojsonl",
     sourcePath: `PADUS${PADUS_VERSION_NODOT}Geodatabase.gdb`,
     ingestGeoidPrefix: "PADUS-",
   })

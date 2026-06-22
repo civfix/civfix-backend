@@ -17,7 +17,7 @@ import type {
   UserActivityKind,
   UserActivityListResponse,
 } from "@civfix/shared"
-import { clampLimit, encodeCursor, decodeCursor } from "./admin/pagination.js"
+import { clampLimit, decodeCursor, paginate } from "./admin/pagination.js"
 
 /** Default page size for the activity list when the request omits `limit`. */
 export const USER_ACTIVITY_DEFAULT_LIMIT = 25
@@ -75,15 +75,12 @@ export function makeUserActivityService(deps: UserActivityServiceDeps): UserActi
       limit: number | undefined,
     ): Promise<UserActivityListResponse> {
       const n = clampLimit(limit ?? USER_ACTIVITY_DEFAULT_LIMIT)
+      // requireUuidId=false: the repo's keyset compares the cursor id against `id::text` (the UNION mixes
+      // report/cleanup/person ids), never `::uuid`, so a non-UUID id is safe — do NOT "tidy" this to true.
       const anchor = decodeCursor(cursor, false)
       const rows = await deps.repo.listActivity({ userId, cursor: anchor, limit: n })
-      // Split off the has-more probe row (fetched as limit + 1) and derive the next cursor.
-      const hasMore = rows.length > n
-      const page = hasMore ? rows.slice(0, n) : rows
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeCursor({ createdAt: last.at, id: last.id }) : null
-      return { items: page.map(toItem), nextCursor }
+      const { items, nextCursor } = paginate(rows, n, (r) => ({ createdAt: r.at, id: r.id }))
+      return { items: items.map(toItem), nextCursor }
     },
   }
 }

@@ -45,9 +45,6 @@ export async function registerVerificationRoutes(
     })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /me/verification  [auth]
-  // -------------------------------------------------------------------------
   route(app, "myVerification", async (request, reply) => {
     const userId = requireAuth(request)
     const verification = await service().getMine(userId)

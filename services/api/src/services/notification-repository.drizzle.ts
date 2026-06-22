@@ -1,30 +1,9 @@
-/**
- * Postgres-backed NotificationRepository (the production implementation of the notifications seam).
- *
- * ALL notification/prefs/push-token access flows through here so the notification service stays infra-free
- * and unit-testable with an in-memory repo. Written against the raw postgres-js tag (`Sql`) to match the
- * rest of the backend.
- *
- * FEED (listNotifications): keyset pagination on (created_at DESC, id DESC) with a `${iso}|${id}` cursor.
- * The id tiebreak keeps a total order when timestamps tie; `|` cannot appear in an ISO timestamp or a
- * UUID, so the split is unambiguous.
- *
- * READ-STATE (markRead): a single UPDATE setting read_at=now() WHERE user_id = $user AND id = ANY($ids)
- * AND read_at IS NULL. The user_id predicate is what prevents marking someone else's notifications read;
- * the read_at IS NULL guard keeps an already-read row's timestamp stable.
- *
- * PREFS: getPrefs/createDefaultPrefs/upsertPrefs operate on notification_prefs (PK user_id). The defaults
- * are all-true booleans + null quiet hours. upsertPrefs builds an ON CONFLICT DO UPDATE that only touches
- * the columns present in the patch, so a partial update leaves the rest intact. quietHours null clears both
- * time columns; an object sets both.
- *
- * PUSH TOKENS (upsertPushToken): OWNERSHIP-SCOPED re-registration (P1-3). ON CONFLICT (platform, token)
- * DO UPDATE re-points the row + clears revoked_at ONLY when the caller already owns the row OR presents
- * the same non-null device_id; a token owned by a different user with no device proof is left untouched
- * (returned as "conflict"), so a known raw token cannot be used to hijack another user's device.
- */
+// Postgres-backed NotificationRepository (the production impl of the notifications seam). All
+// notification/prefs/push-token access flows through here so the service stays infra-free and
+// unit-testable with an in-memory repo. Written against the raw postgres-js tag (`Sql`).
 
 import type { Sql } from "../db/client.js"
+import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import type {
   NewNotificationArgs,
   NotificationPrefsPatch,
@@ -37,11 +16,10 @@ import { DEFAULT_PREFS } from "./notification-service.js"
 import { AppError } from "@civfix/shared"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
-/** 24-hour HH:MM or HH:MM:SS. quietHours values are cast `::time`; an unvalidated bad string would raise
- * a Postgres 22007 -> unhandled 500. We reject malformed input as a 400 before the cast. */
+// 24-hour HH:MM(:SS). quietHours values are cast `::time`; an unvalidated bad string would raise a
+// Postgres 22007 -> unhandled 500, so a malformed value is rejected as a 422 before the cast.
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 
-/** Shape of a notification row as selected back. */
 interface NotificationRowSelect {
   id: string
   user_id: string
@@ -53,7 +31,6 @@ interface NotificationRowSelect {
   created_at: Date
 }
 
-/** Shape of a prefs row as selected back (time columns come back as strings). */
 interface PrefsRowSelect {
   push: boolean
   cleanup_chat: boolean
@@ -64,7 +41,6 @@ interface PrefsRowSelect {
   quiet_end: string | null
 }
 
-/** Project a selected notification row into the structural NotificationRecord. */
 function toRecord(r: NotificationRowSelect): NotificationRecord {
   return {
     id: r.id,
@@ -78,7 +54,6 @@ function toRecord(r: NotificationRowSelect): NotificationRecord {
   }
 }
 
-/** Project a selected prefs row into the structural NotificationPrefsRecord. */
 function toPrefsRecord(r: PrefsRowSelect): NotificationPrefsRecord {
   return {
     push: r.push,
@@ -99,7 +74,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
         RETURNING id, user_id, type, title, body, link, read_at, created_at
       `
-      // The insert always returns exactly one row.
       return toRecord(rows[0]!)
     },
 
@@ -121,17 +95,14 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
-      return { records: page.map(toRecord), nextCursor }
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      return { records: items.map(toRecord), nextCursor }
     },
 
     async markRead(userId: string, ids: string[]): Promise<void> {
       if (ids.length === 0) return
-      // Only the user's own, still-unread rows are touched. `id = ANY(...)` takes the uuid[] directly.
+      // The user_id predicate is what prevents marking someone else's notifications read; the read_at IS
+      // NULL guard keeps an already-read row's timestamp stable. `id = ANY(...)` takes the uuid[] directly.
       await sql`
         UPDATE notifications
         SET read_at = now()
@@ -142,9 +113,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
     },
 
     async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-      // Mirror markRead's style: only the user's own, still-unread rows of this (type, link) are cleared.
-      // Used to dismiss the bell for a conversation when it is read (e.g. type='dm' + '/messages/dm/<id>',
-      // or type='cleanup_chat' + '/cleanups/<id>'). The read_at IS NULL guard keeps already-read rows stable.
       await sql`
         UPDATE notifications
         SET read_at = now()
@@ -166,7 +134,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
     },
 
     async createDefaultPrefs(userId: string): Promise<NotificationPrefsRecord> {
-      // Insert the defaults; if a concurrent request already created the row, DO NOTHING and read it back.
       const rows = await sql<PrefsRowSelect[]>`
         INSERT INTO notification_prefs (user_id, push, cleanup_chat, report_updates, follows)
         VALUES (
@@ -180,7 +147,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         RETURNING push, cleanup_chat, report_updates, follows, mentions, quiet_start, quiet_end
       `
       if (rows[0]) return toPrefsRecord(rows[0])
-      // Lost the insert race: the row exists, so read it.
+      // Lost the insert race: the row exists, so read it back.
       const existing = await sql<PrefsRowSelect[]>`
         SELECT push, cleanup_chat, report_updates, follows, mentions, quiet_start, quiet_end
         FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
@@ -192,10 +159,24 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       userId: string,
       patch: NotificationPrefsPatch,
     ): Promise<NotificationPrefsRecord> {
-      // Build the INSERT column/value lists and the DO UPDATE SET list from only the present patch keys, so
-      // a partial update leaves the untouched columns at their current values. The INSERT side supplies a
-      // full row (defaults for absent booleans, null for absent quiet hours) for the first-time case; the
-      // DO UPDATE side only overwrites the patched columns.
+      // When the patch is empty (no-op), just ensure-and-return the row. Use INSERT … DO NOTHING then a
+      // SELECT rather than a self-assigning DO UPDATE, so an existing row is not needlessly re-written.
+      if (isEmptyPatch(patch)) {
+        const inserted = await sql<PrefsRowSelect[]>`
+          INSERT INTO notification_prefs (user_id) VALUES (${userId})
+          ON CONFLICT (user_id) DO NOTHING
+          RETURNING push, cleanup_chat, report_updates, follows, mentions, quiet_start, quiet_end
+        `
+        if (inserted[0]) return toPrefsRecord(inserted[0])
+        const existing = await sql<PrefsRowSelect[]>`
+          SELECT push, cleanup_chat, report_updates, follows, mentions, quiet_start, quiet_end
+          FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
+        `
+        return existing[0] ? toPrefsRecord(existing[0]) : DEFAULT_PREFS
+      }
+
+      // Build the DO UPDATE SET list from only the present patch keys, so a partial update leaves the
+      // untouched columns intact. The INSERT side supplies a full row for the first-time case.
       const setFragments: Array<ReturnType<Sql>> = []
       if (patch.push !== undefined) setFragments.push(sql`push = ${patch.push}`)
       if (patch.cleanupChat !== undefined) setFragments.push(sql`cleanup_chat = ${patch.cleanupChat}`)
@@ -206,8 +187,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       if (patch.quietHours !== undefined) {
         const start = patch.quietHours === null ? null : patch.quietHours.start
         const end = patch.quietHours === null ? null : patch.quietHours.end
-        // Validate the HH:MM(:SS) shape before the ::time cast so a malformed value is a clean 400, not a
-        // Postgres cast error surfacing as a 500.
         if (
           (start !== null && !QUIET_TIME_RE.test(start)) ||
           (end !== null && !QUIET_TIME_RE.test(end))
@@ -218,21 +197,10 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         setFragments.push(sql`quiet_end = ${end}::time`)
       }
 
-      // Insert-side full row values (used only when the row does not yet exist).
       const insStart =
         patch.quietHours !== undefined && patch.quietHours !== null ? patch.quietHours.start : null
       const insEnd =
         patch.quietHours !== undefined && patch.quietHours !== null ? patch.quietHours.end : null
-
-      // When the patch is empty (no-op), just ensure-and-return the row via the defaults insert path.
-      if (setFragments.length === 0) {
-        const rows = await sql<PrefsRowSelect[]>`
-          INSERT INTO notification_prefs (user_id) VALUES (${userId})
-          ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
-          RETURNING push, cleanup_chat, report_updates, follows, mentions, quiet_start, quiet_end
-        `
-        return toPrefsRecord(rows[0]!)
-      }
 
       const rows = await sql<PrefsRowSelect[]>`
         INSERT INTO notification_prefs (
@@ -259,12 +227,10 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       token: string
       deviceId: string | null
     }): Promise<PushTokenUpsertOutcome> {
-      // OWNERSHIP-SCOPED re-registration (P1-3). ON CONFLICT (platform, token) DO UPDATE ... WHERE:
-      //   - re-point/reactivate only when the conflicting row ALREADY belongs to this user, OR
-      //   - the caller presents the SAME non-null device_id as the stored row (a genuine device handoff).
-      // Otherwise (a token owned by a DIFFERENT user with no device-ownership proof) the WHERE fails, the
-      // UPDATE is skipped, no row is returned, and the existing owner KEEPS the token (no silent steal).
-      // A fresh (platform, token) inserts normally. RETURNING tells us which happened.
+      // OWNERSHIP-STEAL guard (P1-3). The DO UPDATE … WHERE re-points/reactivates only when the
+      // conflicting row ALREADY belongs to this user OR the caller presents the SAME non-null device_id (a
+      // genuine handoff). Otherwise the WHERE fails, the UPDATE is skipped, no row is returned, and the
+      // existing owner KEEPS the token — a known raw token cannot hijack another user's device.
       const rows = await sql<{ id: string }[]>`
         INSERT INTO push_tokens (user_id, platform, token, device_id)
         VALUES (${args.userId}, ${args.platform}, ${args.token}, ${args.deviceId})
@@ -276,43 +242,30 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
            OR (EXCLUDED.device_id IS NOT NULL AND push_tokens.device_id = EXCLUDED.device_id)
         RETURNING id
       `
-      // 1 row -> inserted or owner/same-device update. 0 rows -> a foreign-owned conflict left untouched.
       return rows.length > 0 ? "stored" : "conflict"
     },
 
     async deletePushTokensForUser(userId: string): Promise<void> {
-      // Account erasure: hard-remove the user's device push tokens so no device identifier is left behind
-      // (and no further notifications reach a deleted account's devices). Unlike normal rotation, which
-      // soft-revokes via revoked_at for a device audit trail, erasure deletes the rows outright.
+      // Account erasure HARD-deletes (a push token is a device identifier), unlike normal rotation which
+      // soft-revokes via revoked_at to keep a device audit trail.
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
     },
   }
 }
 
-/**
- * Join SET assignment fragments with commas into one fragment for the DO UPDATE clause. Callers guarantee
- * a non-empty array (the empty-patch case is handled before this is reached).
- */
-function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
-  let acc = fragments[0]!
-  for (let i = 1; i < fragments.length; i++) {
-    acc = sql`${acc}, ${fragments[i]!}`
-  }
-  return acc
+function isEmptyPatch(patch: NotificationPrefsPatch): boolean {
+  return (
+    patch.push === undefined &&
+    patch.cleanupChat === undefined &&
+    patch.reportUpdates === undefined &&
+    patch.follows === undefined &&
+    patch.mentions === undefined &&
+    patch.quietHours === undefined
+  )
 }
 
-/** Canonical UUID shape; the cursor id is cast `${parsed.id}::uuid`, so a non-UUID would 22P02 -> 500. */
-const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/** Parse an `${iso}|${id}` time cursor; null when absent/malformed. */
-function parseTimeCursor(cursor: string | null): { at: Date; id: string } | null {
-  if (cursor === null) return null
-  const idx = cursor.indexOf("|")
-  if (idx <= 0) return null
-  const iso = cursor.slice(0, idx)
-  const id = cursor.slice(idx + 1)
-  const at = new Date(iso)
-  // Reject a non-UUID id (cast ::uuid downstream -> 22P02 -> unhandled 500); degrade to first page.
-  if (Number.isNaN(at.getTime()) || !CURSOR_UUID_RE.test(id)) return null
-  return { at, id }
+// Join SET assignment fragments with commas. Callers guarantee a non-empty array (the empty-patch case
+// is handled before this is reached).
+function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
+  return fragments.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
 }

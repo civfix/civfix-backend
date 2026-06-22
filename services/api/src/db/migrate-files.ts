@@ -11,8 +11,8 @@
  * equal to intended order; we sort explicitly so callers never depend on readdir() ordering, which is
  * platform/filesystem dependent.
  *
- * Non-.sql entries are ignored. Comparison is a plain code-unit compare (localeCompare with the "en"
- * locale and numeric:false) so it is deterministic across machines.
+ * Non-.sql entries are ignored. Comparison is a plain `<`/`>` UTF-16 code-unit compare (NOT
+ * localeCompare) so it is deterministic across machines/locales.
  *
  * @param entries raw directory entries (file names, not paths).
  * @returns the .sql file names, sorted ascending.

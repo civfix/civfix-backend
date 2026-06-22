@@ -16,12 +16,6 @@
 
 import { randomUUID } from "node:crypto"
 import {
-  buildDomainHealth,
-  computeRates,
-  deriveWho,
-  mintThreadToken,
-  toMessageDTO,
-  toThreadListItem,
   MAIL_STATS_WINDOW_DAYS,
   type CreateThreadInput,
   type InsertMessageInput,
@@ -36,9 +30,16 @@ import {
   type OutreachStateRecord,
   type RecordEventInput,
   type ThreadInit,
-} from "./mail-repository.drizzle.js"
+} from "./mail-repository.js"
+import {
+  deriveWho,
+  mintThreadToken,
+  toMessageDTO,
+  toThreadListItem,
+} from "./mail-mappers.js"
+import { buildDomainHealth, computeRates } from "./mail-stats.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
-import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+import type { MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
 /** A stored mail_events row (the subset the stats aggregation reads). */
 export interface StoredMailEvent {
@@ -88,8 +89,6 @@ export class InMemoryMailRepository implements MailRepository {
     this.tick += 1
     return new Date(this.now.getTime() + this.tick)
   }
-
-  // --- seed / inspect helpers -------------------------------------------------
 
   /** Seed a thread directly. Returns the stored record (a token is minted when absent). */
   seedThread(over: Partial<MailThreadRecord> = {}): MailThreadRecord {
@@ -147,8 +146,6 @@ export class InMemoryMailRepository implements MailRepository {
   messagesOf(threadId: string): MailMessageRecord[] {
     return this.messages.filter((m) => m.threadId === threadId).sort((a, b) => cmpCreated(a, b))
   }
-
-  // --- MailRepository ---------------------------------------------------------
 
   upsertThreadByToken(token: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
     for (const t of this.threads.values()) {
@@ -273,6 +270,8 @@ export class InMemoryMailRepository implements MailRepository {
     const limit = clampLimit(input.limit)
     const anchor = decodeCursor(input.cursor)
     const q = input.q !== undefined ? input.q.trim().toLowerCase() : ""
+    // One pass over the messages so the per-thread latest is O(messages) total, not O(threads×messages).
+    const latestByThread = this.latestByThread()
 
     const sortKey = (t: MailThreadRecord): number => (t.lastMessageAt ?? t.createdAt).getTime()
 
@@ -285,7 +284,7 @@ export class InMemoryMailRepository implements MailRepository {
     }
 
     const rows = [...this.threads.values()].filter((t) => {
-      const latest = this.latestOf(t.id)
+      const latest = latestByThread.get(t.id) ?? null
       if (
         input.jurisdictionGeoid !== undefined &&
         t.jurisdictionGeoid !== input.jurisdictionGeoid
@@ -314,7 +313,7 @@ export class InMemoryMailRepository implements MailRepository {
 
     const hasMore = rows.length > limit
     const page = hasMore ? rows.slice(0, limit) : rows
-    const items = page.map((t) => toThreadListItem(t, this.latestOf(t.id)))
+    const items = page.map((t) => toThreadListItem(t, latestByThread.get(t.id) ?? null))
     const last = page[page.length - 1]
     const nextCursor =
       hasMore && last
@@ -424,12 +423,12 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve({ ...record })
   }
 
-  /** The latest (newest) message of a thread, or null. */
-  private latestOf(threadId: string): MailMessageRecord | null {
-    let latest: MailMessageRecord | null = null
+  /** threadId -> its latest (newest) message, computed in one pass over all messages. */
+  private latestByThread(): Map<string, MailMessageRecord> {
+    const latest = new Map<string, MailMessageRecord>()
     for (const m of this.messages) {
-      if (m.threadId !== threadId) continue
-      if (latest === null || cmpCreated(m, latest) > 0) latest = m
+      const cur = latest.get(m.threadId)
+      if (cur === undefined || cmpCreated(m, cur) > 0) latest.set(m.threadId, m)
     }
     return latest
   }
@@ -455,8 +454,3 @@ function cmpThreadNewest(a: MailThreadRecord, b: MailThreadRecord): number {
 // Re-export `deriveWho` so tests that assert the message "who" projection can import it from the memory
 // module alongside the repo (keeps the test import surface to one module).
 export { deriveWho }
-
-// Reference the imported MailDirection type so the explicit import is "used" by a type alias that
-// documents the inbound/outbound contract for readers of this module.
-/** Direction of a stored message: "in" (received) or "out" (sent by civfix). */
-export type StoredMailDirection = MailDirection

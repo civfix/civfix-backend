@@ -53,9 +53,18 @@ export function makeDb(databaseUrl: string, opts: { max?: number } = {}): DbHand
   const common = {
     // Fail fast rather than hanging forever if the host is unreachable.
     connect_timeout: 10,
+    // Close idle sockets after 60s so a NAT/firewall/managed-PG idle reaper can't drop one under us and
+    // resurface as a stale-connection error on the next query; recycle every 30min as a backstop.
+    idle_timeout: 60,
+    max_lifetime: 60 * 30,
     // Let the app own its lifecycle/logging; keep the driver quiet by default.
     onnotice: () => {},
+    // prepare defaults true — correct on a DIRECT Postgres. If a txn-mode pooler (PgBouncer/Supavisor) is
+    // ever introduced, set prepare:false here or it errors with "prepared statement already exists".
   }
+  // Backend budget: this factory opens TWO pools (raw max:10 + drizzle max:4 = up to 14 backends per
+  // process), and the media-worker opens its own pair via @civfix/api/db. Size N replicas + the worker
+  // against Postgres max_connections (≈100) and leave headroom.
   // Raw client for the hand-written SQL repositories (PostGIS / transactional SQL). Full default value
   // serialization — NEVER passed to drizzle (see the note above).
   const sql = postgres(databaseUrl, { ...common, max: opts.max ?? 10 })

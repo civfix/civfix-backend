@@ -13,18 +13,10 @@
 
 import type { MyVerificationDTO } from "@civfix/shared"
 
-// ---------------------------------------------------------------------------
-// Repository seam (faked in tests)
-// ---------------------------------------------------------------------------
-
 export interface VerificationRepository {
   /** Whether the user has a `verified` user_verification row (drives the verified mark). */
   isVerified(userId: string): Promise<boolean>
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 export interface VerificationServiceDeps {
   repo: VerificationRepository

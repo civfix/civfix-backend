@@ -41,7 +41,7 @@ import {
   DEFAULT_TIGER_VINTAGE,
   type BoundaryJob,
 } from "../src/db/boundaries/manifest.js"
-import { ingestGeoJsonFile } from "../src/db/ingest-jurisdictions-core.js"
+import { ingestGeoJsonFile, ingestGeoJsonSeqFile } from "../src/db/ingest-jurisdictions-core.js"
 import { backfillReports } from "../src/db/backfill-jurisdictions-core.js"
 
 const PREFIX = "refresh-boundaries"
@@ -212,26 +212,34 @@ async function main(): Promise<void> {
     // 4) Ingest each layer + backfill, against prod over the tunnel.
     handle = makeDb(databaseUrl, { max: 1 })
     const rowCounts: Record<string, number> = {}
+    let federalLoaded = false
     for (const { job, path } of converted) {
-      const text = readFileSync(path, "utf8")
-      const { upserted, skipped, features } = await ingestGeoJsonFile(
-        handle.sql,
-        text,
-        job.layer,
-        job.ingestGeoidPrefix ?? undefined,
-      )
-      rowCounts[job.layer] = (rowCounts[job.layer] ?? 0) + upserted
-      log(`[${job.layer}] upserted ${upserted} (skipped ${skipped} of ${features})`)
-      if (upserted === 0) warn(`[${job.layer}] upserted 0 rows — check the source/conversion`)
+      try {
+        // The federal (PAD-US) layer is emitted as GeoJSONSeq (.geojsonl) and STREAMED — it is >512 MB,
+        // which exceeds Node's max string length, so readFileSync would throw ERR_STRING_TOO_LONG. The
+        // small TIGER layers are read whole.
+        const { upserted, skipped, features } = path.endsWith(".geojsonl")
+          ? await ingestGeoJsonSeqFile(handle.sql, path, job.layer, job.ingestGeoidPrefix ?? undefined)
+          : await ingestGeoJsonFile(handle.sql, readFileSync(path, "utf8"), job.layer, job.ingestGeoidPrefix ?? undefined)
+        rowCounts[job.layer] = (rowCounts[job.layer] ?? 0) + upserted
+        log(`[${job.layer}] upserted ${upserted} (skipped ${skipped} of ${features})`)
+        if (upserted === 0) warn(`[${job.layer}] upserted 0 rows — check the source/conversion`)
+        if (isFederal(job)) federalLoaded = true
+      } catch (err) {
+        // Federal is best-effort: an ingest hiccup on it must NOT discard the TIGER layers already committed
+        // (each layer is its own transaction). Any non-federal failure is fatal.
+        if (!isFederal(job)) throw err
+        warn(`[federal] ingest failed — skipping federal layer (${(err as Error).message})`)
+      }
     }
 
     log("backfilling reports.jurisdiction_geoid (NULL → resolved)…")
     const { resolved, stayedNull } = await backfillReports(handle.sql)
     log(`backfill: ${resolved} reports resolved, ${stayedNull} still null (outside all coverage)`)
 
-    // 5) Record the load (audit trail for this manual, ~annual process). Tag notes federal presence.
-    const hasFederal = converted.some((c) => isFederal(c.job))
-    const tag = hasFederal ? vintageTag(year) : `${vintageTag(year)}-nofed`
+    // 5) Record the load (audit trail for this manual, ~annual process). Tag notes federal presence —
+    //    "-nofed" if PAD-US was missing/failed at any of fetch, convert, OR ingest.
+    const tag = federalLoaded ? vintageTag(year) : `${vintageTag(year)}-nofed`
     await handle.sql`
       INSERT INTO boundary_vintage (id, vintage_tag, tiger_vintage, padus_version, row_counts, loaded_at)
       VALUES (true, ${tag}, ${year}, ${PADUS_VERSION}, ${handle.sql.json(rowCounts as Parameters<typeof handle.sql.json>[0])}, now())
