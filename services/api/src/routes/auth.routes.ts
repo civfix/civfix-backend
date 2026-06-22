@@ -1,16 +1,6 @@
 /**
  * Auth route plugin.
  *
- * Endpoints (all bodies/queries validated against the @civfix/shared Zod schemas):
- *   POST /auth/apple          verify an Apple identity token, sign in / sign up.
- *   POST /auth/google         verify a Google ID token (mobile), sign in / sign up.
- *   GET  /auth/google/start   begin the Google web flow (Arctic auth URL + PKCE/state cookie).
- *   GET  /auth/google/callback complete the Google web flow.
- *   POST /auth/otp/request    issue an email OTP.
- *   POST /auth/otp/verify     verify an email OTP, sign in / sign up.
- *   GET  /auth/session        report the current session (Redis-backed via req.auth).
- *   POST /auth/logout         revoke the current session (requires auth + CSRF).
- *
  * Transport: every sign-in endpoint returns a SessionResponse whose shape depends on X-Client.
  * For web it sets the httpOnly session cookie + a readable CSRF cookie (and returns csrfToken). For
  * mobile it returns the bearer token in the body. See ./auth-transport for the rule.
@@ -35,7 +25,6 @@ import {
   type HandleAvailableResponse,
   type UserDTO,
 } from "@civfix/shared"
-import { ZodError, type ZodTypeAny, type z } from "zod"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
@@ -45,6 +34,7 @@ import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserved-handles.js"
 import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import {
@@ -58,16 +48,16 @@ import {
 } from "../auth/transport.js"
 import type { UserRecord } from "../auth/stores.js"
 
-/** Short-lived signed cookie holding the Google web flow's state + PKCE verifier. */
 const OAUTH_STATE_COOKIE = "civfix_oauth"
-/** OAuth handshake cookie lifetime (10 minutes is ample for a redirect round trip). */
+// 10 minutes is ample for a redirect round trip.
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
 
-/**
- * Register the auth routes under their own encapsulated plugin context, then expose it from the
- * caller. `authServices` is read off the app (decorated in server.ts) so this plugin stays pure
- * routing and works identically for the injected-test bundle and the production bundle.
- */
+// Per-route ceilings tighter than the global 300/min: OTP issue sends an email, OTP verify and the OAuth
+// callback do token exchange/verify — all brute-force / spam surfaces.
+const OTP_REQUEST_RATE_LIMIT = { max: 5, timeWindow: "1 minute" } as const
+const OTP_VERIFY_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
+const OAUTH_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
 export async function registerAuthRoutes(
   app: FastifyInstance,
   container: Container,
@@ -75,30 +65,23 @@ export async function registerAuthRoutes(
   const services = app.authServices
   const webOrigins = container.env.WEB_ORIGINS
 
-  /**
-   * Whether a (format-valid) @handle is RESERVED: on the static blocklist, OR colliding with an existing
-   * jurisdictions.handle. The jurisdiction collision query runs only when a database is configured
-   * (production / integration); the offline auth harness injects in-memory stores with no DATABASE_URL, so
-   * there only the static blocklist applies. The static check alone is enough for those tests.
-   */
+  // RESERVED = on the static blocklist OR colliding with an existing jurisdictions.handle. The collision
+  // query runs only when a DB is configured; the offline auth harness injects in-memory stores with no
+  // DATABASE_URL, where the static blocklist alone applies.
   async function isReservedOrJurisdiction(handle: string): Promise<boolean> {
     if (isReservedHandle(handle)) return true
     if (!container.env.DATABASE_URL) return false
     return handleCollidesWithJurisdiction(container.getDb().sql, handle)
   }
 
-  // -------------------------------------------------------------------------
-  // Email OTP
-  // -------------------------------------------------------------------------
-
-  route(app, "otpRequest", async (request, reply) => {
+  route(app, "otpRequest", { config: { rateLimit: OTP_REQUEST_RATE_LIMIT } }, async (request, reply) => {
     const body = parse(EmailOtpRequestRequestSchema, request.body)
     const result = await services.otp.issueOtp(body.email, request.ip || null)
     const payload: EmailOtpRequestResponse = { sent: true, resendAfterSec: result.resendAfterSec }
     reply.status(200).send(payload)
   })
 
-  route(app, "otpVerify", async (request, reply) => {
+  route(app, "otpVerify", { config: { rateLimit: OTP_VERIFY_RATE_LIMIT } }, async (request, reply) => {
     const body = parse(EmailOtpVerifyRequestSchema, request.body)
     // request.ip is the real client (trusted-proxy enforced; see server.ts) so the per-IP verify
     // throttle keys on the genuine network, not a spoofable X-Forwarded-For.
@@ -106,13 +89,9 @@ export async function registerAuthRoutes(
     await issueSession(services, request, reply, userId)
   })
 
-  // -------------------------------------------------------------------------
-  // Apple / Google (mobile token flows)
-  // -------------------------------------------------------------------------
-
   route(app, "appleSignIn", async (request, reply) => {
     const body = parse(AppleSignInRequestSchema, request.body)
-    // P2-3: bind the nonce when the client supplied one (closes ID-token replay within the expiry).
+    // Bind the nonce when the client supplied one (closes ID-token replay within the expiry).
     const user = await services.oauth.signInWithAppleIdToken(
       body.identityToken,
       body.fullName,
@@ -127,21 +106,16 @@ export async function registerAuthRoutes(
     await issueSessionForUser(services, request, reply, user)
   })
 
-  // -------------------------------------------------------------------------
-  // Google web (authorization-code + PKCE)
-  // -------------------------------------------------------------------------
-
-  route(app, "googleStart", async (request, reply) => {
+  route(app, "googleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const startQuery = parse(OAuthStartQuerySchema, request.query)
-    // P2-2 (open-redirect prevention): validate the post-login `redirect` target against the WEB_ORIGINS
-    // allowlist (or accept a safe relative internal path) BEFORE stashing it, so the callback can only
-    // ever bounce the browser to a trusted location. A disallowed value is a 422.
+    // Open-redirect guard: validate the post-login `redirect` against the WEB_ORIGINS allowlist (or a safe
+    // relative path) BEFORE stashing it, so the callback can only ever bounce to a trusted location.
     if (startQuery.redirect !== undefined && !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)) {
       throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
     }
     const auth = services.oauth.createGoogleAuthUrl()
-    // Stash state + PKCE verifier + the validated post-login redirect in a signed, httpOnly, short-lived
-    // cookie. The callback validates the state, then sends the browser on to `redirect` after sign-in.
+    // Stash state + PKCE verifier + the validated redirect in a signed, httpOnly, short-lived cookie. The
+    // callback validates the state, then sends the browser on to `redirect` after sign-in.
     const stash: OAuthStash = {
       state: auth.state,
       codeVerifier: auth.codeVerifier,
@@ -158,7 +132,7 @@ export async function registerAuthRoutes(
     reply.redirect(auth.url)
   })
 
-  route(app, "googleCallback", async (request, reply) => {
+  route(app, "googleCallback", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const query = parse(OAuthCallbackQuerySchema, request.query)
     const stash = readOAuthStash(request)
     if (!stash || stash.state !== query.state) {
@@ -175,10 +149,6 @@ export async function registerAuthRoutes(
       webRedirectTo: target,
     })
   })
-
-  // -------------------------------------------------------------------------
-  // Session check + logout
-  // -------------------------------------------------------------------------
 
   route(app, "session", async (request, reply) => {
     const payload = await buildSessionCheck(services, request, reply)
@@ -197,11 +167,6 @@ export async function registerAuthRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // First-run registration: username availability + profile completion
-  // -------------------------------------------------------------------------
-
-  // GET /me/handle-available?handle=  [auth]  - is this username free for me to take?
   route(app, "checkHandle", async (request, reply) => {
     const userId = requireAuth(request)
     const { handle } = parse(HandleAvailableRequestSchema, request.query)
@@ -280,11 +245,6 @@ export async function registerAuthRoutes(
   })
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Options shared by the session-issuing helpers. */
 interface IssueSessionOptions {
   /** Force a transport regardless of the X-Client header (the Google web callback forces "web"). */
   forceKind?: ClientKind
@@ -482,25 +442,4 @@ function isAllowedPostLoginRedirect(redirect: string, webOrigins: readonly strin
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return false
   return webOrigins.includes(url.origin)
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on
- * failure so the canonical error envelope is returned instead of a generic 500. Centralizes the
- * Zod-error -> AppError mapping for the auth routes.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
-  }
 }

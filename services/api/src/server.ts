@@ -1,14 +1,11 @@
 /**
  * Fastify server factory + lifecycle.
  *
- *   buildServer(env?)  builds a fully-configured Fastify instance WITHOUT requiring a live database.
- *                      Error handler, plugins, auth decorator, and routes are registered. Safe for
- *                      `app.inject(...)` in unit tests with all fakes on (the default outside prod).
- *   start(env?)        builds the server, initializes error reporting, listens on PORT, and installs
- *                      SIGTERM/SIGINT handlers for graceful shutdown (server -> jobs/redis/db).
- *
- * The container is attached to the app via `app.decorate("container", ...)` so routes and later
- * plugins can reach the seams.
+ *   buildServer(opts?)  builds a fully-configured Fastify instance WITHOUT requiring a live database.
+ *                       Error handler, plugins, auth decorator, and routes are registered. Safe for
+ *                       `app.inject(...)` in unit tests with all fakes on (the default outside prod).
+ *   start(env?)         builds the server, initializes error reporting, listens on PORT, and installs
+ *                       SIGTERM/SIGINT handlers for graceful shutdown (server -> jobs/redis/db).
  */
 
 import Fastify, { type FastifyInstance } from "fastify"
@@ -45,7 +42,6 @@ import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** The DI container holding all 9 seams plus db/redis handles. */
     container: Container
   }
 }
@@ -62,66 +58,41 @@ export interface BuildServerOptions {
    */
   authServices?: AuthServices
   /**
-   * Inject an in-memory media repository (tests). When present the media routes use it instead of the
-   * Drizzle-backed repo, so the create/finalize/getMedia HTTP flow runs offline (no Docker). Omitted in
-   * production: the routes reach the database lazily via container.getDb().
+   * Per-route in-memory overrides (tests). Each is decorated onto the app under the same name and read
+   * by its route plugin (`app.<name>`); left unset in production, where every route builds its
+   * Drizzle-backed repo + real seams lazily from `container`. Keep the field name === the decorator name
+   * the route reads — they are wired by the data-driven loop in buildServer.
    */
   mediaRepo?: MediaRepository
-  /**
-   * Inject report-service overrides (tests): an in-memory ReportRepository plus optional fake
-   * jurisdiction/presign so the create/get/my-list/map/follow HTTP flow runs offline (no Docker). Left
-   * unset in production, where the report routes build the Drizzle-backed repo + real seams lazily.
-   */
   reportOverrides?: ReportServiceOverrides
-  /**
-   * Inject an anon-service override (tests): a fully-wired AnonService over an in-memory repo + fakes,
-   * so the POST /anon/reports abuse + held-create flow and GET /anon/reports/:id/status run offline.
-   * Left unset in production, where the anon routes build the Drizzle-backed service lazily.
-   */
   anonOverride?: AnonServiceOverride
-  /**
-   * Inject a claim-service override (tests): a ClaimService over an in-memory repo, so the
-   * GET /claim/nudge + POST /claim/report flow runs offline. Left unset in production.
-   */
   claimOverride?: ClaimServiceOverride
-  /**
-   * Inject cleanup-service overrides (tests): an in-memory CleanupRepository so the cleanups
-   * create/list/get/join/leave + member-gated history HTTP flow runs offline. Left unset in production.
-   */
   cleanupOverrides?: CleanupServiceOverrides
-  /**
-   * Inject chat/threads overrides (tests): an isMember probe + in-memory ThreadsRepository (+ optional
-   * shared ChatReadState) so the WS gateway and GET /threads run offline. Left unset in production.
-   */
   chatOverrides?: ChatGatewayOverrides
-  /**
-   * Inject social-service overrides (tests): an in-memory SocialRepository + an optional new_follower
-   * notifier (spy) so the people/follow/profile HTTP flow runs offline. Left unset in production, where
-   * the social routes build the Drizzle-backed repo + the notification service as the notifier lazily.
-   */
   socialOverrides?: SocialServiceOverrides
-  /**
-   * Inject notification-service overrides (tests): an in-memory NotificationRepository so the
-   * list/read/prefs/push-register HTTP flow runs offline (the push seam stays the container's FakePushSender).
-   * Left unset in production, where the notification routes build the Drizzle-backed repo lazily.
-   */
   notificationOverrides?: NotificationServiceOverrides
-  /**
-   * Inject a data-export service override (tests): so POST /me/data-export runs offline against a FakeMailer
-   * + in-memory user store. Left unset in production, where the route builds the service from the container.
-   */
   dataExportOverride?: DataExportOverride
-  /**
-   * Inject moderation-route overrides (tests): an in-memory ModerationRepository so the PUBLIC content-report
-   * route (POST /content-reports) AND the admin moderation queue run offline against the SAME repo. Left
-   * unset in production, where both build the Drizzle-backed repo lazily.
-   */
   moderationOverrides?: ModerationRouteOverrides
 }
 
 /**
- * Build a configured Fastify instance. Does not listen and does not connect to any infra.
+ * The test-injection override keys: each is decorated onto the app under its own name (the route plugin
+ * reads `app.<name>`). buildServer iterates this list so there is ONE place that wires every override.
  */
+const OVERRIDE_KEYS = [
+  "mediaRepo",
+  "reportOverrides",
+  "anonOverride",
+  "claimOverride",
+  "cleanupOverrides",
+  "chatOverrides",
+  "socialOverrides",
+  "notificationOverrides",
+  "dataExportOverride",
+  "moderationOverrides",
+] as const satisfies readonly (keyof BuildServerOptions)[]
+
+/** Build a configured Fastify instance. Does not listen and does not connect to any infra. */
 export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
   const env = opts.env ?? loadEnv()
   const container = opts.container ?? buildContainer(env)
@@ -130,11 +101,33 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     genReqId,
     // Trust ONLY the configured upstream hops for X-Forwarded-* so request.ip is the real client and a
     // client-supplied X-Forwarded-For cannot spoof the per-IP abuse/rate-limit key. Defaults to the
-    // internal loopback+private ranges (see env.TRUST_PROXY / plugins/trust-proxy).
+    // internal loopback+private ranges (see env.TRUST_PROXY / env/parsers parseTrustProxy).
     trustProxy: env.TRUST_PROXY,
+    // App-layer DoS defense-in-depth (the proxy is required but not sufficient): cap body size and bound
+    // slow-client / slowloris exposure. Routes that legitimately need a bigger body opt into a per-route
+    // bodyLimit (the inbound-mail webhook fetches the .eml from R2, so it does not need one).
+    bodyLimit: 262144,
+    requestTimeout: 15000,
+    connectionTimeout: 10000,
+    keepAliveTimeout: 5000,
     disableRequestLogging: false,
     logger: {
       level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
+      // disableRequestLogging:false logs req/res — redact the auth/cookie/CSRF headers and any PII-ish
+      // body fields so secrets never reach the logs.
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "res.headers['set-cookie']",
+          "req.headers['x-csrf-token']",
+          "*.password",
+          "*.token",
+          "*.otp",
+          "*.email",
+        ],
+        censor: "[REDACTED]",
+      },
     },
   })
 
@@ -154,92 +147,51 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   // lazily-connecting ioredis client, so this does not open a socket until the first limited request.
   await registerRateLimit(app, env.REDIS_URL ? { redis: container.getRedis() } : {})
 
-  // API version gate (onRequest): rejects unknown/retired `/vN` segments (and, once a version is flipped
-  // to deprecated/sunset, signals/blocks accordingly) before any handler runs. Registered AFTER rate
-  // limiting (so a flood of bad-version requests is still throttled) and BEFORE the auth-context hook
-  // (so a malformed version is rejected without spending a session resolve). Derives nothing per-route;
-  // the served-versions policy lives in src/versioning/policy.ts.
+  // API version gate (onRequest): rejects unknown/retired `/vN` segments before any handler runs.
+  // Registered AFTER rate limiting (so a flood of bad-version requests is still throttled) and BEFORE
+  // the auth-context hook (so a malformed version is rejected without spending a session resolve).
   await registerVersionGate(app)
 
-  // Auth services: injected (tests) or built from the container (production: Pg stores + Redis +
-  // mailer). In all-fakes mode with no DATABASE_URL/REDIS_URL there is no infra to back them, so the
-  // bundle is left off; the context hook then resolves every request as anonymous and the auth
-  // routes are not mounted. This keeps `buildServer` bootable with no infra (health/unit tests).
+  // Auth services: injected (tests) or built from the container (production: Pg stores + Redis + mailer).
+  // In all-fakes mode with no DATABASE_URL/REDIS_URL there is no infra to back them.
   const authServices = resolveAuthServices(opts, env, container)
   if (authServices) {
     app.decorate("authServices", authServices)
+  } else if (env.NODE_ENV === "production") {
+    // FAIL CLOSED IN PROD: a missing auth bundle means DATABASE_URL/REDIS_URL are unset, which in
+    // production is a misconfiguration. Booting "healthy" but 404-ing all /auth/* and /admin/* (the
+    // reported operator-dashboard outage) is a worse failure than a hard boot error, and the deploy is
+    // NOT health-gated. Hard-fail here, consistent with di.ts's [BOOT]-credential aggregation. Keyed on
+    // the env that built this server (not the global isProd cache) so an embedded/test boot is precise.
+    throw new Error(
+      "auth bundle absent in production: DATABASE_URL and REDIS_URL must both be set " +
+        "(citizen /auth/* and operator /admin/* routes require them). Refusing to boot.",
+    )
   } else {
-    // No auth bundle => registerRoutes mounts NEITHER the citizen /auth/* NOR the operator /admin/*
-    // routes, so every request to them returns Fastify's route-not-found 404 (e.g. "Route GET
-    // /admin/auth/session not found"). This is the intended all-fakes offline boot for local dev and
-    // unit tests, but in a real deployment it is a MISCONFIGURATION: DATABASE_URL/REDIS_URL are unset,
-    // which only happens when NODE_ENV !== "production" (production REQUIRES both — see env.ts). Warn
-    // loudly so a server that silently booted in all-fakes mode (healthy /healthz, 404 on every auth /
-    // admin route) is diagnosable from the logs rather than a mystery 404. Silent in tests (logger off).
+    // Non-prod offline boot: no auth bundle => registerRoutes mounts NEITHER /auth/* NOR /admin/*, so
+    // those routes 404. This is the intended all-fakes path for local dev / unit tests. Warn so a server
+    // that silently booted in all-fakes mode is diagnosable from the logs.
     app.log.warn(
       {
         nodeEnv: env.NODE_ENV,
         hasDatabaseUrl: env.DATABASE_URL.length > 0,
         hasRedisUrl: env.REDIS_URL.length > 0,
       },
-      "auth bundle absent: citizen /auth/* and operator /admin/* routes are NOT mounted. " +
-        "These mount only when DATABASE_URL and REDIS_URL are both set; production sets NODE_ENV=production " +
-        "and requires both. If this is a deployed server, set NODE_ENV=production and the infra URLs.",
+      "auth bundle absent: citizen /auth/* and operator /admin/* routes are NOT mounted (no DATABASE_URL/REDIS_URL).",
     )
   }
 
-  // Optional injected media repository (tests). Left unset in production so the media routes build the
-  // Drizzle-backed repo from the lazily-created DB handle.
-  if (opts.mediaRepo) {
-    app.decorate("mediaRepo", opts.mediaRepo)
+  // Test-injection overrides: one data-driven wiring point. Each is decorated under its own name so the
+  // route plugin reads `app.<name>`; left unset in production so every route builds its Drizzle-backed
+  // repo from the lazily-created DB handle + container seams.
+  for (const key of OVERRIDE_KEYS) {
+    const value = opts[key]
+    // Decorate under the literal name the route plugin reads (`app.<key>`). decorate() is cast to a loose
+    // signature because the loop spans several override types; each route still reads its own typed decorator.
+    if (value !== undefined) (app.decorate as (name: string, value: unknown) => void)(key, value)
   }
 
-  // Optional injected report-service overrides (tests). Left unset in production so the report routes
-  // build the Drizzle-backed repo + real jurisdiction/presign seams from the lazily-created DB handle.
-  if (opts.reportOverrides) {
-    app.decorate("reportOverrides", opts.reportOverrides)
-  }
-
-  // Optional injected anon/claim service overrides (tests). Left unset in production so those routes
-  // build their Drizzle-backed services from the lazily-created DB handle + container seams.
-  if (opts.anonOverride) {
-    app.decorate("anonOverride", opts.anonOverride)
-  }
-  if (opts.claimOverride) {
-    app.decorate("claimOverride", opts.claimOverride)
-  }
-
-  // Optional injected cleanup/chat overrides (tests). Left unset in production so those routes build
-  // their Drizzle-backed repos from the lazily-created DB handle + the container's chat seam.
-  if (opts.cleanupOverrides) {
-    app.decorate("cleanupOverrides", opts.cleanupOverrides)
-  }
-  if (opts.chatOverrides) {
-    app.decorate("chatOverrides", opts.chatOverrides)
-  }
-
-  // Optional injected social/notification overrides (tests). Left unset in production so those routes
-  // build their Drizzle-backed repos from the lazily-created DB handle (+ the container push seam).
-  if (opts.socialOverrides) {
-    app.decorate("socialOverrides", opts.socialOverrides)
-  }
-  if (opts.notificationOverrides) {
-    app.decorate("notificationOverrides", opts.notificationOverrides)
-  }
-
-  // Optional injected data-export + moderation overrides (tests). Left unset in production so the
-  // /me/data-export and /content-reports routes build their services from the container lazily.
-  if (opts.dataExportOverride) {
-    app.decorate("dataExportOverride", opts.dataExportOverride)
-  }
-  if (opts.moderationOverrides) {
-    app.decorate("moderationOverrides", opts.moderationOverrides)
-  }
-
-  // Auth context hook (resolves req.auth from the session, or anonymous).
   await registerAuthContext(app)
-
-  // Domain routes (health always; auth when an auth bundle is present).
   await registerRoutes(app, container, { authMounted: authServices !== undefined })
 
   return app
@@ -248,7 +200,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
 /**
  * Decide which auth bundle to use. Prefer an injected bundle; otherwise build from the container only
  * when both DATABASE_URL and REDIS_URL are present (real infra). Returns undefined in the no-infra
- * all-fakes case so the server still boots for health/unit tests.
+ * all-fakes case (the caller hard-fails in prod, warns-and-degrades otherwise).
  */
 function resolveAuthServices(
   opts: BuildServerOptions,
@@ -262,9 +214,7 @@ function resolveAuthServices(
 
 let shuttingDown = false
 
-/**
- * Build, listen, and wire graceful shutdown. Returns the running app (useful for tests/embedding).
- */
+/** Build, listen, and wire graceful shutdown. Returns the running app (useful for tests/embedding). */
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   await initErrorReporting({
     ...(env.GLITCHTIP_DSN !== undefined ? { dsn: env.GLITCHTIP_DSN } : {}),
@@ -274,29 +224,22 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
 
   const app = await buildServer({ env })
 
-  // Start the jobs queue BEFORE listening so the hot enqueue paths (POST /media/:uploadId/finalize ->
-  // media.checks; POST /reports + /anon/reports -> jurisdiction.discovery) work the moment we serve
-  // traffic. Only the real PgBossJobs needs starting (it opens pg-boss + creates the API's queues), and
-  // only when a database is actually configured; FakeJobs has no start. We feature-detect start() and
-  // gate on DATABASE_URL so an all-fakes boot (no infra) stays connectionless.
+  // Start the jobs queue BEFORE listening so the hot enqueue paths (finalize -> media.checks; report
+  // create -> jurisdiction.discovery) work the moment we serve traffic. Only the real PgBossJobs needs
+  // starting; FakeJobs has no start. start()/stop() are not on the Jobs interface (lifecycle is
+  // adapter-specific), so we feature-detect and gate on DATABASE_URL to keep an all-fakes boot
+  // connectionless.
   const startableJobs = app.container.jobs as { start?: () => Promise<void> }
   if (typeof startableJobs.start === "function" && env.DATABASE_URL) {
     await startableJobs.start()
     app.log.info("jobs: queue started")
 
-    // Phase 2 outreach seam: register the outreach.digest cron + worker AFTER the API queues are up,
-    // and only when real (pg-boss) jobs back a real database (same gate as the queue start above).
-    // WAVE-1 this is a no-op; wave 2 fills registerOutreachJobs (see services/admin/outreach-jobs.ts).
+    // Register the outreach.digest cron, the inbound-mail sweep (+ one boot sweep to drain anything the
+    // CF Email Worker buffered to R2 while the API was down), and the jurisdiction-discovery worker —
+    // all gated on real pg-boss + a real DATABASE_URL.
     await registerOutreachJobs(app.container)
-
-    // Inbound-mail sweep: register the cron + worker, then enqueue ONE boot sweep so anything the
-    // Cloudflare Email Worker buffered to R2 while the API was down is drained immediately on startup.
     await registerInboundJobs(app.container)
     await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
-
-    // Jurisdiction-discovery worker: consume the `jurisdiction.discovery` jobs the report-create path
-    // already enqueues (an un-onboarded jurisdiction) and materialize the operator Discovery-queue task.
-    // Same gate as the inbound jobs (real pg-boss + a real DATABASE_URL).
     await registerDiscoveryJobs(app.container)
   }
 
@@ -304,20 +247,28 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     if (shuttingDown) return
     shuttingDown = true
     app.log.info({ signal }, "shutdown: draining")
+    // Force-exit watchdog: if the drain (app.close -> container.close -> flush) wedges, exit non-zero
+    // rather than hang the process and block the orchestrator's SIGKILL grace. unref'd so it never
+    // keeps the loop alive on a clean drain.
+    const watchdog = setTimeout(() => {
+      app.log.error("shutdown: drain timed out; forcing exit")
+      process.exit(1)
+    }, 20000)
+    watchdog.unref()
     try {
-      // 1) Stop accepting new connections, finish in-flight HTTP, and close every open WebSocket: the
-      //    @fastify/websocket preClose hook iterates server.clients and closes each one, then closes the
-      //    WS server. Our per-socket close handler leaves rooms and clears the heartbeat timer.
+      // 1) Stop accepting new connections, finish in-flight HTTP, close every open WebSocket (the
+      //    @fastify/websocket preClose hook + our per-socket close handler).
       await app.close()
-      // 2) Tear down seams + infra handles held by the container, in order: pg-boss (stop intake/drain),
-      //    the chat pub/sub subscriber (the dedicated duplicated Redis connection), the shared Redis
-      //    client, then the Postgres pool. See di.ts Container.close().
+      // 2) Tear down seams + infra handles (pg-boss, chat pub/sub subscriber, shared Redis, Postgres
+      //    pool). See di.ts Container.close().
       await app.container.close()
       // 3) Flush any buffered error reports.
       await flushErrorReporting()
+      clearTimeout(watchdog)
       app.log.info("shutdown: complete")
       process.exit(0)
     } catch (err) {
+      clearTimeout(watchdog)
       app.log.error({ err }, "shutdown: error during drain")
       process.exit(1)
     }

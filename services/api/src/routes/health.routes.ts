@@ -32,17 +32,21 @@ export async function registerHealthRoutes(
   })
 
   app.get("/readyz", async (_request, reply) => {
-    const usingFakeDbConsumers =
-      container.env.USE_FAKE_CHAT && container.env.USE_FAKE_PUSH && container.env.USE_FAKE_JOBS
-    const usingFakeRedisConsumers = container.env.USE_FAKE_CHAT
+    // Probe a backend only when a real consumer would have created its handle, OR one already exists
+    // (handles are lazy, so an existing handle is the unambiguous "real" signal). The env-flag fallback
+    // mirrors di.ts's real-vs-fake wiring; when di.ts grows a `container.usesRealDb`, prefer that to
+    // remove this hand-enumeration. (USE_FAKE_JOBS/PUSH/CHAT are the seams that force a DB handle; CHAT
+    // is the only Redis consumer outside the rate-limit store.)
+    const env = container.env
+    const realDbConsumer = !(env.USE_FAKE_CHAT && env.USE_FAKE_PUSH && env.USE_FAKE_JOBS)
+    const realRedisConsumer = !env.USE_FAKE_CHAT
 
     const body: ReadyBody = {
       ok: true,
       checks: { db: "skipped", redis: "skipped" },
     }
 
-    // DB check: only meaningful when a real consumer would have created the handle, or one exists.
-    if (!usingFakeDbConsumers || container.dbHandle) {
+    if (realDbConsumer || container.dbHandle) {
       try {
         const handle = container.getDb()
         await handle.sql`select 1`
@@ -54,8 +58,7 @@ export async function registerHealthRoutes(
       }
     }
 
-    // Redis check: same gating.
-    if (!usingFakeRedisConsumers || container.redis) {
+    if (realRedisConsumer || container.redis) {
       try {
         const redis = container.getRedis()
         const pong = await redis.ping()

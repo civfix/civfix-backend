@@ -15,6 +15,9 @@ import type { FastifyInstance } from "fastify"
 import type { RedisClient } from "../adapters/redis.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 
+/** Paths the global ceiling never throttles (health/readiness probes). Matched by exact path. */
+const RATE_LIMIT_ALLOWLIST = new Set(["/healthz", "/readyz"])
+
 export interface RateLimitOptions {
   /** Max requests per window per key. Default 300. */
   max?: number
@@ -43,9 +46,14 @@ export async function registerRateLimit(
     // Health/readiness checks must never be throttled. allowList as an ARRAY is matched against the
     // keyGenerator value (the IP) — so path strings never matched and these were in fact being throttled.
     // The function form receives the request, so match on the URL path (query string stripped).
-    allowList: (req) => {
-      const path = (req.url ?? "").split("?")[0]
-      return path === "/healthz" || path === "/readyz"
+    allowList: (req) => RATE_LIMIT_ALLOWLIST.has((req.url ?? "").split("?")[0] ?? ""),
+    // FAIL OPEN BY DESIGN for the GLOBAL ceiling: when the Redis store errs (a blip), do NOT 500 every
+    // request — let it through (the global cap is a coarse safety net, not a security control). Tighter
+    // per-route OTP/auth limits that must NOT fail open run their own fail-CLOSED counter path
+    // (auth/cache + otp), not this plugin's skipOnError.
+    skipOnError: true,
+    onExceeded: (req, key) => {
+      req.log.debug({ key, url: req.url }, "rate limit exceeded")
     },
     // Use the shared Redis store when a client is supplied; otherwise the plugin's default in-memory LRU.
     ...(opts.redis ? { redis: opts.redis } : {}),

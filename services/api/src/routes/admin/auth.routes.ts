@@ -51,13 +51,16 @@ import {
 } from "../../auth/transport.js"
 import { route } from "../../versioning/route.js"
 
+// Tighter than the global 300/min: the exchange verifies a JWT + mints an operator session (CF Access
+// fronts it in prod, but defense-in-depth at the app layer).
+const ADMIN_AUTH_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
+
 /**
  * Optional injected admin-auth overrides (tests).
  *  - `auditSink` captures the operator.login audit instead of writing through container.getDb() (the
- *    offline auth harness has no DB), so the "exchange writes operator.login" gate is assertable (H3).
+ *    offline auth harness has no DB), so the "exchange writes operator.login" gate is assertable.
  *  - `verifyAccessJwt` substitutes the Cloudflare Access verifier so the exchange route can be HTTP-tested
  *    offline with a locally minted token (the real verifier fetches a remote JWKS).
- * Production leaves both unset.
  */
 export interface AdminAuthOverrides {
   auditSink(input: WriteAuditInput): Promise<void>
@@ -112,10 +115,7 @@ export async function registerAdminAuthRoutes(
     return operator
   }
 
-  // -------------------------------------------------------------------------
-  // POST /admin/auth/access/exchange  [public]  (credentialed fetch from the SPA)
-  // -------------------------------------------------------------------------
-  route(app, "adminAccessExchange", async (request, reply) => {
+  route(app, "adminAccessExchange", { config: { rateLimit: ADMIN_AUTH_RATE_LIMIT } }, async (request, reply) => {
     const verify = app.adminAuthOverrides?.verifyAccessJwt ?? defaultVerify
     if (!verify) {
       throw new AppError(ErrorCode.INTERNAL, "Cloudflare Access is not configured.", {
@@ -132,18 +132,12 @@ export async function registerAdminAuthRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/auth/session  [public]
-  // -------------------------------------------------------------------------
   route(app, "adminSession", async (request, reply) => {
     const payload = await buildAdminSession(services, request, reply)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/auth/logout  [public]  (reuses the Phase 1 logout/CSRF)
-  // -------------------------------------------------------------------------
-  route(app, "adminLogout", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "adminLogout", { preHandler: csrfProtect, config: { rateLimit: ADMIN_AUTH_RATE_LIMIT } }, async (request, reply) => {
     requireAuth(request)
     const token = presentedSessionToken(request)
     if (token) {
@@ -155,10 +149,6 @@ export async function registerAdminAuthRoutes(
     reply.status(200).send(payload)
   })
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /** Read + verify the `Cf-Access-Jwt-Assertion` header; 401 on absent or invalid token. */
 async function verifyHeader(

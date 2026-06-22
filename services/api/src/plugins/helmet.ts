@@ -12,6 +12,7 @@
 
 import fastifyHelmet from "@fastify/helmet"
 import type { FastifyInstance } from "fastify"
+import { isProd } from "../env.js"
 
 export async function registerHelmet(app: FastifyInstance): Promise<void> {
   await app.register(fastifyHelmet, {
@@ -26,5 +27,8 @@ export async function registerHelmet(app: FastifyInstance): Promise<void> {
         "form-action": ["'none'"],
       },
     },
+    // HSTS only in prod (TLS is always upstream there); leave helmet's default ON. In dev/test, disable
+    // it — helmet's default ~180-day HSTS over plain HTTP would pin localhost to HTTPS for months.
+    ...(isProd() ? {} : { strictTransportSecurity: false }),
   })
 }

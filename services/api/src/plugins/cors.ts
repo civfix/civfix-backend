@@ -19,8 +19,9 @@ export async function registerCors(app: FastifyInstance, webOrigins: string[]): 
   // production. Fail closed there (deny all cross-origin) rather than reflect-all-with-credentials.
   // Uses the validated env loader (isProd()), the project convention, not a raw process.env read.
   const prod = isProd()
-  const allowAll = allowlist.size === 0 && !prod
-  if (allowlist.size === 0) {
+  const isEmpty = allowlist.size === 0
+  const allowAll = isEmpty && !prod
+  if (isEmpty) {
     if (prod) {
       app.log.error("CORS: WEB_ORIGINS is empty in production; denying all cross-origin requests.")
     } else {
@@ -31,6 +32,8 @@ export async function registerCors(app: FastifyInstance, webOrigins: string[]): 
   await app.register(fastifyCors, {
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    // Cache preflight for 10 min so a CORS-using SPA does not re-OPTIONS every request.
+    maxAge: 600,
     // Expose the anon-token header so a CROSS-ORIGIN client could read a freshly-issued token from the
     // response. Same-origin web does not need this (it round-trips via the readable civfix_anon cookie),
     // but a cross-origin SPA reading X-Anon-Token must have it whitelisted here (browsers hide all but a

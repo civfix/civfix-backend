@@ -1,9 +1,11 @@
 /**
  * Dependency-injection container.
  *
- * This is the ONE place where real-vs-fake seam selection happens. The rest of the app depends only
- * on the 9 interface types from `@civfix/shared/interfaces`; it never imports a vendor SDK or a fake
- * directly. Selection rules:
+ * This is the ONE place where real-vs-fake seam selection happens. The app depends only on the seam
+ * interfaces, never on a vendor SDK or a fake directly. The container holds 10 of the shared seam
+ * interfaces (Storage ×2 — main + inbound buffer, Mailer, InboundMail, Geocoder, ChatService,
+ * UserChannel, PushSender, AbuseChecks, Jobs) PLUS the backend-local `JurisdictionLookup` seam (a
+ * write-time Census fallback, not part of the shared set). Selection rules:
  *
  *   storage      REAL R2Storage          unless env.USE_FAKE_STORAGE      -> FakeStorage
  *   mailer       REAL OciMailer          unless env.USE_FAKE_MAILER       -> FakeMailer
@@ -12,18 +14,22 @@
  *   chatService  REAL WsChatService       unless env.USE_FAKE_CHAT         -> FakeChatService
  *   userChannel  REAL RedisUserChannel    unless env.USE_FAKE_USER_CHANNEL -> FakeUserChannel
  *   jobs         REAL PgBossJobs          unless env.USE_FAKE_JOBS         -> FakeJobs
- *   geocoder     REAL TigerGeocoder       (no flag; falls back to fake outside production)
- *   jurisdictionLookup REAL CensusJurisdictionLookup (no flag; falls back to fake outside production)
- *   inboundMail  REAL CfInboundMail       (no flag; falls back to fake outside production)
- *   routing      REAL HttpRoutingProvider (no flag; falls back to fake outside production)
+ *   geocoder     REAL TigerGeocoder       (no flag; fake outside production)
+ *   jurisdictionLookup REAL CensusJurisdictionLookup (no flag; fake outside production)
+ *   inboundMail  REAL CfInboundMail       (no flag; fake outside production)
+ *   routingProvider REAL HttpRoutingProvider (no flag; fake outside production)
  *
- * db/redis handles are created LAZILY: the underlying drivers do not connect until first use, and a
- * handle is only created when something needs it (a real seam, or readiness checks). In all-fakes
- * dev/test mode they stay undefined, so the server boots with no DATABASE_URL/REDIS_URL.
+ * SEAM-FLAG CARVE-OUT: geocoder/jurisdictionLookup/inboundMail/routingProvider intentionally have NO
+ * `USE_FAKE_*` flag — they gate on `NODE_ENV === "production"` (real) vs everything else (fake). They
+ * are read-only network lookups with a benign no-op fake (null/empty), so a dev never needs to
+ * exercise the real path locally; the 7 flagged seams are the ones with stateful local infra
+ * (DB/Redis/storage) worth toggling. NOTE: `routingProvider` is a Phase-2 scaffold (HttpRoutingProvider
+ * throws NOT_IMPL) wired but not yet consumed — kept for the seam contract + the di test until a real
+ * routing seam lands.
  *
- * Seams whose REAL impls need db/redis (chat, push) force creation of the relevant handle here; jobs
- * (PgBossJobs) takes the connection string and opens pg-boss lazily in start() (called from the server
- * before it listens). chat, push, and jobs are all fully implemented now (no scaffold throws remain).
+ * db/redis handles are created LAZILY: the drivers do not connect until first use, and a handle is
+ * only created when something needs it (a real seam, or readiness checks). In all-fakes dev/test mode
+ * they stay undefined, so the server boots with no DATABASE_URL/REDIS_URL.
  */
 
 import type {
@@ -177,7 +183,6 @@ export function buildContainer(env: Env): Container {
     return dmRepo
   }
 
-  // ----- storage -----
   const storage: Storage = env.USE_FAKE_STORAGE
     ? new FakeStorage()
     : new R2Storage({
@@ -193,7 +198,7 @@ export function buildContainer(env: Env): Container {
   // after `storage`; `getDmRepo` (above) is lazy, so its closure over this resolves by call time.
   const presignMedia = makeMediaPresigner(storage)
 
-  // ----- inbound-mail storage (the catch-all email buffer) -----
+  // Inbound-mail storage (the catch-all email buffer).
   // The Cloudflare Email Worker writes raw .eml + extracted attachments to a (possibly DEDICATED) bucket;
   // the inbound webhook + sweep read/delete/presign from the SAME bucket. Defaults to R2_BUCKET when
   // R2_INBOUND_BUCKET is unset (single-bucket deploy). No publicBase: inbox attachment links are signed
@@ -208,7 +213,6 @@ export function buildContainer(env: Env): Container {
         bucket: env.R2_INBOUND_BUCKET ?? env.R2_BUCKET,
       })
 
-  // ----- mailer -----
   const mailer: Mailer = env.USE_FAKE_MAILER
     ? new FakeMailer()
     : new OciMailer({
@@ -220,18 +224,16 @@ export function buildContainer(env: Env): Container {
         fromOutreach: env.MAIL_FROM_OUTREACH,
       })
 
-  // ----- geocoder (no flag; fake outside production) -----
-  // REAL TigerGeocoder reads the jurisdictions PostGIS table; it takes a lazy `getSql` thunk so simply
-  // constructing it here does NOT open a DB connection (the driver connects on first query).
+  // TigerGeocoder reads the jurisdictions PostGIS table; the lazy `getSql` thunk means constructing it
+  // here does NOT open a DB connection (the driver connects on first query).
   const geocoder: Geocoder =
     env.NODE_ENV === "production"
       ? new TigerGeocoder({ getSql: () => getDb().sql })
       : new FakeGeocoder()
 
-  // ----- jurisdiction lookup (no flag; fake outside production, mirrors the geocoder seam) -----
-  // Like the geocoder this reaches the network (the US Census Geographies API) on a local resolver miss;
-  // the fake returns null so dev/test reproduce today's local-only behavior offline (no network, no DB).
-  // Holds no resources (fetch + AbortController are per-call), so it needs no close() handling below.
+  // Reaches the US Census Geographies API on a local resolver miss; the fake returns null so dev/test
+  // reproduce today's local-only behavior offline. Holds no resources (fetch + AbortController are
+  // per-call), so it needs no close() handling.
   const jurisdictionLookup: JurisdictionLookup =
     env.NODE_ENV === "production"
       ? new CensusJurisdictionLookup({
@@ -240,7 +242,6 @@ export function buildContainer(env: Env): Container {
         })
       : new FakeJurisdictionLookup()
 
-  // ----- inbound mail (no flag; fake outside production) -----
   const inboundMail: InboundMail =
     env.NODE_ENV === "production"
       ? new CfInboundMail(
@@ -250,11 +251,11 @@ export function buildContainer(env: Env): Container {
         )
       : new FakeInboundMail()
 
-  // ----- routing provider (no flag; fake outside production) -----
+  // Phase-2 scaffold (HttpRoutingProvider throws NOT_IMPL); nothing consumes it yet — kept for the seam
+  // contract until a real routing seam lands (see the header note).
   const routingProvider: RoutingProvider =
     env.NODE_ENV === "production" ? new HttpRoutingProvider() : new FakeRoutingProvider()
 
-  // ----- abuse checks (NSFW gated by USE_FAKE_ABUSE_NSFW) -----
   // The API only uses verifyTurnstile + gpsPlausible from this seam; pHash/isNearDuplicate/nsfwScore are
   // worker-only. We still pass USE_REAL_NSFW for symmetry. With no model wired and the flag off (the
   // default), nsfwScore is benign and nothing here throws. The worker wires the real perceptual hasher +
@@ -268,23 +269,19 @@ export function buildContainer(env: Env): Container {
         useRealNsfw: env.USE_REAL_NSFW,
       })
 
-  // ----- shared Redis pub/sub (chat fan-out + per-user signals) -----
   // ONE RedisChatPubSub multiplexes chat:* (rooms) AND user:* (per-user signals) over a single duplicated
   // subscriber connection, so a worker holding a user's socket does not open a second Redis subscriber.
-  // Built lazily + memoized: it only exists when a REAL chat service or a REAL user channel needs it; in
-  // the all-fakes dev/test path no Redis handle is created. CLOSE OWNERSHIP: WsChatService.close() owns
-  // pubsub.close() (it disconnects the dedicated subscriber connection); RedisUserChannel.close() only
-  // unsubscribes its own user:* channels. See both adapter headers — exactly one closes the shared pubsub.
+  // Built lazily + memoized: it only exists when a REAL chat service or a REAL user channel needs it.
+  // CLOSE OWNERSHIP: the CONTAINER owns sharedPubSub.close() (see close() below); the adapters only
+  // unsubscribe their own channels.
   let sharedPubSub: RedisChatPubSub | undefined
   function getSharedPubSub(): RedisChatPubSub {
     if (!sharedPubSub) sharedPubSub = new RedisChatPubSub(getRedis())
     return sharedPubSub
   }
 
-  // ----- chat service (REAL needs db + redis) -----
-  // REAL: persistence via the Drizzle chat repo (over the raw sql tag) + fan-out via the shared Redis
-  // pub/sub. Both are injected so the realtime/Redis SDKs stay confined to the adapter and tests can swap
-  // fakes.
+  // REAL chat: persistence via the Drizzle chat repo + fan-out via the shared Redis pub/sub, both
+  // injected so the realtime/Redis SDKs stay confined to the adapter and tests can swap fakes.
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
     : new WsChatService({
@@ -292,50 +289,53 @@ export function buildContainer(env: Env): Container {
         pubsub: getSharedPubSub(),
       })
 
-  // ----- user channel (REAL needs redis) -----
-  // REAL: per-user invalidate-signal fan-out over the SAME shared Redis pub/sub as chat. In-memory fake in
-  // the dev/test path so the server boots offline and the gateway/notification signal paths are testable
-  // with no Redis.
+  // REAL user channel: per-user invalidate-signal fan-out over the SAME shared Redis pub/sub as chat.
   const userChannel: UserChannel = env.USE_FAKE_USER_CHANNEL
     ? new FakeUserChannel()
     : new RedisUserChannel({ pubsub: getSharedPubSub(), logger: undefined })
 
-  // ----- push sender (REAL needs db) -----
   const pushSender: PushSender = env.USE_FAKE_PUSH
     ? new FakePushSender()
     : new MultiPushSender({ db: getDb().db, config: buildPushConfig(env) })
 
-  // ----- jobs (REAL needs the pgboss connection string) -----
   const jobs: Jobs = env.USE_FAKE_JOBS
     ? new FakeJobs()
     : new PgBossJobs({ connectionString: env.DATABASE_URL })
 
   async function close(): Promise<void> {
-    // Stop jobs first so nothing new enqueues, then close infra handles.
+    // Stop jobs first so nothing new enqueues, then close infra handles. start()/stop() are not on the
+    // Jobs interface (lifecycle is adapter-specific), so duck-type them.
     const maybePgBoss = jobs as { stop?: () => Promise<void> }
     if (typeof maybePgBoss.stop === "function") {
       await maybePgBoss.stop()
     }
-    // Tear down the user channel's per-user subscriptions (it never closes the shared pub/sub itself).
+    // Adapters only UNSUBSCRIBE their own channels in close(); the container OWNS the shared pub/sub
+    // connection lifecycle (below). This removes the prior fragile arrangement where exactly one of the
+    // two adapters had to own pubsub.close() (a refactor away from a leaked subscriber connection).
     const maybeUserChannel = userChannel as { close?: () => Promise<void> }
     if (typeof maybeUserChannel.close === "function") {
       await maybeUserChannel.close()
     }
-    // Tear down the chat service's pub/sub subscriptions; the REAL WsChatService also closes the shared
-    // pub/sub here (the duplicated Redis subscriber connection) — it OWNS that close, see the adapter
-    // headers. Do this before disconnecting the shared redis handle below.
     const maybeChat = chatService as { close?: () => Promise<void> }
     if (typeof maybeChat.close === "function") {
       await maybeChat.close()
     }
-    // Edge case: a REAL user channel paired with a FAKE chat service still created the shared pub/sub, but
-    // FakeChatService.close() does not own it — so close it here to release the duplicated subscriber
-    // connection (idempotent; the real-chat path already closed it via chatService.close()).
-    if (env.USE_FAKE_CHAT && sharedPubSub) {
+    // Tear down any long-lived push vendor connections (APNs provider, FCM app). Duck-typed: close() is
+    // optional on the PushSender seam (MultiPushSender exposes it; FakePushSender does not).
+    const maybePush = pushSender as { close?: () => Promise<void> }
+    if (typeof maybePush.close === "function") {
+      await maybePush.close()
+    }
+    // Container-owned: close the shared pub/sub subscriber connection if it was ever created, regardless
+    // of which seam (real/fake) triggered its creation. Idempotent on the adapter side.
+    if (sharedPubSub) {
       await sharedPubSub.close()
+      sharedPubSub = undefined
     }
     if (redis) {
-      redis.disconnect()
+      // Graceful drain (quit) rather than abrupt disconnect; fall back to disconnect if quit rejects
+      // (e.g. the client never connected).
+      await redis.quit().catch(() => redis?.disconnect())
       redis = undefined
     }
     if (dbHandle) {
@@ -385,6 +385,14 @@ function buildPushConfig(env: Env) {
     }
   }
   if (env.FCM_SERVICE_ACCOUNT_JSON) {
+    // Fail fast at boot on a malformed service-account blob rather than at the first push send (a bad
+    // FCM_SERVICE_ACCOUNT_JSON would otherwise surface only when the first Android notification is
+    // attempted, long after deploy).
+    try {
+      JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON)
+    } catch {
+      throw new Error("FCM_SERVICE_ACCOUNT_JSON is not valid JSON")
+    }
     config.fcm = {
       serviceAccountJson: env.FCM_SERVICE_ACCOUNT_JSON,
       ...(env.FCM_PROJECT_ID !== undefined ? { projectId: env.FCM_PROJECT_ID } : {}),
