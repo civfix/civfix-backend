@@ -133,6 +133,7 @@ export async function registerAdminJurisdictionsRoutes(
         ...(body.notes !== undefined ? { notes: body.notes } : {}),
         ...(body.flagged !== undefined ? { flagged: body.flagged } : {}),
         ...(body.flagReason !== undefined ? { flagReason: body.flagReason } : {}),
+        ...(body.handle !== undefined ? { handle: body.handle } : {}),
       },
       request.auth.userId,
     )

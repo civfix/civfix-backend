@@ -25,6 +25,7 @@ import type {
   JurisdictionDirectoryResponse,
   ReportCategory,
 } from "@civfix/shared"
+import { isReservedHandle } from "../../auth/reserved-handles.js"
 
 /** The cron/queue job the outreach pipeline drains; enqueued (singletonKey=geoid) on save & route. */
 export const OUTREACH_DIGEST_JOB = "outreach.digest"
@@ -73,6 +74,8 @@ export interface JurisdictionDirectoryRecord {
   contactUpdatedAt: Date | null
   /** When an operator flagged this jurisdiction for review (null if not flagged). */
   flaggedAt: Date | null
+  /** The discussion @handle (the "@sf" mentionable in a report discussion), or null when unset. */
+  handle: string | null
 }
 
 /** Normalized directory list arguments (search + method facet + page window). */
@@ -124,7 +127,7 @@ export interface JurisdictionContactsRepository {
    */
   patch(
     geoid: string,
-    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null; flagged?: boolean; flagReason?: string | null },
+    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null; flagged?: boolean; flagReason?: string | null; handle?: string | null },
     audit: { actorId: string | null },
   ): Promise<boolean>
   /** Read the outreach throttle state for a geoid (last_outreach_at + suppressed), or null when absent. */
@@ -238,6 +241,7 @@ export function buildUnmappedRecord(
     bounced: false,
     contactUpdatedAt: null,
     flaggedAt: null,
+    handle: null,
   }
 }
 
@@ -286,7 +290,7 @@ export interface JurisdictionContactsService {
   /** Patch a jurisdiction's contacts/notes/form WITHOUT routing. Audited in-tx (H4). */
   patch(
     geoid: string,
-    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null; flagged?: boolean; flagReason?: string | null },
+    input: { contacts?: Partial<Record<ReportCategory, string | null>>; defaultEmails?: string[]; formUrl?: string | null; notes?: string | null; flagged?: boolean; flagReason?: string | null; handle?: string | null },
     actorId: string | null,
   ): Promise<void>
   /** List the jurisdiction directory (org/dept/email/form/method/status/coverage/lastRouted). */
@@ -330,9 +334,16 @@ export function makeJurisdictionContactsService(
         notes?: string | null
         flagged?: boolean
         flagReason?: string | null
+        handle?: string | null
       },
       actorId: string | null,
     ): Promise<void> {
+      // Reject a reserved @handle BEFORE the write (the same blocklist that bars user handles from
+      // impersonating system/jurisdiction names). A null/empty handle (clearing it) is always allowed; the
+      // DB-dependent uniqueness check lives in the repo (it needs the live table, in-transaction).
+      if (typeof input.handle === "string" && input.handle !== "" && isReservedHandle(input.handle)) {
+        throw AppError.validation({ handle: "That @handle is reserved." })
+      }
       const ok = await deps.repo.patch(geoid, input, { actorId })
       if (!ok) throw AppError.notFound("Jurisdiction not found")
     },
@@ -387,5 +398,6 @@ export function toDirectoryDTO(record: JurisdictionDirectoryRecord): Jurisdictio
       email: c.email !== null && c.email.trim() !== "" ? c.email : null,
     })),
     flaggedAt: record.flaggedAt !== null ? record.flaggedAt.toISOString() : null,
+    handle: record.handle,
   }
 }

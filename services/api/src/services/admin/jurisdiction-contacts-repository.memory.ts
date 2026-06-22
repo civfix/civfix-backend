@@ -29,6 +29,7 @@ import {
   type ListDirectoryArgs,
   type SaveContactsInput,
 } from "./jurisdiction-contacts-service.js"
+import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
 /** A seeded jurisdiction's mutable contact + routing state. */
@@ -47,6 +48,7 @@ export interface SeededJurisdiction {
   contactUpdatedAt: Date | null
   flaggedAt: Date | null
   flagReason: string | null
+  handle: string | null
 }
 
 /** A seeded report (the subset the routing path mutates). */
@@ -114,6 +116,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     contactUpdatedAt?: Date | null
     flaggedAt?: Date | null
     flagReason?: string | null
+    handle?: string | null
   }): SeededJurisdiction {
     const categoryContacts = new Map<ReportCategory, string | null>()
     for (const [category, email] of Object.entries(input.categoryContacts ?? {}) as [
@@ -137,6 +140,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       contactUpdatedAt: input.contactUpdatedAt ?? null,
       flaggedAt: input.flaggedAt ?? null,
       flagReason: input.flagReason ?? null,
+      handle: input.handle ?? null,
     }
     this.jurisdictions.set(j.geoid, j)
     return j
@@ -240,6 +244,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       notes?: string | null
       flagged?: boolean
       flagReason?: string | null
+      handle?: string | null
     },
     audit: { actorId: string | null },
   ): Promise<boolean> {
@@ -259,6 +264,26 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     if (input.flagged !== undefined) {
       j.flaggedAt = input.flagged ? this.now : null
       j.flagReason = input.flagged ? (input.flagReason ?? null) : null
+    }
+    // Set / clear the @handle (mirrors the Drizzle impl): empty/null clears it; a non-empty handle must be
+    // case-insensitively unique across OTHER jurisdictions, else a conflict (the Drizzle impl additionally
+    // guards against a user-handle collision, which this in-memory double has no users to check).
+    if (input.handle !== undefined) {
+      const handle = input.handle
+      if (handle === null || handle === "") {
+        j.handle = null
+      } else {
+        for (const other of this.jurisdictions.values()) {
+          if (
+            other.geoid !== geoid &&
+            other.handle !== null &&
+            other.handle.toLowerCase() === handle.toLowerCase()
+          ) {
+            throw AppError.conflict("That @handle is already used by another jurisdiction.")
+          }
+        }
+        j.handle = handle
+      }
     }
     if (touchedContact) j.contactUpdatedAt = this.now
     // Mirror the Drizzle in-tx audit (H4).
@@ -405,6 +430,7 @@ function toRecord(j: SeededJurisdiction, reports: SeededReport[]): JurisdictionD
     bounced: j.bounced,
     contactUpdatedAt: j.contactUpdatedAt,
     flaggedAt: j.flaggedAt,
+    handle: j.handle,
   }
 }
 
