@@ -44,9 +44,6 @@ export {
   eventTimelineKind,
 } from "./admin-event-helpers.js"
 
-// Cap on linked reports presigned per detail read (bounds concurrent SigV4 signings).
-const LINKED_PRESIGN_CAP = 50
-
 export interface AdminOrganizerRecord {
   id: string
   name: string
@@ -243,9 +240,8 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         // Only a 'cleanup' event has a linked-report gallery (cleanup-only linking).
         record.eventKind === "cleanup" ? deps.repo.loadLinkedReports(id) : Promise.resolve([]),
       ])
-      const capped = linkedViews.slice(0, LINKED_PRESIGN_CAP)
       const linkedReports: LinkedReportRef[] = await mapWithLimit(
-        capped,
+        linkedViews,
         PRESIGN_CONCURRENCY,
         async (v: LinkedReportView) => {
           const thumbUrl = v.thumbKey !== null ? await presignThumb(v.thumbKey) : null

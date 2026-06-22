@@ -80,7 +80,9 @@ export function isCronish(raw: string | undefined): boolean {
   if (raw === undefined) return false
   const fields = raw.trim().split(/\s+/).filter((f) => f.length > 0)
   if (fields.length !== 5 && fields.length !== 6) return false
-  return fields.every((f) => /^[\d*/,\-?LW#]+$/i.test(f))
+  // Allow letters too (named months/days-of-week like JAN, MON, MON-FRI, plus L/W) — the scheduler
+  // (pg-boss/cron-parser) owns full validation; this only catches gross typos (wrong field count / junk).
+  return fields.every((f) => /^[\dA-Za-z*/,\-?#]+$/.test(f))
 }
 
 /**

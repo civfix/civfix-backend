@@ -83,6 +83,23 @@ export async function seedFederalLands(sql: Sql): Promise<number> {
 
 async function main(): Promise<void> {
   await runDbCli(async (_db, sql) => {
+    // GUARD: refuse to seed a database that already holds AUTHORITATIVE boundary data (a real
+    // db:boundaries:refresh load — detected by the presence of PADUS-/AIANNH- geoids). The dev seed's
+    // hand-made octagonal federal/tribal fixtures (NPS-*/USFS-*/BIA-*) and example.gov contacts would
+    // pollute real data and can even out-rank it in the resolver (a seed geoid sorts before "PADUS-" and
+    // wins the same-layer tie). This is how the original prod cruft got there. The integration test calls
+    // `seedJurisdictions()` directly and never hits this guard; pass --force to override deliberately.
+    const [authoritative] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM jurisdictions WHERE geoid LIKE 'PADUS-%' OR geoid LIKE 'AIANNH-%'
+    `
+    if ((authoritative?.n ?? 0) > 0 && !process.argv.includes("--force")) {
+      console.error(
+        `seed: refusing to run — found ${authoritative?.n} authoritative (PADUS-/AIANNH-) jurisdictions, ` +
+          `so this looks like a real boundary load. Seeding would inject dev fixtures over real data. ` +
+          `Pass --force only if you truly mean to.`,
+      )
+      process.exit(2)
+    }
     const total = JURISDICTION_SEEDS.length + FEDERAL_LANDS.length
     const inserted = await seedJurisdictions(sql)
     console.log(`seed: jurisdictions seeded (${inserted} inserted, ${total - inserted} already present)`)

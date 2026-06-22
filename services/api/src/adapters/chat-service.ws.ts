@@ -85,15 +85,22 @@ export class WsChatService implements ChatService {
       // added below, which happens after this assignment).
       const newRoom: Room = { connections, unsubscribe: async () => {} }
       this.rooms.set(cleanupId, newRoom)
-      newRoom.unsubscribe = await this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
-        const current = this.rooms.get(cleanupId)
-        if (!current) return
-        const { frame, excludeConnId } = decodeEnvelope(payload)
-        for (const c of current.connections) {
-          if (excludeConnId !== undefined && c.id === excludeConnId) continue
-          c.send(frame)
-        }
-      })
+      try {
+        newRoom.unsubscribe = await this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
+          const current = this.rooms.get(cleanupId)
+          if (!current) return
+          const { frame, excludeConnId } = decodeEnvelope(payload)
+          for (const c of current.connections) {
+            if (excludeConnId !== undefined && c.id === excludeConnId) continue
+            c.send(frame)
+          }
+        })
+      } catch (err) {
+        // subscribe rejected (e.g. a Redis blip): drop the phantom room so the next join retries the
+        // subscribe instead of attaching to a room that receives no pub/sub frames.
+        this.rooms.delete(cleanupId)
+        throw err
+      }
       room = newRoom
     }
     room.connections.add(conn)

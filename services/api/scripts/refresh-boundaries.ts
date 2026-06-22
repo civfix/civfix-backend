@@ -178,6 +178,36 @@ async function countLoadedLayers(sql: Sql): Promise<{ rowCounts: Record<string, 
   return { rowCounts, federalLoaded: (rowCounts.federal ?? 0) > 0 }
 }
 
+/**
+ * Remove NON-authoritative federal/tribal rows — legacy dev-seed jurisdictions whose geoid is not the
+ * `PADUS-`/`AIANNH-` prefix the real PAD-US/AIANNH ingest assigns (the octagonal `NPS-*`/`USFS-*`/`BIA-*`
+ * fixtures from db/seed.ts). They duplicate and can OUT-RANK the authoritative polygons — a seed geoid
+ * sorts before `PADUS-` and wins the resolver's same-layer tie, so a report in Yellowstone resolves to the
+ * fake `NPS-YELL` instead of `PADUS-…`. FK-safe: nullable referrers (reports/gov_claims/mail_threads) are
+ * NULLed so the backfill that follows re-resolves them to the real polygon; geoid-keyed dependents
+ * (contacts/outreach/mentions) are deleted; then the stale jurisdictions go. Idempotent. Returns the count
+ * removed. One transaction.
+ */
+async function pruneNonAuthoritative(sql: Sql): Promise<number> {
+  return await sql.begin(async (tx) => {
+    const stale = await tx<{ geoid: string }[]>`
+      SELECT geoid FROM jurisdictions
+      WHERE (layer = 'federal' AND geoid NOT LIKE 'PADUS-%')
+         OR (layer = 'tribal'  AND geoid NOT LIKE 'AIANNH-%')
+    `
+    if (stale.length === 0) return 0
+    const ids = stale.map((s) => s.geoid)
+    await tx`UPDATE reports      SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`UPDATE gov_claims   SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`UPDATE mail_threads SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`DELETE FROM jurisdiction_contacts     WHERE geoid IN ${tx(ids)}`
+    await tx`DELETE FROM outreach_state            WHERE geoid IN ${tx(ids)}`
+    await tx`DELETE FROM report_message_mentions   WHERE geoid IN ${tx(ids)}`
+    await tx`DELETE FROM jurisdictions             WHERE geoid IN ${tx(ids)}`
+    return stale.length
+  })
+}
+
 /** Upsert the singleton boundary_vintage audit row (shared by the full load and --backfill-only). */
 async function stampVintage(sql: Sql, tag: string, year: number, rowCounts: Record<string, number>): Promise<void> {
   await sql`
@@ -232,6 +262,13 @@ async function main(): Promise<void> {
   let handle: DbHandle | null = null
   try {
     handle = makeDb(databaseUrl, { max: 1 })
+
+    // Remove legacy dev-seed federal/tribal rows (FK-safe) up front, in BOTH modes — they duplicate and can
+    // out-rank the authoritative PAD-US/AIANNH data; any report they held is NULLed here and re-resolved by
+    // the backfill below. Runs before countLoadedLayers so --backfill-only stamps post-prune counts.
+    const pruned = await pruneNonAuthoritative(handle.sql)
+    if (pruned > 0) log(`pruned ${pruned} non-authoritative (dev-seed) federal/tribal row(s)`)
+
     let rowCounts: Record<string, number>
     let federalLoaded: boolean
 

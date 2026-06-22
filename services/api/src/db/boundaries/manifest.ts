@@ -57,7 +57,8 @@ export interface BoundaryJob {
   layer: BoundaryLayer
   /**
    * Exact `ogr2ogr` arguments for the conversion: GeoJSON output (GeoJSONSeq for the oversized federal
-   * layer) reprojected to EPSG:4326, plus a source filter for places (`-where` G4110) and federal
+   * layer) reprojected to EPSG:4326, `-makevalid` geometry repair on EVERY job (so no invalid polygon ever
+   * reaches prod — see the federal job note), plus a source filter for places (`-where` G4110) and federal
    * (`-sql` Mang_Type='FED'). NEVER contains a geoid
    * prefix string — prefixing happens at ingest time (see file header). The runner appends the output
    * path and the (already-downloaded) source path after these args.
@@ -167,7 +168,7 @@ export function boundaryManifest(
   jobs.push({
     sourceUrl: `${root}/STATE/tl_${year}_us_state.zip`,
     layer: "state",
-    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326"],
+    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-makevalid"],
     outFile: "states.geojson",
     sourcePath: `tl_${year}_us_state.shp`,
     ingestGeoidPrefix: null,
@@ -177,7 +178,7 @@ export function boundaryManifest(
   jobs.push({
     sourceUrl: `${root}/COUNTY/tl_${year}_us_county.zip`,
     layer: "county",
-    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326"],
+    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-makevalid"],
     outFile: "counties.geojson",
     sourcePath: `tl_${year}_us_county.shp`,
     ingestGeoidPrefix: null,
@@ -190,7 +191,7 @@ export function boundaryManifest(
     jobs.push({
       sourceUrl: `${root}/PLACE/tl_${year}_${ss}_place.zip`,
       layer: "place",
-      ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-where", "MTFCC='G4110'"],
+      ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-makevalid", "-where", "MTFCC='G4110'"],
       outFile: `places_${ss}.geojson`,
       sourcePath: `tl_${year}_${ss}_place.shp`,
       ingestGeoidPrefix: null,
@@ -204,7 +205,7 @@ export function boundaryManifest(
   jobs.push({
     sourceUrl: `${root}/AIANNH/tl_${year}_us_aiannh.zip`,
     layer: "tribal",
-    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326"],
+    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-makevalid"],
     outFile: "aiannh.geojson",
     sourcePath: `tl_${year}_us_aiannh.shp`,
     ingestGeoidPrefix: "AIANNH-",
@@ -226,6 +227,10 @@ export function boundaryManifest(
   //     federal export is >512 MB, which exceeds Node's max string length — so the refresh tool STREAMS it
   //     (ingestGeoJsonSeqFile) instead of readFileSync, which would throw ERR_STRING_TOO_LONG. The small
   //     TIGER layers stay on plain GeoJSON. ogr2ogr `-t_srs`/`-sql`/`-nlt` are format-independent.
+  //     VALIDITY: `-makevalid` repairs PAD-US's self-intersecting / ring-invalid polygons DURING the local
+  //     ogr2ogr conversion, so prod only ever ingests valid geometry. This MUST happen here, not as a
+  //     prod-side ST_MakeValid — ST_MakeValid on the worst PAD-US multipolygons is prohibitively slow and
+  //     can take down a Postgres backend. Invalid geom would make the resolver's ST_Contains unreliable.
   jobs.push({
     sourceUrl: PADUS_GDB_URL,
     layer: "federal",
@@ -234,6 +239,7 @@ export function boundaryManifest(
       "GeoJSONSeq",
       "-t_srs",
       "EPSG:4326",
+      "-makevalid",
       "-sql",
       `SELECT OBJECTID AS GEOID, Unit_Nm AS NAME FROM PADUS${PADUS_VERSION_NODOT}Fee WHERE Mang_Type='FED'`,
       "-nlt",
