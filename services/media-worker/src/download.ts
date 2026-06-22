@@ -64,6 +64,18 @@ function isInMemoryReadable(s: unknown): s is InMemoryReadable {
 /** TTL for the presigned GET the downloader mints (short: it is used immediately). */
 const DOWNLOAD_GET_TTL_SEC = 120
 
+/**
+ * Worker-internal r2 keys are content-addressed (`uploads/yyyy/mm/<sha256>`); the worker also reads its
+ * own derived `thumbs/`/`processed/` objects. presignGet is the only guard before a server-side fetch of
+ * the key, so reject a poisoned-DB-row key that escapes the prefix or contains path traversal before
+ * presigning. (Not request-SSRF — the key never comes from the client — but a cheap defensive backstop.)
+ */
+function isSafeR2Key(key: string): boolean {
+  if (key.length === 0 || key.length > 512) return false
+  if (key.startsWith("/") || key.includes("..") || key.includes("\\")) return false
+  return /^[A-Za-z0-9._\-/]+$/.test(key)
+}
+
 /** Build a DownloadFn over a Storage. */
 export function makeDownloader(storage: Storage): DownloadFn {
   return async function download(r2Key: string, maxBytes: number): Promise<Uint8Array> {
@@ -83,6 +95,11 @@ export function makeDownloader(storage: Storage): DownloadFn {
 
     // Real path: presign a GET and stream it with a hard cap. presign + fetch failures are INFRA
     // (storage unreadable), so they surface as StorageUnavailableError -> the job retries, never rejects.
+    if (!isSafeR2Key(r2Key)) {
+      // A malformed key (a poisoned DB row) is unfetchable; surface it as infra so the job is isolated
+      // (never crashes the worker) and the orphan sweep eventually reaps the bad row.
+      throw new StorageUnavailableError(r2Key, "unsafe r2 key")
+    }
     let url: string
     try {
       url = await storage.presignGet(r2Key, DOWNLOAD_GET_TTL_SEC)

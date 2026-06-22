@@ -10,7 +10,13 @@
  *
  * Safe/idempotent: the DDL is CREATE TABLE IF NOT EXISTS PARTITION OF ... with clock-derived bounds
  * (never user input), so running it repeatedly (or after the partition already exists) is a no-op.
- * NEVER throws: a failure is logged + reported and the worker keeps running.
+ * NEVER throws: a failure is logged + reported (the report() is the alert) and the worker keeps running.
+ *
+ * GOTCHA: this cron is the only writer of next-month partitions. If the worker is DOWN across the 28th
+ * through end-of-month, the upcoming month's partition is never pre-created — inserts then fall back to
+ * the DEFAULT partition (both chat_messages and dm_messages declare one in 0002/0009), so writes never
+ * FAIL, they just miss per-month pruning until the next run backfills. An ensure-failure is reported so
+ * it is visible rather than a silent miss.
  *
  * The actual DDL lives in @civfix/api (ensureNextMonthChatPartition / ensureNextMonthDmPartition) so
  * partition bounds/naming have a SINGLE source shared with the API's migrations.

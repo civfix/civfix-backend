@@ -22,17 +22,22 @@ const HASH_W = 8
 const HASH_H = 8
 
 /**
- * Compute the dHash hex string for `bytes`. Reuses the same decode guard (limitInputPixels, failOn) as
- * the image path. Throws ImageProcessingError if the bytes cannot be decoded.
+ * Compute the dHash hex string for `bytes`. The SECOND untrusted-decode boundary (the image path is the
+ * first), so it mirrors guardedSharp's hardening: limitInputPixels + failOn "warning" + pages:1/
+ * animated:false (decode one frame only). Throws ImageProcessingError if the bytes cannot be decoded.
  */
 export async function perceptualHash(bytes: Uint8Array, limits: WorkerLimits): Promise<string> {
   let raw: Buffer
   try {
     raw = await sharp(Buffer.from(bytes), {
       limitInputPixels: limits.sharpPixelLimit,
-      failOn: "error",
-      // Stream large progressive inputs in one forward pass (mirrors guardedSharp in image.ts) so the
-      // hash decode never keeps more of the surface resident than needed under the worker concurrency cap.
+      // sharp's documented untrusted-input value (matches image.ts guardedSharp).
+      failOn: "warning",
+      // Decode only the first frame/page (no animation surface) — matches the image path's cap.
+      pages: 1,
+      animated: false,
+      // Stream large progressive inputs in one forward pass so the hash decode never keeps more of the
+      // surface resident than needed under the worker concurrency cap.
       sequentialRead: true,
     })
       .timeout({ seconds: Math.max(1, Math.ceil(limits.imageTimeoutMs / 1000)) })

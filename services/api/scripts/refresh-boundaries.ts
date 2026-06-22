@@ -5,6 +5,9 @@
  *   pnpm db:boundaries:refresh                 # latest TIGER vintage, auto SSH tunnel to prod
  *   pnpm db:boundaries:refresh 2025            # explicit TIGER vintage year
  *   pnpm db:boundaries:refresh 2025 /tmp/bnd   # explicit vintage + work dir
+ *   pnpm db:boundaries:refresh --backfill-only # re-run ONLY backfill + vintage stamp (no re-download);
+ *                                              # recovery path when a load committed every layer but the
+ *                                              # backfill step failed — counts come from the live DB.
  *
  * What it does, end to end (no CI, no R2):
  *   1. Opens an `ssh -L` tunnel to prod Postgres (resolves the postgres container's live bridge IP +
@@ -160,15 +163,36 @@ function convert(job: BoundaryJob, outDir: string): string | null {
   return outPath
 }
 
-async function main(): Promise<void> {
-  // Verify GDAL up front (the whole point of running locally).
-  try {
-    execFileSync("ogr2ogr", ["--version"], { stdio: "ignore" })
-  } catch {
-    console.error(`${PREFIX}: ogr2ogr (GDAL) not found on PATH — install it (e.g. \`brew install gdal\`) and re-run.`)
-    process.exit(2)
-  }
+type Sql = Parameters<typeof backfillReports>[0]
 
+/**
+ * Row counts per layer (and whether federal is present) derived from the jurisdictions ALREADY in the DB.
+ * Used by --backfill-only, which doesn't re-ingest, so it reads the live table to stamp an accurate vintage.
+ */
+async function countLoadedLayers(sql: Sql): Promise<{ rowCounts: Record<string, number>; federalLoaded: boolean }> {
+  const rows = await sql<{ layer: string; n: number }[]>`
+    SELECT layer, count(*)::int AS n FROM jurisdictions GROUP BY layer
+  `
+  const rowCounts: Record<string, number> = {}
+  for (const r of rows) rowCounts[r.layer] = r.n
+  return { rowCounts, federalLoaded: (rowCounts.federal ?? 0) > 0 }
+}
+
+/** Upsert the singleton boundary_vintage audit row (shared by the full load and --backfill-only). */
+async function stampVintage(sql: Sql, tag: string, year: number, rowCounts: Record<string, number>): Promise<void> {
+  await sql`
+    INSERT INTO boundary_vintage (id, vintage_tag, tiger_vintage, padus_version, row_counts, loaded_at)
+    VALUES (true, ${tag}, ${year}, ${PADUS_VERSION}, ${sql.json(rowCounts as Parameters<typeof sql.json>[0])}, now())
+    ON CONFLICT (id) DO UPDATE SET
+      vintage_tag = EXCLUDED.vintage_tag,
+      tiger_vintage = EXCLUDED.tiger_vintage,
+      padus_version = EXCLUDED.padus_version,
+      row_counts = EXCLUDED.row_counts,
+      loaded_at = now()
+  `
+}
+
+async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const positional = argv.filter((a) => !a.startsWith("--"))
   const vintageArg = positional[0]
@@ -179,10 +203,20 @@ async function main(): Promise<void> {
   }
   const outDir = positional[1] ?? join(tmpdir(), `civfix-boundaries-${year}`)
   const keep = argv.includes("--keep")
+  // --backfill-only: skip download/convert/ingest and just re-run backfill + vintage stamp against the
+  // jurisdictions ALREADY loaded. The recovery path when a full run loaded every layer but died at backfill
+  // (so re-downloading the 1.5 GB PAD-US source to redo only the backfill would be pure waste).
+  const backfillOnly = argv.includes("--backfill-only")
 
-  const jobs = boundaryManifest(year)
-  log(`vintage ${year}: ${jobs.length} layer job(s); work dir ${outDir}`)
-  mkdirSync(join(outDir, "sources"), { recursive: true })
+  // GDAL is only needed to convert sources; --backfill-only doesn't touch ogr2ogr.
+  if (!backfillOnly) {
+    try {
+      execFileSync("ogr2ogr", ["--version"], { stdio: "ignore" })
+    } catch {
+      console.error(`${PREFIX}: ogr2ogr (GDAL) not found on PATH — install it (e.g. \`brew install gdal\`) and re-run.`)
+      process.exit(2)
+    }
+  }
 
   // 1) DB connection: an explicit DATABASE_URL wins (BYO tunnel); else open an ssh -L tunnel to prod.
   let closeTunnel: (() => void) | null = null
@@ -197,64 +231,69 @@ async function main(): Promise<void> {
 
   let handle: DbHandle | null = null
   try {
-    // 2) Download → 3) convert. Census layers are required (throw aborts the run); federal is best-effort.
-    const converted: { job: BoundaryJob; path: string }[] = []
-    for (const job of jobs) {
-      const got = fetchSource(job, outDir)
-      if (!got) continue
-      const out = convert(job, outDir)
-      if (out) converted.push({ job, path: out })
-    }
-    if (!converted.some((c) => !isFederal(c.job))) {
-      throw new Error("no census layers converted — refusing to load a partial-coverage dataset")
-    }
-
-    // 4) Ingest each layer + backfill, against prod over the tunnel.
     handle = makeDb(databaseUrl, { max: 1 })
-    const rowCounts: Record<string, number> = {}
-    let federalLoaded = false
-    for (const { job, path } of converted) {
-      try {
-        // The federal (PAD-US) layer is emitted as GeoJSONSeq (.geojsonl) and STREAMED — it is >512 MB,
-        // which exceeds Node's max string length, so readFileSync would throw ERR_STRING_TOO_LONG. The
-        // small TIGER layers are read whole.
-        const { upserted, skipped, features } = path.endsWith(".geojsonl")
-          ? await ingestGeoJsonSeqFile(handle.sql, path, job.layer, job.ingestGeoidPrefix ?? undefined)
-          : await ingestGeoJsonFile(handle.sql, readFileSync(path, "utf8"), job.layer, job.ingestGeoidPrefix ?? undefined)
-        rowCounts[job.layer] = (rowCounts[job.layer] ?? 0) + upserted
-        log(`[${job.layer}] upserted ${upserted} (skipped ${skipped} of ${features})`)
-        if (upserted === 0) warn(`[${job.layer}] upserted 0 rows — check the source/conversion`)
-        if (isFederal(job)) federalLoaded = true
-      } catch (err) {
-        // Federal is best-effort: an ingest hiccup on it must NOT discard the TIGER layers already committed
-        // (each layer is its own transaction). Any non-federal failure is fatal.
-        if (!isFederal(job)) throw err
-        warn(`[federal] ingest failed — skipping federal layer (${(err as Error).message})`)
+    let rowCounts: Record<string, number>
+    let federalLoaded: boolean
+
+    if (backfillOnly) {
+      log("--backfill-only: skipping download/convert/ingest; reading layers already in the DB")
+      ;({ rowCounts, federalLoaded } = await countLoadedLayers(handle.sql))
+      const total = Object.values(rowCounts).reduce((a, b) => a + b, 0)
+      if (total === 0) warn("no jurisdictions in the DB — run a full load first (this backfill will resolve nothing)")
+    } else {
+      log(`vintage ${year}: ${boundaryManifest(year).length} layer job(s); work dir ${outDir}`)
+      mkdirSync(join(outDir, "sources"), { recursive: true })
+
+      // 2) Download → 3) convert. Census layers are required (throw aborts the run); federal is best-effort.
+      const converted: { job: BoundaryJob; path: string }[] = []
+      for (const job of boundaryManifest(year)) {
+        const got = fetchSource(job, outDir)
+        if (!got) continue
+        const out = convert(job, outDir)
+        if (out) converted.push({ job, path: out })
+      }
+      if (!converted.some((c) => !isFederal(c.job))) {
+        throw new Error("no census layers converted — refusing to load a partial-coverage dataset")
+      }
+
+      // 4) Ingest each layer against prod over the tunnel.
+      rowCounts = {}
+      federalLoaded = false
+      for (const { job, path } of converted) {
+        try {
+          // The federal (PAD-US) layer is emitted as GeoJSONSeq (.geojsonl) and STREAMED — it is >512 MB,
+          // which exceeds Node's max string length, so readFileSync would throw ERR_STRING_TOO_LONG. The
+          // small TIGER layers are read whole.
+          const { upserted, skipped, features } = path.endsWith(".geojsonl")
+            ? await ingestGeoJsonSeqFile(handle.sql, path, job.layer, job.ingestGeoidPrefix ?? undefined)
+            : await ingestGeoJsonFile(handle.sql, readFileSync(path, "utf8"), job.layer, job.ingestGeoidPrefix ?? undefined)
+          rowCounts[job.layer] = (rowCounts[job.layer] ?? 0) + upserted
+          log(`[${job.layer}] upserted ${upserted} (skipped ${skipped} of ${features})`)
+          if (upserted === 0) warn(`[${job.layer}] upserted 0 rows — check the source/conversion`)
+          if (isFederal(job)) federalLoaded = true
+        } catch (err) {
+          // Federal is best-effort: an ingest hiccup on it must NOT discard the TIGER layers already
+          // committed (each layer is its own transaction). Any non-federal failure is fatal.
+          if (!isFederal(job)) throw err
+          warn(`[federal] ingest failed — skipping federal layer (${(err as Error).message})`)
+        }
       }
     }
 
+    // 5) Backfill + record the load (both modes). Tag notes federal presence — "-nofed" if PAD-US is
+    //    missing (failed at any of fetch/convert/ingest, or absent from the DB in --backfill-only).
     log("backfilling reports.jurisdiction_geoid (NULL → resolved)…")
     const { resolved, stayedNull } = await backfillReports(handle.sql)
     log(`backfill: ${resolved} reports resolved, ${stayedNull} still null (outside all coverage)`)
 
-    // 5) Record the load (audit trail for this manual, ~annual process). Tag notes federal presence —
-    //    "-nofed" if PAD-US was missing/failed at any of fetch, convert, OR ingest.
     const tag = federalLoaded ? vintageTag(year) : `${vintageTag(year)}-nofed`
-    await handle.sql`
-      INSERT INTO boundary_vintage (id, vintage_tag, tiger_vintage, padus_version, row_counts, loaded_at)
-      VALUES (true, ${tag}, ${year}, ${PADUS_VERSION}, ${handle.sql.json(rowCounts as Parameters<typeof handle.sql.json>[0])}, now())
-      ON CONFLICT (id) DO UPDATE SET
-        vintage_tag = EXCLUDED.vintage_tag,
-        tiger_vintage = EXCLUDED.tiger_vintage,
-        padus_version = EXCLUDED.padus_version,
-        row_counts = EXCLUDED.row_counts,
-        loaded_at = now()
-    `
-    log(`done — loaded vintage ${tag}; row counts: ${JSON.stringify(rowCounts)}`)
+    await stampVintage(handle.sql, tag, year, rowCounts)
+    log(`done — vintage ${tag}; row counts: ${JSON.stringify(rowCounts)}`)
   } finally {
     if (handle) await handle.close()
     if (closeTunnel) closeTunnel()
-    if (!keep) rmSync(outDir, { recursive: true, force: true })
+    // Only the full path creates the work dir; never delete it in --backfill-only (we didn't make it).
+    if (!keep && !backfillOnly) rmSync(outDir, { recursive: true, force: true })
   }
 }
 

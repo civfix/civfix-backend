@@ -29,13 +29,11 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import { loadChatReactions, toggleChatReaction } from "./chat-reactions.drizzle.js"
-import { loadChatMentions } from "./chat-mentions.drizzle.js"
+import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./chat-reactions.drizzle.js"
+import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
+import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
-
-/** Canonical UUID shape; the `before` cursor is validated against it before reaching a uuid-column bind. */
-const CHAT_CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * Persistence seam for chat: insert a message + page history. The production impl runs Drizzle/PostGIS;
@@ -149,7 +147,7 @@ function toMessageDTO(
   }
 }
 
-/** Shared SELECT list (sender joined) for chat reads. */
+/** Shared SELECT list (sender joined) for chat history/find reads (the `cm` alias). */
 function chatColumns(sql: Queryable) {
   return sql`
     cm.id,
@@ -166,6 +164,33 @@ function chatColumns(sql: Queryable) {
     u.bio AS sender_bio,
     u.avatar_url AS sender_avatar_url,
     u.deleted_at AS sender_deleted_at
+  `
+}
+
+/**
+ * Project a write CTE — an insert/update that RETURNs (id, cleanup_id, sender_id, body, kind, attachments,
+ * created_at, edited_at, deleted_at) — joined with the sender into a ChatRowSelect. `cte` is a caller-side
+ * module constant (never user input), interpolated as a postgres.js identifier.
+ */
+function selectChatRowFrom(tag: Queryable, cte: string) {
+  return tag`
+    SELECT
+      ${tag(cte)}.id,
+      ${tag(cte)}.cleanup_id,
+      ${tag(cte)}.sender_id,
+      ${tag(cte)}.body,
+      ${tag(cte)}.kind,
+      ${tag(cte)}.attachments,
+      ${tag(cte)}.created_at,
+      ${tag(cte)}.edited_at,
+      ${tag(cte)}.deleted_at,
+      u.display_name AS sender_display_name,
+      u.handle AS sender_handle,
+      u.bio AS sender_bio,
+      u.avatar_url AS sender_avatar_url,
+      u.deleted_at AS sender_deleted_at
+    FROM ${tag(cte)}
+    JOIN users u ON u.id = ${tag(cte)}.sender_id
   `
 }
 
@@ -200,23 +225,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           )
           RETURNING id, cleanup_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
         )
-        SELECT
-          inserted.id,
-          inserted.cleanup_id,
-          inserted.sender_id,
-          inserted.body,
-          inserted.kind,
-          inserted.attachments,
-          inserted.created_at,
-          inserted.edited_at,
-          inserted.deleted_at,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
-        FROM inserted
-        JOIN users u ON u.id = inserted.sender_id
+        ${selectChatRowFrom(q, "inserted")}
       `
       const rows = wantsMedia
         ? await sql.begin(async (tx) => {
@@ -246,7 +255,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       // Only look up the anchor when `before` is a well-formed UUID. The lookup binds it against the uuid
       // `id` column, so a non-UUID value would raise a Postgres 22P02 cast error -> 500; a malformed
       // cursor instead degrades to "newest page" (anchor stays null), matching the foreign-cursor handling.
-      if (before !== undefined && CHAT_CURSOR_UUID_RE.test(before)) {
+      if (before !== undefined && isUuid(before)) {
         const rows = await sql<{ created_at: Date; id: string }[]>`
           SELECT created_at, id FROM chat_messages
           WHERE id = ${before} AND cleanup_id = ${cleanupId} AND deleted_at IS NULL
@@ -272,21 +281,23 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
-      // Batch-load the ready (presigned) attachments for the whole page in ONE query (vs one per message).
-      const attachmentsByMessage = presign
-        ? await loadChatAttachments(sql, page.map((r) => r.id), presign)
-        : new Map<string, MediaDTO[]>()
-      // Hydrate each row's reaction summary (with `mine` resolved for the viewer). The history read is not
-      // viewer-scoped here (it mirrors the existing signature), so `mine` is computed against no viewer
-      // (false); the per-message read path (findMessage) carries the viewer for the toggle response.
-      const items = await Promise.all(
-        page.map(async (r) => {
-          const [reactions, mentions] = await Promise.all([
-            loadChatReactions(sql, r.id, viewerUserId),
-            loadChatMentions(sql, r.id),
-          ])
-          return toMessageDTO(r, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(r.id) ?? [])
-        }),
+      // Batch the three per-message relations into ONE grouped query each (WHERE message_id IN (...)) so a
+      // page is 3 round-trips total, not 3×N. The reaction `mine` flag resolves against the viewer.
+      const ids = page.map((r) => r.id)
+      const [attachmentsByMessage, reactionsByMessage, mentionsByMessage] = await Promise.all([
+        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        loadChatReactionsFor(sql, ids, viewerUserId),
+        loadChatMentionsFor(sql, ids),
+      ])
+      const items = page.map((r) =>
+        toMessageDTO(
+          r,
+          reactionsByMessage.get(r.id) ?? [],
+          mentionsByMessage.get(r.id) ?? [],
+          viewerUserId,
+          undefined,
+          attachmentsByMessage.get(r.id) ?? [],
+        ),
       )
       const last = page[page.length - 1]
       const nextCursor = hasMore && last ? last.id : null
@@ -338,23 +349,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
             AND deleted_at IS NULL
           RETURNING id, cleanup_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
         )
-        SELECT
-          updated.id,
-          updated.cleanup_id,
-          updated.sender_id,
-          updated.body,
-          updated.kind,
-          updated.attachments,
-          updated.created_at,
-          updated.edited_at,
-          updated.deleted_at,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
-        FROM updated
-        JOIN users u ON u.id = updated.sender_id
+        ${selectChatRowFrom(sql, "updated")}
       `
       const row = rows[0]
       if (!row) return null

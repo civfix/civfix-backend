@@ -68,8 +68,7 @@ const ONE_MB = 1024 * 1024
 /** Build the limits from env (with safe defaults). Pure; call once at startup or per test. */
 export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimits {
   return {
-    // Never download more than the largest accepted media (video cap) plus a small slop for container
-    // overhead is unnecessary: we cap exactly at MAX_VIDEO_BYTES and reject anything larger.
+    // Cap exactly at the largest accepted media (the video cap); reject anything larger.
     maxDownloadBytes: parsePosInt(source.MEDIA_MAX_DOWNLOAD_BYTES, MAX_VIDEO_BYTES),
     // ~24 MP: comfortably above a 15 MB photo's real pixel count but well below a decode bomb.
     maxImagePixels: parsePosInt(source.MEDIA_MAX_IMAGE_PIXELS, 24_000_000),
@@ -107,3 +106,5 @@ export const CHAT_PARTITION_CRON = "0 3 28 * *" // 03:00 UTC on the 28th, before
 // lost its inline enqueue (e.g. a shutdown race) is reconciled promptly rather than the report staying
 // held until an unrelated media event. Frequent + cheap (a bounded indexed scan + idempotent re-checks).
 export const HOLD_RELEASE_SWEEP_CRON = "*/5 * * * *"
+// Retention sweep (privacy §7.1): daily delete of consumed/expired email_otps, anon_tokens, sessions.
+export const RETENTION_SWEEP_CRON = "37 4 * * *" // 04:37 UTC daily (off-peak, batch-capped)

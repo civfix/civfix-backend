@@ -3,11 +3,16 @@
  *
  * This is the untrusted-image decode boundary. Hardening:
  *   - DECODE GUARD: sharp is constructed with a hard `limitInputPixels` so a "pixel bomb" (tiny file
- *     declaring billions of pixels) is rejected at header-parse time, before any large allocation, and
- *     with `failOn: "error"` so a truncated/garbage stream errors instead of yielding a partial image.
- *   - TIMEOUT: sharp has no built-in wall clock, so every pipeline is wrapped in withTimeout(); if the
- *     native work wedges, the job-level deadline still fires and the asset is rejected (the sharp call
- *     is also bounded by sharp's own `timeout` option as a second line).
+ *     declaring billions of pixels) is rejected at header-parse time, before any large allocation;
+ *     `failOn: "warning"` (sharp's documented untrusted-input value - "error" still decodes many
+ *     malformed/partial streams) so a corrupt stream is rejected; and `pages: 1` / `animated: false` so a
+ *     multi-frame GIF/WebP / multi-page TIFF decodes only one surface (an animation's frames×pixels cannot
+ *     blow the pixel budget). The post-metadata budget multiplies by `meta.pages` for the same reason.
+ *   - FORMAT ALLOWLIST: after metadata() we assert the detected format is jpeg/png/webp, so a spoofed-MIME
+ *     polyglot (SVG/TIFF/AVIF) cannot be decoded/re-encoded by an unintended libvips codec.
+ *   - TIMEOUT: sharp has no built-in wall clock, so the JS-side withTimeout() rejects the promise on a
+ *     wedge; the native libvips work continues until sharp's own `timeout` option fires, so peak RSS is
+ *     bounded by the larger of the two (the JS reject does not cancel native work).
  *   - MEMORY: sharp.cache(false) and sharp.concurrency(1) keep per-call memory predictable under the
  *     worker's concurrency cap.
  *   - EXIF: read GPS for the report cross-check BEFORE stripping, then STRIP by re-encoding WITHOUT
@@ -85,24 +90,31 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   })
 }
 
+/** Formats we will DECODE + re-encode. A spoofed-MIME input that libvips detects as anything else (SVG,
+ * TIFF, AVIF, GIF, ...) is rejected before any full decode rather than re-encoded via an unintended codec. */
+const ALLOWED_DECODED_FORMATS: ReadonlySet<string> = new Set(["jpeg", "png", "webp"])
+
 /** Build a guarded sharp instance over untrusted bytes (no decoding happens until a consumer runs). */
 function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): sharp.Sharp {
   return sharp(Buffer.from(bytes), {
     // Reject decode bombs at header parse: refuse inputs above this pixel ceiling.
     limitInputPixels: limits.sharpPixelLimit,
-    // Error (do not silently truncate) on a corrupt/partial stream.
-    failOn: "error",
+    // sharp's documented untrusted-input value: reject a corrupt/partial stream. ("error" still decodes
+    // many malformed streams; "warning" is the stricter untrusted boundary.)
+    failOn: "warning",
+    // Decode ONLY the first frame/page of an animated GIF/WebP or multi-page TIFF, so frames×pixels of an
+    // animation cannot blow past the pixel budget (the post-metadata check multiplies by meta.pages too).
+    pages: 1,
+    animated: false,
     // Stream large progressive JPEG/TIFF inputs in one forward pass instead of libvips' random-access
-    // read, so we never keep more of the decoded surface resident than necessary. This caps peak RSS
-    // per concurrent job (a memory-bounded multi-tenant worker may decode up to `concurrency` large
-    // surfaces at once), reducing OOM risk under adversarial large-but-legal uploads.
+    // read, so we never keep more of the decoded surface resident than necessary (caps peak RSS per
+    // concurrent job under adversarial large-but-legal uploads).
     sequentialRead: true,
-    // sharp's own per-pipeline wall clock (seconds), as a second line under withTimeout.
-    // (Rounded up so a sub-second config still yields >= 1s for libvips.)
+    // sharp's own per-pipeline wall clock (seconds), rounded up so a sub-second config still yields >= 1s.
   }).timeout({ seconds: Math.max(1, Math.ceil(limits.imageTimeoutMs / 1000)) })
 }
 
-/** Choose the stripped-image output encoder + content type from the detected input format. */
+/** Choose the stripped-image output encoder + content type from the detected (allowlisted) input format. */
 function chooseOutput(format: string): {
   apply: (s: sharp.Sharp) => sharp.Sharp
   contentType: string
@@ -112,7 +124,6 @@ function chooseOutput(format: string): {
       return { apply: (s) => s.png({ compressionLevel: 9 }), contentType: "image/png" }
     case "webp":
       return { apply: (s) => s.webp({ quality: 90 }), contentType: "image/webp" }
-    // jpeg, and anything else we successfully decoded, normalize to JPEG.
     default:
       return { apply: (s) => s.jpeg({ quality: 90, mozjpeg: false }), contentType: "image/jpeg" }
   }
@@ -151,8 +162,8 @@ export async function processImage(
   bytes: Uint8Array,
   limits: WorkerLimits,
 ): Promise<ProcessedImage> {
-  // 1) Metadata/decode guard. metadata() parses the header and enforces limitInputPixels; a bomb or
-  //    garbage throws here before any full decode.
+  // metadata() parses the header and enforces limitInputPixels; a bomb or garbage throws here before any
+  // full decode.
   const meta = await withTimeout(
     guardedSharp(bytes, limits).metadata(),
     limits.imageTimeoutMs,
@@ -162,23 +173,29 @@ export async function processImage(
   if (!meta.format || typeof meta.width !== "number" || typeof meta.height !== "number") {
     throw new ImageProcessingError("image metadata missing format/dimensions")
   }
-  // Defense in depth beyond sharp's own limit: enforce our (possibly stricter) pixel budget.
-  const pixels = meta.width * meta.height
+  // Format allowlist: reject a spoofed-MIME polyglot (SVG/TIFF/AVIF/GIF/...) before any full decode so an
+  // unintended libvips codec is never reached. Only jpeg/png/webp are decoded + re-encoded.
+  if (!ALLOWED_DECODED_FORMATS.has(meta.format)) {
+    throw new ImageProcessingError(`unsupported image format: ${meta.format}`)
+  }
+  // Defense in depth beyond sharp's own limit: enforce our (possibly stricter) pixel budget over the FULL
+  // stacked surface (width*height*pages) so a multi-page/animated input cannot bypass maxImagePixels even
+  // though we only decode page 1.
+  const pixels = meta.width * meta.height * (meta.pages ?? 1)
   if (pixels > limits.maxImagePixels) {
     throw new ImageProcessingError(
-      `image ${meta.width}x${meta.height} exceeds pixel budget ${limits.maxImagePixels}`,
+      `image ${meta.width}x${meta.height}x${meta.pages ?? 1} exceeds pixel budget ${limits.maxImagePixels}`,
     )
   }
 
-  // 2) GPS from the original EXIF (pre-strip), for the report GPS cross-check note. Never throws.
+  // GPS from the original EXIF (pre-strip), for the report GPS cross-check note. Never throws.
   const exifGps = await readExifGps(bytes)
 
-  // 3+4) Stripped full image AND thumbnail from a SINGLE decode. Building a fresh guardedSharp() per
-  //    output runs an independent full libvips decode of the same bytes; on the CPU-bound worker that
-  //    roughly doubles per-image CPU and peak surface memory. Instead build one guarded pipeline, bake
-  //    the EXIF orientation into the pixels once (`.rotate()`), then `.clone()` it for each output —
-  //    sharp shares that one decoded surface across both branches. Neither output calls withMetadata(),
-  //    so all EXIF/XMP/ICC-as-metadata is dropped; limitInputPixels still applies on the shared decode.
+  // Stripped full image AND thumbnail from a SINGLE decode: a fresh guardedSharp() per output would run
+  // an independent full libvips decode (roughly doubling per-image CPU + peak surface on this CPU-bound
+  // worker). Instead build one guarded pipeline, bake the EXIF orientation into the pixels once
+  // (`.rotate()` with no args), then `.clone()` per output so sharp shares the one decoded surface.
+  // Neither output calls withMetadata(), so all EXIF/XMP/ICC metadata is dropped on re-encode.
   const out = chooseOutput(meta.format)
   const base = guardedSharp(bytes, limits).rotate()
   const [strippedBytes, thumbnailBytes] = await Promise.all([

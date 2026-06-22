@@ -28,9 +28,10 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
-import { loadChatReactions, toggleChatReaction } from "./chat-reactions.drizzle.js"
-import { loadChatMentions } from "./chat-mentions.drizzle.js"
+import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./chat-reactions.drizzle.js"
+import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
+import { monotonicReadWatermark } from "./chat-read-state.drizzle.js"
 import type { PresignMedia } from "./media-presign.js"
 
 /** A dm thread row (the participant pair ordered lo < hi). */
@@ -144,9 +145,11 @@ export interface DmRepository {
   resolveMessageCreatedAt(threadId: string, messageId: string): Promise<Date | null>
   /**
    * The viewer's dm threads (excluding any where either party blocked the other), each with the peer,
-   * the last message, and the unread count. Drives the threads UNION.
+   * the last message, and the unread count. Drives the threads UNION. `limit` caps the DB scan so a heavy
+   * user's full thread set isn't materialized on every inbox load (the merge in threads-service slices the
+   * combined cleanup+dm set, so capping each half is sufficient).
    */
-  listThreadsForUser(userId: string): Promise<DmThreadAggregate[]>
+  listThreadsForUser(userId: string, limit?: number): Promise<DmThreadAggregate[]>
 }
 
 /** A dm message row joined with its sender's person fields, as selected for the DTO. */
@@ -480,21 +483,23 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
-      // Batch-load the ready (presigned) attachments for the whole page in ONE query.
-      const attachmentsByMessage = presign
-        ? await loadChatAttachments(sql, page.map((r) => r.id), presign)
-        : new Map<string, MediaDTO[]>()
-      // Hydrate each row's reaction summary. The history read is not viewer-scoped here (it mirrors the
-      // existing signature), so `mine` is computed against no viewer (false); the per-message read path
-      // (findMessage) carries the viewer for the toggle response.
-      const items = await Promise.all(
-        page.map(async (r) => {
-          const [reactions, mentions] = await Promise.all([
-            loadChatReactions(sql, r.id, viewerUserId),
-            loadChatMentions(sql, r.id),
-          ])
-          return toMessageDTO(r, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(r.id) ?? [])
-        }),
+      // Batch the three per-message relations into ONE grouped query each (WHERE message_id IN (...)) so a
+      // page is 3 round-trips total, not 3×N. The reaction `mine` flag resolves against the viewer.
+      const ids = page.map((r) => r.id)
+      const [attachmentsByMessage, reactionsByMessage, mentionsByMessage] = await Promise.all([
+        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        loadChatReactionsFor(sql, ids, viewerUserId),
+        loadChatMentionsFor(sql, ids),
+      ])
+      const items = page.map((r) =>
+        toMessageDTO(
+          r,
+          reactionsByMessage.get(r.id) ?? [],
+          mentionsByMessage.get(r.id) ?? [],
+          viewerUserId,
+          undefined,
+          attachmentsByMessage.get(r.id) ?? [],
+        ),
       )
       const last = page[page.length - 1]
       const nextCursor = hasMore && last ? last.id : null
@@ -542,13 +547,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     },
 
     async markRead(threadId: string, userId: string, at: Date): Promise<void> {
-      // Monotonic upsert: GREATEST so an out-of-order ack never moves the watermark back.
-      await sql`
-        INSERT INTO dm_read_state (thread_id, user_id, last_read_at)
-        VALUES (${threadId}, ${userId}, ${at})
-        ON CONFLICT (thread_id, user_id) DO UPDATE
-        SET last_read_at = GREATEST(COALESCE(dm_read_state.last_read_at, to_timestamp(0)), ${at})
-      `
+      await monotonicReadWatermark(sql, "dm_read_state", { thread_id: threadId, user_id: userId }, at)
     },
 
     async lastReadAt(threadId: string, userId: string): Promise<Date | null> {
@@ -575,10 +574,12 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       return rows[0]?.created_at ?? null
     },
 
-    async listThreadsForUser(userId: string): Promise<DmThreadAggregate[]> {
+    async listThreadsForUser(userId: string, limit?: number): Promise<DmThreadAggregate[]> {
       // For each thread the user participates in, find the OTHER participant (peer), the last non-deleted
       // message, and the unread count (peer's messages after max(thread.created_at, last_read_at)). Exclude
       // any thread where EITHER party blocked the other (NOT EXISTS over user_blocks both directions).
+      // Cap the scan when a limit is supplied so a heavy user's full thread set isn't materialized per load.
+      const limitClause = limit !== undefined ? sql`LIMIT ${limit}` : sql``
       const rows = await sql<
         {
           thread_id: string
@@ -632,6 +633,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
                OR (b.blocker_id = peer.id AND b.blocked_id = ${userId})
           )
         ORDER BY COALESCE(last_msg.created_at, t.created_at) DESC
+        ${limitClause}
       `
       return rows.map((r) => ({
         threadId: r.thread_id,

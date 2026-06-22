@@ -15,11 +15,7 @@
  * We add a small GRACE window before deleting so a just-expired row is not raced out from under an
  * in-flight request, and a per-table BATCH cap so a large backlog drains over several runs instead of one
  * giant DELETE holding a long lock. Each DELETE is independent and `RETURNING id`, so the count is exact.
- *
- * NO NEW SCHEMA: this only deletes expired rows from existing tables.
- *
- * Mirrors the orphan-sweep / partition-maintenance job shape: pure deps, an injectable clock + logger +
- * reporter, and it NEVER throws — a per-table failure is counted, reported, and the sweep continues.
+ * It NEVER throws — a per-table failure is counted, reported, and the sweep continues.
  */
 
 import type { Sql } from "@civfix/api/db"
@@ -66,12 +62,16 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
 
   const result: RetentionSweepResult = { otps: 0, anonTokens: 0, sessions: 0, errors: 0 }
 
-  // 1) email_otps: consumed OR expired past the grace window. Batched via a ctid subselect.
+  // Batch via an `id IN (SELECT id ... LIMIT n)` subselect: the PK is immutable, unlike ctid which can
+  // move under a concurrent vacuum/HOT-update (a ctid captured by the subselect could then delete a
+  // DIFFERENT row by the time the outer DELETE runs).
+
+  // 1) email_otps: consumed OR expired past the grace window.
   try {
     const rows = await deps.sql<{ id: string }[]>`
       DELETE FROM email_otps
-      WHERE ctid IN (
-        SELECT ctid FROM email_otps
+      WHERE id IN (
+        SELECT id FROM email_otps
         WHERE consumed_at IS NOT NULL OR expires_at < ${cutoff}
         LIMIT ${batch}
       )
@@ -88,8 +88,8 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
   try {
     const rows = await deps.sql<{ id: string }[]>`
       DELETE FROM anon_tokens
-      WHERE ctid IN (
-        SELECT ctid FROM anon_tokens
+      WHERE id IN (
+        SELECT id FROM anon_tokens
         WHERE expires_at < ${cutoff}
         LIMIT ${batch}
       )
@@ -106,8 +106,8 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
   try {
     const rows = await deps.sql<{ id: string }[]>`
       DELETE FROM sessions
-      WHERE ctid IN (
-        SELECT ctid FROM sessions
+      WHERE id IN (
+        SELECT id FROM sessions
         WHERE expires_at < ${cutoff}
         LIMIT ${batch}
       )

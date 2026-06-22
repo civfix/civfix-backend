@@ -1,33 +1,37 @@
 /**
- * Shared persistence helper for CHAT message USER @-mentions (the chat_message_mentions table, which serves
- * BOTH the cleanup group chat and 1:1 DMs — message ids are globally-unique uuids across both). Factored out
- * of chat-repository.drizzle.ts / dm-repository.drizzle.ts so the two repos hydrate the SAME table
- * identically when reading message history. Mirrors chat-reactions.drizzle.ts loadChatReactions.
- *
- * The WRITE path (persisting a new message's mentions) lives in the WS gateway seam (chat.routes), not here:
- * mentions are resolved from @handles + the send frame AFTER persist, so a mention failure never blocks the
- * message. This helper is only the READ side (history / single-message reads project the stored mentions).
+ * Chat/DM message USER @-mentions: thin binders over the table-parameterized message-mentions repo
+ * (message-mentions.drizzle.ts). chat_message_mentions serves BOTH the cleanup group chat and 1:1 DMs
+ * (message ids are globally-unique uuids across both). The WRITE path is driven from the WS gateway seam
+ * AFTER persist (a mention failure never blocks the message); these are the chat-table bindings.
  */
 
-import type { Queryable } from "../db/client.js"
+import type { Queryable, Sql } from "../db/client.js"
 import type { UserMentionDTO } from "@civfix/shared"
+import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 
-/**
- * Load the resolved USER @-mentions on ONE chat/dm message (chat_message_mentions joined to users), as the
- * wire UserMentionDTO[]. Ordered by handle then id for a stable render. Empty when the message names no one.
- */
+const CHAT_MENTIONS = "chat_message_mentions" as const
+
+/** Load the resolved @-mentions on ONE chat/dm message. */
 export async function loadChatMentions(
   tag: Queryable,
   messageId: string,
 ): Promise<UserMentionDTO[]> {
-  const rows = await tag<{ id: string; handle: string | null; display_name: string }[]>`
-    SELECT u.id, u.handle, u.display_name
-    FROM chat_message_mentions cm
-    JOIN users u ON u.id = cm.mentioned_user_id
-    WHERE cm.message_id = ${messageId}
-    ORDER BY u.handle ASC, u.id ASC
-  `
-  // UserMentionDTO.handle is non-null; a mentioned user always has a handle in practice (mentions resolve
-  // from @handles), but coalesce defensively so a NULL-handle row never breaks the contract.
-  return rows.map((r) => ({ id: r.id, handle: r.handle ?? "", displayName: r.display_name }))
+  return (await loadMentionsFor(tag, CHAT_MENTIONS, [messageId])).get(messageId) ?? []
+}
+
+/** Batched: one grouped join for a whole page of message ids (the N+1 fix for list reads). */
+export function loadChatMentionsFor(
+  tag: Queryable,
+  messageIds: string[],
+): Promise<Map<string, UserMentionDTO[]>> {
+  return loadMentionsFor(tag, CHAT_MENTIONS, messageIds)
+}
+
+/** Replace a chat/dm message's mention set (caller dedupes + self-excludes the ids). */
+export function recordChatMentions(
+  sql: Sql,
+  messageId: string,
+  mentionedUserIds: string[],
+): Promise<void> {
+  return makeMentionRepo(sql, CHAT_MENTIONS).recordFor(sql, messageId, mentionedUserIds)
 }

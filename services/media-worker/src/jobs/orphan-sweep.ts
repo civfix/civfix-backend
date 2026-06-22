@@ -17,6 +17,22 @@
 import type { Storage } from "@civfix/shared/interfaces"
 import type { MediaWorkerRepo, OrphanRow } from "@civfix/api/media-repo"
 import type { WorkerLimits } from "../config.js"
+import { thumbnailKey } from "./media-keys.js"
+
+/** Bounded-concurrency map: at most `limit` of `fn` in flight at once. Preserves per-item isolation. */
+async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor++]
+      if (item !== undefined) await fn(item)
+    }
+  })
+  await Promise.all(runners)
+}
+
+/** Concurrent orphan rows processed per run (each is a chain of R2 + DB round-trips). */
+const ORPHAN_CONCURRENCY = 8
 
 export interface OrphanSweepDeps {
   repo: MediaWorkerRepo
@@ -43,9 +59,11 @@ export interface OrphanSweepResult {
 function derivedKeys(o: OrphanRow): string[] {
   const keys = [
     o.r2Key,
+    // LEGACY processed/* objects from before the worker overwrote r2_key in place. Remove-after note:
+    // safe to drop once no media_assets row predates that switch (deleting a missing key is a no-op).
     `processed/${o.r2Key}.img`,
     `processed/${o.r2Key}.mp4`,
-    `thumbs/${o.r2Key}.jpg`,
+    thumbnailKey(o.r2Key),
   ]
   if (o.thumbKey && !keys.includes(o.thumbKey)) keys.push(o.thumbKey)
   return keys
@@ -71,29 +89,33 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
 
   let deleted = 0
   let errors = 0
-  for (const o of orphans) {
+  await mapWithLimit(orphans, ORPHAN_CONCURRENCY, async (o) => {
     try {
       // SECURITY: r2_key is content-addressed (uploads/yyyy/mm/<sha256>), so identical bytes dedupe to a
       // SINGLE physical object shared by every media row with that key. All derivedKeys() are derived from
       // r2_key, so they are equally shared. Deleting them while ANOTHER row (e.g. a committed report's
-      // media) still references the key would destroy live media — an unauthenticated attacker could
-      // upload identical bytes, never commit, and let this sweep nuke the victim's object. So delete the
-      // R2 objects ONLY when no other row references the key; otherwise drop just the orphan DB row and
-      // leave the physical object for the surviving reference(s) to reclaim once it is the last one.
-      const shared = await deps.repo.r2KeyReferencedByOthers(o.id, o.r2Key)
-      if (!shared) {
-        // The derived keys for one orphan are independent of each other, so fire their R2 DELETEs in
-        // parallel instead of serially — this collapses the per-row latency from 4 round-trips to 1.
+      // media) references the key would destroy live media — an attacker could upload identical bytes,
+      // never commit, and let this sweep nuke the victim's object.
+      //
+      // TOCTOU: delete the orphan ROW FIRST, then re-check r2KeyReferencedByOthers, then (only if still
+      // unreferenced) delete the physical objects. With the old order (check -> delete R2 -> delete row) a
+      // legit identical-bytes commit attaching a new row with the same key BETWEEN the check and the R2
+      // delete would lose the shared object out from under the just-committed report. Checking AFTER the
+      // row is gone means a concurrent commit that landed before our delete is seen and we skip the
+      // physical delete (the surviving reference reclaims the object when it becomes the last one).
+      await deps.repo.deleteById(o.id)
+      const stillShared = await deps.repo.r2KeyReferencedByOthers(o.id, o.r2Key)
+      if (!stillShared) {
+        // The derived keys for one orphan are independent, so fire their R2 DELETEs in parallel.
         await Promise.all(derivedKeys(o).map((key) => deps.storage.delete(key)))
       }
-      await deps.repo.deleteById(o.id)
       deleted++
     } catch (err) {
       errors++
       report(err, { job: "orphan.sweep", phase: "delete", mediaId: o.id })
       log("orphan.sweep: row failed", { mediaId: o.id, err: String(err) })
     }
-  }
+  })
 
   log("orphan.sweep: done", {
     scanned: orphans.length,

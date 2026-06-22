@@ -12,8 +12,39 @@
  * off the composite-PK row, an index point-lookup.
  */
 
-import type { Sql } from "../db/client.js"
+import type { Queryable, Sql } from "../db/client.js"
 import type { ChatReadState } from "./threads-service.js"
+
+/**
+ * Monotonically advance a per-user read watermark via INSERT … ON CONFLICT DO UPDATE: the watermark only
+ * ever moves forward (GREATEST against the existing value, COALESCEd from epoch 0 so a NULL prior value is
+ * treated as the floor). Shared by dm_read_state (and any future per-user read-state table with a
+ * two-column key + a `last_read_at` column). `table`/key columns are caller-supplied module constants
+ * (never user input), interpolated as postgres.js identifiers. cleanup_members keeps a plain UPDATE below
+ * because the membership row always pre-exists (an INSERT would violate its other NOT NULL columns).
+ */
+export async function monotonicReadWatermark(
+  tag: Queryable,
+  table: string,
+  keys: Record<string, string>,
+  at: Date,
+): Promise<void> {
+  const entries = Object.entries(keys)
+  const colList = entries.reduce(
+    (acc, [c], i) => (i === 0 ? tag`${tag(c)}` : tag`${acc}, ${tag(c)}`),
+    tag``,
+  )
+  const valList = entries.reduce(
+    (acc, [, v], i) => (i === 0 ? tag`${v}` : tag`${acc}, ${v}`),
+    tag``,
+  )
+  await tag`
+    INSERT INTO ${tag(table)} (${colList}, last_read_at)
+    VALUES (${valList}, ${at})
+    ON CONFLICT (${colList}) DO UPDATE
+    SET last_read_at = GREATEST(COALESCE(${tag(table)}.last_read_at, to_timestamp(0)), ${at})
+  `
+}
 
 export function makeDrizzleChatReadState(sql: Sql): ChatReadState {
   return {

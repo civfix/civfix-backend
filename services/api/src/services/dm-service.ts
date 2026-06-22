@@ -17,7 +17,7 @@
  */
 
 import { AppError, relativeAgo, avatarGradient } from "@civfix/shared"
-import type { MessageThreadDTO, PersonDTO } from "@civfix/shared"
+import type { ChatMessageDTO, MessageThreadDTO, PersonDTO } from "@civfix/shared"
 import type { BlocksRepository } from "./blocks-repository.drizzle.js"
 import type { DmRepository } from "./dm-repository.drizzle.js"
 
@@ -49,6 +49,18 @@ export interface DmServiceDeps {
 export interface DmService {
   /** Open (or fetch) the DM thread between the viewer and target. See the file header for the rules. */
   openDm(viewerId: string, targetUserId: string): Promise<MessageThreadDTO>
+}
+
+/**
+ * Inbox preview text for the last DM message: the body when present, else a kind label derived from the
+ * first attachment ("Photo"/"Video") so an attachment-only message doesn't render a blank preview.
+ */
+function lastPreview(last: ChatMessageDTO): string {
+  const body = last.body
+  if (typeof body === "string" && body.trim() !== "") return body
+  const first = last.attachments?.[0]
+  if (first) return first.kind === "video" ? "Video" : "Photo"
+  return ""
 }
 
 /** Build the peer PersonDTO from a target user view. */
@@ -109,7 +121,7 @@ export function makeDmService(deps: DmServiceDeps): DmService {
         refId: thread.id,
         title,
         peer,
-        last: last !== null ? (last.body ?? "") : null,
+        last: last !== null ? lastPreview(last) : null,
         ago: last !== null ? relativeAgo(new Date(last.createdAt), now()) : null,
         lastFromMe: last !== null && last.from.id === viewerId,
         unread: 0,

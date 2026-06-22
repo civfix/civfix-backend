@@ -42,7 +42,7 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
 
     async isBlockedEitherWay(a: string, b: string): Promise<boolean> {
       const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM user_blocks
+        SELECT 1 FROM user_blocks
         WHERE (blocker_id = ${a} AND blocked_id = ${b})
            OR (blocker_id = ${b} AND blocked_id = ${a})
         LIMIT 1

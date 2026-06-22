@@ -64,11 +64,7 @@ LIMIT 1` as const
 
 /**
  * Resolve the jurisdiction containing (lng, lat). Returns the most-specific match, or null if the
- * point is outside every known boundary.
- *
- * @param sql raw postgres-js tag (e.g. dbHandle.sql).
- * @param lng longitude / x, in [-180, 180], SRID 4326.
- * @param lat latitude  / y, in [-90, 90],  SRID 4326.
+ * point is outside every known boundary. NOTE the coordinate order: (lng = x, lat = y).
  */
 export async function resolveJurisdiction(
   sql: Sql,

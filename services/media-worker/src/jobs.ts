@@ -19,6 +19,7 @@ import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { FakeJobs } from "@civfix/shared/fakes"
 import { parseBool } from "./config.js"
+import { MediaInfraError } from "./jobs/media-checks.js"
 
 /** Default ON outside production so the worker boots offline. */
 function useFakeJobs(source: NodeJS.ProcessEnv = process.env): boolean {
@@ -37,11 +38,12 @@ export interface WorkSettings {
 /**
  * Queue-level retry policy (pg-boss v10 createQueue options). Applied to every job on the queue, so it
  * governs how a job whose handler THROWS is retried. This is the knob that makes media.checks' infra
- * throws (MediaInfraError) recover instead of dead-lettering: without a retryLimit the default is 0 (no
- * retry). Set on the WORKER's createQueue (the worker owns the work side); the fake ignores it.
+ * throws (MediaInfraError) recover with bounded backoff: pg-boss v10's default retryLimit is 2 (retries
+ * are opt-OUT), but we set it explicitly so the value is intentional, not a default we inherit. Set on
+ * the WORKER's createQueue (the worker owns the work side); the fake ignores it.
  */
 export interface QueueOptions {
-  /** Max retries before a job is marked failed for good (pg-boss default 0 = no retry). */
+  /** Max retries before a job is marked failed for good (pg-boss v10 default is 2; retries are opt-OUT). */
   retryLimit?: number
   /** Exponential backoff between retries (pg-boss spaces them out instead of retrying immediately). */
   retryBackoff?: boolean
@@ -57,6 +59,14 @@ export interface QueueOptions {
   policy?: PgBoss.Queue["policy"]
 }
 
+/** Per-schedule options for a cron (worker extension over Jobs.schedule's data-only signature). */
+export interface ScheduleOptions {
+  /** Expire (and allow re-delivery) a scheduled job after this many seconds; sized above worst-case run. */
+  expireInSeconds?: number
+  /** Single-flight key so two fires of the same cron never overlap. */
+  singletonKey?: string
+}
+
 /** The worker's Jobs handle: the shared Jobs surface plus worker-only lifecycle + queue helpers. */
 export interface WorkerJobs extends Jobs {
   start(): Promise<void>
@@ -68,6 +78,8 @@ export interface WorkerJobs extends Jobs {
   createQueue(name: string, options?: QueueOptions): Promise<void>
   /** Register a handler with concurrency/poll settings (worker extension over Jobs.work). */
   workWithSettings(name: string, handler: JobHandler, settings?: WorkSettings): Promise<void>
+  /** Schedule a cron, widened over Jobs.schedule with optional expire/singleton options. */
+  schedule(name: string, cron: string, data?: unknown, options?: ScheduleOptions): Promise<void>
 }
 
 /** Map the shared EnqueueOptions onto pg-boss SendOptions. */
@@ -90,6 +102,9 @@ function toQueueOptions(
   return out
 }
 
+/** pg-boss graceful-stop timeout (ms). MUST be >= the longest per-job budget (media.checks 60s). */
+const STOP_GRACE_MS = 65_000
+
 /** Real pg-boss-backed implementation of the worker Jobs handle. */
 export class PgBossWorkerJobs implements WorkerJobs {
   private readonly connectionString: string
@@ -111,8 +126,12 @@ export class PgBossWorkerJobs implements WorkerJobs {
 
   async stop(): Promise<void> {
     if (!this.boss) return
-    // Graceful: let in-flight jobs finish, then close. wait:true resolves after fully stopped.
-    await this.boss.stop({ graceful: true, wait: true })
+    // Graceful: let in-flight jobs finish, then close. wait:true resolves after fully stopped. The
+    // explicit timeout must be >= the longest per-job budget (media.checks has a 60s MEDIA_JOB_TIMEOUT_MS
+    // wall-clock): pg-boss's 30s graceful default would abandon an in-flight media job on SIGTERM (the
+    // asset stuck `validating` until a sweep reconciles), so we raise it to 65s (the container SIGKILL
+    // grace must allow for this).
+    await this.boss.stop({ graceful: true, wait: true, timeout: STOP_GRACE_MS })
     this.boss = undefined
   }
 
@@ -142,8 +161,16 @@ export class PgBossWorkerJobs implements WorkerJobs {
     return id ?? ""
   }
 
-  async schedule(name: string, cron: string, data?: unknown): Promise<void> {
-    await this.requireBoss().schedule(name, cron, (data as object) ?? {})
+  async schedule(
+    name: string,
+    cron: string,
+    data?: unknown,
+    options?: ScheduleOptions,
+  ): Promise<void> {
+    const sendOpts: PgBoss.ScheduleOptions = {}
+    if (options?.expireInSeconds !== undefined) sendOpts.expireInSeconds = options.expireInSeconds
+    if (options?.singletonKey !== undefined) sendOpts.singletonKey = options.singletonKey
+    await this.requireBoss().schedule(name, cron, (data as object) ?? {}, sendOpts)
   }
 
   async work(name: string, handler: JobHandler): Promise<void> {
@@ -161,23 +188,38 @@ export class PgBossWorkerJobs implements WorkerJobs {
       options.pollingIntervalSeconds = settings.pollingIntervalSeconds
     }
     await this.requireBoss().work(name, options, async (jobs: PgBoss.Job[]) => {
-      // pg-boss v10 delivers an array. Process up to batchSize concurrently; pg-boss completes a job
-      // when its slice resolves and fails it if this callback throws. Our handlers never throw, so a
-      // job always completes (its terminal status is recorded in the DB by the handler itself).
-      await Promise.all(jobs.map((j) => handler({ id: j.id, data: j.data })))
+      // pg-boss v10 delivers a BATCH array and fails the WHOLE batch (re-delivering every sibling) if this
+      // callback throws. The media.checks handler DELIBERATELY re-throws MediaInfraError to signal a retry,
+      // so a Promise.all would let one infra-failing job re-process every clean sibling. Use allSettled and
+      // re-throw ONLY if a settled rejection is infra: a clean sibling is never re-delivered for another
+      // job's transient storage/DB blip, while a real infra failure still triggers the bounded retry. The
+      // never-throw-on-untrusted-input invariant means only MediaInfraError ever rejects here.
+      const results = await Promise.allSettled(jobs.map((j) => handler({ id: j.id, data: j.data })))
+      const infra = results.find(
+        (r): r is PromiseRejectedResult =>
+          r.status === "rejected" && r.reason instanceof MediaInfraError,
+      )
+      if (infra) throw infra.reason
     })
   }
 
   async complete(jobId: string): Promise<void> {
-    // The shared Jobs.complete is name-agnostic; pg-boss v10 needs the queue name. The worker's
-    // handlers complete implicitly by resolving, so this is unused in the worker; provide a safe no-op
-    // rather than guessing a queue name.
-    void jobId
+    // The shared Jobs.complete is name-agnostic; pg-boss v10 needs the queue name. The worker's handlers
+    // complete implicitly by resolving, so this is never called on the worker. Log if it ever is (a
+    // silent no-op would mask a misuse) rather than guessing a queue name.
+    console.warn("PgBossWorkerJobs.complete is unsupported on the worker (handlers complete by resolving)", {
+      jobId,
+    })
     return Promise.resolve()
   }
 
-  async fail(jobId: string, _err?: unknown): Promise<void> {
-    void jobId
+  async fail(jobId: string, err?: unknown): Promise<void> {
+    // Likewise unsupported: a silent no-op would discard both the job AND its error. Log so the misuse is
+    // diagnosable; the worker never calls this (handlers signal failure by throwing).
+    console.warn("PgBossWorkerJobs.fail is unsupported on the worker (throw to fail a job instead)", {
+      jobId,
+      err: err === undefined ? undefined : String(err),
+    })
     return Promise.resolve()
   }
 }

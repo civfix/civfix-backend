@@ -69,67 +69,57 @@ export interface JurisdictionHealthRow {
   population?: number | null
 }
 
+/** Whether the jurisdiction has a usable legacy contact_emails[] entry (a non-blank address). */
+function hasUsableLegacyContact(row: Pick<JurisdictionHealthRow, "contactEmails">): boolean {
+  return Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
+}
+
+/** Whether `updatedAt` is missing/unparseable or older than CONTACT_STALE_MONTHS as of `now`. */
+function isStale(updatedAt: Date | null, now: Date): boolean {
+  if (!(updatedAt instanceof Date) || Number.isNaN(updatedAt.getTime())) return true
+  const staleBefore = new Date(now)
+  staleBefore.setMonth(staleBefore.getMonth() - CONTACT_STALE_MONTHS)
+  return updatedAt.getTime() < staleBefore.getTime()
+}
+
 /**
- * PURE decision: does this jurisdiction need a (re)discovery pass as of `now`?
+ * PURE decision: does this jurisdiction need a (re)discovery pass as of `now`? `now` is injected so the
+ * decision is unit-testable with no DB or wall clock.
  *
- * Contact resolution precedence (Phase 2): a jurisdiction is "routable" when it has a per-category /
- * default jurisdiction_contacts row (`hasRoutingContact`) OR a usable legacy contact_emails[] entry.
- *   - No routable contact at all  -> needs discovery (true).
- *   - A jurisdiction_contacts row -> routable now; only the staleness clock can still flag it, and only
- *     when the legacy contact_updated_at is set + old (a fresh save sets contact_updated_at, so a
- *     just-saved contact never re-flags; a contact with no timestamp does NOT re-flag when a
- *     jurisdiction_contacts row exists, since that row is the authoritative routing signal).
- *   - Legacy emails only          -> the Phase 1 behavior: routable but re-flagged when the metadata
- *     timestamp is missing or older than CONTACT_STALE_MONTHS.
- *
- * BACKWARD COMPATIBLE: with `hasRoutingContact` absent/false the function reduces to the original legacy
- * check exactly, so an empty jurisdiction_contacts table changes nothing. No DB, no clock of its own:
- * `now` is injected so callers (and tests) control time.
+ * Contact resolution precedence (Phase 2): "routable" = a per-category/default jurisdiction_contacts row
+ * (`hasRoutingContact`) OR a usable legacy contact_emails[] entry.
+ *   - No routable contact at all  -> needs discovery.
+ *   - A jurisdiction_contacts row -> routable now; only re-flagged when the legacy contact_updated_at is
+ *     present AND old (a fresh save stamps it; a MISSING timestamp does NOT re-flag here, unlike the
+ *     legacy-only path, because the row itself is the authoritative routing signal).
+ *   - Legacy emails only          -> Phase 1 behavior: re-flagged when the timestamp is missing or old.
+ * BACKWARD COMPATIBLE: with `hasRoutingContact` absent/false this reduces to the original legacy check.
  */
 export function needsDiscovery(row: JurisdictionHealthRow, now: Date): boolean {
-  const hasLegacyContact =
-    Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
   const hasRoutingContact = row.hasRoutingContact === true
 
-  // No routable contact via either path -> needs discovery.
-  if (!hasRoutingContact && !hasLegacyContact) return true
+  if (!hasRoutingContact && !hasUsableLegacyContact(row)) return true
 
-  // A per-category / default jurisdiction_contacts row is the authoritative routing signal: the
-  // jurisdiction is routable. It is only re-flagged for staleness when the legacy metadata timestamp is
-  // present AND old (a just-saved contact stamps contact_updated_at, so it stays fresh; a missing
-  // timestamp does NOT re-flag here, unlike the legacy-only path, because the row itself proves routing).
   if (hasRoutingContact) {
     if (!(row.contactUpdatedAt instanceof Date) || Number.isNaN(row.contactUpdatedAt.getTime())) {
       return false
     }
-    const staleBefore = new Date(now)
-    staleBefore.setMonth(staleBefore.getMonth() - CONTACT_STALE_MONTHS)
-    return row.contactUpdatedAt.getTime() < staleBefore.getTime()
+    return isStale(row.contactUpdatedAt, now)
   }
 
-  // Legacy-only path: the Phase 1 behavior (missing/old timestamp re-flags).
-  if (!(row.contactUpdatedAt instanceof Date) || Number.isNaN(row.contactUpdatedAt.getTime())) {
-    return true
-  }
-  const staleBefore = new Date(now)
-  staleBefore.setMonth(staleBefore.getMonth() - CONTACT_STALE_MONTHS)
-  return row.contactUpdatedAt.getTime() < staleBefore.getTime()
+  return isStale(row.contactUpdatedAt, now)
 }
 
 /**
- * PURE: is this jurisdiction routable RIGHT NOW? True when it has a per-category / default
- * jurisdiction_contacts row (`hasRoutingContact`) OR a usable legacy contact_emails[] entry. This is
- * the inverse of "has no contact at all" and drives the public JurisdictionDTO.routable flag (the
- * report card shows "routes to {name}" when true, vs a "new area, manual review" state when false).
- * Note this is NOT the same as `!needsDiscovery`: a routable jurisdiction can still need a refresh pass
- * when its contact metadata has gone stale, yet it is still routable today.
+ * PURE: is this jurisdiction routable RIGHT NOW? True when it has a per-category/default
+ * jurisdiction_contacts row OR a usable legacy contact_emails[] entry. Drives the public
+ * JurisdictionDTO.routable flag. NOT the same as `!needsDiscovery`: a routable jurisdiction can still
+ * need a refresh pass when its contact metadata has gone stale, yet it is still routable today.
  */
 export function isRoutable(
   row: Pick<JurisdictionHealthRow, "hasRoutingContact" | "contactEmails">,
 ): boolean {
-  const hasLegacy =
-    Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
-  return row.hasRoutingContact === true || hasLegacy
+  return row.hasRoutingContact === true || hasUsableLegacyContact(row)
 }
 
 export interface JurisdictionServiceDeps {
@@ -156,6 +146,8 @@ export interface JurisdictionService {
    * jurisdiction needs one. Resolution is returned regardless of the discovery outcome.
    */
   resolveForPoint(lat: number, lng: number): Promise<JurisdictionDTO | null>
+  /** True when `geoid` names a known jurisdiction row. */
+  exists(geoid: string): Promise<boolean>
 }
 
 export function makeJurisdictionService(deps: JurisdictionServiceDeps): JurisdictionService {
@@ -173,14 +165,17 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
           : null
       }
 
-      // Health read: scalar columns only, keyed by the geoid we just resolved.
-      const health = await loadHealth(deps.sql, resolved.geoid)
+      // Health read + reverse-geocode label are independent of each other; run them concurrently.
+      const [health, geoLabel] = await Promise.all([
+        loadHealth(deps.sql, resolved.geoid),
+        deps.geocoder.cityStateLabel(lat, lng),
+      ])
       if (health && needsDiscovery(health, now())) {
         await enqueueDiscovery(deps.jobs, health)
       }
 
       // Label: prefer the geocoder seam; fall back to the jurisdiction name if it cannot produce one.
-      const label = (await deps.geocoder.cityStateLabel(lat, lng)) ?? resolved.name
+      const label = geoLabel ?? resolved.name
 
       return {
         geoid: resolved.geoid,
@@ -191,6 +186,11 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
         // when the health row could not be read, so an unknown jurisdiction reads as "manual review".
         routable: health ? isRoutable(health) : false,
       }
+    },
+
+    async exists(geoid: string): Promise<boolean> {
+      const rows = await deps.sql`SELECT 1 FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1`
+      return rows.length > 0
     },
   }
 }
@@ -313,7 +313,7 @@ async function loadHealth(sql: Sql, geoid: string): Promise<JurisdictionHealthRo
 async function enqueueDiscovery(jobs: Jobs, row: JurisdictionHealthRow): Promise<void> {
   const data: JurisdictionDiscoveryJob = {
     geoid: row.geoid,
-    ...(row.population !== undefined ? { population: row.population } : {}),
+    ...(row.population != null ? { population: row.population } : {}),
   }
   await jobs.enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: row.geoid })
 }

@@ -162,6 +162,10 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
     },
 
     async insertAbuseFlag(flag: NewAbuseFlag): Promise<void> {
+      // GOTCHA: media.checks is at-least-once (pg-boss retryLimit >= 2), so a re-delivered HELD/NSFW job
+      // can insert a duplicate (subject_type, subject_id, reason) row — abuse_flags has only a non-unique
+      // index, so ON CONFLICT cannot dedupe here. Duplicates are tolerated (the open-mod-queue dedupes by
+      // subject); a UNIQUE backstop would need a migration (deferred).
       await db.insert(abuseFlags).values({
         subjectType: "media",
         subjectId: flag.subjectId,
@@ -250,71 +254,53 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
 }
 
 /**
- * Create next month's chat_messages partition if missing. Mirrors the bounds convention in
- * 0002_chat_partitioning.sql ([lower inclusive, upper exclusive), monthly, UTC). Idempotent:
- * CREATE TABLE IF NOT EXISTS. Takes a postgres-js tag so the worker can run it without Drizzle.
+ * Create the NEXT-month partition of a monthly-partitioned message table if it is missing. Bounds follow
+ * 0002_chat_partitioning.sql ([lower inclusive, upper exclusive), monthly, UTC). Idempotent (CREATE TABLE
+ * IF NOT EXISTS) so it is safe to run every month. Takes a postgres-js tag so the worker can run it
+ * without Drizzle. Returns the created (or already-present) partition's table name.
  *
- * `now` defaults to the current time; injectable for deterministic tests. Returns the created (or
- * already-present) partition's table name.
+ * The partition name + bounds are derived from a CLOCK, never from user input, so this fixed-shape DDL
+ * has no injection surface (the only reason `sql.unsafe` is acceptable here).
  */
-export async function ensureNextMonthChatPartition(
+async function ensureNextMonthPartition(
   sqlTag: import("../db/client.js").Sql,
-  now: Date = new Date(),
+  parent: "chat_messages" | "dm_messages",
+  now: Date,
 ): Promise<string> {
-  // First day of NEXT month (UTC), and the month after, as the [from, to) bounds.
   const y = now.getUTCFullYear()
-  const m = now.getUTCMonth() // 0-based
+  const m = now.getUTCMonth() // 0-based; NEXT month and the month after are the [from, to) bounds.
   const from = new Date(Date.UTC(y, m + 1, 1, 0, 0, 0))
   const to = new Date(Date.UTC(y, m + 2, 1, 0, 0, 0))
 
   const yyyy = String(from.getUTCFullYear()).padStart(4, "0")
   const mm = String(from.getUTCMonth() + 1).padStart(2, "0")
-  const table = `chat_messages_${yyyy}_${mm}`
+  const table = `${parent}_${yyyy}_${mm}`
   const fromLit = `${yyyy}-${mm}-01 00:00:00+00`
-  const toYyyy = String(to.getUTCFullYear()).padStart(4, "0")
-  const toMm = String(to.getUTCMonth() + 1).padStart(2, "0")
-  const toLit = `${toYyyy}-${toMm}-01 00:00:00+00`
+  const toLit = `${String(to.getUTCFullYear()).padStart(4, "0")}-${String(
+    to.getUTCMonth() + 1,
+  ).padStart(2, "0")}-01 00:00:00+00`
 
-  // Table/partition identifiers are derived from a clock, never from user input, so this fixed-shape
-  // DDL has no injection surface. IF NOT EXISTS makes it safe to run every month.
   await sqlTag.unsafe(
-    `CREATE TABLE IF NOT EXISTS ${table} PARTITION OF chat_messages ` +
+    `CREATE TABLE IF NOT EXISTS ${table} PARTITION OF ${parent} ` +
       `FOR VALUES FROM ('${fromLit}') TO ('${toLit}')`,
   )
   return table
 }
 
-/**
- * Create next month's dm_messages partition if missing. Identical logic to ensureNextMonthChatPartition,
- * for the DM message table (0009_dm_and_privacy.sql), which is partitioned monthly the same way as
- * chat_messages. Idempotent (CREATE TABLE IF NOT EXISTS); bounds derive from a clock, never user input.
- *
- * `now` defaults to the current time; injectable for deterministic tests. Returns the created (or
- * already-present) partition's table name.
- */
-export async function ensureNextMonthDmPartition(
+/** Create next month's chat_messages partition if missing. `now` is injectable for deterministic tests. */
+export function ensureNextMonthChatPartition(
   sqlTag: import("../db/client.js").Sql,
   now: Date = new Date(),
 ): Promise<string> {
-  // First day of NEXT month (UTC), and the month after, as the [from, to) bounds.
-  const y = now.getUTCFullYear()
-  const m = now.getUTCMonth() // 0-based
-  const from = new Date(Date.UTC(y, m + 1, 1, 0, 0, 0))
-  const to = new Date(Date.UTC(y, m + 2, 1, 0, 0, 0))
+  return ensureNextMonthPartition(sqlTag, "chat_messages", now)
+}
 
-  const yyyy = String(from.getUTCFullYear()).padStart(4, "0")
-  const mm = String(from.getUTCMonth() + 1).padStart(2, "0")
-  const table = `dm_messages_${yyyy}_${mm}`
-  const fromLit = `${yyyy}-${mm}-01 00:00:00+00`
-  const toYyyy = String(to.getUTCFullYear()).padStart(4, "0")
-  const toMm = String(to.getUTCMonth() + 1).padStart(2, "0")
-  const toLit = `${toYyyy}-${toMm}-01 00:00:00+00`
-
-  await sqlTag.unsafe(
-    `CREATE TABLE IF NOT EXISTS ${table} PARTITION OF dm_messages ` +
-      `FOR VALUES FROM ('${fromLit}') TO ('${toLit}')`,
-  )
-  return table
+/** Create next month's dm_messages partition if missing. `now` is injectable for deterministic tests. */
+export function ensureNextMonthDmPartition(
+  sqlTag: import("../db/client.js").Sql,
+  now: Date = new Date(),
+): Promise<string> {
+  return ensureNextMonthPartition(sqlTag, "dm_messages", now)
 }
 
 /**

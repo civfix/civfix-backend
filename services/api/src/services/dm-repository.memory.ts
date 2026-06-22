@@ -237,6 +237,12 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
+    // Drizzle FK-gates a reaction to a live message; mirror that here so a toggle on a
+    // nonexistent/soft-deleted id is a no-op rather than minting an orphan reaction set.
+    const exists = [...this.log.values()].some((list) =>
+      list.some((m) => m.dto.id === messageId && !m.deleted),
+    )
+    if (!exists) return Promise.resolve(false)
     const set = this.reactions.get(messageId) ?? new Set<string>()
     const key = `${userId}:${emoji}`
     let present: boolean
@@ -268,7 +274,7 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(found ? new Date(found.dto.createdAt) : null)
   }
 
-  async listThreadsForUser(userId: string): Promise<DmThreadAggregate[]> {
+  async listThreadsForUser(userId: string, limit?: number): Promise<DmThreadAggregate[]> {
     const out: DmThreadAggregate[] = []
     for (const t of this.threads.values()) {
       const peerId = t.userLo === userId ? t.userHi : t.userHi === userId ? t.userLo : null
@@ -305,7 +311,7 @@ export class InMemoryDmRepository implements DmRepository {
       (a, b) =>
         (b.last?.createdAt ?? b.createdAt).getTime() - (a.last?.createdAt ?? a.createdAt).getTime(),
     )
-    return out
+    return limit !== undefined ? out.slice(0, limit) : out
   }
 }
 

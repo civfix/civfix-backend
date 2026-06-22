@@ -46,6 +46,12 @@ import type {
 } from "@civfix/shared"
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
+import { makeMediaPresigner } from "./media-presign.js"
+
+/** Minimal structural logger so an enqueue failure is surfaced without coupling to a concrete logger. */
+interface IntakeLogger {
+  warn(obj: unknown, msg?: string): void
+}
 
 /** Stable job name the media-worker step MUST consume to run the untrusted-byte checks. */
 export const MEDIA_CHECKS_JOB = "media.checks"
@@ -148,6 +154,8 @@ export interface MediaIntakeDeps {
   newId?: () => string
   /** Injectable clock for the r2_key date prefix (defaults to Date.now), for deterministic tests. */
   now?: () => Date
+  /** Optional logger; when set, a swallowed checks-job enqueue failure is surfaced at warn level. */
+  logger?: IntakeLogger
 }
 
 export interface MediaIntakeService {
@@ -216,6 +224,7 @@ const SIZE_MISMATCH_TOLERANCE = 1024
 export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeService {
   const newId = deps.newId ?? (() => randomUUID())
   const now = deps.now ?? (() => new Date())
+  const presign = makeMediaPresigner(deps.storage)
 
   return {
     async createUpload(
@@ -278,30 +287,43 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
-      // SECURITY (privacy): do NOT mark media "ready" (publicly servable) from the raw client upload.
-      // The raw object carries the camera's EXIF/GPS metadata (exact capture location), so serving it to
-      // everyone via public report pins leaks the photographer's location. Instead flip to "validating"
-      // and enqueue the worker's untrusted-byte pipeline (media.checks): it strips EXIF/GPS + chapters,
-      // runs the NSFW/abuse + perceptual-dedupe seams, and ONLY THEN promotes the row to ready/held/
-      // rejected (overwriting r2_key in place with the stripped bytes). The media-worker is a deployed
-      // compose service, so this is the intended "validating -> worker -> ready" lifecycle (see header).
+      // IDEMPOTENT REPLAY: a re-finalize of an asset the worker already finished is a no-op. Re-flipping a
+      // terminal asset (ready/rejected/held) back to "validating" + re-enqueuing would un-publish a ready,
+      // already-EXIF-stripped object and re-run the untrusted-byte pipeline (singletonKey only collapses
+      // CONCURRENT enqueues, not a fresh finalize after a COMPLETED job). Reachable by anyone holding the
+      // uploadId, so only the non-terminal "validating" state flips+enqueues. The response status literal
+      // is always "validating" per the contract.
+      if (asset.status !== "validating") {
+        return { mediaId: asset.id, status: "validating" }
+      }
+
+      // SECURITY (privacy): the raw client object carries the camera's EXIF/GPS metadata (exact capture
+      // location), so it must NOT be served publicly. Keep it "validating" and enqueue the worker's
+      // untrusted-byte pipeline (media.checks): it strips EXIF/GPS + chapters, runs the NSFW/abuse +
+      // perceptual-dedupe seams, and ONLY THEN promotes the row to ready/held/rejected (overwriting r2_key
+      // in place). The intended lifecycle is "validating -> worker -> ready" (see header).
       const updated = await deps.repo.setStatusByUploadId(input.uploadId, "validating")
       const mediaId = updated?.id ?? asset.id
 
-      // Enqueue the single checks job. singletonKey=uploadId dedupes a double-finalize (and a redundant
-      // anon-side enqueue) to one job, matching the queue's "short" policy. asset already carries r2Key +
-      // kind, so no extra read is needed. Best-effort failure handling is left to pg-boss/the caller; a
-      // never-processed row stays "validating" (not public) and is swept by the worker cron.
-      await deps.jobs.enqueue(
-        MEDIA_CHECKS_JOB,
-        {
-          mediaId,
-          uploadId: input.uploadId,
-          r2Key: asset.r2Key,
-          kind: asset.kind,
-        } satisfies MediaChecksJob,
-        { singletonKey: input.uploadId },
-      )
+      // singletonKey=uploadId dedupes a double-finalize to one job ("short" policy). RELIABILITY: the row
+      // is now "validating" but no checks job is queued for it; the orphan cron only sweeps report_id IS
+      // NULL, so an already-attached asset could stick at "validating" forever. Surface the failure at warn
+      // (it was silently propagated before) and re-throw so the client sees the failure and can retry.
+      try {
+        await deps.jobs.enqueue(
+          MEDIA_CHECKS_JOB,
+          {
+            mediaId,
+            uploadId: input.uploadId,
+            r2Key: asset.r2Key,
+            kind: asset.kind,
+          } satisfies MediaChecksJob,
+          { singletonKey: input.uploadId },
+        )
+      } catch (err) {
+        deps.logger?.warn({ err, uploadId: input.uploadId, mediaId }, "media.checks enqueue failed")
+        throw err
+      }
 
       return { mediaId, status: "validating" }
     },
@@ -321,11 +343,7 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.notFound("Media not found")
       }
 
-      const url = await deps.storage.presignGet(asset.r2Key, MEDIA_GET_URL_TTL_SEC)
-      const thumbUrl =
-        asset.thumbKey !== null
-          ? await deps.storage.presignGet(asset.thumbKey, MEDIA_GET_URL_TTL_SEC)
-          : undefined
+      const { url, thumbUrl } = await presign(asset.r2Key, asset.thumbKey)
 
       return {
         id: asset.id,

@@ -24,10 +24,6 @@
 import { relativeAgo, avatarGradient } from "@civfix/shared"
 import type { MessageThreadDTO, PersonDTO } from "@civfix/shared"
 
-// ---------------------------------------------------------------------------
-// Read-state store (injectable; DB-backed in prod, in-memory in tests)
-// ---------------------------------------------------------------------------
-
 /**
  * Per-(user, cleanup) last-read timestamp store. The WS gateway's `ack` handler WRITES through it to the
  * durable cleanup_members.last_read_at column. READS for the inbox unread count no longer go through this
@@ -59,10 +55,6 @@ export class InMemoryChatReadState implements ChatReadState {
     return Promise.resolve(ms !== undefined ? new Date(ms) : null)
   }
 }
-
-// ---------------------------------------------------------------------------
-// Repository seam
-// ---------------------------------------------------------------------------
 
 /** A per-thread aggregate row the repository returns for one of the viewer's cleanups. */
 export interface ThreadAggregate {
@@ -125,24 +117,15 @@ export interface DmThreadAggregateView {
 /**
  * The DM half of the inbox: the viewer's DM threads (excluding any blocked either way), each with the
  * peer + last message + unread. Optional on the threads service so the all-cleanup test path can omit it;
- * production + the DM tests wire the dm repo's listThreadsForUser through it.
+ * production + the DM tests wire the dm repo's listThreadsForUser through it. `limit` caps the DB scan so a
+ * heavy user's full DM set isn't materialized every inbox load (the merge below slices to `limit` anyway).
  */
 export interface DmThreadsSource {
-  listDmThreadsFor(userId: string): Promise<DmThreadAggregateView[]>
+  listDmThreadsFor(userId: string, limit?: number): Promise<DmThreadAggregateView[]>
 }
 
-// ---------------------------------------------------------------------------
-// Relative-time label
-// ---------------------------------------------------------------------------
-// The compact "ago" label now comes from the shared relativeAgo (imported from @civfix/shared above), the
-// single source reconciled across the backend + web + mobile. The shared default renders "now" for the
-// near case (< 60s or future) and "Nw" for week-plus; the <60m "Nm", <24h "Nh", and <7d "Nd" buckets are
-// unchanged. We adopt the shared default verbatim (no opts) so the server and both clients emit identical
-// text for the same timestamp.
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
+// The compact "ago" label uses the shared relativeAgo (the single source reconciled across backend + web +
+// mobile) verbatim so the server and both clients emit identical text for the same timestamp.
 
 /** Default page size for GET /threads. */
 export const THREADS_DEFAULT_LIMIT = 30
@@ -233,8 +216,10 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
       )
 
       // DM threads (when the source is wired). The dm aggregate already excludes any thread blocked either
-      // way and pre-computes peer + last + unread, so we just project into the MessageThreadDTO.
-      const dmAggregates = deps.dm ? await deps.dm.listDmThreadsFor(userId) : []
+      // way and pre-computes peer + last + unread, so we just project into the MessageThreadDTO. Cap the DM
+      // scan to `limit` (the merge below keeps only the most-recent `limit` across both kinds anyway, so
+      // fetching more DM rows than that can never surface them — it only over-reads).
+      const dmAggregates = deps.dm ? await deps.dm.listDmThreadsFor(userId, limit) : []
       const dmEntries = dmAggregates.map(
         (agg): { dto: MessageThreadDTO; activity: number } => {
           const lastFromMe = agg.last !== null && agg.last.senderId === userId
