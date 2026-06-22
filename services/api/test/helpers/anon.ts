@@ -29,12 +29,6 @@ import type {
   ReleaseMediaView,
 } from "../../src/services/anon-hold-release.js"
 import type { ClaimRepository, PendingAnonReport } from "../../src/services/claim-service.js"
-import {
-  formatReferenceCode,
-  reportScopeKey,
-  typeCodeFor,
-} from "../../src/db/reference-code.js"
-import type { ReportType } from "@civfix/shared"
 
 /** A stored anon report row (the subset the anon flow reads). */
 export interface StoredAnonReport {
@@ -51,8 +45,6 @@ export interface StoredAnonReport {
   h3Cell: string
   /** Per-report single-use claim code (0005). Cleared on claim. Null for non-anon reports. */
   claimCode: string | null
-  /** The immutable reference code minted at create (#56 / M3). Null on rows seeded without one. */
-  referenceCode: string | null
   createdAt: Date
   publishedAt: Date | null
   deletedAt: Date | null
@@ -94,17 +86,6 @@ export class InMemoryAnonStore {
   readonly timeline: StoredTimeline[] = []
   readonly flags: StoredFlag[] = []
   readonly idempotency = new Map<string, AnonReportResponse>() // `${scope}:${key}`
-  /** Per-scope reference-code counter, mirroring reference_counters (D4). */
-  private readonly refCounters = new Map<string, number>()
-
-  /** Allocate the next reference code for (type, jurCode), mirroring allocateReportReferenceCode (M3). */
-  private allocateReferenceCode(type: ReportType, jurCode: number): string {
-    const typeCode = typeCodeFor(type)
-    const scope = reportScopeKey(typeCode, jurCode)
-    const seq = (this.refCounters.get(scope) ?? 0) + 1
-    this.refCounters.set(scope, seq)
-    return formatReferenceCode(typeCode, jurCode, seq)
-  }
 
   private tick = 0
   private nextDate(): Date {
@@ -146,7 +127,6 @@ export class InMemoryAnonStore {
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
       h3Cell: over.h3Cell ?? "8a2830828767fff",
       claimCode: over.claimCode ?? null,
-      referenceCode: over.referenceCode ?? null,
       createdAt: over.createdAt ?? now,
       publishedAt: over.publishedAt ?? null,
       deletedAt: over.deletedAt ?? null,
@@ -209,9 +189,6 @@ export class InMemoryAnonStore {
           token.reportCount += 1
         }
 
-        // D4: allocate the reference code (mirrors the Drizzle held-create tx; anon reports get a code too).
-        const referenceCode = this.allocateReferenceCode(args.type, args.jurCode)
-
         this.seedReport({
           id: args.reportId,
           reporterUserId: null,
@@ -225,7 +202,6 @@ export class InMemoryAnonStore {
           jurisdictionGeoid: args.jurisdictionGeoid,
           h3Cell: args.h3Cell,
           claimCode: args.claimCode,
-          referenceCode,
           publishedAt: null,
         })
         // Attach media (only unattached or already-ours).

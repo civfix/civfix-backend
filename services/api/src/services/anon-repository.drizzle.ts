@@ -41,7 +41,6 @@ import type {
   CreateAnonReportTxResult,
 } from "./anon-service.js"
 import { ANON_REPORT_CREATE_SCOPE } from "./anon-service.js"
-import { allocateReportReferenceCode } from "../db/reference-code.js"
 import type { AnonTokenRecord, AnonTokenStore } from "../abuse/anon-token.js"
 import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
@@ -121,13 +120,6 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
     async createAnonReportTx(args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult> {
       try {
         const snapshot = await sql.begin(async (tx) => {
-          // 0) D4 LOCK ORDER: allocate the reference code FIRST — the reference_counters upsert must be the
-          // FIRST write in EVERY create tx so each path takes the counter-row lock before any report/token
-          // row lock (a consistent acquisition order that rules out an ABBA deadlock). jurCode is resolved
-          // pre-tx (0 = unknown bucket when no jurisdiction, D5). Anon reports still get a code (#56 / M3);
-          // they simply never auto-forward.
-          const referenceCode = await allocateReportReferenceCode(tx, args.type, args.jurCode)
-
           // 1) ATOMIC per-token cap (bugs P0-1): bump report_count ONLY while the token is still under
           // the cap. Folding the cap into the WHERE makes the check-and-consume a single statement, so N
           // concurrent submits on one token cannot all pass a stale read and overshoot. 0 rows updated
@@ -152,7 +144,7 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
             INSERT INTO reports (
               id, reporter_user_id, anon_session_id, idempotency_key, geom, geom_source,
               jurisdiction_geoid, category, type, title, description, addr, status, visibility, h3_cell,
-              claim_code, reference_code, published_at
+              claim_code, published_at
             ) VALUES (
               ${args.reportId},
               ${null},
@@ -170,7 +162,6 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
               ${"public"},
               ${args.h3Cell},
               ${args.claimCode},
-              ${referenceCode},
               ${null}
             )
           `

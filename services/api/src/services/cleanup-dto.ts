@@ -68,10 +68,6 @@ export function toCleanupDTO(
     bring: record.bring ?? [],
     address: record.address,
     ...(record.dist !== null ? { dist: record.dist } : {}),
-    // Additive #56 fields (D6): the event's resolved jurisdiction + its immutable reference code. Both
-    // omitted when null so a consumer built against the prior contract still parses.
-    ...(record.jurisdictionGeoid !== null ? { jurisdictionGeoid: record.jurisdictionGeoid } : {}),
-    ...(record.referenceCode !== null ? { referenceCode: record.referenceCode } : {}),
     linkedReports,
   }
 }

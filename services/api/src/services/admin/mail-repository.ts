@@ -21,10 +21,8 @@ export interface MailThreadRecord {
   id: string
   threadToken: string
   jurisdictionGeoid: string | null
-  /** The originating report (per-report outreach threads), or null for digest/compose/event threads. */
+  /** The originating report (per-report outreach threads), or null for digest/compose threads. */
   reportId: string | null
-  /** The originating cleanup/event (per-event resource-request threads), or null otherwise (D10/D19). */
-  cleanupId: string | null
   org: string | null
   subject: string | null
   status: MailStatus
@@ -47,8 +45,8 @@ export interface MailMessageRecord {
   createdAt: Date
 }
 
-/** The OCI delivery event type (`failed` = a send the mailer rejected, recorded for the outreach trail). */
-export type MailEventType = "sent" | "delivered" | "bounced" | "complained" | "opened" | "failed"
+/** The OCI delivery event type. */
+export type MailEventType = "sent" | "delivered" | "bounced" | "complained" | "opened"
 
 /** The per-jurisdiction outreach throttle + manual opt-out. */
 export interface OutreachStateRecord {
@@ -60,7 +58,6 @@ export interface OutreachStateRecord {
 export interface ThreadInit {
   jurisdictionGeoid?: string | null
   reportId?: string | null
-  cleanupId?: string | null
   org?: string | null
   subject?: string | null
   status?: MailStatus
@@ -71,7 +68,6 @@ export interface CreateThreadInput {
   threadToken?: string
   jurisdictionGeoid?: string | null
   reportId?: string | null
-  cleanupId?: string | null
   org?: string | null
   subject?: string | null
   status?: MailStatus
@@ -165,18 +161,6 @@ export interface MailRepository {
    * token) auto-routes back onto it.
    */
   findOrCreateReportThread(reportId: string, init?: ThreadInit): Promise<MailThreadRecord>
-  /**
-   * The newest thread WHERE cleanup_id = $1, or a freshly created thread (minted token + `init`) when none
-   * exists (D10/D19). So an event's resource request is ONE conversation and a city reply (via that
-   * thread's event+ reply token) auto-routes back onto the cleanup (onEventReply -> cleanup_timeline).
-   */
-  findOrCreateEventThread(cleanupId: string, init?: ThreadInit): Promise<MailThreadRecord>
-  /**
-   * The thread's prior OUTBOUND Message-IDs (those already stamped), oldest-first. The threading chain for
-   * a follow-up: In-Reply-To = the last, References = the whole list (D14). Excludes the just-inserted OUT
-   * row (its message_id is stamped only AFTER delivery). Empty for the first message on a thread.
-   */
-  priorOutboundMessageIds(threadId: string): Promise<string[]>
   /**
    * The newest thread WHERE jurisdiction_geoid = $1 AND report_id IS NULL, or a freshly created one with a
    * minted token. Replaces the old `geo-{geoid}` token scheme (which failed the real inbound reply-token

@@ -33,12 +33,6 @@ export const userModeration = pgTable(
     flagReason: text("flag_reason"),
     lastDevice: text("last_device"),
     lastIp: inet("last_ip"),
-    // Earned "report-verified" trust (0030, D7), distinct from the identity "verified neighbor" mark.
-    // Earned when a reporter reaches >= 2 operator-approved reports, or set by an explicit admin toggle.
-    // NOT NULL DEFAULT false (every other column carries a default, so the upsert in 0030 is safe).
-    reportVerified: boolean("report_verified").notNull().default(false),
-    reportVerifiedAt: timestamp("report_verified_at", { withTimezone: true }),
-    reportVerifiedBy: uuid("report_verified_by").references(() => users.id),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

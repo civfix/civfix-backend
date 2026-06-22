@@ -348,31 +348,9 @@ describe("GET /reports/:id", () => {
     expect(res.json().code).toBe("NOT_FOUND")
   })
 
-  it("treats a non-UUID id as a reference code (resolve-either): unknown code -> 404", async () => {
-    // Issue #56 resolve-either: GET /reports/:id accepts a UUID OR a reference_code. A non-UUID id is no
-    // longer a 422 — it is looked up by reference_code, and an unknown one is NOT_FOUND.
+  it("422s a non-UUID id", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/v1/reports/DU-42-999999" })
-    expect(res.statusCode).toBe(404)
-    expect(res.json().code).toBe("NOT_FOUND")
-  })
-
-  it("resolves a report by its reference_code", async () => {
-    let code = ""
-    const { app } = await makeHarness({
-      seed: (repo) => {
-        const r = repo.seedReport({ status: "published", visibility: "public", referenceCode: "DU-42-000001" })
-        code = r.referenceCode!
-      },
-    })
-    const res = await app.inject({ method: "GET", url: `/v1/reports/${code}` })
-    expect(res.statusCode).toBe(200)
-    expect(res.json().referenceCode).toBe("DU-42-000001")
-  })
-
-  it("422s an over-long id (still validated)", async () => {
-    const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: `/v1/reports/${"x".repeat(65)}` })
+    const res = await app.inject({ method: "GET", url: "/v1/reports/not-a-uuid" })
     expect(res.statusCode).toBe(422)
   })
 

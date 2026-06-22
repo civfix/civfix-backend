@@ -175,18 +175,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         // outreach lifecycle (was it emailed, did the city reply/bounce) + a per-report mail-thread link.
         geoid: routing?.geoid ?? null,
         outreach: outreachDTO,
-        // The report's immutable reference code (#56), additive: omitted when the row carries none (a
-        // pre-#56 / not-yet-backfilled report).
-        ...(record.referenceCode !== null ? { referenceCode: record.referenceCode } : {}),
-        // Report-verification surface (D7/D18), all additive: the operator verdict + when it was set, and
-        // whether the reporter is report-verified (the LEFT JOIN result; null for an anonymous report).
-        ...(record.verificationVerdict !== null
-          ? { verificationVerdict: record.verificationVerdict }
-          : {}),
-        ...(record.verifiedAt !== null ? { verifiedAt: record.verifiedAt.toISOString() } : {}),
-        ...(record.reporterReportVerified !== null
-          ? { reporterReportVerified: record.reporterReportVerified }
-          : {}),
       }
     },
 
@@ -352,20 +340,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       })
 
       return { threadId: thread.id, routedTo: toAddr }
-    },
-
-    async setVerdict(input: {
-      id: string
-      verdict: "approved" | "rejected"
-      actorId: string | null
-    }): Promise<void> {
-      // The repo runs the verdict write + (for approved, non-anon reporters) the count-and-flip in ONE
-      // transaction so the verdict, the reporter's approved-count, and report_verified can never drift.
-      const ok = await deps.repo.setReportVerdict(input.id, {
-        verdict: input.verdict,
-        actorId: input.actorId,
-      })
-      if (!ok) throw AppError.notFound("Report not found")
     },
   }
 }

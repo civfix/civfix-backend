@@ -20,7 +20,6 @@ import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type { DiscussionMessageDTO, MediaDTO, UserMentionDTO } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import { buildDiscussionForwardPacket } from "./admin/mail-format.js"
 import { parseCityMention, parseUserMentions } from "./discussion-mentions.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
@@ -145,28 +144,20 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
     let forwarded = false
     let forwardedAt: Date | null = null
     if (contact !== null && contact !== "") {
-      // D11: forward onto the PER-REPORT thread (sendReportToJurisdiction), not the rolling per-geoid
-      // digest — so the city's reply threads back into the REPORT timeline (onJurisdictionReply). The body
-      // is a professional packet QUOTING the citizen's comment. A delivery failure must NOT block the post:
-      // a thrown send is swallowed so the comment still lands (forwardedToCity stays false).
-      const packet = buildDiscussionForwardPacket(
-        {
-          reportId,
-          category: report.category,
-          place: report.place,
-          org: jurisdiction.name,
-        },
-        body,
-      )
+      // A delivery failure must NOT block the post: a thrown sendToCity is swallowed so the comment still
+      // lands (forwardedToCity stays false).
       try {
-        await deps.outboundMail.sendReportToJurisdiction({
-          reportId,
+        await deps.outboundMail.sendToCity({
           geoid: jurisdiction.geoid,
-          org: jurisdiction.name,
           toAddr: contact,
-          subject: packet.subject,
-          text: packet.text,
-          html: packet.html,
+          subject: `civfix report ${reportId}`,
+          body,
+          reportContext: {
+            reportId,
+            category: report.category,
+            ...(report.place !== null ? { place: report.place } : {}),
+          },
+          org: jurisdiction.name,
         })
         forwarded = true
         forwardedAt = createdAt

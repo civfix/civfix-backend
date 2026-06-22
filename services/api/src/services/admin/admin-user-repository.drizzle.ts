@@ -80,7 +80,6 @@ interface UserRowSelect {
   flagged: boolean
   flag_reason: string | null
   verified: boolean
-  report_verified: boolean
   avatar_url: string | null
   deleted_at: Date | null
 }
@@ -107,7 +106,6 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     flagged: r.flagged,
     flagReason: r.flag_reason,
     verified: r.verified,
-    reportVerified: r.report_verified,
     avatarUrl: r.avatar_url,
     deletedAt: r.deleted_at,
   }
@@ -142,11 +140,7 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
       COALESCE(um.account_status, 'active') AS account_status,
       (SELECT COUNT(*) FROM reports r WHERE r.reporter_user_id = u.id AND r.deleted_at IS NULL)::text AS reports,
       (SELECT COUNT(*) FROM cleanup_members cm WHERE cm.user_id = u.id)::text AS cleanups,
-      (
-        (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id)
-        + (SELECT COUNT(*) FROM dm_messages dmsg WHERE dmsg.sender_id = u.id)
-        + (SELECT COUNT(*) FROM report_discussion_messages rdm WHERE rdm.author_user_id = u.id)
-      )::text AS messages,
+      (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id)::text AS messages,
       COALESCE(um.removals, 0) AS removals,
       COALESCE(um.strikes, 0) AS strikes,
       COALESCE(um.risk, 'low') AS risk,
@@ -154,8 +148,7 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
       um.flag_reason,
       EXISTS (
         SELECT 1 FROM user_verification uv WHERE uv.user_id = u.id AND uv.status = 'verified'
-      ) AS verified,
-      COALESCE(um.report_verified, false) AS report_verified
+      ) AS verified
     FROM users u
     LEFT JOIN user_moderation um ON um.user_id = u.id
     WHERE TRUE
@@ -339,15 +332,9 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         anchor !== null
           ? sql`AND (m.created_at, m.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
           : sql``
-      // The Messages tab unions the user's THREE message surfaces — cleanup group chat (chat_messages),
-      // 1:1 direct messages (dm_messages), and report discussion comments (report_discussion_messages) —
-      // so an operator sees ALL of a user's messaging activity (the old query only read chat_messages, so
-      // a DM-only user looked empty: #58). Each source contributes its own thread label: the cleanup title
-      // (chat), the OTHER DM participant's @handle/display name (dm), and the report title (report).
-      //
-      // Include the user's OWN soft-deleted messages (NO `deleted_at IS NULL` filter) so an operator sees a
-      // message the user themselves removed (the original text is kept), labeled via the surfaced
-      // deletedAt. report_discussion_messages.body is NOT NULL; chat/dm body is nullable (preserve `?? ""`).
+      // Include the user's OWN soft-deleted messages (NO `m.deleted_at IS NULL` filter) so an operator sees
+      // a message the user themselves removed (the original text is kept), labeled via the surfaced
+      // deletedAt. Admins keep full visibility of user activity.
       const rows = await sql<
         {
           id: string
@@ -355,30 +342,12 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           thread: string | null
           created_at: Date
           deleted_at: Date | null
-          source: "chat" | "dm" | "report"
         }[]
       >`
-        SELECT m.id, m.body, m.thread, m.created_at, m.deleted_at, m.source
-        FROM (
-          SELECT cm.id, cm.body, c.title AS thread, cm.created_at, cm.deleted_at, 'chat' AS source
-          FROM chat_messages cm
-          LEFT JOIN cleanups c ON c.id = cm.cleanup_id
-          WHERE cm.sender_id = ${id}
-          UNION ALL
-          SELECT dm.id, dm.body, COALESCE(NULLIF('@' || other.handle::text, '@'), other.display_name) AS thread,
-                 dm.created_at, dm.deleted_at, 'dm' AS source
-          FROM dm_messages dm
-          JOIN dm_threads t ON t.id = dm.thread_id
-          LEFT JOIN users other
-            ON other.id = CASE WHEN t.user_lo = ${id} THEN t.user_hi ELSE t.user_lo END
-          WHERE dm.sender_id = ${id}
-          UNION ALL
-          SELECT rdm.id, rdm.body, r.title AS thread, rdm.created_at, rdm.deleted_at, 'report' AS source
-          FROM report_discussion_messages rdm
-          JOIN reports r ON r.id = rdm.report_id
-          WHERE rdm.author_user_id = ${id}
-        ) m
-        WHERE TRUE
+        SELECT m.id, m.body, c.title AS thread, m.created_at, m.deleted_at
+        FROM chat_messages m
+        LEFT JOIN cleanups c ON c.id = m.cleanup_id
+        WHERE m.sender_id = ${id}
         ${cursorFilter}
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT ${lim + 1}
@@ -387,10 +356,9 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         rows.map((r) => ({
           id: r.id,
           text: r.body ?? "",
-          thread: r.thread ?? threadFallback(r.source),
+          thread: r.thread ?? "Cleanup chat",
           createdAt: r.created_at,
           deletedAt: r.deleted_at,
-          source: r.source,
         })),
         lim,
         (r) => ({ createdAt: r.createdAt, id: r.id }),
@@ -519,73 +487,21 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       })
     },
 
-    async setReportVerified(
-      id: string,
-      input: { value: boolean; actorId: string | null },
-    ): Promise<boolean> {
-      return sql.begin(async (tx) => {
-        const exists = await tx<{ id: string }[]>`
-          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
-        `
-        if (exists.length === 0) return false
-        // The manual override/revoke (D18). On value:true stamp report_verified_at/by; on value:false clear
-        // them. UPSERT the lazily-created user_moderation row, relying on its NOT NULL column defaults.
-        const stampedAt = input.value ? tx`now()` : tx`NULL`
-        const stampedBy = input.value ? input.actorId : null
-        await tx`
-          INSERT INTO user_moderation (user_id, report_verified, report_verified_at, report_verified_by, updated_at)
-          VALUES (${id}, ${input.value}, ${stampedAt}, ${stampedBy}, now())
-          ON CONFLICT (user_id) DO UPDATE SET
-            report_verified = ${input.value},
-            report_verified_at = ${stampedAt},
-            report_verified_by = ${stampedBy},
-            updated_at = now()
-        `
-        await writeAudit(tx, {
-          actorId: input.actorId,
-          action: input.value ? "user.report_verified" : "user.report_unverified",
-          target: `user:${id}`,
-          meta: {},
-        })
-        return true
-      })
-    },
-
     async removeUserMessage(
       userId: string,
       messageId: string,
       input: { reason: string | null; actorId: string | null },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
-        // Operator soft-delete by message id, scoped to the user as author, not-already-deleted. The
-        // Messages tab unions chat/dm/report-discussion (#58), so resolve the source SERVER-SIDE (no
-        // contract change): the id is a globally-unique uuid, so at most one of the three tables matches.
-        // A 0-row update across all three → false (the service maps it to 404). Audit in the same tx.
-        const chat = await tx<{ id: string }[]>`
+        // Operator soft-delete by message id, scoped to the user as sender, not-already-deleted. A 0-row
+        // update → false (the service maps it to 404). Audit in the same tx as the effect.
+        const rows = await tx<{ id: string }[]>`
           UPDATE chat_messages
           SET deleted_at = now()
           WHERE id = ${messageId} AND sender_id = ${userId} AND deleted_at IS NULL
           RETURNING id
         `
-        const dm =
-          chat.length > 0
-            ? []
-            : await tx<{ id: string }[]>`
-                UPDATE dm_messages
-                SET deleted_at = now()
-                WHERE id = ${messageId} AND sender_id = ${userId} AND deleted_at IS NULL
-                RETURNING id
-              `
-        const report =
-          chat.length > 0 || dm.length > 0
-            ? []
-            : await tx<{ id: string }[]>`
-                UPDATE report_discussion_messages
-                SET deleted_at = now()
-                WHERE id = ${messageId} AND author_user_id = ${userId} AND deleted_at IS NULL
-                RETURNING id
-              `
-        if (chat.length === 0 && dm.length === 0 && report.length === 0) return false
+        if (rows.length === 0) return false
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "message.removed",
@@ -601,15 +517,3 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
 // All admin-user keysets cast ${anchor.id}::uuid (users + the report/event/message sub-lists), so opt
 // into UUID validation: a malformed cursor degrades to the first page instead of a 22P02 -> 500.
 const decodeKeyset = (cursor: string | null | undefined) => decodeCursor(cursor, true)
-
-/** A per-source thread label when the joined title/handle is null (e.g. an orphaned cleanup/report). */
-function threadFallback(source: "chat" | "dm" | "report"): string {
-  switch (source) {
-    case "dm":
-      return "Direct message"
-    case "report":
-      return "Report discussion"
-    default:
-      return "Cleanup chat"
-  }
-}

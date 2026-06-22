@@ -63,7 +63,6 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     flagged?: boolean
     flagReason?: string | null
     verified?: boolean
-    reportVerified?: boolean
     avatarUrl?: string | null
     deletedAt?: Date | null
   }): AdminUserRecord {
@@ -88,7 +87,6 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       flagged: input.flagged ?? false,
       flagReason: input.flagReason ?? null,
       verified: input.verified ?? false,
-      reportVerified: input.reportVerified ?? false,
       avatarUrl: input.avatarUrl ?? null,
       deletedAt: input.deletedAt ?? null,
     }
@@ -110,20 +108,13 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     this.events.set(userId, list)
   }
 
-  /**
-   * Seed a row in a user's Messages tab. `deletedAt` defaults to null (a live message) and `source`
-   * defaults to "chat" (the Messages tab unions chat/dm/report-discussion — #58 — so tests may seed any
-   * source; the union shape is the same single keyed list here).
-   */
+  /** Seed a row in a user's Messages tab. `deletedAt` defaults to null (a live message). */
   seedMessage(
     userId: string,
-    row: Omit<UserMessageRecord, "deletedAt" | "source"> & {
-      deletedAt?: Date | null
-      source?: UserMessageRecord["source"]
-    },
+    row: Omit<UserMessageRecord, "deletedAt"> & { deletedAt?: Date | null },
   ): void {
     const list = this.messages.get(userId) ?? []
-    list.push({ ...row, deletedAt: row.deletedAt ?? null, source: row.source ?? "chat" })
+    list.push({ ...row, deletedAt: row.deletedAt ?? null })
     this.messages.set(userId, list)
   }
 
@@ -280,21 +271,6 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     r.verified = input.verified
     this.audits.push({
       action: input.verified ? "user.verified" : "user.unverified",
-      target: `user:${id}`,
-      meta: {},
-    })
-    return true
-  }
-
-  async setReportVerified(
-    id: string,
-    input: { value: boolean; actorId: string | null },
-  ): Promise<boolean> {
-    const r = this.users.get(id)
-    if (!r) return false
-    r.reportVerified = input.value
-    this.audits.push({
-      action: input.value ? "user.report_verified" : "user.report_unverified",
       target: `user:${id}`,
       meta: {},
     })

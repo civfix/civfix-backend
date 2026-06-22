@@ -27,14 +27,12 @@ import {
   RouteReportRequestSchema,
   SendFollowupRequestSchema,
   SetReportStatusRequestSchema,
-  SetReportVerdictRequestSchema,
   type AdminOkResponse,
   type AdminReportDTO,
   type AdminReportListResponse,
   type DiscussionMessageDTO,
   type DiscussionPageResponse,
   type RouteReportResponse,
-  type SetReportVerdictResponse,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
@@ -224,18 +222,6 @@ export async function registerAdminReportsRoutes(
     const body = parse(SendFollowupRequestSchema, { ...(request.body as object), id })
     await service().sendFollowup(id, { to: body.to, body: body.body, actorId: operatorId })
     const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
-  })
-
-  // Set the report-verification verdict (D7): operator approves/rejects a report (orthogonal to the civic
-  // status). The service writes the verdict and, on an `approved` verdict for a non-anon reporter, flips
-  // the reporter to report_verified once they reach the threshold — all in one transaction.
-  route(app, "setReportVerdict", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(SetReportVerdictRequestSchema, { ...(request.body as object), id })
-    await service().setVerdict({ id, verdict: body.verdict, actorId: operatorId })
-    const payload: SetReportVerdictResponse = { ok: true }
     reply.status(200).send(payload)
   })
 

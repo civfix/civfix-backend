@@ -11,16 +11,9 @@ import type {
   ReportType,
   ReportVisibility,
 } from "@civfix/shared"
-import type { Jobs } from "@civfix/shared/interfaces"
 import type { LinkedEventView } from "./cleanup-service.js"
 
 export const REPORT_CREATE_SCOPE = "report_create"
-
-/** The pg-boss queue + payload for the auto-forward job (D9 / #56). Mirrored in API_QUEUE_NAMES. */
-export const REPORT_AUTOFORWARD_JOB = "report.autoforward"
-export interface ReportAutoForwardJob {
-  reportId: string
-}
 
 // H3 res 10 cells are ~130 m across — the SAME granularity the anon abuse cap keys on
 // (abuse/h3-cap.ABUSE_H3_RES). Distinct from the zoom-derived MAP cluster grid (clusterCellSizeDeg).
@@ -48,10 +41,6 @@ export interface ReportMediaView {
 export interface ReportTimelineView {
   status: ReportStatus
   note: string | null
-  // D13: optional entry tag (e.g. 'reply') + the full untruncated body (an inbound city reply). Both null
-  // on legacy / status-only rows.
-  kind: string | null
-  body: string | null
   createdAt: Date
 }
 
@@ -70,9 +59,6 @@ export interface ReportRecord {
   lng: number
   geomSource: GeomSource
   jurisdictionGeoid: string | null
-  // The immutable human-readable reference code minted at create (issue #56, D1/D4). Nullable forever:
-  // historical rows are backfilled out-of-band, and a code can be absent on a row created before #56.
-  referenceCode: string | null
   createdAt: Date
   publishedAt: Date | null
   deletedAt: Date | null
@@ -101,10 +87,6 @@ export interface CreateReportTxArgs {
   lng: number
   geomSource: GeomSource
   jurisdictionGeoid: string | null
-  // The resolved jurisdiction's compact integer CODE (jurisdictions.code), resolved pre-tx alongside the
-  // geoid. UNKNOWN_JURCODE (0) when the report has no resolved jurisdiction (D5). Drives the reference
-  // code's JURCODE segment; the repo allocates the code from it as the FIRST write in the create tx (D4).
-  jurCode: number
   category: ReportCategory
   type: ReportType
   title: string | null
@@ -139,9 +121,6 @@ export interface ReportRepository {
   createReportTx(args: CreateReportTxArgs): Promise<CreateReportTxResult>
   // Includes soft-deleted rows so the caller can 404 deleted ones.
   findReportById(id: string): Promise<ReportRecord | null>
-  // Resolve a report by its immutable reference_code (issue #56 resolve-either getReport). Includes
-  // soft-deleted rows so the caller can 404 them, same as findReportById. Null when no row carries the code.
-  findReportByReferenceCode(code: string): Promise<ReportRecord | null>
   // Default returns only `ready` media. ownerView additionally includes the owner's own in-flight
   // `validating` uploads; `held`/`rejected` (moderation outcomes) stay hidden from everyone.
   findMediaForReport(reportId: string, ownerView?: boolean): Promise<ReportMediaView[]>
@@ -224,10 +203,6 @@ export interface ReportServiceDeps {
   repo: ReportRepository
   // Resolve a point to a jurisdiction geoid (nullable when outside coverage). Wraps jurisdiction-service.
   resolveJurisdictionGeoid: (lat: number, lng: number) => Promise<string | null>
-  // Resolve a geoid to its compact jurisdictions.code (the reference-code JURCODE segment). Returns
-  // UNKNOWN_JURCODE (0) for a null geoid or one with no code on file (D5). OPTIONAL: when omitted (offline
-  // tests) the service treats every report as the "unknown" bucket (jurCode 0), so a code is still minted.
-  resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   // Best-effort reverse geocoder for `addr` when the reporter supplied none. A missing seam or null result
   // leaves `addr` empty; it must never block creation.
   reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
@@ -239,16 +214,6 @@ export interface ReportServiceDeps {
   loadLinkedEventsForReports?: (reportIds: string[]) => Promise<Map<string, LinkedEventView[]>>
   // Wraps a discussion-repo read for the DETAIL meta. Best-effort: a thrown loader is swallowed by getReport.
   loadDiscussionMeta?: (reportId: string) => Promise<ReportDiscussionMeta>
-  // Auto-forward (D9 / #56): the Jobs seam used to enqueue report.autoforward AFTER the create tx commits,
-  // and the report_verified gate read. BOTH optional + wired together — when either is omitted (offline
-  // tests / a path that doesn't auto-forward) createReport never enqueues. Anonymous/unverified reporters
-  // are never enqueued (the gate returns false). A failed enqueue is logged best-effort, never fatal to the
-  // create (the report is already committed + published; manual routing remains available).
-  jobs?: Jobs
-  // Resolve a reporter's earned report_verified flag (user_moderation.report_verified). Returns false when
-  // no moderation row exists. Only a true result gates an auto-forward enqueue.
-  isReportVerified?: (userId: string) => Promise<boolean>
-  logger?: { warn: (obj: unknown, msg?: string) => void }
   newId?: () => string
   now?: () => Date
 }

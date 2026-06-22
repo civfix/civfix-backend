@@ -21,11 +21,6 @@ export default defineConfig({
   //   so the image can run `node dist/db/backfill-population.js` WITHOUT tsx. Idempotent (re-UPSERTs the
   //   same values), so re-running is safe. Guard-free core (backfill-population-core.ts) is never bundled
   //   into the server (only this CLI + the tsx scripts/refresh-boundaries import it).
-  // db/backfill-reference-codes.ts: the issue-#56 one-off, emitted so the image runs
-  //   `node dist/db/backfill-reference-codes.js` WITHOUT tsx. Stamps reference codes on historical
-  //   reports + cleanups (and resolves cleanup jurisdictions), AFTER deploy is healthy (NEVER in the
-  //   migration tx). Idempotent (only touches reference_code IS NULL rows) + race-free (shares the
-  //   reference_counters allocator with live creates). Guard-free core is never bundled into the server.
   // NOTE the boundary-prep runner (scripts/prepare-boundaries.ts) and the manifest
   //   (src/db/boundaries/manifest.ts) are deliberately NOT entries: the runner is a GDAL-dependent ops
   //   tool run via tsx that never executes inside the production image, and the manifest is consumed only
@@ -38,7 +33,6 @@ export default defineConfig({
     "src/db/ingest-jurisdictions.ts",
     "src/db/backfill-jurisdictions.ts",
     "src/db/backfill-population.ts",
-    "src/db/backfill-reference-codes.ts",
   ],
   outDir: "dist",
   format: ["esm"],

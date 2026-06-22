@@ -24,7 +24,6 @@ export interface ThreadRowSelect {
   thread_token: string
   jurisdiction_geoid: string | null
   report_id: string | null
-  cleanup_id: string | null
   org: string | null
   subject: string | null
   status: MailStatus
@@ -61,7 +60,6 @@ export function toThreadRecord(r: ThreadRowSelect): MailThreadRecord {
     threadToken: r.thread_token,
     jurisdictionGeoid: r.jurisdiction_geoid,
     reportId: r.report_id,
-    cleanupId: r.cleanup_id,
     org: r.org,
     subject: r.subject,
     status: r.status,

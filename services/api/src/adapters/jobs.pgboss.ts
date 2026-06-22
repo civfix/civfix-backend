@@ -42,10 +42,6 @@ export const API_QUEUE_NAMES = [
   // Inbound-mail sweep: reconciles R2-buffered catch-all email (inbound/pending/) the API may have
   // missed while offline. Scheduled as a cron + enqueued once at boot by registerInboundJobs.
   "inbound.sweep",
-  // Report auto-forward (D9 / #56): enqueued post-commit by report-service.createReport for a
-  // report_verified reporter (singletonKey=reportId). The worker emails the report to its jurisdiction
-  // via the existing per-report send + records a timeline row; it never throws (see registerAutoForwardJobs).
-  "report.autoforward",
 ] as const
 
 /** Map the shared EnqueueOptions onto pg-boss SendOptions (only set the fields that are provided). */

@@ -100,24 +100,6 @@ export interface SendReportInput {
   attachments?: OutboundAttachment[]
 }
 
-/**
- * sendEventToJurisdiction input: route an event's resource-request packet to a jurisdiction contact on a
- * per-EVENT thread (so the city's reply auto-routes back onto the cleanup). The service owns the thread,
- * the event+ reply token, and the Message-ID.
- */
-export interface SendEventInput {
-  cleanupId: string
-  /** The cleanup's jurisdiction GEOID (sets the thread's geoid + the 'sent' event meta), or null. */
-  geoid: string | null
-  /** Display label for the jurisdiction (the thread `org`). */
-  org?: string | null
-  /** The municipal contact address to deliver to. */
-  toAddr: string
-  subject: string
-  text: string
-  html?: string
-}
-
 /** The OutboundMailService surface the reports/events + mail routers import. */
 export interface OutboundMailService {
   /** Reports/events "send follow-up to city": thread by jurisdiction, append OUT, deliver, record. */
@@ -129,14 +111,6 @@ export interface OutboundMailService {
    */
   sendReportToJurisdiction(
     input: SendReportInput,
-  ): Promise<{ thread: MailThreadRecord; messageId: string }>
-  /**
-   * Send THIS event's resource request to its jurisdiction: a per-event thread (find-or-create by
-   * cleanup_id), an OUT message with an event+ reply token + a stored Message-ID, and a 'sent' event.
-   * Returns the fresh thread + the Message-ID (for reply correlation onto the cleanup timeline).
-   */
-  sendEventToJurisdiction(
-    input: SendEventInput,
   ): Promise<{ thread: MailThreadRecord; messageId: string }>
   /** Mail Compose modal: new outbound thread + first message + deliver. */
   compose(input: ComposeInput): Promise<MailThreadRecord>
@@ -164,16 +138,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     return `reply+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
   }
 
-  /** report+{token}@{MAIL_REPLY_DOMAIN}: the per-report Reply-To (D10); same token, typed local-part. */
-  function mintReportReply(threadToken: string): string {
-    return `report+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
-  }
-
-  /** event+{token}@{MAIL_REPLY_DOMAIN}: the per-event Reply-To (D10); same token, typed local-part. */
-  function mintEventReply(threadToken: string): string {
-    return `event+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
-  }
-
   /**
    * Deliver one outbound message via `sendOutbound`, store the returned Message-ID on the OUT row, then
    * record the mail_events 'sent' row. Delivery happens BEFORE the post-send writes so a Mailer error
@@ -190,58 +154,22 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     subject: string
     body: string
     html?: string
-    /** The Reply-To address; defaults to reply+{token}@ (digest/compose). Per-report/event pass report+/event+. */
-    replyAddress?: string
+    inReplyTo?: string
     attachments?: OutboundAttachment[]
     eventMeta?: Record<string, unknown>
   }): Promise<string> {
     const rfcMessageId = `<out-${args.messageId}@${domainOf(env.MAIL_FROM_OUTREACH)}>`
-    // D14: thread the follow-up to the city's client by echoing the thread's prior OUT Message-IDs as
-    // In-Reply-To (the latest) + References (the chain). The FIRST message on a thread has no prior ids,
-    // so both are omitted; subsequent sends carry them. Best-effort: a read failure just drops threading.
-    const priorIds = await repo
-      .priorOutboundMessageIds(args.threadId)
-      .catch(() => [] as string[])
-    const inReplyTo = priorIds.length > 0 ? priorIds[priorIds.length - 1] : undefined
-    let sent: { messageId: string }
-    try {
-      sent = await mailer.sendOutbound({
-        from: env.MAIL_FROM_OUTREACH,
-        to: args.toAddr,
-        replyTo: args.replyAddress ?? mintReplyAddress(args.threadToken),
-        subject: args.subject,
-        text: args.body,
-        ...(args.html !== undefined ? { html: args.html } : {}),
-        messageId: rfcMessageId,
-        ...(inReplyTo !== undefined ? { inReplyTo } : {}),
-        ...(priorIds.length > 0 ? { references: priorIds } : {}),
-        ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
-      })
-    } catch (err) {
-      // D17: a send rejection (a now-classified 409 for an unapproved sender, or a transient 500) leaves no
-      // 'sent' row; record a 'failed' mail_events row so the admin Mail surface + deliverability trail see
-      // the lost send, then re-throw so the route still surfaces the error to the operator. The failure
-      // record is itself best-effort + logged — it must not mask the original send error.
-      try {
-        await repo.recordEvent({
-          threadId: args.threadId,
-          messageId: args.messageId,
-          type: "failed",
-          meta: {
-            from: env.MAIL_FROM_OUTREACH,
-            to: args.toAddr,
-            error: err instanceof Error ? err.message : String(err),
-            ...(args.eventMeta ?? {}),
-          },
-        })
-      } catch (recordErr) {
-        logger.warn(
-          { err: recordErr, threadId: args.threadId, messageId: args.messageId },
-          "outbound mail send failed AND recording the 'failed' event failed",
-        )
-      }
-      throw err
-    }
+    const sent = await mailer.sendOutbound({
+      from: env.MAIL_FROM_OUTREACH,
+      to: args.toAddr,
+      replyTo: mintReplyAddress(args.threadToken),
+      subject: args.subject,
+      text: args.body,
+      ...(args.html !== undefined ? { html: args.html } : {}),
+      messageId: rfcMessageId,
+      ...(args.inReplyTo !== undefined ? { inReplyTo: args.inReplyTo } : {}),
+      ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
+    })
     try {
       await repo.setMessageMessageId(args.messageId, sent.messageId)
       await repo.recordEvent({
@@ -297,48 +225,9 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
-        // D10: the per-report Reply-To is report+{token}@ (not the digest reply+). Same token.
-        replyAddress: mintReportReply(thread.threadToken),
         ...(input.html !== undefined ? { html: input.html } : {}),
         ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
         eventMeta: { reportId: input.reportId, ...(input.geoid != null ? { geoid: input.geoid } : {}) },
-      })
-      return { thread: await freshThread(thread), messageId }
-    },
-
-    async sendEventToJurisdiction(
-      input: SendEventInput,
-    ): Promise<{ thread: MailThreadRecord; messageId: string }> {
-      // Per-EVENT thread: find-or-create by cleanup_id (with a minted reply token) so the city's reply
-      // auto-routes back onto the event (onEventReply -> cleanup_timeline). From = the approved outreach
-      // sender (M7); Reply-To = event+{token}@ (OCI honors from + replyTo separately).
-      const thread = await repo.findOrCreateEventThread(input.cleanupId, {
-        jurisdictionGeoid: input.geoid,
-        org: input.org ?? null,
-        subject: input.subject,
-        status: "sent",
-      })
-      const message = await repo.insertMessage({
-        threadId: thread.id,
-        direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
-        toAddr: input.toAddr,
-        subject: input.subject,
-        body: input.text,
-      })
-      const messageId = await deliverAndRecord({
-        threadId: thread.id,
-        messageId: message.id,
-        threadToken: thread.threadToken,
-        toAddr: input.toAddr,
-        subject: input.subject,
-        body: input.text,
-        replyAddress: mintEventReply(thread.threadToken),
-        ...(input.html !== undefined ? { html: input.html } : {}),
-        eventMeta: {
-          cleanupId: input.cleanupId,
-          ...(input.geoid != null ? { geoid: input.geoid } : {}),
-        },
       })
       return { thread: await freshThread(thread), messageId }
     },

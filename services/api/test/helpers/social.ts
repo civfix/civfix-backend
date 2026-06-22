@@ -318,8 +318,6 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
     status: over.status ?? "done",
     bring: over.bring ?? null,
     address: over.address ?? null,
-    jurisdictionGeoid: over.jurisdictionGeoid ?? null,
-    referenceCode: over.referenceCode ?? null,
     createdAt: over.createdAt ?? new Date("2024-12-01T10:00:00.000Z"),
     going: over.going ?? 1,
     dist: over.dist ?? null,

@@ -25,11 +25,6 @@ export interface CleanupRecord {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
-  // The cleanup's resolved jurisdiction GEOID (#56 / D6), nullable when outside coverage or not yet
-  // resolved. Surfaced on the CleanupDTO (additive) + backs the EVENT reference code's JURCODE.
-  jurisdictionGeoid: string | null
-  // The immutable EVENT reference code minted at create (`EVENT-{JURCODE}-{NNNNNN}`, D1). Nullable forever.
-  referenceCode: string | null
   createdAt: Date
   going: number
   dist: number | null
@@ -110,13 +105,6 @@ export interface CreateCleanupTxArgs {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
-  // The cleanup's resolved jurisdiction GEOID (#56 / D6), resolved pre-tx via JurisdictionService; null
-  // outside coverage. Stored on cleanups.jurisdiction_geoid.
-  jurisdictionGeoid: string | null
-  // The resolved jurisdiction's compact integer CODE (jurisdictions.code) — the EVENT reference code's
-  // JURCODE segment. UNKNOWN_JURCODE (0) when no jurisdiction resolved (D5). The repo allocates the EVENT
-  // code from it as the FIRST write in the create tx (D4).
-  jurCode: number
   // Report ids to link in the SAME create tx (filtered to ids that exist; visibility checked by the
   // service). Empty array = no links. Never set for a non-cleanup eventKind.
   linkedReportIds: string[]
@@ -195,9 +183,6 @@ export interface CleanupRepository {
   // Load a cleanup by id (decoding geom, joining the organizer + member count). `near` adds the metres
   // distance. Returns null when the id does not exist.
   findCleanupById(id: string, near: NearPoint | null): Promise<CleanupRecord | null>
-  // Resolve a cleanup by its immutable reference_code (issue #56 resolve-either getCleanup). Same
-  // projection as findCleanupById (no distance). Null when no row carries the code.
-  findCleanupByReferenceCode(code: string): Promise<CleanupRecord | null>
   // Page cleanups under the given filters: up to `limit` records + the next cursor (null when exhausted).
   listCleanups(
     filters: ListCleanupsFilters,
@@ -232,16 +217,4 @@ export interface CleanupRepository {
   // The attendee roster: cleanup_members joined to their (non-deleted) user, with the viewer's
   // `isFollowing` per row. Ordered organizer-first then by join time. `onlyFollowed` restricts the roster.
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>
-  // Resolve a jurisdiction's routing contact by GEOID for an event resource request (#56 / D19), using the
-  // SAME precedence reports use: a default (category NULL) jurisdiction_contacts row -> the legacy
-  // contact_emails[]. Returns the contact + jurisdiction display name, or null when no usable contact. A
-  // null geoid (event outside coverage) yields null.
-  resolveJurisdictionContact(geoid: string | null): Promise<{ contact: string; name: string } | null>
-  // Append ONE cleanup_timeline row (kind free text, optional note, nullable actor). Used by the event
-  // resource-request path (D19) + the inbound city-reply onEventReply (D13) — both write a follow-up entry
-  // that lives in the event timeline.
-  appendCleanupTimeline(
-    cleanupId: string,
-    input: { kind: string; note: string | null; actorId: string | null },
-  ): Promise<void>
 }

@@ -40,7 +40,6 @@ import {
   type AnonTokenStore,
 } from "../abuse/anon-token.js"
 import { generateToken, constantTimeStringEqual } from "../auth/crypto.js"
-import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 
 /** Idempotency scope namespacing anon-report-create keys in idempotency_keys.scope. */
 export const ANON_REPORT_CREATE_SCOPE = "anon_report_create"
@@ -58,13 +57,6 @@ export interface CreateAnonReportTxArgs {
   lng: number
   geomSource: GeomSource
   jurisdictionGeoid: string | null
-  /**
-   * The resolved jurisdiction's compact integer CODE (jurisdictions.code), resolved pre-tx alongside the
-   * geoid. UNKNOWN_JURCODE (0) when the report has no resolved jurisdiction (D5). Drives the reference
-   * code's JURCODE segment; the repo allocates the code from it as the FIRST write in the held-create tx
-   * (D4). Anon reports still get a code (#56 / M3) — they just never auto-forward.
-   */
-  jurCode: number
   category: ReportCategory
   type: ReportType
   title: string | null
@@ -146,12 +138,6 @@ export interface AnonServiceDeps {
   anonTokenSigningKey: string
   /** Resolve a point to a jurisdiction geoid (nullable outside coverage). Wraps jurisdiction-service. */
   resolveJurisdictionGeoid: (lat: number, lng: number) => Promise<string | null>
-  /**
-   * Resolve a geoid to its compact jurisdictions.code (the reference-code JURCODE segment, #56). Returns
-   * UNKNOWN_JURCODE (0) for a null geoid or one with no code on file (D5). OPTIONAL: when omitted (offline
-   * tests) every anon report lands in the "unknown" bucket (jurCode 0), so a code is still minted (M3).
-   */
-  resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   /**
    * Best-effort reverse geocoder: derive an address from the pin when the reporter supplied none, so the
    * report list/detail show a location label. OPTIONAL; a missing seam or null result leaves `addr` empty
@@ -278,12 +264,6 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
           ? Promise.resolve(null)
           : deps.reverseGeocode(input.lat, input.lng),
       ])
-      // Resolve the jurisdiction's compact CODE pre-tx (the reference-code JURCODE segment, D4/D5). A null
-      // geoid OR a missing resolver yields UNKNOWN_JURCODE (0) — anon reports still get a code (M3).
-      const jurCode =
-        deps.resolveJurisdictionCode !== undefined
-          ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
-          : UNKNOWN_JURCODE
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const reportId = newId()
       const claimCode = newClaimCode()
@@ -303,7 +283,6 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         lng: input.lng,
         geomSource: input.geomSource,
         jurisdictionGeoid,
-        jurCode,
         category: input.category,
         type: input.type,
         title: input.title ?? null,

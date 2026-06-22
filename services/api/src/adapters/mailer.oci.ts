@@ -62,39 +62,6 @@ interface Rendered {
   html: string
 }
 
-/** A nodemailer SMTP error carries an optional `responseCode` (the 3-digit SMTP reply) + `code`. */
-interface SmtpError {
-  responseCode?: number
-  code?: string
-  response?: string
-}
-
-/**
- * Classify a caught nodemailer send error (D17). A PERMANENT auth/authorization/sender failure (SMTP
- * 530/535/550, or nodemailer EAUTH/EENVELOPE with a 5xx response) is a CONFLICT (409) with an actionable
- * message — the operator must fix the sender config (OCI Approved Senders), retrying won't help. Any
- * TRANSIENT failure (SMTP 4xx, or a connection/timeout/TLS error) stays INTERNAL (500, retryable). The
- * SMTP response text is folded into the message when present so the real reason surfaces.
- */
-function classifyMailError(err: unknown, from: string): AppError {
-  const e = (err ?? {}) as SmtpError
-  const responseCode = typeof e.responseCode === "number" ? e.responseCode : undefined
-  const code = typeof e.code === "string" ? e.code : undefined
-  const response = typeof e.response === "string" ? e.response : undefined
-
-  const isPermanentResponse = responseCode !== undefined && responseCode >= 500 && responseCode < 600
-  const isAuthCode = code === "EAUTH" || code === "EENVELOPE"
-  if (isPermanentResponse || (isAuthCode && responseCode !== undefined && responseCode >= 500)) {
-    const detail = response ? ` (${response})` : ""
-    return new AppError(
-      ErrorCode.CONFLICT,
-      `Email not sent: sender ${from} is not an approved sender. Configure OCI Approved Senders.${detail}`,
-      { cause: err },
-    )
-  }
-  return new AppError(ErrorCode.INTERNAL, "Failed to send email.", { cause: err })
-}
-
 export class OciMailer implements Mailer {
   private readonly config: OciMailerConfig
   private transporter: Transporter | undefined
@@ -121,7 +88,7 @@ export class OciMailer implements Mailer {
   private async getTransporter(): Promise<Transporter> {
     if (!this.transporter) {
       const nodemailer = await import("nodemailer")
-      const transporter = nodemailer.createTransport({
+      this.transporter = nodemailer.createTransport({
         host: this.config.host,
         port: this.config.port,
         // OCI Email Delivery uses STARTTLS on 587; `secure` is true only for implicit TLS (465).
@@ -131,13 +98,6 @@ export class OciMailer implements Mailer {
         // cleartext. requireTLS makes the send FAIL rather than transmit unencrypted. (No-op for 465.)
         requireTLS: true,
         auth: { user: this.config.user, pass: this.config.pass },
-      })
-      this.transporter = transporter
-      // WARN-ONLY smoke: verify the SMTP connection/credentials on first real use. It NEVER fails the send
-      // (let alone boot — the transporter is built lazily, never at DI wiring) so the offline/fake dev path
-      // is untouched; a bad host/credential just logs once before the actual send surfaces the real error.
-      transporter.verify().catch((err: unknown) => {
-        console.warn({ err }, "OCI mailer SMTP verify failed (continuing; send will surface the error)")
       })
     }
     return this.transporter
@@ -167,7 +127,7 @@ export class OciMailer implements Mailer {
         headers: sanitizeHeaders(email.headers),
       })
     } catch (err) {
-      throw classifyMailError(err, email.from)
+      throw new AppError(ErrorCode.INTERNAL, "Failed to send email.", { cause: err })
     }
     return { messageId }
   }
@@ -183,7 +143,7 @@ export class OciMailer implements Mailer {
         html: body.html,
       })
     } catch (err) {
-      throw classifyMailError(err, this.config.fromNoReply)
+      throw new AppError(ErrorCode.INTERNAL, "Failed to send email.", { cause: err })
     }
   }
 }

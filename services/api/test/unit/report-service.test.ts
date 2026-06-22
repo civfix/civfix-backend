@@ -35,7 +35,6 @@ function fakePresign(r2Key: string, thumbKey: string | null) {
 function makeHarness(
   opts: {
     geoid?: string | null
-    jurCode?: number
     newId?: () => string
   } = {},
 ) {
@@ -46,9 +45,6 @@ function makeHarness(
     repo,
     resolveJurisdictionGeoid: () => Promise.resolve(geoid),
     presignMedia: fakePresign,
-    ...(opts.jurCode !== undefined
-      ? { resolveJurisdictionCode: () => Promise.resolve(opts.jurCode as number) }
-      : {}),
     ...(opts.newId !== undefined ? { newId: opts.newId } : {}),
   })
   return { repo, service }
@@ -223,15 +219,9 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     expect(dto.timeline).toHaveLength(1)
     expect(dto.timeline[0]!.status).toBe("published")
 
-    // Issue #56: a well-formed reference code is minted at create + surfaced on the DTO. The harness wires
-    // no jurisdiction-code resolver, so the report lands in the unknown bucket (JURCODE 0): "GR-0-NNNNNN".
-    expect(dto.referenceCode).toMatch(/^GR-0-\d{6}$/)
-
     // The report row + the H3 cell were persisted.
     const stored = repo.reports.get(dto.id)!
     expect(stored.status).toBe("published")
-    // The minted code is persisted on the row too (so a by-code fetch resolves it).
-    expect(stored.referenceCode).toBe(dto.referenceCode)
     // The fine-grained type was persisted on the row too.
     expect(stored.type).toBe("graffiti")
     // The snapshot is stored under the idempotency key.
@@ -294,29 +284,6 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     // The foreign asset keeps its original report_id and is NOT in this report's media.
     expect(repo.media.find((m) => m.id === foreign.id)!.reportId).toBe("other-report")
     expect(dto.media).toHaveLength(0)
-  })
-})
-
-describe("createReport: reference code (#56)", () => {
-  it("uses the resolved JURCODE in the code's middle segment", async () => {
-    const { service } = makeHarness({ geoid: "0644000", jurCode: 42 })
-    const dto = await service.createReport(createReq({ type: "dump" }), { userId: "u1" })
-    expect(dto.referenceCode).toMatch(/^DU-42-\d{6}$/)
-  })
-
-  it("falls back to JURCODE 0 (unknown bucket) for an unresolved jurisdiction", async () => {
-    const { service } = makeHarness({ geoid: null, jurCode: 0 })
-    const dto = await service.createReport(createReq({ type: "graffiti" }), { userId: "u1" })
-    expect(dto.referenceCode).toMatch(/^GR-0-\d{6}$/)
-  })
-
-  it("getReport resolves by reference_code (resolve-either)", async () => {
-    const { service } = makeHarness({ jurCode: 7 })
-    const created = await service.createReport(createReq({ type: "dump" }), { userId: "u1" })
-    const code = created.referenceCode!
-    const fetched = await service.getReport(code, { userId: "u1" })
-    expect(fetched.id).toBe(created.id)
-    expect(fetched.referenceCode).toBe(code)
   })
 })
 
@@ -447,40 +414,6 @@ describe("getReport: visibility / held hiding", () => {
     await repo.addFollow("fan", r.id)
     const dto = await service.getReport(r.id, { userId: "fan" })
     expect(dto.following).toBe(true)
-  })
-
-  it("surfaces a city reply's kind + full body on the timeline DTO (D13)", async () => {
-    const { repo, service } = makeHarness()
-    // Published + public so an anonymous viewer can read it; the 'reply' row records a city reply.
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
-    // A status-only published transition (kind/body null) PLUS a 'reply' row carrying the full untruncated
-    // body (as onJurisdictionReply persists). The status-only row proves legacy rows omit kind/body.
-    repo.timeline.push({
-      reportId: r.id,
-      status: "published",
-      note: null,
-      createdAt: new Date(Date.now() - 1000),
-    })
-    const fullBody = "We've scheduled a crew and will follow up after the visit — thanks for the report."
-    repo.timeline.push({
-      reportId: r.id,
-      status: "published",
-      note: "Jurisdiction replied — We've scheduled a crew…",
-      kind: "reply",
-      body: fullBody,
-      createdAt: new Date(),
-    })
-    const dto = await service.getReport(r.id, {})
-    const reply = dto.timeline.find((t) => t.kind === "reply")
-    expect(reply).toBeDefined()
-    expect(reply?.body).toBe(fullBody)
-    expect(reply?.note).toContain("Jurisdiction replied")
-    // A status-only row (the published transition) carries neither note, kind, nor body (all omitted on
-    // the DTO when null). It is the only non-reply entry.
-    const statusOnly = dto.timeline.find((t) => t.kind === undefined)
-    expect(statusOnly).toBeDefined()
-    expect(statusOnly?.note).toBeUndefined()
-    expect(statusOnly?.body).toBeUndefined()
   })
 })
 

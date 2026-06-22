@@ -226,29 +226,9 @@ describe("GET /cleanups and /cleanups/:id", () => {
     expect(missing.statusCode).toBe(404)
   })
 
-  it("treats a non-UUID id as a reference code (resolve-either): unknown code -> 404", async () => {
-    // Issue #56 resolve-either: GET /cleanups/:id accepts a UUID OR an EVENT reference_code. A non-UUID id
-    // is no longer a 422 — it is looked up by reference_code, and an unknown one is NOT_FOUND.
+  it("422s a non-UUID id", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/v1/cleanups/EVENT-42-999999" })
-    expect(res.statusCode).toBe(404)
-  })
-
-  it("resolves a cleanup by its EVENT reference_code and surfaces referenceCode on the DTO", async () => {
-    const { app, token } = await makeHarness()
-    const id = await createCleanup(app, token)
-    const byId = await app.inject({ method: "GET", url: `/v1/cleanups/${id}` })
-    const refCode = byId.json().referenceCode as string
-    expect(refCode).toMatch(/^EVENT-\d+-\d{6}$/)
-    const byCode = await app.inject({ method: "GET", url: `/v1/cleanups/${refCode}` })
-    expect(byCode.statusCode).toBe(200)
-    expect(byCode.json().id).toBe(id)
-    expect(byCode.json().referenceCode).toBe(refCode)
-  })
-
-  it("422s an over-long id (still validated)", async () => {
-    const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: `/v1/cleanups/${"x".repeat(65)}` })
+    const res = await app.inject({ method: "GET", url: "/v1/cleanups/not-a-uuid" })
     expect(res.statusCode).toBe(422)
   })
 })

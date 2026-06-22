@@ -78,11 +78,6 @@ export interface AdminUserRecord {
   /** Whether the account is a "verified neighbor" (a user_verification row with status='verified'). */
   verified: boolean
   /**
-   * Whether the account is "report-verified" (user_moderation.report_verified, D7) — earned at >= 2
-   * operator-approved reports or set by the admin toggle (D18). Distinct from the identity `verified`.
-   */
-  reportVerified: boolean
-  /**
    * The canonical avatar URL (users.avatar_url; the public URL persisted on upload), or null. The service
    * surfaces it on the admin DTO so an operator sees the SAME photo as web/mobile (no separate presign).
    */
@@ -112,7 +107,7 @@ export interface UserEventRecord {
   whenAt: Date
 }
 
-/** A row in the user's Messages tab (a chat/dm/report-discussion message + the thread it was in). */
+/** A row in the user's Messages tab (a chat message + the thread/cleanup it was in). */
 export interface UserMessageRecord {
   id: string
   text: string
@@ -121,8 +116,6 @@ export interface UserMessageRecord {
   /** When the user themselves deleted (tombstoned) this message; null when not user-deleted. The admin
    *  still sees the original text, labeled via this flag. */
   deletedAt: Date | null
-  /** Which surface the message came from (the Messages tab unions cleanup chat + DM + report discussion). */
-  source: "chat" | "dm" | "report"
 }
 
 /** Normalized list arguments the repo consumes. `status` is the account status to match (null = any). */
@@ -194,16 +187,6 @@ export interface AdminUserRepository {
   setVerified(
     id: string,
     input: { verified: boolean; actorId: string | null },
-  ): Promise<boolean>
-  /**
-   * Set the user's report-verified flag (D18 manual override / revoke). Upserts the user_moderation row
-   * respecting its NOT NULL defaults; on `value:true` stamps report_verified_at = now() and
-   * report_verified_by = actorId, on `value:false` clears them. Audited in the same transaction. Returns
-   * false when the user does not exist.
-   */
-  setReportVerified(
-    id: string,
-    input: { value: boolean; actorId: string | null },
   ): Promise<boolean>
   /**
    * Operator soft-delete (tombstone) of one of a user's chat messages, scoped to the user as the sender.
@@ -286,8 +269,6 @@ export interface AdminUserService {
   setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void>
   /** Set the user's verified-neighbor status (true=verify, false=unverify). 404 when the user is absent. */
   setVerified(id: string, input: { verified: boolean; actorId: string | null }): Promise<void>
-  /** Set the user's report-verified flag (D18 override/revoke). 404 when the user is absent. */
-  setReportVerified(id: string, input: { value: boolean; actorId: string | null }): Promise<void>
   /** Operator removes (tombstones) one of a user's chat messages. 404 when the message does not exist. */
   removeMessage(
     userId: string,
@@ -356,8 +337,6 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         role: record.role,
         messages: record.messages,
         verificationStatus: record.verified ? "verified" : "unverified",
-        // Report-verified flag (D7/D18), additive on the DTO; defaults false when no moderation row exists.
-        reportVerified: record.reportVerified,
       }
     },
 
@@ -415,7 +394,6 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         // Surface a user-deleted message's tombstone so the admin UI can label it "[deleted by user]"
         // while still showing the original text. Additive + optional in the contract.
         deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
-        source: r.source,
       }))
       return { items, nextCursor }
     },
@@ -466,14 +444,6 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       input: { verified: boolean; actorId: string | null },
     ): Promise<void> {
       const ok = await deps.repo.setVerified(id, input)
-      if (!ok) throw AppError.notFound("User not found")
-    },
-
-    async setReportVerified(
-      id: string,
-      input: { value: boolean; actorId: string | null },
-    ): Promise<void> {
-      const ok = await deps.repo.setReportVerified(id, input)
       if (!ok) throw AppError.notFound("User not found")
     },
 

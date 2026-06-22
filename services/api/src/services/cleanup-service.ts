@@ -21,7 +21,6 @@
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
-import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import type {
   CleanupAttendeesResponse,
   CleanupDTO,
@@ -29,11 +28,8 @@ import type {
   EventKind,
   LinkedReportRef,
   ListCleanupsRequest,
-  RequestEventResourcesResponse,
   UpdateCleanupRequest,
 } from "@civfix/shared"
-import type { OutboundMailService } from "./admin/outbound-mail-service.js"
-import { buildEventPacket } from "./admin/mail-format.js"
 import { PRESIGN_CONCURRENCY, mapWithLimit } from "./media-presign.js"
 import {
   CLEANUPS_DEFAULT_LIMIT,
@@ -67,34 +63,12 @@ export interface CleanupViewer {
   userId: string | null
 }
 
-// 8-4-4-4-12 hex shape (the exact set the Postgres `uuid` type accepts on cleanups.id) — used by the
-// resolve-either getCleanup to decide whether the URL `:id` is a primary key or a reference_code (e.g.
-// "EVENT-42-000001"). Like the report path, it does NOT enforce the v1-5 nibbles: an EVENT code never
-// matches this dash layout + hex-only charset, so the discrimination is unambiguous.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function isUuid(value: string): boolean {
-  return UUID_RE.test(value)
-}
-
 export interface CleanupServiceDeps {
   repo: CleanupRepository
   // Presign a linked report's thumb object key into a client-usable URL, wrapping the Storage seam.
   // OPTIONAL: when omitted (offline tests) it defaults to an identity pass-through (returns the raw key)
   // so a test still sees a thumb without a storage SDK.
   presignThumb?: (thumbKey: string) => Promise<string>
-  // Resolve the cleanup's point to a jurisdiction geoid (#56 / D6), nullable outside coverage. OPTIONAL:
-  // when omitted (offline tests) the cleanup has no resolved jurisdiction (null geoid + jurCode 0).
-  resolveJurisdictionGeoid?: (lat: number, lng: number) => Promise<string | null>
-  // Resolve a geoid to its compact jurisdictions.code (the EVENT reference-code JURCODE segment).
-  // Returns UNKNOWN_JURCODE (0) for a null geoid or one with no code on file (D5). OPTIONAL.
-  resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
-  // The outbound-mail seam used by requestResources (D19) to send the event packet to the jurisdiction on
-  // a per-event thread. OPTIONAL: when omitted (a service built without mail wiring) requestResources is
-  // unavailable and throws — the route always wires it in production.
-  outboundMail?: OutboundMailService
-  // Whether a user is IDENTITY-verified (the requestResources host gate, D19). OPTIONAL for the same reason.
-  isVerified?: (userId: string) => Promise<boolean>
   // Injectable id factory (defaults to crypto.randomUUID) for deterministic tests.
   newId?: () => string
 }
@@ -120,15 +94,6 @@ export interface CleanupService {
   joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }>
   leaveCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }>
   listAttendees(id: string, viewer: CleanupViewer): Promise<CleanupAttendeesResponse>
-  // Request resources from the event's jurisdiction (POST /cleanups/:id/request-resources, D19). HOST-gated
-  // (organizer) AND identity-verified (else 403); 404 when missing; 422 NOT_ROUTABLE when the jurisdiction
-  // has no contact. Sends the event packet on a per-event mail thread + records a 'resource_request'
-  // cleanup_timeline row, then returns { ok: true }.
-  requestResources(input: {
-    cleanupId: string
-    message: string
-    actorId: string
-  }): Promise<RequestEventResourcesResponse>
 }
 
 export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
@@ -195,18 +160,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       await assertReportsLinkable(linkedReportIds)
 
-      // Resolve the cleanup's jurisdiction + its compact CODE BEFORE the create tx (#56 / D6), exactly like
-      // the report path. A missing resolver, a point outside coverage, or a geoid with no code on file all
-      // yield a null geoid + UNKNOWN_JURCODE (0) — the EVENT code still mints in the "0" bucket (D5).
-      const jurisdictionGeoid =
-        deps.resolveJurisdictionGeoid !== undefined
-          ? await deps.resolveJurisdictionGeoid(input.lat, input.lng)
-          : null
-      const jurCode =
-        deps.resolveJurisdictionCode !== undefined
-          ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
-          : UNKNOWN_JURCODE
-
       const cleanupId = newId()
       const record = await deps.repo.createCleanupTx({
         cleanupId,
@@ -221,8 +174,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         status: "upcoming",
         bring: input.bring ?? null,
         address: input.address ?? null,
-        jurisdictionGeoid,
-        jurCode,
         linkedReportIds,
       })
       const linkedReports = await hydrateLinkedReports(cleanupId, record.eventKind)
@@ -351,16 +302,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     },
 
     async getCleanup(id: string, viewer: CleanupViewer): Promise<CleanupDTO> {
-      // RESOLVE-EITHER (issue #56 / ROUTING): the URL `:id` is an opaque string — a UUID primary key OR a
-      // reference_code. A UUID-shaped id resolves by id; anything else resolves by reference_code. All
-      // subsequent reads (membership/links) use the LOADED record's uuid `id`, so this stays read-safe.
-      const record = isUuid(id)
-        ? await deps.repo.findCleanupById(id, null)
-        : await deps.repo.findCleanupByReferenceCode(id)
+      const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
       const [joined, linkedReports] = await Promise.all([
-        viewerJoined(record.id, viewer),
-        hydrateLinkedReports(record.id, record.eventKind),
+        viewerJoined(id, viewer),
+        hydrateLinkedReports(id, record.eventKind),
       ])
       return toCleanupDTO(record, joined, linkedReports)
     },
@@ -405,74 +351,5 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       // the real total and an "+N others" overflow regardless of how many names it may display.
       return { attendees, going: record.going, scope }
     },
-
-    async requestResources(input: {
-      cleanupId: string
-      message: string
-      actorId: string
-    }): Promise<RequestEventResourcesResponse> {
-      if (deps.outboundMail === undefined || deps.isVerified === undefined) {
-        throw AppError.internal("Event resource requests are not available")
-      }
-      const record = await deps.repo.findCleanupById(input.cleanupId, null)
-      if (!record) notFoundCleanup()
-
-      // HOST + IDENTITY-VERIFIED gate (D19): only the organizer, and only when identity-verified, may
-      // request resources. The UI also gates, but enforce server-side. A non-host 403s before the
-      // verification read so we don't leak verification state for someone else's event.
-      if (record.organizerUserId !== input.actorId) {
-        throw AppError.forbidden("Only the event host can request resources.")
-      }
-      const verified = await deps.isVerified(input.actorId)
-      if (!verified) {
-        throw AppError.forbidden("Only identity-verified hosts can request resources.")
-      }
-
-      // Resolve the event's jurisdiction routing contact (same precedence reports use). No contact -> 422.
-      const routing = await deps.repo.resolveJurisdictionContact(record.jurisdictionGeoid)
-      if (routing === null) {
-        throw AppError.notRoutable(
-          "This event's area has no jurisdiction contact on file, so resources can't be requested yet.",
-        )
-      }
-
-      const packet = buildEventPacket(
-        {
-          title: record.title,
-          host: record.organizer.displayName,
-          place: routing.name,
-          address: record.address,
-          lat: record.lat,
-          lng: record.lng,
-          referenceCode: record.referenceCode,
-        },
-        input.message,
-      )
-      await deps.outboundMail.sendEventToJurisdiction({
-        cleanupId: record.id,
-        geoid: record.jurisdictionGeoid,
-        org: routing.name,
-        toAddr: routing.contact,
-        subject: packet.subject,
-        text: packet.text,
-        html: packet.html,
-      })
-
-      // Record the request in the event timeline (D19) so follow-ups live in the event. `note` is the
-      // short request preview; actor is the host.
-      await deps.repo.appendCleanupTimeline(record.id, {
-        kind: "resource_request",
-        note: resourceRequestNote(input.message),
-        actorId: input.actorId,
-      })
-      return { ok: true }
-    },
   }
-}
-
-/** A short single-line preview of the host's resource-request message for the timeline note. */
-function resourceRequestNote(message: string): string {
-  const collapsed = message.replace(/\s+/g, " ").trim()
-  const preview = collapsed.length > 140 ? `${collapsed.slice(0, 140)}…` : collapsed
-  return preview.length > 0 ? `Resources requested — ${preview}` : "Resources requested"
 }

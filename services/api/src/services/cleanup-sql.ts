@@ -21,8 +21,6 @@ export interface CleanupRowSelect {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
-  jurisdiction_geoid: string | null
-  reference_code: string | null
   created_at: Date
   going: number
   dist: number | null
@@ -62,8 +60,6 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     status: r.status,
     bring: r.bring,
     address: r.address,
-    jurisdictionGeoid: r.jurisdiction_geoid,
-    referenceCode: r.reference_code,
     createdAt: r.created_at,
     going: r.going,
     // postgres returns numeric distance as a string; normalize to number | null.
@@ -95,8 +91,6 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.status,
     c.bring,
     c.address,
-    c.jurisdiction_geoid,
-    c.reference_code,
     c.created_at,
     COALESCE(g.going, 0) AS going,
     ${distExpr} AS dist,

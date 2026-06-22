@@ -22,7 +22,6 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core"
-import { cleanups } from "./cleanups.js"
 import { jurisdictions } from "./jurisdictions.js"
 import { reports } from "./reports.js"
 import type {
@@ -46,10 +45,6 @@ export const mailThreads = pgTable(
     // Per-report outreach thread linkage (0020): the report this thread carries the conversation for, so
     // a jurisdiction's reply auto-routes back onto it. Nullable: digest/compose threads have no report.
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
-    // Per-event outreach thread linkage (0031, D10/D19): the cleanup (event) this resource-request thread
-    // carries the conversation for, so a city reply auto-routes back onto it. Nullable: report/digest
-    // threads have no cleanup. Mirrors reportId.
-    cleanupId: uuid("cleanup_id").references(() => cleanups.id, { onDelete: "set null" }),
     org: text("org"),
     subject: text("subject"),
     status: text("status").$type<MailThreadStatus>().notNull().default("sent"),
@@ -63,9 +58,7 @@ export const mailThreads = pgTable(
     index("mail_threads_geoid_idx").on(t.jurisdictionGeoid),
     // NOTE: the partial index `mail_threads_report_idx ON mail_threads (report_id) WHERE report_id IS
     // NOT NULL` lives ONLY in drizzle/0020_report_mail_link.sql (drizzle-kit cannot emit the partial
-    // WHERE predicate), so it is intentionally not mirrored here. Likewise the partial index
-    // `mail_threads_cleanup_idx ON mail_threads (cleanup_id) WHERE cleanup_id IS NOT NULL` lives only in
-    // drizzle/0031_timeline_event_mail.sql and is intentionally not mirrored here for the same reason.
+    // WHERE predicate), so it is intentionally not mirrored here.
     index("mail_threads_last_message_idx").on(t.lastMessageAt.desc()),
     index("mail_threads_unread_idx")
       .on(t.lastMessageAt.desc())

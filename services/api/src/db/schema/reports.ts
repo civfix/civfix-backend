@@ -56,15 +56,6 @@ export const reports = pgTable(
     // AnonReportResponse, and cleared on claim. Nullable: non-anon reports never carry one. Replaces the
     // prior overwritten anon_tokens.claim_code so EACH report on a token is independently claimable.
     claimCode: text("claim_code"),
-    // Human-readable immutable reference code `{TYPECODE}-{JURCODE}-{NNNNNN}` (issue #56, 0030). NULLABLE:
-    // minted by the create paths going forward and by the post-deploy backfill for historical rows. A
-    // UNIQUE index (reports_reference_code_uidx) guarantees no two reports share a code.
-    referenceCode: text("reference_code"),
-    // Operator verification verdict (0030), distinct from the civic `status`. NULL = no verdict yet; a
-    // CHECK constraint (reports_verification_verdict_check) restricts the stored value to approved|rejected.
-    verificationVerdict: text("verification_verdict").$type<"approved" | "rejected">(),
-    verifiedBy: uuid("verified_by").references(() => users.id),
-    verifiedAt: timestamp("verified_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -79,8 +70,6 @@ export const reports = pgTable(
     index("reports_anon_session_idx").on(t.anonSessionId),
     // Partial unique (WHERE claim_code IS NOT NULL): an active code resolves to exactly one report.
     uniqueIndex("reports_claim_code_key").on(t.claimCode).where(sql`claim_code IS NOT NULL`),
-    // UNIQUE reference code (0030). Tolerates the all-NULL pre-backfill state; resolves a code to one report.
-    uniqueIndex("reports_reference_code_uidx").on(t.referenceCode),
     // Performance indexes (drizzle/0013_perf_indexes.sql) — each backs a specific hot access pattern.
     // Admin reports list keyset (created_at DESC, id DESC) over non-deleted rows.
     index("reports_created_id_idx")

@@ -4,7 +4,6 @@ import type { InboundMail } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
-import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import {
   processInboundObject,
   resolveMessageId,
@@ -49,7 +48,6 @@ interface Ctx {
   mailRepo: InMemoryMailRepository
   inboundRepo: InMemoryInboundRepository
   adminReportRepo: InMemoryAdminReportRepository
-  cleanupRepo: InMemoryCleanupRepository
   jobs: FakeJobs
   db: FakeSqlControl
 }
@@ -65,17 +63,9 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
   const mailRepo = new InMemoryMailRepository()
   const inboundRepo = new InMemoryInboundRepository()
   const adminReportRepo = new InMemoryAdminReportRepository()
-  const cleanupRepo = new InMemoryCleanupRepository()
   const jobs = new FakeJobs()
   const db = makeFakeSql(sqlHandlers)
-  const deps: InboundProcessorDeps = {
-    storage,
-    inboundMail,
-    mailRepo,
-    inboundRepo,
-    adminReportRepo,
-    cleanupRepo,
-  }
+  const deps: InboundProcessorDeps = { storage, inboundMail, mailRepo, inboundRepo, adminReportRepo }
   const container = {
     env: {},
     storage,
@@ -84,7 +74,7 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
     jobs,
     getDb: () => ({ sql: db.sql }),
   } as unknown as Container
-  return { container, deps, storage, mailRepo, inboundRepo, adminReportRepo, cleanupRepo, jobs, db }
+  return { container, deps, storage, mailRepo, inboundRepo, adminReportRepo, jobs, db }
 }
 
 async function put(c: Ctx, key: string, eml: Buffer): Promise<void> {
@@ -257,51 +247,6 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     const r = await processInboundObject(c.container, key, c.deps)
     expect(r.outcome).toBe("threaded")
     expect(c.storage.get(key)).toBeNull() // the pending object was still consumed
-  })
-
-  it("persists the FULL reply body + kind='reply' on the timeline (D13), not just the preview", async () => {
-    const reportId = "report-full"
-    const c = ctx()
-    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
-    c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
-    // Spy on the repo's setStatus (the live-report path) to capture the kind + full body it persists.
-    const calls: { kind?: string; body?: string | null; note: string }[] = []
-    const orig = c.adminReportRepo.setStatus.bind(c.adminReportRepo)
-    c.adminReportRepo.setStatus = (id, input) => {
-      calls.push({ kind: input.kind, body: input.body, note: input.note })
-      return orig(id, input)
-    }
-    const fullBody = "Hello — we have scheduled a crew for next week and will follow up after the visit."
-    const key = `${INBOUND_PENDING_PREFIX}reply-full.eml`
-    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: fullBody }))
-    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
-
-    expect(calls).toHaveLength(1)
-    expect(calls[0]?.kind).toBe("reply")
-    expect(calls[0]?.body).toBe(fullBody) // full untruncated text
-    expect(calls[0]?.note).toContain("Jurisdiction replied") // the short preview note stays
-  })
-})
-
-describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () => {
-  it("writes a 'city_reply' cleanup_timeline row (actor null, full body) for an event thread", async () => {
-    const cleanupId = "cleanup-evt-1"
-    const c = ctx()
-    // An event thread (cleanup_id set, NO report_id) on a 24-hex token.
-    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
-    const fullBody = "Yes, we can supply 20 bags and gloves; pick them up at the depot Friday morning."
-    const key = `${INBOUND_PENDING_PREFIX}evt-reply.eml`
-    await put(c, key, rfc822({ from: "events@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: fullBody }))
-
-    const r = await processInboundObject(c.container, key, c.deps)
-    expect(r.outcome).toBe("threaded")
-    // Threaded onto the event thread + flipped to 'replied'; NO report side-effects ran.
-    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
-
-    const row = c.cleanupRepo.timeline.find((t) => t.cleanupId === cleanupId && t.kind === "city_reply")
-    expect(row).toBeDefined()
-    expect(row?.actorId).toBeNull()
-    expect(row?.note).toBe(fullBody)
   })
 })
 

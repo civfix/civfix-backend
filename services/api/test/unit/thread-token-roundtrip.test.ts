@@ -62,19 +62,4 @@ describe("thread token round-trip (mint -> reply+{token}@ -> extract)", () => {
     expect(real.extractThreadToken(mail)).toBeNull()
     expect(fake.extractThreadToken(mail)).toBeNull()
   })
-
-  // D10: the real adapter's local-part match widened to (reply|report|event)+, KEEPING the second-step
-  // 24-hex THREAD_TOKEN_RE gate. report+ (per-report) and event+ (per-event) carry the SAME token shape.
-  it("recovers the token from reply+ / report+ / event+ local-parts (real adapter)", () => {
-    const token = mintThreadToken()
-    expect(real.extractThreadToken(mailTo(`reply+${token}@civfix.org`))).toBe(token)
-    expect(real.extractThreadToken(mailTo(`report+${token}@civfix.org`))).toBe(token)
-    expect(real.extractThreadToken(mailTo(`event+${token}@civfix.org`))).toBe(token)
-  })
-
-  it("rejects a garbage / non-24-hex token on a report+ / event+ address (real adapter)", () => {
-    expect(real.extractThreadToken(mailTo("report+not-a-token@civfix.org"))).toBeNull()
-    expect(real.extractThreadToken(mailTo("event+ZZZZ@civfix.org"))).toBeNull()
-    expect(real.extractThreadToken(mailTo("report+geo-06037@civfix.org"))).toBeNull()
-  })
 })

@@ -26,7 +26,6 @@ import {
   UnlistReportRequestSchema,
   PaginationQuerySchema,
   IdSchema,
-  ReportRefOrIdSchema,
   type ReportDTO,
   type GetReportResponse,
   type ListMyReportsResponse,
@@ -37,7 +36,6 @@ import {
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
-import type { Sql } from "../db/client.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
@@ -49,7 +47,6 @@ import {
   type ReportServiceDeps,
 } from "../services/report-service.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
-import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
@@ -74,7 +71,6 @@ const photonReverseGeocode = makePhotonReverseGeocode()
 export interface ReportServiceOverrides {
   repo: ReportRepository
   resolveJurisdictionGeoid?: ReportServiceDeps["resolveJurisdictionGeoid"]
-  resolveJurisdictionCode?: ReportServiceDeps["resolveJurisdictionCode"]
   reverseGeocode?: ReportServiceDeps["reverseGeocode"]
   presignMedia?: ReportServiceDeps["presignMedia"]
   loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
@@ -92,12 +88,6 @@ declare module "fastify" {
 
 /** Path param schema for the routes that take a report UUID in the URL. */
 const ReportIdParamsSchema = z.object({ id: IdSchema }).strict()
-
-// GET /reports/:id is resolve-either (issue #56 / ROUTING): the URL id may be a UUID primary key OR a
-// reference_code. Validate it with the looser shared ReportRefOrIdSchema (a 1..64-char opaque string); the
-// service branches uuid-shaped -> findReportById, else -> findReportByReferenceCode. ONLY this route is
-// relaxed — every other by-id route keeps the strict UUID schema (mutations key off the loaded DTO's id).
-const ReportRefOrIdParamsSchema = z.object({ id: ReportRefOrIdSchema }).strict()
 
 // zoom decoder: the shared `zoom: z.number()` does not clamp and clusterCellSizeDeg has no range guard, so
 // a NaN zoom would emit a cluster at NaN coords (serializes to null = a broken pin). .int() rejects
@@ -242,9 +232,6 @@ export async function registerReportRoutes(
         repo: overrides.repo,
         resolveJurisdictionGeoid:
           overrides.resolveJurisdictionGeoid ?? (() => Promise.resolve(null)),
-        ...(overrides.resolveJurisdictionCode !== undefined
-          ? { resolveJurisdictionCode: overrides.resolveJurisdictionCode }
-          : {}),
         presignMedia: overrides.presignMedia ?? defaultPresign(container),
         ...(overrides.reverseGeocode !== undefined ? { reverseGeocode: overrides.reverseGeocode } : {}),
         ...(overrides.loadLinkedEventsForReports !== undefined
@@ -308,19 +295,11 @@ export async function registerReportRoutes(
         const resolved = await jurisdiction.resolveForPoint(lat, lng)
         return resolved?.geoid ?? null
       },
-      // Resolve the geoid's compact jurisdictions.code (the reference-code JURCODE segment) pre-tx; 0
-      // when the geoid is null or has no code on file (D5). The report repo allocates the code from it.
-      resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
       // Street-level Photon address, falling back to the local "City, ST" label so a report almost
       // always gets a location text even when Photon is unreachable. Best-effort: null leaves addr empty.
       reverseGeocode: async (lat, lng) =>
         (await photonReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
       presignMedia: defaultPresign(container),
-      // AUTO-FORWARD (D9 / #56): the Jobs seam + the report_verified gate read. createReport enqueues
-      // report.autoforward post-commit ONLY when the reporter is report_verified (singletonKey=reportId).
-      jobs: container.jobs,
-      isReportVerified: (userId) => isReportVerified(sql, userId),
-      logger: app.log,
     })
   }
 
@@ -338,9 +317,9 @@ export async function registerReportRoutes(
     },
   )
 
-  // GET /reports/:id  (anon-ok) — resolve-either: id may be a UUID or a reference_code (issue #56).
+  // GET /reports/:id  (anon-ok)
   route(app, "getReport", async (request, reply) => {
-    const { id } = parse(ReportRefOrIdParamsSchema, request.params)
+    const { id } = parse(ReportIdParamsSchema, request.params)
     const dto: GetReportResponse = await service().getReport(id, ownerOf(request))
     reply.status(200).send(dto)
   })
@@ -412,17 +391,6 @@ export async function registerReportRoutes(
     const dto: ReportDTO = await service().unlistReport(userId, id, body.unlisted)
     reply.status(200).send(dto)
   })
-}
-
-/**
- * Read a reporter's earned report_verified flag (user_moderation.report_verified, D7). A user with no
- * moderation row reads false (no row, no trust). Backs the auto-forward enqueue gate (D9 / #56).
- */
-async function isReportVerified(sql: Sql, userId: string): Promise<boolean> {
-  const rows = await sql<{ report_verified: boolean }[]>`
-    SELECT report_verified FROM user_moderation WHERE user_id = ${userId} LIMIT 1
-  `
-  return rows[0]?.report_verified ?? false
 }
 
 /** Build the default media presigner over the container's Storage seam (presign url + optional thumb). */

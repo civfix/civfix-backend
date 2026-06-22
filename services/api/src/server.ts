@@ -38,7 +38,6 @@ import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
-import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
@@ -242,8 +241,6 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerInboundJobs(app.container)
     await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
     await registerDiscoveryJobs(app.container)
-    // Report auto-forward (D9 / #56): email a report_verified reporter's new report to its jurisdiction.
-    await registerAutoForwardJobs(app.container, app.log)
   }
 
   async function shutdown(signal: string): Promise<void> {

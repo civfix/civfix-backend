@@ -41,7 +41,6 @@ export interface ReportRowSelect {
   lat: number
   geom_source: "device" | "exif" | "manual"
   jurisdiction_geoid: string | null
-  reference_code: string | null
   created_at: Date
   published_at: Date | null
   deleted_at: Date | null
@@ -63,7 +62,6 @@ export function toRecord(r: ReportRowSelect): ReportRecord {
     lng: r.lng,
     geomSource: r.geom_source,
     jurisdictionGeoid: r.jurisdiction_geoid,
-    referenceCode: r.reference_code,
     createdAt: r.created_at,
     publishedAt: r.published_at,
     deletedAt: r.deleted_at,
@@ -74,7 +72,7 @@ export function toRecord(r: ReportRowSelect): ReportRecord {
 export function reportColumns(sql: Queryable) {
   return sql`
     id, reporter_user_id, anon_session_id, category, type, title, description, addr, status, visibility,
-    ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, jurisdiction_geoid, reference_code,
+    ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, jurisdiction_geoid,
     created_at, published_at, deleted_at
   `
 }
@@ -106,15 +104,11 @@ export function toMediaView(m: MediaRowSelect): ReportMediaView {
 export interface TimelineRowSelect {
   status: ReportStatus
   note: string | null
-  // D13: `kind` tags the entry (e.g. 'reply') and `body` carries the full untruncated text (an inbound
-  // city reply); both NULLABLE (legacy rows have neither).
-  kind: string | null
-  body: string | null
   created_at: Date
 }
 
 export function toTimelineView(t: TimelineRowSelect): ReportTimelineView {
-  return { status: t.status, note: t.note, kind: t.kind, body: t.body, createdAt: t.created_at }
+  return { status: t.status, note: t.note, createdAt: t.created_at }
 }
 
 // A public map/search pin row before projection. created_at backs the search keyset cursor; the map path

@@ -76,14 +76,6 @@ export interface AdminReportRecord {
   lng: number
   hasPhoto: boolean
   createdAt: Date
-  /** The report's immutable reference code (#56), or null on a row created before the code was minted. */
-  referenceCode: string | null
-  /** The operator's report-verification verdict (D7), distinct from the civic status. Null when unjudged. */
-  verificationVerdict: "approved" | "rejected" | null
-  /** When the verdict was last set (verified_at), or null when the report has never been judged. */
-  verifiedAt: Date | null
-  /** Whether the report's reporter is report-verified (LEFT JOIN user_moderation). Null for an anon report. */
-  reporterReportVerified: boolean | null
 }
 
 /** Normalized list arguments the repo consumes. */
@@ -147,25 +139,12 @@ export interface AdminReportRepository {
    * Append a SYSTEM report_timeline row at the report's CURRENT status (actor NULL, no audit). Used by the
    * inbound reply side-effects (§2.7) to record a jurisdiction reply on the timeline without changing the
    * report status. Unlike setStatus this is a non-transition row; unlike appendFollowup it writes no audit.
-   * D13: `note` is the short collapsed preview; `body` (optional) carries the full untruncated reply text
-   * persisted to report_timeline.body so the public timeline can render a collapsible full reply.
    */
-  appendSystemTimeline(
-    id: string,
-    input: { note: string; kind: ReportTimelineItem["kind"]; body?: string | null },
-  ): Promise<void>
+  appendSystemTimeline(id: string, input: { note: string; kind: ReportTimelineItem["kind"] }): Promise<void>
   listMedia(id: string): Promise<AdminReportMediaRecord[]>
   setStatus(
     id: string,
-    input: {
-      status: AdminReportStatus
-      note: string
-      actorId: string | null
-      // D13: optional kind + full body persisted alongside the transition (an inbound city reply that also
-      // advances the report carries kind='reply' + the full text). Omitted for a plain operator transition.
-      kind?: ReportTimelineItem["kind"]
-      body?: string | null
-    },
+    input: { status: AdminReportStatus; note: string; actorId: string | null },
   ): Promise<boolean>
   /** Toggle the report's abuse flag; returns the resulting flagged state, or null when the report is gone. */
   toggleFlag(
@@ -187,23 +166,7 @@ export interface AdminReportRepository {
       destination: string
     },
   ): Promise<void>
-  /**
-   * Set a report's verification verdict (D7) and, on an `approved` verdict for a report with a non-null
-   * reporter, recompute the reporter's approved-report count and flip user_moderation.report_verified to
-   * true once it reaches the threshold (2). ALL in ONE transaction so the verdict write + count + flip are
-   * consistent. A `rejected` verdict writes only the verdict (never counts, never resets report_verified);
-   * an anonymous report (reporterUserId null) writes the verdict for bookkeeping but never counts/flips.
-   * Idempotent: re-setting the same verdict re-runs the recompute (a no-op once the flag is already true).
-   * Returns false when the report does not exist (or is soft-deleted), which the service maps to 404.
-   */
-  setReportVerdict(
-    id: string,
-    input: { verdict: "approved" | "rejected"; actorId: string | null },
-  ): Promise<boolean>
 }
-
-/** The threshold of operator-approved reports a reporter must reach to EARN report_verified (D7). */
-export const REPORT_VERIFIED_THRESHOLD = 2
 
 export interface AdminReportServiceDeps {
   repo: AdminReportRepository
@@ -267,16 +230,6 @@ export interface AdminReportService {
     id: string,
     input: { contactEmailOverride: string | null; note: string | null; actorId: string | null },
   ): Promise<RouteToJurisdictionResult>
-  /**
-   * Set a report's verification verdict (D7). Writes the verdict cols and, for an `approved` verdict on a
-   * report with a non-null reporter, flips the reporter to report_verified once they reach the threshold.
-   * 404 when the report does not exist. Idempotent.
-   */
-  setVerdict(input: {
-    id: string
-    verdict: "approved" | "rejected"
-    actorId: string | null
-  }): Promise<void>
 }
 
 export type { AdminReportListItemDTO }

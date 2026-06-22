@@ -15,7 +15,7 @@
  * the discovery pipeline fills in.
  */
 
-import { index, integer, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core"
+import { index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { geometry, type JURISDICTION_LAYER_VALUES } from "./types.js"
 
 type JurisdictionLayer = (typeof JURISDICTION_LAYER_VALUES)[number]
@@ -42,17 +42,11 @@ export const jurisdictions = pgTable(
     // Nullable; most jurisdictions have no handle. A PARTIAL UNIQUE index on lower(handle) keeps
     // handles case-insensitively unique (see NOTE below).
     handle: text("handle"),
-    // Compact integer code used as the JURCODE segment of report/event reference codes (0030, D2).
-    // Allocated from jurisdiction_code_seq (single source of truth): backfilled by geoid ordinal in
-    // 0030, and via nextval() for lazily-upserted rows. NULLABLE in the mirror; all rows are backfilled.
-    code: integer("code"),
   },
   // NOTE: the GiST(geom) index lives in 0001_core.sql. Only b-tree indexes are declared here.
   (t) => [
     index("jurisdictions_layer_idx").on(t.layer),
     index("jurisdictions_population_idx").on(t.population),
-    // UNIQUE jurisdiction code (0030). Tolerates NULLs; here all rows are backfilled.
-    uniqueIndex("jurisdictions_code_uidx").on(t.code),
     // NOTE: a trigram GIN index `jurisdictions_name_trgm ON jurisdictions USING gin (name gin_trgm_ops)`
     // backs the admin reports `j.name ILIKE '%q%'` search. It lives in drizzle/0014_search_trgm.sql and
     // is intentionally NOT mirrored here (raw-SQL-only search; gin_trgm_ops opclass form).

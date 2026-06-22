@@ -11,8 +11,6 @@ import type { ParsedMail } from "@civfix/shared/interfaces"
 import type { MailRepository, MailThreadRecord } from "./mail-repository.drizzle.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
 import type { AdminReportRepository } from "./admin-report-service.js"
-import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
-import type { CleanupRepository } from "../cleanup-service.js"
 
 /**
  * Find a thread by the In-Reply-To / References headers an inbound reply echoes back (the fallback when
@@ -69,27 +67,15 @@ export async function onJurisdictionReply(
   const record = await reportRepo.getReport(reportId)
   if (!record) return
 
-  const fullBody = (mail.text ?? mail.html ?? "").trim()
-  const preview = replyPreview(fullBody)
+  const preview = replyPreview(mail.text ?? mail.html ?? "")
   const note = `Jurisdiction replied — ${preview}`
-  // D13: stop discarding the full body. `note` stays the short preview (the list/notification copy); `body`
-  // carries the full untruncated reply text + kind='reply' so the public timeline renders a collapsible
-  // full reply. Persist null body when the reply is empty (nothing to expand).
-  const body = fullBody.length > 0 ? fullBody : null
 
   // Advance a live (published/acknowledged) report to in_progress with the reply note; otherwise just
-  // record a system 'reply' timeline row (no status change, e.g. an already-resolved report). Both carry
-  // the full body + kind so the timeline entry is the same regardless of whether the status advanced.
+  // record a system 'reply' timeline row (no status change, e.g. an already-resolved report).
   if (record.status === "published" || record.status === "acknowledged") {
-    await reportRepo.setStatus(reportId, {
-      status: "in_progress",
-      note,
-      actorId: null,
-      kind: "reply",
-      body,
-    })
+    await reportRepo.setStatus(reportId, { status: "in_progress", note, actorId: null })
   } else {
-    await reportRepo.appendSystemTimeline(reportId, { note, kind: "reply", body })
+    await reportRepo.appendSystemTimeline(reportId, { note, kind: "reply" })
   }
 
   const reporterUserId = record.reporter?.id
@@ -103,33 +89,6 @@ export async function onJurisdictionReply(
     })
   }
 
-  await mailRepo.setThreadStatus(thread.id, "replied")
-}
-
-/**
- * Best-effort side-effects when a jurisdiction reply lands on a per-EVENT thread (D13/D19): record the
- * reply as a `cleanup_timeline` row (kind 'city_reply', actor NULL, the full body) so an event's follow-ups
- * live in the event timeline for the host, then flip the thread status to 'replied'. STRICTLY best-effort
- * (the caller swallows failures), mirroring onJurisdictionReply for the report side.
- */
-export async function onEventReply(
-  container: Container,
-  injectedCleanupRepo: CleanupRepository | undefined,
-  mailRepo: MailRepository,
-  thread: MailThreadRecord,
-  mail: ParsedMail,
-): Promise<void> {
-  const cleanupId = thread.cleanupId
-  if (cleanupId === null) return
-  const cleanupRepo = injectedCleanupRepo ?? makeDrizzleCleanupRepository(container.getDb().sql)
-  const fullBody = (mail.text ?? mail.html ?? "").trim()
-  const preview = replyPreview(fullBody)
-  const note = preview.length > 0 ? `Jurisdiction replied — ${preview}` : "Jurisdiction replied"
-  await cleanupRepo.appendCleanupTimeline(cleanupId, {
-    kind: "city_reply",
-    note: fullBody.length > 0 ? fullBody : note,
-    actorId: null,
-  })
   await mailRepo.setThreadStatus(thread.id, "replied")
 }
 

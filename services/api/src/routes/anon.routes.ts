@@ -43,7 +43,6 @@ import { RedisCounterStore } from "../abuse/counter-store.js"
 import { makeAnonService, type AnonService } from "../services/anon-service.js"
 import { makeDrizzleAnonReportRepository } from "../services/anon-repository.drizzle.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
-import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
@@ -128,9 +127,6 @@ export async function registerAnonRoutes(
         const resolved = await jurisdiction.resolveForPoint(lat, lng)
         return resolved?.geoid ?? null
       },
-      // Resolve the geoid's compact jurisdictions.code (reference-code JURCODE segment, #56) pre-tx; 0
-      // when the geoid is null or has no code on file (D5). The anon repo allocates the code from it (M3).
-      resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
       // Derive an address from the pin when the reporter supplied none (street-level Photon, falling back
       // to the local "City, ST" label). Best-effort: null leaves addr empty and never blocks the submit.
       reverseGeocode: async (lat, lng) =>
