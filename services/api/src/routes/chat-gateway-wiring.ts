@@ -69,7 +69,7 @@ export interface ChatWiring {
  * normalized client IP as the global plugin). Skipped when @fastify/rate-limit isn't registered (offline
  * test/dev boots that don't install it).
  */
-function applyWsUpgradeRateLimit(app: FastifyInstance): void {
+export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
   if (typeof app.createRateLimit !== "function") return
   const limiter = app.createRateLimit({
     ...WS_UPGRADE_RATE_LIMIT,
@@ -80,7 +80,11 @@ function applyWsUpgradeRateLimit(app: FastifyInstance): void {
   app.addHook("onRequest", async (request, reply) => {
     if ((request.url ?? "").split("?")[0] !== "/ws") return
     const result = await limiter(request)
-    if (!result.isAllowed) {
+    // @fastify/rate-limit's createRateLimit result: `isAllowed` means "allowlist-EXEMPT" (true only for an
+    // allowList bypass), NOT "within limit" — it is hardcoded false on the normal path. The over-the-limit
+    // verdict is `isExceeded` (current > max). Block only when not exempt AND exceeded; checking `!isAllowed`
+    // alone 429s EVERY upgrade (see the library README's `!isAllowed && isExceeded` example).
+    if (!result.isAllowed && result.isExceeded) {
       reply.header("retry-after", result.ttlInSeconds)
       reply.status(429).send({ code: ErrorCode.RATE_LIMITED, message: "Too many connection attempts." })
     }
