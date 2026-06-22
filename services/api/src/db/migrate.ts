@@ -81,11 +81,18 @@ export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): P
     for (const name of ordered) {
       if (already.has(name)) continue
       const text = await readFile(join(dir, name), "utf8")
-      // Transaction-per-file: the DDL and its bookkeeping row commit together or not at all.
-      await reserved.begin(async (tx) => {
-        await tx.unsafe(text)
-        await tx`INSERT INTO _civfix_migrations (name) VALUES (${name})`
-      })
+      // Transaction-per-file: the DDL and its bookkeeping row commit together or not at all. A reserved
+      // connection has no `.begin()` in postgres 3.4 (only the pool sql does), so drive BEGIN/COMMIT
+      // explicitly on the pinned connection.
+      await reserved.unsafe("begin")
+      try {
+        await reserved.unsafe(text)
+        await reserved`INSERT INTO _civfix_migrations (name) VALUES (${name})`
+        await reserved.unsafe("commit")
+      } catch (err) {
+        await reserved.unsafe("rollback").catch(() => {})
+        throw err
+      }
       applied.push(name)
     }
     return applied
