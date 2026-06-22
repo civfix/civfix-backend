@@ -32,7 +32,19 @@ export type CensusJsonFetch = (url: string) => Promise<unknown[][]>
 
 const defaultFetchJson: CensusJsonFetch = async (url) => {
   const res = await fetch(url)
+  // The Census API now REQUIRES an API key: an unkeyed request 302-redirects to /data/missing_key.html
+  // (an HTML page), so a "successful" fetch can still be HTML. Detect that and fail with a clear, actionable
+  // message instead of a cryptic "Unexpected token '<'" JSON parse error.
+  const contentType = res.headers.get("content-type") ?? ""
+  if (res.url.includes("missing_key") || (!contentType.includes("json") && res.redirected)) {
+    throw new Error(
+      "Census API requires an API key — set CENSUS_API_KEY (free, instant: https://api.census.gov/data/key_signup.html)",
+    )
+  }
   if (!res.ok) throw new Error(`Census API ${res.status} ${res.statusText}`)
+  if (!contentType.includes("json")) {
+    throw new Error(`Census API returned a non-JSON response (${res.status}); check the query/year`)
+  }
   return (await res.json()) as unknown[][]
 }
 
@@ -137,6 +149,13 @@ export async function backfillPopulation(
   }
 
   const fetched = collected.length
+  if (fetched === 0) {
+    log(
+      "fetched 0 ACS rows — every Census call failed. The Census API requires CENSUS_API_KEY " +
+        "(free, instant: https://api.census.gov/data/key_signup.html); set it and re-run.",
+    )
+    return { fetched: 0, updated: 0, states: states.length }
+  }
   log(`fetched ${fetched} ACS population rows (ACS5 ${year}); applying...`)
   const updated = await applyPopulations(sql, collected)
   return { fetched, updated, states: states.length }

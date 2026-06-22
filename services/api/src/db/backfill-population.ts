@@ -7,7 +7,8 @@
  * Runs against the env DATABASE_URL (open your own tunnel + export it, or use
  * `pnpm db:boundaries:refresh --backfill-only` which auto-tunnels to prod and includes this step). The
  * upsert LOGIC lives in the guard-free ./backfill-population-core.js (imported here + by refresh-boundaries).
- * Set CENSUS_API_KEY to raise the Census rate limit (keyless works for this volume).
+ * REQUIRES CENSUS_API_KEY — the Census API now rejects unkeyed requests (redirects to missing_key.html).
+ * Get a free, instant key at https://api.census.gov/data/key_signup.html and export it before running.
  */
 
 import { runDbCli, runIfMain } from "./cli.js"
