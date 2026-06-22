@@ -17,6 +17,7 @@
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "check:sql": "node scripts/check-dynamic-sql.mjs",
     "dev": "turbo run dev",
     "clean": "turbo run clean"
   },
