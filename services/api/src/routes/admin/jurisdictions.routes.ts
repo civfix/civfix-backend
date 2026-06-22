@@ -11,6 +11,7 @@ import {
   SaveContactsRequestSchema,
   type AdminOkResponse,
   type JurisdictionDirectoryResponse,
+  type JurisdictionGeometryResponse,
   type ReportCategory,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
@@ -93,6 +94,12 @@ export async function registerAdminJurisdictionsRoutes(
   route(app, "listJurisdictions", async (request, reply) => {
     const query = parse(JurisdictionListQuerySchema, request.query)
     const payload: JurisdictionDirectoryResponse = await service().listDirectory(query)
+    reply.status(200).send(payload)
+  })
+
+  route(app, "getJurisdictionGeometry", async (request, reply) => {
+    const geoid = geoidParam(request)
+    const payload: JurisdictionGeometryResponse = await service().getGeometry(geoid)
     reply.status(200).send(payload)
   })
 

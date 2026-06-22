@@ -17,6 +17,10 @@ export default defineConfig({
   //   tsx. It re-resolves `reports.jurisdiction_geoid` for existing NULL rows (the "Unmapped" backlog),
   //   which DO NOT self-heal because resolution happens once at write time. Idempotent
   //   (WHERE jurisdiction_geoid IS NULL), so re-running it is safe.
+  // db/backfill-population.ts: fills jurisdictions.population from Census ACS (TIGER carries none), emitted
+  //   so the image can run `node dist/db/backfill-population.js` WITHOUT tsx. Idempotent (re-UPSERTs the
+  //   same values), so re-running is safe. Guard-free core (backfill-population-core.ts) is never bundled
+  //   into the server (only this CLI + the tsx scripts/refresh-boundaries import it).
   // NOTE the boundary-prep runner (scripts/prepare-boundaries.ts) and the manifest
   //   (src/db/boundaries/manifest.ts) are deliberately NOT entries: the runner is a GDAL-dependent ops
   //   tool run via tsx that never executes inside the production image, and the manifest is consumed only
@@ -28,6 +32,7 @@ export default defineConfig({
     "src/db/seed.ts",
     "src/db/ingest-jurisdictions.ts",
     "src/db/backfill-jurisdictions.ts",
+    "src/db/backfill-population.ts",
   ],
   outDir: "dist",
   format: ["esm"],

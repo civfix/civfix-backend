@@ -249,6 +249,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
     const { records } = await contacts.listDirectory({
       q: null,
       filter: "all",
+      sort: "population",
       cursor: null,
       limit: 25,
     })
@@ -256,5 +257,66 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
     expect(row).toBeDefined()
     expect(row?.defaultEmails).toContain("311@lacity.gov")
     expect(row?.lastRoutedAt).not.toBeNull()
+  })
+
+  it("listDirectory returns total + routed/unrouted facets on the first page (cursor absent)", async () => {
+    const res = await contacts.listDirectory({
+      q: null,
+      filter: "all",
+      sort: "population",
+      cursor: null,
+      limit: 25,
+    })
+    expect(typeof res.total).toBe("number")
+    expect(res.total!).toBeGreaterThan(0)
+    expect(res.facets).not.toBeNull()
+    // routed + unrouted partition the (search-scoped) total exactly.
+    expect(res.facets!.routed + res.facets!.unrouted).toBe(res.total)
+  })
+
+  it("the routed/none filter splits jurisdictions by whether a contact is on file", async () => {
+    await contacts.saveAndRoute(
+      GEOID,
+      { contacts: {}, defaultEmails: ["311@lacity.gov"], formUrl: null },
+      { actorId: null },
+    )
+    const routed = await contacts.listDirectory({
+      q: null,
+      filter: "routed",
+      sort: "population",
+      cursor: null,
+      limit: 100,
+    })
+    expect(routed.records.some((r) => r.geoid === GEOID)).toBe(true)
+    const none = await contacts.listDirectory({
+      q: null,
+      filter: "none",
+      sort: "population",
+      cursor: null,
+      limit: 100,
+    })
+    expect(none.records.some((r) => r.geoid === GEOID)).toBe(false)
+  })
+
+  it("getGeometry returns the simplified boundary + bbox + interior point for a seeded jurisdiction", async () => {
+    const geo = await contacts.getGeometry(GEOID)
+    expect(geo).not.toBeNull()
+    expect(geo!.geoid).toBe(GEOID)
+    expect(geo!.geometry.type).toMatch(/Polygon/)
+    expect(Array.isArray(geo!.geometry.coordinates)).toBe(true)
+    // bbox is [west, south, east, north] with west<=east, south<=north.
+    const [west, south, east, north] = geo!.bbox
+    expect(west).toBeLessThanOrEqual(east)
+    expect(south).toBeLessThanOrEqual(north)
+    // The interior point lies within the bbox.
+    const [clng, clat] = geo!.centroid
+    expect(clng).toBeGreaterThanOrEqual(west)
+    expect(clng).toBeLessThanOrEqual(east)
+    expect(clat).toBeGreaterThanOrEqual(south)
+    expect(clat).toBeLessThanOrEqual(north)
+  })
+
+  it("getGeometry returns null for an unknown geoid", async () => {
+    expect(await contacts.getGeometry("99999999")).toBeNull()
   })
 })

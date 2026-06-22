@@ -44,6 +44,29 @@ export function decodeCursor(
 }
 
 /**
+ * Encode an offset-pagination cursor (opaque base64url of the NEXT row offset). Offset paging is used by
+ * the jurisdictions directory specifically: the table is static reference data browsed/searched under an
+ * arbitrary sort (population / reports / name), where keyset's drift-immunity buys nothing and a free
+ * choice of ORDER BY is worth more. The cursor stays an opaque string so the wire `nextCursor` contract
+ * (and the typed client's infinite-scroll loop) is unchanged.
+ */
+export function encodeOffsetCursor(offset: number): string {
+  return Buffer.from(JSON.stringify({ o: Math.max(0, Math.floor(offset)) }), "utf8").toString("base64url")
+}
+
+/** Decode an offset cursor to its row offset; absent/malformed -> 0 (start from the top). */
+export function decodeOffsetCursor(cursor: string | null | undefined): number {
+  if (!cursor) return 0
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { o?: unknown }
+    const o = typeof parsed.o === "number" && Number.isFinite(parsed.o) ? Math.floor(parsed.o) : 0
+    return o < 0 ? 0 : o
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Clamp a requested page limit into [1, ADMIN_MAX_LIMIT], defaulting to ADMIN_DEFAULT_LIMIT when
  * undefined/invalid. The wire schema already coerces + caps; this is the defensive server-side clamp so a
  * repo never receives a 0 / negative / huge LIMIT.

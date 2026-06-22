@@ -46,6 +46,7 @@ import {
 } from "../src/db/boundaries/manifest.js"
 import { ingestGeoJsonFile, ingestGeoJsonSeqFile } from "../src/db/ingest-jurisdictions-core.js"
 import { backfillReports } from "../src/db/backfill-jurisdictions-core.js"
+import { backfillPopulation } from "../src/db/backfill-population-core.js"
 
 const PREFIX = "refresh-boundaries"
 const log = (m: string): void => console.log(`${PREFIX}: ${m}`)
@@ -322,6 +323,16 @@ async function main(): Promise<void> {
     log("backfilling reports.jurisdiction_geoid (NULL → resolved)…")
     const { resolved, stayedNull } = await backfillReports(handle.sql)
     log(`backfill: ${resolved} reports resolved, ${stayedNull} still null (outside all coverage)`)
+
+    // Population from Census ACS (TIGER carries none). Best-effort: a Census outage must NOT fail a load
+    // whose boundaries already committed — population can always be re-backfilled with --backfill-only.
+    try {
+      log("backfilling jurisdictions.population from Census ACS…")
+      const pop = await backfillPopulation(handle.sql, { log: (m) => log(`population: ${m}`) })
+      log(`population: ${pop.updated} jurisdictions updated from ${pop.fetched} ACS rows`)
+    } catch (err) {
+      warn(`population backfill failed (boundaries unaffected): ${(err as Error).message}`)
+    }
 
     const tag = federalLoaded ? vintageTag(year) : `${vintageTag(year)}-nofed`
     await stampVintage(handle.sql, tag, year, rowCounts)

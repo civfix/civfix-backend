@@ -1,5 +1,6 @@
 import type {
   JurisdictionDirectoryResponse,
+  JurisdictionGeometryResponse,
   JurisdictionLayer,
   JurisdictionListQuery,
   ReportCategory,
@@ -39,12 +40,39 @@ export interface JurisdictionDirectoryRecord {
   flaggedAt: Date | null
 }
 
-/** Normalized directory list arguments (search + method facet + page window). */
+/** Directory routing-posture facet. "routed" = any contact on file (email OR form); "none" = neither. */
+export type DirectoryFilter = "all" | "email" | "form" | "none" | "routed"
+
+/** Directory sort key. "population" (default) and "reports" are DESC; "name" is A->Z. */
+export type DirectorySort = "population" | "reports" | "name"
+
+/** Normalized directory list arguments (search + method facet + sort + page window). */
 export interface ListDirectoryArgs {
   q: string | null
-  filter: "all" | "email" | "form" | "none"
+  filter: DirectoryFilter
+  sort: DirectorySort
   cursor: string | null
   limit: number
+}
+
+/** The directory page plus the first-page-only totals (count + chip facets) for the search. */
+export interface ListDirectoryResult {
+  records: JurisdictionDirectoryRecord[]
+  nextCursor: string | null
+  /** Count of jurisdictions matching the search; only computed on the first page (cursor absent). */
+  total: number | null
+  /** Routed/unrouted split of the search result; only computed on the first page. */
+  facets: { routed: number; unrouted: number } | null
+}
+
+/** One jurisdiction's boundary geometry for the verification map (simplified GeoJSON + bbox + interior point). */
+export interface JurisdictionGeometryRecord {
+  geoid: string
+  name: string
+  layer: JurisdictionLayer
+  bbox: [number, number, number, number]
+  centroid: [number, number]
+  geometry: { type: string; coordinates: unknown }
 }
 
 /** The outcome of a save-and-route, returned for the route to audit + the test to assert. */
@@ -95,8 +123,10 @@ export interface JurisdictionContactsRepository {
   patch(geoid: string, input: PatchContactsInput, audit: { actorId: string | null }): Promise<boolean>
   /** Read the outreach throttle state for a geoid (last_outreach_at + suppressed), or null when absent. */
   getOutreachState(geoid: string): Promise<{ lastOutreachAt: Date | null; suppressed: boolean } | null>
-  /** Page the directory rows (org/coverage/method derived by the service), filtered + searched. */
-  listDirectory(args: ListDirectoryArgs): Promise<{ records: JurisdictionDirectoryRecord[]; nextCursor: string | null }>
+  /** Page the directory rows (org/coverage/method derived by the service), searched + filtered + sorted. */
+  listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult>
+  /** One jurisdiction's simplified boundary geometry for the map, or null when it has no stored boundary. */
+  getGeometry(geoid: string): Promise<JurisdictionGeometryRecord | null>
   /**
    * Stamp `bounced_at = now()` on every jurisdiction_contacts row carrying this address: the inbound bounce
    * handler calls this when an outbound hard-bounces, so the directory surfaces a `bounced` contact (which
@@ -127,4 +157,6 @@ export interface JurisdictionContactsService {
   patch(geoid: string, input: PatchContactsInput, actorId: string | null): Promise<void>
   /** List the jurisdiction directory (org/dept/email/form/method/status/coverage/lastRouted). */
   listDirectory(query: JurisdictionListQuery): Promise<JurisdictionDirectoryResponse>
+  /** One jurisdiction's boundary geometry for the verification map; 404s when the geoid has no boundary. */
+  getGeometry(geoid: string): Promise<JurisdictionGeometryResponse>
 }

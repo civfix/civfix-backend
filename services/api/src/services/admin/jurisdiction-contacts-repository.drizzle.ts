@@ -21,18 +21,16 @@
  */
 
 import type { Sql } from "../../db/client.js"
-import { decodeCursor, encodeCursor, clampLimit } from "./pagination.js"
+import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { upsertJurisdictionContacts } from "./discovery-repository.drizzle.js"
-import {
-  buildUnmappedRecord,
-  directoryMethod,
-  shouldIncludeUnmapped,
-} from "./jurisdiction-directory-projection.js"
+import { buildUnmappedRecord, shouldIncludeUnmapped } from "./jurisdiction-directory-projection.js"
 import type {
   JurisdictionContactsRepository,
   JurisdictionDirectoryRecord,
+  JurisdictionGeometryRecord,
   ListDirectoryArgs,
+  ListDirectoryResult,
   PatchContactsInput,
   SaveContactsInput,
 } from "./jurisdiction-contacts-types.js"
@@ -296,12 +294,10 @@ export function makeDrizzleJurisdictionContactsRepository(
       return { lastOutreachAt: row.last_outreach_at, suppressed: row.suppressed }
     },
 
-    async listDirectory(
-      args: ListDirectoryArgs,
-    ): Promise<{ records: JurisdictionDirectoryRecord[]; nextCursor: string | null }> {
+    async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
       // Directory rows: jurisdictions with their default + per-category contacts, last-routed time (from
       // the most recent acknowledged report_timeline in the geoid), and a bounce flag (from a bounced
-      // mail_events row for the geoid's thread). Keyset over (geoid) so the page is stable.
+      // mail_events row for the geoid's thread). Offset-paged under an arbitrary sort (see pagination.ts).
       const search =
         args.q !== null
           ? (() => {
@@ -309,17 +305,16 @@ export function makeDrizzleJurisdictionContactsRepository(
               return sql`AND (j.name ILIKE ${like} ESCAPE '\\' OR j.geoid ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
-      const anchor = decodeCursor(args.cursor)
-      const after = anchor ? sql`AND j.geoid > ${anchor.id}` : sql``
+      const offset = decodeOffsetCursor(args.cursor)
       const limit = clampLimit(args.limit)
 
-      // Method facet pushed into the WHERE (was JS-only, post-LIMIT). directoryMethod is derivable from
-      // the already-joined columns, so mirroring its rule here keeps LIMIT counting only matching rows and
-      // the geoid cursor aligned (a sparse facet no longer yields near-empty pages -> a client refetch
-      // storm). The SQL must match jurisdiction-directory-projection.directoryMethod EXACTLY:
+      // Routing-posture facet pushed into the WHERE (counts only matching rows under OFFSET/LIMIT). The
+      // SQL mirrors jurisdiction-directory-projection.directoryMethod EXACTLY so the filter and the
+      // projected `method` never disagree:
       //   hasEmail = j.contact_emails has a non-blank entry OR a per-category jurisdiction_contacts row has
       //              a non-blank email; 'email' = hasEmail; 'form' = !hasEmail AND a non-blank
-      //              report_form_url; 'none' = neither. (btrim(...) <> '' mirrors the JS .trim() !== "".)
+      //              report_form_url; 'none' = neither; 'routed' = hasEmail OR hasForm. (btrim(...) <> ''
+      //   mirrors the JS .trim() !== "".)
       const hasEmailExpr = sql`(
         EXISTS (
           SELECT 1 FROM unnest(COALESCE(j.contact_emails, '{}'::text[])) AS e(v)
@@ -338,8 +333,20 @@ export function makeDrizzleJurisdictionContactsRepository(
           : args.filter === "form"
             ? sql`AND NOT ${hasEmailExpr} AND ${hasFormExpr}`
             : args.filter === "none"
-              ? sql`AND NOT ${hasEmailExpr} AND NOT ${hasFormExpr}`
-              : sql``
+              ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
+              : args.filter === "routed"
+                ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
+                : sql``
+
+      // Whole-table sort (the page is a window into it). population (default) + reports are DESC with a
+      // geoid tiebreak for a stable order across pages; name is A->Z. COALESCE so NULL population/no-reports
+      // sort last under DESC instead of first.
+      const orderBy =
+        args.sort === "reports"
+          ? sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
+          : args.sort === "name"
+            ? sql`ORDER BY j.name ASC, j.geoid ASC`
+            : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
 
       const rows = await sql<DirectoryRow[]>`
         SELECT
@@ -412,38 +419,96 @@ export function makeDrizzleJurisdictionContactsRepository(
         ) w ON true
         WHERE true
         ${search}
-        ${after}
         ${methodFilter}
-        ORDER BY j.geoid ASC
+        ${orderBy}
+        OFFSET ${offset}
         LIMIT ${limit + 1}
       `
 
-      let records = rows.map(toRecord)
-      // Belt-and-suspenders re-derive the method facet from the projected record (one definition of the
-      // rule, via directoryMethod); against the SQL ${methodFilter} predicate it is a no-op. The keyset
-      // (hasMore/page/cursor) is derived from the SAME post-filter records so a filtered-out row cannot
-      // advance the cursor past an un-emitted geoid (skip/duplicate bug).
-      if (args.filter !== "all") {
-        records = records.filter((r) => directoryMethod(r) === args.filter)
+      // Fetch limit+1 to detect a further page; the methodFilter is enforced in SQL (no JS post-filter, so
+      // OFFSET/LIMIT slice the matching set directly and a page is never short).
+      const hasMore = rows.length > limit
+      const page = (hasMore ? rows.slice(0, limit) : rows).map(toRecord)
+      const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
+
+      // total + chip facets: computed ONLY on the first page (offset 0), scoped to the search but NOT the
+      // active filter (so the chips show how the whole search result splits routed-vs-unrouted).
+      let total: number | null = null
+      let facets: { routed: number; unrouted: number } | null = null
+      if (offset === 0) {
+        const agg = await sql<{ total: string; routed: string; unrouted: string }[]>`
+          SELECT
+            COUNT(*)::text AS total,
+            COUNT(*) FILTER (WHERE ${hasEmailExpr} OR ${hasFormExpr})::text AS routed,
+            COUNT(*) FILTER (WHERE NOT (${hasEmailExpr} OR ${hasFormExpr}))::text AS unrouted
+          FROM jurisdictions j
+          WHERE true ${search}
+        `
+        const a = agg[0]
+        total = Number(a?.total ?? "0")
+        facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
       }
-      const hasMore = records.length > limit
-      const page = hasMore ? records.slice(0, limit) : records
-      const last = hasMore ? page[page.length - 1] : undefined
-      const nextCursor = last ? encodeCursor({ createdAt: new Date(0), id: last.geoid }) : null
 
       // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page so reports whose
       // jurisdiction did not resolve (NULL or orphaned geoid) are visible + triageable. Suppressed when
-      // there are none waiting. (Not part of the keyset; it pins to the top of the first page.)
+      // there are none waiting. (Not paged; it pins to the top of the first page.)
       if (shouldIncludeUnmapped(args)) {
         const unmapped = await loadUnmappedAggregate(sql)
         if (unmapped.total > 0) {
           return {
             records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...page],
             nextCursor,
+            total,
+            facets,
           }
         }
       }
-      return { records: page, nextCursor }
+      return { records: page, nextCursor, total, facets }
+    },
+
+    async getGeometry(geoid: string): Promise<JurisdictionGeometryRecord | null> {
+      // Simplify the stored MultiPolygon for the wire (a raw county/state boundary is large); 0.003deg
+      // (~300m) preserves shape for "is this in the right place?" verification at a fraction of the bytes.
+      // ST_PointOnSurface gives an interior label point (never outside the polygon, unlike ST_Centroid).
+      const rows = await sql<
+        {
+          geoid: string
+          name: string
+          layer: string
+          west: number
+          south: number
+          east: number
+          north: number
+          clng: number
+          clat: number
+          geometry: { type: string; coordinates: unknown }
+        }[]
+      >`
+        SELECT
+          j.geoid,
+          j.name,
+          j.layer,
+          ST_XMin(j.geom) AS west,
+          ST_YMin(j.geom) AS south,
+          ST_XMax(j.geom) AS east,
+          ST_YMax(j.geom) AS north,
+          ST_X(ST_PointOnSurface(j.geom)) AS clng,
+          ST_Y(ST_PointOnSurface(j.geom)) AS clat,
+          ST_AsGeoJSON(ST_SimplifyPreserveTopology(j.geom, 0.003))::json AS geometry
+        FROM jurisdictions j
+        WHERE j.geoid = ${geoid} AND j.geom IS NOT NULL
+        LIMIT 1
+      `
+      const r = rows[0]
+      if (!r) return null
+      return {
+        geoid: r.geoid,
+        name: r.name,
+        layer: r.layer as JurisdictionLayer,
+        bbox: [r.west, r.south, r.east, r.north],
+        centroid: [r.clng, r.clat],
+        geometry: r.geometry,
+      }
     },
 
     async markContactBounced(email: string): Promise<void> {

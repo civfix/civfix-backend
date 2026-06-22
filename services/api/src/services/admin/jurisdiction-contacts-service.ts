@@ -16,6 +16,7 @@
 import { AppError } from "@civfix/shared"
 import type { JurisdictionListQuery } from "@civfix/shared"
 import { toDirectoryDTO, hasAnyContact } from "./jurisdiction-directory-projection.js"
+import type { DirectoryFilter, DirectorySort } from "./jurisdiction-contacts-types.js"
 import {
   OUTREACH_DIGEST_JOB,
   type JurisdictionContactsService,
@@ -58,15 +59,28 @@ export function makeJurisdictionContactsService(
     },
 
     async listDirectory(query: JurisdictionListQuery) {
-      // query.filter is the shared Zod enum ("all"|"email"|"form"|"none") enforced at the wire boundary,
-      // so it is structurally the ListDirectoryArgs filter union; default to "all" when omitted.
-      const { records, nextCursor } = await deps.repo.listDirectory({
+      // query.filter / query.sort are the shared Zod enums enforced at the wire boundary, so they are
+      // structurally the ListDirectoryArgs unions; default to "all" / "population" when omitted.
+      const { records, nextCursor, total, facets } = await deps.repo.listDirectory({
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
-        filter: query.filter ?? "all",
+        filter: (query.filter ?? "all") as DirectoryFilter,
+        sort: (query.sort ?? "population") as DirectorySort,
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       })
-      return { items: records.map(toDirectoryDTO), nextCursor }
+      return {
+        items: records.map(toDirectoryDTO),
+        nextCursor,
+        // Omit the first-page-only fields on deeper pages (null -> undefined) so the wire stays clean.
+        ...(total !== null ? { total } : {}),
+        ...(facets !== null ? { facets } : {}),
+      }
+    },
+
+    async getGeometry(geoid: string) {
+      const record = await deps.repo.getGeometry(geoid)
+      if (!record) throw AppError.notFound("Jurisdiction boundary not found")
+      return record
     },
   }
 

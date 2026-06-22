@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { clampLimit, decodeOffsetCursor, encodeOffsetCursor } from "./pagination.js"
 import type { OutreachStateRecord } from "./mail-repository.drizzle.js"
 import {
   buildUnmappedRecord,
@@ -28,7 +28,9 @@ import {
 import type {
   JurisdictionContactsRepository,
   JurisdictionDirectoryRecord,
+  JurisdictionGeometryRecord,
   ListDirectoryArgs,
+  ListDirectoryResult,
   PatchContactsInput,
   SaveContactsInput,
 } from "./jurisdiction-contacts-types.js"
@@ -288,38 +290,53 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     }
   }
 
-  async listDirectory(
-    args: ListDirectoryArgs,
-  ): Promise<{ records: JurisdictionDirectoryRecord[]; nextCursor: string | null }> {
-    let records = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))
+  async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
+    const all = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))
 
-    if (args.q !== null) {
-      const needle = args.q.toLowerCase()
-      records = records.filter(
-        (r) => r.name.toLowerCase().includes(needle) || r.geoid.toLowerCase().includes(needle),
-      )
-    }
-    if (args.filter !== "all") {
-      records = records.filter((r) => directoryMethod(r) === args.filter)
-    }
+    // Search first (chip facets are search-scoped but filter-agnostic, mirroring the Drizzle aggregate).
+    const searched =
+      args.q !== null
+        ? (() => {
+            const needle = args.q.toLowerCase()
+            return all.filter(
+              (r) => r.name.toLowerCase().includes(needle) || r.geoid.toLowerCase().includes(needle),
+            )
+          })()
+        : all
 
-    // Stable sort by geoid (deterministic keyset for the unit tests).
-    records.sort((a, b) => (a.geoid < b.geoid ? -1 : a.geoid > b.geoid ? 1 : 0))
+    // Routing-posture facet ("routed" = any contact, i.e. method !== "none").
+    let records =
+      args.filter === "all"
+        ? searched.slice()
+        : args.filter === "routed"
+          ? searched.filter((r) => directoryMethod(r) !== "none")
+          : searched.filter((r) => directoryMethod(r) === args.filter)
+
+    // Whole-table sort (mirrors the Drizzle ORDER BY): population/reports DESC, name A->Z, geoid tiebreak.
+    const byGeoid = (a: JurisdictionDirectoryRecord, b: JurisdictionDirectoryRecord) =>
+      a.geoid < b.geoid ? -1 : a.geoid > b.geoid ? 1 : 0
+    records.sort((a, b) => {
+      if (args.sort === "name") return a.name < b.name ? -1 : a.name > b.name ? 1 : byGeoid(a, b)
+      const av = args.sort === "reports" ? a.reportsWaiting : (a.population ?? 0)
+      const bv = args.sort === "reports" ? b.reportsWaiting : (b.population ?? 0)
+      return bv - av || byGeoid(a, b)
+    })
 
     const limit = clampLimit(args.limit)
-    const anchor = decodeCursor(args.cursor)
-    let start = 0
-    if (anchor) {
-      const idx = records.findIndex((r) => r.geoid === anchor.id)
-      start = idx >= 0 ? idx + 1 : records.length
-    }
-    const slice = records.slice(start, start + limit + 1)
+    const offset = decodeOffsetCursor(args.cursor)
+    const slice = records.slice(offset, offset + limit + 1)
     const hasMore = slice.length > limit
     const page = hasMore ? slice.slice(0, limit) : slice
-    const last = hasMore ? page[page.length - 1] : undefined
-    // Encode the same sentinel createdAt the Drizzle impl uses (geoid is the only keyset key) so both
-    // emit byte-identical cursor strings for the same position.
-    const nextCursor = last ? encodeCursor({ createdAt: new Date(0), id: last.geoid }) : null
+    const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
+
+    // total + facets only on the first page, scoped to the search (NOT the filter).
+    let total: number | null = null
+    let facets: { routed: number; unrouted: number } | null = null
+    if (offset === 0) {
+      total = searched.length
+      const routed = searched.filter((r) => directoryMethod(r) !== "none").length
+      facets = { routed, unrouted: searched.length - routed }
+    }
 
     // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page (mirrors the Drizzle
     // impl): waiting reports whose geoid is not a seeded jurisdiction (orphaned/unresolved) aggregate here.
@@ -329,10 +346,18 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         return {
           records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...page],
           nextCursor,
+          total,
+          facets,
         }
       }
     }
-    return { records: page, nextCursor }
+    return { records: page, nextCursor, total, facets }
+  }
+
+  // The in-memory fake stores no geometry, so the verification map has nothing to render here. Tests that
+  // need geometry exercise the Drizzle impl against PostGIS; the service 404s on this null.
+  async getGeometry(_geoid: string): Promise<JurisdictionGeometryRecord | null> {
+    return null
   }
 
   /** Aggregate waiting reports whose geoid is not a seeded jurisdiction (the in-memory "unmapped" set). */
