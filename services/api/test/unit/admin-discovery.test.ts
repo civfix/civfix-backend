@@ -40,6 +40,7 @@ describe("discovery pure helpers", () => {
       recycling: 0,
       graffiti: 0,
       hazard: 0,
+      encampment: 0,
       water: 0,
       other: 0,
     })

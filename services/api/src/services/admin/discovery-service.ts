@@ -51,6 +51,7 @@ export const DISCOVERY_CATEGORIES: readonly ReportCategory[] = [
   "recycling",
   "graffiti",
   "hazard",
+  "encampment",
   "water",
   "other",
 ]
@@ -64,6 +65,7 @@ export const CATEGORY_LABELS: Record<ReportCategory, string> = {
   recycling: "Recycling",
   graffiti: "Graffiti",
   hazard: "Hazard",
+  encampment: "Encampment",
   water: "Water",
   other: "Other",
 }

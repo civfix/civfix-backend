@@ -327,6 +327,9 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     const body = res.json()
     expect(body.user.displayName).toBe("Google Person")
     expect(typeof body.token).toBe("string")
+    // A brand-new OAuth account is profileComplete:false, exactly like a fresh OTP signup, so the clients'
+    // first-run gate (which triggers ONLY on an explicit `false`) fires for Google/Apple signups too.
+    expect(body.user.profileComplete).toBe(false)
 
     // The minted session authenticates.
     const check = await harness.app.inject({
@@ -354,6 +357,8 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().user.displayName).toBe("Apple Person")
+    // Brand-new Apple account is profileComplete:false (parity with the OTP + Google signup paths).
+    expect(res.json().user.profileComplete).toBe(false)
   })
 
   it("an unverifiable token surfaces as an error (not a session)", async () => {

@@ -14,13 +14,14 @@ import type {
 } from "@civfix/shared"
 
 // The 6 canonical report categories in canonical order. Kept backend-local rather than imported from
-// @civfix/shared: analytics owns its own axis ordering (the dashboard renders a fixed 6-bar series and a
+// @civfix/shared: analytics owns its own axis ordering (the dashboard renders a fixed 7-bar series and a
 // category with no reports must still render a 0 bar). Mirrors REPORT_CATEGORY_VALUES.
 export const ANALYTICS_CATEGORIES: readonly ReportCategory[] = [
   "trash",
   "recycling",
   "graffiti",
   "hazard",
+  "encampment",
   "water",
   "other",
 ] as const

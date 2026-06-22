@@ -183,7 +183,7 @@ const MapReportsResponseJsonSchema = {
           id: { type: "string" },
           category: {
             type: "string",
-            enum: ["trash", "recycling", "graffiti", "hazard", "water", "other"],
+            enum: ["trash", "recycling", "graffiti", "hazard", "encampment", "water", "other"],
           },
           // Fine-grained issue type (0021), inlined from ReportTypeSchema. fast-json-stringify DROPS any
           // undeclared property, so `type` MUST be listed for the map pin to carry it on the wire (the

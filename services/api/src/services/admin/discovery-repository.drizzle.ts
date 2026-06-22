@@ -64,6 +64,7 @@ interface TaskAggRow {
   cat_recycling: string
   cat_graffiti: string
   cat_hazard: string
+  cat_encampment: string
   cat_water: string
   cat_other: string
   contact_categories: string[] | null
@@ -78,6 +79,7 @@ function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
     recycling: r.cat_recycling,
     graffiti: r.cat_graffiti,
     hazard: r.cat_hazard,
+    encampment: r.cat_encampment,
     water: r.cat_water,
     other: r.cat_other,
   }
@@ -138,6 +140,7 @@ async function taskAggregateSql(
       COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
       COALESCE(w.cat_graffiti, 0)::text AS cat_graffiti,
       COALESCE(w.cat_hazard, 0)::text AS cat_hazard,
+      COALESCE(w.cat_encampment, 0)::text AS cat_encampment,
       COALESCE(w.cat_water, 0)::text AS cat_water,
       COALESCE(w.cat_other, 0)::text AS cat_other,
       c.categories AS contact_categories,
@@ -154,6 +157,7 @@ async function taskAggregateSql(
         COUNT(*) FILTER (WHERE r.category = 'recycling') AS cat_recycling,
         COUNT(*) FILTER (WHERE r.category = 'graffiti') AS cat_graffiti,
         COUNT(*) FILTER (WHERE r.category = 'hazard') AS cat_hazard,
+        COUNT(*) FILTER (WHERE r.category = 'encampment') AS cat_encampment,
         COUNT(*) FILTER (WHERE r.category = 'water') AS cat_water,
         COUNT(*) FILTER (WHERE r.category = 'other') AS cat_other
       FROM reports r

@@ -12,6 +12,7 @@ const CATEGORY_LABELS: Record<ReportCategory, string> = {
   recycling: "Recycling",
   graffiti: "Graffiti",
   hazard: "Hazard",
+  encampment: "Encampment",
   water: "Water",
   other: "Other",
 }
@@ -21,6 +22,7 @@ const ALL_CATEGORIES: readonly ReportCategory[] = [
   "recycling",
   "graffiti",
   "hazard",
+  "encampment",
   "water",
   "other",
 ]

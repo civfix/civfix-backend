@@ -117,18 +117,18 @@ describe("buildByCategory", () => {
 
   it("is all-zero (pct 0) when there are no reports", () => {
     const rows = buildByCategory([])
-    expect(rows).toHaveLength(6)
+    expect(rows).toHaveLength(7)
     expect(rows.every((r) => r.count === 0 && r.pct === 0)).toBe(true)
   })
 })
 
 describe("buildResolutionByCategory", () => {
-  it("fills all 6 categories (missing -> 0 hours), rounded", () => {
+  it("fills all 7 categories (missing -> 0 hours), rounded", () => {
     const res = buildResolutionByCategory([
       { category: "trash", medianHours: 12.34 },
       { category: "graffiti", medianHours: 48 },
     ])
-    expect(res.rows).toHaveLength(6)
+    expect(res.rows).toHaveLength(7)
     expect(res.rows.find((r) => r.cat === "trash")?.hours).toBe(12.3)
     expect(res.rows.find((r) => r.cat === "graffiti")?.hours).toBe(48)
     expect(res.rows.find((r) => r.cat === "other")?.hours).toBe(0)
@@ -304,11 +304,11 @@ describe("analytics service wiring", () => {
     expect(res.weeks[7]).toBe(11)
   })
 
-  it("byCategory() / resolutionByCategory() always return all 6 categories", async () => {
+  it("byCategory() / resolutionByCategory() always return all 7 categories", async () => {
     const { repo, svc } = harness()
     repo.byCategoryValue = [{ category: "trash", count: 3 }]
     repo.resolutionByCategoryValue = [{ category: "trash", medianHours: 5 }]
-    expect((await svc.byCategory()).rows).toHaveLength(6)
-    expect((await svc.resolutionByCategory()).rows).toHaveLength(6)
+    expect((await svc.byCategory()).rows).toHaveLength(7)
+    expect((await svc.resolutionByCategory()).rows).toHaveLength(7)
   })
 })

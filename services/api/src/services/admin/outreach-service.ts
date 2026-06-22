@@ -64,12 +64,13 @@ export interface OutreachRepository {
   listCandidateGeoids(): Promise<string[]>
 }
 
-/** The 6 canonical categories in display order (local copy; the digest body lists them in this order). */
+/** The 7 canonical categories in display order (local copy; the digest body lists them in this order). */
 export const OUTREACH_CATEGORIES: readonly ReportCategory[] = [
   "trash",
   "recycling",
   "graffiti",
   "hazard",
+  "encampment",
   "water",
   "other",
 ]
@@ -80,6 +81,7 @@ const CATEGORY_LABELS: Record<ReportCategory, string> = {
   recycling: "Recycling",
   graffiti: "Graffiti",
   hazard: "Hazard",
+  encampment: "Encampment",
   water: "Water",
   other: "Other",
 }

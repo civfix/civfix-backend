@@ -66,6 +66,7 @@ export const REPORT_CATEGORY_VALUES = [
   "recycling",
   "graffiti",
   "hazard",
+  "encampment",
   "water",
   "other",
 ] as const

@@ -34,6 +34,7 @@ interface DigestRow {
   cat_recycling: string
   cat_graffiti: string
   cat_hazard: string
+  cat_encampment: string
   cat_water: string
   cat_other: string
 }
@@ -84,6 +85,7 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
           COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
           COALESCE(w.cat_graffiti, 0)::text AS cat_graffiti,
           COALESCE(w.cat_hazard, 0)::text AS cat_hazard,
+          COALESCE(w.cat_encampment, 0)::text AS cat_encampment,
           COALESCE(w.cat_water, 0)::text AS cat_water,
           COALESCE(w.cat_other, 0)::text AS cat_other
         FROM jurisdictions j
@@ -95,6 +97,7 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
             COUNT(*) FILTER (WHERE r.category = 'recycling') AS cat_recycling,
             COUNT(*) FILTER (WHERE r.category = 'graffiti') AS cat_graffiti,
             COUNT(*) FILTER (WHERE r.category = 'hazard') AS cat_hazard,
+            COUNT(*) FILTER (WHERE r.category = 'encampment') AS cat_encampment,
             COUNT(*) FILTER (WHERE r.category = 'water') AS cat_water,
             COUNT(*) FILTER (WHERE r.category = 'other') AS cat_other
           FROM reports r
@@ -117,6 +120,7 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
         recycling: row.cat_recycling,
         graffiti: row.cat_graffiti,
         hazard: row.cat_hazard,
+        encampment: row.cat_encampment,
         water: row.cat_water,
         other: row.cat_other,
       }

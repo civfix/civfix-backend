@@ -142,6 +142,14 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
  * the user-facing identifier is `handle`. `handleChangeableAt` is the ISO timestamp the user may next
  * change their @handle (null = changeable now), derived from handle_changed_at + 30 days. `now` is
  * injectable so tests can drive that cooldown clock deterministically.
+ *
+ * This is the SINGLE serializer every sign-in path renders the user through (OTP verify, Apple, Google,
+ * the Google web callback, and GET /auth/session), so the first-run gate flag is computed in exactly one
+ * place and can never diverge between providers. The clients' first-run gate triggers ONLY on an explicit
+ * `profileComplete === false`, so we coerce the stored column to a definite boolean here: a brand-new
+ * account (OTP or OAuth) is created with profile_complete=false and MUST serialize as `false` (not
+ * undefined), or the OAuth signups would silently skip the "finish setting up your account" step the OTP
+ * signups get.
  */
 export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
   return {
@@ -151,7 +159,7 @@ export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
     handleChangeableAt: handleChangeableAtFrom(user.handleChangedAt, now),
     email: user.email,
     avatarUrl: user.avatarUrl,
-    profileComplete: user.profileComplete,
+    profileComplete: user.profileComplete === true,
     allowDirectMessages: user.allowDirectMessages,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
