@@ -23,6 +23,7 @@ import { AppError } from "@civfix/shared"
 import type { ReportCategory, ReportDTO, ReportStatus, ReportType, ReportVisibility } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
 import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { escapeLike } from "./admin/like.js"
 import type {
   BBox,
@@ -84,7 +85,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
 
   async function loadTimeline(tag: Queryable, reportId: string): Promise<ReportTimelineView[]> {
     const rows = await tag<TimelineRowSelect[]>`
-      SELECT status, note, created_at
+      SELECT status, note, kind, body, created_at
       FROM report_timeline
       WHERE report_id = ${reportId}
       ORDER BY created_at ASC, id ASC
@@ -119,7 +120,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     const grouped = new Map<string, ReportTimelineView[]>()
     if (reportIds.length === 0) return grouped
     const rows = await sql<(TimelineRowSelect & { report_id: string })[]>`
-      SELECT report_id, status, note, created_at
+      SELECT report_id, status, note, kind, body, created_at
       FROM report_timeline
       WHERE report_id = ANY(${reportIds}::uuid[])
       ORDER BY report_id, created_at ASC, id ASC
@@ -141,10 +142,17 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async createReportTx(args: CreateReportTxArgs): Promise<CreateReportTxResult> {
       try {
         const snapshot = await sql.begin(async (tx) => {
+          // D4 LOCK ORDER: allocate the reference code FIRST (the reference_counters upsert must precede
+          // any reports row lock so every create path takes the counter lock before the report lock — a
+          // consistent acquisition order rules out an ABBA deadlock). jurCode is resolved pre-tx (0 when the
+          // report has no resolved jurisdiction, D5), so a NULL jurisdiction yields a "{TYPECODE}:0" scope.
+          const referenceCode = await allocateReportReferenceCode(tx, args.type, args.jurCode)
+
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, idempotency_key, geom, geom_source, jurisdiction_geoid,
-              category, type, title, description, addr, status, visibility, h3_cell, published_at
+              category, type, title, description, addr, status, visibility, h3_cell, reference_code,
+              published_at
             ) VALUES (
               ${args.reportId},
               ${args.reporterUserId},
@@ -160,6 +168,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
               ${args.status},
               ${args.visibility},
               ${args.h3Cell},
+              ${referenceCode},
               ${args.publishedAt}
             )
           `
@@ -223,6 +232,16 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async findReportById(id: string): Promise<ReportRecord | null> {
       const rows = await sql<ReportRowSelect[]>`
         SELECT ${reportColumns(sql)} FROM reports WHERE id = ${id} LIMIT 1
+      `
+      return rows[0] ? toRecord(rows[0]) : null
+    },
+
+    async findReportByReferenceCode(code: string): Promise<ReportRecord | null> {
+      // reference_code is UNIQUE (reports_reference_code_uidx), so this resolves at most one row — the
+      // by-code half of the resolve-either getReport (issue #56). Soft-deleted rows are included so the
+      // service can 404 them exactly like findReportById.
+      const rows = await sql<ReportRowSelect[]>`
+        SELECT ${reportColumns(sql)} FROM reports WHERE reference_code = ${code} LIMIT 1
       `
       return rows[0] ? toRecord(rows[0]) : null
     },

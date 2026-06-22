@@ -30,10 +30,12 @@ import type { AdminReportRepository } from "./admin-report-service.js"
 import { detectBounce, handleBounce, type BounceDetection } from "./inbound-bounce.js"
 import {
   findThreadByReferences,
+  onEventReply,
   onJurisdictionReply,
   parseMessageIdList,
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
+import type { CleanupRepository } from "../cleanup-service.js"
 
 // Re-export the split modules' public surface so external importers (tests) resolve via this barrel.
 export { detectBounce, resolveMessageId, parseMessageIdList, type BounceDetection }
@@ -73,6 +75,8 @@ export interface InboundProcessorDeps {
   /** The admin-report repo for a jurisdiction-reply's report side-effects; injectable so tests use the
    *  in-memory impl (the side-effects are otherwise the only reason the processor touches the report repo). */
   adminReportRepo?: AdminReportRepository
+  /** The cleanup repo for an EVENT-reply's cleanup_timeline side-effect (D13/D19); injectable for tests. */
+  cleanupRepo?: CleanupRepository
 }
 
 export async function processInboundObject(
@@ -84,10 +88,12 @@ export async function processInboundObject(
   const inboundMail = deps.inboundMail ?? container.inboundMail
   const mailRepo = deps.mailRepo ?? makeDrizzleMailRepository(container.getDb().sql)
   const inboundRepo = deps.inboundRepo ?? makeDrizzleInboundRepository(container.getDb().sql)
-  // The report repo (for a jurisdiction-reply's side-effects) is resolved LAZILY in onJurisdictionReply —
-  // only when a thread actually has a report_id — so a no-reply inbound never touches the report repo and a
-  // container without getDb() (e.g. the webhook unit harness) is never dereferenced on the common path.
+  // The report/cleanup repos (for a reply's side-effects) are resolved LAZILY in onJurisdictionReply /
+  // onEventReply — only when a thread actually carries the matching id — so a no-reply inbound never touches
+  // them and a container without getDb() (e.g. the webhook unit harness) is never dereferenced on the
+  // common path.
   const injectedReportRepo = deps.adminReportRepo
+  const injectedCleanupRepo = deps.cleanupRepo
 
   const bytes = await storage.getObject(key)
   if (bytes === null) {
@@ -141,9 +147,9 @@ export async function processInboundObject(
 
   let result: ProcessResult
   if (token !== null && token.length > 0) {
-    result = await routeThreaded(container, injectedReportRepo, storage, mailRepo, mail, token, messageId, null)
+    result = await routeThreaded(container, injectedReportRepo, injectedCleanupRepo, storage, mailRepo, mail, token, messageId, null)
   } else if (fallbackThread !== null) {
-    result = await routeThreaded(container, injectedReportRepo, storage, mailRepo, mail, null, messageId, fallbackThread)
+    result = await routeThreaded(container, injectedReportRepo, injectedCleanupRepo, storage, mailRepo, mail, null, messageId, fallbackThread)
   } else {
     result = await routeInbox(storage, inboundRepo, key, mail, messageId)
   }
@@ -164,6 +170,7 @@ export async function processInboundObject(
 async function routeThreaded(
   container: Container,
   injectedReportRepo: AdminReportRepository | undefined,
+  injectedCleanupRepo: CleanupRepository | undefined,
   storage: Storage,
   mailRepo: MailRepository,
   mail: ParsedMail,
@@ -200,8 +207,13 @@ async function routeThreaded(
       ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
     },
   })
+  // Dispatch by the id the thread carries: a report thread -> report timeline side-effects; an event
+  // thread -> the cleanup_timeline 'city_reply' side-effect (D13/D19). A digest/compose thread carries
+  // neither and fires nothing. Both side-effect paths are best-effort (failures swallowed).
   if (thread.reportId !== null) {
     await onJurisdictionReply(container, injectedReportRepo, mailRepo, thread, mail).catch(() => {})
+  } else if (thread.cleanupId !== null) {
+    await onEventReply(container, injectedCleanupRepo, mailRepo, thread, mail).catch(() => {})
   }
   return { outcome: "threaded", id: message.id }
 }

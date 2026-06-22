@@ -33,6 +33,7 @@ import type {
   UpdateCleanupPatch,
 } from "../../src/services/cleanup-service.js"
 import type { EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
+import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
 
 /** A stored cleanup (the persisted fields; geom is kept decoded as lat/lng). */
 interface StoredCleanup {
@@ -48,6 +49,8 @@ interface StoredCleanup {
   status: CleanupRecord["status"]
   bring: string[] | null
   address: string | null
+  jurisdictionGeoid: string | null
+  referenceCode: string | null
   createdAt: Date
 }
 
@@ -115,12 +118,32 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   readonly reports = new Map<string, StoredReport>()
   /** cleanup_reports junction rows. */
   readonly links: StoredLink[] = []
-  /** cleanup_timeline rows appended by link/unlink (kind + reportId + actor), inspectable by tests. */
-  readonly timeline: { cleanupId: string; kind: string; reportId: string; actorId: string | null }[] =
-    []
+  /** cleanup_timeline rows appended by link/unlink/cancel/resource_request (kind + reportId + note +
+   *  actor), inspectable by tests. `reportId` is "" for non-link rows; `note` carries free-text entries. */
+  readonly timeline: {
+    cleanupId: string
+    kind: string
+    reportId: string
+    note: string | null
+    actorId: string | null
+  }[] = []
+
+  /** Seedable geoid -> jurisdiction routing contact, mirroring jurisdiction_contacts (D19 event routing). */
+  readonly jurisdictionContacts = new Map<string, { contact: string; name: string }>()
 
   /** Injectable clock so when-filters are deterministic. Defaults to real now. */
   now: () => Date = () => new Date()
+
+  /** Per-scope EVENT reference-code counter ("EVENT:{jurcode}" -> next seq), mirroring reference_counters. */
+  private readonly refCounters = new Map<string, number>()
+
+  /** Allocate the next EVENT reference code for jurCode, mirroring allocateEventReferenceCode (D4/M8). */
+  private allocateEventReferenceCode(jurCode: number): string {
+    const scope = eventScopeKey(jurCode)
+    const seq = (this.refCounters.get(scope) ?? 0) + 1
+    this.refCounters.set(scope, seq)
+    return formatReferenceCode(EVENT_PREFIX, jurCode, seq)
+  }
 
   /** Test helper: seed a user so the organizer person join resolves. Returns the id. */
   seedUser(over: Partial<StoredUser> = {}): StoredUser {
@@ -182,6 +205,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: over.status ?? "upcoming",
       bring: over.bring ?? null,
       address: over.address ?? null,
+      jurisdictionGeoid: over.jurisdictionGeoid ?? null,
+      referenceCode: over.referenceCode ?? null,
       createdAt: over.createdAt ?? new Date(),
     }
     this.cleanups.set(cleanup.id, cleanup)
@@ -224,6 +249,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: c.status,
       bring: c.bring,
       address: c.address,
+      jurisdictionGeoid: c.jurisdictionGeoid,
+      referenceCode: c.referenceCode,
       createdAt: c.createdAt,
       going: this.memberCountOf(c.id),
       dist: near !== null ? haversineMeters(near, { lat: c.lat, lng: c.lng }) : null,
@@ -232,6 +259,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   }
 
   createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord> {
+    // D4: allocate the EVENT reference code FIRST (mirrors the Drizzle create tx), keyed off the pre-tx
+    // jurCode (0 = unknown bucket when no jurisdiction resolved).
+    const referenceCode = this.allocateEventReferenceCode(args.jurCode)
     const cleanup: StoredCleanup = {
       id: args.cleanupId,
       organizerUserId: args.organizerUserId,
@@ -245,6 +275,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: args.status,
       bring: args.bring,
       address: args.address,
+      jurisdictionGeoid: args.jurisdictionGeoid,
+      referenceCode,
       createdAt: this.now(),
     }
     this.cleanups.set(cleanup.id, cleanup)
@@ -263,6 +295,12 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? this.toRecord(c, near) : null)
   }
 
+  findCleanupByReferenceCode(code: string): Promise<CleanupRecord | null> {
+    // Mirror the Drizzle by-code lookup (reference_code is unique). No distance (not a near listing).
+    const c = [...this.cleanups.values()].find((x) => x.referenceCode === code)
+    return Promise.resolve(c ? this.toRecord(c, null) : null)
+  }
+
   /** Link the given ids (skip already-linked) + record a 'report_linked' timeline row each. Returns added. */
   private linkInner(cleanupId: string, reportIds: string[], actorId: string | null): string[] {
     const added: string[] = []
@@ -270,7 +308,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       const exists = this.links.some((l) => l.cleanupId === cleanupId && l.reportId === reportId)
       if (exists) continue
       this.links.push({ cleanupId, reportId, linkedByUserId: actorId, linkedAt: this.now() })
-      this.timeline.push({ cleanupId, kind: "report_linked", reportId, actorId })
+      this.timeline.push({ cleanupId, kind: "report_linked", reportId, note: null, actorId })
       added.push(reportId)
     }
     return added
@@ -301,7 +339,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)
     if (idx < 0) return Promise.resolve(false)
     this.links.splice(idx, 1)
-    this.timeline.push({ cleanupId, kind: "report_unlinked", reportId, actorId })
+    this.timeline.push({ cleanupId, kind: "report_unlinked", reportId, note: null, actorId })
     return Promise.resolve(true)
   }
 
@@ -318,7 +356,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     for (const reportId of toRemove) {
       const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)
       if (idx >= 0) this.links.splice(idx, 1)
-      this.timeline.push({ cleanupId, kind: "report_unlinked", reportId, actorId })
+      this.timeline.push({ cleanupId, kind: "report_unlinked", reportId, note: null, actorId })
     }
     return Promise.resolve({ added, removed: toRemove })
   }
@@ -524,7 +562,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     // Mirror the Drizzle impl's observable timeline write so a service test can assert the 'cancel' row.
     // The notification fan-out is NOT modeled here (the per-member INSERT...SELECT is covered by the
     // PG integration test); the service test asserts the status flip + host gate + timeline 'cancel'.
-    this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", actorId: input.actorId })
+    this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", note: input.note, actorId: input.actorId })
     return Promise.resolve(true)
   }
 
@@ -551,6 +589,27 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     })
     if (onlyFollowed) views = views.filter((v) => v.isFollowing)
     return Promise.resolve(views.slice(0, limit))
+  }
+
+  resolveJurisdictionContact(
+    geoid: string | null,
+  ): Promise<{ contact: string; name: string } | null> {
+    if (geoid === null) return Promise.resolve(null)
+    return Promise.resolve(this.jurisdictionContacts.get(geoid) ?? null)
+  }
+
+  appendCleanupTimeline(
+    cleanupId: string,
+    input: { kind: string; note: string | null; actorId: string | null },
+  ): Promise<void> {
+    this.timeline.push({
+      cleanupId,
+      kind: input.kind,
+      reportId: "",
+      note: input.note,
+      actorId: input.actorId,
+    })
+    return Promise.resolve()
   }
 }
 

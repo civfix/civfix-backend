@@ -27,6 +27,10 @@ const ENV: OutboundMailEnv = {
 
 /** A reply+{token}@civfix.org address whose token is exactly 24 lowercase hex chars (the minted shape). */
 const REPLY_24HEX_RE = /^reply\+[0-9a-f]{24}@civfix\.org$/
+/** A report+{token}@ address (per-report Reply-To, D10): same 24-hex token, typed local-part. */
+const REPORT_24HEX_RE = /^report\+[0-9a-f]{24}@civfix\.org$/
+/** An event+{token}@ address (per-event Reply-To, D10): same 24-hex token, typed local-part. */
+const EVENT_24HEX_RE = /^event\+[0-9a-f]{24}@civfix\.org$/
 
 function harness(): {
   repo: InMemoryMailRepository
@@ -78,9 +82,10 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
     expect(env?.to).toBe("clerk@lacity.gov")
     expect(env?.subject).toBe("civfix report: Pothole [abcd1234]")
     expect(env?.html).toBe("<p>A pothole on Main St.</p>")
-    // replyTo carries the per-report thread's 24-hex token (so the city's reply auto-routes back).
-    expect(env?.replyTo).toMatch(REPLY_24HEX_RE)
-    expect(env?.replyTo).toBe(`reply+${thread.threadToken}@civfix.org`)
+    // D10: the per-report Reply-To is report+{token}@ (typed local-part), carrying the same 24-hex token so
+    // the city's reply auto-routes back onto this report.
+    expect(env?.replyTo).toMatch(REPORT_24HEX_RE)
+    expect(env?.replyTo).toBe(`report+${thread.threadToken}@civfix.org`)
     // The binary photo attachment is carried through (the bug that dropped attachments is closed).
     expect(env?.attachments).toHaveLength(1)
     expect(env?.attachments?.[0]?.filename).toBe("photo.png")
@@ -141,6 +146,90 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
     })
     expect(repo.events[0]?.meta).toMatchObject({ reportId: "report-2" })
     expect(repo.events[0]?.meta).not.toHaveProperty("geoid")
+  })
+})
+
+describe("OutboundMailService.sendEventToJurisdiction (D10/D19 per-event thread)", () => {
+  it("threads on the EVENT (cleanup_id), From outreach, with an event+{24hex}@ replyTo + 'sent' event", async () => {
+    const { repo, mailer, svc } = harness()
+    const { thread, messageId } = await svc.sendEventToJurisdiction({
+      cleanupId: "cleanup-1",
+      geoid: "0644000",
+      org: "City of LA",
+      toAddr: "events@lacity.gov",
+      subject: "civfix event: Park Cleanup [EVENT-42-000001]",
+      text: "We need 20 trash bags and gloves.",
+      html: "<p>We need 20 trash bags and gloves.</p>",
+    })
+    // The thread is a PER-EVENT thread (cleanup_id set, report_id null) with a minted 24-hex token.
+    expect(thread.cleanupId).toBe("cleanup-1")
+    expect(thread.reportId).toBeNull()
+    expect(thread.jurisdictionGeoid).toBe("0644000")
+    expect(thread.threadToken).toMatch(/^[0-9a-f]{24}$/)
+
+    expect(mailer.sent).toHaveLength(1)
+    const env = mailer.lastOutbound()
+    // M7: From = the approved outreach sender; Reply-To = event+{token}@ (OCI honors from + replyTo apart).
+    expect(env?.from).toBe("outreach@civfix.org")
+    expect(env?.to).toBe("events@lacity.gov")
+    expect(env?.html).toBe("<p>We need 20 trash bags and gloves.</p>")
+    expect(env?.replyTo).toMatch(EVENT_24HEX_RE)
+    expect(env?.replyTo).toBe(`event+${thread.threadToken}@civfix.org`)
+    expect(messageId).toMatch(/^<out-.+@civfix\.org>$/)
+
+    expect(repo.events).toHaveLength(1)
+    expect(repo.events[0]?.type).toBe("sent")
+    expect(repo.events[0]?.meta).toMatchObject({ cleanupId: "cleanup-1", geoid: "0644000" })
+  })
+
+  it("reuses the SAME per-event thread on a second send (find-or-create by cleanup_id)", async () => {
+    const { repo, svc } = harness()
+    const first = await svc.sendEventToJurisdiction({
+      cleanupId: "cleanup-2",
+      geoid: null,
+      toAddr: "events@city.gov",
+      subject: "S1",
+      text: "b1",
+    })
+    const second = await svc.sendEventToJurisdiction({
+      cleanupId: "cleanup-2",
+      geoid: null,
+      toAddr: "events@city.gov",
+      subject: "S2",
+      text: "b2",
+    })
+    expect(second.thread.id).toBe(first.thread.id)
+    expect(repo.threads.size).toBe(1)
+  })
+})
+
+describe("OutboundMailService threading headers (D14)", () => {
+  it("sets NO In-Reply-To/References on the first message, then the chain on the second", async () => {
+    const { mailer, svc } = harness()
+    const first = await svc.sendReportToJurisdiction({
+      reportId: "report-thr",
+      geoid: "0644000",
+      toAddr: "clerk@city.gov",
+      subject: "S1",
+      text: "b1",
+    })
+    // First message on the thread: no prior OUT Message-IDs to echo.
+    const env1 = mailer.lastOutbound()
+    expect(env1?.inReplyTo).toBeUndefined()
+    expect(env1?.references).toBeUndefined()
+
+    const second = await svc.sendReportToJurisdiction({
+      reportId: "report-thr",
+      geoid: "0644000",
+      toAddr: "clerk@city.gov",
+      subject: "S2",
+      text: "b2",
+    })
+    // Same thread; the second send threads off the first's stored Message-ID.
+    expect(second.thread.id).toBe(first.thread.id)
+    const env2 = mailer.lastOutbound()
+    expect(env2?.inReplyTo).toBe(first.messageId)
+    expect(env2?.references).toEqual([first.messageId])
   })
 })
 
@@ -281,7 +370,7 @@ describe("OutboundMailService.compose / appendOutbound", () => {
     )
   })
 
-  it("propagates a Mailer failure WITHOUT recording a 'sent' event", async () => {
+  it("propagates a Mailer failure, recording a 'failed' event (not 'sent') (D17)", async () => {
     const repo = new InMemoryMailRepository()
     const mailer = new FakeMailer()
     mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
@@ -290,8 +379,12 @@ describe("OutboundMailService.compose / appendOutbound", () => {
     await expect(svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })).rejects.toThrow(
       /smtp down/,
     )
-    // The message was persisted (insert precedes delivery) but NO 'sent' event was recorded.
+    // The message was persisted (insert precedes delivery) and a 'failed' event was recorded for the
+    // outreach trail; NO 'sent' event exists.
     expect(repo.messagesOf(t.id)).toHaveLength(1)
-    expect(repo.events).toHaveLength(0)
+    expect(repo.events).toHaveLength(1)
+    expect(repo.events[0]?.type).toBe("failed")
+    expect(repo.events[0]?.meta).toMatchObject({ to: "x@y.com", error: "smtp down" })
+    expect(repo.events.some((e) => e.type === "sent")).toBe(false)
   })
 })

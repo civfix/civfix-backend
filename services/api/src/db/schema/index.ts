@@ -66,6 +66,8 @@ export * from "./moderation.js"
 export * from "./idempotency.js"
 export * from "./discovery.js"
 export * from "./audit.js"
+// per-scope reference-code counters (issue #56). Canonical DDL: drizzle/0030_reference_codes.sql.
+export * from "./reference_counters.js"
 
 // Phase 2 (admin / operator): routing contacts, gov queue, user trust, moderation queue, mail,
 // outreach throttle, event timeline. Canonical DDL in drizzle/0007_admin_phase2.sql.

@@ -91,6 +91,8 @@ interface CleanupRowSelect {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
+  jurisdiction_geoid: string | null
+  reference_code: string | null
   created_at: Date
   going: number
   org_display_name: string
@@ -118,6 +120,8 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     status: r.status,
     bring: r.bring,
     address: r.address,
+    jurisdictionGeoid: r.jurisdiction_geoid,
+    referenceCode: r.reference_code,
     createdAt: r.created_at,
     going: Number(r.going),
     dist: null,
@@ -349,6 +353,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           c.status,
           c.bring,
           c.address,
+          c.jurisdiction_geoid,
+          c.reference_code,
           c.created_at,
           (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id) AS going,
           u.display_name AS org_display_name,

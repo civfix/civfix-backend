@@ -28,6 +28,11 @@ import type {
   ReportRepository,
   ReportTimelineView,
 } from "../../src/services/report-service.js"
+import {
+  formatReferenceCode,
+  reportScopeKey,
+  typeCodeFor,
+} from "../../src/db/reference-code.js"
 import type { ReportDTO } from "@civfix/shared"
 
 /** A stored media asset (the subset the report flow reads + the report_id binding). */
@@ -49,6 +54,9 @@ interface StoredTimeline {
   reportId: string
   status: ReportRecord["status"]
   note: string | null
+  // D13: optional entry tag + full body (an inbound city reply); default null on status-only rows.
+  kind?: string | null
+  body?: string | null
   createdAt: Date
 }
 
@@ -65,6 +73,17 @@ export class InMemoryReportRepository implements ReportRepository {
   readonly timeline: StoredTimeline[] = []
   readonly follows = new Set<string>() // `${userId}:${reportId}`
   readonly idempotency = new Map<string, StoredIdempotency>() // `${scope}:${key}`
+  /** Per-scope reference-code counter ("{typecode}:{jurcode}" -> next seq), mirroring reference_counters. */
+  private readonly refCounters = new Map<string, number>()
+
+  /** Allocate the next reference code for (type, jurCode), mirroring allocateReportReferenceCode (D4). */
+  private allocateReferenceCode(type: ReportRecord["type"], jurCode: number): string {
+    const typeCode = typeCodeFor(type)
+    const scope = reportScopeKey(typeCode, jurCode)
+    const seq = (this.refCounters.get(scope) ?? 0) + 1
+    this.refCounters.set(scope, seq)
+    return formatReferenceCode(typeCode, jurCode, seq)
+  }
 
   /** Monotonic clock so created_at ordering is deterministic across inserts in a single test. */
   private tick = 0
@@ -110,6 +129,7 @@ export class InMemoryReportRepository implements ReportRepository {
       lng: over.lng ?? -118.35,
       geomSource: over.geomSource ?? "device",
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
+      referenceCode: over.referenceCode ?? null,
       createdAt: over.createdAt ?? now,
       publishedAt: over.publishedAt ?? (over.status === undefined ? now : null),
       deletedAt: over.deletedAt ?? null,
@@ -130,6 +150,9 @@ export class InMemoryReportRepository implements ReportRepository {
     const prior = this.idempotency.get(idemKey)
     if (prior) return { kind: "replayed", snapshot: prior.snapshot }
 
+    // D4: allocate the reference code FIRST (before the report "insert"), mirroring the Drizzle create tx.
+    const referenceCode = this.allocateReferenceCode(args.type, args.jurCode)
+
     const createdAt = this.nextDate()
     const record: ReportRecord = {
       id: args.reportId,
@@ -146,6 +169,7 @@ export class InMemoryReportRepository implements ReportRepository {
       lng: args.lng,
       geomSource: args.geomSource,
       jurisdictionGeoid: args.jurisdictionGeoid,
+      referenceCode,
       createdAt,
       publishedAt: args.publishedAt,
       deletedAt: null,
@@ -202,12 +226,24 @@ export class InMemoryReportRepository implements ReportRepository {
     const rows = this.timeline
       .filter((t) => t.reportId === reportId)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .map((t) => ({ status: t.status, note: t.note, createdAt: t.createdAt }))
+      .map((t) => ({
+        status: t.status,
+        note: t.note,
+        kind: t.kind ?? null,
+        body: t.body ?? null,
+        createdAt: t.createdAt,
+      }))
     return Promise.resolve(rows)
   }
 
   findReportById(id: string): Promise<ReportRecord | null> {
     const r = this.reports.get(id)
+    return Promise.resolve(r ? { ...r } : null)
+  }
+
+  findReportByReferenceCode(code: string): Promise<ReportRecord | null> {
+    // Mirror the Drizzle by-code lookup (reference_code is unique). Includes soft-deleted rows.
+    const r = [...this.reports.values()].find((x) => x.referenceCode === code)
     return Promise.resolve(r ? { ...r } : null)
   }
 

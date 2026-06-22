@@ -7,7 +7,8 @@
  */
 
 import { sql } from "drizzle-orm"
-import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
+import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import { jurisdictions } from "./jurisdictions.js"
 import { users } from "./users.js"
 import {
   geometry,
@@ -45,6 +46,13 @@ export const cleanups = pgTable(
     // (default 0). Added in 0007_admin_phase2.sql.
     capacity: integer("capacity"),
     bags: integer("bags").notNull().default(0),
+    // Human-readable immutable EVENT reference code `EVENT-{JURCODE}-{NNNNNN}` (issue #56, 0030).
+    // NULLABLE: minted by createCleanupTx going forward + the post-deploy backfill for historical rows.
+    // A UNIQUE index (cleanups_reference_code_uidx) guarantees no two events share a code.
+    referenceCode: text("reference_code"),
+    // The jurisdiction this event sits in (0030, D6), resolved point-in-polygon. Drives the EVENT code's
+    // JURCODE + event mail routing. NULLABLE: resolved at create going forward + by the backfill.
+    jurisdictionGeoid: text("jurisdiction_geoid").references(() => jurisdictions.geoid),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   // NOTE: GiST(geom) is in 0001_core.sql.
@@ -54,6 +62,10 @@ export const cleanups = pgTable(
     index("cleanups_organizer_idx").on(t.organizerUserId),
     // Activity-feed cleanups branch ordering (created_at DESC). Added in drizzle/0013_perf_indexes.sql.
     index("cleanups_created_idx").on(t.createdAt.desc()),
+    // UNIQUE EVENT reference code (0030). Tolerates the all-NULL pre-backfill state.
+    uniqueIndex("cleanups_reference_code_uidx").on(t.referenceCode),
+    // Cleanups-by-jurisdiction (0030): EVENT mail routing + jurisdiction reads.
+    index("cleanups_jurisdiction_idx").on(t.jurisdictionGeoid),
     // NOTE: trigram GIN indexes `cleanups_title_trgm` / `cleanups_address_trgm`
     // (USING gin (... gin_trgm_ops)) back the admin event-list ILIKE search; they live in
     // drizzle/0014_search_trgm.sql and are intentionally NOT mirrored here (raw-SQL-only search).

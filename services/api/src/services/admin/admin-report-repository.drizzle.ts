@@ -16,15 +16,16 @@ import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
 import { STATUS_BUCKETS } from "./admin-report-status.js"
-import type {
-  AdminReporterRecord,
-  AdminReportMediaRecord,
-  AdminReportRecord,
-  AdminReportRepository,
-  AdminReportRoutingRecord,
-  AdminReportTimelineRecord,
-  ListReportsArgs,
-  NotifyReporterInput,
+import {
+  REPORT_VERIFIED_THRESHOLD,
+  type AdminReporterRecord,
+  type AdminReportMediaRecord,
+  type AdminReportRecord,
+  type AdminReportRepository,
+  type AdminReportRoutingRecord,
+  type AdminReportTimelineRecord,
+  type ListReportsArgs,
+  type NotifyReporterInput,
 } from "./admin-report-service.js"
 import type {
   AdminReportCounts,
@@ -88,6 +89,10 @@ interface ReportRowSelect {
   confirmations: string
   has_photo: boolean
   created_at: Date
+  reference_code: string | null
+  verification_verdict: "approved" | "rejected" | null
+  verified_at: Date | null
+  reporter_report_verified: boolean | null
   reporter_id: string | null
   reporter_name: string | null
   reporter_handle: string | null
@@ -124,6 +129,10 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
     lng: r.lng,
     hasPhoto: r.has_photo,
     createdAt: r.created_at,
+    referenceCode: r.reference_code,
+    verificationVerdict: r.verification_verdict,
+    verifiedAt: r.verified_at,
+    reporterReportVerified: r.reporter_report_verified,
   }
 }
 
@@ -153,6 +162,12 @@ function reportSelect(
       (SELECT COUNT(*) FROM report_follows rf WHERE rf.report_id = r.id)::text AS confirmations,
       EXISTS (SELECT 1 FROM media_assets m WHERE m.report_id = r.id AND m.status = 'ready') AS has_photo,
       r.created_at,
+      r.reference_code,
+      r.verification_verdict,
+      r.verified_at,
+      -- The reporter's earned report-verified flag (D7); null for an anonymous report (no user_moderation
+      -- row joins), false when the reporter has a user row but no moderation row yet.
+      CASE WHEN u.id IS NULL THEN NULL ELSE COALESCE(um.report_verified, false) END AS reporter_report_verified,
       u.id AS reporter_id,
       u.display_name AS reporter_name,
       u.handle AS reporter_handle,
@@ -162,6 +177,7 @@ function reportSelect(
     FROM reports r
     LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
     LEFT JOIN users u ON u.id = r.reporter_user_id
+    LEFT JOIN user_moderation um ON um.user_id = r.reporter_user_id
     WHERE r.deleted_at IS NULL
     ${extraWhere}
     ${orderLimit}
@@ -357,15 +373,14 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
 
     async appendSystemTimeline(
       id: string,
-      input: { note: string; kind: ReportTimelineItem["kind"] },
+      input: { note: string; kind: ReportTimelineItem["kind"]; body?: string | null },
     ): Promise<void> {
       // A non-transition system row at the report's CURRENT status, actor NULL, no audit (used by the
-      // inbound reply side-effects). `kind` is not persisted (report_timeline has no kind column); the DTO
-      // re-derives it from the note prefix / status, so it is intentionally unused here beyond the contract.
-      void input.kind
+      // inbound reply side-effects). D13: persist `kind` + the full `body` (0031 added both columns) so the
+      // public timeline can tag the entry + render the full reply collapsibly; `note` stays the preview.
       await sql`
-        INSERT INTO report_timeline (report_id, status, note, actor_id)
-        SELECT ${id}, r.status, ${input.note}, NULL
+        INSERT INTO report_timeline (report_id, status, note, kind, body, actor_id)
+        SELECT ${id}, r.status, ${input.note}, ${input.kind ?? null}, ${input.body ?? null}, NULL
         FROM reports r WHERE r.id = ${id}
       `
     },
@@ -392,7 +407,13 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
 
     async setStatus(
       id: string,
-      input: { status: AdminReportStatus; note: string; actorId: string | null },
+      input: {
+        status: AdminReportStatus
+        note: string
+        actorId: string | null
+        kind?: ReportTimelineItem["kind"]
+        body?: string | null
+      },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
@@ -401,9 +422,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           RETURNING id
         `
         if (updated.length === 0) return false
+        // D13: an inbound city reply that also advances the report persists kind + the full body alongside
+        // the transition; a plain operator transition passes neither (both default NULL).
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
-          VALUES (${id}, ${input.status}, ${input.note}, ${input.actorId})
+          INSERT INTO report_timeline (report_id, status, note, kind, body, actor_id)
+          VALUES (${id}, ${input.status}, ${input.note}, ${input.kind ?? null}, ${input.body ?? null}, ${input.actorId})
         `
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -515,6 +538,64 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           target: `report:${id}`,
           meta: { to: input.to, destination: input.destination },
         })
+      })
+    },
+
+    async setReportVerdict(
+      id: string,
+      input: { verdict: "approved" | "rejected"; actorId: string | null },
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        // Write the verdict cols (idempotent: re-setting the same verdict re-stamps verified_by/at). Returns
+        // the reporter so an approved verdict can recompute that reporter's approved-count in the SAME tx.
+        const updated = await tx<{ reporter_user_id: string | null }[]>`
+          UPDATE reports
+          SET verification_verdict = ${input.verdict},
+              verified_by = ${input.actorId},
+              verified_at = now()
+          WHERE id = ${id} AND deleted_at IS NULL
+          RETURNING reporter_user_id
+        `
+        const row = updated[0]
+        if (!row) return false
+        await writeAudit(tx, {
+          actorId: input.actorId,
+          action: "report.verdict_set",
+          target: `report:${id}`,
+          meta: { verdict: input.verdict },
+        })
+
+        // Only an `approved` verdict for a non-anon reporter can earn report_verified. A `rejected` verdict
+        // never counts and never resets an earned flag (D7). An anonymous report writes the verdict above
+        // (bookkeeping) but the count query filters reporter_user_id IS NOT NULL, so it never flips.
+        const reporter = row.reporter_user_id
+        if (input.verdict !== "approved" || reporter === null) return true
+
+        // Recompute the reporter's approved, non-deleted report count. Re-approving an already-approved
+        // report is a no-op (the recompute is idempotent). At/above the threshold, flip report_verified to
+        // true if not already set — UPSERTing the user_moderation row (it is created lazily) and relying on
+        // its NOT NULL column defaults for the rest, exactly like the D8 grandfather / setUserReportVerified.
+        const counted = await tx<{ n: number }[]>`
+          SELECT count(*)::int AS n
+          FROM reports
+          WHERE reporter_user_id = ${reporter}
+            AND verification_verdict = 'approved'
+            AND deleted_at IS NULL
+        `
+        const approvedCount = counted[0]?.n ?? 0
+        if (approvedCount < REPORT_VERIFIED_THRESHOLD) return true
+
+        await tx`
+          INSERT INTO user_moderation (user_id, report_verified, report_verified_at, report_verified_by, updated_at)
+          VALUES (${reporter}, true, now(), ${input.actorId}, now())
+          ON CONFLICT (user_id) DO UPDATE SET
+            report_verified = true,
+            report_verified_at = COALESCE(user_moderation.report_verified_at, now()),
+            report_verified_by = COALESCE(user_moderation.report_verified_by, ${input.actorId}),
+            updated_at = now()
+          WHERE user_moderation.report_verified = false
+        `
+        return true
       })
     },
   }

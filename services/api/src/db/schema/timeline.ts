@@ -24,6 +24,10 @@ export const reportTimeline = pgTable(
       .references(() => reports.id, { onDelete: "cascade" }),
     status: text("status").$type<ReportStatus>().notNull(),
     note: text("note"),
+    // Issue #56 (D13): `note` stays the short collapsed preview; `kind` tags the entry type and `body`
+    // carries the full (untruncated) inbound text. Both NULLABLE (0031); legacy rows have neither.
+    kind: text("kind"),
+    body: text("body"),
     actorId: uuid("actor_id").references(() => users.id),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },

@@ -70,6 +70,29 @@ describe("createCleanup", () => {
     expect(dto.address).toBeNull()
     expect(dto.bring).toEqual([])
   })
+
+  it("mints an EVENT reference code (unknown bucket without a jurisdiction resolver)", async () => {
+    // No resolveJurisdictionGeoid/Code wired here, so the event lands in the unknown bucket (JURCODE 0).
+    const dto = await service.createCleanup(baseInput(), ORG)
+    expect(dto.referenceCode).toMatch(/^EVENT-0-\d{6}$/)
+    expect(dto.jurisdictionGeoid).toBeUndefined()
+  })
+
+  it("resolves the event's jurisdiction + code and getCleanup resolves by reference_code", async () => {
+    const scoped = makeCleanupService({
+      repo,
+      resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
+      resolveJurisdictionCode: () => Promise.resolve(42),
+    })
+    const created = await scoped.createCleanup(baseInput(), ORG)
+    expect(created.jurisdictionGeoid).toBe("0644000")
+    expect(created.referenceCode).toMatch(/^EVENT-42-\d{6}$/)
+
+    // Resolve-either getCleanup: by code resolves the same event.
+    const byCode = await scoped.getCleanup(created.referenceCode!, { userId: ORG })
+    expect(byCode.id).toBe(created.id)
+    expect(byCode.referenceCode).toBe(created.referenceCode)
+  })
 })
 
 describe("joinCleanup / leaveCleanup", () => {
@@ -413,5 +436,130 @@ describe("listAttendees (who's going)", () => {
     await expect(
       service.listAttendees("00000000-0000-0000-0000-000000000000", { userId: null }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+})
+
+describe("requestResources (D19 event resource request)", () => {
+  interface EventSend {
+    cleanupId: string
+    geoid: string | null
+    toAddr: string
+    subject: string
+    text: string
+  }
+
+  function harness(opts: { verified: boolean; contact?: { geoid: string; email: string } | null }) {
+    const r = new InMemoryCleanupRepository()
+    r.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive" })
+    const sends: EventSend[] = []
+    if (opts.contact) {
+      r.jurisdictionContacts.set(opts.contact.geoid, {
+        contact: opts.contact.email,
+        name: "City of LA",
+      })
+    }
+    const svc = makeCleanupService({
+      repo: r,
+      isVerified: () => Promise.resolve(opts.verified),
+      outboundMail: {
+        sendEventToJurisdiction: (input) => {
+          sends.push({
+            cleanupId: input.cleanupId,
+            geoid: input.geoid,
+            toAddr: input.toAddr,
+            subject: input.subject,
+            text: input.text,
+          })
+          return Promise.resolve({
+            thread: {
+              id: "thread-1",
+              threadToken: "0".repeat(24),
+              reportId: null,
+              cleanupId: input.cleanupId,
+              jurisdictionGeoid: input.geoid,
+              org: null,
+              subject: input.subject,
+              status: "sent",
+              unread: false,
+              lastMessageAt: null,
+              createdAt: new Date(),
+            },
+            messageId: "<out-1@civfix.org>",
+          })
+        },
+        // The rest of the OutboundMailService surface is unused by requestResources.
+        sendToCity: () => Promise.reject(new Error("unused")),
+        sendReportToJurisdiction: () => Promise.reject(new Error("unused")),
+        compose: () => Promise.reject(new Error("unused")),
+        appendOutbound: () => Promise.reject(new Error("unused")),
+        mintReplyAddress: (t) => `reply+${t}@civfix.org`,
+      },
+    })
+    return { repo: r, svc, sends }
+  }
+
+  async function seedEvent(
+    r: InMemoryCleanupRepository,
+    svc: CleanupService,
+    geoid: string | null,
+  ): Promise<string> {
+    // Seed via the repo so we can set the resolved jurisdiction geoid directly.
+    const dto = await svc.createCleanup(baseInput({ title: "Park Cleanup" }), ORG)
+    const stored = r.cleanups.get(dto.id)
+    if (stored) stored.jurisdictionGeoid = geoid
+    return dto.id
+  }
+
+  it("happy path: verified host -> event thread send + resource_request timeline row", async () => {
+    const { repo: r, svc, sends } = harness({
+      verified: true,
+      contact: { geoid: "0644000", email: "events@lacity.gov" },
+    })
+    const id = await seedEvent(r, svc, "0644000")
+    const res = await svc.requestResources({ cleanupId: id, message: "Need 20 trash bags.", actorId: ORG })
+    expect(res).toEqual({ ok: true })
+
+    expect(sends).toHaveLength(1)
+    expect(sends[0]).toMatchObject({ cleanupId: id, geoid: "0644000", toAddr: "events@lacity.gov" })
+    expect(sends[0]!.subject).toContain("civfix event:")
+    expect(sends[0]!.text).toContain("Need 20 trash bags.")
+
+    const row = r.timeline.find((t) => t.cleanupId === id && t.kind === "resource_request")
+    expect(row).toBeDefined()
+    expect(row?.actorId).toBe(ORG)
+    expect(row?.note).toContain("Need 20 trash bags.")
+  })
+
+  it("403s a non-host (and sends nothing)", async () => {
+    const { repo: r, svc, sends } = harness({
+      verified: true,
+      contact: { geoid: "0644000", email: "events@lacity.gov" },
+    })
+    const id = await seedEvent(r, svc, "0644000")
+    await expect(
+      svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect(sends).toHaveLength(0)
+  })
+
+  it("403s a host who is NOT identity-verified", async () => {
+    const { repo: r, svc, sends } = harness({
+      verified: false,
+      contact: { geoid: "0644000", email: "events@lacity.gov" },
+    })
+    const id = await seedEvent(r, svc, "0644000")
+    await expect(
+      svc.requestResources({ cleanupId: id, message: "hi", actorId: ORG }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect(sends).toHaveLength(0)
+  })
+
+  it("422 NOT_ROUTABLE when the jurisdiction has no contact on file", async () => {
+    const { repo: r, svc, sends } = harness({ verified: true, contact: null })
+    const id = await seedEvent(r, svc, "0644000")
+    await expect(
+      svc.requestResources({ cleanupId: id, message: "hi", actorId: ORG }),
+    ).rejects.toMatchObject({ code: "NOT_ROUTABLE" })
+    expect(sends).toHaveLength(0)
   })
 })

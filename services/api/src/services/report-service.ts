@@ -37,6 +37,7 @@ import type {
   ReportVisibility,
 } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
+import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { toLinkedEventRef, type LinkedEventView } from "./cleanup-service.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
@@ -48,10 +49,12 @@ import {
   type UnsignedReportPin,
 } from "./report-clustering.js"
 import {
+  REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
   REPORTS_DEFAULT_LIMIT,
   REPORTS_SEARCH_DEFAULT_LIMIT,
   type BBox,
+  type ReportAutoForwardJob,
   type ReportDiscussionMeta,
   type ReportMediaView,
   type ReportOwner,
@@ -64,6 +67,17 @@ import {
 
 export * from "./report-service.types.js"
 export * from "./report-clustering.js"
+
+// 8-4-4-4-12 hex shape (the exact set the Postgres `uuid` type accepts on the reports.id column). Used by
+// the resolve-either getReport to decide whether the URL `:id` is a primary key (resolve by id) or a
+// reference_code (resolve by code). Deliberately does NOT enforce the v1-5 version/variant nibbles: every
+// real id is a valid uuid regardless, and a reference code ("DU-42-000001", "EVENT-...") never matches this
+// dash layout + hex-only charset, so the discrimination is unambiguous.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value)
+}
 
 export function makeReportService(deps: ReportServiceDeps): ReportService {
   const newId = deps.newId ?? (() => randomUUID())
@@ -109,6 +123,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       status: view.status,
       at: view.createdAt.toISOString(),
       ...(view.note !== null ? { note: view.note } : {}),
+      // D13: surface the entry kind + the full body when present (an inbound city reply carries
+      // kind='reply' + body). Both are optional non-null on the DTO, so omit when null.
+      ...(view.kind !== null ? { kind: view.kind } : {}),
+      ...(view.body !== null ? { body: view.body } : {}),
     }
   }
 
@@ -139,6 +157,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       lng: record.lng,
       geomSource: record.geomSource,
       ...(record.jurisdictionGeoid !== null ? { jurisdictionGeoid: record.jurisdictionGeoid } : {}),
+      ...(record.referenceCode !== null ? { referenceCode: record.referenceCode } : {}),
       createdAt: record.createdAt.toISOString(),
       ...(record.publishedAt !== null ? { publishedAt: record.publishedAt.toISOString() } : {}),
       mine: flags.mine,
@@ -198,6 +217,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         deps.resolveJurisdictionGeoid(input.lat, input.lng),
         wantsReverse ? deps.reverseGeocode!(input.lat, input.lng) : Promise.resolve(null),
       ])
+      // Resolve the jurisdiction's compact CODE pre-tx (the reference-code JURCODE segment, D4/D5). A null
+      // geoid OR a missing resolver yields UNKNOWN_JURCODE (0) — the unknown bucket, never a crash.
+      const jurCode =
+        deps.resolveJurisdictionCode !== undefined
+          ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
+          : UNKNOWN_JURCODE
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const publishedAt = now()
       const reportId = newId()
@@ -211,6 +236,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         lng: input.lng,
         geomSource: input.geomSource,
         jurisdictionGeoid,
+        jurCode,
         category: input.category,
         type: input.type,
         title: input.title ?? null,
@@ -228,11 +254,22 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           toReportDTO(record, media, timeline, { mine: true, following: false }),
       })
 
+      // AUTO-FORWARD (D9 / #56): AFTER the create tx commits (never inside it), enqueue report.autoforward
+      // ONLY when the reporter is report_verified. Anonymous/unverified reporters are never enqueued. The
+      // singletonKey=reportId dedupes a double-enqueue. Best-effort: a gate-read or enqueue failure is logged
+      // and swallowed — the report is already committed + published, and manual routing stays available.
+      await maybeEnqueueAutoForward(deps, reportId, owner.userId)
+
       return result.snapshot
     },
 
     async getReport(id: string, viewer: ReportOwner): Promise<ReportDTO> {
-      const record = await deps.repo.findReportById(id)
+      // RESOLVE-EITHER (issue #56 / ROUTING): the URL `:id` segment is an opaque string — a UUID primary
+      // key OR a reference_code. A UUID-shaped id resolves by primary key; anything else resolves by
+      // reference_code. Every MUTATION still keys off the loaded DTO's uuid `id`, so this is read-only.
+      const record = isUuid(id)
+        ? await deps.repo.findReportById(id)
+        : await deps.repo.findReportByReferenceCode(id)
       // Missing OR soft-deleted -> 404 (a deleted report is gone for everyone, including the owner).
       if (!record || record.deletedAt !== null) {
         throw AppError.notFound("Report not found")
@@ -377,4 +414,30 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     },
   }
   return service
+}
+
+/**
+ * Enqueue the report.autoforward job (D9 / #56) for a just-created report, gated on the reporter being
+ * report_verified. The jobs seam + the gate read are BOTH optional + wired together; when either is absent
+ * (offline tests / a non-forwarding path) this is a no-op. Anonymous/unverified reporters never enqueue.
+ * Runs POST-COMMIT, so any failure (a gate-read throw, an enqueue throw) is logged best-effort and
+ * swallowed — the report is already committed + published and manual routing remains available.
+ */
+async function maybeEnqueueAutoForward(
+  deps: ReportServiceDeps,
+  reportId: string,
+  reporterUserId: string,
+): Promise<void> {
+  if (deps.jobs === undefined || deps.isReportVerified === undefined) return
+  try {
+    const verified = await deps.isReportVerified(reporterUserId)
+    if (!verified) return
+    await deps.jobs.enqueue(
+      REPORT_AUTOFORWARD_JOB,
+      { reportId } satisfies ReportAutoForwardJob,
+      { singletonKey: reportId },
+    )
+  } catch (err) {
+    deps.logger?.warn({ err, reportId }, "report.autoforward enqueue failed")
+  }
 }
