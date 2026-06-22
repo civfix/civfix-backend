@@ -241,7 +241,9 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     // + the reporter-only unlistReport route [POST /reports/:id/unlist] (the owner hides / re-lists their
     // own report from the public map) and the host-only cancelCleanup route [POST /cleanups/:id/cancel]
     // (the organizer cancels their event + notifies attendees) = 155.
-    expect(Object.keys(endpoints).length).toBe(155)
+    // + getJurisdictionGeometry [GET /admin/jurisdictions/:geoid/geometry] (the directory's boundary
+    // verification map) = 156.
+    expect(Object.keys(endpoints).length).toBe(156)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

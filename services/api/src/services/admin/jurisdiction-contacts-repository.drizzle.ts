@@ -513,7 +513,7 @@ export function makeDrizzleJurisdictionContactsRepository(
           north: number
           clng: number
           clat: number
-          geometry: { type: string; coordinates: unknown }
+          geometry: { type: string; coordinates: unknown[] }
         }[]
       >`
         SELECT

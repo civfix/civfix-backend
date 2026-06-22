@@ -74,7 +74,7 @@ export interface JurisdictionGeometryRecord {
   layer: JurisdictionLayer
   bbox: [number, number, number, number]
   centroid: [number, number]
-  geometry: { type: string; coordinates: unknown }
+  geometry: { type: string; coordinates: unknown[] }
 }
 
 /** The outcome of a save-and-route, returned for the route to audit + the test to assert. */
