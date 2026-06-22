@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
 import type {
   OutboundMailService,
-  SendToCityInput,
+  SendReportInput,
 } from "../../src/services/admin/outbound-mail-service.js"
 import {
   makeDiscussionService,
@@ -31,17 +31,26 @@ const REPORT = "11111111-1111-1111-1111-111111111111"
 const AUTHOR = "22222222-2222-2222-2222-222222222222"
 const OTHER = "33333333-3333-3333-3333-333333333333"
 
-/** A spy OutboundMailService capturing sendToCity calls; the other methods are unused stubs. */
+/**
+ * A spy OutboundMailService capturing the @jurisdiction forward. D11: the forward now targets the
+ * PER-REPORT thread (sendReportToJurisdiction), not the per-geoid digest (sendToCity), so the city's reply
+ * threads back onto the report. We capture sendReportToJurisdiction here; the other methods are stubs.
+ */
 class SpyOutboundMail implements OutboundMailService {
-  readonly cityCalls: SendToCityInput[] = []
+  readonly reportCalls: SendReportInput[] = []
   shouldThrow = false
-  sendToCity(input: SendToCityInput): Promise<MailThreadRecord> {
-    this.cityCalls.push(input)
+  sendReportToJurisdiction(
+    input: SendReportInput,
+  ): Promise<{ thread: MailThreadRecord; messageId: string }> {
+    this.reportCalls.push(input)
     if (this.shouldThrow) return Promise.reject(new Error("smtp boom"))
-    return Promise.resolve(stubThread())
-  }
-  sendReportToJurisdiction(): Promise<{ thread: MailThreadRecord; messageId: string }> {
     return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
+  }
+  sendEventToJurisdiction(): Promise<{ thread: MailThreadRecord; messageId: string }> {
+    return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
+  }
+  sendToCity(): Promise<MailThreadRecord> {
+    return Promise.resolve(stubThread())
   }
   compose(): Promise<MailThreadRecord> {
     return Promise.resolve(stubThread())
@@ -59,6 +68,7 @@ function stubThread(): MailThreadRecord {
     id: "thread-1",
     threadToken: "geo-1",
     reportId: null,
+    cleanupId: null,
     jurisdictionGeoid: null,
     org: null,
     subject: null,
@@ -215,12 +225,18 @@ describe("DiscussionService.createMessage @city mention + forward", () => {
     contactEmail: null,
   }
 
-  it("forwards to the city + records a forwarded mention when a contact is on file", async () => {
+  it("forwards onto the PER-REPORT thread + records a forwarded mention when a contact is on file", async () => {
     const { mail, service } = makeHarness(JURIS_WITH_CONTACT)
     const dto = await service.createMessage(REPORT, AUTHOR, { body: "pls help @sf" })
-    expect(mail.cityCalls).toHaveLength(1)
-    expect(mail.cityCalls[0]!.toAddr).toBe("fix@sf.gov")
-    expect(mail.cityCalls[0]!.geoid).toBe("0600001")
+    // D11: the forward targets sendReportToJurisdiction (per-report thread) so the city's reply threads back
+    // onto the report — NOT the per-geoid digest sendToCity.
+    expect(mail.reportCalls).toHaveLength(1)
+    expect(mail.reportCalls[0]!.reportId).toBe(REPORT)
+    expect(mail.reportCalls[0]!.toAddr).toBe("fix@sf.gov")
+    expect(mail.reportCalls[0]!.geoid).toBe("0600001")
+    // The body is a professional packet quoting the citizen's comment (not the raw comment).
+    expect(mail.reportCalls[0]!.text).toContain("pls help @sf")
+    expect(mail.reportCalls[0]!.subject).toContain("civfix report:")
     expect(dto.forwardedToCity).toBe(true)
     expect(dto.cityMention).toEqual({
       handle: "sf",
@@ -233,7 +249,7 @@ describe("DiscussionService.createMessage @city mention + forward", () => {
   it("STILL POSTS (forwardedToCity=false, no throw) when the city has no contact on file", async () => {
     const { mail, service } = makeHarness(JURIS_NO_CONTACT)
     const dto = await service.createMessage(REPORT, AUTHOR, { body: "hey @sf fix it" })
-    expect(mail.cityCalls).toHaveLength(0) // never attempted - no contact
+    expect(mail.reportCalls).toHaveLength(0) // never attempted - no contact
     expect(dto.forwardedToCity).toBe(false)
     expect(dto.cityMention).toEqual({
       handle: "sf",
@@ -247,7 +263,7 @@ describe("DiscussionService.createMessage @city mention + forward", () => {
     const { mail, service } = makeHarness(JURIS_WITH_CONTACT)
     mail.shouldThrow = true
     const dto = await service.createMessage(REPORT, AUTHOR, { body: "@sf urgent" })
-    expect(mail.cityCalls).toHaveLength(1)
+    expect(mail.reportCalls).toHaveLength(1)
     expect(dto.forwardedToCity).toBe(false)
     expect(dto.cityMention?.forwarded).toBe(false)
   })
@@ -255,7 +271,7 @@ describe("DiscussionService.createMessage @city mention + forward", () => {
   it("does NOT forward when the body mentions a different handle", async () => {
     const { mail, service } = makeHarness(JURIS_WITH_CONTACT)
     const dto = await service.createMessage(REPORT, AUTHOR, { body: "@oakland not us" })
-    expect(mail.cityCalls).toHaveLength(0)
+    expect(mail.reportCalls).toHaveLength(0)
     expect(dto.cityMention).toBeNull()
   })
 
@@ -267,7 +283,7 @@ describe("DiscussionService.createMessage @city mention + forward", () => {
       contactEmail: "fix@oakland.gov",
     })
     const dto = await service.createMessage(REPORT, AUTHOR, { body: "ping @oakland" })
-    expect(mail.cityCalls).toHaveLength(1)
+    expect(mail.reportCalls).toHaveLength(1)
     expect(dto.forwardedToCity).toBe(true)
     expect(dto.cityMention?.handle).toBe("oakland")
   })

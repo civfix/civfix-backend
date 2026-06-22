@@ -98,6 +98,7 @@ export class InMemoryMailRepository implements MailRepository {
       threadToken: over.threadToken ?? mintThreadToken(),
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
       reportId: over.reportId ?? null,
+      cleanupId: over.cleanupId ?? null,
       org: over.org ?? null,
       subject: over.subject ?? null,
       status: over.status ?? "sent",
@@ -155,6 +156,7 @@ export class InMemoryMailRepository implements MailRepository {
       threadToken: token,
       jurisdictionGeoid: init.jurisdictionGeoid ?? null,
       reportId: init.reportId ?? null,
+      cleanupId: init.cleanupId ?? null,
       org: init.org ?? null,
       subject: init.subject ?? null,
       status: init.status ?? "sent",
@@ -168,6 +170,7 @@ export class InMemoryMailRepository implements MailRepository {
       threadToken: input.threadToken ?? mintThreadToken(),
       jurisdictionGeoid: input.jurisdictionGeoid ?? null,
       reportId: input.reportId ?? null,
+      cleanupId: input.cleanupId ?? null,
       org: input.org ?? null,
       subject: input.subject ?? null,
       status: input.status ?? "sent",
@@ -186,6 +189,26 @@ export class InMemoryMailRepository implements MailRepository {
     }
     if (best) return Promise.resolve({ ...best })
     return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
+  }
+
+  findOrCreateEventThread(cleanupId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
+    // The newest existing per-event thread (cleanup_id matches), else a freshly created one linked to the
+    // cleanup with a minted token. Mirrors findOrCreateReportThread (ORDER BY created_at DESC, id DESC).
+    let best: MailThreadRecord | null = null
+    for (const t of this.threads.values()) {
+      if (t.cleanupId !== cleanupId) continue
+      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+    }
+    if (best) return Promise.resolve({ ...best })
+    return this.createThread({ ...init, cleanupId, threadToken: mintThreadToken() })
+  }
+
+  priorOutboundMessageIds(threadId: string): Promise<string[]> {
+    const ids = this.messages
+      .filter((m) => m.threadId === threadId && m.direction === "out" && m.messageId !== null)
+      .sort((a, b) => cmpCreated(a, b))
+      .map((m) => m.messageId as string)
+    return Promise.resolve(ids)
   }
 
   upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
@@ -384,7 +407,9 @@ export class InMemoryMailRepository implements MailRepository {
     const counts = { sent: 0, delivered: 0, bounced: 0, complained: 0, opened: 0 }
     for (const e of this.events) {
       if (e.createdAt.getTime() < cutoff) continue
-      counts[e.type] += 1
+      // 'failed' is recorded for the outreach trail but is NOT a deliverability stat, so it is skipped here
+      // (mirrors the Drizzle `if (row.type in counts)` guard).
+      if (e.type in counts) counts[e.type as keyof typeof counts] += 1
     }
     let unread = 0
     for (const t of this.threads.values()) if (t.unread) unread += 1

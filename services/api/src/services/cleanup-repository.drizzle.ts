@@ -20,6 +20,7 @@ import { AppError } from "@civfix/shared"
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
 import { parseNearCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import { allocateEventReferenceCode } from "../db/reference-code.js"
 import type {
   AttendeeView,
   CleanupRecord,
@@ -71,10 +72,15 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
   return {
     async createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord> {
       return sql.begin(async (tx) => {
+        // D4 LOCK ORDER: allocate the EVENT reference code FIRST — the reference_counters upsert must
+        // precede the cleanups row lock (a consistent acquisition order across every create path rules out
+        // an ABBA deadlock). jurCode is resolved pre-tx (0 = unknown bucket when no jurisdiction, D5).
+        const referenceCode = await allocateEventReferenceCode(tx, args.jurCode)
+
         await tx`
           INSERT INTO cleanups (
             id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at, status,
-            bring, address
+            bring, address, jurisdiction_geoid, reference_code
           ) VALUES (
             ${args.cleanupId},
             ${args.organizerUserId},
@@ -86,7 +92,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             ${args.scheduledAt},
             ${args.status},
             ${args.bring as unknown as string[] | null},
-            ${args.address}
+            ${args.address},
+            ${args.jurisdictionGeoid},
+            ${referenceCode}
           )
         `
         // Auto-join the organizer in the SAME transaction (membership == chat membership, atomic).
@@ -352,6 +360,21 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return readById(sql, id, near)
     },
 
+    async findCleanupByReferenceCode(code: string): Promise<CleanupRecord | null> {
+      // reference_code is UNIQUE (cleanups_reference_code_uidx), so this resolves at most one row — the
+      // by-code half of the resolve-either getCleanup (issue #56). No distance (a by-code fetch is not a
+      // near listing).
+      const rows = await sql<CleanupRowSelect[]>`
+        SELECT ${cleanupColumns(sql, null)}
+        FROM cleanups c
+        JOIN users u ON u.id = c.organizer_user_id
+        ${goingJoin(sql)}
+        WHERE c.reference_code = ${code}
+        LIMIT 1
+      `
+      return rows[0] ? toRecord(rows[0]) : null
+    },
+
     async listCleanups(
       filters: ListCleanupsFilters,
     ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }> {
@@ -543,6 +566,40 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         bio: r.bio,
         isFollowing: r.is_following,
       }))
+    },
+
+    async resolveJurisdictionContact(
+      geoid: string | null,
+    ): Promise<{ contact: string; name: string } | null> {
+      if (geoid === null) return null
+      // Precedence mirrors getRouting (events have no per-category, so default -> legacy): the default
+      // (category NULL) jurisdiction_contacts row, then the legacy contact_emails[1].
+      const rows = await sql<{ name: string | null; default_email: string | null; legacy_email: string | null }[]>`
+        SELECT
+          j.name,
+          (SELECT jc.email FROM jurisdiction_contacts jc
+             WHERE jc.geoid = j.geoid AND jc.category IS NULL
+               AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS default_email,
+          j.contact_emails[1] AS legacy_email
+        FROM jurisdictions j
+        WHERE j.geoid = ${geoid}
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (!row) return null
+      const contact = row.default_email ?? row.legacy_email ?? null
+      if (contact === null || contact === "") return null
+      return { contact, name: row.name ?? geoid }
+    },
+
+    async appendCleanupTimeline(
+      cleanupId: string,
+      input: { kind: string; note: string | null; actorId: string | null },
+    ): Promise<void> {
+      await sql`
+        INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+        VALUES (${cleanupId}, ${input.kind}, ${input.note}, ${input.actorId})
+      `
     },
   }
 }

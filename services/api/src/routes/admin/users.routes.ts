@@ -24,6 +24,7 @@ import {
   FlagUserRequestSchema,
   RemoveUserMessageRequestSchema,
   SetRoleRequestSchema,
+  SetUserReportVerifiedRequestSchema,
   SetUserStatusRequestSchema,
   SetUserVerifiedRequestSchema,
   UserSubListQuerySchema,
@@ -167,6 +168,15 @@ export async function registerAdminUsersRoutes(
     const { id } = idParam(request)
     const body = parse(SetUserVerifiedRequestSchema, { ...(request.body as object), id })
     await service().setVerified(id, { verified: body.verified, actorId: requireOperator(request) })
+    const payload: AdminOkResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  // D18 manual override/revoke of the report-verified flag (distinct from the verified-neighbor mark).
+  route(app, "setUserReportVerified", { preHandler: csrfProtect }, async (request, reply) => {
+    const { id } = idParam(request)
+    const body = parse(SetUserReportVerifiedRequestSchema, { ...(request.body as object), id })
+    await service().setReportVerified(id, { value: body.value, actorId: requireOperator(request) })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })

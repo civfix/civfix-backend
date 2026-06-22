@@ -243,6 +243,7 @@ export const MAIL_EVENT_TYPE_VALUES = [
   "bounced",
   "complained",
   "opened",
+  "failed",
 ] as const
 
 /** inbound_emails.status (catch-all inbox triage). Mirrors shared InboundEmailStatusSchema. */

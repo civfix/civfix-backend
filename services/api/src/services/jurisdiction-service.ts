@@ -247,20 +247,29 @@ async function resolveViaLookup(
  * geom is NULL here so no PostGIS function appears (a plain insert), we keep the raw tag for consistency
  * with the house geometry rule (NEVER the Drizzle insert builder for this table).
  *
+ * CODE on insert (D2, #56): a fresh row is stamped with the next `jurisdiction_code_seq` value so it gets a
+ * compact JURCODE for reference codes — the SAME single-sequence source the backfill + every other lazy
+ * insert use, so no two jurisdictions collide on a code.
+ *
  * PRESERVATION on conflict (CRITICAL): the ON CONFLICT SET list updates ONLY name + layer. It deliberately
  * does NOT touch:
  *   - geom: an existing self-hosted polygon row keeps its boundary (a later real ingest is never clobbered
  *     by this null-geom fallback; and re-hitting an already-API-sourced row leaves its NULL geom as-is).
  *   - contact_emails / contact_updated_at: operator-mapped / discovered routing is never wiped.
  *   - priority: left as the existing row's value on update (only the fresh INSERT sets it from LAYER_PRIORITY).
+ *   - code: an existing row KEEPS its already-allocated JURCODE — the conflict path never re-issues a code
+ *     (a stable, immutable identity), so an established jurisdiction's reference codes stay consistent.
  */
 async function upsertApiSourcedJurisdiction(
   sql: Sql,
   hit: JurisdictionLookupResult,
 ): Promise<void> {
   await sql`
-    INSERT INTO jurisdictions (geoid, name, layer, priority, geom, contact_emails)
-    VALUES (${hit.geoid}, ${hit.name}, ${hit.layer}, ${LAYER_PRIORITY[hit.layer]}, NULL, NULL)
+    INSERT INTO jurisdictions (geoid, name, layer, priority, geom, contact_emails, code)
+    VALUES (
+      ${hit.geoid}, ${hit.name}, ${hit.layer}, ${LAYER_PRIORITY[hit.layer]}, NULL, NULL,
+      nextval('jurisdiction_code_seq')
+    )
     ON CONFLICT (geoid) DO UPDATE SET
       name = EXCLUDED.name,
       layer = EXCLUDED.layer

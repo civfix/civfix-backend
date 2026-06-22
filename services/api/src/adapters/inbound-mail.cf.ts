@@ -3,9 +3,9 @@
  *
  * The Cloudflare Email Worker writes the raw .eml to R2; the backend fetches it and calls parse() here.
  * parse() decodes the RFC822 bytes (via mailparser) into the vendor-neutral ParsedMail, including
- * attachments. extractThreadToken() recovers a reply+{token}@ thread token (or an X-Thread-Token
- * header) so the inbound processor can route a reply into its mail_threads thread; catch-all mail with
- * no token goes to the inbound_emails inbox instead.
+ * attachments. extractThreadToken() recovers a (reply|report|event)+{token}@ thread token (or an
+ * X-Thread-Token header) so the inbound processor can route a reply into its mail_threads thread;
+ * catch-all mail with no token goes to the inbound_emails inbox instead.
  *
  * Seam rule: the MIME-parsing SDK (mailparser) is imported ONLY in this file, lazily, so constructing
  * the adapter during DI never loads it.
@@ -68,7 +68,9 @@ export class CfInboundMail implements InboundMail {
     const headerToken = mail.headers["x-thread-token"]
     if (headerToken && THREAD_TOKEN_RE.test(headerToken)) return headerToken
     for (const addr of mail.to) {
-      const match = addr.address.match(/reply\+([^@]+)@/)
+      // The typed local-parts are reply+ (digest/compose), report+ (per-report), and event+ (per-event);
+      // all carry the SAME 24-hex token, so the second-step THREAD_TOKEN_RE.test() still gates the value.
+      const match = addr.address.match(/(?:reply|report|event)\+([^@]+)@/)
       if (match && match[1] && THREAD_TOKEN_RE.test(match[1])) return match[1]
     }
     return null

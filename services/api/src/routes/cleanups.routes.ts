@@ -21,8 +21,10 @@ import {
   UpdateCleanupRequestSchema,
   CancelCleanupRequestSchema,
   ListCleanupsRequestSchema,
+  RequestEventResourcesRequestSchema,
   ChatHistoryQuerySchema,
   IdSchema,
+  ReportRefOrIdSchema,
   AppError,
   type CleanupDTO,
   type GetCleanupResponse,
@@ -30,6 +32,7 @@ import {
   type LeaveCleanupResponse,
   type CleanupAttendeesResponse,
   type ChatHistoryResponse,
+  type RequestEventResourcesResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -45,6 +48,11 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { resolveJurisdictionCode } from "../db/reference-code.js"
+import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
+import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
+import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
 import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
@@ -56,6 +64,10 @@ export interface CleanupServiceOverrides {
   repo: CleanupRepository
   presignThumb?: CleanupServiceDeps["presignThumb"]
   newId?: CleanupServiceDeps["newId"]
+  // Event resource-request seams (D19); tests inject fakes so requestResources runs offline. Production
+  // wires them from the container (outbound mail over the Drizzle mail repo + the verification repo).
+  outboundMail?: CleanupServiceDeps["outboundMail"]
+  isVerified?: CleanupServiceDeps["isVerified"]
 }
 
 declare module "fastify" {
@@ -65,6 +77,12 @@ declare module "fastify" {
 }
 
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+// GET /cleanups/:id is resolve-either (issue #56 / ROUTING): the URL id may be a UUID OR an EVENT
+// reference_code. Validate it with the looser shared ReportRefOrIdSchema (a 1..64-char opaque string,
+// reused as the generic ref-or-id shape); the service branches uuid-shaped -> findCleanupById, else ->
+// findCleanupByReferenceCode. ONLY this route is relaxed — every other by-id route keeps strict UUID.
+const CleanupRefOrIdParamsSchema = z.object({ id: ReportRefOrIdSchema }).strict()
 
 // Query schema for GET /cleanups, decoding EXACTLY what the shared client sends (see ./query-encoding.ts):
 // optional bbox + optional near each as a single JSON-encoded object param, and scalar when/cursor/limit.
@@ -105,7 +123,40 @@ export async function registerCleanupRoutes(
               presignThumb: (thumbKey: string) =>
                 container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
             }),
+      // Production resolves the event's jurisdiction (#56 / D6) at create — same JurisdictionService + the
+      // compact-code lookup the report path uses. Skipped under a test override (which boots with no DB),
+      // so an offline cleanup create lands a null geoid + the EVENT code in the "0" bucket.
+      ...(overrides
+        ? {}
+        : {
+            resolveJurisdictionGeoid: async (lat: number, lng: number) => {
+              const jurisdiction = makeJurisdictionService({
+                sql: container.getDb().sql,
+                geocoder: container.geocoder,
+                jobs: container.jobs,
+                jurisdictionLookup: container.jurisdictionLookup,
+              })
+              const resolved = await jurisdiction.resolveForPoint(lat, lng)
+              return resolved?.geoid ?? null
+            },
+            resolveJurisdictionCode: (geoid: string | null) =>
+              resolveJurisdictionCode(container.getDb().sql, geoid),
+            // Event resource-request (D19): the outbound-mail seam (per-event thread) + the identity-
+            // verification read. Built over the container's DB-backed seams in production.
+            outboundMail: makeOutboundMailService({
+              repo: makeDrizzleMailRepository(container.getDb().sql),
+              mailer: container.mailer,
+              env: {
+                MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
+                MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
+              },
+            }),
+            isVerified: (userId: string) =>
+              makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
+          }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
+      ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
+      ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
     })
   }
 
@@ -136,6 +187,21 @@ export async function registerCleanupRoutes(
     reply.status(200).send(dto)
   })
 
+  // Host-only event resource request (POST /cleanups/:id/request-resources, D19): the service enforces the
+  // organizer + identity-verified gate (403), the 404 for a missing event, and 422 NOT_ROUTABLE when the
+  // jurisdiction has no contact. The body carries the host's message; the id comes from the URL path.
+  route(app, "requestEventResources", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const body = parse(RequestEventResourcesRequestSchema, { ...(request.body as object), id })
+    const payload: RequestEventResourcesResponse = await service().requestResources({
+      cleanupId: id,
+      message: body.message,
+      actorId: userId,
+    })
+    reply.status(200).send(payload)
+  })
+
   route(app, "listCleanups", async (request, reply) => {
     const q = parse(ListCleanupsQuerySchema, request.query)
     // Re-validate the decoded shape against the shared schema (single source of truth). bbox/near are
@@ -151,8 +217,9 @@ export async function registerCleanupRoutes(
     reply.status(200).send(payload)
   })
 
+  // GET /cleanups/:id  (anon-ok) — resolve-either: id may be a UUID or an EVENT reference_code (issue #56).
   route(app, "getCleanup", async (request, reply) => {
-    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const { id } = parse(CleanupRefOrIdParamsSchema, request.params)
     const dto: GetCleanupResponse = await service().getCleanup(id, viewerOf(request))
     reply.status(200).send(dto)
   })

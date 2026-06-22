@@ -49,6 +49,15 @@ const SIGNING_KEY = "test-anon-signing-key"
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
 /**
+ * Endpoints present in the @civfix/shared registry whose BACKEND routes intentionally land in a LATER
+ * wave (cross-wave dependency). Now EMPTY: requestEventResources (D19) is routed (#56 email wave), so the
+ * per-endpoint registration smoke test below proves EVERY one of the 159 endpoints is wired (0 skips).
+ * Keep this set here (rather than deleting it) so a future cross-wave endpoint has an obvious, MINIMAL
+ * place to land — an unexpected route-missing endpoint must still fail.
+ */
+const NOT_YET_ROUTED = new Set<string>([])
+
+/**
  * Build one server with the FULL fakes/overrides bundle so every domain plugin mounts and resolves with
  * no infra. Auth services are present so the /auth/* routes mount.
  */
@@ -188,9 +197,10 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     expect(res.json()).toMatchObject({ ok: true })
   })
 
-  // One assertion per endpoint so a failure names exactly which route is unwired.
+  // One assertion per endpoint so a failure names exactly which route is unwired. Endpoints whose backend
+  // route lands in a later wave (NOT_YET_ROUTED) are skipped, not asserted as wired.
   for (const [name, ep] of Object.entries(endpoints)) {
-    it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
+    it.skipIf(NOT_YET_ROUTED.has(name))(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
       // The ONLY failing condition: Fastify's route-not-found handler ran (no route matched). It emits a
@@ -243,7 +253,11 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     // (the organizer cancels their event + notifies attendees) = 155.
     // + getJurisdictionGeometry [GET /admin/jurisdictions/:geoid/geometry] (the directory's boundary
     // verification map) = 156.
-    expect(Object.keys(endpoints).length).toBe(156)
+    // + the 3-route reference-code/verification surface added in @civfix/shared 0.19.0: setReportVerdict
+    // [POST /admin/reports/:id/verdict] (D7 report-verification verdict), setUserReportVerified
+    // [POST /admin/users/:id/report-verify] (D18 report-verified toggle), and requestEventResources
+    // [POST /cleanups/:id/request-resources] (D19 event resource request) — all now ROUTED (#56) = 159.
+    expect(Object.keys(endpoints).length).toBe(159)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

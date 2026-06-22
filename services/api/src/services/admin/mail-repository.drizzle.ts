@@ -75,23 +75,24 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const status = init.status ?? "sent"
       const unread = init.unread ?? false
       const inserted = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, org, subject, status, unread)
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
         VALUES (
           ${token},
           ${init.jurisdictionGeoid ?? null},
           ${init.reportId ?? null},
+          ${init.cleanupId ?? null},
           ${init.org ?? null},
           ${init.subject ?? null},
           ${status},
           ${unread}
         )
         ON CONFLICT (thread_token) DO NOTHING
-        RETURNING id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                   last_message_at, created_at
       `
       if (inserted[0]) return toThreadRecord(inserted[0])
       const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE thread_token = ${token}
@@ -105,17 +106,18 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     async createThread(input: CreateThreadInput): Promise<MailThreadRecord> {
       const token = input.threadToken ?? mintThreadToken()
       const rows = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, org, subject, status, unread)
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
         VALUES (
           ${token},
           ${input.jurisdictionGeoid ?? null},
           ${input.reportId ?? null},
+          ${input.cleanupId ?? null},
           ${input.org ?? null},
           ${input.subject ?? null},
           ${input.status ?? "sent"},
           ${input.unread ?? false}
         )
-        RETURNING id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                   last_message_at, created_at
       `
       const row = rows[0]
@@ -128,7 +130,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       init: ThreadInit = {},
     ): Promise<MailThreadRecord> {
       const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE report_id = ${reportId}
@@ -139,11 +141,41 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
     },
 
+    async findOrCreateEventThread(
+      cleanupId: string,
+      init: ThreadInit = {},
+    ): Promise<MailThreadRecord> {
+      // The newest per-event thread (cleanup_id matches), else a freshly created one linked to the cleanup
+      // with a minted token. Mirrors findOrCreateReportThread (which threads on report_id).
+      const existing = await sql<ThreadRowSelect[]>`
+        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
+               last_message_at, created_at
+        FROM mail_threads
+        WHERE cleanup_id = ${cleanupId}
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `
+      if (existing[0]) return toThreadRecord(existing[0])
+      return this.createThread({ ...init, cleanupId, threadToken: mintThreadToken() })
+    },
+
+    async priorOutboundMessageIds(threadId: string): Promise<string[]> {
+      const rows = await sql<{ message_id: string }[]>`
+        SELECT message_id
+        FROM mail_messages
+        WHERE thread_id = ${threadId}
+          AND direction = 'out'
+          AND message_id IS NOT NULL
+        ORDER BY created_at ASC, id ASC
+      `
+      return rows.map((r) => r.message_id)
+    },
+
     async upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
       // The newest digest thread for the jurisdiction (report_id IS NULL so per-report threads are not
       // reused). Replaces the old `geo-{geoid}` token scheme.
       const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE jurisdiction_geoid = ${geoid} AND report_id IS NULL
@@ -156,7 +188,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async findThreadByToken(token: string): Promise<MailThreadRecord | null> {
       const rows = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE thread_token = ${token}
@@ -171,7 +203,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const ids = messageIds.filter((m) => typeof m === "string" && m.length > 0)
       if (ids.length === 0) return null
       const rows = await sql<ThreadRowSelect[]>`
-        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.org, t.subject, t.status,
+        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.cleanup_id, t.org, t.subject, t.status,
                t.unread, t.last_message_at, t.created_at
         FROM mail_threads t
         JOIN mail_messages m ON m.thread_id = t.id
@@ -268,7 +300,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           lm_body: string | null
         })[]
       >`
-        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.org, t.subject, t.status,
+        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.cleanup_id, t.org, t.subject, t.status,
                t.unread, t.last_message_at, t.created_at,
                lm.direction AS lm_direction, lm.from_addr AS lm_from_addr, lm.to_addr AS lm_to_addr,
                lm.body AS lm_body
@@ -318,7 +350,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async getThread(id: string): Promise<MailThreadDTO | null> {
       const threads = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE id = ${id}
@@ -338,7 +370,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async getThreadRecord(id: string): Promise<MailThreadRecord | null> {
       const rows = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, org, subject, status, unread,
+        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
         WHERE id = ${id}
