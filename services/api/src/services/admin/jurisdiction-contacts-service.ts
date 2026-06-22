@@ -17,6 +17,7 @@ import { AppError } from "@civfix/shared"
 import type { JurisdictionListQuery } from "@civfix/shared"
 import { toDirectoryDTO, hasAnyContact } from "./jurisdiction-directory-projection.js"
 import type { DirectoryFilter, DirectorySort } from "./jurisdiction-contacts-types.js"
+import { isReservedHandle } from "../../auth/reserved-handles.js"
 import {
   OUTREACH_DIGEST_JOB,
   type JurisdictionContactsService,
@@ -54,6 +55,12 @@ export function makeJurisdictionContactsService(
     },
 
     async patch(geoid: string, input: PatchContactsInput, actorId: string | null): Promise<void> {
+      // Reject a reserved @handle BEFORE the write (the same blocklist that bars user handles from
+      // impersonating system/jurisdiction names). A null/empty handle (clearing it) is always allowed; the
+      // DB-dependent uniqueness check lives in the repo (it needs the live table, in-transaction).
+      if (typeof input.handle === "string" && input.handle !== "" && isReservedHandle(input.handle)) {
+        throw AppError.validation({ handle: "That @handle is reserved." })
+      }
       const ok = await deps.repo.patch(geoid, input, { actorId })
       if (!ok) throw AppError.notFound("Jurisdiction not found")
     },

@@ -62,6 +62,7 @@ function record(over: Partial<JurisdictionDirectoryRecord> = {}): JurisdictionDi
     bounced: false,
     contactUpdatedAt: null,
     flaggedAt: null,
+    handle: null,
     ...over,
   }
 }
@@ -366,6 +367,47 @@ describe("patch", () => {
   it("throws notFound for an unknown jurisdiction", async () => {
     const { svc } = harness()
     await expect(svc.patch("nope", { notes: "x" }, null)).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("sets the discussion @handle and surfaces it on the directory row", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "1", name: "City" })
+
+    await svc.patch("1", { handle: "sf" }, "op-1")
+
+    expect(repo.jurisdictions.get("1")!.handle).toBe("sf")
+    const row = (await svc.listDirectory({})).items.find((i) => i.geoid === "1")!
+    expect(row.handle).toBe("sf")
+  })
+
+  it("clears the @handle when given an empty string", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "1", name: "City", handle: "sf" })
+
+    await svc.patch("1", { handle: "" }, "op-1")
+
+    expect(repo.jurisdictions.get("1")!.handle).toBeNull()
+  })
+
+  it("rejects a reserved @handle (422) and leaves the handle unchanged", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "1", name: "City" })
+
+    await expect(svc.patch("1", { handle: "admin" }, "op-1")).rejects.toMatchObject({
+      httpStatus: 422,
+    })
+    expect(repo.jurisdictions.get("1")!.handle).toBeNull()
+  })
+
+  it("rejects a @handle already used (case-insensitively) by another jurisdiction (409)", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "1", name: "City One", handle: "sf" })
+    repo.seedJurisdiction({ geoid: "2", name: "City Two" })
+
+    await expect(svc.patch("2", { handle: "SF" }, "op-1")).rejects.toMatchObject({
+      httpStatus: 409,
+    })
+    expect(repo.jurisdictions.get("2")!.handle).toBeNull()
   })
 })
 

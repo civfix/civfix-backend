@@ -382,6 +382,23 @@ describe("getProfile", () => {
     // But A organized none, so the organized-count stat is 0.
     expect(profile.stats.cleanups).toBe(0)
   })
+
+  it("falls back to the provider avatar_url on the full profile when no custom avatar was uploaded", async () => {
+    // Regression: buildProfile used to omit avatarUrl whenever avatarR2Key was null, dropping the canonical
+    // provider photo (e.g. Google) so the profile screen showed the monogram. It must mirror toPersonDTO and
+    // surface view.avatarUrl as the fallback.
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice", avatarUrl: "https://cdn.example.test/alice.jpg" })
+    const { profile } = await service.getProfile(A, { userId: null })
+    expect(profile.avatarUrl).toBe("https://cdn.example.test/alice.jpg")
+  })
+
+  it("omits avatarUrl on the full profile only when neither an uploaded nor a provider photo exists", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" }) // no avatarUrl, no avatarR2Key
+    const { profile } = await service.getProfile(A, { userId: null })
+    expect(profile.avatarUrl).toBeUndefined()
+  })
 })
 
 describe("getMyProfile", () => {

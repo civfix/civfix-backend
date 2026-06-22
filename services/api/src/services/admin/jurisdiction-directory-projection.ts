@@ -96,6 +96,7 @@ export function buildUnmappedRecord(
     bounced: false,
     contactUpdatedAt: null,
     flaggedAt: null,
+    handle: null,
   }
 }
 
@@ -138,5 +139,6 @@ export function toDirectoryDTO(record: JurisdictionDirectoryRecord): Jurisdictio
       email: c.email !== null && c.email.trim() !== "" ? c.email : null,
     })),
     flaggedAt: record.flaggedAt !== null ? record.flaggedAt.toISOString() : null,
+    handle: record.handle,
   }
 }

@@ -38,6 +38,8 @@ export interface JurisdictionDirectoryRecord {
   bounced: boolean
   contactUpdatedAt: Date | null
   flaggedAt: Date | null
+  /** The discussion @handle (the "@sf" mentionable in a report discussion), or null when unset. */
+  handle: string | null
 }
 
 /** Directory routing-posture facet. "routed" = any contact on file (email OR form); "none" = neither. */
@@ -99,6 +101,8 @@ export interface PatchContactsInput {
   notes?: string | null
   flagged?: boolean
   flagReason?: string | null
+  /** Set / clear the discussion @handle (normalized + shape-checked by the shared schema; null/"" clears). */
+  handle?: string | null
 }
 
 export interface JurisdictionContactsRepository {

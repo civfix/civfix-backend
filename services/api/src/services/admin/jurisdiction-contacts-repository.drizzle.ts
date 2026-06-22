@@ -34,6 +34,7 @@ import type {
   PatchContactsInput,
   SaveContactsInput,
 } from "./jurisdiction-contacts-types.js"
+import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { likeContains } from "./like.js"
 
@@ -61,6 +62,7 @@ interface DirectoryRow {
   last_routed_at: Date | null
   bounced: boolean
   flagged_at: Date | null
+  handle: string | null
   // COUNT(*) comes back from postgres-js as a string; parsed in toRecord.
   reports_waiting: string
   cat_trash: string
@@ -105,6 +107,7 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
     bounced: r.bounced,
     contactUpdatedAt: r.contact_updated_at,
     flaggedAt: r.flagged_at,
+    handle: r.handle,
   }
 }
 
@@ -269,6 +272,34 @@ export function makeDrizzleJurisdictionContactsRepository(
             await tx`UPDATE jurisdictions SET flagged_at = NULL, flag_reason = NULL WHERE geoid = ${geoid}`
           }
         }
+        // Set / clear the discussion @handle. The shared schema already normalized + shape-checked it; here
+        // we enforce the DB-dependent rules in-transaction so they're atomic with the write: an empty/null
+        // handle clears it; a non-empty handle must be case-insensitively unique across OTHER jurisdictions
+        // (the partial unique index jurisdictions_handle_lower_key is the ultimate guard - this pre-check
+        // turns a would-be 500 into a clean 409) and must not shadow an existing user @handle (discussion
+        // mentions resolve users too). The reserved-word check runs in the service before this.
+        if (input.handle !== undefined) {
+          const handle = input.handle
+          if (handle === null || handle === "") {
+            await tx`UPDATE jurisdictions SET handle = NULL WHERE geoid = ${geoid}`
+          } else {
+            const dupeJurisdiction = await tx<{ geoid: string }[]>`
+              SELECT geoid FROM jurisdictions
+              WHERE handle IS NOT NULL AND lower(handle) = lower(${handle}) AND geoid <> ${geoid}
+              LIMIT 1
+            `
+            if (dupeJurisdiction.length > 0) {
+              throw AppError.conflict("That @handle is already used by another jurisdiction.")
+            }
+            const dupeUser = await tx<{ id: string }[]>`
+              SELECT id FROM users WHERE lower(handle::text) = lower(${handle}) LIMIT 1
+            `
+            if (dupeUser.length > 0) {
+              throw AppError.conflict("That @handle is already taken by a member.")
+            }
+            await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
+          }
+        }
         // Audit the patch IN-TX (H4), recording which fields changed.
         await writeAudit(tx, {
           actorId: audit.actorId,
@@ -392,6 +423,7 @@ export function makeDrizzleJurisdictionContactsRepository(
           j.layer,
           j.population,
           j.flagged_at,
+          j.handle,
           COALESCE(w.total, 0)::text AS reports_waiting,
           COALESCE(w.cat_trash, 0)::text AS cat_trash,
           COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
