@@ -93,12 +93,16 @@ async function main(): Promise<void> {
       SELECT count(*)::int AS n FROM jurisdictions WHERE geoid LIKE 'PADUS-%' OR geoid LIKE 'AIANNH-%'
     `
     if ((authoritative?.n ?? 0) > 0 && !process.argv.includes("--force")) {
-      console.error(
-        `seed: refusing to run — found ${authoritative?.n} authoritative (PADUS-/AIANNH-) jurisdictions, ` +
-          `so this looks like a real boundary load. Seeding would inject dev fixtures over real data. ` +
-          `Pass --force only if you truly mean to.`,
+      // Graceful no-op (exit 0), NOT a hard failure: this runs as a compose init service on every deploy,
+      // and "real boundary data is present, so there's nothing to dev-seed" is the EXPECTED success path in
+      // production. Exiting non-zero here would make the `seed` init service fail and block `api` startup
+      // (taking prod down). Re-seeding dev fixtures over real data is what we want to AVOID; pass --force
+      // only to override deliberately.
+      console.log(
+        `seed: skipping — found ${authoritative?.n} authoritative (PADUS-/AIANNH-) jurisdictions ` +
+          `(a real boundary load). The dev seed would inject fixtures over real data; pass --force to override.`,
       )
-      process.exit(2)
+      return
     }
     const total = JURISDICTION_SEEDS.length + FEDERAL_LANDS.length
     const inserted = await seedJurisdictions(sql)
