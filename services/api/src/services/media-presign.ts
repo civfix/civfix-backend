@@ -1,34 +1,43 @@
-/**
- * makeMediaPresigner - the shared media URL signer used to project a stored media_assets row into a
- * client-facing MediaDTO (a short-lived presigned GET url for the object + its thumbnail).
- *
- * This is the same `(r2Key, thumbKey) -> { url, thumbUrl? }` shape the report + discussion read paths
- * build inline (see discussion.routes.ts `defaultPresign`); extracted here so the chat/DM attachment
- * projection (chat-attachments.drizzle.ts, wired through the chat + dm repos) reuses one definition rather
- * than a fourth copy. `thumbKey === null` ⇒ no thumbnail (images: only `url`).
- *
- * Typed structurally against the storage seam's `presignGet` so it pulls in neither the Container nor the
- * Storage interface (avoids an import cycle through di.ts).
- */
 import { MEDIA_GET_URL_TTL_SEC } from "./media-intake-service.js"
 
-/** Presign a media object + optional thumbnail into short-lived GET urls. */
 export type PresignMedia = (
   r2Key: string,
   thumbKey: string | null,
 ) => Promise<{ url: string; thumbUrl?: string }>
 
-/** The slice of the storage seam the presigner needs (a presigned-GET issuer). */
+// Structural slice of the storage seam (presigned-GET issuer) so this module pulls in neither Container
+// nor the Storage interface — avoids an import cycle through di.ts.
 interface PresignStorage {
   presignGet(key: string, ttlSec: number): Promise<string>
 }
 
-/** Build the default media presigner over a storage seam (mirrors the report/discussion read paths). */
 export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
   return async (r2Key, thumbKey) => {
     const url = await storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
-    if (thumbKey === null) return { url }
+    if (thumbKey === null) return { url } // images: only url, no thumbnail
     const thumbUrl = await storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
     return { url, thumbUrl }
   }
+}
+
+// Concurrency cap for presign fan-outs (bounds concurrent SigV4 signings / R2 ops per page).
+export const PRESIGN_CONCURRENCY = 8
+
+// Bounded-concurrency map preserving input order. Replaces unbounded `Promise.all(arr.map(fn))` on
+// presign/sub-query fan-outs so a large page can't fire hundreds of concurrent R2/DB ops.
+export async function mapWithLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  const cap = Math.max(1, Math.min(limit, items.length))
+  let next = 0
+  const workers = Array.from({ length: cap }, async () => {
+    for (let i = next++; i < items.length; i = next++) {
+      results[i] = await fn(items[i] as T, i)
+    }
+  })
+  await Promise.all(workers)
+  return results
 }

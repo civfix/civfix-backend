@@ -2,16 +2,18 @@
  * Fastify error handler that renders the canonical AppError wire envelope.
  *
  *   AppError            -> { statusCode, body: { code, message, requestId, fields? } }
+ *   ZodError            -> 422 VALIDATION (structural match: a ZodError thrown outside a route's
+ *                          parse() wrapper would otherwise fall through to 500)
  *   Fastify validation  -> 422 VALIDATION with field details
- *   anything else       -> 500 INTERNAL (message hidden in production), with requestId
+ *   anything else        -> mapped client code (<500) or 500 INTERNAL (message hidden in production)
  *
  * Every unknown (non-AppError, or AppError with httpStatus >= 500) error is forwarded to
- * GlitchTip/Sentry via captureError (no-op when no DSN). There are NO silent catches: the handler
- * always logs and always responds.
+ * GlitchTip/Sentry via captureError. There are NO silent catches: the handler always logs and responds.
  */
 
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify"
+import { isProd } from "../env.js"
 import { captureError } from "./glitchtip.js"
 
 interface ErrorBody {
@@ -21,7 +23,20 @@ interface ErrorBody {
   fields?: Record<string, string>
 }
 
-/** Map a Fastify schema-validation error into field-keyed messages. */
+// A non-AppError client error carries its honest HTTP status; map it to the matching wire code so the
+// typed client's status->code reverse-map agrees. Unmapped <500 falls back to VALIDATION.
+const STATUS_TO_CODE: Record<number, ErrorCode> = {
+  400: ErrorCode.VALIDATION,
+  401: ErrorCode.UNAUTHORIZED,
+  403: ErrorCode.FORBIDDEN,
+  404: ErrorCode.NOT_FOUND,
+  409: ErrorCode.CONFLICT,
+  410: ErrorCode.API_VERSION_SUNSET,
+  415: ErrorCode.VALIDATION,
+  422: ErrorCode.VALIDATION,
+  429: ErrorCode.RATE_LIMITED,
+}
+
 function fieldsFromValidation(err: FastifyError): Record<string, string> {
   const out: Record<string, string> = {}
   const validation = err.validation ?? []
@@ -34,13 +49,7 @@ function fieldsFromValidation(err: FastifyError): Record<string, string> {
   return out
 }
 
-/**
- * Build the Fastify error handler. Logging uses the per-request logger; production-mode message
- * hiding is driven by NODE_ENV.
- */
 export function makeErrorHandler() {
-  const isProd = process.env.NODE_ENV === "production"
-
   return function errorHandler(
     error: FastifyError | AppError | Error,
     request: FastifyRequest,
@@ -48,7 +57,6 @@ export function makeErrorHandler() {
   ): void {
     const requestId = request.id
 
-    // 1) Our own typed errors render directly.
     if (error instanceof AppError) {
       error.requestId = requestId
       const body: ErrorBody = {
@@ -59,7 +67,7 @@ export function makeErrorHandler() {
       }
       if (error.httpStatus >= 500) {
         request.log.error({ err: error, requestId }, "AppError (server)")
-        captureError(error, { requestId, url: request.url, method: request.method })
+        captureError(error, { requestId, url: request.url.split("?")[0], method: request.method })
       } else {
         request.log.info({ code: error.code, requestId }, "AppError (client)")
       }
@@ -67,7 +75,19 @@ export function makeErrorHandler() {
       return
     }
 
-    // 2) Fastify validation errors -> VALIDATION (422).
+    // Structural ZodError match (NOT instanceof) so it survives the dual-zod-realm boundary between
+    // @civfix/shared's zod and the API's zod: a ZodError thrown outside a route parse() (service-level
+    // parse / .transform / nested parse) reaches the handler and must render as 422, never 500.
+    if (error.name === "ZodError" && Array.isArray((error as { issues?: unknown }).issues)) {
+      const issues = (error as unknown as { issues: { path: (string | number)[]; message: string }[] }).issues
+      const fields: Record<string, string> = {}
+      for (const i of issues) fields[i.path.length ? i.path.join(".") : "_"] = i.message
+      request.log.info({ requestId, fields }, "zod validation error")
+      const body: ErrorBody = { code: ErrorCode.VALIDATION, message: "Validation failed", requestId, fields }
+      reply.status(422).send(body)
+      return
+    }
+
     const fastifyErr = error as FastifyError
     if (fastifyErr.validation && fastifyErr.validation.length > 0) {
       const fields = fieldsFromValidation(fastifyErr)
@@ -82,11 +102,10 @@ export function makeErrorHandler() {
       return
     }
 
-    // 3) Fastify's own rate-limit / known statusCode errors (e.g. 429, 400) pass through honestly.
     const statusCode = typeof fastifyErr.statusCode === "number" ? fastifyErr.statusCode : 500
     if (statusCode < 500) {
       request.log.info({ requestId, statusCode }, "client error")
-      const code = statusCode === 429 ? ErrorCode.RATE_LIMITED : ErrorCode.VALIDATION
+      const code = STATUS_TO_CODE[statusCode] ?? ErrorCode.VALIDATION
       const body: ErrorBody = {
         code,
         message: error.message || "Request error",
@@ -96,26 +115,25 @@ export function makeErrorHandler() {
       return
     }
 
-    // 4) Everything else is an unexpected server error.
     request.log.error({ err: error, requestId }, "unhandled error")
-    captureError(error, { requestId, url: request.url, method: request.method })
+    captureError(error, { requestId, url: request.url.split("?")[0], method: request.method })
     const body: ErrorBody = {
       code: ErrorCode.INTERNAL,
-      message: isProd ? "Internal error" : (error.message ?? "Internal error"),
+      message: isProd() ? "Internal error" : (error.message ?? "Internal error"),
       requestId,
     }
     reply.status(500).send(body)
   }
 }
 
-/**
- * Not-found handler so missing routes return the same envelope as everything else.
- */
 export function makeNotFoundHandler() {
   return function notFoundHandler(request: FastifyRequest, reply: FastifyReply): void {
+    request.log.info({ method: request.method, url: request.url, requestId: request.id }, "route not found")
     const body: ErrorBody = {
       code: ErrorCode.NOT_FOUND,
-      message: `Route ${request.method} ${request.url} not found`,
+      // Prod: static (stealth). Dev/test: echo method+url so route-coverage can tell an
+      // unregistered-endpoint 404 apart from a domain (AppError) 404.
+      message: isProd() ? "Not found" : `Route ${request.method} ${request.url} not found`,
       requestId: request.id,
     }
     reply.status(404).send(body)

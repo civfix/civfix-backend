@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { Mailer } from "@civfix/shared/interfaces"
 import { AppError, ErrorCode } from "@civfix/shared"
@@ -39,6 +39,14 @@ class FlakyMailer implements Mailer {
 
 const EMAIL = "Jane.Doe@example.com"
 const IP = "203.0.113.9"
+
+// Every OTP issue/verify pays a real argon2id hash (64 MiB / 3 passes), and several tests here chain
+// or fan out multiple of them concurrently. Under full-suite concurrency the vitest worker pool
+// saturates the CPU, so a correct-but-starved run can exceed the default 5s per-test timeout and flip
+// to a (flaky) failure. The assertions are all on BEHAVIOR (injected-clock windows, attempt ceilings),
+// never on elapsed wall-clock, so a generous file-level timeout makes the suite deterministic
+// regardless of how loaded the host is — without touching production code.
+vi.setConfig({ testTimeout: 30_000 })
 
 function makeOtp(startMs = 1_700_000_000_000) {
   const clockRef = { value: startMs }
@@ -87,7 +95,6 @@ describe("OtpService.issueOtp", () => {
 
     const rows = store.all()
     expect(rows.length).toBe(1)
-    // The stored value is an argon2 hash, NOT the code.
     expect(rows[0]!.codeHash).not.toContain(code)
     expect(rows[0]!.codeHash.startsWith("$argon2id$")).toBe(true)
   })
@@ -95,9 +102,7 @@ describe("OtpService.issueOtp", () => {
   it("enforces the 1-per-60s per-email cooldown", async () => {
     const { service, advance } = makeOtp()
     await service.issueOtp(EMAIL, IP)
-    // Immediate resend is rejected.
     await expectAppError(service.issueOtp(EMAIL, IP), ErrorCode.RATE_LIMITED)
-    // After the window passes it is allowed again.
     advance((OTP_EMAIL_WINDOW_SECONDS + 1) * 1000)
     await expect(service.issueOtp(EMAIL, IP)).resolves.toBeTruthy()
   })
@@ -119,16 +124,10 @@ describe("OtpService.issueOtp", () => {
     advance((OTP_EMAIL_WINDOW_SECONDS + 1) * 1000)
     await service.issueOtp(EMAIL, IP)
 
-    // The old code can no longer be verified (superseded), but the new one can.
     await expectAppError(service.verifyOtp(EMAIL, firstCode, IP), ErrorCode.UNAUTHORIZED)
-    // Exactly one active (unconsumed) row remains.
     const active = store.all().filter((r) => r.consumedAt === null)
     expect(active.length).toBe(1)
   })
-
-  // -------------------------------------------------------------------------
-  // P1-7: a mailer failure must NOT lock the user out of an immediate retry
-  // -------------------------------------------------------------------------
 
   it("P1-7: a mailer failure does NOT lock out a legitimate immediate retry (cooldown rolled back)", async () => {
     const clockRef = { value: 1_700_000_000_000 }
@@ -178,7 +177,6 @@ describe("OtpService.verifyOtp", () => {
 
     const userId = await service.verifyOtp(EMAIL, code, IP)
     expect(userId).toMatch(/^[0-9a-f-]{36}$/)
-    // The user was created with the citizen role.
     const user = await users.findById(userId)
     expect(user?.role).toBe("citizen")
 
@@ -234,10 +232,6 @@ describe("OtpService.verifyOtp", () => {
     )
   })
 
-  // -------------------------------------------------------------------------
-  // P1-4: concurrent first-sign-in for the same NEW email resolves to ONE user (no 500)
-  // -------------------------------------------------------------------------
-
   it("P1-4: two concurrent verifies for the same brand-new email resolve to the SAME user (no 500)", async () => {
     const { service, mailer, users } = makeOtp()
     await service.issueOtp(EMAIL, IP)
@@ -252,7 +246,6 @@ describe("OtpService.verifyOtp", () => {
       service.verifyOtp(EMAIL, code, IP),
     ])
     expect(a).toBe(b)
-    // Exactly one user exists for that email.
     const user = await users.findByEmail(EMAIL)
     expect(user).not.toBeNull()
     expect(user!.id).toBe(a)
@@ -275,10 +268,6 @@ describe("OtpService.verifyOtp", () => {
     expect(n1.id).not.toBe(n2.id)
   })
 })
-
-// ---------------------------------------------------------------------------
-// P1-1: per-email + per-IP verify-failure throttle (brute-force lockout across codes)
-// ---------------------------------------------------------------------------
 
 describe("OtpService.verifyOtp throttle (P1-1)", () => {
   it("locks an email after OTP_VERIFY_EMAIL_FAIL_MAX failed verifies, even across fresh codes", async () => {
@@ -323,10 +312,6 @@ describe("OtpService.verifyOtp throttle (P1-1)", () => {
     expect(await cache.get(`otp:vf:ip:${IP}`)).toBeNull()
   })
 })
-
-// ---------------------------------------------------------------------------
-// P1-3: concurrent verifies cannot bypass the 3-attempt ceiling (atomic attempts)
-// ---------------------------------------------------------------------------
 
 describe("OtpService.verifyOtp attempt ceiling is atomic (P1-3)", () => {
   it("fires K concurrent wrong guesses; the live code is still rejected and the code ends locked", async () => {
