@@ -29,11 +29,10 @@ import {
   AnonReportRequestSchema,
   AnonReportStatusRequestSchema,
   IdSchema,
-  AppError,
   type AnonReportResponse,
   type AnonReportStatusResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { ANON_COOKIE } from "../auth/transport.js"
@@ -46,6 +45,7 @@ import { makeDrizzleAnonReportRepository } from "../services/anon-repository.dri
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
 import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 
 /** Response header carrying a freshly-issued anon token (mobile reads + re-sends it as anonToken). */
 export const ANON_TOKEN_HEADER = "x-anon-token"
@@ -71,6 +71,34 @@ declare module "fastify" {
 
 /** Path param schema for the status route. */
 const AnonReportIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+/** Per-route caps for the abuse-heavy anon surface (each attempt drives DB/Redis writes). */
+const ANON_CREATE_RATE_LIMIT = { max: 15, timeWindow: "1 minute" } as const
+const ANON_STATUS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+
+// fast-json-stringify response schemas (the 202/200 bodies serialize on the fast path; an undeclared
+// property is dropped, so the optional publishedAt MUST be listed to reach the wire).
+const AnonReportResponseJsonSchema = {
+  type: "object",
+  properties: {
+    reportId: { type: "string" },
+    status: { type: "string", enum: ["held", "published"] },
+    claimCode: { type: "string" },
+  },
+  required: ["reportId", "status", "claimCode"],
+} as const
+
+const AnonReportStatusResponseJsonSchema = {
+  type: "object",
+  properties: {
+    status: {
+      type: "string",
+      enum: ["submitted", "held", "published", "acknowledged", "in_progress", "resolved", "rejected"],
+    },
+    publishedAt: { type: "string", nullable: true },
+  },
+  required: ["status"],
+} as const
 
 export async function registerAnonRoutes(
   app: FastifyInstance,
@@ -109,91 +137,82 @@ export async function registerAnonRoutes(
     })
   }
 
-  // -------------------------------------------------------------------------
-  // POST /anon/reports  [public, full abuse stack]
-  // -------------------------------------------------------------------------
-  route(app, "anonCreateReport", async (request, reply) => {
-    const body = parse(AnonReportRequestSchema, request.body)
+  route(
+    app,
+    "anonCreateReport",
+    {
+      config: { rateLimit: ANON_CREATE_RATE_LIMIT },
+      schema: { response: { 202: AnonReportResponseJsonSchema } },
+    },
+    async (request, reply) => {
+      const body = parse(AnonReportRequestSchema, request.body)
 
-    // Resolve the presented anon token from the body (mobile echoes it as anonToken) OR, when the body
-    // does not carry one, from the readable civfix_anon cookie (web). The browser auto-resends that
-    // cookie with credentials:include, so the web round-trips WITHOUT any client change; previously only
-    // body.anonToken was read, so the cookie was ignored and a NEW token was minted every submit,
-    // resetting the per-token abuse cap. Body wins when both are present (an explicit echo is canonical).
-    const presentedAnonToken = body.anonToken ?? cookieAnonToken(request)
-    const effectiveBody =
-      presentedAnonToken !== undefined ? { ...body, anonToken: presentedAnonToken } : body
+      // Resolve the presented anon token from the body (mobile echoes it as anonToken) OR, when the body
+      // does not carry one, from the readable civfix_anon cookie (web). The browser auto-resends that
+      // cookie with credentials:include, so the web round-trips without any client change; body wins when
+      // both are present (an explicit echo is canonical). Reading the cookie is load-bearing: without it a
+      // NEW token was minted every submit, resetting the per-token abuse cap.
+      const presentedAnonToken = body.anonToken ?? cookieAnonToken(request)
+      const effectiveBody =
+        presentedAnonToken !== undefined ? { ...body, anonToken: presentedAnonToken } : body
 
-    // The presented anon token travels in the body (effectiveBody.anonToken); the context carries only
-    // the transport signals the abuse stack reads (IP + CF geo headers + UA). cfGeoTrusted gates the
-    // CF-* geo headers on the request actually arriving through a trusted proxy/edge (P1-2): request.ips
-    // has more than one entry only when Fastify trusted a forwarding hop (see cfGeoFromTrustedEdge).
-    const result = await service().submitAnonReport(effectiveBody, {
-      ip: request.ip || null,
-      cfGeo: request.headers,
-      cfGeoTrusted: cfGeoFromTrustedEdge(request),
-      ...(request.headers["user-agent"] !== undefined
-        ? { userAgent: String(request.headers["user-agent"]) }
-        : {}),
-    })
+      // cfGeoTrusted gates the spoofable CF-* geo headers on the request arriving through a trusted
+      // proxy/edge (P1-2): request.ips has >1 entry only when Fastify trusted a forwarding hop.
+      const result = await service().submitAnonReport(effectiveBody, {
+        ip: request.ip || null,
+        cfGeo: request.headers,
+        cfGeoTrusted: cfGeoFromTrustedEdge(request),
+        ...(request.headers["user-agent"] !== undefined
+          ? { userAgent: String(request.headers["user-agent"]) }
+          : {}),
+      })
 
-    // Hand back a freshly-minted anon token (when one was issued) via cookie (web) + header (mobile).
-    if (result.issuedAnonToken !== undefined) {
-      setAnonCookie(reply, result.issuedAnonToken)
-      reply.header(ANON_TOKEN_HEADER, result.issuedAnonToken)
-    }
+      if (result.issuedAnonToken !== undefined) {
+        setAnonCookie(reply, result.issuedAnonToken)
+        reply.header(ANON_TOKEN_HEADER, result.issuedAnonToken)
+      }
 
-    // 202 Accepted: the report was accepted but is HELD pending review (not yet published). This mirrors
-    // the ABUSE_HELD status semantics; the body is the AnonReportResponse with status "held".
-    const payload: AnonReportResponse = result.response
-    reply.status(202).send(payload)
-  })
+      // 202 Accepted: the report is HELD pending review (not yet published), mirroring ABUSE_HELD.
+      const payload: AnonReportResponse = result.response
+      reply.status(202).send(payload)
+    },
+  )
 
-  // -------------------------------------------------------------------------
-  // GET /anon/reports/:id/status  [public, claimCode-gated]  (dedicated tighter per-IP limit, P2-7)
-  // -------------------------------------------------------------------------
   route(
     app,
     "anonReportStatus",
-    { config: { rateLimit: ANON_STATUS_RATE_LIMIT } },
+    {
+      config: { rateLimit: ANON_STATUS_RATE_LIMIT },
+      schema: { response: { 200: AnonReportStatusResponseJsonSchema } },
+    },
     async (request, reply) => {
       const { id } = parse(AnonReportIdParamsSchema, request.params)
-      // The claim code arrives as a query param; validate the (reportId, claimCode) pair against the
-      // shared request schema so the contract is the single source of truth.
-      const q = parse(AnonReportStatusQuerySchema, request.query)
-      parse(AnonReportStatusRequestSchema, { reportId: id, claimCode: q.claimCode })
+      // Validate the (reportId, claimCode) pair against the shared request schema in ONE pass so the
+      // contract is the single source of truth (the param + query are folded in here, not re-parsed).
+      const { claimCode } = parse(AnonReportStatusRequestSchema, {
+        reportId: id,
+        claimCode: queryClaimCode(request),
+      })
 
-      const payload: AnonReportStatusResponse = await service().anonReportStatus(id, q.claimCode)
+      const payload: AnonReportStatusResponse = await service().anonReportStatus(id, claimCode)
       reply.status(200).send(payload)
     },
   )
 }
 
-/** Query schema for the status route: the claim code echoed by the client. */
-const AnonReportStatusQuerySchema = z.object({ claimCode: z.string().min(1) }).strict()
+/** The raw claimCode query value (validated by AnonReportStatusRequestSchema), or undefined when absent. */
+function queryClaimCode(request: FastifyRequest): unknown {
+  return (request.query as Record<string, unknown> | undefined)?.claimCode
+}
 
-/**
- * Dedicated tighter per-IP limit for the public claim-code status surface (P2-7). The 256-bit claim
- * code is not brute-forcible and a wrong code already 404s with a constant-time compare, so this is
- * defense-in-depth on top of the global limiter. 30/min/IP comfortably covers a client polling its own
- * held report's status while bounding automated probing.
- */
-const ANON_STATUS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
-
-/**
- * Read the anon token from the readable civfix_anon cookie (web transport). Returns undefined when the
- * cookie is absent or empty. The browser auto-resends this cookie (set on a prior submit) with
- * credentials:include, so the web client round-trips the SAME token without echoing it in the body.
- */
+/** Read the anon token from the readable civfix_anon cookie (web transport); undefined when absent/empty. */
 function cookieAnonToken(request: FastifyRequest): string | undefined {
   const value = request.cookies[ANON_COOKIE]
   return value && value.length > 0 ? value : undefined
 }
 
-/**
- * Set the readable anon-token cookie (web transport). NOT httpOnly (the SPA reads it to echo as
- * anonToken) but SameSite=Lax + Secure-in-prod, matching the CSRF cookie. Lifetime tracks the token.
- */
+// NOT httpOnly: the SPA reads this cookie to echo it back as anonToken. SameSite=Lax + Secure-in-prod
+// matches the CSRF cookie; the token carries no authority by itself (the server loads + caps the row).
 function setAnonCookie(reply: FastifyReply, token: string): void {
   reply.setCookie(ANON_COOKIE, token, {
     httpOnly: false,
@@ -202,24 +221,4 @@ function setAnonCookie(reply: FastifyReply, token: string): void {
     path: "/",
     maxAge: ANON_TOKEN_TTL_SECONDS,
   })
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on
- * failure so the canonical envelope is returned. Mirrors the other route plugins.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
-  }
 }

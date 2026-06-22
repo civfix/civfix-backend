@@ -75,6 +75,8 @@ export function makePhotonReverseGeocode(
       const res = await doFetch(url.toString(), {
         signal: controller.signal,
         headers: { Accept: "application/json" },
+        // A compromised/MITM Photon must not be able to 30x us into an internal address (SSRF).
+        redirect: "error",
       })
       if (!res.ok) return null
       const data = (await res.json()) as { features?: { properties?: PhotonReverseProps }[] }

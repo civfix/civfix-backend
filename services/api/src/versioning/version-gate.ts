@@ -27,7 +27,13 @@
 
 import { AppError } from "@civfix/shared"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
-import { isBelowMinSupported, isVersionSegment, versionStatus } from "./policy.js"
+import {
+  isBelowMinSupported,
+  isServedVersion,
+  isVersionSegment,
+  validateVersionPolicy,
+  versionStatus,
+} from "./policy.js"
 
 /** Extract the first path segment of a URL, ignoring any query string. e.g. "/v1/reports?x=1" → "v1". */
 function firstPathSegment(url: string): string {
@@ -45,6 +51,8 @@ function firstPathSegment(url: string): string {
  * deprecated version, attaching the `Deprecation`/`Sunset` response headers.
  */
 export async function registerVersionGate(app: FastifyInstance): Promise<void> {
+  // Fail boot on an inconsistent policy (served/min version missing or sunset) rather than at request time.
+  validateVersionPolicy()
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const seg = firstPathSegment(request.url)
 
@@ -60,6 +68,14 @@ export async function registerVersionGate(app: FastifyInstance): Promise<void> {
     if (status === null) {
       // A vN the contract does not define at all.
       throw AppError.unsupportedApiVersion()
+    }
+
+    // SERVED_VERSIONS is the operational on/off switch (single source of truth): a contract-defined but
+    // not-served version is rejected here, regardless of its lifecycle entry.
+    if (!isServedVersion(seg)) {
+      throw status.status === "sunset"
+        ? AppError.apiVersionSunset()
+        : AppError.unsupportedApiVersion()
     }
 
     switch (status.status) {
@@ -79,6 +95,12 @@ export async function registerVersionGate(app: FastifyInstance): Promise<void> {
         return
       case "sunset":
         throw AppError.apiVersionSunset()
+      default: {
+        // A new VersionLifecycle member must declare its handling above; this never-assignment makes the
+        // omission a compile error, and the throw fails closed rather than falling through to allow.
+        const _exhaustive: never = status.status
+        return _exhaustive
+      }
     }
   })
 }

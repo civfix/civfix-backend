@@ -41,7 +41,7 @@ import type {
   CreateAnonReportTxResult,
 } from "./anon-service.js"
 import { ANON_REPORT_CREATE_SCOPE } from "./anon-service.js"
-import type { AnonTokenRecord } from "../abuse/anon-token.js"
+import type { AnonTokenRecord, AnonTokenStore } from "../abuse/anon-token.js"
 import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
@@ -79,11 +79,27 @@ function toTokenRecord(r: AnonTokenRowSelect): AnonTokenRecord {
   }
 }
 
-// ---------------------------------------------------------------------------
-// AnonReportRepository
-// ---------------------------------------------------------------------------
+/** The shared AnonTokenStore over anon_tokens (both anon repos compose it). */
+function anonTokenStore(sql: Sql): AnonTokenStore {
+  return {
+    async insert(row: AnonTokenRecord): Promise<void> {
+      await sql`
+        INSERT INTO anon_tokens (id, created_at, expires_at, report_count, flagged, claim_code)
+        VALUES (${row.id}, ${row.createdAt}, ${row.expiresAt}, ${row.reportCount}, ${row.flagged}, ${row.claimCode})
+      `
+    },
+    async findById(id: string): Promise<AnonTokenRecord | null> {
+      const rows = await sql<AnonTokenRowSelect[]>`
+        SELECT id, created_at, expires_at, report_count, flagged, claim_code
+        FROM anon_tokens WHERE id = ${id} LIMIT 1
+      `
+      return rows[0] ? toTokenRecord(rows[0]) : null
+    },
+  }
+}
 
 export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository {
+  const tokens = anonTokenStore(sql)
   async function readSnapshot(key: string, scope: string): Promise<AnonReportResponse | null> {
     const rows = await sql<{ response_snapshot: AnonReportResponse }[]>`
       SELECT response_snapshot
@@ -95,28 +111,12 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
   }
 
   return {
-    // --- AnonTokenStore ---
-    async insert(row: AnonTokenRecord): Promise<void> {
-      await sql`
-        INSERT INTO anon_tokens (id, created_at, expires_at, report_count, flagged, claim_code)
-        VALUES (${row.id}, ${row.createdAt}, ${row.expiresAt}, ${row.reportCount}, ${row.flagged}, ${row.claimCode})
-      `
-    },
+    ...tokens,
 
-    async findById(id: string): Promise<AnonTokenRecord | null> {
-      const rows = await sql<AnonTokenRowSelect[]>`
-        SELECT id, created_at, expires_at, report_count, flagged, claim_code
-        FROM anon_tokens WHERE id = ${id} LIMIT 1
-      `
-      return rows[0] ? toTokenRecord(rows[0]) : null
-    },
-
-    // --- idempotency ---
     async findIdempotentSnapshot(key: string, scope: string): Promise<AnonReportResponse | null> {
       return readSnapshot(key, scope)
     },
 
-    // --- held-create transaction ---
     async createAnonReportTx(args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult> {
       try {
         const snapshot = await sql.begin(async (tx) => {
@@ -234,7 +234,6 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
       }
     },
 
-    // --- status lookup ---
     async findAnonReportStatus(reportId: string): Promise<AnonReportStatusRow | null> {
       // The claim code is stored PER REPORT (0005), so read it straight off the report row - no
       // anon_tokens join (which used to return the LATEST submit's code, breaking older reports).
@@ -263,27 +262,11 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
   }
 }
 
-// ---------------------------------------------------------------------------
-// ClaimRepository
-// ---------------------------------------------------------------------------
-
 export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
   return {
-    // --- AnonTokenStore (resolveAnonToken needs findById; insert is unused on this path) ---
-    async insert(row: AnonTokenRecord): Promise<void> {
-      await sql`
-        INSERT INTO anon_tokens (id, created_at, expires_at, report_count, flagged, claim_code)
-        VALUES (${row.id}, ${row.createdAt}, ${row.expiresAt}, ${row.reportCount}, ${row.flagged}, ${row.claimCode})
-      `
-    },
-
-    async findById(id: string): Promise<AnonTokenRecord | null> {
-      const rows = await sql<AnonTokenRowSelect[]>`
-        SELECT id, created_at, expires_at, report_count, flagged, claim_code
-        FROM anon_tokens WHERE id = ${id} LIMIT 1
-      `
-      return rows[0] ? toTokenRecord(rows[0]) : null
-    },
+    // ClaimRepository extends AnonTokenStore; the claim path only reads (findById), but the store carries
+    // insert too. Composing the shared store keeps the two anon repos byte-identical here.
+    ...anonTokenStore(sql),
 
     async findPendingByTokenId(tokenId: string): Promise<PendingAnonReport | null> {
       // The claim code now lives on the report row (0005). The nudge surfaces the most recent

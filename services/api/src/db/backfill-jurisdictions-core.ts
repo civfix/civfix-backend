@@ -19,13 +19,10 @@ import type postgres from "postgres"
 import type { Sql } from "./client.js"
 import { JURISDICTION_LAYER_RANK_CASE } from "./sql/jurisdiction.js"
 
-/** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
 type SqlFragment = postgres.Fragment
 
-/**
- * How many reports to select + update per round-trip. Large enough to amortize per-batch latency, small
- * enough to keep each UPDATE's spatial work (a GiST-indexed ST_Contains per row) bounded.
- */
+// Large enough to amortize per-batch latency, small enough to keep each UPDATE's spatial work
+// (a GiST-indexed ST_Contains per row) bounded.
 const BATCH_SIZE = 1000
 
 /**
@@ -56,22 +53,34 @@ export async function backfillReports(sql: Sql): Promise<{ resolved: number; sta
 
     const batchIds = batch.map((b) => b.id)
 
-    // Resolve each report point to its most-specific containing jurisdiction and stamp it. The LATERAL
-    // subquery picks the single best polygon using the SHARED ranking constant (sql.unsafe — trusted,
-    // code-defined, identical to the write-time resolver). Rows outside every polygon match nothing → stay
-    // NULL → absent from RETURNING. The IN(...) / IS NULL guards keep the statement idempotent.
+    // Resolve each report point to its most-specific containing jurisdiction and stamp it. A correlated
+    // scalar subquery (inside a CTE) picks the single best polygon using the SHARED ranking constant
+    // (sql.unsafe — trusted, code-defined, identical to the write-time resolver). This is a CTE + join, NOT
+    // `UPDATE reports r ... FROM LATERAL (... r.geom ...)`: Postgres forbids a LATERAL FROM-item from
+    // referencing the UPDATE target table (error 42P10, "cannot be referenced from this part of the
+    // query"). Inside the CTE's plain SELECT the correlation to `r` IS allowed. Rows outside every polygon
+    // resolve to a NULL geoid, are filtered by `m.geoid IS NOT NULL` → stay NULL → absent from RETURNING.
+    // The IN(...) / IS NULL guards keep the statement idempotent.
     const updated = await sql<{ id: string }[]>`
+      WITH matches AS (
+        SELECT
+          r.id,
+          (
+            SELECT geoid
+            FROM jurisdictions
+            WHERE ST_Contains(geom, r.geom)
+            ORDER BY ${sql.unsafe(JURISDICTION_LAYER_RANK_CASE)}
+            LIMIT 1
+          ) AS geoid
+        FROM reports r
+        WHERE r.jurisdiction_geoid IS NULL
+          AND r.id IN ${sql(batchIds)}
+      )
       UPDATE reports r
-      SET jurisdiction_geoid = j.geoid
-      FROM LATERAL (
-        SELECT geoid
-        FROM jurisdictions
-        WHERE ST_Contains(geom, r.geom)
-        ORDER BY ${sql.unsafe(JURISDICTION_LAYER_RANK_CASE)}
-        LIMIT 1
-      ) j
-      WHERE r.jurisdiction_geoid IS NULL
-        AND r.id IN ${sql(batchIds)}
+      SET jurisdiction_geoid = m.geoid
+      FROM matches m
+      WHERE r.id = m.id
+        AND m.geoid IS NOT NULL
       RETURNING r.id
     `
 

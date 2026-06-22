@@ -116,6 +116,12 @@ export function normalizeFeatures(
   const rows: IngestRow[] = []
   let skipped = 0
   for (const f of fc.features ?? []) {
+    // A FeatureCollection from an untrusted converter can carry a null/non-object slot; count it as
+    // skipped rather than letting normalizeFeature throw on a null `.geometry` access.
+    if (typeof f !== "object" || f === null) {
+      skipped += 1
+      continue
+    }
     const row = normalizeFeature(f, defaultLayer, geoidPrefix)
     if (row === null) skipped += 1
     else rows.push(row)

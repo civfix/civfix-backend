@@ -79,10 +79,13 @@ export class WsChatService implements ChatService {
     let room = this.rooms.get(cleanupId)
     if (!room) {
       const connections = new Set<ChatConnection>()
-      // Subscribe first so no published frame is missed once the room exists. The handler decodes the
-      // internal envelope (message + optional excludeConnId), then delivers the CLIENT-facing
-      // {type:"message"} frame to every local connection EXCEPT the excluded one (the sender, P1-2).
-      const unsubscribe = await this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
+      // Populate the room in the Map BEFORE awaiting subscribe so two concurrent first-joins for the same
+      // cleanup can't both subscribe and leak the loser's unsubscribe handle (TOCTOU). The placeholder
+      // unsubscribe is a no-op until the real handle lands (leaveRoom can only fire after a connection is
+      // added below, which happens after this assignment).
+      const newRoom: Room = { connections, unsubscribe: async () => {} }
+      this.rooms.set(cleanupId, newRoom)
+      newRoom.unsubscribe = await this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
         const current = this.rooms.get(cleanupId)
         if (!current) return
         const { frame, excludeConnId } = decodeEnvelope(payload)
@@ -91,8 +94,7 @@ export class WsChatService implements ChatService {
           c.send(frame)
         }
       })
-      room = { connections, unsubscribe }
-      this.rooms.set(cleanupId, room)
+      room = newRoom
     }
     room.connections.add(conn)
   }
@@ -185,7 +187,9 @@ export class WsChatService implements ChatService {
   async close(): Promise<void> {
     const unsubs = [...this.rooms.values()].map((r) => r.unsubscribe())
     this.rooms.clear()
-    await Promise.all(unsubs)
+    // allSettled, not all: one rejected unsubscribe must NOT skip pubsub.close() and leak the dedicated
+    // Redis subscriber connection (which keeps the event loop alive past SIGTERM).
+    await Promise.allSettled(unsubs)
     await this.pubsub.close()
   }
 

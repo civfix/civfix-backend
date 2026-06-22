@@ -24,10 +24,6 @@
 
 import { customType } from "drizzle-orm/pg-core"
 
-// ---------------------------------------------------------------------------
-// PostGIS geometry custom type
-// ---------------------------------------------------------------------------
-
 /** Geometry subtypes we use. Mirrors the PostGIS type modifier names. */
 export type GeometrySubtype = "Point" | "MultiPolygon" | "Polygon" | "Geometry"
 
@@ -51,10 +47,6 @@ export const geometry = customType<{ data: unknown; driverData: string; config: 
   },
 })
 
-// ---------------------------------------------------------------------------
-// CITEXT custom type
-// ---------------------------------------------------------------------------
-
 /**
  * Case-insensitive text via the CITEXT extension. Identical to `text` in JS (`data: string`); the
  * database does the case-insensitive comparison and uniqueness. Used for email + handle columns.
@@ -64,10 +56,6 @@ export const citext = customType<{ data: string; driverData: string }>({
     return "citext"
   },
 })
-
-// ---------------------------------------------------------------------------
-// Enum value tuples (mirrors of @civfix/shared zod enums; see file header)
-// ---------------------------------------------------------------------------
 
 /** users.role / cleanup_members.role authority enum. Mirrors shared RoleSchema. */
 export const ROLE_VALUES = ["citizen", "gov_user", "gov_admin", "operator"] as const
@@ -176,10 +164,8 @@ export const ABUSE_SOURCE_VALUES = ["worker", "api", "user_report"] as const
 /** jurisdiction_discovery_tasks.status. Mirrors shared DiscoveryStatusSchema. */
 export const DISCOVERY_STATUS_VALUES = ["open", "in_progress", "done"] as const
 
-// ---------------------------------------------------------------------------
-// Phase 2 (admin / operator) enum value tuples. These mirror the @civfix/shared
-// admin enums and the CHECK constraints in drizzle/0007_admin_phase2.sql.
-// ---------------------------------------------------------------------------
+// Phase 2 (admin/operator) enum tuples — mirror the @civfix/shared admin enums and the CHECK constraints
+// in drizzle/0007_admin_phase2.sql.
 
 /** gov_claims.method. Mirrors shared GovMethodSchema. */
 export const GOV_METHOD_VALUES = ["email", "cold_outreach"] as const

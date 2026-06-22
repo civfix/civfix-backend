@@ -24,7 +24,7 @@ export const auditLog = pgTable(
   (t) => [
     index("audit_log_actor_created_idx").on(t.actorId, t.createdAt),
     index("audit_log_action_idx").on(t.action),
-    // --- Performance indexes added in drizzle/0013_perf_indexes.sql ---
+    // Performance indexes (drizzle/0013_perf_indexes.sql) — each backs a specific access pattern.
     // Activity-feed audit branch: global newest-first scan.
     index("audit_log_created_idx").on(t.createdAt.desc()),
     // Admin audit list keyset (created_at DESC, id DESC).

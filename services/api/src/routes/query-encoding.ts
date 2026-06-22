@@ -20,16 +20,25 @@
 import { z } from "zod"
 import { BBoxSchema, LatLngSchema, ReportCategorySchema, ReportTypeSchema } from "@civfix/shared"
 
+// Upper bound on a JSON-encoded query param BEFORE we parse it. A bbox/near object is tiny (well under
+// this); the cap stops an unauthenticated GET from forcing a megabytes-of-valid-JSON parse on the event
+// loop (DoS) before validation ever runs. Over-cap is a 422, identical to malformed JSON.
+const MAX_JSON_PARAM_LEN = 4096
+
 /**
  * A query param that is a JSON-encoded object, validated against `inner` after parsing. The client
  * sends `?bbox=<JSON.stringify(bbox)>`; here we JSON.parse the string then pipe through the shared
- * object schema. Bad JSON or a value that does not match `inner` yields a Zod issue (-> 422 at the
- * route's parse()), never a thrown SyntaxError.
+ * object schema. An over-length value, bad JSON, or a value that does not match `inner` yields a Zod
+ * issue (-> 422 at the route's parse()), never a thrown SyntaxError.
  */
 function jsonParam<S extends z.ZodTypeAny>(inner: S) {
   return z
     .string()
     .transform((raw, ctx) => {
+      if (raw.length > MAX_JSON_PARAM_LEN) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "JSON param too large" })
+        return z.NEVER
+      }
       try {
         return JSON.parse(raw) as unknown
       } catch {
@@ -38,6 +47,21 @@ function jsonParam<S extends z.ZodTypeAny>(inner: S) {
       }
     })
     .pipe(inner)
+}
+
+/**
+ * A query param sent as repeated keys (string[]) OR a single CSV string, each token validated against
+ * `element`. An unknown token is a 422 (not a silent drop); the result is a non-empty array. Omit the key
+ * entirely for "no filter". (Used for `categories` and `types`.)
+ */
+function csvOrRepeated<S extends z.ZodTypeAny>(element: S) {
+  return z
+    .union([z.string(), z.array(z.string())])
+    .transform((value) => {
+      const tokens = Array.isArray(value) ? value.flatMap((v) => v.split(",")) : value.split(",")
+      return tokens.map((t) => t.trim()).filter((t) => t.length > 0)
+    })
+    .pipe(z.array(element).min(1))
 }
 
 /**
@@ -58,34 +82,8 @@ export const BBoxQueryParam = jsonParam(BBoxSchema).refine(
 /** near as the client sends it: a single JSON-encoded LatLng object param. */
 export const LatLngQueryParam = jsonParam(LatLngSchema)
 
-/**
- * categories as the client sends it: repeated params (string[]). For resilience we ALSO accept a single
- * string, splitting it on commas (a CSV) so a hand-built `?categories=trash,hazard` still works. Each
- * token is validated against ReportCategory, so an unknown token is a 422 (not a silent drop). The
- * result is a non-empty ReportCategory[]; omit the key entirely for "no filter".
- *
- * Use inside a route schema like: `categories: CategoriesQueryParam.optional()`.
- */
-export const CategoriesQueryParam = z
-  .union([z.string(), z.array(z.string())])
-  .transform((value) => {
-    // A repeated param is already an array; a single param may be a CSV. Normalize both to tokens.
-    const tokens = Array.isArray(value) ? value.flatMap((v) => v.split(",")) : value.split(",")
-    return tokens.map((t) => t.trim()).filter((t) => t.length > 0)
-  })
-  .pipe(z.array(ReportCategorySchema).min(1))
+/** categories: repeated params or a single CSV, each token a ReportCategory. `categories: CategoriesQueryParam.optional()`. */
+export const CategoriesQueryParam = csvOrRepeated(ReportCategorySchema)
 
-/**
- * types as the client sends it (0021): the fine-grained-type analogue of CategoriesQueryParam. Repeated
- * params (string[]) or a single CSV string, each token validated against ReportType (an unknown token is a
- * 422, not a silent drop). The result is a non-empty ReportType[]; omit the key for "no type filter".
- *
- * Use inside a route schema like: `types: TypesQueryParam.optional()`.
- */
-export const TypesQueryParam = z
-  .union([z.string(), z.array(z.string())])
-  .transform((value) => {
-    const tokens = Array.isArray(value) ? value.flatMap((v) => v.split(",")) : value.split(",")
-    return tokens.map((t) => t.trim()).filter((t) => t.length > 0)
-  })
-  .pipe(z.array(ReportTypeSchema).min(1))
+/** types (0021): the fine-grained-type analogue of categories, each token a ReportType. */
+export const TypesQueryParam = csvOrRepeated(ReportTypeSchema)

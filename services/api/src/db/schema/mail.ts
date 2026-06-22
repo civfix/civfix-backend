@@ -1,15 +1,10 @@
 /**
- * Mail (Phase 2): two-way mail with municipal contacts (outreach + replies) and the OCI delivery
- * event feed. Three tables:
+ * Mail (Phase 2): two-way mail with municipal contacts (outreach + replies) plus the OCI delivery event
+ * feed — mail_threads, mail_messages, mail_events.
  *
- *   - mail_threads   one conversation. thread_token is minted into reply+{token}@{MAIL_REPLY_DOMAIN}
- *                    and is globally UNIQUE. status drives the mailbox filters; unread/last_message_at
- *                    drive the list ordering + badge.
- *   - mail_messages  one message in a thread. direction in|out. attachments jsonb: array of
- *                    { key (R2), filename, size }. message_id / in_reply_to support inbound threading.
- *   - mail_events    OCI delivery webhook feed (sent/delivered/bounced/complained/opened) that
- *                    deliverability stats aggregate over a rolling window. thread_id / message_id are
- *                    nullable (an event may arrive before correlation).
+ * GOTCHAS: mail_threads.thread_token is minted into reply+{token}@{MAIL_REPLY_DOMAIN} and is globally
+ * UNIQUE (it routes inbound replies back to the thread). mail_events.thread_id / message_id are nullable
+ * because a delivery event can arrive before it is correlated to a thread/message.
  *
  * The status / direction / type CHECKs are enforced in 0007_admin_phase2.sql.
  *

@@ -80,16 +80,49 @@ export function makeDrizzleAnonHoldReleaseRepo(sql: Sql): AnonHoldReleaseRepo {
       return rows[0]?.n ?? 0
     },
 
-    async publishHeldReport(reportId: string, publishedAt: Date): Promise<boolean> {
+    async publishHeldReport(
+      reportId: string,
+      publishedAt: Date,
+      mediaIds: string[] = [],
+    ): Promise<boolean> {
       return sql.begin(async (tx) => {
-        // Flip only while still held (idempotent under a concurrent release).
-        const updated = await tx<{ id: string }[]>`
+        // Lock the report row so the gate re-check + flip are serialized against a concurrent release.
+        const locked = await tx<{ id: string }[]>`
+          SELECT id FROM reports
+          WHERE id = ${reportId} AND status = ${"held"} AND deleted_at IS NULL
+          FOR UPDATE
+        `
+        if (locked.length === 0) return false
+
+        // RE-CHECK the gate inside the tx (closes the read-then-publish TOCTOU): any media that is no
+        // longer "ready" blocks publication.
+        const notReady = await tx<{ n: number }[]>`
+          SELECT COUNT(*)::int AS n FROM media_assets
+          WHERE report_id = ${reportId} AND status <> ${"ready"}
+        `
+        if ((notReady[0]?.n ?? 0) > 0) return false
+
+        // Any OPEN abuse_flag on the report or one of its media (re-evaluated in-tx) blocks publication.
+        const mediaClause =
+          mediaIds.length > 0
+            ? tx`OR (subject_type = 'media' AND subject_id IN ${tx(mediaIds)})`
+            : tx``
+        const openFlags = await tx<{ n: number }[]>`
+          SELECT COUNT(*)::int AS n
+          FROM abuse_flags
+          WHERE resolved_at IS NULL
+            AND (
+              (subject_type = 'report' AND subject_id = ${reportId})
+              ${mediaClause}
+            )
+        `
+        if ((openFlags[0]?.n ?? 0) > 0) return false
+
+        await tx`
           UPDATE reports
           SET status = ${"published"}, published_at = ${publishedAt}
           WHERE id = ${reportId} AND status = ${"held"} AND deleted_at IS NULL
-          RETURNING id
         `
-        if (updated.length === 0) return false
         await tx`
           INSERT INTO report_timeline (report_id, status, note, actor_id)
           VALUES (${reportId}, ${"published"}, ${"Released after automated review"}, ${null})

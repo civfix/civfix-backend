@@ -6,9 +6,7 @@
  * activity for idle-timeout/analytics.
  */
 
-import { pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
-import { inet } from "drizzle-orm/pg-core"
-import { index } from "drizzle-orm/pg-core"
+import { index, inet, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 
 export const sessions = pgTable(

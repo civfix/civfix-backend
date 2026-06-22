@@ -176,7 +176,8 @@ export class CensusJurisdictionLookup implements JurisdictionLookup {
         format: "json",
       })
       const url = `${this.baseUrl}?${params.toString()}`
-      const res = await this.fetchImpl(url, { signal: controller.signal })
+      // redirect:"error" so a compromised/MITM Census endpoint can't 30x us into an internal address.
+      const res = await this.fetchImpl(url, { signal: controller.signal, redirect: "error" })
       if (!res.ok) return null
 
       // Parse the body in its own guard: a 200 with a truncated/HTML body must degrade to null, not throw.

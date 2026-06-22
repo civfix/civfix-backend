@@ -76,6 +76,9 @@ export interface AbuseChecksConfig {
 /** Cloudflare Turnstile server-side verification endpoint. */
 const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
+/** Bound the siteverify call so a hung Cloudflare endpoint can't stall the auth/anon-report hot path. */
+const TURNSTILE_TIMEOUT_MS = 4000
+
 /** Max plausible distance (km) between two independent location signals before we flag the point. */
 const GPS_MAX_KM = 50
 
@@ -115,27 +118,42 @@ export class RealAbuseChecks implements AbuseChecks {
     // remoteip is optional but recommended; only send a real value.
     if (ip && ip.length > 0) body.set("remoteip", ip)
 
-    let res: Response
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), TURNSTILE_TIMEOUT_MS)
     try {
-      res = await fetch(TURNSTILE_VERIFY_URL, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
-      })
-    } catch (err) {
-      // Transport failure: we cannot confirm a human, so fail closed by surfacing an error. (Preserve
-      // the cause on the Error chain without depending on the AppError factory accepting options.)
-      const wrapped = AppError.internal("Turnstile verification request failed")
-      ;(wrapped as { cause?: unknown }).cause = err
-      throw wrapped
-    }
+      let res: Response
+      try {
+        res = await fetch(TURNSTILE_VERIFY_URL, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body,
+          signal: controller.signal,
+        })
+      } catch (err) {
+        // Transport failure / timeout abort: we cannot confirm a human, so fail closed by surfacing an
+        // error. (Preserve the cause on the Error chain without depending on the AppError factory options.)
+        const wrapped = AppError.internal("Turnstile verification request failed")
+        ;(wrapped as { cause?: unknown }).cause = err
+        throw wrapped
+      }
 
-    if (!res.ok) {
-      throw AppError.internal(`Turnstile verification returned HTTP ${res.status}`)
-    }
+      if (!res.ok) {
+        throw AppError.internal(`Turnstile verification returned HTTP ${res.status}`)
+      }
 
-    const json = (await res.json()) as TurnstileVerifyResponse
-    return json.success === true
+      // A 200 with a non-JSON body must fail closed, not throw a raw SyntaxError out of the method.
+      let json: TurnstileVerifyResponse
+      try {
+        json = (await res.json()) as TurnstileVerifyResponse
+      } catch (err) {
+        const wrapped = AppError.internal("Turnstile verification returned a non-JSON body")
+        ;(wrapped as { cause?: unknown }).cause = err
+        throw wrapped
+      }
+      return json.success === true
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**
@@ -156,11 +174,16 @@ export class RealAbuseChecks implements AbuseChecks {
   /**
    * Near-duplicate check. Delegates to the injected lookup (e.g. a media_assets phash query) when wired;
    * otherwise returns the documented benign default { dup: false } (fail open) rather than throwing, so
-   * a missing dedupe index never blocks legitimate uploads.
+   * a missing dedupe index never blocks legitimate uploads. `opts` forwards the self/sibling exclusions
+   * (P0-2 / #43) to the lookup — the AbuseChecks interface omits them, so a caller using the seam (vs the
+   * worker's direct query) must pass them explicitly or accept exclusion-unaware behavior.
    */
-  async isNearDuplicate(hash: string): Promise<NearDuplicateResult> {
+  async isNearDuplicate(hash: string, opts?: FindPhashDuplicateOpts): Promise<NearDuplicateResult> {
     if (this.config.findPhashDuplicate) {
-      return this.config.findPhashDuplicate(hash)
+      // Forward opts only when present so an opts-unaware call stays a single-arg invocation.
+      return opts === undefined
+        ? this.config.findPhashDuplicate(hash)
+        : this.config.findPhashDuplicate(hash, opts)
     }
     return { dup: false }
   }

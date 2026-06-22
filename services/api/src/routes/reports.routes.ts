@@ -26,7 +26,6 @@ import {
   UnlistReportRequestSchema,
   PaginationQuerySchema,
   IdSchema,
-  AppError,
   type ReportDTO,
   type GetReportResponse,
   type ListMyReportsResponse,
@@ -34,7 +33,7 @@ import {
   type ReportClusterResponse,
   type FollowReportResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -53,7 +52,12 @@ import { makeDrizzleDiscussionRepository } from "../services/discussion-reposito
 import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
 import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
+
+// Tighter per-IP cap on authed report-create (vs the global 300/min): a write triggers a jurisdiction
+// resolve + media presign + DB insert. 20/min is ample for a real reporter while bounding spam.
+const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
 /** Shared street-level reverse geocoder (Photon). Falls back to the local "City, ST" label per call. */
 const photonReverseGeocode = makePhotonReverseGeocode()
@@ -85,48 +89,46 @@ declare module "fastify" {
 /** Path param schema for the routes that take a report UUID in the URL. */
 const ReportIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-/**
- * Query schema for GET /map/reports, decoding EXACTLY what the shared client sends (see
- * ./query-encoding.ts): bbox as a single JSON-encoded object param, categories as repeated params (or a
- * CSV for resilience), and a scalar zoom. We decode here, then re-validate the assembled shape against
- * the shared nested ListReportsInBBoxRequest below so the wire contract stays the single source of
- * truth. NOT .strict(): qs may surface extra/unknown params (and tolerating them is more robust for a
- * public GET), but the re-validation against the shared .strict() schema still rejects a malformed body.
- */
-/**
- * zoom decoder (P2): the client sends a scalar; we coerce then HARD-bound it. The shared schema's
- * `zoom: z.number()` is frozen and does not clamp, and the clustering math (clusterCellSizeDeg) has no
- * NaN/range guard of its own - a NaN zoom would map every point to a "NaN:NaN" grid cell and emit a
- * single cluster at NaN coords (which serializes to null -> a broken pin). z.coerce.number() turns a
- * non-numeric string into NaN, so we explicitly reject non-finite via .int() (NaN/Infinity fail int) and
- * bound to a sane web tile range [0, 22]. A bad zoom is now a clean 422, not a corrupt cluster.
- */
+// zoom decoder: the shared `zoom: z.number()` does not clamp and clusterCellSizeDeg has no range guard, so
+// a NaN zoom would emit a cluster at NaN coords (serializes to null = a broken pin). .int() rejects
+// non-finite (NaN/Infinity fail int); bound to a sane web tile range. A bad zoom is a clean 422.
 const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
 
-const MapReportsQuerySchema = z.object({
-  bbox: BBoxQueryParam,
-  categories: CategoriesQueryParam.optional(),
-  // Fine-grained type filter (0021): applied alongside categories. Same repeated-param/CSV wire form.
-  types: TypesQueryParam.optional(),
-  zoom: ZoomQueryParam,
-})
+// GET /map/reports query: decode the client's wire form (JSON bbox + repeated/CSV categories + scalar
+// zoom), then `.pipe` the assembled object through the shared .strict() contract in ONE parse pass — the
+// wire contract stays the single source of truth without a second full Zod pass on this hottest read.
+const MapReportsQuerySchema = z
+  .object({
+    bbox: BBoxQueryParam,
+    categories: CategoriesQueryParam.optional(),
+    types: TypesQueryParam.optional(),
+    zoom: ZoomQueryParam,
+  })
+  .transform((q) => ({
+    bbox: q.bbox,
+    ...(q.categories !== undefined ? { categories: q.categories } : {}),
+    ...(q.types !== undefined ? { types: q.types } : {}),
+    zoom: q.zoom,
+  }))
+  .pipe(ListReportsInBBoxRequestSchema)
 
-/**
- * Query schema for GET /reports/search, decoding EXACTLY what the shared client sends: a scalar `q`, a
- * scalar `cursor`, a coerced scalar `limit`, and `categories` as repeated params (or a CSV) decoded via
- * the SAME CategoriesQueryParam the map uses. We decode here, then re-validate the assembled shape against
- * the shared ListReportsSearchRequestSchema below so the wire contract stays the single source of truth.
- * NOT .strict(): a public GET may surface extra/unknown params from qs; the shared .strict() re-validation
- * still rejects a malformed assembled body.
- */
-const SearchReportsQuerySchema = z.object({
-  q: z.string().optional(),
-  categories: CategoriesQueryParam.optional(),
-  // Fine-grained type filter (0021): applied alongside categories. Same repeated-param/CSV wire form.
-  types: TypesQueryParam.optional(),
-  cursor: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(50).optional(),
-})
+// GET /reports/search query: same decode-then-pipe single-parse pattern as the map read.
+const SearchReportsQuerySchema = z
+  .object({
+    q: z.string().optional(),
+    categories: CategoriesQueryParam.optional(),
+    types: TypesQueryParam.optional(),
+    cursor: z.string().optional(),
+    limit: z.coerce.number().int().positive().max(50).optional(),
+  })
+  .transform((q) => ({
+    ...(q.q !== undefined ? { q: q.q } : {}),
+    ...(q.categories !== undefined ? { categories: q.categories } : {}),
+    ...(q.types !== undefined ? { types: q.types } : {}),
+    ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
+    ...(q.limit !== undefined ? { limit: q.limit } : {}),
+  }))
+  .pipe(ListReportsSearchRequestSchema)
 
 /**
  * Compiled-serializer JSON Schema for the GET /map/reports 200 body (perf).
@@ -301,32 +303,28 @@ export async function registerReportRoutes(
     })
   }
 
-  // -------------------------------------------------------------------------
-  // POST /reports  [auth][csrf]
-  // -------------------------------------------------------------------------
-  route(app, "createReport", { preHandler: csrfProtect }, async (request, reply) => {
-    // Anonymous callers must use /anon/reports (the next step); a report here requires a signed-in user.
-    const userId = requireAuth(request)
-    const body = parse(CreateReportRequestSchema, request.body)
-    // The create response IS a ReportDTO (the shared contract has no distinct CreateReportResponse).
-    // 201 Created on first insert; an idempotent replay also returns 201 with the original ReportDTO
-    // (the effect already happened, and the body is the same report - the client cannot tell, by design).
-    const dto: ReportDTO = await service().createReport(body, { userId })
-    reply.status(201).send(dto)
-  })
+  // POST /reports  [auth][csrf]  (anonymous callers use /anon/reports). 201 on first insert; an idempotent
+  // replay also returns 201 with the original ReportDTO (the client cannot tell, by design).
+  route(
+    app,
+    "createReport",
+    { preHandler: csrfProtect, config: { rateLimit: CREATE_REPORT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(CreateReportRequestSchema, request.body)
+      const dto: ReportDTO = await service().createReport(body, { userId })
+      reply.status(201).send(dto)
+    },
+  )
 
-  // -------------------------------------------------------------------------
   // GET /reports/:id  (anon-ok)
-  // -------------------------------------------------------------------------
   route(app, "getReport", async (request, reply) => {
     const { id } = parse(ReportIdParamsSchema, request.params)
     const dto: GetReportResponse = await service().getReport(id, ownerOf(request))
     reply.status(200).send(dto)
   })
 
-  // -------------------------------------------------------------------------
   // GET /reports  [auth]  (the caller's own reports)
-  // -------------------------------------------------------------------------
   route(app, "listMyReports", async (request, reply) => {
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
@@ -334,20 +332,10 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
   // GET /map/reports  (anon-ok)
-  // -------------------------------------------------------------------------
   route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } } }, async (request, reply) => {
-    // Decode the client's wire form (JSON bbox + repeated categories + scalar zoom).
-    const q = parse(MapReportsQuerySchema, request.query)
-    // Re-validate the assembled shape against the shared schema so the wire contract is the single
-    // source of truth. q.categories is already a validated ReportCategory[] (or undefined = no filter).
-    const validated = parse(ListReportsInBBoxRequestSchema, {
-      bbox: q.bbox,
-      ...(q.categories !== undefined ? { categories: q.categories } : {}),
-      ...(q.types !== undefined ? { types: q.types } : {}),
-      zoom: q.zoom,
-    })
+    // One parse: MapReportsQuerySchema decodes the wire form and pipes it through the shared contract.
+    const validated = parse(MapReportsQuerySchema, request.query)
     const payload: ReportClusterResponse = await service().listReportsInBBox(
       validated.bbox,
       validated.categories ?? null,
@@ -355,37 +343,21 @@ export async function registerReportRoutes(
       validated.zoom,
     )
     // Anon-ok and identical across all viewers for a given bbox+zoom+categories: a short shared TTL lets
-    // browsers and Cloudflare absorb repeated pans/loads without re-running the spatial query + cluster
-    // serialization every time. Kept short (60s) because report data is dynamic — mirrors GET /map/cleanups.
-    // (Edge caching also needs a CF cache rule for /v1/map/*; the origin header alone only buys
-    // browser-cache + revalidation.)
+    // browsers and Cloudflare absorb repeated pans without re-running the spatial query + serialization.
+    // (Edge caching also needs a CF cache rule for /v1/map/*; the origin header alone only buys browser
+    // revalidation.)
     reply.header("Cache-Control", "public, max-age=60")
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
   // GET /reports/search  (anon-ok)
-  // -------------------------------------------------------------------------
   route(app, "searchReports", async (request, reply) => {
-    // Decode the client's wire form (scalar q/cursor/limit + repeated categories), then re-validate the
-    // assembled shape against the shared schema so the wire contract is the single source of truth.
-    // q.categories is already a validated ReportCategory[] (or undefined = no filter); the others pass
-    // through. Mirrors GET /map/reports' decode-then-revalidate; public/optional-auth like the map read.
-    const decoded = parse(SearchReportsQuerySchema, request.query)
-    const validated = parse(ListReportsSearchRequestSchema, {
-      ...(decoded.q !== undefined ? { q: decoded.q } : {}),
-      ...(decoded.categories !== undefined ? { categories: decoded.categories } : {}),
-      ...(decoded.types !== undefined ? { types: decoded.types } : {}),
-      ...(decoded.cursor !== undefined ? { cursor: decoded.cursor } : {}),
-      ...(decoded.limit !== undefined ? { limit: decoded.limit } : {}),
-    })
+    const validated = parse(SearchReportsQuerySchema, request.query)
     const payload: ListReportsSearchResponse = await service().searchReports(validated)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
   // POST /reports/:id/follow  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "followReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(ReportIdParamsSchema, request.params)
@@ -393,9 +365,7 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
   // DELETE /reports/:id/follow  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "unfollowReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(ReportIdParamsSchema, request.params)
@@ -403,27 +373,20 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
   // POST /reports/:id/resolve  [auth][csrf]  (the reporter marks their own report resolved / reopens it)
-  // -------------------------------------------------------------------------
   route(app, "resolveReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(ReportIdParamsSchema, request.params)
-    // Merge the authoritative path id into the body before validating (the client also sends it in the
-    // body; the URL value wins) — mirrors the discussion routes' param+body reconciliation.
+    // Merge the authoritative path id into the body before validating (the URL value wins over the body's).
     const body = parse(ResolveReportRequestSchema, { ...(request.body as object), id })
     const dto: ReportDTO = await service().resolveReport(userId, id, body.resolved)
     reply.status(200).send(dto)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /reports/:id/unlist  [auth][csrf]  (the reporter hides their own report from the public map / re-lists it)
-  // -------------------------------------------------------------------------
+  // POST /reports/:id/unlist  [auth][csrf]  (the reporter hides their own report / re-lists it)
   route(app, "unlistReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(ReportIdParamsSchema, request.params)
-    // Merge the authoritative path id into the body before validating (the client also sends it in the
-    // body; the URL value wins) — mirrors the resolveReport route's param+body reconciliation.
     const body = parse(UnlistReportRequestSchema, { ...(request.body as object), id })
     const dto: ReportDTO = await service().unlistReport(userId, id, body.unlisted)
     reply.status(200).send(dto)
@@ -446,25 +409,5 @@ function ownerOf(request: FastifyRequest): { userId?: string | undefined; anonSe
   return {
     userId: auth?.userId ?? undefined,
     anonSessionId: auth?.anonSessionId ?? undefined,
-  }
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on
- * failure so the canonical envelope is returned instead of a generic 500. Mirrors the other routes.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
   }
 }

@@ -16,24 +16,19 @@
  * DATABASE_URL + live Postgres when run as a CLI; not exercised by the offline unit suite.
  */
 
-import { fileURLToPath } from "node:url"
 import type { Sql } from "./client.js"
-import { makeDb } from "./client.js"
-import { loadEnv } from "../env.js"
+import { runDbCli, runIfMain } from "./cli.js"
 import { JURISDICTION_SEEDS } from "./seed-fixtures.js"
 import { FEDERAL_LANDS, federalLandGeoJson } from "./data/federal-lands.js"
 
 /**
  * Insert the seed jurisdictions. Returns the number of rows actually inserted (0 if everything was
  * already present). Safe to call multiple times.
- *
- * @param sql raw postgres-js tag (e.g. dbHandle.sql).
  */
 export async function seedJurisdictions(sql: Sql): Promise<number> {
   let inserted = 0
   for (const j of JURISDICTION_SEEDS) {
     const [xmin, ymin, xmax, ymax] = j.bbox
-    // ST_MakeEnvelope(xmin, ymin, xmax, ymax, 4326) -> Polygon; ST_Multi(...) -> MultiPolygon(4326).
     const rows = await sql`
       INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population, contact_emails)
       VALUES (
@@ -87,24 +82,11 @@ export async function seedFederalLands(sql: Sql): Promise<number> {
 }
 
 async function main(): Promise<void> {
-  const env = loadEnv()
-  const handle = makeDb(env.DATABASE_URL, { max: 1 })
-  try {
+  await runDbCli(async (_db, sql) => {
     const total = JURISDICTION_SEEDS.length + FEDERAL_LANDS.length
-    const inserted = await seedJurisdictions(handle.sql)
+    const inserted = await seedJurisdictions(sql)
     console.log(`seed: jurisdictions seeded (${inserted} inserted, ${total - inserted} already present)`)
-  } finally {
-    await handle.close()
-  }
-}
-
-// Run only when executed directly (tsx src/db/seed.ts), not when imported by the harness/tests.
-const invokedDirectly =
-  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]
-if (invokedDirectly) {
-  main().catch((err: unknown) => {
-    console.error("seed: failed")
-    console.error(err)
-    process.exit(1)
   })
 }
+
+runIfMain(import.meta.url, "seed", main)

@@ -27,17 +27,13 @@
  * keyset loop is covered by the Docker-gated integration harness). Mirrors backfill-jurisdictions.ts.
  */
 
-import { fileURLToPath } from "node:url"
 import type postgres from "postgres"
 import type { Sql } from "./client.js"
-import { makeDb } from "./client.js"
-import { loadEnv } from "../env.js"
+import { runDbCli, runIfMain } from "./cli.js"
 import { jurisdictionHandle } from "../services/discussion-mentions.js"
 
-/** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
 type SqlFragment = postgres.Fragment
 
-/** How many jurisdictions to select + update per round-trip. */
 const BATCH_SIZE = 1000
 
 /**
@@ -100,7 +96,11 @@ export async function backfillHandles(sql: Sql): Promise<{ assigned: number; ski
 
 /**
  * Pick a free handle for a geoid: the bare slug when unclaimed (in-process + in-DB), else "<slug>_<tail>"
- * with the geoid's last 4 chars. Deterministic per geoid so a re-run lands the same handle.
+ * (the geoid's last 4 chars), then "<slug>_<tail>_2", "_3", … LOOPING until an unclaimed candidate is
+ * found. Looping (vs trying only the bare slug + one tail candidate) is required: with ≥3 jurisdictions
+ * sharing a slug AND trailing-4 geoid, or a re-run, both prior candidates could be taken — returning an
+ * already-claimed value would violate the partial UNIQUE on lower(handle) and abort the whole backfill.
+ * Deterministic per geoid so a re-run lands the same handle.
  */
 async function claimHandle(
   sql: Sql,
@@ -117,29 +117,21 @@ async function claimHandle(
   }
   if (!(await taken(base))) return base
   const tail = geoid.slice(-4)
-  return `${base}_${tail}`
-}
-
-async function main(): Promise<void> {
-  const env = loadEnv()
-  const handle = makeDb(env.DATABASE_URL, { max: 1 })
-  try {
-    const { assigned, skipped } = await backfillHandles(handle.sql)
-    console.log(
-      `backfill-handles: done - ${assigned} jurisdictions got a handle, ${skipped} skipped (no usable slug)`,
-    )
-  } finally {
-    await handle.close()
+  const withTail = `${base}_${tail}`
+  if (!(await taken(withTail))) return withTail
+  for (let n = 2; ; n++) {
+    const candidate = `${withTail}_${n}`
+    if (!(await taken(candidate))) return candidate
   }
 }
 
-// Run only when executed directly (tsx src/db/backfill-jurisdiction-handles.ts), not when imported.
-const invokedDirectly =
-  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]
-if (invokedDirectly) {
-  main().catch((err: unknown) => {
-    console.error("backfill-handles: failed")
-    console.error(err)
-    process.exit(1)
+async function main(): Promise<void> {
+  await runDbCli(async (_db, sql) => {
+    const { assigned, skipped } = await backfillHandles(sql)
+    console.log(
+      `backfill-handles: done - ${assigned} jurisdictions got a handle, ${skipped} skipped (no usable slug)`,
+    )
   })
 }
+
+runIfMain(import.meta.url, "backfill-handles", main)

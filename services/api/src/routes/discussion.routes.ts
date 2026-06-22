@@ -9,18 +9,14 @@
  *   POST   /reports/:id/discussion/:messageId/reactions       [auth][csrf]   toggle a reaction.
  *   DELETE /reports/:id/discussion/:messageId                 [auth][csrf]   author deletes their message.
  *
- * Method/path/version + auth come from the shared endpoint registry via route(); each body/param/query is
- * validated against the shared Zod schema (the same parse() -> AppError.validation pattern as the other
- * route files). The READS are anon-ok: the viewer is the optional request.auth.userId (drives `mine` +
- * per-emoji `mine`); a held/hidden report 404s a non-owner (enforced inside the service). The WRITES carry
- * csrfProtect AND a tighter per-IP rate limit (the same @fastify/rate-limit route-level config the dm /
- * users routes use) so a chatty/abusive client cannot flood the thread.
+ * The READS are anon-ok: the viewer is the optional request.auth.userId (drives `mine`); a held/hidden
+ * report 404s a non-owner (enforced inside the service). The WRITES carry csrfProtect AND a tighter per-IP
+ * rate limit so a chatty/abusive client cannot flood the thread.
  *
- * The discussion service is built per request from either an injected override bundle (tests: an in-memory
- * repo + a fake presigner + a stub OutboundMailService, so the whole flow runs offline) or from the
- * container (production: the Drizzle repo, the Storage presign seam, the OutboundMailService over the
- * Drizzle mail repo, the ChatService WS broadcast, and the best-effort report-owner/parent-author bell).
- * Built lazily so merely mounting the plugin opens no connection.
+ * The discussion service is built per request from either an injected override bundle (tests: in-memory
+ * repo + fake presigner + stub OutboundMailService) or from the container (production: Drizzle repo,
+ * Storage presign, OutboundMailService, ChatService WS broadcast, and the best-effort bells). Built lazily
+ * so merely mounting the plugin opens no connection.
  */
 
 import {
@@ -29,16 +25,16 @@ import {
   DiscussionHistoryQuerySchema,
   ToggleReactionRequestSchema,
   IdSchema,
-  AppError,
   type DiscussionMessageDTO,
   type DiscussionPageResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import {
   makeDiscussionService,
@@ -57,23 +53,123 @@ import { roomKeyFor } from "../ws/gateway.js"
 import { makeNotificationService } from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 
-/** Path-param schema for the report-id-only routes. */
 const ReportIdParamsSchema = z.object({ id: IdSchema }).strict()
-/** Path-param schema for the routes that also carry a message id (replies / reactions / delete). */
 const MessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()
 
-/**
- * Tighter per-IP rate limit for discussion WRITES (post / react / delete): a real commenter posts a
- * handful of times a minute; 30/min bounds automated flooding while staying ample for normal use. Mirrors
- * the dm/users route-level @fastify/rate-limit config (the global ceiling still applies underneath).
- */
+// Tighter per-IP rate limit for discussion WRITES (post / react / delete): 30/min bounds automated
+// flooding while staying ample for a real commenter. The global ceiling still applies underneath.
 export const DISCUSSION_WRITE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
-/**
- * Optional injected discussion-service dependencies (tests). When present the routes build the service
- * from these instead of the container, so the whole read/post/react/delete HTTP flow runs offline. The
- * broadcast/notify hooks are left to the service's optional deps (a test usually omits them).
- */
+// fast-json-stringify response schema for the anon-ok list reads (the 2-3x serialization path). Every DTO
+// field is listed so none is silently dropped; optional fields (editedAt/deletedAt/codec/thumbUrl/etc.)
+// are present in `properties` but absent from `required`, preserving the wire contract.
+const DiscussionMessageJsonSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    reportId: { type: "string" },
+    parentId: { type: "string", nullable: true },
+    author: {
+      type: "object",
+      nullable: true,
+      properties: {
+        id: { type: "string" },
+        displayName: { type: "string" },
+        handle: { type: "string", nullable: true },
+        avatar: { type: "array", items: { type: "string" }, nullable: true },
+        avatarUrl: { type: "string", nullable: true },
+        deleted: { type: "boolean" },
+      },
+      required: ["id", "displayName"],
+    },
+    body: { type: "string" },
+    attachments: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          kind: { type: "string", enum: ["image", "video"] },
+          codec: { type: "string", nullable: true },
+          url: { type: "string" },
+          thumbUrl: { type: "string", nullable: true },
+          width: { type: "number", nullable: true },
+          height: { type: "number", nullable: true },
+          status: { type: "string", enum: ["validating", "ready", "rejected", "held"] },
+        },
+        required: ["id", "kind", "url", "status"],
+      },
+    },
+    reactions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          emoji: { type: "string" },
+          count: { type: "number" },
+          mine: { type: "boolean" },
+        },
+        required: ["emoji", "count", "mine"],
+      },
+    },
+    mentions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          handle: { type: "string" },
+          displayName: { type: "string" },
+        },
+        required: ["id", "handle", "displayName"],
+      },
+    },
+    replyCount: { type: "number" },
+    cityMention: {
+      type: "object",
+      nullable: true,
+      properties: {
+        handle: { type: "string" },
+        geoid: { type: "string" },
+        name: { type: "string" },
+        forwarded: { type: "boolean" },
+      },
+      required: ["handle", "geoid", "name", "forwarded"],
+    },
+    forwardedToCity: { type: "boolean" },
+    createdAt: { type: "string" },
+    editedAt: { type: "string", nullable: true },
+    deletedAt: { type: "string", nullable: true },
+    mine: { type: "boolean" },
+  },
+  required: [
+    "id",
+    "reportId",
+    "parentId",
+    "author",
+    "body",
+    "attachments",
+    "reactions",
+    "mentions",
+    "replyCount",
+    "cityMention",
+    "forwardedToCity",
+    "createdAt",
+    "mine",
+  ],
+} as const
+
+const DiscussionPageResponseJsonSchema = {
+  type: "object",
+  properties: {
+    items: { type: "array", items: DiscussionMessageJsonSchema },
+    nextCursor: { type: "string", nullable: true },
+  },
+  required: ["items", "nextCursor"],
+} as const
+
+// Optional injected discussion-service dependencies (tests). The broadcast/notify hooks are left to the
+// service's optional deps (a test usually omits them).
 export interface DiscussionServiceOverrides {
   repo: DiscussionRepository
   outboundMail: OutboundMailService
@@ -88,7 +184,6 @@ export interface DiscussionServiceOverrides {
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected discussion-service overrides (tests). See DiscussionServiceOverrides. */
     discussionOverrides?: DiscussionServiceOverrides
   }
 }
@@ -97,7 +192,6 @@ export async function registerDiscussionRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  /** Build the discussion service from injected overrides (tests) or the container seams (production). */
   function service(): DiscussionService {
     const overrides = app.discussionOverrides
     if (overrides) {
@@ -134,11 +228,9 @@ export async function registerDiscussionRoutes(
       repo,
       outboundMail,
       presignMedia: defaultPresign(container),
-      // Live fan-out over the report-discussion WS room. Best-effort + fire-and-forget: the broadcast
-      // signal must NEVER affect the HTTP response, so we void the (optional) broadcastEvent promise and
-      // swallow any fan-out failure (mirrors the gateway's fire-and-forget signals). roomKeyFor is the
-      // single source of truth for the "rd:" room-key prefix (exported from the gateway). Discussion
-      // writes go over HTTP, so this is the ONLY place that fans out the {type:"discussion"} frame.
+      // Live fan-out over the report-discussion WS room. roomKeyFor is the single source of truth for the
+      // "rd:" room-key prefix; discussion writes go over HTTP, so this is the ONLY place that fans out the
+      // {type:"discussion"} frame. Fire-and-forget: a fan-out failure must never affect the HTTP response.
       broadcast: (reportId, event) => {
         void Promise.resolve(
           container.chatService.broadcastEvent?.(roomKeyFor("report_discussion", reportId), {
@@ -148,60 +240,56 @@ export async function registerDiscussionRoutes(
           }),
         ).catch(() => {})
       },
-      // Best-effort report-owner / parent-author bell on a new message/reply (reuses the EXISTING
-      // `report_update` notification type — no contract change). Fully fire-and-forget: a notify failure
-      // must never affect the HTTP response. In the all-fakes dev path (no DB) there is no notification
-      // store, so the hook is left unwired (the WS live signal + the follow bell still provide awareness).
+      // Best-effort report-owner / parent-author bell. Unwired in the all-fakes dev path (no notification
+      // store), where the WS live signal + follow bell still provide awareness.
       ...(container.env.USE_FAKE_CHAT
         ? {}
         : { notifyOnMessage: makeDiscussionNotifier(container) }),
-      // USER @-mention resolution: combine parsed @handles + the request's mentionedUserIds into real users
-      // (self excluded). Anyone may be tagged; the resolver applies NO block/pref filtering (that gates the
-      // notification only). Runs over the lazily-created DB handle, so no connection opens until a write.
+      // USER @-mention resolution over the lazily-created DB handle (no connection until a write). No
+      // block/pref filtering here (that gates the notification only).
       resolveMentions: (input) => resolveMentionTargets(sql, input),
-      // Best-effort per-mentioned-user bell (reuses the EXISTING `report_update` notification type — no
-      // contract change). Block-gated here (a mentioner the target blocked, or vice versa, raises no bell);
-      // pref-gated inside the notification service. Skipped in the all-fakes dev path (no notification store).
+      // Best-effort per-mentioned-user bell. Block-gated here; pref-gated inside the notification service.
       ...(container.env.USE_FAKE_CHAT
         ? {}
         : { notifyMention: makeMentionNotifier(container) }),
     })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /reports/:id/discussion  (anon-ok)
-  // -------------------------------------------------------------------------
-  route(app, "getReportDiscussion", async (request, reply) => {
-    const { id } = parse(ReportIdParamsSchema, request.params)
-    const q = parse(DiscussionHistoryQuerySchema, request.query)
-    const payload: DiscussionPageResponse = await service().list(
-      id,
-      viewerOf(request),
-      q.cursor ?? null,
-      q.limit ?? 0,
-    )
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "getReportDiscussion",
+    { schema: { response: { 200: DiscussionPageResponseJsonSchema } } },
+    async (request, reply) => {
+      const { id } = parse(ReportIdParamsSchema, request.params)
+      const q = parse(DiscussionHistoryQuerySchema, request.query)
+      const payload: DiscussionPageResponse = await service().list(
+        id,
+        viewerOf(request),
+        q.cursor ?? null,
+        q.limit ?? 0,
+      )
+      reply.status(200).send(payload)
+    },
+  )
 
-  // -------------------------------------------------------------------------
-  // GET /reports/:id/discussion/:messageId/replies  (anon-ok)
-  // -------------------------------------------------------------------------
-  route(app, "getDiscussionReplies", async (request, reply) => {
-    const { id, messageId } = parse(MessageParamsSchema, request.params)
-    const q = parse(DiscussionHistoryQuerySchema, request.query)
-    const payload: DiscussionPageResponse = await service().listReplies(
-      id,
-      messageId,
-      viewerOf(request),
-      q.cursor ?? null,
-      q.limit ?? 0,
-    )
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "getDiscussionReplies",
+    { schema: { response: { 200: DiscussionPageResponseJsonSchema } } },
+    async (request, reply) => {
+      const { id, messageId } = parse(MessageParamsSchema, request.params)
+      const q = parse(DiscussionHistoryQuerySchema, request.query)
+      const payload: DiscussionPageResponse = await service().listReplies(
+        id,
+        messageId,
+        viewerOf(request),
+        q.cursor ?? null,
+        q.limit ?? 0,
+      )
+      reply.status(200).send(payload)
+    },
+  )
 
-  // -------------------------------------------------------------------------
-  // POST /reports/:id/discussion  [auth][csrf]  (rate-limited)
-  // -------------------------------------------------------------------------
   route(
     app,
     "postDiscussionMessage",
@@ -209,8 +297,8 @@ export async function registerDiscussionRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(ReportIdParamsSchema, request.params)
-      // The body schema carries the report id (the typed client fills `:id` into the object); the
-      // authoritative id is the URL path, so stamp it before validating.
+      // The body schema carries the report id (the typed client fills `:id`); the authoritative id is the
+      // URL path, so stamp it before validating.
       const body = parse(CreateDiscussionMessageRequestSchema, { ...(request.body as object), id })
       const dto: DiscussionMessageDTO = await service().createMessage(id, userId, {
         body: body.body,
@@ -222,9 +310,6 @@ export async function registerDiscussionRoutes(
     },
   )
 
-  // -------------------------------------------------------------------------
-  // PATCH /reports/:id/discussion/:messageId  [auth][csrf]  (rate-limited)
-  // -------------------------------------------------------------------------
   route(
     app,
     "editDiscussionMessage",
@@ -232,9 +317,8 @@ export async function registerDiscussionRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id, messageId } = parse(MessageParamsSchema, request.params)
-      // The body schema carries both path ids (the typed client fills them in); the authoritative ids are
-      // the URL path, so stamp them before validating. `body` (1..4000) is required; `mediaUploadIds`
-      // (optional) REPLACES the attachment set. The service enforces author-only (404 if not the author).
+      // The authoritative ids are the URL path; stamp them before validating. The service enforces
+      // author-only (404 if not the author).
       const body = parse(EditDiscussionMessageRequestSchema, {
         ...(request.body as object),
         id,
@@ -249,9 +333,6 @@ export async function registerDiscussionRoutes(
     },
   )
 
-  // -------------------------------------------------------------------------
-  // POST /reports/:id/discussion/:messageId/reactions  [auth][csrf]  (rate-limited)
-  // -------------------------------------------------------------------------
   route(
     app,
     "toggleDiscussionReaction",
@@ -270,9 +351,6 @@ export async function registerDiscussionRoutes(
     },
   )
 
-  // -------------------------------------------------------------------------
-  // DELETE /reports/:id/discussion/:messageId  [auth][csrf]  (rate-limited)
-  // -------------------------------------------------------------------------
   route(
     app,
     "deleteDiscussionMessage",
@@ -291,7 +369,6 @@ export async function registerDiscussionRoutes(
   )
 }
 
-/** Build the default media presigner over the container's Storage seam (mirrors the report path). */
 function defaultPresign(container: Container): DiscussionServiceDeps["presignMedia"] {
   return async (r2Key: string, thumbKey: string | null) => {
     const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
@@ -302,20 +379,16 @@ function defaultPresign(container: Container): DiscussionServiceDeps["presignMed
 }
 
 /**
- * Build the best-effort post-create notification hook (production). Reuses the EXISTING `report_update`
- * notification type (so NO @civfix/shared contract change): on a new TOP-LEVEL message the report's owner
- * is notified; on a REPLY the parent message's author is notified. The actor (author) is always excluded,
- * and a missing recipient (anonymous report / system-authored parent / self) is skipped. Fully
- * fire-and-forget: the hook voids the createNotification promise and swallows failures, so a notify error
- * never affects the discussion-post HTTP response (the notification service ALSO swallows its push/signal
- * failures internally). The notification service is built off the lazily-created DB handle here, the same
- * per-request construction the chat/social/notification routes use.
+ * Best-effort post-create notification hook (production). Reuses the EXISTING `report_update` type (NO
+ * @civfix/shared change): a new TOP-LEVEL message notifies the report owner; a REPLY notifies the parent
+ * author. Self / missing recipient is skipped. Fully fire-and-forget: a notify error never affects the
+ * HTTP response. Built off the lazily-created DB handle (the same per-request construction the other
+ * routes use).
  */
 function makeDiscussionNotifier(
   container: Container,
 ): NonNullable<DiscussionServiceDeps["notifyOnMessage"]> {
   return (input) => {
-    // Resolve the single recipient: the parent author for a reply, else the report owner. Exclude self.
     const recipient = input.isReply ? input.parentAuthorUserId : input.reportOwnerUserId
     if (recipient === null || recipient === input.actorUserId) return
     void Promise.resolve()
@@ -339,15 +412,10 @@ function makeDiscussionNotifier(
 }
 
 /**
- * Build the best-effort per-mentioned-user notification hook (production). Reuses the EXISTING `report_update`
- * notification type so NO @civfix/shared contract change (the frozen notification enum gains nothing). The
- * mention bell is GATED: it is suppressed when the actor and the mentioned user blocked each other either way
- * (so a block silences a mention ping) AND when the mentioned user has muted the dedicated `mentions` pref
- * (checked here because the reused `report_update` type cannot distinguish a mention in typeAllowedByPrefs),
- * and the notification service then applies the user's notification prefs/quiet-hours to the push. Self is
- * already excluded by the service. Fully fire-and-forget: a notify
- * failure (or a blocks/DB hiccup) never affects the discussion HTTP response. Built off the lazily-created DB
- * handle, the same per-request construction the chat/social/notification routes use.
+ * Best-effort per-mentioned-user notification hook (production). Reuses `report_update` (no shared change).
+ * GATED: suppressed when the actor and mentioned user blocked each other either way AND when the mentioned
+ * user muted the dedicated `mentions` pref (checked here because the reused `report_update` type cannot
+ * distinguish a mention in typeAllowedByPrefs). Self is already excluded by the service. Fire-and-forget.
  */
 function makeMentionNotifier(
   container: Container,
@@ -355,7 +423,6 @@ function makeMentionNotifier(
   return (input) => {
     void Promise.resolve()
       .then(async () => {
-        // Block gate: do not raise a mention bell when either party blocked the other.
         const blocks = container.getBlocksRepo()
         if (await blocks.isBlockedEitherWay(input.actorUserId, input.mentionedUserId)) return
         const notifications = makeNotificationService({
@@ -363,8 +430,6 @@ function makeMentionNotifier(
           pushSender: container.pushSender,
           userChannel: container.userChannel,
         })
-        // Honor the dedicated `mentions` mute. The bell reuses the `report_update` type, so the per-type
-        // pref gate inside the service cannot distinguish a mention — enforce the mentions toggle here.
         const prefs = await notifications.getPrefs(input.mentionedUserId)
         if (!prefs.mentions) return
         await notifications.createNotification(input.mentionedUserId, {
@@ -378,27 +443,6 @@ function makeMentionNotifier(
   }
 }
 
-/** Resolve the optional viewer user id from the resolved auth (anon-ok reads). */
 function viewerOf(request: FastifyRequest): string | null {
   return request.auth?.userId ?? null
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on failure
- * so the canonical envelope is returned instead of a generic 500. Mirrors the other route plugins.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
-  }
 }

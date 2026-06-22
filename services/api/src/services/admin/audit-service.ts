@@ -15,10 +15,6 @@
 import type { AuditListQuery, AuditListResponse, AuditLogEntryDTO } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 
-// ---------------------------------------------------------------------------
-// Repository seam (structural records; faked in tests)
-// ---------------------------------------------------------------------------
-
 /** Normalized list arguments the repo consumes (the filters + the page window). */
 export interface ListAuditArgs {
   actor: string | null
@@ -51,13 +47,10 @@ export interface AuditRepository {
   list(args: ListAuditArgs): Promise<{ records: AuditRecord[]; nextCursor: string | null }>
 }
 
-// ---------------------------------------------------------------------------
-// Pure projection (no DB, no IO)
-// ---------------------------------------------------------------------------
-
 /**
- * Project an audit record into the strict AuditLogEntryDTO. `target` falls back to "" so the strict DTO
- * (which requires a string) stays valid for a NULL target; `meta` falls back to {} for a NULL meta.
+ * Project an audit record into the strict AuditLogEntryDTO. `target` falls back to "" and `meta` to {}
+ * for the strict DTO's required fields. `createdAt` is `DEFAULT now()` (nullable in the DDL); a
+ * hand-inserted NULL row would otherwise throw on `.toISOString()` → 500 on the list, so guard it.
  */
 export function toAuditEntryDTO(record: AuditRecord): AuditLogEntryDTO {
   return {
@@ -67,7 +60,7 @@ export function toAuditEntryDTO(record: AuditRecord): AuditLogEntryDTO {
     action: record.action,
     target: record.target ?? "",
     meta: record.meta ?? {},
-    createdAt: record.createdAt.toISOString(),
+    createdAt: (record.createdAt ?? new Date(0)).toISOString(),
   }
 }
 
@@ -77,10 +70,6 @@ function cleanFilter(value: string | undefined): string | null {
   const trimmed = value.trim()
   return trimmed === "" ? null : trimmed
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 export interface AuditServiceDeps {
   repo: AuditRepository

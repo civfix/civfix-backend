@@ -19,7 +19,7 @@ import {
   type ClaimNudgeResponse,
   type ClaimReportResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -28,9 +28,10 @@ import { ANON_COOKIE } from "../auth/transport.js"
 import { makeClaimService, type ClaimService } from "../services/claim-service.js"
 import { makeDrizzleClaimRepository } from "../services/anon-repository.drizzle.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
-import { makeReportService } from "../services/report-service.js"
+import { makeReportService, type ReportService } from "../services/report-service.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 
 /**
  * Optional injected claim-service (tests). When present the routes use it directly so the nudge/claim
@@ -63,32 +64,39 @@ export async function registerClaimRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  // The report service is only needed to project the claimed ReportDTO and depends only on the stable
+  // container seams (sql + storage), so build it ONCE on first use instead of per request (the prior code
+  // rebuilt the whole report repo + presign closure on every nudge/claim). Tests bypass it via claimOverride.
+  let reportServiceMemo: ReportService | undefined
+  function reportService(): ReportService {
+    if (reportServiceMemo === undefined) {
+      reportServiceMemo = makeReportService({
+        repo: makeDrizzleReportRepository(container.getDb().sql),
+        resolveJurisdictionGeoid: () => Promise.resolve(null),
+        presignMedia: async (r2Key, thumbKey) => {
+          const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
+          if (thumbKey === null) return { url }
+          const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
+          return { url, thumbUrl }
+        },
+      })
+    }
+    return reportServiceMemo
+  }
+
   /** Build the claim service from an injected override (tests) or the container seams (production). */
   function service(): ClaimService {
     const override = app.claimOverride
     if (override) return override.service
 
-    const sql = container.getDb().sql
-    const reportService = makeReportService({
-      repo: makeDrizzleReportRepository(sql),
-      resolveJurisdictionGeoid: () => Promise.resolve(null),
-      presignMedia: async (r2Key, thumbKey) => {
-        const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
-        if (thumbKey === null) return { url }
-        const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
-        return { url, thumbUrl }
-      },
-    })
     return makeClaimService({
-      repo: makeDrizzleClaimRepository(sql),
+      repo: makeDrizzleClaimRepository(container.getDb().sql),
       anonTokenSigningKey: container.env.ANON_TOKEN_SIGNING_KEY,
-      getReportForOwner: (reportId, owner) => reportService.getReport(reportId, owner),
+      getReportForOwner: (reportId, owner) => reportService().getReport(reportId, owner),
     })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /claim/nudge  [anon-ok]  (dedicated tighter per-IP limit, P2-7)
-  // -------------------------------------------------------------------------
+  // GET /claim/nudge  [anon-ok]  (dedicated tighter per-IP limit)
   route(app, "claimNudge", { config: { rateLimit: CLAIM_RATE_LIMIT } }, async (request, reply) => {
     const q = parse(ClaimNudgeQuerySchema, request.query)
     // Prefer the query param (mobile) and fall back to the readable anon cookie (web).
@@ -101,9 +109,7 @@ export async function registerClaimRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /claim/report  [auth][csrf]  (dedicated tighter per-IP limit, P2-7)
-  // -------------------------------------------------------------------------
+  // POST /claim/report  [auth][csrf]  (dedicated tighter per-IP limit)
   route(
     app,
     "claimReport",
@@ -115,24 +121,4 @@ export async function registerClaimRoutes(
       reply.status(200).send(payload)
     },
   )
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on
- * failure so the canonical envelope is returned. Mirrors the other route plugins.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
-  }
 }

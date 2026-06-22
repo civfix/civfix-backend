@@ -6,31 +6,18 @@
  * accept per hour. This is orthogonal to the per-IP cap: it throttles geographic concentration even
  * when the abuser rotates IPs.
  *
- * ANON-ONLY: authenticated users are exempt. A signed-in reporter is accountable (and publishes
- * immediately, per plan 11.7), so the geographic cap does not apply to them; only the anon path calls
- * `enforceH3CellCap`. The exemption is expressed by the call site (the anon-service calls this; the
- * authed report-service does not), and asserted by `h3CellCapExempt`.
- *
- * RESOLUTION: a SINGLE config constant ABUSE_H3_RES controls the cell size so the policy can flip from
- * r10 to r9 by changing one number. H3 res 10 cells are ~130 m across (vertex to vertex; ~65 m average
- * edge, ~0.015 km^2 area); r9 is ~3x coarser. r10 matches reports.h3_cell so an operator reasons about
- * one granularity. This cell is used ONLY for the anon abuse cap below; the MAP CLUSTER cell sizing is a
- * SEPARATE, zoom-derived degree grid (see report-service.clusterCellSizeDeg) and is unrelated to H3.
- *
- * Pure vs seam: `abuseH3Cell` is the pure cell computation (wraps h3-js); `enforceH3CellCap` is the
- * thin CounterStore integration, so both are unit-testable with an in-memory CounterStore and no Redis.
+ * ANON-ONLY: authenticated users are exempt (accountable + publish immediately, per plan 11.7); only the
+ * anon path calls `enforceH3CellCap`. The exemption is expressed by the call site and asserted by
+ * `h3CellCapExempt`. This cap is ORTHOGONAL to the per-IP cap (it throttles geographic concentration
+ * even when the abuser rotates IPs), and the abuse cell is UNRELATED to map clustering (that uses a
+ * separate zoom-derived degree grid, not H3).
  */
 
 import { latLngToCell } from "h3-js"
 import { AppError } from "@civfix/shared"
 import type { CounterStore } from "./counter-store.js"
 
-/**
- * H3 resolution for the per-cell ANON abuse cap. SINGLE source of truth for this control's granularity:
- * flip to 9 to coarsen the cell (one number changes the whole policy). H3 res 10 cells are ~130 m across
- * (~65 m edge, ~0.015 km^2); this matches reports.h3_cell. NOT related to map clustering (that uses a
- * separate zoom-derived degree grid, not H3).
- */
+/** H3 resolution for the per-cell ANON abuse cap (single number flips the whole policy). r10 ~130 m across, matches reports.h3_cell. */
 export const ABUSE_H3_RES = 10
 
 /** Max anonymous submissions a single H3 cell will accept per hour. */

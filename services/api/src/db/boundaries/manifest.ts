@@ -154,6 +154,11 @@ export function boundaryManifest(
   vintage: number | "latest" = DEFAULT_TIGER_VINTAGE,
 ): BoundaryJob[] {
   const year = vintage === "latest" ? DEFAULT_TIGER_VINTAGE : vintage
+  // Reject a non-integer / out-of-range vintage here rather than letting it 404 at fetch time with a
+  // confusing URL like .../TIGERNaN. The Census TIGER program began in 2007.
+  if (!Number.isInteger(year) || year < 2007 || year > 2100) {
+    throw new Error(`boundaryManifest: invalid TIGER vintage ${String(vintage)}`)
+  }
   const root = tigerRoot(year)
 
   const jobs: BoundaryJob[] = []

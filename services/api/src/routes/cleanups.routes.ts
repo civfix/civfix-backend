@@ -1,20 +1,19 @@
 /**
  * Cleanup route plugin.
  *
- *   POST /cleanups               [auth][csrf]        create a cleanup (organizer auto-joins).
- *   GET  /cleanups               [anon-ok]           list cleanups (when/bbox/near filters, cursor paged).
- *   GET  /cleanups/:id           [anon-ok]           fetch one cleanup.
- *   POST /cleanups/:id/join      [auth][csrf]        join (idempotent); returns {joined, going}.
- *   POST /cleanups/:id/leave     [auth][csrf]        leave (organizer cannot leave); returns {joined, going}.
- *   GET  /cleanups/:id/messages  [auth][MEMBER-gated] chat history -> ChatHistoryResponse.
+ *   POST  /cleanups               [auth][csrf]         create a cleanup (organizer auto-joins).
+ *   PATCH /cleanups/:id           [auth][csrf]         organizer edit (scalars + linked-report reconcile).
+ *   POST  /cleanups/:id/cancel    [auth][csrf]         organizer cancel (notifies attendees).
+ *   GET   /cleanups               [anon-ok]            list cleanups (when/bbox/near, cursor paged).
+ *   GET   /cleanups/:id           [anon-ok]            fetch one cleanup.
+ *   POST  /cleanups/:id/join      [auth][csrf]         join (idempotent); returns {joined, going}.
+ *   POST  /cleanups/:id/leave     [auth][csrf]         leave (organizer cannot leave); {joined, going}.
+ *   GET   /cleanups/:id/attendees [anon-ok]            the "who's going" roster (viewer-scoped).
+ *   GET   /cleanups/:id/messages  [auth][MEMBER-gated] chat history -> ChatHistoryResponse.
  *
- * Bodies/params/queries are validated against the @civfix/shared Zod schemas via the same `parse` ->
- * AppError.validation pattern as the other routes. The DB handle + seams are reached lazily inside
- * handlers (via container) so merely mounting the plugin opens no connection.
- *
- * The cleanup service is built per request from either an injected override (tests: an in-memory repo so
- * the whole flow runs offline) or from the container (production: the Drizzle/PostGIS repo). The
- * member-gated history reads through container.chatService (the real WsChatService or the fake).
+ * The DB handle + seams are reached lazily inside handlers (via container) so merely mounting the plugin
+ * opens no connection. The cleanup service is built per request from an injected override (tests: an
+ * in-memory repo so the whole flow runs offline) or the container (production: the Drizzle/PostGIS repo).
  */
 
 import {
@@ -32,11 +31,12 @@ import {
   type CleanupAttendeesResponse,
   type ChatHistoryResponse,
 } from "@civfix/shared"
-import { ZodError, z, type ZodTypeAny } from "zod"
+import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
+import { parse } from "./_validate.js"
 import {
   makeCleanupService,
   type CleanupRepository,
@@ -49,37 +49,28 @@ import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
 import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
 
-/**
- * Optional injected cleanup-service dependencies (tests). When present the routes build the service from
- * these instead of the container, so the whole create/list/get/join/leave/history HTTP flow runs offline
- * (no Docker). The same repo backs the member-gated history check. In production it is left unset and the
- * routes build the Drizzle-backed repo lazily.
- */
+// Optional injected cleanup-service dependencies (tests): the routes build the service from these instead
+// of the container, so the whole HTTP flow runs offline. The same repo backs the member-gated history
+// check. Unset in production, where the routes build the Drizzle-backed repo lazily.
 export interface CleanupServiceOverrides {
   repo: CleanupRepository
   presignThumb?: CleanupServiceDeps["presignThumb"]
   newId?: CleanupServiceDeps["newId"]
-  now?: CleanupServiceDeps["now"]
 }
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected cleanup-service overrides (tests). See CleanupServiceOverrides. */
     cleanupOverrides?: CleanupServiceOverrides
   }
 }
 
-/** Path param schema for the routes that take a cleanup UUID in the URL. */
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-/**
- * Query schema for GET /cleanups, decoding EXACTLY what the shared client sends (see
- * ./query-encoding.ts): optional bbox + optional near each as a single JSON-encoded object param, and
- * scalar when/cursor/limit. We decode bbox/near here, then re-validate the assembled object against the
- * shared nested ListCleanupsRequest so the wire contract stays the single source of truth — including
- * the `limit` coercion, so `limit` is passed through as a raw string here rather than coerced twice.
- * (NOT .strict(); the re-validation against the shared .strict() schema is the gate.)
- */
+// Query schema for GET /cleanups, decoding EXACTLY what the shared client sends (see ./query-encoding.ts):
+// optional bbox + optional near each as a single JSON-encoded object param, and scalar when/cursor/limit.
+// We decode bbox/near here then re-validate the assembled object against the shared nested
+// ListCleanupsRequest (the single source of truth) — `limit` stays a raw string here so it is coerced
+// once, by the shared schema. (NOT .strict(); the re-validation against the shared .strict() schema gates.)
 const ListCleanupsQuerySchema = z.object({
   bbox: BBoxQueryParam.optional(),
   near: LatLngQueryParam.optional(),
@@ -88,40 +79,36 @@ const ListCleanupsQuerySchema = z.object({
   limit: z.string().optional(),
 })
 
-/** Default history page size when GET /cleanups/:id/messages omits `limit` (shared cap is 50). */
 const HISTORY_DEFAULT_LIMIT = 30
 
 export async function registerCleanupRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  /** Build the cleanup repository from injected overrides (tests) or the container DB (production). */
   function repo(): CleanupRepository {
     const overrides = app.cleanupOverrides
     if (overrides) return overrides.repo
     return makeDrizzleCleanupRepository(container.getDb().sql)
   }
 
-  /** Build the cleanup service over the resolved repository. */
   function service(): CleanupService {
     const overrides = app.cleanupOverrides
     return makeCleanupService({
       repo: repo(),
-      // In production presign the linked-report gallery thumbs over the Storage seam (the repo returns raw
-      // object keys); in tests the override may inject its own (else the service defaults to a pass-through).
+      // Production presigns linked-report gallery thumbs over the Storage seam (the repo returns raw object
+      // keys); a test override may inject its own (else the service defaults to a pass-through).
       ...(overrides?.presignThumb !== undefined
         ? { presignThumb: overrides.presignThumb }
         : overrides
           ? {}
-          : { presignThumb: (thumbKey: string) => container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC) }),
+          : {
+              presignThumb: (thumbKey: string) =>
+                container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
+            }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
-      ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
     })
   }
 
-  // -------------------------------------------------------------------------
-  // POST /cleanups  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "createCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(CreateCleanupRequestSchema, request.body)
@@ -129,12 +116,8 @@ export async function registerCleanupRoutes(
     reply.status(201).send(dto)
   })
 
-  // -------------------------------------------------------------------------
-  // PATCH /cleanups/:id  [auth][csrf]  (organizer-only; the service enforces the host gate)
-  // -------------------------------------------------------------------------
-  // The host edits the event (scalars + the FULL desired linked-report set, which the service reconciles).
-  // The service throws FORBIDDEN (403) for a non-organizer and NOT_FOUND (404) for a missing event; the
-  // route only resolves the auth + validates the body.
+  // Organizer-only: the service throws FORBIDDEN (403) for a non-organizer and NOT_FOUND (404) for a
+  // missing event; the route only resolves auth + validates the body.
   route(app, "updateCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
@@ -143,27 +126,16 @@ export async function registerCleanupRoutes(
     reply.status(200).send(dto)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /cleanups/:id/cancel  [auth][csrf]  (organizer-only; the service enforces the host gate)
-  // -------------------------------------------------------------------------
-  // The host cancels the event: the service flips status to 'cancelled', writes a 'cancel' timeline row,
-  // and fans out a notification to every attendee, then returns the updated CleanupDTO. The service throws
-  // FORBIDDEN (403) for a non-organizer and NOT_FOUND (404) for a missing event.
+  // Organizer-only cancel: flips status to 'cancelled', writes a 'cancel' timeline row, fans a
+  // notification to every attendee, then returns the updated CleanupDTO.
   route(app, "cancelCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(CancelCleanupRequestSchema, { ...(request.body as object), id })
-    const dto: GetCleanupResponse = await service().cancelCleanup(
-      id,
-      body.reason ?? null,
-      userId,
-    )
+    const dto: GetCleanupResponse = await service().cancelCleanup(id, body.reason ?? null, userId)
     reply.status(200).send(dto)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /cleanups  (anon-ok)
-  // -------------------------------------------------------------------------
   route(app, "listCleanups", async (request, reply) => {
     const q = parse(ListCleanupsQuerySchema, request.query)
     // Re-validate the decoded shape against the shared schema (single source of truth). bbox/near are
@@ -179,18 +151,12 @@ export async function registerCleanupRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /cleanups/:id  (anon-ok)
-  // -------------------------------------------------------------------------
   route(app, "getCleanup", async (request, reply) => {
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const dto: GetCleanupResponse = await service().getCleanup(id, viewerOf(request))
     reply.status(200).send(dto)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /cleanups/:id/join  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "joinCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
@@ -198,9 +164,6 @@ export async function registerCleanupRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /cleanups/:id/leave  [auth][csrf]
-  // -------------------------------------------------------------------------
   route(app, "leaveCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
@@ -208,62 +171,33 @@ export async function registerCleanupRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /cleanups/:id/attendees  (anon-ok)
-  // -------------------------------------------------------------------------
-  // The "who's going" roster. The service scopes it to the viewer: only people you follow until you
-  // RSVP, then everyone going. Anonymous/non-member viewers therefore get an empty roster + the count.
+  // The "who's going" roster, scoped to the viewer by the service: only people you follow until you RSVP,
+  // then everyone going. Anonymous/non-member viewers get an empty roster + the count.
   route(app, "getCleanupAttendees", async (request, reply) => {
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: CleanupAttendeesResponse = await service().listAttendees(id, viewerOf(request))
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /cleanups/:id/messages  [auth][MEMBER-gated]
-  // -------------------------------------------------------------------------
   route(app, "cleanupMessages", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
-    // Shared non-strict ChatHistoryQuerySchema: tolerates and strips the cleanupId path-param echo the
-    // typed client still serializes into the query, and coerces `limit`. The authoritative id is the
-    // URL path; only `before` (cursor) and `limit` are read here.
+    // Shared non-strict ChatHistoryQuerySchema tolerates+strips the cleanupId path-param echo the typed
+    // client still serializes into the query, and coerces `limit`. The authoritative id is the URL path.
     const q = parse(ChatHistoryQuerySchema, request.query)
 
-    // Membership gate: only a cleanup member may read the room history. A non-member gets a 403 (the
-    // cleanup's existence is not secret - it is listed on the public map - so 403, not 404).
+    // Membership gate: only a cleanup member may read the room history. A non-member gets a 403 — the
+    // cleanup's existence is not secret (it is listed on the public map) so 403, not 404.
     const isMember = await repo().isMember(id, userId)
     if (!isMember) throw AppError.forbidden("You are not a member of this cleanup.")
 
     const limit = q.limit ?? HISTORY_DEFAULT_LIMIT
-    // Pass the viewer so each message's reactions resolve the viewer's own `mine` flag on the first page.
     const page = await container.chatService.history(id, q.before, limit, userId)
     const payload: ChatHistoryResponse = { items: page.items, nextCursor: page.nextCursor }
     reply.status(200).send(payload)
   })
 }
 
-/** Derive the viewer context (signed-in user id, or null) from the resolved auth on the request. */
 function viewerOf(request: FastifyRequest): CleanupViewer {
   return { userId: request.auth?.userId ?? null }
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on
- * failure so the canonical envelope is returned instead of a generic 500. Mirrors the other routes.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
-  }
 }

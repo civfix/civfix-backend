@@ -26,14 +26,10 @@
 import { AppError } from "@civfix/shared"
 
 /**
- * Curated blocklist of widely-recognized hate slurs (lowercase, base forms). Entries are matched as
- * whole tokens (word boundaries) against both the raw and de-obfuscated text, so common inflections
- * formed by trailing letters (e.g. plural "-s") are covered by the `\w*` suffix in the matcher while
- * unrelated longer words are NOT (the boundary is anchored on the LEFT of each entry and a controlled
- * suffix on the right — see `buildPatterns`).
- *
- * Kept intentionally short. Each line notes the category. Reviewer note: this is a defensive denylist
- * for a public civic-reporting app; it exists to satisfy a platform requirement, not to editorialize.
+ * Curated blocklist of widely-recognized hate slurs (lowercase, base forms), matched as whole tokens
+ * (word boundaries) against both the raw and de-obfuscated text — the boundary is anchored on the LEFT
+ * of each entry with a controlled plural suffix on the right (see `buildPatterns`). Defensive denylist
+ * to satisfy a platform requirement; deliberately short, biased to precision over recall.
  */
 const SLUR_BASES: readonly string[] = [
   // racial / ethnic
@@ -90,10 +86,8 @@ function buildPatterns(bases: readonly string[]): readonly RegExp[] {
 
 const RAW_PATTERNS = buildPatterns(SLUR_BASES)
 
-/**
- * Leetspeak / homoglyph digit substitutions applied during de-obfuscation only (NOT to the raw pass).
- * Constrained to the common, unambiguous mappings called out in the spec.
- */
+// Leetspeak / homoglyph digit substitutions applied during de-obfuscation only (NOT the raw pass);
+// constrained to common unambiguous mappings so normal text isn't mangled into a slur.
 function deLeet(s: string): string {
   return s
     .replace(/[1!|]/g, "i")
@@ -146,11 +140,7 @@ export function containsSlur(text: string | null | undefined): boolean {
   return false
 }
 
-/**
- * Throw a VALIDATION AppError keyed on `field` when `text` contains a slur; no-op for null/empty.
- * Mirrors the codebase's `AppError.validation({ [field]: ... })` convention so the route's error
- * mapper renders a 422 with a field-scoped message.
- */
+/** Throw a 422 VALIDATION AppError keyed on `field` when `text` contains a slur; no-op for null/empty. */
 export function assertNoSlur(text: string | null | undefined, field = "body"): void {
   if (containsSlur(text)) {
     throw AppError.validation({ [field]: "This contains language that isn't allowed." })

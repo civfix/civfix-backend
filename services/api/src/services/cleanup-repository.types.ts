@@ -1,0 +1,220 @@
+import type {
+  CleanupStatus,
+  CleanupType,
+  EventKind,
+  ReportCategory,
+  ReportStatus,
+  ReportType,
+} from "@civfix/shared"
+
+// The persisted cleanup row the service projects into a CleanupDTO (geom already decoded to lat/lng).
+// `organizer*` are the denormalized organizer person fields the read joins in so the DTO can be built
+// without a second round-trip. `going` is the member count; `dist` the optional metres distance for a
+// `near` ordering.
+export interface CleanupRecord {
+  id: string
+  organizerUserId: string
+  type: CleanupType
+  // cleanup vs other_volunteer (0018); only 'cleanup' events may link reports / show the gallery.
+  eventKind: EventKind
+  title: string
+  description: string | null
+  lat: number
+  lng: number
+  scheduledAt: Date
+  status: CleanupStatus
+  bring: string[] | null
+  address: string | null
+  createdAt: Date
+  going: number
+  dist: number | null
+  organizer: CleanupPersonView
+}
+
+// A report linked to a cleanup (geom decoded, ready-media thumb resolved, junction linked_at carried).
+// Only published+public reports are returned (held/hidden never leak). The service presigns `thumbKey`.
+export interface LinkedReportView {
+  // The cleanup this link belongs to (so a batched load can regroup by cleanup).
+  cleanupId: string
+  id: string
+  category: ReportCategory
+  // Optional fine-grained issue type (0021); when absent the additive LinkedReportRef.type is omitted.
+  type?: ReportType
+  title: string | null
+  status: ReportStatus
+  lat: number
+  lng: number
+  addr: string | null
+  // The report's first ready-media thumb object key (or its r2 key), or null when no ready media.
+  thumbKey: string | null
+  linkedAt: Date
+}
+
+// A cleanup (event) a report is linked to. Carries the organizer person fields + going count + eventKind
+// + lifecycle status so the service can build the LinkedEventRef. `reportId` lets a batched load regroup.
+export interface LinkedEventView {
+  reportId: string
+  id: string
+  title: string
+  eventKind: EventKind
+  status: CleanupStatus
+  scheduledAt: Date
+  lat: number
+  lng: number
+  going: number
+  organizer: CleanupPersonView
+  linkedAt: Date
+}
+
+// The organizer's person fields as the read projects them (avatar gradient is derived in the service).
+export interface CleanupPersonView {
+  id: string
+  displayName: string
+  handle: string | null
+  bio: string | null
+  // Whether the organizer is document-verified. Optional: a read that does not join user_verification
+  // leaves it undefined ⇒ rendered as not verified.
+  verified?: boolean
+}
+
+// An attendee row: the same person fields as the organizer view plus the viewer's follow relationship.
+export interface AttendeeView extends CleanupPersonView {
+  isFollowing: boolean
+}
+
+// Arguments for the attendee roster read (the service resolves `onlyFollowed`/`limit` from the viewer).
+export interface ListAttendeesArgs {
+  cleanupId: string
+  viewerId: string | null
+  // When true, return only attendees the viewer follows (the "not yet RSVP'd" rule); anonymous ⇒ empty.
+  onlyFollowed: boolean
+  limit: number
+}
+
+// Everything the create transaction needs to persist a cleanup + the organizer membership atomically.
+export interface CreateCleanupTxArgs {
+  cleanupId: string
+  organizerUserId: string
+  type: CleanupType
+  eventKind: EventKind
+  title: string
+  description: string | null
+  lat: number
+  lng: number
+  scheduledAt: Date
+  status: CleanupStatus
+  bring: string[] | null
+  address: string | null
+  // Report ids to link in the SAME create tx (filtered to ids that exist; visibility checked by the
+  // service). Empty array = no links. Never set for a non-cleanup eventKind.
+  linkedReportIds: string[]
+}
+
+// A scalar PATCH of an existing cleanup (only the supplied fields change). Geometry via lat+lng pair.
+export interface UpdateCleanupPatch {
+  title?: string
+  description?: string | null
+  eventKind?: EventKind
+  type?: CleanupType
+  scheduledAt?: Date
+  // lat+lng MUST be supplied together (the repo rebuilds geom only when both are present).
+  lat?: number
+  lng?: number
+  address?: string | null
+  bring?: string[] | null
+}
+
+// A point the caller can sort/measure distance from (for `near` listings).
+export interface NearPoint {
+  lat: number
+  lng: number
+}
+
+// A bbox (west/south/east/north) declared structurally to avoid importing the zod type here.
+export interface CleanupBBox {
+  west: number
+  south: number
+  east: number
+  north: number
+}
+
+// Filters for listCleanups, resolved from ListCleanupsRequest by the service.
+export interface ListCleanupsFilters {
+  when: "upcoming" | "past" | "attending" | undefined
+  bbox: CleanupBBox | undefined
+  near: NearPoint | undefined
+  cursor: string | null
+  limit: number
+  // The signed-in viewer (or null), used ONLY by `when: "attending"`. Ignored for other `when` values.
+  viewerId?: string | null
+}
+
+// Persistence seam for the cleanups domain. The production impl runs Drizzle/PostGIS (create +
+// organizer-membership insert in ONE transaction); offline tests pass an in-memory impl. Keeping ALL
+// cleanup/membership access behind this interface is what makes the service testable with no DB.
+export interface CleanupRepository {
+  // Insert the cleanup row AND the organizer's cleanup_members(role 'organizer') row in a SINGLE
+  // transaction, then read the row back (geom decoded, organizer joined, going counted). This is the
+  // atomicity guarantee that membership == chat membership from creation onward.
+  createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord>
+  // Apply a scalar PATCH (only the supplied fields change). lat+lng (both present) rebuild geom; supplying
+  // neither leaves the position untouched. Returns false when the cleanup does not exist. Does NOT touch
+  // links (the service reconciles those separately).
+  updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean>
+  // Link reports: insert a cleanup_reports row (ON CONFLICT DO NOTHING) + a cleanup_timeline
+  // 'report_linked' row per newly-linked id, in one transaction. Returns the ids that were newly linked.
+  linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]>
+  // Unlink ONE report: delete the cleanup_reports row + append a 'report_unlinked' row, in one
+  // transaction. Returns true when a link existed (idempotent no-op otherwise).
+  unlinkReport(cleanupId: string, reportId: string, actorId: string | null): Promise<boolean>
+  // Reconcile a cleanup's links to EXACTLY `desiredIds`. Returns the applied diff ({ added, removed }).
+  reconcileLinkedReports(
+    cleanupId: string,
+    desiredIds: string[],
+    actorId: string | null,
+  ): Promise<{ added: string[]; removed: string[] }>
+  // Batched load of the reports linked to a set of cleanups, grouped by cleanup id. Only published+public
+  // (non-deleted) reports are returned (held/hidden never leak). Empty input ⇒ empty map.
+  loadLinkedReportsForCleanups(cleanupIds: string[]): Promise<Map<string, LinkedReportView[]>>
+  // Batched load of the events a set of reports is linked to, grouped by report id. Empty input ⇒ empty map.
+  loadLinkedEventsForReports(reportIds: string[]): Promise<Map<string, LinkedEventView[]>>
+  // Which of the given report ids are visible (published+public, non-deleted)? Used to validate links.
+  filterVisibleReportIds(reportIds: string[]): Promise<Set<string>>
+  // Load a cleanup by id (decoding geom, joining the organizer + member count). `near` adds the metres
+  // distance. Returns null when the id does not exist.
+  findCleanupById(id: string, near: NearPoint | null): Promise<CleanupRecord | null>
+  // Page cleanups under the given filters: up to `limit` records + the next cursor (null when exhausted).
+  listCleanups(
+    filters: ListCleanupsFilters,
+  ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }>
+  // Whether `userId` is a member of `cleanupId` (member or organizer).
+  isMember(cleanupId: string, userId: string): Promise<boolean>
+  // Batched membership probe over a page: of the given cleanup ids, which is `userId` a member of?
+  // Empty input ⇒ empty set (no query).
+  membersOf(cleanupIds: string[], userId: string): Promise<Set<string>>
+  // The user ids of a cleanup's members, capped at `limit` (a soft fan-out bound). Used by the WS gateway
+  // to fan a thread-unread signal to the room's members.
+  listMemberIds(cleanupId: string, limit: number): Promise<string[]>
+  // Current member count for a cleanup (the "going" number).
+  memberCount(cleanupId: string): Promise<number>
+  // The organizer's user id, or null when the cleanup does not exist.
+  organizerOf(cleanupId: string): Promise<string | null>
+  // Upsert a cleanup_members(role 'member') row in a transaction (idempotent: re-joining is a no-op).
+  // Returns true when the cleanup exists (so the route can 404 a missing cleanup).
+  joinCleanupTx(cleanupId: string, userId: string): Promise<boolean>
+  // Delete a cleanup_members row. Returns true when the cleanup exists. Deleting a non-existent membership
+  // on an existing cleanup is an idempotent no-op that still returns true.
+  leaveCleanup(cleanupId: string, userId: string): Promise<boolean>
+  // Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a 'cancel' cleanup_timeline row + fan
+  // out a notification row to EVERY other member (set-based INSERT ... SELECT). Returns false when the
+  // cleanup does not exist. The service composes ALL user-facing copy — the timeline `note` and the
+  // notification `body` — and passes them in; the repo only persists (layer separation). `reason` is the
+  // raw operator-supplied reason (kept for the fake's observable contract).
+  cancelCleanupTx(
+    id: string,
+    input: { note: string; body: string; reason: string | null; actorId: string },
+  ): Promise<boolean>
+  // The attendee roster: cleanup_members joined to their (non-deleted) user, with the viewer's
+  // `isFollowing` per row. Ordered organizer-first then by join time. `onlyFollowed` restricts the roster.
+  listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>
+}

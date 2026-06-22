@@ -54,7 +54,7 @@ export const reportDiscussionMessages = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (t) => [
-    // Thread render + reply pagination, matching report_discussion_messages_report_parent_created_idx.
+    // Backs thread render + reply pagination (report, parent, created_at).
     index("report_discussion_messages_report_parent_created_idx").on(
       t.reportId,
       t.parentId,

@@ -7,8 +7,7 @@
  *                   ON DELETE CASCADE on the report so deleting a report drops its followers.
  */
 
-import { pgTable, primaryKey, timestamp, uuid } from "drizzle-orm/pg-core"
-import { index } from "drizzle-orm/pg-core"
+import { index, pgTable, primaryKey, timestamp, uuid } from "drizzle-orm/pg-core"
 import { reports } from "./reports.js"
 import { users } from "./users.js"
 

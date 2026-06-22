@@ -2,37 +2,18 @@
  * Anonymous reporting service: the logged-out submit + status half of the reports domain, with the
  * full API-layer abuse stack and the hold-then-publish lifecycle.
  *
- * submitAnonReport runs the abuse controls IN ORDER, then creates the report HELD in ONE transaction:
+ * submitAnonReport runs the abuse controls IN ORDER (Turnstile, honeypot, idempotency fast-path, anon
+ * token + per-token cap, per-IP cap, per-H3-cell cap, GPS sanity) and only then creates the report HELD
+ * in ONE transaction (createAnonReportTx) — see the inline (1)..(7) markers. The claim code is stored
+ * PER REPORT (reports.claim_code, 0005), NOT on the shared anon_tokens row, so each of a token's
+ * up-to-5 reports stays independently status-queryable/claimable.
  *
- *   1. Turnstile        verifyTurnstile(token, ip); a failed challenge -> AppError.turnstileFailed.
- *   2. Honeypot         a non-empty hidden field -> silent-ish reject (a plain VALIDATION envelope, no
- *                       hint it was the honeypot) AND a best-effort abuse_flag(reason "honeypot").
- *   3. Anon token       resolve the presented token or issue a fresh one; enforce the per-token cap.
- *   4. Per-IP cap       10/hr per normalized IP (full IPv4 / IPv6 /64) via the CounterStore.
- *   5. Per-H3-cell cap  per-cell hourly cap (ANON-ONLY) via the CounterStore.
- *   6. GPS sanity       compare the point to the coarse IP geo (CF headers). The EXIF cross-check is
- *                       DEFERRED to the worker's release gate; an implausible point -> gpsImplausible.
- *   7. Idempotency      scope "anon_report_create": a duplicate key replays the ORIGINAL response.
- *
- * Then, in a SINGLE transaction (createAnonReportTx): insert the report (reporter_user_id null,
- * anon_session_id = anon token id, status "held", visibility "public", published_at null, jurisdiction
- * resolved, h3_cell, geom, AND a per-report single-use claimCode), attach media, insert the initial
- * timeline rows (submitted + held), bump the anon_tokens.report_count (the cap is a token property), and
- * store the AnonReportResponse snapshot in idempotency_keys - all atomically. The claim code is stored
- * PER REPORT (reports.claim_code, 0005), NOT on the shared anon_tokens row, so each of a token's up-to-5
- * reports stays independently status-queryable/claimable (a later submit no longer overwrites it). The
- * media.checks jobs are enqueued after commit (idempotently; a no-op if media-intake already enqueued).
- *
- * HELD reports stay HIDDEN: the report is created status "held" (NOT published+public), so the existing
- * getReport (404s non-published to strangers) and the map/list candidate queries (published+public
- * only) already exclude it. Its status is observable ONLY via anonReportStatus with the matching
- * claimCode. The worker later releases the hold (see releaseAnonHoldIfReady).
- *
- * anonReportStatus verifies the claimCode against the report's own claim_code and returns
- * {status, publishedAt}; a wrong code is NOT-FOUND (no enumeration of report existence).
+ * HELD reports stay HIDDEN (status "held", never published+public), so getReport + the map/list
+ * candidate queries already exclude them; status is observable ONLY via anonReportStatus with the
+ * matching claimCode. The worker later releases the hold (see releaseAnonHoldIfReady).
  */
 
-import { randomUUID, timingSafeEqual } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type {
   AnonReportRequest,
@@ -58,17 +39,13 @@ import {
   type AnonTokenDeps,
   type AnonTokenStore,
 } from "../abuse/anon-token.js"
-import { generateToken } from "../auth/crypto.js"
+import { generateToken, constantTimeStringEqual } from "../auth/crypto.js"
 
 /** Idempotency scope namespacing anon-report-create keys in idempotency_keys.scope. */
 export const ANON_REPORT_CREATE_SCOPE = "anon_report_create"
 
 /** abuse_flags reasons the anon API layer raises (mirrors the shared AbuseReason subset). */
 export type AnonAbuseReason = "honeypot" | "gps"
-
-// ---------------------------------------------------------------------------
-// Repository seam (faked in tests)
-// ---------------------------------------------------------------------------
 
 /** Everything the held-create transaction persists for an anonymous report. */
 export interface CreateAnonReportTxArgs {
@@ -133,10 +110,6 @@ export interface AnonReportRepository extends AnonTokenStore {
   /** Load the status + claim code for an anon report by id (the per-report reports.claim_code, 0005). */
   findAnonReportStatus(reportId: string): Promise<AnonReportStatusRow | null>
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 /**
  * The per-request transport context the abuse stack reads (IP + CF geo headers + UA). The PRESENTED
@@ -237,7 +210,9 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         if (input.anonToken) {
           const presentedId = verifyAnonTokenSignature(input.anonToken, deps.anonTokenSigningKey)
           if (presentedId) {
-            await raiseAbuseFlag("anon_token", presentedId, "honeypot").catch(() => {})
+            await raiseAbuseFlag("anon_token", presentedId, "honeypot").catch((err) => {
+              log("anon-submit: honeypot raiseAbuseFlag failed (non-fatal)", { err: String(err) })
+            })
           }
         }
         log("anon-submit: honeypot tripped; rejecting", { ip: ctx.ip })
@@ -280,17 +255,19 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         throw AppError.gpsImplausible()
       }
 
-      // First submit. Resolve jurisdiction + compute h3 + mint ids, then run the single held-create tx.
-      const jurisdictionGeoid = await deps.resolveJurisdictionGeoid(input.lat, input.lng)
+      // First submit. The jurisdiction resolve and the (only-when-no-addr) reverse-geocode are independent
+      // lookups OUTSIDE the tx — run them concurrently to shorten the create hot path.
+      const suppliedAddr = input.addr?.trim()
+      const [jurisdictionGeoid, geocodedAddr] = await Promise.all([
+        deps.resolveJurisdictionGeoid(input.lat, input.lng),
+        suppliedAddr || !deps.reverseGeocode
+          ? Promise.resolve(null)
+          : deps.reverseGeocode(input.lat, input.lng),
+      ])
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const reportId = newId()
       const claimCode = newClaimCode()
-      // Derive an address from the pin when none was supplied (best-effort; null on failure).
-      const addr = input.addr?.trim()
-        ? input.addr.trim()
-        : deps.reverseGeocode
-          ? await deps.reverseGeocode(input.lat, input.lng)
-          : null
+      const addr = suppliedAddr ? suppliedAddr : geocodedAddr
 
       const responseSnapshot: AnonReportResponse = {
         reportId,
@@ -348,7 +325,8 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       const row = await deps.repo.findAnonReportStatus(reportId)
       // No enumeration: a missing report OR a wrong/absent claim code both return NOT-FOUND, so a
       // stranger cannot probe which report ids exist or guess a code by the error shape.
-      if (!row || row.claimCode === null || !claimCodeEqual(row.claimCode, claimCode)) {
+      // Constant-time compare: the claim code length is not secret, its contents are.
+      if (!row || row.claimCode === null || !constantTimeStringEqual(row.claimCode, claimCode)) {
         throw AppError.notFound("Report not found")
       }
       return {
@@ -382,13 +360,4 @@ function resolveTrustedCfGeo(
     return null
   }
   return parseCfGeo(ctx.cfGeo)
-}
-
-/** Constant-time compare of two claim codes (length is not secret; contents are). */
-function claimCodeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a)
-  const bb = Buffer.from(b)
-  // timingSafeEqual requires equal-length buffers; a length mismatch is a definite non-match.
-  if (ab.length !== bb.length) return false
-  return timingSafeEqual(ab, bb)
 }

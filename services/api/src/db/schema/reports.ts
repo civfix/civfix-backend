@@ -70,7 +70,7 @@ export const reports = pgTable(
     index("reports_anon_session_idx").on(t.anonSessionId),
     // Partial unique (WHERE claim_code IS NOT NULL): an active code resolves to exactly one report.
     uniqueIndex("reports_claim_code_key").on(t.claimCode).where(sql`claim_code IS NOT NULL`),
-    // --- Performance indexes added in drizzle/0013_perf_indexes.sql ---
+    // Performance indexes (drizzle/0013_perf_indexes.sql) — each backs a specific hot access pattern.
     // Admin reports list keyset (created_at DESC, id DESC) over non-deleted rows.
     index("reports_created_id_idx")
       .on(t.createdAt.desc(), t.id.desc())

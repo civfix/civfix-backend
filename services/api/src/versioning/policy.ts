@@ -49,6 +49,8 @@ export const VERSION_STATUS: Record<ApiVersion, VersionStatus> = {
   v1: { status: "current" },
 } as const
 
+const VERSION_SEGMENT_RE = /^v\d+$/
+
 /** Numeric major extracted from a `vN` segment, or `null` if the segment is not of that shape. */
 function majorOf(seg: string): number | null {
   const match = /^v(\d+)$/.exec(seg)
@@ -58,7 +60,7 @@ function majorOf(seg: string): number | null {
 
 /** True iff `seg` matches the `/^v\d+$/` shape of an API-version path segment (e.g. "v1", "v2"). */
 export function isVersionSegment(seg: string): boolean {
-  return majorOf(seg) !== null
+  return VERSION_SEGMENT_RE.test(seg)
 }
 
 /** True iff `seg` is a version this deployment currently serves (current OR deprecated, not sunset). */
@@ -87,4 +89,22 @@ export function isBelowMinSupported(seg: string): boolean {
   const min = majorOf(MIN_SUPPORTED_VERSION)
   if (min === null) return false
   return major < min
+}
+
+/**
+ * Cross-validate the three policy sources at startup: every SERVED_VERSIONS member (and the
+ * MIN_SUPPORTED floor) must have a non-sunset VERSION_STATUS entry, else the gate would advertise a
+ * version it can't serve. Throws an Error listing the offending versions so a misconfiguration fails boot
+ * instead of surfacing as confusing 4xxs in prod.
+ */
+export function validateVersionPolicy(): void {
+  const problems: string[] = []
+  for (const v of [MIN_SUPPORTED_VERSION, ...SERVED_VERSIONS]) {
+    const status = VERSION_STATUS[v]
+    if (!status) problems.push(`${v}: no VERSION_STATUS entry`)
+    else if (status.status === "sunset") problems.push(`${v}: served/min but marked sunset`)
+  }
+  if (problems.length > 0) {
+    throw new Error(`API version policy is inconsistent: ${problems.join("; ")}`)
+  }
 }

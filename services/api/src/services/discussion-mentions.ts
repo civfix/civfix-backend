@@ -51,14 +51,6 @@ export function jurisdictionHandle(name: string | null | undefined): string | nu
 const HANDLE_CHAR = /[a-z0-9_]/i
 
 /**
- * Does `body` @mention `cityHandle` (case-insensitive, word-boundary)? Returns the matched handle text as
- * it appeared in the body (the substring after "@", same length as cityHandle) or null when absent.
- *
- * PURE: no DB, no network. A null/empty/whitespace cityHandle never matches. Matching is anchored so that
- * "@<handle>" is preceded by a non-handle char (or start of string) and followed by a non-handle char (or
- * end of string), preventing partial matches ("@sf" must not match "@sfo" or "user@sf.gov" local-parts).
- */
-/**
  * Extract every distinct @handle token from a free-text body, for USER @-mentions (distinct from the
  * single-handle parseCityMention, which targets one known jurisdiction handle). PURE: no DB, no network.
  *
@@ -96,6 +88,14 @@ export function parseUserMentions(body: string): string[] {
   return out
 }
 
+/**
+ * Does `body` @mention `cityHandle` (case-insensitive, word-boundary)? Returns the matched handle text as
+ * it appeared in the body (the substring after "@", same length as cityHandle) or null when absent.
+ *
+ * PURE: no DB, no network. A null/empty/whitespace cityHandle never matches. Matching is anchored so that
+ * "@<handle>" is preceded by a non-handle char (or start of string) and followed by a non-handle char (or
+ * end of string), preventing partial matches ("@sf" must not match "@sfo" or "user@sf.gov" local-parts).
+ */
 export function parseCityMention(body: string, cityHandle: string | null | undefined): string | null {
   if (cityHandle === null || cityHandle === undefined) return null
   const handle = cityHandle.trim()

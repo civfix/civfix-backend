@@ -1,24 +1,15 @@
 /**
  * Postgres-backed DiscussionRepository (the production implementation of the discussion persistence seam).
  *
- * ALL report_discussion_messages / report_message_reactions / report_message_mentions / discussion-media
- * access flows through here so the discussion service stays infra-free and unit-testable with an in-memory
- * repo. Written against the raw postgres-js tag (`Sql`) like the reports repo, since createMessage runs as a
+ * Written against the raw postgres-js tag (`Sql`) like the reports repo, since createMessage runs as a
  * SINGLE transaction (sql.begin): insert the message, attach media (the same unattached-or-own rule report
- * create uses, never stealing a foreign asset), and record the @mention row - all atomically.
+ * create uses, never stealing a foreign asset), and record the @mention rows — all atomically.
  *
- * READ SHAPE. Each message record is assembled with:
- *   - the author person fields (LEFT JOIN users; null for a system / soft-removed row),
- *   - replyCount = count of NON-deleted direct children,
- *   - reactions aggregated per emoji with a per-viewer `mine` flag (a LEFT JOIN on the viewer's own row),
- *   - attachments (media_assets WHERE discussion_message_id = the message; the service filters to `ready`
- *     and presigns),
- *   - the single @mention (LEFT JOIN report_message_mentions + jurisdictions for the name/handle).
- * Pagination is an oldest-first keyset over (created_at ASC, id ASC), matching the
- * report_discussion_messages_report_parent_created_idx index.
- *
- * Geometry note: this domain touches NO geometry, so unlike the reports repo there is no PostGIS here; the
- * raw tag is used for the transaction + the ANY/aggregate reads, not for geometry.
+ * READ SHAPE: each message record carries the author person fields (LEFT JOIN users; null for a system /
+ * soft-removed row), replyCount, per-emoji reactions (with the viewer's `mine`), attachments, the single
+ * @city mention, and the resolved USER @-mentions. The relation loads are BATCHED across a page (one
+ * `WHERE message_id IN (...)` per relation, grouped into a Map) — never one query per row. Pagination is an
+ * oldest-first keyset over (created_at ASC, id ASC), matching report_discussion_messages_report_parent_created_idx.
  */
 
 import type { Queryable, Sql } from "../db/client.js"
@@ -31,9 +22,11 @@ import type {
   DiscussionRepository,
   ReportJurisdictionView,
 } from "./discussion-service.js"
-import type { ReactionEmoji, ReportCategory, UserMentionDTO } from "@civfix/shared"
+import { loadReactionsFor } from "./message-reactions.drizzle.js"
+import { makeMentionRepo, loadMentionsFor } from "./message-mentions.drizzle.js"
+import { parseTimeCursor } from "../db/cursor-helpers.js"
+import type { ReactionEmoji, ReportCategory } from "@civfix/shared"
 
-/** A discussion message row as selected back (author joined; counts/reactions/attachments loaded after). */
 interface MessageRowSelect {
   id: string
   report_id: string
@@ -55,7 +48,6 @@ interface MessageRowSelect {
   mention_forwarded_at: Date | null
 }
 
-/** Shared SELECT list (author + replyCount + mention) for a single message keyed by the viewer. */
 function messageColumns(tag: Queryable) {
   return tag`
     m.id,
@@ -82,7 +74,6 @@ function messageColumns(tag: Queryable) {
   `
 }
 
-/** FROM + joins shared by every message read (author, the single mention + its jurisdiction). */
 function messageFrom(tag: Queryable) {
   return tag`
     FROM report_discussion_messages m
@@ -93,14 +84,20 @@ function messageFrom(tag: Queryable) {
 }
 
 export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository {
-  /** Load the `ready`/in-flight media attached to a message (raw keys; the service presigns + filters). */
-  async function loadAttachments(
+  const mentionRepo = makeMentionRepo(sql, "report_message_user_mentions")
+
+  // Batched: ready attachments for a set of messages, grouped by message id (raw keys; the service presigns
+  // + the read is scoped to status='ready' so held/rejected/validating are never served, the EXIF/GPS gate).
+  async function loadAttachmentsFor(
     tag: Queryable,
-    messageId: string,
-  ): Promise<DiscussionMediaView[]> {
+    messageIds: string[],
+  ): Promise<Map<string, DiscussionMediaView[]>> {
+    const byMessage = new Map<string, DiscussionMediaView[]>()
+    if (messageIds.length === 0) return byMessage
     const rows = await tag<
       {
         id: string
+        message_id: string
         kind: "image" | "video"
         codec: string | null
         r2_key: string
@@ -110,65 +107,35 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
         height: number | null
       }[]
     >`
-      SELECT id, kind, codec, r2_key, thumb_key, status, width, height
+      SELECT id, discussion_message_id AS message_id, kind, codec, r2_key, thumb_key, status, width, height
       FROM media_assets
-      WHERE discussion_message_id = ${messageId}
+      WHERE discussion_message_id IN ${tag(messageIds)}
+        AND status = 'ready'
       ORDER BY created_at ASC
     `
-    return rows.map((m) => ({
-      id: m.id,
-      kind: m.kind,
-      codec: m.codec,
-      r2Key: m.r2_key,
-      thumbKey: m.thumb_key,
-      status: m.status,
-      width: m.width,
-      height: m.height,
-    }))
+    for (const m of rows) {
+      const view: DiscussionMediaView = {
+        id: m.id,
+        kind: m.kind,
+        codec: m.codec,
+        r2Key: m.r2_key,
+        thumbKey: m.thumb_key,
+        status: m.status,
+        width: m.width,
+        height: m.height,
+      }
+      const list = byMessage.get(m.message_id)
+      if (list) list.push(view)
+      else byMessage.set(m.message_id, [view])
+    }
+    return byMessage
   }
 
-  /** Aggregate per-emoji reaction counts for a message, with a `mine` flag for the viewer (null = none). */
-  async function loadReactions(
-    tag: Queryable,
-    messageId: string,
-    viewerUserId: string | null,
-  ): Promise<DiscussionReactionView[]> {
-    const rows = await tag<{ emoji: string; count: number; mine: boolean }[]>`
-      SELECT
-        emoji,
-        count(*)::int AS count,
-        bool_or(user_id = ${viewerUserId}) AS mine
-      FROM report_message_reactions
-      WHERE message_id = ${messageId}
-      GROUP BY emoji
-      ORDER BY emoji ASC
-    `
-    return rows.map((r) => ({ emoji: r.emoji, count: r.count, mine: viewerUserId !== null && r.mine }))
-  }
-
-  /** Load the resolved USER @-mentions on a message (report_message_user_mentions joined to users). */
-  async function loadUserMentions(
-    tag: Queryable,
-    messageId: string,
-  ): Promise<UserMentionDTO[]> {
-    const rows = await tag<{ id: string; handle: string | null; display_name: string }[]>`
-      SELECT u.id, u.handle, u.display_name
-      FROM report_message_user_mentions um
-      JOIN users u ON u.id = um.mentioned_user_id
-      WHERE um.message_id = ${messageId}
-      ORDER BY u.handle ASC, u.id ASC
-    `
-    // The UserMentionDTO handle is non-null; a mentioned user always has a handle in practice (mentions are
-    // resolved from @handles), but coalesce defensively so a NULL-handle row never breaks the contract.
-    return rows.map((r) => ({ id: r.id, handle: r.handle ?? "", displayName: r.display_name }))
-  }
-
-  /** Project a selected row + its loaded attachments/reactions/userMentions into the service's record shape. */
   function toRecord(
     r: MessageRowSelect,
     attachments: DiscussionMediaView[],
     reactions: DiscussionReactionView[],
-    userMentions: UserMentionDTO[],
+    userMentions: DiscussionMessageRecord["userMentions"],
   ): DiscussionMessageRecord {
     return {
       id: r.id,
@@ -206,29 +173,25 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
     }
   }
 
-  /** Hydrate a batch of selected rows (attachments + reactions per row), preserving order. */
+  // Hydrate a batch of selected rows: one grouped query per relation (attachments / reactions / mentions),
+  // not three per row — the N+1 fix. Reactions + mentions reuse the shared message-relation loaders.
   async function hydrate(
     tag: Queryable,
     rows: MessageRowSelect[],
     viewerUserId: string | null,
   ): Promise<DiscussionMessageRecord[]> {
-    return Promise.all(
-      rows.map(async (r) => {
-        const [attachments, reactions, userMentions] = await Promise.all([
-          loadAttachments(tag, r.id),
-          loadReactions(tag, r.id, viewerUserId),
-          loadUserMentions(tag, r.id),
-        ])
-        return toRecord(r, attachments, reactions, userMentions)
-      }),
+    if (rows.length === 0) return []
+    const ids = rows.map((r) => r.id)
+    const [attachments, reactions, mentions] = await Promise.all([
+      loadAttachmentsFor(tag, ids),
+      loadReactionsFor(tag, "report_message_reactions", ids, viewerUserId),
+      loadMentionsFor(tag, "report_message_user_mentions", ids),
+    ])
+    return rows.map((r) =>
+      toRecord(r, attachments.get(r.id) ?? [], reactions.get(r.id) ?? [], mentions.get(r.id) ?? []),
     )
   }
 
-  /**
-   * Page messages with a given parent filter (null = top-level), oldest-first keyset. NON-deleted only by
-   * default (the public read); pass includeDeleted=true (the operator read) to ALSO return soft-removed
-   * rows. The service tombstones a removed row when projecting, so removed content never leaks.
-   */
   async function pageMessages(
     reportId: string,
     parentClause: ReturnType<Sql>,
@@ -237,12 +200,11 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
     limit: number,
     includeDeleted: boolean,
   ): Promise<{ records: DiscussionMessageRecord[]; nextCursor: string | null }> {
-    const anchor = parseCursor(cursor)
+    const anchor = parseTimeCursor(cursor)
     const cursorFilter =
       anchor !== null
-        ? sql`AND (m.created_at, m.id) > (${anchor.createdAt}, ${anchor.id}::uuid)`
+        ? sql`AND (m.created_at, m.id) > (${anchor.at}, ${anchor.id}::uuid)`
         : sql``
-    // Default public read hides tombstones; the operator read keeps them (no extra predicate).
     const deletedFilter = includeDeleted ? sql`` : sql`AND m.deleted_at IS NULL`
     const rows = await sql<MessageRowSelect[]>`
       SELECT ${messageColumns(sql)}
@@ -258,15 +220,28 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
     const page = hasMore ? rows.slice(0, limit) : rows
     const records = await hydrate(sql, page, viewerUserId)
     const last = page[page.length - 1]
-    const nextCursor =
-      hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
+    const nextCursor = hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
     return { records, nextCursor }
+  }
+
+  async function readOne(
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<DiscussionMessageRecord | null> {
+    const rows = await sql<MessageRowSelect[]>`
+      SELECT ${messageColumns(sql)}
+      ${messageFrom(sql)}
+      WHERE m.id = ${messageId}
+      LIMIT 1
+    `
+    const [record] = await hydrate(sql, rows, viewerUserId)
+    return record ?? null
   }
 
   return {
     async findReportForDiscussion(reportId: string): Promise<DiscussionReportView | null> {
-      // Report visibility handle + its resolved jurisdiction (name/handle) + first usable contact email,
-      // using the SAME contact precedence as admin getRouting: category-specific -> default -> legacy[1].
+      // Report visibility handle + its resolved jurisdiction + first usable contact email, using the SAME
+      // contact precedence as admin getRouting: category-specific -> default -> legacy[1].
       const rows = await sql<
         {
           id: string
@@ -301,7 +276,7 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category IS NULL
                AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS default_email,
-          (SELECT j.contact_emails[1]) AS legacy_email
+          j.contact_emails[1] AS legacy_email
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
         WHERE r.id = ${reportId}
@@ -330,20 +305,14 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
       }
     },
 
-    async findMessage(
-      reportId: string,
-      messageId: string,
-      viewerUserId: string | null,
-    ): Promise<DiscussionMessageRecord | null> {
+    async findMessage(reportId, messageId, viewerUserId) {
       const rows = await sql<MessageRowSelect[]>`
         SELECT ${messageColumns(sql)}
         ${messageFrom(sql)}
         WHERE m.id = ${messageId} AND m.report_id = ${reportId}
         LIMIT 1
       `
-      const row = rows[0]
-      if (!row) return null
-      const [hydrated] = await hydrate(sql, [row], viewerUserId)
+      const [hydrated] = await hydrate(sql, rows, viewerUserId)
       return hydrated ?? null
     },
 
@@ -364,7 +333,6 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
 
     async createMessage(args: CreateDiscussionMessageTxArgs): Promise<DiscussionMessageRecord> {
       await sql.begin(async (tx) => {
-        // 1) Insert the message.
         await tx`
           INSERT INTO report_discussion_messages (
             id, report_id, parent_id, author_user_id, body, forwarded_to_city, created_at
@@ -379,9 +347,8 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
           )
         `
 
-        // 2) Attach media: bind only an upload whose discussion_message_id is NULL (unattached) or already
-        // this message; never steal a foreign attachment. Mirrors the report-create media-attach rule. A
-        // ready/validating asset is linkable; held/rejected stay (they are simply not served on read).
+        // Bind only an upload whose discussion_message_id is NULL (unattached) or already this message; never
+        // steal a foreign attachment. A ready/validating asset is linkable; held/rejected stay (just unserved).
         if (args.mediaUploadIds.length > 0) {
           await tx`
             UPDATE media_assets
@@ -393,7 +360,6 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
           `
         }
 
-        // 3) Record the @city mention row when present (composite PK de-dupes a repeat geoid).
         if (args.mention !== null) {
           await tx`
             INSERT INTO report_message_mentions (message_id, geoid, forwarded_at)
@@ -402,42 +368,19 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
           `
         }
 
-        // 4) Record the resolved USER @-mentions (already de-duped + self-excluded by the service). The
-        // composite PK (message_id, mentioned_user_id) de-dupes; ON CONFLICT DO NOTHING keeps it idempotent.
-        for (const mentionedUserId of args.mentionedUserIds) {
-          await tx`
-            INSERT INTO report_message_user_mentions (message_id, mentioned_user_id)
-            VALUES (${args.messageId}, ${mentionedUserId})
-            ON CONFLICT (message_id, mentioned_user_id) DO NOTHING
-          `
-        }
+        // Resolved USER @-mentions (already de-duped + self-excluded). One batched INSERT…ON CONFLICT.
+        await mentionRepo.recordFor(tx, args.messageId, args.mentionedUserIds)
       })
 
-      // Read the freshly-created message back as a record for the author (the viewer is the creator).
-      const rows = await sql<MessageRowSelect[]>`
-        SELECT ${messageColumns(sql)}
-        ${messageFrom(sql)}
-        WHERE m.id = ${args.messageId}
-        LIMIT 1
-      `
-      const [record] = await hydrate(sql, rows, args.authorUserId)
+      const record = await readOne(args.messageId, args.authorUserId)
       // The row was just inserted in the committed transaction above, so it must exist.
       return record!
     },
 
-    async editMessage(
-      reportId: string,
-      messageId: string,
-      authorId: string,
-      body: string,
-      editedAt: Date,
-      mediaUploadIds: string[] | undefined,
-      mentionedUserIds: string[],
-    ): Promise<DiscussionMessageRecord | null> {
+    async editMessage(reportId, messageId, authorId, body, editedAt, mediaUploadIds, mentionedUserIds) {
       const matched = await sql.begin(async (tx) => {
-        // 1) Update the body + stamp edited_at, but ONLY for this report's message authored by authorId and
-        // not already soft-removed (a tombstone is not editable). RETURNING tells us whether a row matched;
-        // when none did (wrong report / not the author / removed / missing) we bail with the tx untouched.
+        // The UPDATE's WHERE is the author + not-deleted gate; RETURNING tells us whether a row matched
+        // (wrong report / not the author / removed / missing => no match => bail with the tx untouched).
         const updated = await tx<{ id: string }[]>`
           UPDATE report_discussion_messages
           SET body = ${body}, edited_at = ${editedAt}
@@ -449,10 +392,9 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
         `
         if (updated.length === 0) return false
 
-        // 2) Optional attachment REPLACEMENT: when the caller passed mediaUploadIds, swap the message's
-        // attachment set. First detach the message's CURRENT attachments (clear discussion_message_id), then
-        // bind the given uploads under the SAME unattached-or-own + report-unbound + ready/validating rule
-        // createMessage uses (never stealing a foreign asset). Passing [] therefore clears all attachments.
+        // Optional attachment REPLACEMENT: detach the message's current attachments, then bind the given
+        // uploads under the SAME unattached-or-own + report-unbound + ready/validating rule createMessage
+        // uses. Passing [] therefore clears all attachments; omitting leaves the set untouched.
         if (mediaUploadIds !== undefined) {
           await tx`
             UPDATE media_assets
@@ -471,41 +413,16 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
           }
         }
 
-        // 3) REPLACE the USER @-mention set: delete the message's current rows, then insert the new resolved
-        // set (already de-duped + self-excluded). An edit that drops an @handle therefore drops its row.
-        await tx`
-          DELETE FROM report_message_user_mentions WHERE message_id = ${messageId}
-        `
-        for (const mentionedUserId of mentionedUserIds) {
-          await tx`
-            INSERT INTO report_message_user_mentions (message_id, mentioned_user_id)
-            VALUES (${messageId}, ${mentionedUserId})
-            ON CONFLICT (message_id, mentioned_user_id) DO NOTHING
-          `
-        }
+        // REPLACE the USER @-mention set (delete-then-batched-insert); an edit that drops an @handle drops it.
+        await mentionRepo.recordFor(tx, messageId, mentionedUserIds)
         return true
       })
       if (!matched) return null
-
-      // Read the freshly-edited message back as a record for the author (the viewer is the editor).
-      const rows = await sql<MessageRowSelect[]>`
-        SELECT ${messageColumns(sql)}
-        ${messageFrom(sql)}
-        WHERE m.id = ${messageId}
-        LIMIT 1
-      `
-      const [record] = await hydrate(sql, rows, authorId)
-      // The row was just updated in the committed transaction above, so it must still exist.
-      return record ?? null
+      return readOne(messageId, authorId)
     },
 
-    async toggleReaction(
-      messageId: string,
-      userId: string,
-      emoji: ReactionEmoji,
-    ): Promise<boolean> {
-      // Toggle: try to delete an existing (message,user,emoji); if nothing was deleted, insert it. Done in
-      // one transaction so a concurrent double-toggle cannot land both a delete and an insert out of order.
+    async toggleReaction(messageId, userId, emoji: ReactionEmoji): Promise<boolean> {
+      // One transaction so a concurrent double-toggle cannot land both a delete and an insert out of order.
       return sql.begin(async (tx) => {
         const deleted = await tx<{ message_id: string }[]>`
           DELETE FROM report_message_reactions
@@ -544,21 +461,3 @@ export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository 
     },
   }
 }
-
-/**
- * Parse an oldest-first keyset cursor "<iso>|<id>" into its anchor, or null when absent/malformed. A
- * non-UUID id is rejected (it would 22P02 on the `::uuid` cast) and degrades to "from the start".
- */
-function parseCursor(cursor: string | null): { createdAt: Date; id: string } | null {
-  if (cursor === null) return null
-  const idx = cursor.indexOf("|")
-  if (idx < 0) return null
-  const iso = cursor.slice(0, idx)
-  const id = cursor.slice(idx + 1)
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || !CURSOR_UUID_RE.test(id)) return null
-  return { createdAt: at, id }
-}
-
-/** Canonical UUID shape, validated before a cursor id reaches a `::uuid` cast. */
-const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

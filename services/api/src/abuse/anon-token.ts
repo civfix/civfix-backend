@@ -26,9 +26,9 @@
  * cap, expiry, claim-code) is unit-testable with no database.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto"
+import { createHmac } from "node:crypto"
 import { AppError } from "@civfix/shared"
-import { generateToken } from "../auth/crypto.js"
+import { generateToken, constantTimeStringEqual } from "../auth/crypto.js"
 
 /** Anonymous token lifetime: 24 hours, in seconds. */
 export const ANON_TOKEN_TTL_SECONDS = 24 * 60 * 60
@@ -39,24 +39,10 @@ export const ANON_TOKEN_REPORT_CAP = 5
 /** Separator between the token id and its HMAC in the wire form. base64url never contains ".". */
 const TOKEN_SEP = "."
 
-// ---------------------------------------------------------------------------
-// Pure signing / verification (key passed in; no IO)
-// ---------------------------------------------------------------------------
-
-/** HMAC-SHA256 of `tokenId` under `signingKey`, base64url-encoded. */
 function hmac(tokenId: string, signingKey: string): string {
   return createHmac("sha256", signingKey).update(tokenId).digest("base64url")
 }
 
-/** Constant-time compare of two base64url HMAC strings (equal length expected; false otherwise). */
-function hmacEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a)
-  const bb = Buffer.from(b)
-  if (ab.length !== bb.length) return false
-  return timingSafeEqual(ab, bb)
-}
-
-/** Build the signed wire token for a token id. PURE. */
 export function signAnonToken(tokenId: string, signingKey: string): string {
   return `${tokenId}${TOKEN_SEP}${hmac(tokenId, signingKey)}`
 }
@@ -72,12 +58,8 @@ export function verifyAnonTokenSignature(token: string, signingKey: string): str
   const tokenId = token.slice(0, idx)
   const sig = token.slice(idx + 1)
   const expected = hmac(tokenId, signingKey)
-  return hmacEqual(sig, expected) ? tokenId : null
+  return constantTimeStringEqual(sig, expected) ? tokenId : null
 }
-
-// ---------------------------------------------------------------------------
-// Store seam (anon_tokens row lifecycle; faked in tests)
-// ---------------------------------------------------------------------------
 
 /** The anon_tokens row fields the abuse stack reads/writes. */
 export interface AnonTokenRecord {
@@ -95,9 +77,7 @@ export interface AnonTokenRecord {
  * logic unit-testable with no DB.
  */
 export interface AnonTokenStore {
-  /** Insert a new anon_tokens row. */
   insert(row: AnonTokenRecord): Promise<void>
-  /** Load a row by id, or null. */
   findById(id: string): Promise<AnonTokenRecord | null>
 }
 
@@ -110,7 +90,6 @@ export interface AnonTokenDeps {
   now?: () => Date
 }
 
-/** The outcome of issuing a fresh anon token. */
 export interface IssuedAnonToken {
   /** The signed wire token to hand back to the client. */
   token: string
@@ -191,7 +170,7 @@ export async function resolveOrIssueAnonToken(
     assertUnderReportCap(existing)
     return { record: existing }
   }
+  // A freshly-issued token has report_count 0, so it is trivially under the cap — no assert needed.
   const issued = await issueAnonToken(deps)
-  assertUnderReportCap(issued.record)
   return { record: issued.record, issuedToken: issued.token }
 }

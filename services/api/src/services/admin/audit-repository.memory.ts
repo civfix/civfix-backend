@@ -8,7 +8,7 @@
  */
 
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
-import { decodeCursor, encodeCursor, type CursorAnchor } from "./pagination.js"
+import { decodeCursor, paginate, type CursorAnchor } from "./pagination.js"
 
 /** Optional fields for a seeded audit row (sensible defaults fill the rest). */
 export interface SeedAuditInput {
@@ -67,17 +67,12 @@ export class InMemoryAuditRepository implements AuditRepository {
     const windowed =
       anchor !== null ? sorted.filter((r) => beforeAnchor(r, anchor)) : sorted
 
-    const page = windowed.slice(0, args.limit)
-    const hasMore = windowed.length > args.limit
-    const last = page[page.length - 1]
-    const nextCursor = hasMore && last ? encodeCursor(anchorOf(last)) : null
-    return { records: page, nextCursor }
+    const { items, nextCursor } = paginate(windowed, args.limit, (r) => ({
+      createdAt: r.createdAt,
+      id: r.id,
+    }))
+    return { records: items, nextCursor }
   }
-}
-
-/** The keyset anchor for an audit row (created_at + id tiebreak). */
-function anchorOf(record: AuditRecord): CursorAnchor {
-  return { createdAt: record.createdAt, id: record.id }
 }
 
 /** Sort comparator: newest first, id DESC as the tiebreak (matches the SQL ORDER BY). */

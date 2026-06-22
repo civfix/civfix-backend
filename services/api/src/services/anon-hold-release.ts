@@ -66,11 +66,15 @@ export interface AnonHoldReleaseRepo {
   /** Count OPEN (resolved_at IS NULL) abuse_flags whose subject is this report OR one of its media. */
   countOpenAbuseFlags(reportId: string, mediaIds: string[]): Promise<number>
   /**
-   * Flip the report held -> published in ONE transaction: set status "published", published_at = now,
-   * and append a "published" timeline row. Returns true if a row was updated (false when it was no
-   * longer held, e.g. a concurrent release won). Idempotent: a no-longer-held report yields false.
+   * Flip the report held -> published in ONE transaction: lock the report FOR UPDATE, RE-CHECK the
+   * release gate inside the tx (still held; no media left non-"ready"; zero open abuse_flags on the
+   * report or its `mediaIds`), then set status "published", published_at = now, and append a "published"
+   * timeline row. Returns true only if it published. Re-checking in-tx closes the TOCTOU where a media
+   * rejection or a new abuse flag lands between the caller's pre-reads and the flip. Idempotent: a
+   * no-longer-held report (or one that no longer passes the gate) yields false. `mediaIds` is last +
+   * optional so prior in-memory fakes (which can't race) stay valid without it.
    */
-  publishHeldReport(reportId: string, publishedAt: Date): Promise<boolean>
+  publishHeldReport(reportId: string, publishedAt: Date, mediaIds?: string[]): Promise<boolean>
   /**
    * Find up to `limit` ANON held reports (reporter_user_id IS NULL, status 'held', not deleted) that are
    * candidates for a release re-check. Backs the self-healing sweep (P2-8): if an inline
@@ -163,9 +167,15 @@ export async function releaseAnonHoldIfReady(
     }
   }
 
-  // All clear: flip held -> published in one transaction. A false return means a concurrent release
-  // already published it, which is fine (still "published" from the caller's perspective).
-  const flipped = await deps.repo.publishHeldReport(reportId, now())
+  // All clear from the pre-reads: flip held -> published in one transaction. publishHeldReport RE-CHECKS
+  // the gate (media ready + zero open flags) inside the tx, so a false return means either a concurrent
+  // release won or a rejection/flag landed since the reads above — in both cases the report correctly
+  // stays unpublished.
+  const flipped = await deps.repo.publishHeldReport(
+    reportId,
+    now(),
+    media.map((m) => m.id),
+  )
   if (!flipped) {
     return { outcome: "not_held", published: false }
   }

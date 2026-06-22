@@ -1,26 +1,21 @@
 /**
- * Postgres-backed AdminReportRepository (Phase 2): the production binding of the admin reports seam.
- *
- * Written against the raw postgres-js tag (`Sql`) like the Phase 1 report repo, because every read
- * decodes report geometry (ST_X/ST_Y) and the list aggregates flagged/confirmations/hasPhoto with
- * correlated EXISTS/COUNT subqueries that are clearest as hand-written SQL. Reads touch reports +
- * report_timeline + report_follows + media_assets + jurisdictions + jurisdiction_contacts + abuse_flags
- * + users (+ oauth_identities). Mutations run as single transactions so a status
- * change + its report_timeline row never drift.
+ * Postgres-backed AdminReportRepository: the production binding of the admin reports seam, hand-written
+ * over the raw postgres-js tag (`Sql`) because reads decode geometry (ST_X/ST_Y) and aggregate
+ * flagged/confirmations/hasPhoto with correlated EXISTS/COUNT subqueries. Mutations run as single
+ * transactions so a status change + its report_timeline row never drift.
  *
  * FLAGGED: a report is "flagged" when it has an OPEN abuse_flag (subject_type 'report', resolved_at
- * NULL). toggleFlag opens one (reason 'manual', source 'api') when none is open, else resolves the open
- * ones. CONFIRMATIONS: COUNT(report_follows) for the report. ROUTING CONTACT: resolved with the same
- * precedence the routing path uses (category-specific jurisdiction_contacts -> default row -> legacy
- * jurisdictions.contact_emails[]). NOTIFY REPORTER: inserts a notifications row (type 'report_update').
- *
- * AUDIT is the route's job (it holds the operator userId); this repo writes the effect + timeline only.
+ * NULL). ROUTING CONTACT precedence: category-specific jurisdiction_contacts -> default (category NULL)
+ * row -> legacy jurisdictions.contact_emails[]. AUDIT is the route's job (it holds the operator userId);
+ * this repo writes the effect + timeline only.
  */
 
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
-import { decodeCursor, encodeCursor, clampLimit } from "./pagination.js"
+import { decodeCursor, clampLimit, paginate } from "./pagination.js"
+import { isUuid } from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
+import { STATUS_BUCKETS } from "./admin-report-status.js"
 import type {
   AdminReporterRecord,
   AdminReportMediaRecord,
@@ -42,6 +37,19 @@ import { likeContains } from "./like.js"
 
 /** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
 type SqlFragment = postgres.Fragment
+
+// A bucket count saturates at this cap so countByBucket scans at most ~cap*3 rows instead of running an
+// exact COUNT(*) over an unbounded reports table on every chip refresh (the chip just needs "this many or
+// more"). Above the cap the counts are an estimate.
+const FACET_COUNT_CAP = 999
+
+/** A report is flagged when it has an OPEN abuse_flag (subject_type 'report', resolved_at NULL). */
+function flaggedReportExpr(sql: Queryable): SqlFragment {
+  return sql`EXISTS (
+    SELECT 1 FROM abuse_flags af
+    WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
+  )`
+}
 
 /**
  * The report-search predicate (title / jurisdiction name / reporter display-name + handle, plus an exact
@@ -135,10 +143,7 @@ function reportSelect(
       r.id,
       r.category,
       r.status,
-      EXISTS (
-        SELECT 1 FROM abuse_flags af
-        WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
-      ) AS flagged,
+      ${flaggedReportExpr(sql)} AS flagged,
       r.title,
       j.name AS place,
       COALESCE(NULLIF(r.addr, ''), j.name) AS address,
@@ -177,15 +182,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       if (args.statuses !== null && args.statuses.length > 0) {
         conds.push(sql`AND r.status = ANY(${args.statuses})`)
       }
-      if (args.flaggedOnly) {
-        conds.push(sql`AND EXISTS (
-          SELECT 1 FROM abuse_flags af
-          WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
-        )`)
-      }
-      // The search predicate (title/jurisdiction/reporter, + exact id on a uuid q) is shared with
-      // countByBucket via searchReportsFragment (which escapes LIKE metachars) so the chips and the list
-      // always agree AND both are protected against wildcard injection.
+      if (args.flaggedOnly) conds.push(sql`AND ${flaggedReportExpr(sql)}`)
       if (args.q !== null) conds.push(searchReportsFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
@@ -194,42 +191,42 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const orderLimit = sql`ORDER BY r.created_at DESC, r.id DESC LIMIT ${limit + 1}`
 
       const rows = (await reportSelect(sql, extraWhere, orderLimit)) as unknown as ReportRowSelect[]
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const records = page.map(toRecord)
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null
-      return { records, nextCursor }
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      return { records: items.map(toRecord), nextCursor }
     },
 
     async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
       // One aggregate over the searched, non-removed reports: a count per design bucket + the orthogonal
-      // flagged count. Mirrors STATUS_BUCKETS (admin-report-service.ts) — keep the status sets in sync.
+      // flagged count, each capped at FACET_COUNT_CAP so a huge table doesn't force an O(rows) exact count
+      // on a hot chip refresh. The FILTER predicates derive from the canonical STATUS_BUCKETS, so the
+      // chips and the list can't drift.
       const search = searchReportsFragment(sql, args.q)
+      const cap = FACET_COUNT_CAP
       const rows = await sql<
         { submitted: string; in_progress: string; completed: string; flagged: string }[]
       >`
         SELECT
-          COUNT(*) FILTER (WHERE r.status IN ('submitted', 'held', 'published'))::text AS submitted,
-          COUNT(*) FILTER (WHERE r.status IN ('acknowledged', 'in_progress'))::text AS in_progress,
-          COUNT(*) FILTER (WHERE r.status = 'resolved')::text AS completed,
-          COUNT(*) FILTER (WHERE EXISTS (
-            SELECT 1 FROM abuse_flags af
-            WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
-          ))::text AS flagged
-        FROM reports r
-        LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-        LEFT JOIN users u ON u.id = r.reporter_user_id
-        WHERE r.deleted_at IS NULL
-        ${search}
+          LEAST(COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.submitted})), ${cap})::text AS submitted,
+          LEAST(COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress})), ${cap})::text AS in_progress,
+          LEAST(COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed})), ${cap})::text AS completed,
+          LEAST(COUNT(*) FILTER (WHERE ${flaggedReportExpr(sql)}), ${cap})::text AS flagged
+        FROM (
+          SELECT r.id, r.status
+          FROM reports r
+          LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+          LEFT JOIN users u ON u.id = r.reporter_user_id
+          WHERE r.deleted_at IS NULL
+          ${search}
+          LIMIT ${cap * 3 + 1}
+        ) r
       `
       const row = rows[0]
       const submitted = Number(row?.submitted ?? "0")
       const inProgress = Number(row?.in_progress ?? "0")
       const completed = Number(row?.completed ?? "0")
       const flagged = Number(row?.flagged ?? "0")
-      return { all: submitted + inProgress + completed, submitted, in_progress: inProgress, completed, flagged }
+      const all = Math.min(submitted + inProgress + completed, cap)
+      return { all, submitted, in_progress: inProgress, completed, flagged }
     },
 
     async getReport(id: string): Promise<AdminReportRecord | null> {
@@ -383,13 +380,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         ORDER BY created_at ASC
         LIMIT ${MEDIA_CAP}
       `
+      // Raw object-store keys; the service presigns them over the Storage seam. Only status='ready'
+      // assets are returned so the detail never points at a non-renderable upload.
       return rows.map((m) => ({
         id: m.id,
         kind: m.kind,
-        // Raw object-store KEYS; the admin report SERVICE presigns them (deps.presignMedia over the Storage
-        // seam) into browser-loadable URLs, exactly like the citizen report DTO's toMediaDTO. Only
-        // status='ready' media is returned (in-flight/held/rejected assets excluded), so the detail's
-        // "reporter photo" box never points at a non-renderable asset.
         r2Key: m.r2_key,
         thumbKey: m.thumb_key,
       }))
@@ -527,9 +522,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
 
 /**
  * Map a per-report mail thread's status + whether an inbound reply landed onto the report's outreach
- * status (§2.5). Precedence: bounced > replied (inbound message OR thread 'replied') > delivered
- * (delivered/opened) > sent (any other live thread with an OUT send). Shared by the Drizzle + memory repos
- * via re-implementation; keep the two in lockstep.
+ * status. Precedence: bounced > replied (inbound message OR thread 'replied') > delivered
+ * (delivered/opened) > sent. Imported by the memory repo so the two stay in lockstep.
  */
 export function mapOutreachStatus(
   threadStatus: string,
@@ -539,9 +533,4 @@ export function mapOutreachStatus(
   if (hasInbound || threadStatus === "replied") return "replied"
   if (threadStatus === "delivered" || threadStatus === "opened") return "delivered"
   return "sent"
-}
-
-/** Loose uuid shape check so a non-uuid `q` search never trips a Postgres cast error on `q::uuid`. */
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }

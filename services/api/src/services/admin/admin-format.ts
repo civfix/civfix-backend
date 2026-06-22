@@ -1,20 +1,11 @@
-/**
- * Shared pure formatting helpers for the admin reports / events / users projections (Phase 2).
- *
- * Owned by the reports/events/users wave; imported by the three services so the relative+absolute
- * timestamp pair and labels render identically across every admin surface. Pure (no
- * IO, clock injected) so the projections stay unit-testable with no database. No sibling domain touches
- * this file.
- */
+// Shared pure formatting helpers for the admin reports / events / users projections (clock injected, no
+// IO) so the relative+absolute timestamp pair renders identically across every admin surface.
 
 import { relativeAgo } from "@civfix/shared"
 import type { RelAbsTime } from "@civfix/shared"
 
-/**
- * The absolute-timestamp formatter the design renders next to the relative one ("Jun 3, 2026, 4:12 PM").
- * Fixed to en-US + UTC so the label is deterministic across machines + in tests (the design treats it as
- * an unambiguous display string, not a locale-aware one). A null date renders an em-dash-free "-".
- */
+// Fixed to en-US + UTC so the absolute label is deterministic across machines + in tests (the design
+// treats it as an unambiguous display string, not a locale-aware one).
 const ABS_FORMAT = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
   year: "numeric",

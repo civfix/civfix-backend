@@ -1,20 +1,11 @@
 /**
- * In-memory AdminReportRepository (Phase 2): the offline binding of the admin reports persistence seam.
- *
- * Mirrors the Drizzle impl's OBSERVABLE contract so the admin report service can be unit-tested with NO
- * database (no Docker), the same way InMemoryDiscoveryRepository backs the discovery tests:
- *   - listReports applies the search (title/place/id/reporter) + the status + flagged-only facet and
- *     pages newest-id-keyset;
- *   - getReport/listTimeline/getRouting/listMedia read the seeded report + its extras;
- *   - setStatus / toggleFlag / remove mutate the report + append a timeline row;
- *   - notifyReporter records a notification row (inspectable for the follow-up-to-reporter test);
- *   - appendFollowup appends a followup timeline row.
- * Seed/inspect helpers (seedReport, the public reports/timeline/notifications maps) let tests arrange +
- * assert state directly.
+ * In-memory AdminReportRepository: the offline binding of the admin reports persistence seam, faithful to
+ * the Drizzle impl's OBSERVABLE contract so the service is unit-testable with no database. Seed/inspect
+ * helpers (seedReport + the public reports/timeline/notifications maps) let tests arrange + assert state.
  */
 
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { clampLimit, decodeCursor, paginate } from "./pagination.js"
 import type {
   AdminReporterRecord,
   AdminReportMediaRecord,
@@ -33,6 +24,7 @@ import type {
   ReportTimelineItem,
 } from "@civfix/shared"
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
+import { STATUS_BUCKETS } from "./admin-report-status.js"
 
 /** A recorded notification (the follow-up to the reporter), inspectable by tests. */
 export interface RecordedReportNotification {
@@ -152,25 +144,16 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   ): Promise<{ records: AdminReportRecord[]; nextCursor: string | null }> {
     let rows = [...this.reports.values()].map((s) => s.record)
 
-    // A removed (rejected) report stays in the store but is excluded unless explicitly filtered to it; the
-    // Drizzle impl filters deleted_at IS NULL. Here we keep rejected visible only when status filter asks.
-    if (args.q !== null) {
-      const needle = args.q.toLowerCase()
-      rows = rows.filter(
-        (r) =>
-          r.title.toLowerCase().includes(needle) ||
-          r.place.toLowerCase().includes(needle) ||
-          r.id.toLowerCase().includes(needle) ||
-          (r.reporter?.name.toLowerCase().includes(needle) ?? false),
-      )
-    }
+    if (args.q !== null) rows = rows.filter((r) => matchesSearch(r, args.q as string))
     if (args.statuses !== null) {
       const set = new Set(args.statuses)
       rows = rows.filter((r) => set.has(r.status))
+    } else {
+      // The Drizzle impl filters deleted_at IS NULL; a removed report is `rejected`. Exclude it unless a
+      // status filter explicitly asks for it, so a removed report doesn't stay visible in the default list.
+      rows = rows.filter((r) => r.status !== "rejected")
     }
-    if (args.flaggedOnly) {
-      rows = rows.filter((r) => r.flagged)
-    }
+    if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
 
     // Newest-first by createdAt, id desc tiebreak (stable keyset).
     rows.sort((a, b) => {
@@ -184,28 +167,20 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
 
   async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
     let rows = [...this.reports.values()].map((s) => s.record)
-    if (args.q !== null) {
-      const needle = args.q.toLowerCase()
-      rows = rows.filter(
-        (r) =>
-          r.title.toLowerCase().includes(needle) ||
-          r.place.toLowerCase().includes(needle) ||
-          r.id.toLowerCase().includes(needle) ||
-          (r.reporter?.name.toLowerCase().includes(needle) ?? false),
-      )
-    }
+    if (args.q !== null) rows = rows.filter((r) => matchesSearch(r, args.q as string))
     // Non-removed only (mirrors the Drizzle deleted_at IS NULL filter): a removed report is `rejected`.
     rows = rows.filter((r) => r.status !== "rejected")
-    const SUBMITTED = new Set<AdminReportStatus>(["submitted", "held", "published"])
-    const IN_PROGRESS = new Set<AdminReportStatus>(["acknowledged", "in_progress"])
+    const submittedSet = new Set<AdminReportStatus>(STATUS_BUCKETS.submitted)
+    const inProgressSet = new Set<AdminReportStatus>(STATUS_BUCKETS.in_progress)
+    const completedSet = new Set<AdminReportStatus>(STATUS_BUCKETS.completed)
     let submitted = 0
     let inProgress = 0
     let completed = 0
     let flagged = 0
     for (const r of rows) {
-      if (SUBMITTED.has(r.status)) submitted += 1
-      else if (IN_PROGRESS.has(r.status)) inProgress += 1
-      else if (r.status === "resolved") completed += 1
+      if (submittedSet.has(r.status)) submitted += 1
+      else if (inProgressSet.has(r.status)) inProgress += 1
+      else if (completedSet.has(r.status)) completed += 1
       if (r.flagged) flagged += 1
     }
     return {
@@ -381,6 +356,17 @@ function defaultReporter(): AdminReporterRecord {
   }
 }
 
+/** Search predicate shared by listReports + countByBucket so the chips and the list always agree. */
+function matchesSearch(record: AdminReportRecord, q: string): boolean {
+  const needle = q.toLowerCase()
+  return (
+    record.title.toLowerCase().includes(needle) ||
+    record.place.toLowerCase().includes(needle) ||
+    record.id.toLowerCase().includes(needle) ||
+    (record.reporter?.name.toLowerCase().includes(needle) ?? false)
+  )
+}
+
 /** Page a sorted array by the shared "<iso>|<id>" id-keyset cursor (one-extra-row probe). */
 function pageByCursor(
   rows: AdminReportRecord[],
@@ -394,12 +380,9 @@ function pageByCursor(
     const idx = rows.findIndex((r) => r.id === anchor.id)
     start = idx >= 0 ? idx + 1 : rows.length
   }
-  const slice = rows.slice(start, start + lim + 1)
-  if (slice.length <= lim) {
-    return { records: slice, nextCursor: null }
-  }
-  const records = slice.slice(0, lim)
-  const last = records[records.length - 1]
-  const nextCursor = last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null
-  return { records, nextCursor }
+  const { items, nextCursor } = paginate(rows.slice(start, start + lim + 1), lim, (r) => ({
+    createdAt: r.createdAt,
+    id: r.id,
+  }))
+  return { records: items, nextCursor }
 }

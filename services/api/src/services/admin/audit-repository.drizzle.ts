@@ -14,7 +14,8 @@
  */
 
 import type { Sql } from "../../db/client.js"
-import { clampLimit, decodeCursor, encodeCursor, type CursorAnchor } from "./pagination.js"
+import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { isUuid } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import { likeContains } from "./like.js"
 
@@ -81,20 +82,10 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
-      const records = page.map(toRecord)
       const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? encodeCursor(anchorOf(toRecord(last))) : null
-      return { records, nextCursor }
+      const nextCursor =
+        hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null
+      return { records: page.map(toRecord), nextCursor }
     },
   }
-}
-
-/** The keyset anchor for an audit row (created_at + id tiebreak). */
-function anchorOf(record: AuditRecord): CursorAnchor {
-  return { createdAt: record.createdAt, id: record.id }
-}
-
-/** Loose uuid shape check so a non-uuid `actor` filter never trips a Postgres cast error. */
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }

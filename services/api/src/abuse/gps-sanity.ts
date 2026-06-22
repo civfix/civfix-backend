@@ -29,14 +29,8 @@
 import type { AbuseChecks } from "@civfix/shared/interfaces"
 import type { LatLng } from "@civfix/shared"
 
-/**
- * Cloudflare geo headers we read for the coarse IP location. CF-IPLatitude / CF-IPLongitude are set by
- * Cloudflare's "Add visitor location headers" managed transform; they are city-level coarse, which is
- * exactly the granularity we want for a ~50 km plausibility gate (not a precise fix).
- *
- * Header lookups are case-insensitive in Node/Fastify (header names are lowercased), so we read the
- * lowercase forms.
- */
+// Cloudflare's "Add visitor location headers" transform sets these (city-level coarse — the right
+// granularity for a ~50 km gate). Node/Fastify lowercase header names, so we read the lowercase forms.
 export const CF_LAT_HEADER = "cf-iplatitude"
 export const CF_LNG_HEADER = "cf-iplongitude"
 export const CF_COUNTRY_HEADER = "cf-ipcountry"
@@ -44,7 +38,6 @@ export const CF_COUNTRY_HEADER = "cf-ipcountry"
 /** A minimal case-insensitive header bag (the subset of FastifyRequest.headers we read). */
 export type HeaderBag = Record<string, string | string[] | undefined>
 
-/** Read a single header value (first element if it arrived as an array), trimmed; null when absent. */
 function header(headers: HeaderBag, name: string): string | null {
   const raw = headers[name]
   const value = Array.isArray(raw) ? raw[0] : raw

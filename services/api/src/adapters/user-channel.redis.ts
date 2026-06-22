@@ -74,10 +74,11 @@ export class RedisUserChannel implements UserChannel {
     let entry = this.users.get(userId)
     if (!entry) {
       const connections = new Set<ChatConnection>()
-      // Subscribe first so no published signal is missed once the user is present. The handler decodes
-      // the bare UserSignal, validates it defensively, then writes the CLIENT-facing {type:"signal", ...}
-      // frame to every local connection for this user.
-      const unsubscribe = await this.pubsub.subscribe(userChannel(userId), (payload) => {
+      // Populate the Map BEFORE awaiting subscribe (chat-pubsub's safe ordering) so two simultaneous
+      // first-connections for the same user can't both subscribe and leak the loser's unsubscribe handle.
+      const newEntry: UserSubscription = { connections, unsubscribe: async () => {} }
+      this.users.set(userId, newEntry)
+      newEntry.unsubscribe = await this.pubsub.subscribe(userChannel(userId), (payload) => {
         const current = this.users.get(userId)
         if (!current) return
         const signal = decodeSignal(payload)
@@ -89,8 +90,7 @@ export class RedisUserChannel implements UserChannel {
         const frame = JSON.stringify({ type: "signal", ...signal })
         for (const c of current.connections) c.send(frame)
       })
-      entry = { connections, unsubscribe }
-      this.users.set(userId, entry)
+      entry = newEntry
     }
     entry.connections.add(conn)
 

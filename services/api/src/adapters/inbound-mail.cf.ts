@@ -23,7 +23,9 @@ import type { AddressObject, Attachment, EmailAddress } from "mailparser"
 const THREAD_TOKEN_RE = /^[0-9a-f]{24}$/
 
 export interface CfInboundMailConfig {
-  /** Shared secret used to authenticate the Cloudflare webhook (CF_EMAIL_WEBHOOK_SECRET). */
+  // Carried for parity with the env wiring but intentionally unused HERE: the webhook HMAC is verified in
+  // the route (against the exact raw bytes), which is the correct place. Kept so di.ts can pass it without
+  // a special case; this adapter only parses already-authenticated bytes.
   webhookSecret?: string
 }
 
@@ -59,13 +61,10 @@ export class CfInboundMail implements InboundMail {
   }
 
   extractThreadToken(mail: ParsedMail): string | null {
-    // Prefer the explicit header, else parse a reply+{token}@... recipient. NOTE: unlike
-    // FakeInboundMail.extractThreadToken, the real adapter additionally SHAPE-VALIDATES the candidate
-    // (THREAD_TOKEN_RE) so a forged/junk inbound value cannot create stray threads (security hardening).
-    // SECURITY: a thread token is a 24-hex-char value minted by mintThreadToken(). Validate the SHAPE of
-    // any candidate (from the spoofable X-Thread-Token header OR a sender-chosen reply+{x}@ address) before
-    // returning it, so a junk/forged value cannot create stray threads or probe the thread namespace. The
-    // real protection is the token's entropy; this just rejects obviously-malformed candidates early.
+    // SECURITY: a thread token is the 24-hex-char value minted by mintThreadToken(). Shape-validate any
+    // candidate (from the spoofable X-Thread-Token header OR a sender-chosen reply+{x}@ address) before
+    // returning it so a junk/forged value can't create stray threads or probe the namespace. The token's
+    // entropy is the real protection; THREAD_TOKEN_RE just rejects obviously-malformed candidates early.
     const headerToken = mail.headers["x-thread-token"]
     if (headerToken && THREAD_TOKEN_RE.test(headerToken)) return headerToken
     for (const addr of mail.to) {

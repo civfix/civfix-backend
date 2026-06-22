@@ -12,23 +12,20 @@
  * container's Drizzle repo, or an injected in-memory repo (app.moderationOverrides) for the offline tests.
  */
 
-import {
-  ReportContentRequestSchema,
-  AppError,
-  type ReportContentResponse,
-} from "@civfix/shared"
-import { ZodError, type z, type ZodTypeAny } from "zod"
+import { ReportContentRequestSchema, type ReportContentResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { route } from "../versioning/route.js"
+import { parse } from "./_validate.js"
 import { writeAudit } from "../services/admin/audit.js"
 import {
   makeModerationService,
   type ModerationService,
 } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
+import { reportOwnedBy } from "../services/report-sql.js"
 
 /**
  * Tighter per-IP rate limit for filing content reports: a real user reports a handful per minute; 20/min
@@ -59,9 +56,6 @@ export async function registerReportContentRoutes(
     })
   }
 
-  // -------------------------------------------------------------------------
-  // POST /content-reports  [auth][csrf]  (rate-limited)
-  // -------------------------------------------------------------------------
   route(
     app,
     "reportContent",
@@ -87,7 +81,7 @@ export async function registerReportContentRoutes(
       // hard purge happens here (that is a product/counsel decision) — an admin actions the queue item.
       const isOwnerTakedown =
         body.subjectType === "report" &&
-        (await reportOwnedBy(app, container, body.subjectId, userId))
+        (await isOwnerTakedownReport(app, container, body.subjectId, userId))
 
       // Enqueue a user-filed report. subjectType maps 1:1 to moderation_items.subject_type (the CHECK was
       // widened in 0024 to include comment|message|event|profile|photo). dedupeOpen keeps one open item per
@@ -123,14 +117,12 @@ export async function registerReportContentRoutes(
 }
 
 /**
- * Whether `reportId` is a (non-deleted) report whose reporter is `userId` — i.e. the caller owns it. Used
- * to recognize an OWNER takedown request on POST /content-reports. DB-gated + fail-safe: when no
- * DATABASE_URL is configured (offline/all-fakes boot, where there is no DB to query) it returns false, so
- * the route degrades to the ordinary user-report path rather than attempting a connection. Any query error
- * is swallowed to false for the same reason — a takedown that can't confirm ownership is just filed as a
- * normal user report.
+ * Owner-takedown detection for POST /content-reports: is the caller the reporter of this report? DB-gated
+ * + fail-safe: with no DATABASE_URL (offline/all-fakes boot) it returns false so the route degrades to the
+ * ordinary user-report path rather than attempting a connection; any query error is swallowed to false for
+ * the same reason. The ownership query itself lives in the persistence layer (report-sql.reportOwnedBy).
  */
-async function reportOwnedBy(
+async function isOwnerTakedownReport(
   app: FastifyInstance,
   container: Container,
   reportId: string,
@@ -138,34 +130,9 @@ async function reportOwnedBy(
 ): Promise<boolean> {
   if (!container.env.DATABASE_URL) return false
   try {
-    const rows = await container.getDb().sql<{ reporter_user_id: string | null }[]>`
-      SELECT reporter_user_id FROM reports
-      WHERE id = ${reportId} AND deleted_at IS NULL
-      LIMIT 1
-    `
-    return rows[0]?.reporter_user_id === userId
+    return await reportOwnedBy(container.getDb().sql, reportId, userId)
   } catch (err) {
     app.log.warn({ err: String(err), reportId }, "content-reports: owner check failed (non-fatal)")
     return false
-  }
-}
-
-/**
- * Validate `data` against a Zod schema, throwing AppError.validation (422 with field details) on failure
- * so the canonical envelope is returned instead of a generic 500. Mirrors the other route plugins.
- */
-function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
-  try {
-    return schema.parse(data)
-  } catch (err) {
-    if (err instanceof ZodError) {
-      const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
-        fields[key] = issue.message
-      }
-      throw AppError.validation(fields)
-    }
-    throw err
   }
 }

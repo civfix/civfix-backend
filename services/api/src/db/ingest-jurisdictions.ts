@@ -4,35 +4,19 @@
  *
  *   pnpm db:ingest <path/to/boundaries.geojson> [layer] [geoid-prefix]
  *
- * `layer` (default "federal") is the fallback jurisdiction layer for features whose properties do not
- * carry one; pass "tribal" for a reservations export, etc.
- *
- * The actual ingest LOGIC (normalizeFeatures / upsertJurisdiction / ingestGeoJsonFile, the geoid-prefix
- * rule, the contact-preserving upsert) lives in ./ingest-jurisdictions-core.ts — a side-effect-free module
- * with NO `main()` and NO CLI guard, so other code (the local refresh tool scripts/refresh-boundaries.ts)
- * can import it without dragging in this file's `main()`. THIS file is ONLY the CLI shell: arg parsing +
- * DB handle + main(). It
- * is also a tsup entry, emitted to dist/db/ingest-jurisdictions.js so the production image can run
- * `node dist/db/ingest-jurisdictions.js <file> <layer> [geoid-prefix]` without tsx.
- *
- * Prefix rule (the optional third arg `geoid-prefix`): Census TIGER geoids are FIPS-hierarchical, so the
- * TIGER geocoder derives "City, ST" from the leading 2 chars — valid ONLY for real Census FIPS ids. The
- * two non-FIPS layers must be namespaced at load time to stay globally unique AND make uspsFromGeoid()
- * return null (so the geocoder falls back to the authoritative spatial state query): pass "AIANNH-" for an
- * AIANNH/tribal export and "PADUS-" for a PAD-US/federal export. TIGER place/county/state pass NO prefix.
- *
- * Real, public-domain sources: US Census TIGER/Line (place/county/state/AIANNH), USGS PAD-US (federal).
- * Requires DATABASE_URL + live Postgres/PostGIS; not exercised by the offline unit suite.
+ * `layer` (default "federal") is the fallback layer for features whose properties carry none. The
+ * geoid-prefix rule (AIANNH-/PADUS- for the non-FIPS layers) and the ingest LOGIC live in the guard-free
+ * ./ingest-jurisdictions-core.js (imported by both this shell and scripts/refresh-boundaries.ts; see that
+ * file's header for the prefix rule, the contact-preserving upsert, the public-domain sources, and the
+ * tsup-bundling rationale that requires the split). This file is ONLY the CLI shell (args + run).
  */
 
 import { readFile } from "node:fs/promises"
-import { fileURLToPath } from "node:url"
-import { makeDb } from "./client.js"
-import { loadEnv } from "../env.js"
+import { runDbCli, runIfMain } from "./cli.js"
 import { LAYER_RANK, ingestGeoJsonFile, type IngestRow } from "./ingest-jurisdictions-core.js"
 
 // Re-export the core API from the historical path so existing importers (e.g. the unit test importing
-// `normalizeFeatures` from this module) keep working without reaching into the core module directly.
+// `normalizeFeatures` from this module) keep resolving against this module.
 export {
   normalizeFeatures,
   upsertJurisdiction,
@@ -44,8 +28,6 @@ export type { IngestRow } from "./ingest-jurisdictions-core.js"
 async function main(): Promise<void> {
   const file = process.argv[2]
   const defaultLayer = (process.argv[3] ?? "federal") as IngestRow["layer"]
-  // Optional load-time geoid namespace (see file header "Prefix rule"). main() owns the trimming; the
-  // pure normalizeFeatures takes the value as-is.
   const geoidPrefix = (process.argv[4] ?? "").trim()
   if (!file) {
     console.error("usage: tsx src/db/ingest-jurisdictions.ts <boundaries.geojson> [layer] [geoid-prefix]")
@@ -56,27 +38,18 @@ async function main(): Promise<void> {
     process.exit(2)
   }
 
-  const text = await readFile(file, "utf8")
-  const env = loadEnv()
-  const handle = makeDb(env.DATABASE_URL, { max: 1 })
+  // Read the file up front so a missing/unreadable path is a clear error, not confused with a DB failure.
+  let text: string
   try {
-    const { upserted, skipped } = await ingestGeoJsonFile(handle.sql, text, defaultLayer, geoidPrefix)
-    console.log(`ingest: ${upserted} jurisdictions upserted from ${file} (${skipped} features skipped)`)
-  } finally {
-    await handle.close()
+    text = await readFile(file, "utf8")
+  } catch (err) {
+    throw new Error(`ingest: cannot read ${file}`, { cause: err })
   }
-}
 
-// Run only when executed directly (tsx src/db/ingest-jurisdictions.ts <file> / node dist/db/ingest-jurisdictions.js),
-// not when imported. This guard is SAFE here because this CLI module is NEVER imported by the API runtime
-// (runtime imports the guard-free ./ingest-jurisdictions-core.js instead), so it can only ever be the
-// entry of its own tsup bundle. See ingest-jurisdictions-core.ts for the bundling rationale.
-const invokedDirectly =
-  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]
-if (invokedDirectly) {
-  main().catch((err: unknown) => {
-    console.error("ingest: failed")
-    console.error(err)
-    process.exit(1)
+  await runDbCli(async (_db, sql) => {
+    const { upserted, skipped } = await ingestGeoJsonFile(sql, text, defaultLayer, geoidPrefix)
+    console.log(`ingest: ${upserted} jurisdictions upserted from ${file} (${skipped} features skipped)`)
   })
 }
+
+runIfMain(import.meta.url, "ingest", main)
