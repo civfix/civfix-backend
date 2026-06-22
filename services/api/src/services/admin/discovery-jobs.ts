@@ -1,19 +1,11 @@
 /**
- * Jurisdiction-discovery worker seam. Registers the `jurisdiction.discovery` pg-boss worker — the
- * consumer the report-create path already ENQUEUES to (jurisdiction-service.enqueueDiscovery, singletonKey
- * = geoid) when a pin lands in a jurisdiction with no usable routing contact. Before this worker existed
- * those jobs sat unconsumed; the worker materializes a discovery TASK row so the un-onboarded jurisdiction
- * surfaces in the operator's Discovery queue.
+ * Registers the `jurisdiction.discovery` pg-boss worker that materializes a discovery TASK row so an
+ * un-onboarded jurisdiction surfaces in the operator's queue.
  *
- * Wired into the server's job-start path (server.ts start()) right next to registerInboundJobs and under
- * the SAME gate (real pg-boss + a real DATABASE_URL), so an all-fakes offline boot never touches pg-boss.
- * The `jurisdiction.discovery` queue is created in PgBossJobs.start() (API_QUEUE_NAMES), which runs first,
- * so work() never races a missing queue.
- *
- * Handler contract: read job.data.{geoid, population}; skip when the geoid now has a routing contact (a
- * race: a contact was saved between the enqueue and the run, so there is nothing to discover); else
- * materialize ONE open task per geoid (idempotent ON CONFLICT (geoid) WHERE status <> 'done'). It must not
- * throw on a benign miss (unknown geoid / already-onboarded) — those are no-ops, not failures.
+ * The queue is created by PgBossJobs.start() (API_QUEUE_NAMES), which runs BEFORE this work() call, so
+ * work() never races a missing queue. The handler is idempotent (ON CONFLICT (geoid) WHERE status <>
+ * 'done') and never throws on a benign miss (unknown geoid / already-onboarded) — those are no-ops, so a
+ * retry-on-throw is safe.
  */
 
 import type { Container } from "../../di.js"
@@ -23,10 +15,6 @@ import {
 } from "../../services/jurisdiction-service.js"
 import { makeDrizzleDiscoveryRepository } from "./discovery-repository.drizzle.js"
 
-/**
- * Register the jurisdiction-discovery worker. Called from server.ts start() after the API queues are up
- * and only under real pg-boss + a real DATABASE_URL (the caller gates this, same as registerInboundJobs).
- */
 export async function registerDiscoveryJobs(container: Container): Promise<void> {
   await container.jobs.work(JURISDICTION_DISCOVERY_JOB, async (job) => {
     const data = (job.data ?? {}) as Partial<JurisdictionDiscoveryJob>

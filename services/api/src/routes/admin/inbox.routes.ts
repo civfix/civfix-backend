@@ -27,10 +27,14 @@ import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
+import { mapWithLimit, PRESIGN_CONCURRENCY } from "../../services/media-presign.js"
 import {
   makeDrizzleInboundRepository,
   type InboundRepository,
 } from "../../services/admin/inbound-repository.drizzle.js"
+
+/** Hard cap on attachments presigned per inbound email (defends a crafted mail with thousands of parts). */
+const MAX_INBOX_ATTACHMENTS = 50
 
 /**
  * Optional injected inbox dependencies (tests). When present the routes use the in-memory inbound repo +
@@ -71,15 +75,13 @@ export async function registerAdminInboxRoutes(
     const { id } = idParam(request)
     const dto = await repo().get(id)
     if (dto === null) throw AppError.notFound("Inbound email not found.")
-    const payload: InboundEmailDTO = {
-      ...dto,
-      attachments: await Promise.all(
-        dto.attachments.map(async (att) => ({
-          ...att,
-          key: await storage().presignGet(att.key, MEDIA_GET_URL_TTL_SEC),
-        })),
-      ),
-    }
+    const store = storage()
+    const attachments = await mapWithLimit(
+      dto.attachments.slice(0, MAX_INBOX_ATTACHMENTS),
+      PRESIGN_CONCURRENCY,
+      async (att) => ({ ...att, key: await store.presignGet(att.key, MEDIA_GET_URL_TTL_SEC) }),
+    )
+    const payload: InboundEmailDTO = { ...dto, attachments }
     reply.status(200).send(payload)
   })
 

@@ -1,15 +1,8 @@
 /**
- * Inbound-mail sweep jobs seam. Registers the "inbound.sweep" pg-boss cron + worker. Wired into the
- * server's job-start path (server.ts start()), right after the API queues + outreach jobs start and ONLY
- * when real (pg-boss) jobs back a real database, so an all-fakes offline boot never touches pg-boss.
- *
- * What it wires:
- *   1. schedule the cron: container.jobs.schedule("inbound.sweep", env.INBOUND_SWEEP_CRON). Each tick
- *      runs runInboundSweep (LIST inbound/pending/ -> processInboundObject per key).
- *   2. register the worker: container.jobs.work("inbound.sweep", handler) running the same sweep (so a
- *      boot-time enqueue and the cron share one code path).
- * The "inbound.sweep" queue is created in PgBossJobs.start() (API_QUEUE_NAMES), which runs before this,
- * so schedule/work never race a missing queue (pg-boss v10 requires the queue to exist first).
+ * Inbound-mail sweep jobs seam: registers the "inbound.sweep" pg-boss cron + worker (both run the same
+ * runInboundSweep, which is idempotent on message_id and never throws). GOTCHA: the queue is created in
+ * PgBossJobs.start() (API_QUEUE_NAMES) BEFORE this runs, so schedule/work never race a missing queue
+ * (pg-boss v10 requires the queue to exist first).
  */
 
 import type { Container } from "../../di.js"

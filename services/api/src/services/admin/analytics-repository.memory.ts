@@ -21,7 +21,7 @@ import type {
   TopContributorRow,
   TopJurisdictionRow,
   WeekBucket,
-} from "./analytics-service.js"
+} from "./analytics-types.js"
 
 /** Default empty KPI aggregates (all zero) so a test only sets what it asserts. */
 function zeroKpis(): KpiAggregates {
@@ -47,37 +47,38 @@ export class InMemoryAnalyticsRepository implements AnalyticsRepository {
   heatmapValue: HeatmapCellRow[] = []
   retentionValue: RetentionRow[] = []
 
+  // Getters return shallow copies so a test mutating a returned value can't corrupt the canned state.
   async kpis(): Promise<KpiAggregates> {
-    return this.kpisValue
+    return { ...this.kpisValue }
   }
   async pinsByWeek(_weeks: number): Promise<WeekBucket[]> {
-    return this.pinsByWeekValue
+    return [...this.pinsByWeekValue]
   }
   async byCategory(): Promise<CategoryCount[]> {
-    return this.byCategoryValue
+    return [...this.byCategoryValue]
   }
   async funnel(): Promise<FunnelCounts> {
-    return this.funnelValue
+    return { ...this.funnelValue }
   }
   async coverage(): Promise<CoverageCounts> {
-    return this.coverageValue
+    return { ...this.coverageValue }
   }
   async resolutionByCategory(): Promise<CategoryMedian[]> {
-    return this.resolutionByCategoryValue
+    return [...this.resolutionByCategoryValue]
   }
   async events(_months: number): Promise<EventAggregates> {
-    return this.eventsValue
+    return { ...this.eventsValue }
   }
   async topJurisdictions(_limit: number): Promise<TopJurisdictionRow[]> {
-    return this.topJurisdictionsValue
+    return [...this.topJurisdictionsValue]
   }
   async topContributors(_limit: number): Promise<TopContributorRow[]> {
-    return this.topContributorsValue
+    return [...this.topContributorsValue]
   }
   async heatmap(_limit: number): Promise<HeatmapCellRow[]> {
-    return this.heatmapValue
+    return [...this.heatmapValue]
   }
   async retention(_cohorts: number): Promise<RetentionRow[]> {
-    return this.retentionValue
+    return [...this.retentionValue]
   }
 }

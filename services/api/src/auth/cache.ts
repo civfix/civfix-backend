@@ -13,6 +13,7 @@
  */
 
 import type { RedisClient } from "../adapters/redis.js"
+import { attachAtomicIncr } from "../adapters/redis-incr.js"
 
 export interface CacheClient {
   /** Return the stored string, or null if absent / expired. */
@@ -108,9 +109,13 @@ export class InMemoryCacheClient implements CacheClient {
  */
 export class RedisCacheClient implements CacheClient {
   private readonly redis: RedisClient
+  // Atomic INCR + PEXPIRE-on-create: a crash between INCR and EXPIRE would otherwise strand a TTL-less
+  // OTP rate-limit key and lock that email/IP out of sign-in forever (see adapters/redis-incr.ts).
+  private readonly atomicIncr: (key: string, ttlSeconds: number) => Promise<number>
 
   constructor(redis: RedisClient) {
     this.redis = redis
+    this.atomicIncr = attachAtomicIncr(redis)
   }
 
   async get(key: string): Promise<string | null> {
@@ -125,12 +130,7 @@ export class RedisCacheClient implements CacheClient {
     await this.redis.del(key)
   }
 
-  async incr(key: string, ttlSeconds: number): Promise<number> {
-    const next = await this.redis.incr(key)
-    if (next === 1) {
-      // First hit in this window: anchor the expiry. Later hits leave it untouched.
-      await this.redis.expire(key, Math.max(1, Math.ceil(ttlSeconds)))
-    }
-    return next
+  incr(key: string, ttlSeconds: number): Promise<number> {
+    return this.atomicIncr(key, ttlSeconds)
   }
 }

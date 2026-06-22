@@ -22,7 +22,7 @@ export interface DataExportServiceDeps {
   mailer: Mailer
   /** Object storage (reserved for future media-byte inclusion; not loaded inline today). */
   storage: Storage
-  /** The auth bundle's UserStore, to resolve the requester's profile + recipient email. */
+  /** The auth bundle's UserStore — the recipient-email fallback when the profile SELECT yields no row. */
   users: UserStore
   /** The no-reply From the export email is sent from (env.MAIL_FROM_NOREPLY). */
   fromNoReply: string
@@ -41,12 +41,9 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
   return {
     async exportData(userId: string): Promise<{ ok: true; email: string | null }> {
-      const user = await users.findById(userId)
-      // Defensive: a deleted/missing user simply yields a minimal export with no email send.
-      const email = user?.email ?? null
-
-      // ----- Gather (per-source SELECTs scoped to this user; secrets excluded) -----
-      // profile (the durable users row; PII the user owns)
+      // The per-source SELECTs are independent, so gather them concurrently (bounded by the ~13 fixed
+      // statements; the postgres.js pool caps real parallelism). The profile SELECT is the recipient
+      // email's source of truth, so a deleted/missing row yields a minimal export with no send.
       const profileRows = await sql<
         {
           id: string
@@ -64,8 +61,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         FROM users WHERE id = ${userId} LIMIT 1
       `
 
-      // reports the user filed (join the jurisdiction for the place label; mirror listUserReports)
-      const reports = await sql<
+      const reports = sql<
         {
           id: string
           category: string
@@ -83,8 +79,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         ORDER BY r.created_at DESC
       `
 
-      // discussion comments authored on civic reports
-      const comments = await sql<
+      const comments = sql<
         { id: string; report_id: string; body: string; created_at: Date; deleted_at: Date | null }[]
       >`
         SELECT id, report_id, body, created_at, deleted_at
@@ -93,8 +88,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         ORDER BY created_at DESC
       `
 
-      // cleanup (group) chat messages the user sent (mirror listUserMessages)
-      const chatMessages = await sql<
+      const chatMessages = sql<
         {
           id: string
           cleanup_id: string
@@ -109,8 +103,8 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         ORDER BY created_at DESC
       `
 
-      // direct messages the user sent (the user's OWN messages only; peers' messages are not the user's data)
-      const dmMessages = await sql<
+      // The user's OWN messages only; peers' messages are not the user's data.
+      const dmMessages = sql<
         {
           id: string
           thread_id: string
@@ -125,15 +119,14 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         ORDER BY created_at DESC
       `
 
-      // cleanups (events) organized + joined
-      const cleanupsOrganized = await sql<
+      const cleanupsOrganized = sql<
         { id: string; title: string | null; created_at: Date }[]
       >`
         SELECT id, title, created_at FROM cleanups
         WHERE organizer_user_id = ${userId}
         ORDER BY created_at DESC
       `
-      const cleanupsJoined = await sql<
+      const cleanupsJoined = sql<
         { cleanup_id: string; role: string; joined_at: Date }[]
       >`
         SELECT cleanup_id, role, joined_at FROM cleanup_members
@@ -141,68 +134,97 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         ORDER BY joined_at DESC
       `
 
-      // social graph (follows people, in both directions) + blocks the user set
-      const following = await sql<{ followee_id: string }[]>`
+      const following = sql<{ followee_id: string }[]>`
         SELECT followee_id FROM follows_people WHERE follower_id = ${userId}
       `
-      const followers = await sql<{ follower_id: string }[]>`
+      const followers = sql<{ follower_id: string }[]>`
         SELECT follower_id FROM follows_people WHERE followee_id = ${userId}
       `
-      const blocks = await sql<{ blocked_id: string }[]>`
+      const blocks = sql<{ blocked_id: string }[]>`
         SELECT blocked_id FROM user_blocks WHERE blocker_id = ${userId}
       `
 
-      // notification preferences (no secrets)
-      const notificationPrefs = await sql<Record<string, unknown>[]>`
+      const notificationPrefs = sql<Record<string, unknown>[]>`
         SELECT * FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
       `
 
-      // push tokens — REDACT the raw token (device registration is the user's data, the secret is not)
-      const pushTokenRows = await sql<
+      // REDACT the raw token below: device registration is the user's data, the secret is not.
+      const pushTokenRowsQuery = sql<
         { id: string; platform: string; created_at: Date; revoked_at: Date | null }[]
       >`
         SELECT id, platform, created_at, revoked_at FROM push_tokens WHERE user_id = ${userId}
       `
-      const pushTokens = pushTokenRows.map((t) => ({
-        id: t.id,
-        platform: t.platform,
-        token: "[REDACTED]",
-        createdAt: t.created_at,
-        revokedAt: t.revoked_at,
-      }))
 
-      // verification status (the "verified neighbor" state; documents jsonb omitted as sensitive).
-      // NOTE: user_verification has NO created_at column - the request timestamp is `applied_at` (see
+      // NOTE: user_verification has NO created_at column — the request timestamp is `applied_at` (see
       // 0016_user_verification.sql). Selecting created_at here threw `column "created_at" does not exist`,
-      // which failed EVERY data-export with a 500. Use applied_at.
-      const verification = await sql<{ status: string; applied_at: Date }[]>`
+      // which failed EVERY data-export with a 500. Use applied_at. (verification jsonb is omitted as sensitive.)
+      const verification = sql<{ status: string; applied_at: Date }[]>`
         SELECT status, applied_at FROM user_verification WHERE user_id = ${userId} LIMIT 1
       `
 
-      const exportObject = {
-        exportedAt: new Date().toISOString(),
-        format: "civfix-data-export@1",
-        userId,
-        profile: profileRows[0] ?? null,
+      const [
+        reportRows,
+        commentRows,
+        chatRows,
+        dmRows,
+        cleanupsOrganizedRows,
+        cleanupsJoinedRows,
+        followingRows,
+        followerRows,
+        blockRows,
+        notificationPrefRows,
+        pushTokenRows,
+        verificationRows,
+      ] = await Promise.all([
         reports,
         comments,
         chatMessages,
         dmMessages,
         cleanupsOrganized,
         cleanupsJoined,
-        following: following.map((f) => f.followee_id),
-        followers: followers.map((f) => f.follower_id),
-        blocks: blocks.map((b) => b.blocked_id),
-        notificationPrefs: notificationPrefs[0] ?? null,
-        pushTokens,
-        verification: verification[0] ?? null,
-      }
+        following,
+        followers,
+        blocks,
+        notificationPrefs,
+        pushTokenRowsQuery,
+        verification,
+      ])
 
-      const bytes = new TextEncoder().encode(JSON.stringify(exportObject, null, 2))
+      const profile = profileRows[0] ?? null
+      // Prefer the gather SELECT's email (one consistent snapshot with the rest of the export); fall back
+      // to the UserStore so a caller whose profile row isn't visible via raw sql still resolves a recipient.
+      const email = profile?.email ?? (await users.findById(userId))?.email ?? null
+
+      const exportObject = {
+        exportedAt: new Date().toISOString(),
+        format: "civfix-data-export@1",
+        userId,
+        profile,
+        reports: reportRows,
+        comments: commentRows,
+        chatMessages: chatRows,
+        dmMessages: dmRows,
+        cleanupsOrganized: cleanupsOrganizedRows,
+        cleanupsJoined: cleanupsJoinedRows,
+        following: followingRows.map((f) => f.followee_id),
+        followers: followerRows.map((f) => f.follower_id),
+        blocks: blockRows.map((b) => b.blocked_id),
+        notificationPrefs: notificationPrefRows[0] ?? null,
+        pushTokens: pushTokenRows.map((t) => ({
+          id: t.id,
+          platform: t.platform,
+          token: "[REDACTED]",
+          createdAt: t.created_at,
+          revokedAt: t.revoked_at,
+        })),
+        verification: verificationRows[0] ?? null,
+      }
 
       // No email on file (Apple / OTP-less / anon-claimed): skip the send, surface email:null so the
       // client can tell the user to add an email first.
       if (email === null) return { ok: true, email: null }
+
+      const bytes = new TextEncoder().encode(JSON.stringify(exportObject))
 
       const text =
         "Attached is a copy of your civfix data (JSON). It includes your profile, reports, comments, " +

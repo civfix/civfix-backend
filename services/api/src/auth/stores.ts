@@ -13,8 +13,9 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { AppError, HANDLE_REGEX } from "@civfix/shared"
+import { AppError } from "@civfix/shared"
 import type { Role } from "@civfix/shared"
+import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 
 /** The rolling rename cooldown: a @handle changed AFTER profile completion locks for 30 days. */
 export const HANDLE_RENAME_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
@@ -41,10 +42,6 @@ export function generatePlaceholderHandle(id?: string): string {
   const hex = (id ?? randomUUID()).replace(/-/g, "").slice(0, 12).toLowerCase()
   return `user${hex}`
 }
-
-// ---------------------------------------------------------------------------
-// Session store
-// ---------------------------------------------------------------------------
 
 /** A persisted session row. `id` is the SHA-256 hex of the raw token. `roles` is denormalized. */
 export interface SessionRecord {
@@ -134,10 +131,6 @@ export class InMemorySessionStore implements SessionStore {
   }
 }
 
-// ---------------------------------------------------------------------------
-// User store
-// ---------------------------------------------------------------------------
-
 /** Subset of a users row the auth flows read/write. */
 export interface UserRecord {
   id: string
@@ -209,7 +202,11 @@ export interface UserStore {
    * New users start with `profile_complete = false` (they must finish first-run registration).
    */
   create(email: string | null, input: CreateUserInput): Promise<UserRecord>
-  /** First-run registration: set the handle + displayName and mark the profile complete. */
+  /**
+   * First-run registration / profile edit: set the handle + displayName and mark the profile complete.
+   * The ROUTE owns the reserved/slur/jurisdiction gate; the STORE owns handle format + uniqueness + the
+   * rolling-30-day rename cooldown (see handle-policy.ts). Throws AppError.notFound for an unknown id.
+   */
   updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord>
   /**
    * Set the user's role (Phase 2 admin/gov provisioning). IDEMPOTENT: setting the role a user already
@@ -313,39 +310,25 @@ export class InMemoryUserStore implements UserStore {
 
   async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
     const row = this.byId.get(id)
-    if (!row) throw new Error("InMemoryUserStore.updateProfile: user not found")
-    // `avatarUploadId` (and the `presignAvatar` canonicalizer) are accepted but a no-op here: the in-memory
-    // store has no media table to resolve the upload id against, so there is no r2_key to presign and
-    // avatar_url stays as-is. The Pg store resolves the media row, presigns its r2_key into the canonical
-    // public URL, and persists that into users.avatar_url.
+    if (!row) throw AppError.notFound("User not found.")
+    // `avatarUploadId`/`presignAvatar` are accepted but a no-op here: the in-memory store has no media
+    // table to resolve the upload id against. The Pg store resolves the media row, presigns its r2_key,
+    // and persists the canonical public URL into users.avatar_url.
 
-    // Decide the handle write by comparing lower(submitted) vs lower(current). The name/bio editors
-    // re-send the current handle every PUT, so an unchanged handle MUST be a no-op (no validation, no
-    // handle_changed_at stamp). A changed handle re-validates + (when a real rename) enforces the cooldown.
     let handle = row.handle
     let handleChangedAt = row.handleChangedAt
-    const changed = (row.handle ?? "").toLowerCase() !== input.handle.toLowerCase()
-    if (changed) {
-      if (!HANDLE_REGEX.test(input.handle.trim())) {
-        throw AppError.validation({ handle: "That username isn't a valid format." })
-      }
+    if (handleChanged(row.handle, input.handle)) {
       const taken = await this.findByHandle(input.handle)
-      if (taken !== null && taken.id !== id) {
-        throw AppError.conflict("That username is taken.")
-      }
-      if (row.profileComplete === true) {
-        // A real rename: enforce the rolling-30-day cooldown.
-        const next = handleChangeableAtFrom(row.handleChangedAt, this.now())
-        if (next !== null) {
-          throw AppError.rateLimited(`You can change your username again on ${next}.`)
-        }
-        handle = input.handle
-        handleChangedAt = this.now()
-      } else {
-        // Initial set during first-run completion: set the handle, leave the cooldown clock null.
-        handle = input.handle
-        handleChangedAt = null
-      }
+      const decided = decideHandleWrite({
+        current: row.handle,
+        submitted: input.handle,
+        profileComplete: row.profileComplete,
+        handleChangedAt: row.handleChangedAt,
+        isTaken: taken !== null && taken.id !== id,
+        now: this.now(),
+      })
+      handle = decided.handle
+      handleChangedAt = decided.handleChangedAt
     }
 
     const next: UserRecord = {
@@ -401,10 +384,6 @@ export class InMemoryUserStore implements UserStore {
   }
 }
 
-// ---------------------------------------------------------------------------
-// OAuth identity store
-// ---------------------------------------------------------------------------
-
 export interface OAuthIdentityRecord {
   id: string
   userId: string
@@ -437,10 +416,6 @@ export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
     return Promise.resolve()
   }
 }
-
-// ---------------------------------------------------------------------------
-// OTP store
-// ---------------------------------------------------------------------------
 
 export interface OtpRecord {
   id: string
@@ -525,10 +500,6 @@ export class InMemoryOtpStore implements OtpStore {
     return this.rows
   }
 }
-
-// ---------------------------------------------------------------------------
-// Bundle
-// ---------------------------------------------------------------------------
 
 /** All auth persistence seams grouped, for convenient construction/injection. */
 export interface AuthStores {

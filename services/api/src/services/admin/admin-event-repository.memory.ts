@@ -19,7 +19,7 @@
 
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
-import { flaggedFromTimeline } from "./admin-event-service.js"
+import { flaggedFromTimeline } from "./admin-event-helpers.js"
 import {
   toEventStatus,
   toStoredCleanupStatus,
@@ -198,16 +198,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     }
     let rows = seededRows.map((s) => s.record)
 
-    if (args.q !== null) {
-      const needle = args.q.toLowerCase()
-      rows = rows.filter(
-        (r) =>
-          r.title.toLowerCase().includes(needle) ||
-          r.place.toLowerCase().includes(needle) ||
-          r.id.toLowerCase().includes(needle) ||
-          (r.organizer?.name.toLowerCase().includes(needle) ?? false),
-      )
-    }
+    if (args.q !== null) rows = rows.filter((r) => matchesQuery(r, args.q as string))
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
 
     rows.sort((a, b) => {
@@ -235,16 +226,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
 
   async countByBucket(args: { q: string | null }): Promise<AdminEventCounts> {
     let rows = [...this.events.values()].map((s) => s.record)
-    if (args.q !== null) {
-      const needle = args.q.toLowerCase()
-      rows = rows.filter(
-        (r) =>
-          r.title.toLowerCase().includes(needle) ||
-          r.place.toLowerCase().includes(needle) ||
-          r.id.toLowerCase().includes(needle) ||
-          (r.organizer?.name.toLowerCase().includes(needle) ?? false),
-      )
-    }
+    if (args.q !== null) rows = rows.filter((r) => matchesQuery(r, args.q as string))
     let upcoming = 0
     let inProgress = 0
     let completed = 0
@@ -330,8 +312,10 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   async cancel(id: string, input: { note: string; actorId: string | null }): Promise<boolean> {
     const seeded = this.events.get(id)
     if (!seeded) return false
-    seeded.storedStatus = "cancelled"
-    seeded.record.status = "cancelled"
+    // Round-trip through the mappers like setStatus does, so a future non-trivial 'cancelled' mapping
+    // can't drift between cancel and setStatus.
+    seeded.storedStatus = toStoredCleanupStatus("cancelled")
+    seeded.record.status = toEventStatus(seeded.storedStatus)
     this.appendTimeline(id, {
       kind: "cancel",
       note: input.note,
@@ -348,7 +332,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
 
   async postMessage(
     id: string,
-    input: { body: string; actorId: string | null },
+    input: { body: string; actorId: string },
   ): Promise<{ notified: number } | null> {
     const seeded = this.events.get(id)
     if (!seeded) return null
@@ -461,6 +445,17 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     list.push(row)
     this.timeline.set(id, list)
   }
+}
+
+// The search-needle filter shared by listEvents + countByBucket (mirrors the SQL ILIKE-over-N-columns).
+function matchesQuery(record: AdminEventRecord, q: string): boolean {
+  const needle = q.toLowerCase()
+  return (
+    record.title.toLowerCase().includes(needle) ||
+    record.place.toLowerCase().includes(needle) ||
+    record.id.toLowerCase().includes(needle) ||
+    (record.organizer?.name.toLowerCase().includes(needle) ?? false)
+  )
 }
 
 /** Default seeded organizer (a claimed account with a verified email + oauth). */

@@ -25,7 +25,7 @@ import {
   type ProvisionedUser,
   type UserProvisioner,
 } from "./gov-claims-service.js"
-import type { GovCheckStatus, GovVerificationCheck } from "@civfix/shared"
+import type { GovCheckStatus, GovVerificationCheck, Role } from "@civfix/shared"
 
 /** An in-memory GovClaimsRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryGovClaimsRepository implements GovClaimsRepository {
@@ -67,9 +67,9 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
   ): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }> {
     let rows = [...this.claims.values()].filter((r) => r.status === "pending")
 
-    // The status facet narrows further (mostly "all"/"pending" for the pending queue, but a test may
-    // request "approved"/"rejected" which yields nothing here since listPending is pending-only).
-    if (args.filter !== "all") {
+    // Narrow only for a non-"all"/"pending" facet (matches the Drizzle guard); "all"/"pending" are no-ops
+    // over the pending-only queue, an "approved"/"rejected" facet yields nothing.
+    if (args.filter !== "all" && args.filter !== "pending") {
       rows = rows.filter((r) => r.status === args.filter)
     }
 
@@ -122,14 +122,15 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
     },
   ): Promise<GovClaimRecord | null> {
     const claim = this.claims.get(id)
-    if (!claim) return null
+    // Mirror the Drizzle WHERE status='pending' guard: a decided claim's checks are immutable (null/404).
+    if (!claim || claim.status !== "pending") return null
     const check: GovCheckRecord = {
       status: input.status,
       evidence: input.evidence,
       note: input.note,
     }
     claim.checks = { ...claim.checks, [input.check]: check }
-    return claim
+    return { ...claim }
   }
 
   async approve(
@@ -140,7 +141,7 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
     if (!claim || claim.status !== "pending") return null
     claim.status = "approved"
     claim.userId = input.userId
-    return claim
+    return { ...claim }
   }
 
   async reject(
@@ -151,7 +152,7 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
     if (!claim || claim.status !== "pending") return null
     claim.status = "rejected"
     claim.rejectReason = input.reason
-    return claim
+    return { ...claim }
   }
 }
 
@@ -201,7 +202,7 @@ export class InMemoryUserProvisioner implements UserProvisioner {
     return { ...user }
   }
 
-  async setRole(id: string, role: string): Promise<ProvisionedUser> {
+  async setRole(id: string, role: Role): Promise<ProvisionedUser> {
     const user = this.users.get(id)
     if (!user) throw new Error("InMemoryUserProvisioner.setRole: user not found")
     user.role = role

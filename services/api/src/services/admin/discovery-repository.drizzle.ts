@@ -27,14 +27,12 @@
 import type postgres from "postgres"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
-
-/** A composable SQL fragment (postgres.js `PendingQuery<any>`); what a `sql\`...\`` expression yields. */
-type SqlFragment = postgres.Fragment
 import { decodeCursor, encodeCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { likeContains } from "./like.js"
 import {
   DISCOVERY_CATEGORIES,
+  computeContactState,
   type DiscoveryContactRecord,
   type DiscoveryContactSuggestionRecord,
   type DiscoveryDetailRecord,
@@ -44,6 +42,9 @@ import {
   type DiscoveryTaskRecord,
   type ListDiscoveryArgs,
 } from "./discovery-service.js"
+
+/** A composable SQL fragment (postgres.js); what a `sql\`...\`` expression yields. */
+type SqlFragment = postgres.Fragment
 
 /** Max sample pins returned for a detail mini-map. */
 const SAMPLE_PIN_CAP = 50
@@ -104,13 +105,22 @@ function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
   }
 }
 
+/** Max live discovery tasks the list path materializes per fetch (the facet + keyset run in JS over this
+ * bounded set; one row per un-onboarded jurisdiction keeps the real count far below it). */
+const LIST_FETCH_CAP = 1000
+
 /**
  * The shared aggregate SELECT: every OPEN discovery task joined with its jurisdiction, plus the
  * per-category waiting counts, the oldest/newest waiting timestamps, the per-category contact category
  * set, and whether a default/legacy contact exists. `WHERE t.status <> 'done'` keeps the queue to live
- * tasks. Reused by listTasks (paged/filtered/sorted) and getDetail (single id) via the `extra` clause.
+ * tasks. Reused by listTasks (paged/filtered/sorted) and getDetail/getTask (single id) via `extraWhere`;
+ * `extraTail` carries an optional ORDER BY ... LIMIT so the list path is bounded in SQL.
  */
-async function taskAggregateSql(sql: Queryable, extraWhere: SqlFragment): Promise<TaskAggRow[]> {
+async function taskAggregateSql(
+  sql: Queryable,
+  extraWhere: SqlFragment,
+  extraTail: SqlFragment = sql``,
+): Promise<TaskAggRow[]> {
   // Interpolated into an UNTYPED template (so the `extraWhere` fragment composes without the typed-tag
   // variance friction), then cast to the known row shape. The column list + the cast are the contract.
   const rows = await sql`
@@ -161,6 +171,7 @@ async function taskAggregateSql(sql: Queryable, extraWhere: SqlFragment): Promis
     ) c ON true
     WHERE t.status <> 'done'
     ${extraWhere}
+    ${extraTail}
   `
   return rows as unknown as TaskAggRow[]
 }
@@ -170,9 +181,11 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     async listTasks(
       args: ListDiscoveryArgs,
     ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
-      // Fetch ALL live task aggregates, then apply the attention/clear facet + sort + keyset in JS. The
-      // discovery queue is small (one row per un-onboarded jurisdiction), so this is well-bounded and
-      // keeps the facet logic (which depends on per-category contact state) in one place with the service.
+      // The sort + a LIST_FETCH_CAP LIMIT are pushed into SQL so the fetch is bounded (the per-geoid
+      // LATERAL aggregates do not run for the entire national TIGER set). The attention/clear facet stays
+      // in JS (it depends on per-category contact state, the same predicate the service uses), and the
+      // keyset pages by array position after the anchor id — best-effort, order-fragile under concurrent
+      // task mutation (a row can shift between pages); acceptable for a small operator queue.
       const search =
         args.q !== null
           ? (() => {
@@ -180,21 +193,20 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
               return sql`AND (j.name ILIKE ${like} ESCAPE '\\' OR t.geoid ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
-      const rows = await taskAggregateSql(sql, search)
+      // ORDER BY mirrors the queue: pop|reports DESC then id DESC (the stable keyset tiebreak). population
+      // is COALESCE(j.population, t.population) and total the LATERAL count — both selected aliases.
+      const order =
+        args.sort === "reports"
+          ? sql`ORDER BY COALESCE(w.total, 0) DESC, t.id DESC`
+          : sql`ORDER BY COALESCE(j.population, t.population, 0) DESC, t.id DESC`
+      const rows = await taskAggregateSql(sql, search, sql`${order} LIMIT ${LIST_FETCH_CAP}`)
       let records = rows.map(toTaskRecord)
 
       if (args.filter === "attention") {
-        records = records.filter((r) => missingContacts(r).length > 0)
+        records = records.filter((r) => computeContactState(r).missing.length > 0)
       } else if (args.filter === "clear") {
-        records = records.filter((r) => missingContacts(r).length === 0)
+        records = records.filter((r) => computeContactState(r).missing.length === 0)
       }
-
-      records.sort((a, b) => {
-        const primary =
-          args.sort === "reports" ? b.total - a.total : (b.population ?? 0) - (a.population ?? 0)
-        if (primary !== 0) return primary
-        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
-      })
 
       const limit = clampLimit(args.limit)
       const anchor = decodeCursor(args.cursor)
@@ -392,22 +404,6 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shared SQL helpers (also used by jurisdiction-contacts-repository.drizzle.ts)
-// ---------------------------------------------------------------------------
-
-/** Categories with waiting reports but no contact (repo-local copy of the service predicate for facets). */
-function missingContacts(record: DiscoveryTaskRecord): ReportCategory[] {
-  const routed = new Set<ReportCategory>(record.contactCategories)
-  const missing: ReportCategory[] = []
-  for (const category of DISCOVERY_CATEGORIES) {
-    const waiting = (record.perCategory[category] ?? 0) > 0
-    const hasContact = routed.has(category) || record.hasDefaultContact
-    if (waiting && !hasContact) missing.push(category)
-  }
-  return missing
-}
-
 /** Load the existing per-category routing contacts for a geoid (category-specific rows only). */
 async function loadContacts(sql: Queryable, geoid: string): Promise<DiscoveryContactRecord[]> {
   const rows = await sql<{ category: string | null; email: string | null }[]>`
@@ -447,19 +443,20 @@ async function loadGeometry(
   taskId: string,
   geoid: string,
 ): Promise<{ placeGeojson: unknown | null; center: [number, number] | null; zoom: number | null }> {
-  const taskRows = await sql<{ place_geojson: unknown | null }[]>`
-    SELECT place_geojson FROM jurisdiction_discovery_tasks WHERE id = ${taskId} LIMIT 1
-  `
+  // The two reads are independent (task place_geojson vs the jurisdiction centroid); run them together.
+  // The jurisdictions.geom may be absent in seed-light envs; tolerate a null centroid (null center).
+  const [taskRows, centerRows] = await Promise.all([
+    sql<{ place_geojson: unknown | null }[]>`
+      SELECT place_geojson FROM jurisdiction_discovery_tasks WHERE id = ${taskId} LIMIT 1
+    `,
+    sql<{ lat: number | null; lng: number | null }[]>`
+      SELECT ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lng
+      FROM jurisdictions
+      WHERE geoid = ${geoid}
+      LIMIT 1
+    `,
+  ])
   const placeGeojson = taskRows[0]?.place_geojson ?? null
-
-  // Centroid for the mini-map center (lat,lng). The jurisdictions.geom may be absent in seed-light envs;
-  // tolerate a null centroid by returning a null center (the design then renders a text label).
-  const centerRows = await sql<{ lat: number | null; lng: number | null }[]>`
-    SELECT ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lng
-    FROM jurisdictions
-    WHERE geoid = ${geoid}
-    LIMIT 1
-  `
   const c = centerRows[0]
   const center: [number, number] | null =
     c && c.lat !== null && c.lng !== null ? [c.lat, c.lng] : null

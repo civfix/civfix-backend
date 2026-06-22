@@ -41,10 +41,6 @@ import type {
   ReportCategory,
 } from "@civfix/shared"
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
 /**
  * The 6 canonical civfix report categories in display order (matches ReportCategorySchema / the DB
  * REPORT_CATEGORY_VALUES). Declared locally because @civfix/shared exports the zod enum + the inferred
@@ -71,10 +67,6 @@ export const CATEGORY_LABELS: Record<ReportCategory, string> = {
   water: "Water",
   other: "Other",
 }
-
-// ---------------------------------------------------------------------------
-// Repository seam (structural records; faked in tests)
-// ---------------------------------------------------------------------------
 
 /**
  * A discovery task row joined with its jurisdiction, plus the derived waiting-report aggregates the
@@ -217,10 +209,6 @@ export interface DiscoveryRepository {
   materializeDiscoveryTask(input: { geoid: string; population?: number | null }): Promise<boolean>
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers (no DB, no IO)
-// ---------------------------------------------------------------------------
-
 /** Fill a per-category count map so every real category is present (0 when no waiting reports). */
 export function fullPerCategoryCounts(
   partial: Partial<Record<ReportCategory, number>>,
@@ -318,10 +306,6 @@ export function suggestionToNote(s: DiscoveryContactSuggestionRecord): Discovery
     createdAt: s.createdAt,
   }
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 export interface DiscoveryServiceDeps {
   repo: DiscoveryRepository

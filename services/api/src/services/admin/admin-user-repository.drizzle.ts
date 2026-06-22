@@ -16,7 +16,8 @@
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
-import { clampLimit, decodeCursor, encodeCursor, type CursorAnchor } from "./pagination.js"
+import { clampLimit, decodeCursor } from "./pagination.js"
+import { paginate } from "../../db/cursor-helpers.js"
 import type {
   AdminUserRecord,
   AdminUserRepository,
@@ -161,7 +162,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     async listUsers(
       args: ListUsersArgs,
     ): Promise<{ records: AdminUserRecord[]; nextCursor: string | null }> {
-      const limit = clampKeyset(args.limit)
+      const limit = clampLimit(args.limit)
       const anchor = decodeKeyset(args.cursor)
 
       const conds: SqlFragment[] = []
@@ -180,20 +181,19 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       const orderLimit = sql`ORDER BY u.created_at DESC, u.id DESC LIMIT ${limit + 1}`
 
       const rows = (await userSelect(sql, extraWhere, orderLimit)) as unknown as UserRowSelect[]
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const records = page.map(toRecord)
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last && last.created_at
-          ? encodeKeyset({ createdAt: last.created_at, id: last.id })
-          : null
-      return { records, nextCursor }
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({
+        // A null created_at would yield a null anchor; paginate then emits nextCursor:null (it never
+        // pages past the legacy no-created_at row, which only the very first seeded users have).
+        ...(r.created_at !== null ? { createdAt: r.created_at } : {}),
+        id: r.id,
+      }))
+      return { records: items.map(toRecord), nextCursor }
     },
 
     async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
-      // One aggregate over the searched, non-deleted users: total + per-facet (active / suspended) + the
-      // orthogonal flagged count. `suspended` is the explicit suspended status (matching the facet).
+      // One aggregate over the searched user set (tombstoned accounts INCLUDED, matching listUsers so the
+      // chip counts and the list agree): total + per-facet (active / suspended) + the orthogonal flagged
+      // count. `suspended` is the explicit suspended status (matching the facet).
       const search = searchUsersFragment(sql, args.q)
       const rows = await sql<
         { all: string; active: string; suspended: string; flagged: string }[]
@@ -231,7 +231,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       cursor: string | null,
       limit: number,
     ): Promise<{ records: UserReportRecord[]; nextCursor: string | null }> {
-      const lim = clampKeyset(limit)
+      const lim = clampLimit(limit)
       const anchor = decodeKeyset(cursor)
       const cursorFilter =
         anchor !== null
@@ -255,7 +255,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         ORDER BY r.created_at DESC, r.id DESC
         LIMIT ${lim + 1}
       `
-      return pageRows(
+      const { items, nextCursor } = paginate(
         rows.map((r) => ({
           id: r.id,
           category: r.category,
@@ -267,6 +267,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         lim,
         (r) => ({ createdAt: r.createdAt, id: r.id }),
       )
+      return { records: items, nextCursor }
     },
 
     async listUserEvents(
@@ -274,7 +275,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       cursor: string | null,
       limit: number,
     ): Promise<{ records: UserEventRecord[]; nextCursor: string | null }> {
-      const lim = clampKeyset(limit)
+      const lim = clampLimit(limit)
       const anchor = decodeKeyset(cursor)
       // Keyset over the membership's joined_at + cleanup id (a user joins a cleanup at most once).
       const cursorFilter =
@@ -305,7 +306,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         ORDER BY cm.joined_at DESC, c.id DESC
         LIMIT ${lim + 1}
       `
-      return pageRows(
+      const { items, nextCursor } = paginate(
         rows.map((r) => ({
           id: r.id,
           title: r.title ?? "Cleanup",
@@ -317,6 +318,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         lim,
         (r) => ({ createdAt: r.whenAt, id: r.id }),
       )
+      return { records: items, nextCursor }
     },
 
     async listUserMessages(
@@ -324,7 +326,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       cursor: string | null,
       limit: number,
     ): Promise<{ records: UserMessageRecord[]; nextCursor: string | null }> {
-      const lim = clampKeyset(limit)
+      const lim = clampLimit(limit)
       const anchor = decodeKeyset(cursor)
       const cursorFilter =
         anchor !== null
@@ -350,7 +352,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT ${lim + 1}
       `
-      return pageRows(
+      const { items, nextCursor } = paginate(
         rows.map((r) => ({
           id: r.id,
           text: r.body ?? "",
@@ -361,6 +363,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         lim,
         (r) => ({ createdAt: r.createdAt, id: r.id }),
       )
+      return { records: items, nextCursor }
     },
 
     async toggleFlag(
@@ -451,6 +454,12 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
         `
         if (exists.length === 0) return false
+        // The operator override upserts straight to 'verified', bypassing any pending/rejected state, so
+        // capture the prior status for the audit trail (absence -> "unverified").
+        const prior = await tx<{ status: string }[]>`
+          SELECT status FROM user_verification WHERE user_id = ${id} LIMIT 1
+        `
+        const priorStatus = prior[0]?.status ?? "unverified"
         if (input.verified) {
           // Mark verified: upsert the row to status='verified' with the reviewer + time (a row's presence
           // with status='verified' is what lights the verified mark everywhere). Any stale rejection is cleared.
@@ -472,6 +481,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           actorId: input.actorId,
           action: input.verified ? "user.verified" : "user.unverified",
           target: `user:${id}`,
+          meta: { priorStatus },
         })
         return true
       })
@@ -504,25 +514,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Keyset helpers ((created_at, id) row-value cursor over the shared "<iso>|<id>" format)
-// ---------------------------------------------------------------------------
-
-const clampKeyset = clampLimit
 // All admin-user keysets cast ${anchor.id}::uuid (users + the report/event/message sub-lists), so opt
 // into UUID validation: a malformed cursor degrades to the first page instead of a 22P02 -> 500.
-const decodeKeyset = (cursor: string | null | undefined): CursorAnchor | null => decodeCursor(cursor, true)
-const encodeKeyset = encodeCursor
-
-/** Split a `limit + 1` row set into { records, nextCursor }, deriving the keyset anchor via `pick`. */
-function pageRows<T>(
-  rows: T[],
-  limit: number,
-  pick: (row: T) => CursorAnchor,
-): { records: T[]; nextCursor: string | null } {
-  const hasMore = rows.length > limit
-  const page = hasMore ? rows.slice(0, limit) : rows
-  const last = page[page.length - 1]
-  const nextCursor = hasMore && last ? encodeKeyset(pick(last)) : null
-  return { records: page, nextCursor }
-}
+const decodeKeyset = (cursor: string | null | undefined) => decodeCursor(cursor, true)

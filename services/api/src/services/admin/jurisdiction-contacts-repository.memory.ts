@@ -24,11 +24,14 @@ import {
   buildUnmappedRecord,
   directoryMethod,
   shouldIncludeUnmapped,
-  type JurisdictionContactsRepository,
-  type JurisdictionDirectoryRecord,
-  type ListDirectoryArgs,
-  type SaveContactsInput,
-} from "./jurisdiction-contacts-service.js"
+} from "./jurisdiction-directory-projection.js"
+import type {
+  JurisdictionContactsRepository,
+  JurisdictionDirectoryRecord,
+  ListDirectoryArgs,
+  PatchContactsInput,
+  SaveContactsInput,
+} from "./jurisdiction-contacts-types.js"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
 /** A seeded jurisdiction's mutable contact + routing state. */
@@ -233,14 +236,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
 
   async patch(
     geoid: string,
-    input: {
-      contacts?: Partial<Record<ReportCategory, string | null>>
-      defaultEmails?: string[]
-      formUrl?: string | null
-      notes?: string | null
-      flagged?: boolean
-      flagReason?: string | null
-    },
+    input: PatchContactsInput,
     audit: { actorId: string | null },
   ): Promise<boolean> {
     const j = this.jurisdictions.get(geoid)
@@ -321,7 +317,9 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     const hasMore = slice.length > limit
     const page = hasMore ? slice.slice(0, limit) : slice
     const last = hasMore ? page[page.length - 1] : undefined
-    const nextCursor = last ? encodeCursor({ createdAt: this.now, id: last.geoid }) : null
+    // Encode the same sentinel createdAt the Drizzle impl uses (geoid is the only keyset key) so both
+    // emit byte-identical cursor strings for the same position.
+    const nextCursor = last ? encodeCursor({ createdAt: new Date(0), id: last.geoid }) : null
 
     // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page (mirrors the Drizzle
     // impl): waiting reports whose geoid is not a seeded jurisdiction (orphaned/unresolved) aggregate here.

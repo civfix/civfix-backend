@@ -15,7 +15,7 @@ import type {
   MailSectionCounts,
   ReportsSectionCounts,
   UsersSectionCounts,
-} from "./home-service.js"
+} from "./home-types.js"
 
 export class InMemoryHomeRepository implements HomeRepository {
   discoveryValue: DiscoverySectionCounts = { queue: 0, reportsWaiting: 0, overSla: 0 }
@@ -34,31 +34,32 @@ export class InMemoryHomeRepository implements HomeRepository {
   usersError: Error | null = null
   livePinsError: Error | null = null
 
+  // Getters return shallow copies so a test mutating a returned value can't corrupt the canned state.
   async discoverySummary(): Promise<DiscoverySectionCounts> {
     if (this.discoveryError) throw this.discoveryError
-    return this.discoveryValue
+    return { ...this.discoveryValue }
   }
   async reportsSummary(): Promise<ReportsSectionCounts> {
     if (this.reportsError) throw this.reportsError
-    return this.reportsValue
+    return { ...this.reportsValue }
   }
   async eventsSummary(): Promise<EventsSectionCounts> {
     if (this.eventsError) throw this.eventsError
-    return this.eventsValue
+    return { ...this.eventsValue }
   }
   async mailSummary(): Promise<MailSectionCounts> {
     if (this.mailError) throw this.mailError
-    return this.mailValue
+    return { ...this.mailValue }
   }
   async usersSummary(): Promise<UsersSectionCounts> {
     if (this.usersError) throw this.usersError
-    return this.usersValue
+    return { ...this.usersValue }
   }
   async livePins24h(): Promise<number> {
     if (this.livePinsError) throw this.livePinsError
     return this.livePinsValue
   }
   async recentPins(_limit: number): Promise<HomeMapPinRecord[]> {
-    return this.recentPinsValue
+    return [...this.recentPinsValue]
   }
 }

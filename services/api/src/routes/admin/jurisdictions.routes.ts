@@ -1,19 +1,8 @@
 /**
- * Admin jurisdictions (routing contacts + directory) routes (Phase 2).
- *
- *   POST  /admin/jurisdictions/:geoid/contacts  "Save & route": persist per-category routing contacts,
- *                                               set contact_updated_at, route pending pins, enqueue
- *                                               (throttled) outreach (SaveContactsRequest). [csrf]
- *   GET   /admin/jurisdictions                  the jurisdiction directory (JurisdictionDirectoryResponse).
- *   PATCH /admin/jurisdictions/:geoid           patch contacts / form / notes (PatchJurisdictionRequest). [csrf]
- *
- * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
- * applied by routes/admin/index.ts; mutations additionally carry csrfProtect. The acting operator's
- * userId comes from request.auth.userId and is passed INTO the service so the audit is written inside the
- * repo transaction (H4: discovery.contacts_saved on save, jurisdiction.patched on patch are atomic with
- * their effect and covered by the in-memory repo's audit sink in tests - the route no longer writes a
- * separate, skip-under-test audit). The service is built lazily from the container (Drizzle repo + the
- * Jobs seam) or a test override (in-memory repo + fake jobs).
+ * Admin jurisdictions (routing contacts + directory) routes: "Save & route", the directory list, and the
+ * no-route PATCH. The operator userId is threaded INTO the service so the audit (discovery.contacts_saved
+ * on save, jurisdiction.patched on patch) is written inside the repo transaction (H4: did + recorded is
+ * atomic with the effect); the route never writes a separate audit.
  */
 
 import {
@@ -80,9 +69,6 @@ export async function registerAdminJurisdictionsRoutes(
     })
   }
 
-  // -------------------------------------------------------------------------
-  // POST /admin/jurisdictions/:geoid/contacts  [csrf]  "Save & route"
-  // -------------------------------------------------------------------------
   route(
     app,
     "saveJurisdictionContacts",
@@ -90,8 +76,6 @@ export async function registerAdminJurisdictionsRoutes(
     async (request, reply) => {
       const geoid = geoidParam(request)
       const body = parse(SaveContactsRequestSchema, { ...(request.body as object), geoid })
-      // The save + route + audit (discovery.contacts_saved) run atomically inside the repo transaction
-      // (H4); the operator userId is threaded in for the in-tx audit.
       await service().saveAndRoute(
         geoid,
         {
@@ -106,22 +90,15 @@ export async function registerAdminJurisdictionsRoutes(
     },
   )
 
-  // -------------------------------------------------------------------------
-  // GET /admin/jurisdictions  (directory)
-  // -------------------------------------------------------------------------
   route(app, "listJurisdictions", async (request, reply) => {
     const query = parse(JurisdictionListQuerySchema, request.query)
     const payload: JurisdictionDirectoryResponse = await service().listDirectory(query)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // PATCH /admin/jurisdictions/:geoid  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "patchJurisdiction", { preHandler: csrfProtect }, async (request, reply) => {
     const geoid = geoidParam(request)
     const body = parse(PatchJurisdictionRequestSchema, { ...(request.body as object), geoid })
-    // Patch + audit (jurisdiction.patched) run atomically inside the repo transaction (H4).
     await service().patch(
       geoid,
       {

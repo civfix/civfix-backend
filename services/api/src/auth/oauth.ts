@@ -16,7 +16,7 @@
  * Code on the Arctic clients are likewise only constructed when real OAuth credentials are present.
  */
 
-import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
+import { Google, generateCodeVerifier, generateState } from "arctic"
 import { AppError } from "@civfix/shared"
 import type { OAuthIdentityStore, UserRecord, UserStore } from "./stores.js"
 import { RemoteJwksVerifier, type JwksVerifier, type VerifiedIdToken } from "./jwks.js"
@@ -74,7 +74,6 @@ export class OAuthService {
   private readonly users: UserStore
   private readonly verifier: JwksVerifier
   private googleClient: Google | undefined
-  private appleClient: Apple | undefined
 
   constructor(opts: OAuthServiceOptions) {
     this.config = opts.config
@@ -92,10 +91,6 @@ export class OAuthService {
   get appleEnabled(): boolean {
     return this.config.apple !== undefined
   }
-
-  // -------------------------------------------------------------------------
-  // Google web (authorization-code + PKCE)
-  // -------------------------------------------------------------------------
 
   /** Build a Google authorization URL plus the state/verifier the callback must echo. */
   createGoogleAuthUrl(): GoogleAuthRequest {
@@ -118,10 +113,6 @@ export class OAuthService {
     const claims = await this.verifyGoogleIdToken(idToken)
     return this.upsertFromClaims(PROVIDER_GOOGLE, claims)
   }
-
-  // -------------------------------------------------------------------------
-  // Mobile / native: verify an ID token directly
-  // -------------------------------------------------------------------------
 
   /** Verify a Google ID token's signature + claims and return the verified subject/email. */
   async verifyGoogleIdToken(idToken: string): Promise<VerifiedIdToken> {
@@ -171,10 +162,6 @@ export class OAuthService {
     return this.upsertFromClaims(PROVIDER_APPLE, claims, fullName)
   }
 
-  // -------------------------------------------------------------------------
-  // Upsert / account linking
-  // -------------------------------------------------------------------------
-
   /**
    * Find-or-create the user behind a verified identity:
    *   1. exact (provider, sub) identity hit -> return that user;
@@ -199,30 +186,30 @@ export class OAuthService {
     //    account. A provider that lets a user set an arbitrary UNVERIFIED email must not be able to take
     //    over an account created via email-OTP or another provider that owns that address. An unverified
     //    (or relay/absent) email falls through to branch 3 and gets a fresh, separate account instead.
+    //    A tombstoned (soft-deleted) account is NOT relinked — resurrecting a deleted identity would
+    //    silently undelete it; those sign-ins fall through to a fresh account.
     if (claims.email && claims.emailVerified) {
       const byEmail = await this.users.findByEmail(claims.email)
-      if (byEmail) {
+      if (byEmail && byEmail.deletedAt === null) {
         await this.oauthStore.linkIdentity(byEmail.id, provider, claims.sub)
         return byEmail
       }
     }
 
-    // 3) Brand-new user + identity. Mark the email verified only when the provider asserted a
-    // verified email; an unverified or absent email leaves email_verified false.
+    // 3) Brand-new user + identity. Convergence under a concurrent first sign-in comes from create()'s
+    //    ON CONFLICT (email) — both racers resolve to one user — and linkIdentity's idempotent UPSERT.
+    //    Mark the email verified only when the provider asserted one; unverified/absent leaves it false.
     const created = await this.users.create(claims.email ?? null, {
       displayName: fullName ?? deriveDisplayName(claims, provider),
       role: "citizen",
       emailVerified: claims.email !== null && claims.emailVerified,
-      // Capture the provider photo (Google `picture`); Apple never sends one, so this stays null there.
-      avatarUrl: claims.picture,
+      // Capture the provider photo, but only an https: URL (it is rendered as <img src>); Apple never
+      // sends one, so this stays null there.
+      avatarUrl: safeAvatarUrl(claims.picture),
     })
     await this.oauthStore.linkIdentity(created.id, provider, claims.sub)
     return created
   }
-
-  // -------------------------------------------------------------------------
-  // Lazy client / config accessors
-  // -------------------------------------------------------------------------
 
   private requireGoogle(): Google {
     const cfg = this.requireGoogleConfig()
@@ -245,28 +232,6 @@ export class OAuthService {
     }
     return this.config.apple
   }
-
-  /**
-   * Build the Apple Arctic client (web OAuth). Apple needs the PKCS8 private key as bytes; the PEM
-   * body is base64-decoded here. Exposed for the optional web Apple flow; the POST flow above does
-   * not need it. Kept so wiring is honest when the web Apple flow is enabled.
-   */
-  private requireApple(): Apple {
-    const cfg = this.requireAppleConfig()
-    if (!this.appleClient) {
-      const pkcs8 = pemToPkcs8Bytes(cfg.privateKey)
-      this.appleClient = new Apple(cfg.clientId, cfg.teamId, cfg.keyId, pkcs8, cfg.redirectUri)
-    }
-    return this.appleClient
-  }
-
-  /** Reserved for the optional web Apple flow; references requireApple so it is not dead wiring. */
-  createAppleAuthUrl(): { url: string; state: string } {
-    const client = this.requireApple()
-    const state = generateState()
-    const url = client.createAuthorizationURL(state, ["name", "email"])
-    return { url: url.toString(), state }
-  }
 }
 
 /** Best-effort display name from verified claims; falls back to a provider-tagged default. */
@@ -279,11 +244,15 @@ function deriveDisplayName(claims: VerifiedIdToken, provider: string): string {
   return provider === PROVIDER_APPLE ? "Apple user" : "Google user"
 }
 
-/** Decode a PEM private key body to raw PKCS8 bytes (strips header/footer + whitespace). */
-function pemToPkcs8Bytes(pem: string): Uint8Array {
-  const body = pem
-    .replace(/-----BEGIN [^-]+-----/g, "")
-    .replace(/-----END [^-]+-----/g, "")
-    .replace(/\s+/g, "")
-  return Uint8Array.from(Buffer.from(body, "base64"))
+/**
+ * Accept a provider avatar URL only when it is an https: URL (it is persisted and rendered as
+ * <img src>); anything else (http:, javascript:, data:, malformed) is dropped to null.
+ */
+function safeAvatarUrl(picture: string | null): string | null {
+  if (!picture) return null
+  try {
+    return new URL(picture).protocol === "https:" ? picture : null
+  } catch {
+    return null
+  }
 }

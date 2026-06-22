@@ -74,12 +74,18 @@ const ARGON_OPTS = {
   parallelism: 1,
 } as const
 
+/** Minimal logger seam (the pino instance satisfies it); defaults to a no-op when unwired. */
+export interface OtpLogger {
+  warn(obj: unknown, msg?: string): void
+}
+
 export interface OtpServiceOptions {
   store: OtpStore
   users: UserStore
   cache: CacheClient
   mailer: Mailer
   now?: () => number
+  logger?: OtpLogger
 }
 
 export interface IssueResult {
@@ -93,6 +99,7 @@ export class OtpService {
   private readonly cache: CacheClient
   private readonly mailer: Mailer
   private readonly now: () => number
+  private readonly logger?: OtpLogger
 
   constructor(opts: OtpServiceOptions) {
     this.store = opts.store
@@ -100,6 +107,7 @@ export class OtpService {
     this.cache = opts.cache
     this.mailer = opts.mailer
     this.now = opts.now ?? Date.now
+    this.logger = opts.logger
   }
 
   /**
@@ -147,9 +155,12 @@ export class OtpService {
     } catch (err) {
       // The code was never delivered: release the cooldown THIS call set so an immediate retry is not
       // locked out for 60s (P1-7). Only clear when we anchored it (emailHits === 1); a concurrent caller
-      // that legitimately holds the window is untouched. Best-effort: a cache hiccup here is non-fatal.
+      // that legitimately holds the window is untouched. Best-effort: a cache hiccup here is non-fatal,
+      // but log it — a failed release silently locks the user out for the window with no signal.
       if (emailHits === 1) {
-        await this.cache.del(emailKey).catch(() => {})
+        await this.cache.del(emailKey).catch((delErr: unknown) => {
+          this.logger?.warn({ err: delErr }, "otp: failed to release per-email cooldown after issue error")
+        })
       }
       throw err
     }
@@ -244,7 +255,7 @@ export class OtpService {
   }
 }
 
-/** Derive a friendly default display name from an email local-part (e.g. "jane.doe" -> "jane.doe"). */
+/** Derive a default display name from an email local-part (the part before `@`). */
 function defaultDisplayName(email: string): string {
   const at = email.indexOf("@")
   const local = at > 0 ? email.slice(0, at) : email

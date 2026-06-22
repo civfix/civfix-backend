@@ -23,10 +23,10 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js"
-import { AppError, HANDLE_REGEX, type Role } from "@civfix/shared"
+import { AppError, type Role } from "@civfix/shared"
+import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 import {
   generatePlaceholderHandle,
-  handleChangeableAtFrom,
   type AuthStores,
   type CreateUserInput,
   type OAuthIdentityRecord,
@@ -42,10 +42,6 @@ import {
   type UserRecord,
   type UserStore,
 } from "./stores.js"
-
-// ---------------------------------------------------------------------------
-// Sessions
-// ---------------------------------------------------------------------------
 
 export class PgSessionStore implements SessionStore {
   constructor(private readonly db: Db) {}
@@ -115,10 +111,6 @@ export class PgSessionStore implements SessionStore {
     return deleted.map((r) => r.id)
   }
 }
-
-// ---------------------------------------------------------------------------
-// Users
-// ---------------------------------------------------------------------------
 
 /**
  * Reads/writes the real `users.email` column (CITEXT, partial-unique when non-null). find-or-create
@@ -203,55 +195,39 @@ export class PgUserStore implements UserStore {
   }
 
   async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
-    // Load the current row so we can compare lower(submitted) vs lower(current) and read the rename-policy
-    // inputs (profile_complete + handle_changed_at). The name/bio editors re-send the CURRENT handle every
-    // PUT, so an unchanged handle MUST be a no-op for handle/handle_changed_at.
+    // Load the current row to read the rename-policy inputs (profile_complete + handle_changed_at). The
+    // name/bio editors re-send the CURRENT handle every PUT, so an unchanged handle MUST be a no-op.
     const current = await this.findById(id)
-    if (!current) throw new Error("PgUserStore.updateProfile: user not found")
+    if (!current) throw AppError.notFound("User not found.")
 
     const set: Partial<typeof users.$inferInsert> = {
       displayName: input.displayName,
       profileComplete: true,
     }
 
-    const changed = (current.handle ?? "").toLowerCase() !== input.handle.toLowerCase()
-    if (changed) {
-      // Format + uniqueness re-validated here (the route also gates reserved/slur). uniqueness races the
-      // partial-unique index for the rare concurrent-claim case.
-      if (!HANDLE_REGEX.test(input.handle.trim())) {
-        throw AppError.validation({ handle: "That username isn't a valid format." })
-      }
+    if (handleChanged(current.handle, input.handle)) {
+      // uniqueness here races the partial-unique index for the rare concurrent-claim case.
       const taken = await this.findByHandle(input.handle)
-      if (taken !== null && taken.id !== id) {
-        throw AppError.conflict("That username is taken.")
-      }
-      if (current.profileComplete === true) {
-        // A real rename: enforce the rolling-30-day cooldown, then stamp handle_changed_at = now.
-        const next = handleChangeableAtFrom(current.handleChangedAt, this.now())
-        if (next !== null) {
-          throw AppError.rateLimited(`You can change your username again on ${next}.`)
-        }
-        set.handle = input.handle
-        set.handleChangedAt = this.now()
-      } else {
-        // Initial set during first-run completion: set the handle, leave the cooldown clock null.
-        set.handle = input.handle
-        set.handleChangedAt = null
-      }
+      const decided = decideHandleWrite({
+        current: current.handle,
+        submitted: input.handle,
+        profileComplete: current.profileComplete,
+        handleChangedAt: current.handleChangedAt,
+        isTaken: taken !== null && taken.id !== id,
+        now: this.now(),
+      })
+      set.handle = decided.handle
+      set.handleChangedAt = decided.handleChangedAt
     }
     // Only touch the bio when the caller supplied it (the bio editor); registration omits it. An empty
     // string clears the bio; trimming/length are already enforced by the shared UpdateProfileRequest.
     if (input.bio !== undefined) set.bio = input.bio === "" ? null : input.bio
-    // When the avatar picker sent a finalized upload id, resolve it to the media row and set avatar_media_id
-    // to that row's id (possessing the finalized upload id is the capability proof, like the report flow).
-    // An unknown upload id leaves the avatar unchanged rather than failing the rest of the profile update.
-    //
-    // CANONICALIZE avatar_url ON UPLOAD: in addition to avatar_media_id we presign the media's r2_key into
-    // the canonical public URL and PERSIST it into users.avatar_url, so avatar_url is the single source of
-    // truth every projection reads (toUserDTO/session/me, people lists, chat/dm/discussion authors, search,
-    // admin) — no per-request presign threading. The presigner is injected (production wires the Storage
-    // seam; the worker overwrites r2_key in place, so this is the processed copy). We select r2_key in the
-    // SAME lookup so resolving + persisting is one extra query, not two writes.
+    // CANONICALIZE avatar_url ON UPLOAD: when the avatar picker sent a finalized upload id, resolve it to
+    // the media row (possessing the finalized id is the capability proof, like the report flow), set
+    // avatar_media_id, AND presign the media's r2_key into the canonical public URL persisted in
+    // users.avatar_url — the single source of truth every projection reads (no per-request presign). An
+    // unknown upload id, or a presign blip, leaves the avatar unchanged rather than failing the whole
+    // profile update (a transient R2 error must not block first-run registration).
     if (input.avatarUploadId !== undefined) {
       const media = await this.db
         .select({ id: mediaAssets.id, r2Key: mediaAssets.r2Key })
@@ -261,13 +237,17 @@ export class PgUserStore implements UserStore {
       if (media[0]) {
         set.avatarMediaId = media[0].id
         if (input.presignAvatar) {
-          set.avatarUrl = await input.presignAvatar(media[0].r2Key)
+          try {
+            set.avatarUrl = await input.presignAvatar(media[0].r2Key)
+          } catch {
+            // Leave avatar_url unchanged; avatar_media_id still points at the processed copy.
+          }
         }
       }
     }
     const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]
-    if (!r) throw new Error("PgUserStore.updateProfile: user not found")
+    if (!r) throw AppError.notFound("User not found.")
     return toUserRecord(r)
   }
 
@@ -330,10 +310,6 @@ export class PgUserStore implements UserStore {
   }
 }
 
-// ---------------------------------------------------------------------------
-// OAuth identities
-// ---------------------------------------------------------------------------
-
 export class PgOAuthIdentityStore implements OAuthIdentityStore {
   constructor(private readonly db: Db) {}
 
@@ -358,16 +334,18 @@ export class PgOAuthIdentityStore implements OAuthIdentityStore {
   }
 
   async linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void> {
+    // Idempotent UPSERT on the globally-unique (provider, provider_user_id). A bare DO NOTHING would
+    // silently no-op when the pair already exists, leaving the identity stranded on whatever user it
+    // first pointed at; DO UPDATE re-points user_id so a re-link converges on the intended user.
     await this.db
       .insert(oauthIdentities)
       .values({ userId, provider, providerUserId })
-      .onConflictDoNothing()
+      .onConflictDoUpdate({
+        target: [oauthIdentities.provider, oauthIdentities.providerUserId],
+        set: { userId },
+      })
   }
 }
-
-// ---------------------------------------------------------------------------
-// OTPs
-// ---------------------------------------------------------------------------
 
 export class PgOtpStore implements OtpStore {
   constructor(private readonly db: Db) {}
@@ -424,10 +402,6 @@ export class PgOtpStore implements OtpStore {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Bundle
-// ---------------------------------------------------------------------------
-
 /** All Postgres-backed auth stores wired to one Drizzle client. */
 export class PgAuthStores implements AuthStores {
   readonly sessions: SessionStore
@@ -442,10 +416,6 @@ export class PgAuthStores implements AuthStores {
     this.otps = new PgOtpStore(db)
   }
 }
-
-// ---------------------------------------------------------------------------
-// Row mappers
-// ---------------------------------------------------------------------------
 
 interface UserRowLike {
   id: string

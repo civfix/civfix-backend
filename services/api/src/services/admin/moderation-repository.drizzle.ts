@@ -30,6 +30,7 @@
  * item per currently-held report lacking an open item.
  */
 
+import type postgres from "postgres"
 import type { ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
@@ -44,6 +45,9 @@ import {
   type ModerationUserSnapshot,
 } from "./moderation-service.js"
 
+/** A composable SQL fragment (postgres.js Fragment). */
+type SqlFragment = postgres.Fragment
+
 /**
  * R2 public base for moderation media URLs. The moderation detail returns `${MEDIA_URL_PREFIX}<r2_key>`
  * (a relative `/media/...` path the dashboard rewrites via NEXT_PUBLIC_* to the real object-store/CDN
@@ -53,6 +57,19 @@ import {
  * dashboard rewrite.
  */
 const MEDIA_URL_PREFIX = "/media/"
+
+/**
+ * The moderation_items column list, identical across the list SELECT and the approve/remove/appeal/
+ * resolveItem RETURNING clauses (a bare column list, valid in both positions). `"similar"` is quoted
+ * because it is a reserved-ish identifier. Centralized so the projection cannot drift between the read
+ * and the four write paths.
+ */
+function itemColumns(sql: Queryable): SqlFragment {
+  return sql`
+    id, kind, subject_type, subject_id, flag, reason, category, place, priority,
+    auto_action, status, signals, "similar", meta, created_at
+  `
+}
 
 /** A moderation_items row (snake_case columns) as read from Postgres. */
 interface ModerationItemRow {
@@ -238,9 +255,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         : sql``
 
       const rows = (await sql`
-        SELECT
-          id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-          auto_action, status, signals, "similar", meta, created_at
+        SELECT ${itemColumns(sql)}
         FROM moderation_items
         WHERE status = 'open'
         ${facet}
@@ -261,9 +276,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
 
     async getItem(id: string): Promise<ModerationItemRecord | null> {
       const rows = (await sql`
-        SELECT
-          id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-          auto_action, status, signals, "similar", meta, created_at
+        SELECT ${itemColumns(sql)}
         FROM moderation_items
         WHERE id = ${id}
         LIMIT 1
@@ -281,17 +294,22 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "approved", input.actorId)
         if (!resolved) return null
-        // Underlying effect: publish the held report subject (only when still held).
+        // Underlying effect: publish the held report subject (only when still held). Gate the timeline
+        // 'published' row on the UPDATE actually matching a held row (RETURNING id) so a report not
+        // published by THIS action (already-published / soft-deleted) gets no misleading history entry.
         if (resolved.subject_type === "report") {
-          await tx`
+          const published = await tx<{ id: string }[]>`
             UPDATE reports
             SET status = 'published', published_at = COALESCE(published_at, now())
             WHERE id = ${resolved.subject_id} AND status = 'held' AND deleted_at IS NULL
+            RETURNING id
           `
-          await tx`
-            INSERT INTO report_timeline (report_id, status, note, actor_id)
-            VALUES (${resolved.subject_id}, 'published', ${"Approved in moderation"}, ${input.actorId})
-          `
+          if (published.length > 0) {
+            await tx`
+              INSERT INTO report_timeline (report_id, status, note, actor_id)
+              VALUES (${resolved.subject_id}, 'published', ${"Approved in moderation"}, ${input.actorId})
+            `
+          }
         }
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -315,17 +333,22 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "removed", input.actorId)
         if (!resolved) return null
-        // Underlying effect: reject + soft-delete the report subject.
+        // Underlying effect: reject + soft-delete the report subject. Gate the 'rejected' timeline row on
+        // the UPDATE matching a not-yet-deleted row (RETURNING id) so an already-removed report does not
+        // get a second misleading 'rejected' history entry from this no-op.
         if (resolved.subject_type === "report") {
-          await tx`
+          const rejected = await tx<{ id: string }[]>`
             UPDATE reports
             SET status = 'rejected', deleted_at = COALESCE(deleted_at, now())
             WHERE id = ${resolved.subject_id} AND deleted_at IS NULL
+            RETURNING id
           `
-          await tx`
-            INSERT INTO report_timeline (report_id, status, note, actor_id)
-            VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? "Removed in moderation"}, ${input.actorId})
-          `
+          if (rejected.length > 0) {
+            await tx`
+              INSERT INTO report_timeline (report_id, status, note, actor_id)
+              VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? "Removed in moderation"}, ${input.actorId})
+            `
+          }
         }
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -375,9 +398,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
           UPDATE moderation_items
           SET status = 'approved', resolved_at = now(), resolved_by = ${input.actorId}
           WHERE id = ${id} AND status = 'open' AND kind = 'appeal'
-          RETURNING
-            id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-            auto_action, status, signals, "similar", meta, created_at
+          RETURNING ${itemColumns(tx)}
         `) as unknown as ModerationItemRow[]
         const resolved = rows[0]
         if (!resolved) return null
@@ -469,9 +490,7 @@ async function resolveItem(
     UPDATE moderation_items
     SET status = ${status}, resolved_at = now(), resolved_by = ${actorId}
     WHERE id = ${id} AND status = 'open'
-    RETURNING
-      id, kind, subject_type, subject_id, flag, reason, category, place, priority,
-      auto_action, status, signals, "similar", meta, created_at
+    RETURNING ${itemColumns(tx)}
   `) as unknown as ModerationItemRow[]
   return rows[0] ?? null
 }

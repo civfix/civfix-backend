@@ -93,6 +93,19 @@ export function makeMailService(deps: MailServiceDeps): MailService {
     return repo.getLastOutboundRecipient(threadId)
   }
 
+  /** The shared reply/resend prologue: load the thread (404 if unknown) + resolve its recipient (422 if none). */
+  async function loadThreadAndRecipient(
+    id: string,
+    noRecipientField: string,
+    noRecipientMsg: string,
+  ): Promise<{ dto: MailThreadDTO; toAddr: string }> {
+    const dto = await repo.getThread(id)
+    if (!dto) throw AppError.notFound("Mail thread not found")
+    const toAddr = await resolveRecipient(id, dto.messages)
+    if (toAddr === null) throw AppError.validation({ [noRecipientField]: noRecipientMsg })
+    return { dto, toAddr }
+  }
+
   return {
     async list(query: MailListQuery): Promise<MailListResponse> {
       const input: ListThreadsInput = {
@@ -124,19 +137,20 @@ export function makeMailService(deps: MailServiceDeps): MailService {
     },
 
     async reply(id: string, input: { body: string }, actorId: string | null): Promise<MailThreadDTO> {
-      const dto = await repo.getThread(id)
-      if (!dto) throw AppError.notFound("Mail thread not found")
-      const toAddr = await resolveRecipient(id, dto.messages)
-      if (toAddr === null) {
-        throw AppError.validation({ to: "No recipient address on this thread to reply to." })
-      }
+      const { toAddr } = await loadThreadAndRecipient(
+        id,
+        "to",
+        "No recipient address on this thread to reply to.",
+      )
       // H4: the mail.replied audit is written in the same tx as the OUT message insert.
       await outboundMail.appendOutbound(id, {
         body: input.body,
         toAddr,
         audit: { actorId, action: "mail.replied", meta: { to: toAddr } },
       })
-      // Replying resolves the operator's attention: mark the thread replied + read.
+      // Best-effort attention-resolve after the send (replied + read). These are two separate non-tx repo
+      // writes on the already-recorded reply; a failure here leaves the (audited) reply intact but the
+      // thread not flipped — a benign UI-state drift the operator can re-toggle, not a lost message.
       await repo.setThreadStatus(id, "replied")
       await repo.markThreadRead(id)
       return requireThreadDTO(id)
@@ -159,15 +173,14 @@ export function makeMailService(deps: MailServiceDeps): MailService {
     },
 
     async resend(id: string, actorId: string | null): Promise<MailThreadDTO> {
-      const dto = await repo.getThread(id)
-      if (!dto) throw AppError.notFound("Mail thread not found")
+      const { dto, toAddr } = await loadThreadAndRecipient(
+        id,
+        "to",
+        "No recipient address on this thread to resend to.",
+      )
       const last = latestOutbound(dto.messages)
       if (!last) {
         throw AppError.validation({ id: "No outbound message on this thread to resend." })
-      }
-      const toAddr = await resolveRecipient(id, dto.messages)
-      if (toAddr === null) {
-        throw AppError.validation({ to: "No recipient address on this thread to resend to." })
       }
       // Re-deliver the latest outbound body as a fresh OUT message (a true resend appends a new attempt so
       // the deliverability event correlates to a real message row). H4: mail.resent audited in-tx.
@@ -184,10 +197,6 @@ export function makeMailService(deps: MailServiceDeps): MailService {
     },
   }
 }
-
-// ---------------------------------------------------------------------------
-// Pure helpers (recipient resolution from a thread's message history)
-// ---------------------------------------------------------------------------
 
 /**
  * Resolve the municipal correspondent's address from a thread's messages: the `from` of the latest

@@ -79,9 +79,22 @@ function distinctUsers(members: string[]): string[] {
   return [...new Set(members.map(userOf))].sort()
 }
 
-// ---------------------------------------------------------------------------
-// Redis implementation
-// ---------------------------------------------------------------------------
+type MultiReplies = [error: Error | null, result: unknown][] | null
+
+/**
+ * Validate the result of a presence MULTI. ioredis returns null only when the whole transaction was
+ * aborted (e.g. a queue-time error), and otherwise one `[err, value]` slot per queued command WITHOUT
+ * rolling back on a per-command runtime error. Presence is a correctness path (the snapshot drives the
+ * online count + join/leave deltas), so a partial failure must be treated as a hard failure rather than
+ * silently reading a stale/incomplete member set. Throws on a null result or any non-null error slot.
+ */
+function presenceMembers(replies: MultiReplies): string[] {
+  if (replies === null) throw new Error("presence MULTI aborted")
+  for (const [err] of replies) {
+    if (err) throw err
+  }
+  return (replies.at(-1)?.[1] as string[]) ?? []
+}
 
 /**
  * Redis-backed presence. Uses standard sorted-set commands on the SHARED client (no dedicated connection
@@ -109,11 +122,12 @@ export class RedisChatPresence implements ChatPresence {
       .expire(key, PRESENCE_KEY_TTL_SECONDS)
       .zrange(key, 0, -1)
       .exec()
-    // The zrange reply is the LAST command in the MULTI; reply is [err, value] per command.
-    const members = (replies?.at(-1)?.[1] as string[]) ?? []
-    // userJoined: this connection is the user's ONLY one in the room -> they just came online.
+    const members = presenceMembers(replies)
+    // userJoined: this is the user's ONLY connection in the room -> they just came online. The zadd
+    // above was verified to have applied (presenceMembers throws on any error slot), so === 1 is exact;
+    // an impossible 0 can no longer be masked into a spurious join delta.
     const userConns = members.filter((m) => userOf(m) === userId).length
-    return { online: distinctUsers(members), userJoined: userConns <= 1 }
+    return { online: distinctUsers(members), userJoined: userConns === 1 }
   }
 
   async leave(cleanupId: string, connId: string, userId: string): Promise<PresenceLeaveResult> {
@@ -126,32 +140,30 @@ export class RedisChatPresence implements ChatPresence {
       .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
       .zrange(key, 0, -1)
       .exec()
-    const members = (replies?.at(-1)?.[1] as string[]) ?? []
+    const members = presenceMembers(replies)
     const userGone = !members.some((m) => userOf(m) === userId)
     return { online: distinctUsers(members), userGone }
   }
 
   async refresh(cleanupId: string, connId: string, userId: string): Promise<void> {
     const key = this.key(cleanupId)
-    // One MULTI instead of 2 serial round-trips (zadd + expire) -> 1 RTT.
-    await this.redis
+    const replies = await this.redis
       .multi()
       .zadd(key, Date.now(), member(userId, connId))
       .expire(key, PRESENCE_KEY_TTL_SECONDS)
       .exec()
+    presenceMembers(replies)
   }
 
   async online(cleanupId: string): Promise<string[]> {
     const key = this.key(cleanupId)
     const now = Date.now()
-    // One MULTI instead of 2 serial round-trips (prune + zrange) -> 1 RTT, atomic snapshot.
     const replies = await this.redis
       .multi()
       .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
       .zrange(key, 0, -1)
       .exec()
-    const members = (replies?.at(-1)?.[1] as string[]) ?? []
-    return distinctUsers(members)
+    return distinctUsers(presenceMembers(replies))
   }
 
   close(): Promise<void> {
@@ -159,10 +171,6 @@ export class RedisChatPresence implements ChatPresence {
     return Promise.resolve()
   }
 }
-
-// ---------------------------------------------------------------------------
-// In-memory implementation (fake dev path + tests)
-// ---------------------------------------------------------------------------
 
 /**
  * In-process presence with the SAME TTL/prune semantics as the Redis impl, so the fake dev path renders

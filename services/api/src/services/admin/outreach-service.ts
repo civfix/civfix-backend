@@ -29,10 +29,6 @@ import type { ReportCategory } from "@civfix/shared"
 import type { MailRepository } from "./mail-repository.drizzle.js"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 
-// ---------------------------------------------------------------------------
-// Repository seam (digest aggregation + contact resolution + candidate listing)
-// ---------------------------------------------------------------------------
-
 /**
  * The per-jurisdiction outreach digest: the waiting-report aggregate + the resolved municipal routing
  * contact the email is sent to. `toAddr` is the resolved contact (category-agnostic default / first
@@ -67,10 +63,6 @@ export interface OutreachRepository {
    */
   listCandidateGeoids(): Promise<string[]>
 }
-
-// ---------------------------------------------------------------------------
-// Pure helpers
-// ---------------------------------------------------------------------------
 
 /** The 6 canonical categories in display order (local copy; the digest body lists them in this order). */
 export const OUTREACH_CATEGORIES: readonly ReportCategory[] = [
@@ -136,10 +128,6 @@ export function digestBody(digest: OutreachDigest): string {
   return lines.join("\n")
 }
 
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
-
 /** The outcome of one jurisdiction's digest run (returned so the job can audit + the test can assert). */
 export interface OutreachRunResult {
   geoid: string
@@ -151,6 +139,8 @@ export interface OutreachRunResult {
   reportCount: number
   /** The mail thread the digest was appended to (when sent). */
   threadId?: string
+  /** Set when runForGeoid threw inside the sweep (the per-geoid failure was caught so the sweep continued). */
+  error?: string
 }
 
 export interface OutreachServiceDeps {
@@ -202,6 +192,10 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
     })
 
     // 4. Stamp the throttle window so the next enqueue / cron tick inside it is a no-op.
+    // The throttle (read state -> send -> stamp) is NOT atomic, so two truly-concurrent runs for one geoid
+    // could both pass the gate and double-send. The real guard against that is the pg-boss singletonKey=geoid
+    // on the targeted job (one in-flight per geoid) plus the daily-cron cadence; this in-service throttle is
+    // defense-in-depth for the serial case, not a concurrency lock.
     await deps.mailRepo.setOutreachState(geoid, { lastOutreachAt: now() })
 
     return { geoid, sent: true, reportCount: digest.total, threadId: thread.id }
@@ -211,9 +205,17 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
     const geoids = await deps.outreachRepo.listCandidateGeoids()
     const results: OutreachRunResult[] = []
     for (const geoid of geoids) {
-      // Each jurisdiction is independent; a failure on one must not abort the sweep for the rest.
-      const result = await runForGeoid(geoid)
-      results.push(result)
+      // Each jurisdiction is independent; a failure on one must NOT abort the sweep for the rest.
+      try {
+        results.push(await runForGeoid(geoid))
+      } catch (err) {
+        results.push({
+          geoid,
+          sent: false,
+          reportCount: 0,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
     return results
   }

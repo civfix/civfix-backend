@@ -143,23 +143,10 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
-    const limit = clampLimit(args.limit)
-    const anchor = decodeCursor(args.cursor)
-    let start = 0
-    if (anchor) {
-      const idx = rows.findIndex((r) => r.id === anchor.id)
-      start = idx >= 0 ? idx + 1 : rows.length
-    }
-    const slice = rows.slice(start, start + limit + 1)
-    if (slice.length <= limit) {
-      return { records: slice, nextCursor: null }
-    }
-    const records = slice.slice(0, limit)
-    const last = records[records.length - 1]
-    const nextCursor = last
-      ? encodeCursor({ createdAt: last.joinedAt ?? new Date(0), id: last.id })
-      : null
-    return { records, nextCursor }
+    return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
+      createdAt: r.joinedAt ?? new Date(0),
+      id: r.id,
+    }))
   }
 
   async getUser(id: string): Promise<AdminUserRecord | null> {
@@ -196,13 +183,13 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ records: UserReportRecord[]; nextCursor: string | null }> {
-    return pageSubList(
+    return pageInMemoryById(
       [...(this.reports.get(id) ?? [])].sort(
         (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
       ),
       cursor,
       limit,
-      (r) => r.id,
+      (r) => ({ createdAt: r.createdAt, id: r.id }),
     )
   }
 
@@ -211,11 +198,11 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ records: UserEventRecord[]; nextCursor: string | null }> {
-    return pageSubList(
+    return pageInMemoryById(
       [...(this.events.get(id) ?? [])].sort((a, b) => b.whenAt.getTime() - a.whenAt.getTime()),
       cursor,
       limit,
-      (r) => r.id,
+      (r) => ({ createdAt: r.whenAt, id: r.id }),
     )
   }
 
@@ -224,13 +211,13 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ records: UserMessageRecord[]; nextCursor: string | null }> {
-    return pageSubList(
+    return pageInMemoryById(
       [...(this.messages.get(id) ?? [])].sort(
         (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
       ),
       cursor,
       limit,
-      (r) => r.id,
+      (r) => ({ createdAt: r.createdAt, id: r.id }),
     )
   }
 
@@ -308,18 +295,23 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
   }
 }
 
-/** Page a pre-sorted sub-list by the shared "<iso>|<id>" id-keyset cursor (one-extra-row probe). */
-function pageSubList<T>(
+/**
+ * Page a PRE-SORTED in-memory list by the shared "<iso>|<id>" cursor (find-anchor-by-id then a
+ * one-extra-row probe). `anchorOf` returns the {createdAt,id} the cursor encodes — encoding the row's
+ * REAL timestamp (not new Date(0)) so the opaque cursor string matches the Drizzle impl for the same
+ * page. The id alone drives the slice position (the cursor's createdAt is informational here).
+ */
+function pageInMemoryById<T>(
   rows: T[],
-  cursor: string | null,
+  cursor: string | null | undefined,
   limit: number,
-  idOf: (row: T) => string,
+  anchorOf: (row: T) => { createdAt: Date; id: string },
 ): { records: T[]; nextCursor: string | null } {
   const lim = clampLimit(limit)
   const anchor = decodeCursor(cursor)
   let start = 0
   if (anchor) {
-    const idx = rows.findIndex((r) => idOf(r) === anchor.id)
+    const idx = rows.findIndex((r) => anchorOf(r).id === anchor.id)
     start = idx >= 0 ? idx + 1 : rows.length
   }
   const slice = rows.slice(start, start + lim + 1)
@@ -328,6 +320,6 @@ function pageSubList<T>(
   }
   const records = slice.slice(0, lim)
   const last = records[records.length - 1]
-  const nextCursor = last ? encodeCursor({ createdAt: new Date(0), id: idOf(last) }) : null
+  const nextCursor = last ? encodeCursor(anchorOf(last)) : null
   return { records, nextCursor }
 }

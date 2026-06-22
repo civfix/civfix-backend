@@ -2,8 +2,9 @@
  * Low-level auth crypto primitives.
  *
  * This module is the ONLY place in the auth subsystem that reaches for raw crypto (oslo +
- * node:crypto). Everything else (session service, OTP, CSRF) composes these helpers so the choice
- * of primitive lives in one audited spot.
+ * node:crypto). Everything else (session service, OTP, CSRF, JWKS nonce, inbound-mail webhook,
+ * anon token/code compares) composes these helpers so the choice of primitive lives in one audited
+ * spot.
  *
  *   - opaque tokens are 256 bits of CSPRNG entropy, base64url-encoded (no padding);
  *   - only the SHA-256 hex of a token is ever persisted, so a store leak does not expose live
@@ -12,9 +13,8 @@
  *   - string comparisons that touch secrets are constant-time.
  */
 
-import { randomBytes } from "node:crypto"
+import { randomBytes, timingSafeEqual } from "node:crypto"
 import { sha256 } from "oslo/crypto"
-import { constantTimeEqual } from "oslo/crypto"
 
 /** Byte length of an opaque session / CSRF / anon token before encoding (256 bits). */
 export const TOKEN_BYTES = 32
@@ -76,12 +76,14 @@ export function generateNumericCode(digits: number): string {
 }
 
 /**
- * Constant-time string equality. Compares the UTF-8 byte encodings; returns false for differing
- * lengths (oslo's constantTimeEqual short-circuits on length, which is acceptable: the length of a
- * token / CSRF value is not secret, only its contents are).
+ * Constant-time string equality, via node's timingSafeEqual over the UTF-8 byte encodings. A length
+ * mismatch returns false up front (the length of a token / CSRF value / HMAC is not secret, only its
+ * contents are; every caller compares fixed-width values). The single canonical compare for the auth
+ * subsystem AND the inbound-mail webhook / anon token+code compares — do NOT reimplement it elsewhere.
  */
 export function constantTimeStringEqual(a: string, b: string): boolean {
-  const ab = new TextEncoder().encode(a)
-  const bb = new TextEncoder().encode(b)
-  return constantTimeEqual(ab, bb)
+  const ab = Buffer.from(a, "utf8")
+  const bb = Buffer.from(b, "utf8")
+  if (ab.length !== bb.length) return false
+  return timingSafeEqual(ab, bb)
 }

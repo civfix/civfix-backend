@@ -12,11 +12,7 @@
 import type { FastifyRequest } from "fastify"
 import { requireAuth, requireRole } from "./context.js"
 
-/**
- * Assert the request carries an authenticated operator session. Throws AppError.unauthorized() when
- * there is no session and AppError.forbidden() when the session lacks the operator role. Returns the
- * operator userId on success.
- */
+/** Assert an authenticated operator session (401 no session / 403 not operator); returns the userId. */
 export function requireOperator(request: FastifyRequest): string {
   const userId = requireAuth(request)
   requireRole(request, "operator")

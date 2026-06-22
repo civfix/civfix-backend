@@ -23,10 +23,6 @@ import { relativeAgo } from "@civfix/shared"
 import type { ActivityItemDTO, ActivityKind, ActivityListResponse } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 
-// ---------------------------------------------------------------------------
-// Repository seam (normalized source records; faked in tests)
-// ---------------------------------------------------------------------------
-
 /** The kind of underlying source a feed record came from (drives the classification). */
 export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"
 
@@ -62,10 +58,6 @@ export interface ActivityRepository {
   recent(limit: number): Promise<ActivitySourceRecord[]>
 }
 
-// ---------------------------------------------------------------------------
-// Pure classification (no DB, no IO)
-// ---------------------------------------------------------------------------
-
 /** A cosmetic hue per kind (the design tints the leading icon). Stable hex-ish tokens. */
 const KIND_HUE: Record<ActivityKind, string> = {
   pin: "#38bdf8",
@@ -79,23 +71,19 @@ const KIND_HUE: Record<ActivityKind, string> = {
 }
 
 /**
- * Map an audit_log action to a feed kind. Operator/gov actions collapse into the design's activity kinds:
- *   - gov_claim.approved          -> gov_onboard
- *   - discovery.contacts_saved    -> discovery_done
- *   - moderation.*                -> mod_action
- *   - report.* / anon claim       -> claim (an account/report action by an operator/citizen)
- *   - mail.* sent/replied         -> outreach_open (an outbound mail touch)
- * Anything unrecognized falls back to mod_action (a generic operator action), so the feed never drops a
- * real audited action.
+ * Map an audit_log action to a feed kind:
+ *   - gov_claim.*           -> gov_onboard
+ *   - discovery.*           -> discovery_done
+ *   - outreach.* / mail.*   -> outreach_open (an outbound mail touch)
+ *   - everything else       -> mod_action
  */
 export function classifyAuditAction(action: string): ActivityKind {
   if (action.startsWith("gov_claim.")) return "gov_onboard"
   if (action.startsWith("discovery.")) return "discovery_done"
-  if (action.startsWith("moderation.")) return "mod_action"
   if (action.startsWith("outreach.")) return "outreach_open"
   if (action.startsWith("mail.")) return "outreach_open"
-  if (action === "report.removed" || action.startsWith("user.")) return "mod_action"
-  if (action.startsWith("report.") || action.startsWith("event.")) return "mod_action"
+  // Everything else (moderation.* / report.* / event.* / user.* / unrecognized) is a generic operator
+  // action, so the feed never drops a real audited action.
   return "mod_action"
 }
 
@@ -183,10 +171,6 @@ function item(
 ): ActivityItemDTO {
   return { kind, who, what, where, ts, hue: KIND_HUE[kind] }
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 export interface ActivityServiceDeps {
   repo: ActivityRepository

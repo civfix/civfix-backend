@@ -16,6 +16,7 @@
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { toEventStatus } from "./event-status.js"
+import { DISCOVERY_SLA_HOURS } from "./discovery-service.js"
 import type {
   DiscoverySectionCounts,
   EventsSectionCounts,
@@ -24,15 +25,8 @@ import type {
   MailSectionCounts,
   ReportsSectionCounts,
   UsersSectionCounts,
-} from "./home-service.js"
+} from "./home-types.js"
 import type { EventKind, ReportCategory } from "@civfix/shared"
-
-// Re-export the shared event-status mapping under the name this module historically exported (H1: the
-// mapping now lives in one place, event-status.ts, used by both the home + admin-event repos).
-export { toEventStatus }
-
-/** The discovery SLA window (hours) past which a waiting report is "over SLA" (mirrors discovery). */
-const DISCOVERY_SLA_HOURS = 24
 
 /** Parse a ::text count to a finite number (0 on NaN/undefined). */
 function num(value: string | null | undefined): number {
@@ -96,8 +90,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async reportsSummary(): Promise<ReportsSectionCounts> {
-      // flagged = reports with an open abuse_flag; in-progress = status in_progress/acknowledged; completed
-      // = resolved. All over non-deleted reports.
       const rows = await sql<{ flagged: string; in_progress: string; completed: string }[]>`
         SELECT
           (
@@ -119,8 +111,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async eventsSummary(): Promise<EventsSectionCounts> {
-      // upcoming + live (active/in_progress) counts, and attendees summed over non-completed,
-      // non-cancelled events. Member counts come from cleanup_members.
       const rows = await sql<{ upcoming: string; live: string; attending: string }[]>`
         SELECT
           COUNT(*) FILTER (WHERE status = 'upcoming')::text AS upcoming,
@@ -157,8 +147,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async usersSummary(): Promise<UsersSectionCounts> {
-      // flagged / high-risk / suspended derive from the user_moderation side table. high-risk = risk in
-      // (elevated, high); suspended = account_status in (suspended, banned).
       const rows = await sql<{ flagged: string; high_risk: string; suspended: string }[]>`
         SELECT
           COUNT(*) FILTER (WHERE flagged = true)::text AS flagged,

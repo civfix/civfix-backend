@@ -51,10 +51,6 @@ import type {
 } from "@civfix/shared"
 import { toRelAbs } from "./admin-format.js"
 
-// ---------------------------------------------------------------------------
-// Repository seam (structural records; faked in tests)
-// ---------------------------------------------------------------------------
-
 /**
  * A user row joined with its moderation side table + the derived counts. `accountStatus` defaults to
  * "active" (the repo coalesces a missing user_moderation row). `city` is the best-effort location label.
@@ -223,10 +219,6 @@ export interface SessionControl {
 /** Injected role-write seam (the route wires UserStore.setRole). Throws when the user does not exist. */
 export type SetUserRole = (userId: string, role: Role) => Promise<void>
 
-// ---------------------------------------------------------------------------
-// Pure helpers (no DB, no IO)
-// ---------------------------------------------------------------------------
-
 /**
  * Map the list `filter` facet to a repo query shape. The design facet (all|active|suspended|flagged)
  * reconciles to: an account status to match and/or the flagged-only marker. "suspended" matches the
@@ -248,10 +240,6 @@ export function resolveUserFilter(filter: string | undefined): {
       return { status: null, flaggedOnly: false }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 export interface AdminUserServiceDeps {
   repo: AdminUserRepository
@@ -441,6 +429,9 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       // Ensure the user exists first so a bad id is a clean 404 rather than a setRole throw.
       await assertUserExists(deps.repo, id)
       await deps.setUserRole(id, input.role)
+      // NOTE: the role write (UserStore seam) and the audit (repo seam) are NOT one transaction — they
+      // cross two seams — so an audit failure after the role write leaves the change un-audited. Accepted:
+      // the role write is the durable effect and audit is best-effort observability here.
       await deps.repo.recordRoleAudit(id, { role: input.role, actorId: input.actorId })
       // H2: revoke ALL the user's sessions so the role snapshot cached on a live session cannot outlive
       // the change (an operator demotion takes effect immediately; the victim must re-auth). Revoking on

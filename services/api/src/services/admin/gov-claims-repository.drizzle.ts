@@ -51,6 +51,9 @@ interface GovClaimRow {
 /** The valid check keys, used to narrow the parsed jsonb keys to the typed union. */
 const CHECK_KEYS: readonly string[] = ["linkedin", "directory", "callback"]
 
+/** The valid check-status values; an unknown/widened status reads back as 'pending' (never coerced). */
+const CHECK_STATUSES: readonly GovCheckStatus[] = ["verified", "pending"]
+
 /** Parse the `checks` jsonb into the typed per-check map, dropping unknown keys / malformed entries. */
 function parseChecks(raw: unknown): Partial<Record<GovVerificationCheck, GovCheckRecord>> {
   const out: Partial<Record<GovVerificationCheck, GovCheckRecord>> = {}
@@ -58,7 +61,11 @@ function parseChecks(raw: unknown): Partial<Record<GovVerificationCheck, GovChec
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!CHECK_KEYS.includes(key) || !value || typeof value !== "object") continue
     const v = value as Record<string, unknown>
-    const status = v.status === "verified" ? "verified" : "pending"
+    // Validate against the real union (not "verified else pending") so a future widened status is not
+    // silently downgraded to verified/pending on read; an unrecognized value defaults to 'pending'.
+    const status: GovCheckStatus = CHECK_STATUSES.includes(v.status as GovCheckStatus)
+      ? (v.status as GovCheckStatus)
+      : "pending"
     out[key as GovVerificationCheck] = {
       status,
       evidence: typeof v.evidence === "string" ? v.evidence : null,
@@ -87,6 +94,10 @@ function toRecord(row: GovClaimRow): GovClaimRecord {
 }
 
 export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
+  // The single 12-column projection shared by every SELECT/RETURNING (one source of truth for the row).
+  const cols = sql`id, user_id, name, title, org, jurisdiction_geoid, method, contact_email, status,
+    checks, reject_reason, created_at`
+
   return {
     async listPending(
       args: ListGovClaimsArgs,
@@ -112,8 +123,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         : sql``
 
       const rows = await sql<GovClaimRow[]>`
-        SELECT id, user_id, name, title, org, jurisdiction_geoid, method, contact_email, status,
-          checks, reject_reason, created_at
+        SELECT ${cols}
         FROM gov_claims
         WHERE status = 'pending'
         ${facet}
@@ -133,8 +143,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
 
     async getClaim(id: string): Promise<GovClaimRecord | null> {
       const rows = await sql<GovClaimRow[]>`
-        SELECT id, user_id, name, title, org, jurisdiction_geoid, method, contact_email, status,
-          checks, reject_reason, created_at
+        SELECT ${cols}
         FROM gov_claims WHERE id = ${id} LIMIT 1
       `
       const row = rows[0]
@@ -159,15 +168,16 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
           note: input.note,
           at: new Date().toISOString(),
         }
+        // WHERE status='pending' so an operator cannot mutate the checks of an already-decided claim (and
+        // write a spurious gov_claim.verified audit); a non-pending claim returns 0 rows -> 404/no-op.
         const rows = await tx<GovClaimRow[]>`
           UPDATE gov_claims
           SET checks = COALESCE(checks, '{}'::jsonb) || jsonb_build_object(
             ${input.check}::text,
             ${tx.json(checkValue as Parameters<typeof tx.json>[0])}
           )
-          WHERE id = ${id}
-          RETURNING id, user_id, name, title, org, jurisdiction_geoid, method, contact_email, status,
-            checks, reject_reason, created_at
+          WHERE id = ${id} AND status = 'pending'
+          RETURNING ${cols}
         `
         const row = rows[0]
         if (!row) return null
@@ -191,8 +201,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
           SET status = 'approved', user_id = ${input.userId}, decided_at = now(),
               decided_by = ${input.actorId}
           WHERE id = ${id} AND status = 'pending'
-          RETURNING id, user_id, name, title, org, jurisdiction_geoid, method, contact_email, status,
-            checks, reject_reason, created_at
+          RETURNING ${cols}
         `
         const row = rows[0]
         if (!row) return null
@@ -220,8 +229,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
           SET status = 'rejected', reject_reason = ${input.reason}, decided_at = now(),
               decided_by = ${input.actorId}
           WHERE id = ${id} AND status = 'pending'
-          RETURNING id, user_id, name, title, org, jurisdiction_geoid, method, contact_email, status,
-            checks, reject_reason, created_at
+          RETURNING ${cols}
         `
         const row = rows[0]
         if (!row) return null

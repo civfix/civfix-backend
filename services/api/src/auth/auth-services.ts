@@ -11,7 +11,7 @@ import type { Container } from "../di.js"
 import type { OAuthProvider, UserDTO } from "@civfix/shared"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService } from "./session-service.js"
-import { OtpService } from "./otp.js"
+import { OtpService, type OtpLogger } from "./otp.js"
 import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
 import { handleChangeableAtFrom, type AuthStores, type UserRecord, type UserStore } from "./stores.js"
@@ -51,6 +51,8 @@ export interface BuildAuthServicesOptions {
   verifier?: JwksVerifier
   /** Optional clock override (tests). */
   now?: () => number
+  /** Optional logger (the pino instance); wired in production so the OTP service can warn. */
+  logger?: OtpLogger
 }
 
 /** Assemble the auth services from already-constructed seams. Pure wiring; no I/O. */
@@ -67,6 +69,7 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
     cache: opts.cache,
     mailer: opts.mailer,
     ...(now ? { now } : {}),
+    ...(opts.logger ? { logger: opts.logger } : {}),
   })
   const oauth = new OAuthService({
     config: opts.oauthConfig,

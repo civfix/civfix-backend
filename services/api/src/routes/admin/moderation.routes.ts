@@ -10,8 +10,9 @@
  *
  * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
  * applied by routes/admin/index.ts (this whole router runs inside the guarded child context); mutations
- * additionally carry csrfProtect. The acting operator's userId comes from request.auth.userId and is
- * recorded on every audit write (the repo writes the audit inside the same transaction as the effect).
+ * additionally carry csrfProtect and resolve the acting operator's (non-null) userId via
+ * requireOperator(request), recorded on every audit write (the repo writes the audit inside the same
+ * transaction as the effect).
  * The service is built lazily from the container (Drizzle repo) or from a test override (in-memory repo)
  * for the offline HTTP tests, mirroring the Phase 1 discovery routes.
  *
@@ -33,6 +34,7 @@ import {
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
@@ -75,66 +77,48 @@ export async function registerAdminModerationRoutes(
     return makeModerationService({ repo })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /admin/moderation
-  // -------------------------------------------------------------------------
   route(app, "listModeration", async (request, reply) => {
     const query = parse(ModerationListQuerySchema, request.query)
     const payload: ModerationListResponse = await service().list(query)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/moderation/:id
-  // -------------------------------------------------------------------------
   route(app, "getModerationItem", async (request, reply) => {
     const { id } = idParam(request)
     const payload: GetModerationItemResponse = await service().getItem(id)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/moderation/:id/approve  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "approveModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(ApproveModerationRequestSchema, { ...(request.body as object), id })
-    await service().approve(id, { actorId: request.auth.userId, note: body.note ?? null })
+    await service().approve(id, { actorId: requireOperator(request), note: body.note ?? null })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/moderation/:id/remove  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "removeModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(RemoveModerationRequestSchema, { ...(request.body as object), id })
-    await service().remove(id, { actorId: request.auth.userId, reason: body.reason ?? null })
+    await service().remove(id, { actorId: requireOperator(request), reason: body.reason ?? null })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/moderation/:id/hold  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "holdModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(HoldModerationRequestSchema, { ...(request.body as object), id })
-    await service().hold(id, { actorId: request.auth.userId, note: body.note ?? null })
+    await service().hold(id, { actorId: requireOperator(request), note: body.note ?? null })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/moderation/:id/appeal  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "appealModeration", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(AppealModerationRequestSchema, { ...(request.body as object), id })
     await service().appeal(id, {
       decision: body.decision,
-      actorId: request.auth.userId,
+      actorId: requireOperator(request),
       note: body.note ?? null,
     })
     const payload: AdminOkResponse = { ok: true }

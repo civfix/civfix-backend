@@ -11,12 +11,12 @@
  *   POST /admin/users/:id/role     set role (SetRoleRequest). [csrf]
  *
  * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
- * applied by routes/admin/index.ts; mutations additionally carry csrfProtect. The acting operator's
- * userId comes from request.auth.userId and is recorded on every audit write (flag/status audits are
- * written inside the repo transaction; the role audit by the service). The service is built lazily from
- * the container (Drizzle user repo) with the session-revoke wired to SessionService.revokeAllForUser and
- * the role write wired to UserStore.setRole (both from app.authServices), or from a per-instance test
- * override.
+ * applied by routes/admin/index.ts; mutations additionally carry csrfProtect. Each mutation resolves the
+ * acting operator's (non-null) userId via requireOperator(request) and records it on every audit write
+ * (flag/status audits inside the repo transaction; the role audit by the service). The service is built
+ * lazily from the container (Drizzle user repo) with the session-revoke wired to
+ * SessionService.revokeAllForUser and the role write wired to UserStore.setRole (both from
+ * app.authServices), or from a per-instance test override.
  */
 
 import {
@@ -39,6 +39,7 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
+import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
 import {
@@ -100,27 +101,18 @@ export async function registerAdminUsersRoutes(
     return makeAdminUserService({ repo, sessions, setUserRole })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /admin/users
-  // -------------------------------------------------------------------------
   route(app, "listAdminUsers", async (request, reply) => {
     const query = parse(AdminUserListQuerySchema, request.query)
     const payload: AdminUserListResponse = await service().list(query)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/users/:id
-  // -------------------------------------------------------------------------
   route(app, "getAdminUser", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminUserDTO = await service().get(id)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/users/:id/reports
-  // -------------------------------------------------------------------------
   route(app, "getUserReports", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
@@ -128,9 +120,6 @@ export async function registerAdminUsersRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/users/:id/events
-  // -------------------------------------------------------------------------
   route(app, "getUserEvents", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
@@ -138,9 +127,6 @@ export async function registerAdminUsersRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/users/:id/messages
-  // -------------------------------------------------------------------------
   route(app, "getUserMessages", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
@@ -148,64 +134,50 @@ export async function registerAdminUsersRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/users/:id/flag  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "flagUser", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(FlagUserRequestSchema, { ...(request.body as object), id })
-    await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
+    await service().flag(id, { reason: body.reason ?? null, actorId: requireOperator(request) })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/users/:id/status  [csrf]   (ban revokes all the user's sessions)
-  // -------------------------------------------------------------------------
+  // H2: a "banned" status revokes ALL the user's sessions; the service does NOT 200 on a failed revoke.
   route(app, "setUserStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetUserStatusRequestSchema, { ...(request.body as object), id })
     await service().setStatus(id, {
       status: body.status,
       reason: body.reason ?? null,
-      actorId: request.auth.userId,
+      actorId: requireOperator(request),
     })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/users/:id/role  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "setUserRole", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetRoleRequestSchema, { ...(request.body as object), id })
-    await service().setRole(id, { role: body.role, actorId: request.auth.userId })
+    await service().setRole(id, { role: body.role, actorId: requireOperator(request) })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/users/:id/verify  [csrf]   set "verified neighbor" status (after a verification call)
-  // -------------------------------------------------------------------------
   route(app, "setUserVerified", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetUserVerifiedRequestSchema, { ...(request.body as object), id })
-    await service().setVerified(id, { verified: body.verified, actorId: request.auth.userId })
+    await service().setVerified(id, { verified: body.verified, actorId: requireOperator(request) })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/users/:id/messages/:messageId/remove  [csrf]   operator removes a user's message
-  // -------------------------------------------------------------------------
   route(app, "removeUserMessage", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id, messageId } = MessageParamsSchema.parse(request.params)
+    const { id, messageId } = parse(MessageParamsSchema, request.params)
     // The body carries the path ids (the typed client fills them); the authoritative ids are the URL path.
     const body = parse(RemoveUserMessageRequestSchema, { ...(request.body as object), id, messageId })
     await service().removeMessage(id, messageId, {
       reason: body.reason ?? null,
-      actorId: request.auth.userId,
+      actorId: requireOperator(request),
     })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)

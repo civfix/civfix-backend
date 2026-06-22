@@ -126,7 +126,11 @@ export class InMemoryOutreachRepository implements OutreachRepository {
   }
 }
 
-/** Resolve a jurisdiction's routing recipient: default -> first per-category -> first legacy. */
+/**
+ * Resolve a jurisdiction's routing recipient: default -> first per-category -> first legacy. The
+ * per-category fallback iterates OUTREACH_CATEGORIES in canonical display order, which the Drizzle
+ * loadDigest mirrors via `array_position(...)` so both bindings pick the SAME contact.
+ */
 function resolveContact(j: SeededOutreachJurisdiction): string | null {
   if (j.defaultEmail && j.defaultEmail.trim() !== "") return j.defaultEmail.trim()
   for (const category of OUTREACH_CATEGORIES) {

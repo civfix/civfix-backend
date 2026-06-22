@@ -6,10 +6,8 @@
  * normalized membership test. An EMPTY allowlist means NO ONE is an admin (every check is false), which
  * is the documented "no admin can log in" default.
  *
- * Keep this trivial and dependency-free: the Cloudflare Access exchange route(s)
- * (POST/GET /admin/auth/access/exchange) call it to authorize the email verified by the Access JWT —
- * granting the operator role for an allowlisted email and rejecting (403) any non-allowlisted one. It is
- * the in-app authorization gate that complements the edge Access authentication (doc 16).
+ * The Cloudflare Access exchange route authorizes the email verified by the Access JWT against this
+ * list — the in-app authorization gate complementing the edge Access authentication (doc 16).
  */
 
 import type { Env } from "../env.js"

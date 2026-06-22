@@ -34,6 +34,19 @@ import {
 export const CF_WEBHOOK_SIGNATURE_HEADER = "x-cf-signature"
 
 /**
+ * Per-route limit: the route is unauthenticated-reachable (the HMAC is checked INSIDE the handler, after
+ * the body is buffered + the HMAC computed), so a tight per-IP cap stops an attacker driving buffered-body
+ * + HMAC work via the global 300/min. The Worker nudges at most a handful/sec.
+ */
+const INBOUND_WEBHOOK_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+
+/**
+ * The body is a tiny `{"key":"inbound/pending/<id>.eml"}` JSON object; cap it well under the global
+ * bodyLimit so an oversized unauthenticated POST is rejected before it is buffered + HMAC'd.
+ */
+const INBOUND_WEBHOOK_BODY_LIMIT = 4096
+
+/**
  * Optional injected processing seams (tests). When present the webhook passes them to
  * processInboundObject (an in-memory mail repo + in-memory inbound repo + a fake Storage + the fake
  * parser), so the whole pipeline runs offline with no DB and no R2.
@@ -71,10 +84,14 @@ export async function registerInboundMailWebhook(
       },
     )
 
-    scope.post("/webhooks/inbound-mail", async (request, reply) => {
-      // Pass the ROOT app (closure) so we read inboundMailOverrides off the instance tests decorated.
-      await handleInbound(request, reply, container, app, expectedSecret)
-    })
+    scope.post(
+      "/webhooks/inbound-mail",
+      { bodyLimit: INBOUND_WEBHOOK_BODY_LIMIT, config: { rateLimit: INBOUND_WEBHOOK_RATE_LIMIT } },
+      async (request, reply) => {
+        // Pass the ROOT app (closure) so we read inboundMailOverrides off the instance tests decorated.
+        await handleInbound(request, reply, container, app, expectedSecret)
+      },
+    )
   })
 }
 

@@ -1,17 +1,6 @@
 /**
- * Admin discovery (jurisdiction onboarding queue) routes (Phase 2).
- *
- *   GET  /admin/discovery            the population-sorted discovery queue (DiscoveryListResponse).
- *   GET  /admin/discovery/:id        a discovery task detail (GetDiscoveryTaskResponse).
- *   POST /admin/discovery/:id/notes  add an operator note (AddNoteRequest). [csrf]
- *   POST /admin/discovery/:id/flag   flag the task for review (FlagDiscoveryRequest). [csrf]
- *   POST /admin/discovery/:id/draft  save contact drafts without routing (SaveDraftRequest). [csrf]
- *
- * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
- * applied by routes/admin/index.ts (this whole router runs inside the guarded child context); mutations
- * additionally carry csrfProtect. The acting operator's userId comes from request.auth.userId and is
- * recorded on every audit write. The service is built lazily from the container (Drizzle repo) or from a
- * test override (in-memory repo) for the offline HTTP tests, mirroring the Phase 1 reports routes.
+ * Admin discovery (jurisdiction onboarding queue) routes: list / detail + the note / flag / draft
+ * mutations. The acting operator's userId is recorded on every audit write.
  *
  * NOTES STORAGE: operator notes are persisted as audit_log rows (action discovery.note_added) and read
  * back from there - the discovery task has no notes column and the foundation schema is frozen. See
@@ -73,42 +62,30 @@ export async function registerAdminDiscoveryRoutes(
     return makeDiscoveryService({ repo })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /admin/discovery
-  // -------------------------------------------------------------------------
   route(app, "listDiscovery", async (request, reply) => {
     const query = parse(DiscoveryListQuerySchema, request.query)
     const payload: DiscoveryListResponse = await service().list(query)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/discovery/:id
-  // -------------------------------------------------------------------------
   route(app, "getDiscoveryTask", async (request, reply) => {
     const { id } = idParam(request)
     const payload: DiscoveryTaskDetailDTO = await service().getTask(id)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/discovery/:id/notes  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "addDiscoveryNote", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(AddNoteRequestSchema, { ...(request.body as object), id })
     const actorId = request.auth.userId
     const who = await operatorLabel(app, actorId)
     // addNote persists the note AS the audit_log discovery.note_added row (the note store), so the write
-    // is atomic + audited in one place; no separate writeAudit here. Return the mutation ack.
+    // is atomic + audited in one place; no separate writeAudit here.
     await service().addNote(id, { text: body.text, actorId, who })
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/discovery/:id/flag  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "flagDiscovery", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(FlagDiscoveryRequestSchema, { ...(request.body as object), id })
@@ -117,9 +94,6 @@ export async function registerAdminDiscoveryRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/discovery/:id/draft  [csrf]
-  // -------------------------------------------------------------------------
   route(app, "saveDiscoveryDraft", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SaveDraftRequestSchema, { ...(request.body as object), id })
@@ -134,13 +108,10 @@ export async function registerAdminDiscoveryRoutes(
   })
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /**
- * Resolve a human "who" label for an operator note from the operator's user record (display name, else
- * handle, else email, else a short id). Falls back to "operator" when the auth bundle / user is absent.
+ * Resolve a human "who" label for an operator note from the operator's user record: @handle (the canonical
+ * identifier), else display name, else email, else a short id. Falls back to "operator" when the auth
+ * bundle / user is absent.
  */
 async function operatorLabel(app: FastifyInstance, actorId: string | null): Promise<string> {
   if (actorId === null) return "operator"

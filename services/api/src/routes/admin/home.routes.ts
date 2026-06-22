@@ -40,6 +40,9 @@ export async function registerAdminHomeRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const onSectionError = (section: string, err: unknown) =>
+    app.log.warn({ err, section }, "admin home summary section failed")
+
   /** Build the home service from injected overrides (tests) or the container (production). */
   function service(): HomeService {
     const overrides = app.homeOverrides
@@ -48,32 +51,20 @@ export async function registerAdminHomeRoutes(
         repo: overrides.repo,
         analytics: overrides.analytics,
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
-        onSectionError: (section, err) =>
-          app.log.warn({ err, section }, "admin home summary section failed"),
+        onSectionError,
       })
     }
     const sql = container.getDb().sql
     const repo: HomeRepository = makeDrizzleHomeRepository(sql)
     const analytics: AnalyticsRepository = makeDrizzleAnalyticsRepository(sql)
-    return makeHomeService({
-      repo,
-      analytics,
-      onSectionError: (section, err) =>
-        app.log.warn({ err, section }, "admin home summary section failed"),
-    })
+    return makeHomeService({ repo, analytics, onSectionError })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /admin/home/summary
-  // -------------------------------------------------------------------------
   route(app, "adminHomeSummary", async (_request, reply) => {
     const payload: HomeSummaryResponse = await service().summary()
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/home/map
-  // -------------------------------------------------------------------------
   route(app, "adminHomeMap", async (_request, reply) => {
     const payload: HomeMapResponse = await service().map()
     reply.status(200).send(payload)

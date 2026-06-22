@@ -36,22 +36,15 @@ import type {
   GovClaimStatus,
   GovMethod,
   GovVerificationCheck,
+  Role,
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
 
 /** The three verification checks in display order. */
 export const GOV_CHECKS: readonly GovVerificationCheck[] = ["linkedin", "directory", "callback"]
 
 /** The role granted to an approved gov claim's user. */
-export const GOV_ADMIN_ROLE = "gov_admin"
-
-// ---------------------------------------------------------------------------
-// Repository seam (structural records; faked in tests)
-// ---------------------------------------------------------------------------
+export const GOV_ADMIN_ROLE: Role = "gov_admin"
 
 /** The stored per-check state (status + optional evidence + note). */
 export interface GovCheckRecord {
@@ -103,7 +96,7 @@ export interface ProvisionedUser {
 export interface UserProvisioner {
   findByEmail(email: string): Promise<ProvisionedUser | null>
   create(email: string, displayName: string): Promise<ProvisionedUser>
-  setRole(id: string, role: string): Promise<ProvisionedUser>
+  setRole(id: string, role: Role): Promise<ProvisionedUser>
 }
 
 /**
@@ -151,10 +144,6 @@ export interface GovClaimsRepository {
   ): Promise<GovClaimRecord | null>
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers (no DB, no IO)
-// ---------------------------------------------------------------------------
-
 /** Project the stored checks map into the full strict GovChecks DTO (absent checks default pending). */
 export function toChecksDTO(
   checks: Partial<Record<GovVerificationCheck, GovCheckRecord>>,
@@ -183,10 +172,6 @@ export function pendingChecks(
 ): GovVerificationCheck[] {
   return GOV_CHECKS.filter((c) => (checks[c]?.status ?? "pending") === "pending")
 }
-
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
 
 export interface GovClaimsServiceDeps {
   repo: GovClaimsRepository

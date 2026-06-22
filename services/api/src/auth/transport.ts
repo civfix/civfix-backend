@@ -35,9 +35,7 @@ export function clientKind(request: FastifyRequest): ClientKind {
   return value === "mobile" ? "mobile" : "web"
 }
 
-/**
- * Extract a bearer token from the Authorization header, or null. Case-insensitive on the scheme.
- */
+/** Extract a bearer token from the Authorization header, or null (scheme match is case-insensitive). */
 export function bearerToken(request: FastifyRequest): string | null {
   const raw = request.headers.authorization
   const header = Array.isArray(raw) ? raw[0] : raw
@@ -62,8 +60,7 @@ export function setSessionCookie(reply: FastifyReply, token: string, maxAgeSecon
   reply.setCookie(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    // Drive Secure from the validated env loader (single source of truth) rather than a raw process.env
-    // read. In prod this is always true (NODE_ENV is force-set by the Dockerfile + compose).
+    // Secure from the validated env loader (single source of truth), always true in prod.
     secure: isProd(),
     path: "/",
     maxAge: maxAgeSeconds,

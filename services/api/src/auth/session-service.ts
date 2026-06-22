@@ -24,6 +24,12 @@ import type { SessionStore } from "./stores.js"
 /** Default session lifetime: 30 days. */
 export const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 
+/**
+ * Extra seconds the banned marker outlives the session TTL, so it can veto any session that could still
+ * be live (the marker must not expire before the longest-lived session it backstops).
+ */
+export const BANNED_MARKER_GRACE_SECONDS = 60
+
 /** Redis key namespace for sessions. */
 const SESSION_KEY_PREFIX = "sess:"
 
@@ -154,17 +160,18 @@ export class SessionService {
         await this.maybeSlide(hash, cached.expiresAtMs, nowMs)
         return { userId: cached.userId, roles: cached.roles, source: "cache" }
       }
-      // Corrupt or stale cache entry: drop it and fall through to the durable store.
-      await this.cache.del(sessionKey(hash))
+      // Corrupt or stale cache entry: drop it (best-effort — a del blip must not 500 a resolvable
+      // request) and fall through to the durable store.
+      await this.cache.del(sessionKey(hash)).catch(() => {})
     }
 
     // --- Miss path: durable store is the source of truth. ---
     const row = await this.store.findById(hash)
     if (!row) return null
     if (row.expiresAt.getTime() <= nowMs) {
-      // Expired: clean up both layers so it cannot be re-warmed.
+      // Expired: clean up both layers so it cannot be re-warmed. The cache del is best-effort.
       await this.store.deleteById(hash)
-      await this.cache.del(sessionKey(hash))
+      await this.cache.del(sessionKey(hash)).catch(() => {})
       return null
     }
 
@@ -203,9 +210,10 @@ export class SessionService {
    */
   async revokeAllForUser(userId: string): Promise<number> {
     const ids = await this.store.deleteAllForUser(userId)
-    for (const hash of ids) {
-      await this.cache.del(sessionKey(hash))
-    }
+    // Drop every write-through entry, but best-effort: the durable rows are already gone (the source of
+    // truth), so one cache.del reject must not abort the rest and leave other entries warm. The banned
+    // marker (banUser) is the backstop for any that slip through.
+    await Promise.allSettled(ids.map((hash) => this.cache.del(sessionKey(hash))))
     return ids.length
   }
 
@@ -218,8 +226,7 @@ export class SessionService {
    */
   async banUser(userId: string): Promise<number> {
     const revoked = await this.revokeAllForUser(userId)
-    // Marker TTL outlives the session TTL so it can veto any session that could still be live.
-    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + 60)
+    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
     return revoked
   }
 

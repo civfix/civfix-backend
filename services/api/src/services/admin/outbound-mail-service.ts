@@ -1,36 +1,30 @@
 /**
- * OutboundMailService (Phase 2): the thin "send mail + record it" service the admin reports/events and
- * mail routers call. It composes the MailRepository (persist the thread/message/event) with the Mailer
- * seam (actually deliver), and nothing else - no Fastify, no DI container - so it is fully unit-testable
- * with the in-memory repo + FakeMailer.
+ * OutboundMailService: the thin "send mail + record it" service the admin reports/events + mail routers
+ * call. It composes the MailRepository (persist the thread/message/event) with the Mailer seam (deliver),
+ * fully unit-testable with the in-memory repo + FakeMailer. Four send paths (sendToCity,
+ * sendReportToJurisdiction, compose, appendOutbound), all From MAIL_FROM_OUTREACH; each returns the
+ * affected thread record (sendReportToJurisdiction also the Message-ID) so the caller can map it to a DTO.
  *
- * Four send paths, all From MAIL_FROM_OUTREACH (outreach@civfix.org):
- *   - sendToCity   the reports/events "send follow-up to city": find-or-create the jurisdiction's digest
- *                  thread (by geoid), append an OUT message, deliver, record a 'sent' event.
- *   - sendReportToJurisdiction  Approve & send THIS report: a per-report thread (by report_id) so the
- *                  city's reply auto-routes back onto the report, with photo attachments + a stored
- *                  Message-ID. Returns the thread + the Message-ID used.
- *   - compose      the Mail Compose modal: a brand-new outbound thread + first OUT message + deliver.
- *   - appendOutbound the Mail reply: append an OUT message to an existing thread + deliver.
- * Each returns the affected thread record (sendReportToJurisdiction also the Message-ID) so the caller
- * can map it to a DTO (via getThread).
+ * Delivery uses `Mailer.sendOutbound(email)` (the first-class envelope seam) which HONORS `from` +
+ * `replyTo` and carries attachments + an explicit Message-ID (the two the old `sendTransactional` path
+ * silently dropped in prod). The reply-to is minted reply+{threadToken}@{MAIL_REPLY_DOMAIN} so an inbound
+ * reply threads back; the returned Message-ID is stored on the OUT row for In-Reply-To correlation.
  *
- * Delivery uses `Mailer.sendOutbound(email)` - the first-class envelope seam - which HONORS the `from`
- * (MAIL_FROM_OUTREACH) and `replyTo` and carries binary attachments + an explicit Message-ID (the two
- * the old `sendTransactional` path silently dropped in production). The reply-to address is minted as
- * reply+{threadToken}@{MAIL_REPLY_DOMAIN} so an inbound reply threads back (the inbound webhook, owned by
- * the mail agent, parses that token); the returned Message-ID is stored on the OUT row for In-Reply-To
- * correlation. The FakeMailer captures the full envelope for assertions.
+ * Audit (H4): the operator audit (mail.sent / mail.replied / mail.resent) is written in the SAME tx as the
+ * message insert (repo.insertMessage's audit param), so a committed outbound message can never lack its
+ * audit row. The deliverability mail_events 'sent' row is recorded separately.
  *
- * Audit note (H4): the operator audit (mail.sent / mail.replied / mail.resent) is written IN THE SAME
- * transaction as the message insert (repo.insertMessage's audit param), so a committed outbound message
- * can never lack its audit row. The caller (mail-service) passes the operator userId + action; this
- * service fills the `mail:{threadId}` target (it owns the thread id, including for a freshly composed
- * thread). The deliverability mail_events 'sent' row is recorded separately as before.
+ * RELIABILITY: the post-send writes (store Message-ID, record 'sent') run AFTER delivery succeeded. They
+ * are best-effort + logged — a failure there must NOT surface a 500 for an already-sent message (which an
+ * operator would re-send, double-sending). The trade-off: a lost Message-ID/'sent' row weakens
+ * reply/bounce correlation + deliverability stats for that one message, which is preferable to a duplicate
+ * send. The ideal fix is a single repo `recordSent` tx; that needs a MailRepository change (see U16).
  */
 
+import { AppError } from "@civfix/shared"
 import type { Mailer, OutboundAttachment } from "@civfix/shared/interfaces"
 import type { MailAuditInput, MailRepository, MailThreadRecord } from "./mail-repository.drizzle.js"
+import { domainOf } from "../../adapters/mail-text.js"
 
 /** The env slice the service needs (the outbound From + the reply domain for threading). */
 export interface OutboundMailEnv {
@@ -38,12 +32,10 @@ export interface OutboundMailEnv {
   MAIL_REPLY_DOMAIN: string
 }
 
-/**
- * Legacy template name for operator-originated outbound mail. Delivery now goes through the first-class
- * `Mailer.sendOutbound` envelope (no template), so this is retained only for the existing tests'
- * import surface; it is no longer passed to the Mailer.
- */
-export const OUTBOUND_MAIL_TEMPLATE = "admin_outbound"
+/** Minimal logger seam for the best-effort post-send warnings (defaults to console). */
+export interface OutboundMailLogger {
+  warn(obj: unknown, msg?: string): void
+}
 
 /** Optional report context the reports follow-up can thread into the message (for the operator trail). */
 export interface ReportContext {
@@ -132,33 +124,27 @@ export interface OutboundMailServiceDeps {
   repo: MailRepository
   mailer: Mailer
   env: OutboundMailEnv
+  /** Optional logger for the best-effort post-send warnings (defaults to console). */
+  logger?: OutboundMailLogger
 }
 
-/**
- * Construct the OutboundMailService. Pure wiring over the three deps; no infra handles, no container.
- */
+/** Construct the OutboundMailService. Pure wiring over the deps; no infra handles, no container. */
 export function makeOutboundMailService(deps: OutboundMailServiceDeps): OutboundMailService {
   const { repo, mailer, env } = deps
+  const logger: OutboundMailLogger = deps.logger ?? console
 
   /** reply+{token}@{MAIL_REPLY_DOMAIN}; the inbound webhook parses {token} back to the thread. */
   function mintReplyAddress(threadToken: string): string {
     return `reply+${threadToken}@${env.MAIL_REPLY_DOMAIN}`
   }
 
-  /** The sending domain (after '@' of MAIL_FROM_OUTREACH), used to mint the OUT Message-ID. */
-  function fromDomain(): string {
-    const at = env.MAIL_FROM_OUTREACH.lastIndexOf("@")
-    const domain = at >= 0 ? env.MAIL_FROM_OUTREACH.slice(at + 1).trim() : ""
-    return domain.length > 0 ? domain : "civfix.org"
-  }
-
   /**
-   * Deliver one outbound message via the first-class `sendOutbound` seam, store the returned Message-ID
-   * on the OUT row, then record the mail_events 'sent' row. Delivery happens BEFORE the event is recorded
-   * so a send failure (a thrown Mailer error) surfaces to the caller without leaving a misleading 'sent'
-   * event. The From is MAIL_FROM_OUTREACH and the reply-to is the thread's minted address (so the city's
-   * reply threads back via the inbound pipeline). The OUT Message-ID is derived from the message row id
-   * (`<out-{id}@{fromDomain}>`) so an eventual reply/bounce can correlate by In-Reply-To/References.
+   * Deliver one outbound message via `sendOutbound`, store the returned Message-ID on the OUT row, then
+   * record the mail_events 'sent' row. Delivery happens BEFORE the post-send writes so a Mailer error
+   * surfaces to the caller without a misleading 'sent' event. The post-send writes are best-effort +
+   * logged: once delivery succeeded the message IS out, so a write failure must not 500 the caller into a
+   * duplicate re-send. The OUT Message-ID is `<out-{id}@{fromDomain}>` for In-Reply-To/References
+   * correlation.
    */
   async function deliverAndRecord(args: {
     threadId: string
@@ -172,7 +158,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     attachments?: OutboundAttachment[]
     eventMeta?: Record<string, unknown>
   }): Promise<string> {
-    const rfcMessageId = `<out-${args.messageId}@${fromDomain()}>`
+    const rfcMessageId = `<out-${args.messageId}@${domainOf(env.MAIL_FROM_OUTREACH)}>`
     const sent = await mailer.sendOutbound({
       from: env.MAIL_FROM_OUTREACH,
       to: args.toAddr,
@@ -184,15 +170,30 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       ...(args.inReplyTo !== undefined ? { inReplyTo: args.inReplyTo } : {}),
       ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
     })
-    // Persist the Message-ID actually used on the OUT row (so a later reply/bounce correlates).
-    await repo.setMessageMessageId(args.messageId, sent.messageId)
-    await repo.recordEvent({
-      threadId: args.threadId,
-      messageId: args.messageId,
-      type: "sent",
-      meta: { from: env.MAIL_FROM_OUTREACH, to: args.toAddr, ...(args.eventMeta ?? {}) },
-    })
+    try {
+      await repo.setMessageMessageId(args.messageId, sent.messageId)
+      await repo.recordEvent({
+        threadId: args.threadId,
+        messageId: args.messageId,
+        type: "sent",
+        meta: { from: env.MAIL_FROM_OUTREACH, to: args.toAddr, ...(args.eventMeta ?? {}) },
+      })
+    } catch (err) {
+      logger.warn(
+        { err, threadId: args.threadId, messageId: args.messageId },
+        "outbound mail delivered but post-send write failed (Message-ID/'sent' may be missing)",
+      )
+    }
     return sent.messageId
+  }
+
+  /** Re-read a thread after a write so the returned record reflects last_message_at; falls back + logs on a transient null. */
+  async function freshThread(thread: MailThreadRecord): Promise<MailThreadRecord> {
+    const fresh = await repo.getThreadRecord(thread.id)
+    if (fresh === null) {
+      logger.warn({ threadId: thread.id }, "outbound mail: thread re-read returned null; using stale record")
+    }
+    return fresh ?? thread
   }
 
   return {
@@ -228,9 +229,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
         eventMeta: { reportId: input.reportId, ...(input.geoid != null ? { geoid: input.geoid } : {}) },
       })
-      // Re-read so the returned record reflects the post-insert last_message_at.
-      const fresh = await repo.getThreadRecord(thread.id)
-      return { thread: fresh ?? thread, messageId }
+      return { thread: await freshThread(thread), messageId }
     },
 
     async sendToCity(input: SendToCityInput): Promise<MailThreadRecord> {
@@ -274,9 +273,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         body: input.body,
         eventMeta,
       })
-      // Re-read so the returned record reflects the post-insert last_message_at.
-      const fresh = await repo.getThreadRecord(thread.id)
-      return fresh ?? thread
+      return freshThread(thread)
     },
 
     async compose(input: ComposeInput): Promise<MailThreadRecord> {
@@ -298,14 +295,13 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         subject: input.subject,
         body: input.body,
       })
-      const fresh = await repo.getThreadRecord(thread.id)
-      return fresh ?? thread
+      return freshThread(thread)
     },
 
     async appendOutbound(threadId: string, input: AppendOutboundInput): Promise<MailThreadRecord> {
       const thread = await repo.getThreadRecord(threadId)
       if (!thread) {
-        throw new Error(`appendOutbound: thread ${threadId} not found`)
+        throw AppError.notFound("Mail thread not found")
       }
       const subject = input.subject ?? replySubject(thread.subject)
       const message = await repo.insertMessage({
@@ -325,8 +321,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         subject,
         body: input.body,
       })
-      const fresh = await repo.getThreadRecord(thread.id)
-      return fresh ?? thread
+      return freshThread(thread)
     },
   }
 }

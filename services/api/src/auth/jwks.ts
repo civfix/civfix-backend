@@ -11,8 +11,9 @@
  * directly, so there is no third-party JWT library in the dependency graph.
  */
 
-import { createHash, timingSafeEqual } from "node:crypto"
+import { createHash } from "node:crypto"
 import { AppError } from "@civfix/shared"
+import { constantTimeStringEqual } from "./crypto.js"
 
 /** The verified, trusted claims a caller may rely on after a successful verify. */
 export interface VerifiedIdToken {
@@ -110,6 +111,8 @@ export class RemoteJwksVerifier implements JwksVerifier {
   private readonly cache = new Map<string, CachedJwks>()
   /** Last time we FORCE-refreshed each jwksUrl (unknown-kid path), to throttle fetch amplification. */
   private readonly lastForceRefreshAtMs = new Map<string, number>()
+  /** In-flight fetch per url, so concurrent misses share ONE network call (single-flight). */
+  private readonly inFlight = new Map<string, Promise<Jwk[]>>()
   /** Minimum spacing between forced refreshes per url (bounds unknown-kid DoS amplification). */
   private static readonly FORCE_REFRESH_FLOOR_MS = 60 * 1000
 
@@ -169,13 +172,21 @@ export class RemoteJwksVerifier implements JwksVerifier {
 
   private async getKeys(jwksUrl: string, forceRefresh: boolean): Promise<Jwk[]> {
     const cached = this.cache.get(jwksUrl)
-    if (
-      !forceRefresh &&
-      cached &&
-      this.now() - cached.fetchedAtMs < this.cacheTtlMs
-    ) {
+    if (!forceRefresh && cached && this.now() - cached.fetchedAtMs < this.cacheTtlMs) {
       return cached.keys
     }
+    // Single-flight: N concurrent callers (TTL expiry stampede OR an unknown-kid flood) share ONE
+    // outbound JWKS fetch instead of each firing their own.
+    const existing = this.inFlight.get(jwksUrl)
+    if (existing) return existing
+    const promise = this.fetchKeys(jwksUrl).finally(() => {
+      this.inFlight.delete(jwksUrl)
+    })
+    this.inFlight.set(jwksUrl, promise)
+    return promise
+  }
+
+  private async fetchKeys(jwksUrl: string): Promise<Jwk[]> {
     const res = await this.fetchImpl(jwksUrl)
     if (!res.ok) {
       throw AppError.unauthorized("Could not fetch identity provider keys.")
@@ -187,9 +198,10 @@ export class RemoteJwksVerifier implements JwksVerifier {
   }
 }
 
-/** Default fetch wrapper around the global fetch (Node 18+/22). */
+// redirect:"error" so a compromised/MITM provider can't 30x us elsewhere (the JWKS url is hardcoded,
+// not jku/x5u-derived, so this is defense-in-depth not a direct SSRF fix).
 const defaultFetch: FetchLike = async (url: string) => {
-  const res = await fetch(url)
+  const res = await fetch(url, { redirect: "error" })
   return { ok: res.ok, json: () => res.json() }
 }
 
@@ -211,15 +223,10 @@ function decodeJsonSegment<T>(segment: string): T | null {
 function nonceMatches(claimNonce: string | undefined, expected: string): boolean {
   if (typeof claimNonce !== "string" || claimNonce.length === 0) return false
   const expectedHash = createHash("sha256").update(expected).digest("hex")
-  return constantTimeEqual(claimNonce, expected) || constantTimeEqual(claimNonce, expectedHash)
-}
-
-/** Constant-time string compare (equal length required; a length mismatch is a definite non-match). */
-function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a)
-  const bb = Buffer.from(b)
-  if (ab.length !== bb.length) return false
-  return timingSafeEqual(ab, bb)
+  return (
+    constantTimeStringEqual(claimNonce, expected) ||
+    constantTimeStringEqual(claimNonce, expectedHash)
+  )
 }
 
 /** Verify an RS256 signature over `signingInput` using an RSA JWK via WebCrypto. */

@@ -1,28 +1,10 @@
 /**
- * Admin mail / outreach routes (Phase 2).
- *
- *   GET  /admin/mail/stats     deliverability stats over 7d (MailStatsResponse).
- *   GET  /admin/mail           the thread list (filter dir / needs-attention / geoid) (MailListResponse).
- *   GET  /admin/mail/:id       a thread with messages (GetMailThreadResponse).
- *   POST /admin/mail           compose a new outbound thread (ComposeRequest). [csrf]
- *   POST /admin/mail/:id/reply reply to a thread (ReplyRequest). [csrf]
- *   POST /admin/mail/:id/read  mark a thread read (MarkMailReadRequest). [csrf]
- *   POST /admin/mail/:id/status set thread status (SetMailStatusRequest). [csrf]
- *   POST /admin/mail/:id/resend resend an outbound message (ResendRequest). [csrf]
- *
- * ROUTE ORDER: GET /admin/mail/stats is registered BEFORE GET /admin/mail/:id so the literal `stats`
- * segment is not captured by the `:id` param.
- *
- * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
- * applied by routes/admin/index.ts (this whole router runs inside the guarded child context); mutations
- * additionally carry csrfProtect. The acting operator's userId comes from request.auth.userId and is
- * passed INTO the service so the audit is written inside the repo transaction (H4: mail.sent on compose,
- * mail.replied on reply, mail.resent on resend, mail.status_changed on status - each atomic with its
- * effect and covered by the in-memory repo's audit sink in tests, instead of a separate skip-under-test
- * route audit). Marking a thread read is a benign lifecycle toggle with no dedicated audit action, so it
- * is not audited. The service is built lazily from the container (Drizzle mail repo + the
- * OutboundMailService over container.mailer) or from a per-instance test override (in-memory repo + a
- * FakeMailer-backed outbound), mirroring the Phase 1 lazy-construct pattern.
+ * Admin mail / outreach routes: stats, thread list/read, compose/reply/read/status/resend. The
+ * requireOperator guard is applied by routes/admin/index.ts (this whole router runs inside the guarded
+ * child context); mutations additionally carry csrfProtect. The service is built lazily from the container
+ * (Drizzle mail repo + the OutboundMailService over container.mailer) or from a per-instance test override
+ * (in-memory repo + a FakeMailer-backed outbound). See the in-handler comments for the route-order +
+ * in-tx-audit (H4) invariants.
  */
 
 import {
@@ -105,38 +87,29 @@ export async function registerAdminMailRoutes(
     })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /admin/mail/stats  (static segment BEFORE /:id)
-  // -------------------------------------------------------------------------
+  // getMailStats is registered BEFORE getMailThread so the literal `stats` segment is not captured by :id.
   route(app, "getMailStats", async (_request, reply) => {
     const payload: MailStatsResponse = await service().stats()
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/mail
-  // -------------------------------------------------------------------------
   route(app, "listMail", async (request, reply) => {
     const query = parse(MailListQuerySchema, request.query)
     const payload: MailListResponse = await service().list(query)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // GET /admin/mail/:id
-  // -------------------------------------------------------------------------
   route(app, "getMailThread", async (request, reply) => {
     const { id } = idParam(request)
     const payload: MailThreadDTO = await service().getThread(id)
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/mail  [csrf]  (compose -> mail.sent)
-  // -------------------------------------------------------------------------
+  // H4: the compose/reply/status/resend mutations each pass request.auth.userId into the service so the
+  // operator audit (mail.sent / mail.replied / mail.status_changed / mail.resent) is written in the SAME
+  // tx as its effect. Mark-read is a benign lifecycle toggle with no audit action.
   route(app, "composeMail", { preHandler: csrfProtect }, async (request, reply) => {
     const body = parse(ComposeRequestSchema, request.body)
-    // The mail.sent audit is written in-tx with the first message insert (H4).
     await service().compose(
       { to: body.to, subject: body.subject, body: body.body },
       request.auth.userId,
@@ -145,48 +118,33 @@ export async function registerAdminMailRoutes(
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/mail/:id/reply  [csrf]  (reply -> mail.replied)
-  // -------------------------------------------------------------------------
   route(app, "replyMail", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(ReplyRequestSchema, { ...(request.body as object), id })
-    // The mail.replied audit is written in-tx with the OUT message insert (H4).
     await service().reply(id, { body: body.body }, request.auth.userId)
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/mail/:id/read  [csrf]  (lifecycle toggle; not audited)
-  // -------------------------------------------------------------------------
   route(app, "markMailRead", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
-    parse(MarkMailReadRequestSchema, { ...(request.body as object), id })
+    parse(MarkMailReadRequestSchema, { ...(request.body as object), id }) // validate-only
     await service().markRead(id)
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/mail/:id/status  [csrf]  (status change -> mail.status_changed)
-  // -------------------------------------------------------------------------
   route(app, "setMailStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
     const body = parse(SetMailStatusRequestSchema, { ...(request.body as object), id })
-    // The mail.status_changed audit is written in-tx with the status UPDATE (H4).
     await service().setStatus(id, body.status, request.auth.userId)
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  // -------------------------------------------------------------------------
-  // POST /admin/mail/:id/resend  [csrf]  (resend -> mail.resent)
-  // -------------------------------------------------------------------------
   route(app, "resendMail", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = idParam(request)
-    parse(ResendRequestSchema, { ...(request.body as object), id })
-    // The mail.resent audit is written in-tx with the OUT message insert (H4).
+    parse(ResendRequestSchema, { ...(request.body as object), id }) // validate-only
     await service().resend(id, request.auth.userId)
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)

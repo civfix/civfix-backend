@@ -28,15 +28,18 @@ import {
   buildUnmappedRecord,
   directoryMethod,
   shouldIncludeUnmapped,
-  type JurisdictionContactsRepository,
-  type JurisdictionDirectoryRecord,
-  type ListDirectoryArgs,
-  type SaveContactsInput,
-} from "./jurisdiction-contacts-service.js"
+} from "./jurisdiction-directory-projection.js"
+import type {
+  JurisdictionContactsRepository,
+  JurisdictionDirectoryRecord,
+  ListDirectoryArgs,
+  PatchContactsInput,
+  SaveContactsInput,
+} from "./jurisdiction-contacts-types.js"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { likeContains } from "./like.js"
 
-/** The 6 canonical categories (local copy; the directory record maps per-category contacts by these). */
+/** The 6 canonical categories (local; @civfix/shared exports the zod enum + type but no plain array). */
 const CATEGORIES: readonly ReportCategory[] = [
   "trash",
   "recycling",
@@ -176,13 +179,9 @@ export function makeDrizzleJurisdictionContactsRepository(
       audit: { actorId: string | null },
     ): Promise<{ routedReports: number; taskResolved: boolean }> {
       return sql.begin(async (tx) => {
-        // 1. contacts + legacy mirror.
         await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
-
-        // 2. contact_updated_at.
         await tx`UPDATE jurisdictions SET contact_updated_at = now() WHERE geoid = ${geoid}`
 
-        // 3. resolve open discovery task(s).
         const tasks = await tx<{ id: string }[]>`
           UPDATE jurisdiction_discovery_tasks
           SET status = 'done'
@@ -191,11 +190,11 @@ export function makeDrizzleJurisdictionContactsRepository(
         `
         const taskResolved = tasks.length > 0
 
-        // 4. route waiting pins in ONE set-based statement (M6): a CTE flips every waiting report to
-        // 'acknowledged' (RETURNING the ids), and the outer INSERT ... SELECT writes one routed
-        // report_timeline row per just-acknowledged report. This is two-statements-as-one regardless of N
-        // (no per-report round trip), so a hot un-onboarded geoid with many waiting pins does not hold the
-        // transaction open across a JS loop.
+        // M6: route every waiting pin in ONE set-based statement (the CTE flips them to 'acknowledged'
+        // RETURNING ids, the inner INSERT...SELECT writes one timeline row each) regardless of N, so a hot
+        // un-onboarded geoid with many waiting pins never holds the tx open across a JS loop. The literal
+        // 'Routed to jurisdiction contact' note text is composed in SQL by design (a single fixed string,
+        // not a per-row computation, so there is no service-side copy to thread in).
         const routed = await tx<{ id: string }[]>`
           WITH routed AS (
             UPDATE reports
@@ -218,7 +217,7 @@ export function makeDrizzleJurisdictionContactsRepository(
         // is stamped ONLY when a digest is actually sent (OutreachService.runForGeoid after a successful
         // send). With no stamp here, the service's enqueue fires and the worker sends, then stamps for real.
 
-        // 5. audit the save IN-TX (H4): "did + recorded" is atomic - a failed audit rolls back the routing.
+        // Audit the save IN-TX (H4): "did + recorded" is atomic - a failed audit rolls back the routing.
         await writeAudit(tx, {
           actorId: audit.actorId,
           action: "discovery.contacts_saved",
@@ -238,14 +237,7 @@ export function makeDrizzleJurisdictionContactsRepository(
 
     async patch(
       geoid: string,
-      input: {
-        contacts?: Partial<Record<ReportCategory, string | null>>
-        defaultEmails?: string[]
-        formUrl?: string | null
-        notes?: string | null
-        flagged?: boolean
-        flagReason?: string | null
-      },
+      input: PatchContactsInput,
       audit: { actorId: string | null },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
@@ -324,7 +316,7 @@ export function makeDrizzleJurisdictionContactsRepository(
       // Method facet pushed into the WHERE (was JS-only, post-LIMIT). directoryMethod is derivable from
       // the already-joined columns, so mirroring its rule here keeps LIMIT counting only matching rows and
       // the geoid cursor aligned (a sparse facet no longer yields near-empty pages -> a client refetch
-      // storm). The SQL must match jurisdiction-contacts-service.directoryMethod EXACTLY:
+      // storm). The SQL must match jurisdiction-directory-projection.directoryMethod EXACTLY:
       //   hasEmail = j.contact_emails has a non-blank entry OR a per-category jurisdiction_contacts row has
       //              a non-blank email; 'email' = hasEmail; 'form' = !hasEmail AND a non-blank
       //              report_form_url; 'none' = neither. (btrim(...) <> '' mirrors the JS .trim() !== "".)
@@ -427,16 +419,16 @@ export function makeDrizzleJurisdictionContactsRepository(
       `
 
       let records = rows.map(toRecord)
-      // The method facet is now applied in SQL (the ${methodFilter} fragment above), so LIMIT counts only
-      // matching rows and the geoid cursor stays aligned. This JS pass is kept only as a belt-and-suspenders
-      // check that re-derives the facet from the projected record via the service's directoryMethod (one
-      // definition of the rule); against the SQL predicate it should be a no-op. (N2.)
+      // Belt-and-suspenders re-derive the method facet from the projected record (one definition of the
+      // rule, via directoryMethod); against the SQL ${methodFilter} predicate it is a no-op. The keyset
+      // (hasMore/page/cursor) is derived from the SAME post-filter records so a filtered-out row cannot
+      // advance the cursor past an un-emitted geoid (skip/duplicate bug).
       if (args.filter !== "all") {
         records = records.filter((r) => directoryMethod(r) === args.filter)
       }
-      const hasMore = rows.length > limit
+      const hasMore = records.length > limit
       const page = hasMore ? records.slice(0, limit) : records
-      const last = hasMore ? rows[limit - 1] : undefined
+      const last = hasMore ? page[page.length - 1] : undefined
       const nextCursor = last ? encodeCursor({ createdAt: new Date(0), id: last.geoid }) : null
 
       // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page so reports whose

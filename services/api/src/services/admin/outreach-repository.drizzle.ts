@@ -60,10 +60,16 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
               LIMIT 1
             ),
             (
+              -- CANONICAL per-category precedence = the OUTREACH_CATEGORIES display order
+              -- (trash,recycling,graffiti,hazard,water,other), NOT alphabetical, so this matches the
+              -- in-memory resolveContact's iteration order exactly (an unmatched category sorts last).
               SELECT cc.email FROM jurisdiction_contacts cc
               WHERE cc.geoid = j.geoid AND cc.category IS NOT NULL
                 AND cc.email IS NOT NULL AND cc.email <> ''
-              ORDER BY cc.category ASC
+              ORDER BY COALESCE(
+                array_position(ARRAY['trash','recycling','graffiti','hazard','water','other']::text[], cc.category),
+                2147483647
+              ), cc.category ASC
               LIMIT 1
             ),
             (

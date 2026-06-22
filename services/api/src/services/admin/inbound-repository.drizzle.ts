@@ -13,7 +13,7 @@
  */
 
 import type { Sql } from "../../db/client.js"
-import { clampLimit, decodeCursor, encodeCursor, type CursorAnchor } from "./pagination.js"
+import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { likeContains } from "./like.js"
 import type {
   InboundEmailDTO,
@@ -205,9 +205,4 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
       return rows.length > 0
     },
   }
-}
-
-/** The keyset anchor (received_at sort key + id tiebreak) — exported for parity with the mail repo. */
-export function inboundAnchorOf(row: { received_at: Date; id: string }): CursorAnchor {
-  return { createdAt: row.received_at, id: row.id }
 }

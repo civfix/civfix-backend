@@ -54,9 +54,6 @@ export async function registerAdminActivityRoutes(
     return makeActivityService({ repo })
   }
 
-  // -------------------------------------------------------------------------
-  // GET /admin/activity
-  // -------------------------------------------------------------------------
   route(app, "adminActivity", async (request, reply) => {
     const query = parse(ActivityListQuerySchema, request.query)
     const payload: ActivityListResponse = await service().list({

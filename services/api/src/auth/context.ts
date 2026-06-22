@@ -69,6 +69,11 @@ export async function resolveAuthContext(request: FastifyRequest): Promise<AuthC
     // never Postgres) BEFORE it slides the session expiry, so a missed-revoke session cannot be extended
     // past the banned marker and a banned user resolves to null here. The warm-session Redis-only
     // property is preserved for active users (no store read is added on the hot path).
+    //
+    // FAIL-CLOSED: resolveSession is NOT wrapped — a thrown Redis/store error propagates to a 500 rather
+    // than silently degrading a presented token to anonymous. Degrading-to-anon on a backend blip would
+    // mask a real outage AND drop the user's authenticated identity for the request; for an auth probe we
+    // prefer to fail the request over serving it unauthenticated.
     const resolved = await services.sessions.resolveSession(token)
     if (resolved) {
       return { userId: resolved.userId, roles: resolved.roles, anon: false }
