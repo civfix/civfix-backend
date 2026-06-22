@@ -1,7 +1,6 @@
 import type {
   CreateReportRequest,
   GeomSource,
-  LinkedEventRef,
   ListMyReportsResponse,
   ListReportsSearchResponse,
   PaginationQuery,

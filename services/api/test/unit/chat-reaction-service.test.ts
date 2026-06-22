@@ -101,7 +101,7 @@ describe("chat reaction service — cleanup group chat", () => {
     const h = makeHarness()
     await h.chat.insertMessage({ cleanupId: CLEANUP, userId: ALICE, body: "hi" }, MSG_ID)
     await expect(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       h.service.toggleCleanupReaction(CLEANUP, MSG_ID, ALICE, "thumbsup" as any),
     ).rejects.toBeInstanceOf(AppError)
   })

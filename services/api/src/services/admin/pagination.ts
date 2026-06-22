@@ -7,11 +7,7 @@
  * contract; these are the server-side encode/decode + limit clamp around them.
  */
 
-import {
-  CURSOR_UUID_RE,
-  encodeTimeCursor,
-  parseTimeCursor,
-} from "../../db/cursor-helpers.js"
+import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 
 export { CURSOR_UUID_RE, paginate } from "../../db/cursor-helpers.js"
 
