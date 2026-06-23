@@ -8,6 +8,7 @@
 
 import {
   AppleSignInRequestSchema,
+  AppleCallbackBodySchema,
   GoogleSignInRequestSchema,
   EmailOtpRequestRequestSchema,
   EmailOtpVerifyRequestSchema,
@@ -135,7 +136,7 @@ export async function registerAuthRoutes(
   route(app, "googleCallback", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const query = parse(OAuthCallbackQuerySchema, request.query)
     const stash = readOAuthStash(request)
-    if (!stash || stash.state !== query.state) {
+    if (!stash || stash.state !== query.state || stash.codeVerifier === undefined) {
       throw AppError.unauthorized("Invalid OAuth state.")
     }
     reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
@@ -147,6 +148,65 @@ export async function registerAuthRoutes(
     await issueSessionForUser(services, request, reply, user, {
       forceKind: "web",
       webRedirectTo: target,
+    })
+  })
+
+  // Sign in with Apple, WEB redirect flow. Mirrors googleStart/googleCallback with three Apple-specific
+  // differences: (1) no PKCE (the stash carries only state), (2) the state cookie is SameSite=None so it
+  // survives Apple's CROSS-SITE form POST back to the callback (a Lax cookie would be dropped), and (3) the
+  // callback is a POST whose body is application/x-www-form-urlencoded (response_mode=form_post).
+  route(app, "appleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
+    const startQuery = parse(OAuthStartQuerySchema, request.query)
+    if (startQuery.redirect !== undefined && !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)) {
+      throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
+    }
+    const auth = services.oauth.createAppleAuthUrl()
+    const stash: OAuthStash = {
+      state: auth.state,
+      ...(startQuery.redirect !== undefined ? { redirect: startQuery.redirect } : {}),
+    }
+    // SameSite=None (required for the cross-site form_post) implies Secure; Apple web sign-in is HTTPS-only.
+    reply.setCookie(OAUTH_STATE_COOKIE, JSON.stringify(stash), {
+      signed: true,
+      httpOnly: true,
+      sameSite: "none",
+      secure: true,
+      path: "/",
+      maxAge: OAUTH_STATE_TTL_SECONDS,
+    })
+    reply.redirect(auth.url)
+  })
+
+  // The Apple callback needs a urlencoded body parser, which is not registered globally. Encapsulate it in
+  // a child scope so only this route gains the parser (the rest of the API keeps its JSON-only parsing).
+  await app.register(async (appleScope) => {
+    appleScope.addContentTypeParser(
+      "application/x-www-form-urlencoded",
+      { parseAs: "string" },
+      (_req, body, done) => {
+        try {
+          done(null, Object.fromEntries(new URLSearchParams(body as string)))
+        } catch (err) {
+          done(err as Error)
+        }
+      },
+    )
+    route(appleScope, "appleCallback", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
+      const body = parse(AppleCallbackBodySchema, request.body)
+      const stash = readOAuthStash(request)
+      if (!stash || stash.state !== body.state) {
+        throw AppError.unauthorized("Invalid OAuth state.")
+      }
+      reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
+      const fullName = appleFullNameFromUserField(body.user)
+      const user = await services.oauth.completeAppleCallback(body.code, fullName)
+      // Top-level browser navigation (form POST): establish the web cookie session, then 302 back to the
+      // app origin captured at /start. The SPA hydrates via GET /auth/session on arrival (same as Google).
+      const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
+      await issueSessionForUser(services, request, reply, user, {
+        forceKind: "web",
+        webRedirectTo: target,
+      })
     })
   })
 
@@ -325,11 +385,17 @@ async function buildSessionCheck(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<SessionCheckResponse> {
-  // Best-effort: tell the web which sign-in buttons to show. Omitted when none are configured.
+  // Best-effort: tell the client which sign-in buttons to show. Omitted when none are configured.
+  // Platform-aware for Apple: the NATIVE token flow only needs the bundle id, but the WEB redirect flow
+  // additionally needs the Services ID (APPLE_OAUTH_WEB_CLIENT_ID). So a web caller is told "apple" only
+  // when the web flow is actually configured — otherwise it would render an Apple button whose /start
+  // returns "not configured". Mobile callers are unaffected (they use the native flow).
+  const providerList =
+    clientKind(request) === "web" && !services.oauth.appleWebEnabled
+      ? services.enabledProviders.filter((p) => p !== "apple")
+      : services.enabledProviders
   const enabledProviders =
-    services.enabledProviders.length > 0
-      ? { enabledProviders: services.enabledProviders }
-      : {}
+    providerList.length > 0 ? { enabledProviders: providerList } : {}
 
   const { auth } = request
   if (!auth.userId) {
@@ -378,12 +444,13 @@ function webCsrfToken(
 
 interface OAuthStash {
   state: string
-  codeVerifier: string
+  /** Google's PKCE code verifier. Absent for Apple (Apple's web flow has no PKCE). */
+  codeVerifier?: string
   /** The validated post-login redirect target (where to send the browser after sign-in). */
   redirect?: string
 }
 
-/** Read + unsign the Google web flow stash cookie; null when absent or tampered. */
+/** Read + unsign the OAuth web-flow stash cookie (Google or Apple); null when absent or tampered. */
 function readOAuthStash(request: FastifyRequest): OAuthStash | null {
   const raw = request.cookies[OAUTH_STATE_COOKIE]
   if (!raw) return null
@@ -391,16 +458,32 @@ function readOAuthStash(request: FastifyRequest): OAuthStash | null {
   if (!unsigned.valid || unsigned.value === null) return null
   try {
     const parsed = JSON.parse(unsigned.value) as Partial<OAuthStash>
-    if (typeof parsed.state === "string" && typeof parsed.codeVerifier === "string") {
+    if (typeof parsed.state === "string") {
       return {
         state: parsed.state,
-        codeVerifier: parsed.codeVerifier,
+        ...(typeof parsed.codeVerifier === "string" ? { codeVerifier: parsed.codeVerifier } : {}),
         ...(typeof parsed.redirect === "string" ? { redirect: parsed.redirect } : {}),
       }
     }
     return null
   } catch {
     return null
+  }
+}
+
+/**
+ * Apple posts the user's name+email in the `user` form field as a JSON STRING, but ONLY on the very first
+ * authorization (never again). Parse a "First Last" display name out of it, or undefined when it is absent
+ * / malformed (later sign-ins) — the user then sets their name in first-run registration. PURE.
+ */
+function appleFullNameFromUserField(user: string | undefined): string | undefined {
+  if (!user) return undefined
+  try {
+    const parsed = JSON.parse(user) as { name?: { firstName?: string; lastName?: string } }
+    const full = `${parsed.name?.firstName?.trim() ?? ""} ${parsed.name?.lastName?.trim() ?? ""}`.trim()
+    return full.length > 0 ? full : undefined
+  } catch {
+    return undefined
   }
 }
 

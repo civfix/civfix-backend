@@ -132,6 +132,11 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
       privateKey: env.APPLE_OAUTH_PRIVATE_KEY,
       // Apple reuses the Google-style redirect under the same public API host when web flow is on.
       redirectUri: `${env.PUBLIC_API_URL}/auth/apple/callback`,
+      // The Services ID (web client id). When present the web redirect flow + web button light up; when
+      // absent only the native/mobile token flow works. Reuses the same team/key/.p8 as above.
+      ...(env.APPLE_OAUTH_WEB_CLIENT_ID
+        ? { webClientId: env.APPLE_OAUTH_WEB_CLIENT_ID }
+        : {}),
     }
   }
   return config

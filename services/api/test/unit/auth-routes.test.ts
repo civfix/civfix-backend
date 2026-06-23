@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 import { resolvePostLoginRedirect } from "../../src/routes/auth.routes.js"
+import type { OAuthConfig } from "../../src/auth/oauth.js"
 
 /**
  * Full offline sign-in flows through the real Fastify app (app.inject), wired with the in-memory
@@ -81,15 +82,75 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(check.roles).toEqual(["citizen"])
   })
 
-  it("an unauthenticated /auth/session reports authenticated:false with enabledProviders", async () => {
+  // The OAuth config used to test the Apple WEB flow: the default harness providers PLUS the Services ID
+  // (APPLE_OAUTH_WEB_CLIENT_ID) that the web redirect flow + web Apple button require.
+  const OAUTH_WITH_APPLE_WEB: OAuthConfig = {
+    google: {
+      clientId: "test-google-client",
+      clientSecret: "test-google-secret",
+      redirectUri: "http://localhost:8080/auth/google/callback",
+    },
+    apple: {
+      clientId: "test-apple-client",
+      teamId: "TEAMID",
+      keyId: "KEYID",
+      privateKey: "unused-in-stubbed-verify",
+      redirectUri: "http://localhost:8080/auth/apple/callback",
+      webClientId: "org.civfix.web",
+    },
+  }
+
+  it("an unauthenticated WEB /auth/session omits apple unless the web Services ID is configured", async () => {
     harness = await makeAuthHarness()
+    // No x-client header => web transport. The default harness configures the NATIVE Apple flow but NOT the
+    // web Services ID, so the web's Apple button (which needs the web redirect flow) is NOT advertised.
     const res = await harness.app.inject({ method: "GET", url: "/v1/auth/session" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.authenticated).toBe(false)
     expect(body.roles).toEqual([])
-    // The default harness configures both OAuth providers, so all three buttons are advertised.
-    expect(body.enabledProviders).toEqual(["apple", "google", "email"])
+    expect(body.enabledProviders).toEqual(["google", "email"])
+  })
+
+  it("a MOBILE /auth/session advertises apple (the native flow needs no web Services ID)", async () => {
+    harness = await makeAuthHarness()
+    const res = await harness.app.inject({
+      method: "GET",
+      url: "/v1/auth/session",
+      headers: { "x-client": "mobile" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().enabledProviders).toEqual(["apple", "google", "email"])
+  })
+
+  it("a WEB /auth/session advertises apple once the web Services ID is configured", async () => {
+    harness = await makeAuthHarness({ oauthConfig: OAUTH_WITH_APPLE_WEB })
+    const res = await harness.app.inject({ method: "GET", url: "/v1/auth/session" })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().enabledProviders).toEqual(["apple", "google", "email"])
+  })
+
+  it("GET /auth/apple/start redirects to Apple (form_post) with a SameSite=None state cookie", async () => {
+    harness = await makeAuthHarness({ oauthConfig: OAUTH_WITH_APPLE_WEB })
+    const res = await harness.app.inject({ method: "GET", url: "/auth/apple/start" })
+    expect(res.statusCode).toBe(302)
+    const location = String(res.headers["location"])
+    expect(location).toContain("appleid.apple.com")
+    expect(location).toContain("response_type=code")
+    // Apple REQUIRES form_post whenever scopes are requested; Arctic omits it, so the route adds it.
+    expect(location).toContain("response_mode=form_post")
+    // The state cookie must be SameSite=None so it survives Apple's cross-site form POST to the callback.
+    const setCookie = res.headers["set-cookie"]
+    const rawCookie = (Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie)).toLowerCase()
+    expect(rawCookie).toContain("samesite=none")
+  })
+
+  it("GET /auth/apple/start is rejected when the web Services ID is not configured", async () => {
+    harness = await makeAuthHarness()
+    const res = await harness.app.inject({ method: "GET", url: "/auth/apple/start" })
+    // Native-only Apple config => the web flow is unavailable; /start surfaces a clean 4xx, not a 5xx.
+    expect(res.statusCode).toBeGreaterThanOrEqual(400)
+    expect(res.statusCode).toBeLessThan(500)
   })
 
   it("a wrong OTP code is rejected with 401", async () => {

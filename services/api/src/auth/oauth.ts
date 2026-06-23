@@ -16,7 +16,7 @@
  * Code on the Arctic clients are likewise only constructed when real OAuth credentials are present.
  */
 
-import { Google, generateCodeVerifier, generateState } from "arctic"
+import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
 import { AppError } from "@civfix/shared"
 import type { OAuthIdentityStore, UserRecord, UserStore } from "./stores.js"
 import { RemoteJwksVerifier, type JwksVerifier, type VerifiedIdToken } from "./jwks.js"
@@ -50,6 +50,12 @@ export interface OAuthConfig {
     /** PEM contents of the .p8 private key. */
     privateKey: string
     redirectUri: string
+    /**
+     * The Apple "Services ID" for Sign in with Apple on the WEB (separate from `clientId`, the native
+     * bundle id). When set it enables the web redirect flow (createAppleAuthUrl / completeAppleCallback)
+     * and is the audience the web id_token is verified against. Unset => web Apple sign-in is unavailable.
+     */
+    webClientId?: string
   }
 }
 
@@ -74,6 +80,7 @@ export class OAuthService {
   private readonly users: UserStore
   private readonly verifier: JwksVerifier
   private googleClient: Google | undefined
+  private appleClient: Apple | undefined
 
   constructor(opts: OAuthServiceOptions) {
     this.config = opts.config
@@ -87,9 +94,14 @@ export class OAuthService {
     return this.config.google !== undefined
   }
 
-  /** Whether the Apple flow is configured. */
+  /** Whether the Apple flow is configured (covers the native/mobile token flow). */
   get appleEnabled(): boolean {
     return this.config.apple !== undefined
+  }
+
+  /** Whether the Apple WEB redirect flow is configured (needs the Services ID, APPLE_OAUTH_WEB_CLIENT_ID). */
+  get appleWebEnabled(): boolean {
+    return this.config.apple?.webClientId !== undefined
   }
 
   /** Build a Google authorization URL plus the state/verifier the callback must echo. */
@@ -112,6 +124,34 @@ export class OAuthService {
     const idToken = tokens.idToken()
     const claims = await this.verifyGoogleIdToken(idToken)
     return this.upsertFromClaims(PROVIDER_GOOGLE, claims)
+  }
+
+  /**
+   * Build an Apple WEB authorization URL plus the state the callback must echo. Apple has no PKCE (so no
+   * code verifier, unlike Google). We request `name email` scopes to learn the user on first consent; Apple
+   * REQUIRES `response_mode=form_post` whenever scopes are requested (Arctic builds the code-flow URL but
+   * leaves the response mode unset, so we add it), which is why the callback is a POST.
+   */
+  createAppleAuthUrl(): { url: string; state: string } {
+    const client = this.requireAppleWeb()
+    const state = generateState()
+    const url = client.createAuthorizationURL(state, ["name", "email"])
+    url.searchParams.set("response_mode", "form_post")
+    return { url: url.toString(), state }
+  }
+
+  /**
+   * Complete the Apple WEB callback: exchange `code` for tokens (Arctic signs the client_secret JWT with
+   * the .p8 key), verify the returned id_token (its `aud` is the Services ID, NOT the native bundle id),
+   * and upsert the user. `fullName` is Apple's first-consent display name, parsed by the route from the
+   * form_post `user` field (absent on later sign-ins). The caller validates state against the stash first.
+   */
+  async completeAppleCallback(code: string, fullName?: string): Promise<UserRecord> {
+    const client = this.requireAppleWeb()
+    const tokens = await client.validateAuthorizationCode(code)
+    const idToken = tokens.idToken()
+    const claims = await this.verifyAppleWebIdToken(idToken)
+    return this.upsertFromClaims(PROVIDER_APPLE, claims, fullName)
   }
 
   /** Verify a Google ID token's signature + claims and return the verified subject/email. */
@@ -232,6 +272,40 @@ export class OAuthService {
     }
     return this.config.apple
   }
+
+  private requireAppleWebConfig(): NonNullable<OAuthConfig["apple"]> & { webClientId: string } {
+    const apple = this.config.apple
+    if (!apple?.webClientId) {
+      throw AppError.validation(undefined, "Apple web sign-in is not configured.")
+    }
+    return { ...apple, webClientId: apple.webClientId }
+  }
+
+  private requireAppleWeb(): Apple {
+    const cfg = this.requireAppleWebConfig()
+    if (!this.appleClient) {
+      // client_id is the Services ID (web); the team/key/.p8 are shared with the native config. Arctic
+      // wants the PKCS#8 private key as raw DER bytes (it signs the client_secret JWT with them).
+      this.appleClient = new Apple(
+        cfg.webClientId,
+        cfg.teamId,
+        cfg.keyId,
+        decodeApplePrivateKey(cfg.privateKey),
+        cfg.redirectUri,
+      )
+    }
+    return this.appleClient
+  }
+
+  /** Verify an Apple WEB id_token: same issuer/JWKS as the native flow, but its audience is the Services ID. */
+  private async verifyAppleWebIdToken(idToken: string): Promise<VerifiedIdToken> {
+    const apple = this.requireAppleWebConfig()
+    return this.verifier.verify(idToken, {
+      jwksUrl: APPLE_JWKS_URL,
+      issuers: [APPLE_ISSUER],
+      audiences: [apple.webClientId],
+    })
+  }
 }
 
 /** Best-effort display name from verified claims; falls back to a provider-tagged default. */
@@ -255,4 +329,19 @@ function safeAvatarUrl(picture: string | null): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Decode an Apple .p8 Sign-in key (PEM-wrapped PKCS#8) into the raw DER bytes Arctic's `Apple` client wants
+ * (it signs the OAuth client_secret JWT with them). Tolerant of how the key is stored in env: accepts real
+ * or escaped (`\n`) newlines, with or without the BEGIN/END armor — everything outside the base64 body is
+ * stripped before decoding.
+ */
+function decodeApplePrivateKey(pem: string): Uint8Array {
+  const b64 = pem
+    .replace(/\\n/g, "\n")
+    .replace(/-----BEGIN [^-]+-----/g, "")
+    .replace(/-----END [^-]+-----/g, "")
+    .replace(/\s+/g, "")
+  return new Uint8Array(Buffer.from(b64, "base64"))
 }

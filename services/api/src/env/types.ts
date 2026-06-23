@@ -89,6 +89,14 @@ export interface Env {
   APPLE_OAUTH_TEAM_ID?: string
   APPLE_OAUTH_KEY_ID?: string
   APPLE_OAUTH_PRIVATE_KEY?: string
+  /**
+   * The Apple "Services ID" used for Sign in with Apple on the WEB (e.g. `org.civfix.web`). It is a
+   * SEPARATE identifier from APPLE_OAUTH_CLIENT_ID (the native app's bundle id): the web id_token's `aud`
+   * is this Services ID, and it is the OAuth `client_id` of the web redirect flow. Reuses the same team
+   * id / key id / .p8 private key as the native config. When unset, the web Apple button's start endpoint
+   * returns "not configured" (the native/mobile Apple flow is unaffected). [OPT]
+   */
+  APPLE_OAUTH_WEB_CLIENT_ID?: string
 
   GOOGLE_OAUTH_CLIENT_ID?: string
   GOOGLE_OAUTH_CLIENT_SECRET?: string
