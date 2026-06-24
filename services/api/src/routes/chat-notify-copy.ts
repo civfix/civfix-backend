@@ -20,20 +20,23 @@ export function authorDisplay(message: ChatMessageDTO, fallback: string): string
 }
 
 /**
- * Bell body: a server-truncated preview of a text message (~80 chars, ellipsized), or a generic
- * "Sent you a message" for a non-text message (share_pin / task_complete / rsvp_change / a body-less
- * frame), so a structured payload never leaks as the preview.
+ * The server-truncated preview of a text message (~80 chars, ellipsized), or `null` for a non-text
+ * message (share_pin / task_complete / rsvp_change / a body-less frame) so a structured payload never
+ * leaks as the preview. The caller substitutes a localized "Sent you a message" wrapper when this is null.
+ *
+ * The preview is USER CONTENT: it is passed to the i18n renderer as an interpolation var (already
+ * truncated here), so only the surrounding notification copy is translated — never the user's text.
  */
-export function messagePreview(message: ChatMessageDTO): string {
+export function textPreview(message: ChatMessageDTO): string | null {
   const body = message.body
   if (message.kind === "text" && typeof body === "string" && body.trim() !== "") {
     const trimmed = body.trim()
     return trimmed.length > PREVIEW_MAX ? `${trimmed.slice(0, PREVIEW_MAX - 1)}…` : trimmed
   }
-  return "Sent you a message"
+  return null
 }
 
-export const dmNotificationTitle = (message: ChatMessageDTO): string => authorDisplay(message, "New message")
-export const dmNotificationBody = messagePreview
-export const mentionAuthorName = (message: ChatMessageDTO): string => authorDisplay(message, "Someone")
-export const mentionBody = messagePreview
+/** The sender's display name for a DM bell title: @handle / display name / a generic fallback marker. */
+export const dmAuthorName = (message: ChatMessageDTO): string => authorDisplay(message, "")
+/** The mention author's display name: @handle / display name / a generic fallback marker. */
+export const mentionAuthorName = (message: ChatMessageDTO): string => authorDisplay(message, "")

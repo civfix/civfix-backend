@@ -21,6 +21,8 @@ import { AppError, ErrorCode } from "@civfix/shared"
 import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import type { Transporter } from "nodemailer"
 import { domainOf, escapeHtml, sanitizeHeaderValue } from "./mail-text.js"
+import { renderMessage } from "../i18n/renderMessage.js"
+import { DEFAULT_LOCALE, resolveLocale } from "../i18n/locales.js"
 
 const CRLF_RE = /[\r\n\0]/
 const CRLF_GLOBAL_RE = /[\r\n\0]/g
@@ -191,39 +193,47 @@ export class OciMailer implements Mailer {
   }
 }
 
-/** Render the OTP email. */
-function renderOtp(code: string): Rendered {
-  const subject = "Your civfix sign-in code"
+/**
+ * Render the OTP (sign-in passcode) email. PRE-AUTH: there is no user row yet, so there is no stored
+ * `users.locale` to honor — per the i18n spec this email defaults to English ('en'). A caller MAY pass an
+ * `Accept-Language` base tag as `locale` (clamped to a supported code) as an optional best-effort.
+ */
+function renderOtp(code: string, locale: string = DEFAULT_LOCALE): Rendered {
+  const subject = renderMessage(locale, "email.otp.subject")
   const text = [
-    `Your civfix sign-in code is ${code}.`,
+    renderMessage(locale, "email.otp.body_line1", { code }),
     "",
-    "It expires in 5 minutes. If you did not request it, you can ignore this email.",
+    renderMessage(locale, "email.otp.body_expiry"),
   ].join("\n")
   const html = [
-    "<p>Your civfix sign-in code is:</p>",
-    `<p style="font-size:24px;font-weight:bold;letter-spacing:3px">${code}</p>`,
-    "<p>It expires in 5 minutes. If you did not request it, you can ignore this email.</p>",
+    `<p>${escapeHtml(renderMessage(locale, "email.otp.html_intro"))}</p>`,
+    `<p style="font-size:24px;font-weight:bold;letter-spacing:3px">${escapeHtml(code)}</p>`,
+    `<p>${escapeHtml(renderMessage(locale, "email.otp.body_expiry"))}</p>`,
   ].join("")
   return { subject, text, html }
 }
 
 /**
- * Render a named transactional template. Unknown templates fall back to a generic notification so a
- * missing template never throws at send time. Kept small for Phase 1.
+ * Render a named transactional template, localized to the recipient's locale. The caller passes the
+ * recipient's `users.locale` as `vars.locale` (the adapter itself is locale-agnostic — it has no user
+ * row); absent/unsupported => English. Unknown templates fall back to a generic notification so a missing
+ * template never throws at send time. EXCLUDES jurisdiction report-packet emails (sent via sendOutbound /
+ * mail-format.ts), which stay English for officials.
  */
 function renderTemplate(template: string, vars: Record<string, unknown>): Rendered {
+  const locale = resolveLocale(typeof vars.locale === "string" ? vars.locale : undefined)
   switch (template) {
     case "report_update": {
       const status = stringVar(vars, "status", "updated")
-      const subject = `Your civfix report was ${status}`
-      const text = `Your report has a new status: ${status}.`
-      const html = `<p>Your report has a new status: <strong>${status}</strong>.</p>`
+      const subject = renderMessage(locale, "email.report_update.subject", { status })
+      const text = renderMessage(locale, "email.report_update.body", { status })
+      const html = `<p>${escapeHtml(text)}</p>`
       return { subject, text, html }
     }
     default: {
-      const subject = stringVar(vars, "subject", "A civfix notification")
-      const message = stringVar(vars, "message", "You have a new civfix notification.")
-      return { subject, text: message, html: `<p>${message}</p>` }
+      const subject = stringVar(vars, "subject", renderMessage(locale, "email.generic.subject"))
+      const message = stringVar(vars, "message", renderMessage(locale, "email.generic.body"))
+      return { subject, text: message, html: `<p>${escapeHtml(message)}</p>` }
     }
   }
 }

@@ -400,10 +400,8 @@ function makeDiscussionNotifier(
         })
         await notifications.createNotification(recipient, {
           type: "report_update",
-          title: input.isReply ? "New reply on your comment" : "New comment on your report",
-          body: input.isReply
-            ? "Someone replied to your comment."
-            : "Someone commented on your report.",
+          titleKey: input.isReply ? "notification.reply.title" : "notification.comment.title",
+          bodyKey: input.isReply ? "notification.reply.body" : "notification.comment.body",
           link: `/reports/${input.reportId}`,
         })
       })
@@ -434,8 +432,8 @@ function makeMentionNotifier(
         if (!prefs.mentions) return
         await notifications.createNotification(input.mentionedUserId, {
           type: "report_update",
-          title: "You were mentioned",
-          body: "Someone mentioned you in a report discussion.",
+          titleKey: "notification.report_mention.title",
+          bodyKey: "notification.report_mention.body",
           link: `/reports/${input.reportId}`,
         })
       })

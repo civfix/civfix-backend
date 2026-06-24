@@ -16,6 +16,7 @@ import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
 import { handleChangeableAtFrom, type AuthStores, type UserRecord, type UserStore } from "./stores.js"
 import { PgAuthStores } from "./pg-stores.js"
+import { resolveLocale } from "../i18n/locales.js"
 
 export interface AuthServices {
   sessions: SessionService
@@ -125,6 +126,12 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
     env.APPLE_OAUTH_KEY_ID &&
     env.APPLE_OAUTH_PRIVATE_KEY
   ) {
+    // The native iOS Apple id_token's aud is the app bundle id (APPLE_OAUTH_IOS_CLIENT_ID, e.g.
+    // org.civfix.community). Accept it alongside clientId so native sign-in verifies even when clientId is
+    // set to the WEB Services ID (org.civfix.web) — mirrors the Google iOS/Android extraAudiences above.
+    const appleExtraAudiences = [env.APPLE_OAUTH_IOS_CLIENT_ID].filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    )
     config.apple = {
       clientId: env.APPLE_OAUTH_CLIENT_ID,
       teamId: env.APPLE_OAUTH_TEAM_ID,
@@ -137,6 +144,7 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
       ...(env.APPLE_OAUTH_WEB_CLIENT_ID
         ? { webClientId: env.APPLE_OAUTH_WEB_CLIENT_ID }
         : {}),
+      ...(appleExtraAudiences.length > 0 ? { extraAudiences: appleExtraAudiences } : {}),
     }
   }
   return config
@@ -157,7 +165,7 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
  * signups get.
  */
 export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
-  return {
+  const base: UserDTO = {
     id: user.id,
     displayName: user.displayName,
     handle: user.handle,
@@ -169,4 +177,11 @@ export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
     role: user.role,
     createdAt: user.createdAt.toISOString(),
   }
+  // Attach the user's chosen UI/message locale (clamped to a supported code {en,es,de,ko}) so a fresh
+  // authed client seeds its UI from the server source of truth. Attached via a structural widen — not an
+  // inline literal — so this compiles whether or not the currently-installed @civfix/shared `UserDTO`
+  // carries `locale` yet (the shared contract step adds it; this stays forward-compatible against an
+  // older pinned dist that would otherwise reject `locale` as an excess property).
+  ;(base as UserDTO & { locale: string }).locale = resolveLocale(user.locale)
+  return base
 }

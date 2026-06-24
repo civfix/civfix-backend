@@ -37,7 +37,7 @@ import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { InMemoryChatPresence, RedisChatPresence, type ChatPresence } from "../adapters/chat-presence.js"
 import { InMemoryChatReadState, type ChatReadState } from "../services/threads-service.js"
-import { dmNotificationTitle, dmNotificationBody, mentionAuthorName, mentionBody } from "./chat-notify-copy.js"
+import { dmAuthorName, mentionAuthorName, textPreview } from "./chat-notify-copy.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 
 /** Per-IP upgrade rate limit on GET /ws: a reconnect storm otherwise exhausts sockets + per-handshake
@@ -245,12 +245,23 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
             if (!(await isMember(roomId, mentionedUserId))) return
             if (await blocksRepo.isBlockedEitherWay(actorUserId, mentionedUserId)) return
             if (!(await notificationService.getPrefs(mentionedUserId)).mentions) return
-            await notificationService.createNotification(mentionedUserId, {
-              type: "cleanup_chat",
-              title: `${mentionAuthorName(message)} mentioned you`,
-              body: mentionBody(message),
-              link: `/cleanups/${roomId}`,
-            })
+            // The author name is user content (an @handle / display name), so it rides as an interpolation
+            // VAR into the localized "{{name}} mentioned you" wrapper, never translated. The body is the
+            // message preview when present (raw user text — passed as `body`), else the localized
+            // "Sent you a message" wrapper (no user content to leak).
+            {
+              const name = mentionAuthorName(message)
+              const preview = textPreview(message)
+              await notificationService.createNotification(mentionedUserId, {
+                type: "cleanup_chat",
+                titleKey: "notification.chat_mention.title",
+                vars: { name },
+                ...(preview !== null
+                  ? { body: preview }
+                  : { bodyKey: "notification.message.no_preview" }),
+                link: `/cleanups/${roomId}`,
+              })
+            }
           },
         })
 
@@ -274,10 +285,17 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     threadRecipientsOf,
     onDmDelivered: notificationService
       ? async (threadId, recipientId, message) => {
+          // The DM bell title is the sender's @handle/display name (user content → raw `title`); when the
+          // sender has neither, fall back to the localized "New message" wrapper. The body is the text
+          // preview when present (raw user content), else the localized "Sent you a message" wrapper.
+          const name = dmAuthorName(message)
+          const preview = textPreview(message)
           await notificationService.createNotification(recipientId, {
             type: "dm",
-            title: dmNotificationTitle(message),
-            body: dmNotificationBody(message),
+            ...(name !== "" ? { title: name } : { titleKey: "notification.dm.title_fallback" }),
+            ...(preview !== null
+              ? { body: preview }
+              : { bodyKey: "notification.message.no_preview" }),
             link: `/messages/dm/${threadId}`,
           })
         }

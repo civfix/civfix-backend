@@ -250,6 +250,15 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       // soft-revokes via revoked_at to keep a device audit trail.
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
     },
+
+    async findUserLocale(userId: string): Promise<string | null> {
+      // The recipient's chosen UI/message locale (0033), loaded just before rendering a localized
+      // notification. Returns null when the user is unknown; the service then falls back to 'en'.
+      const rows = await sql<{ locale: string }[]>`
+        SELECT locale FROM users WHERE id = ${userId} LIMIT 1
+      `
+      return rows[0]?.locale ?? null
+    },
   }
 }
 

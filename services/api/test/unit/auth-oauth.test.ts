@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest"
 import { OAuthService, PROVIDER_GOOGLE, PROVIDER_APPLE } from "../../src/auth/oauth.js"
 import type { JwksVerifier, VerifiedIdToken, VerifyParams } from "../../src/auth/jwks.js"
 import { InMemoryOAuthIdentityStore, InMemoryUserStore } from "../../src/auth/stores.js"
+import { oauthConfigFromEnv } from "../../src/auth/auth-services.js"
+import type { Env } from "../../src/env/types.js"
 
 class StubVerifier implements JwksVerifier {
   private readonly map = new Map<string, VerifiedIdToken>()
@@ -16,6 +18,16 @@ class StubVerifier implements JwksVerifier {
 
 function claims(sub: string, email: string | null, name?: string): VerifiedIdToken {
   return { sub, email, emailVerified: true, name: name ?? null, picture: null }
+}
+
+/** Verifier that records the params it was called with, so tests can assert the accepted audience set. */
+class CapturingVerifier implements JwksVerifier {
+  lastParams: VerifyParams | null = null
+  constructor(private readonly result: VerifiedIdToken) {}
+  verify(_idToken: string, params: VerifyParams): Promise<VerifiedIdToken> {
+    this.lastParams = params
+    return Promise.resolve(this.result)
+  }
 }
 
 function makeService() {
@@ -97,5 +109,62 @@ describe("OAuthService", () => {
     const { service } = makeService()
     expect(service.googleEnabled).toBe(true)
     expect(service.appleEnabled).toBe(true)
+  })
+
+  it("accepts a native Apple token whose aud is the bundle id via extraAudiences", async () => {
+    // clientId is the WEB Services ID; the native bundle id is supplied as an extra audience. The native
+    // id_token (aud = bundle id) must still verify — the bundle id is in the accepted audience set.
+    const verifier = new CapturingVerifier(claims("apple-native-sub", "native@example.com", "Native User"))
+    const service = new OAuthService({
+      config: {
+        apple: {
+          clientId: "org.civfix.web",
+          teamId: "team",
+          keyId: "key",
+          privateKey: "pk",
+          redirectUri: "http://localhost/apple/cb",
+          extraAudiences: ["org.civfix.community"],
+        },
+      },
+      oauthStore: new InMemoryOAuthIdentityStore(),
+      users: new InMemoryUserStore(),
+      verifier,
+    })
+
+    const user = await service.signInWithAppleIdToken("native-token", undefined)
+    expect(user.displayName).toBe("Native User")
+    // The bundle id is offered to the verifier alongside the (web) clientId.
+    expect(verifier.lastParams?.audiences).toEqual(["org.civfix.web", "org.civfix.community"])
+  })
+})
+
+describe("oauthConfigFromEnv", () => {
+  function envWith(overrides: Partial<Env>): Env {
+    return { PUBLIC_API_URL: "https://api.civfix.org", ...overrides } as unknown as Env
+  }
+
+  it("maps APPLE_OAUTH_IOS_CLIENT_ID to apple.extraAudiences", () => {
+    const config = oauthConfigFromEnv(
+      envWith({
+        APPLE_OAUTH_CLIENT_ID: "org.civfix.web",
+        APPLE_OAUTH_TEAM_ID: "team",
+        APPLE_OAUTH_KEY_ID: "key",
+        APPLE_OAUTH_PRIVATE_KEY: "pk",
+        APPLE_OAUTH_IOS_CLIENT_ID: "org.civfix.community",
+      }),
+    )
+    expect(config.apple?.extraAudiences).toEqual(["org.civfix.community"])
+  })
+
+  it("omits apple.extraAudiences when APPLE_OAUTH_IOS_CLIENT_ID is unset", () => {
+    const config = oauthConfigFromEnv(
+      envWith({
+        APPLE_OAUTH_CLIENT_ID: "org.civfix.community",
+        APPLE_OAUTH_TEAM_ID: "team",
+        APPLE_OAUTH_KEY_ID: "key",
+        APPLE_OAUTH_PRIVATE_KEY: "pk",
+      }),
+    )
+    expect(config.apple?.extraAudiences).toBeUndefined()
   })
 })

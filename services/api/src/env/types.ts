@@ -90,6 +90,13 @@ export interface Env {
   APPLE_OAUTH_KEY_ID?: string
   APPLE_OAUTH_PRIVATE_KEY?: string
   /**
+   * Additional accepted audience for the NATIVE Apple id_token, beyond APPLE_OAUTH_CLIENT_ID. A native iOS
+   * "Sign in with Apple" identity token's `aud` is the app bundle id (e.g. `org.civfix.community`). Set this
+   * to that bundle id so native sign-in verifies even when APPLE_OAUTH_CLIENT_ID is configured to the WEB
+   * Services ID (org.civfix.web) instead of the bundle id — mirrors GOOGLE_OAUTH_IOS_CLIENT_ID. [OPT]
+   */
+  APPLE_OAUTH_IOS_CLIENT_ID?: string
+  /**
    * The Apple "Services ID" used for Sign in with Apple on the WEB (e.g. `org.civfix.web`). It is a
    * SEPARATE identifier from APPLE_OAUTH_CLIENT_ID (the native app's bundle id): the web id_token's `aud`
    * is this Services ID, and it is the OAuth `client_id` of the web redirect flow. Reuses the same team

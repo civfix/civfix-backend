@@ -232,6 +232,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       "APPLE_OAUTH_KEY_ID",
       "APPLE_OAUTH_PRIVATE_KEY",
       "APPLE_OAUTH_WEB_CLIENT_ID",
+      "APPLE_OAUTH_IOS_CLIENT_ID",
       "GOOGLE_OAUTH_CLIENT_ID",
       "GOOGLE_OAUTH_CLIENT_SECRET",
       "GOOGLE_OAUTH_REDIRECT_URI",

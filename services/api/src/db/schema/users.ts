@@ -48,6 +48,11 @@ export const users = pgTable(
     // import cycle in the schema mirror makes drizzle's table-type inference collapse to `any`. NULL =>
     // fall back to avatar_url / the monogram.
     avatarMediaId: uuid("avatar_media_id"),
+    // Per-account UI/message locale (0033). One supported language code {en,es,de,ko}; 'en' is the
+    // source + fallback. SOURCE OF TRUTH for server-generated user-facing copy (push titles/bodies,
+    // account/OTP emails), rendered with no client in the loop. The app-level write path validates
+    // against the LocaleEnum, so the column stays a plain text (no DB CHECK), like `role`.
+    locale: text("locale").notNull().default("en"),
     // First-run registration gate: false until the user sets a username + name. Backfilled true for
     // pre-existing accounts in 0006 so only NEW users are forced through registration.
     profileComplete: boolean("profile_complete").notNull().default(false),

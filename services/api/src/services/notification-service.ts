@@ -24,6 +24,8 @@ import {
   toPrefsDTO,
   typeAllowedByPrefs,
 } from "./notification-helpers.js"
+import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
+import { DEFAULT_LOCALE } from "../i18n/locales.js"
 
 export {
   DEFAULT_PREFS,
@@ -115,14 +117,37 @@ export interface NotificationRepository {
   // HARD-deletes the rows rather than soft-revoking (which is what normal rotation does, keeping an audit
   // trail). Idempotent.
   deletePushTokensForUser(userId: string): Promise<void>
+
+  // The recipient's chosen UI/message locale (users.locale). Loaded just before a localized notification
+  // is rendered so the persisted title/body + the inline push are in the user's language. Returns null
+  // when the user is unknown; the service falls back to the default locale ('en').
+  findUserLocale(userId: string): Promise<string | null>
 }
 
 export type PushTokenUpsertOutcome = "stored" | "conflict"
 
+/**
+ * Create a notification. Copy is supplied in ONE of two forms:
+ *   - LOCALIZED (preferred): `titleKey` (+ optional `bodyKey`) into the i18n catalog, with `vars` for
+ *     `{{...}}` interpolation. The service loads the recipient's `users.locale` and renders both the
+ *     persisted row AND the inline push in that language, falling back to English.
+ *   - RAW (legacy / already-localized): a literal `title` (+ optional `body`). Used where the copy is not
+ *     localizable (or for back-compat). When both forms are present the KEYS win.
+ * `link` is locale-independent.
+ */
 export interface CreateNotificationInput {
   type: NotificationType
-  title: string
+  /** Literal, already-rendered title. Required unless `titleKey` is supplied. */
+  title?: string
+  /** Literal, already-rendered body. */
   body?: string
+  /** i18n catalog key for the title; rendered in the recipient's locale. Takes precedence over `title`. */
+  titleKey?: MessageKey
+  /** i18n catalog key for the body; rendered in the recipient's locale. Takes precedence over `body`. */
+  bodyKey?: MessageKey
+  /** `{{var}}` interpolation values for `titleKey`/`bodyKey`. User content (a DM/mention preview) is
+   * passed here already-truncated by the caller; only the surrounding wrapper copy is translated. */
+  vars?: MessageVars
   link?: string
 }
 
@@ -191,15 +216,38 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
+  // Resolve the recipient's locale (best-effort; falls back to 'en' on any lookup error) ONLY when the
+  // input carries i18n keys. A raw-copy notification needs no locale lookup, so we skip the query.
+  async function localeFor(userId: string, input: CreateNotificationInput): Promise<string> {
+    if (input.titleKey === undefined && input.bodyKey === undefined) return DEFAULT_LOCALE
+    try {
+      return (await deps.repo.findUserLocale(userId)) ?? DEFAULT_LOCALE
+    } catch (err) {
+      deps.logger?.warn({ err, userId }, "notification locale lookup failed; falling back to en")
+      return DEFAULT_LOCALE
+    }
+  }
+
   async function doCreateNotification(
     userId: string,
     input: CreateNotificationInput,
   ): Promise<NotificationDTO> {
+    const locale = await localeFor(userId, input)
+    // KEYS win over raw copy. A raw `title` is required when no `titleKey` is given (enforced below); the
+    // empty-string fallback only guards an impossible all-undefined case so the column stays NOT NULL.
+    const title =
+      input.titleKey !== undefined
+        ? renderMessage(locale, input.titleKey, input.vars)
+        : (input.title ?? "")
+    const body =
+      input.bodyKey !== undefined
+        ? renderMessage(locale, input.bodyKey, input.vars)
+        : (input.body ?? null)
     const record = await deps.repo.insertNotification({
       userId,
       type: input.type,
-      title: input.title,
-      body: input.body ?? null,
+      title,
+      body,
       link: input.link ?? null,
     })
     await maybeSendPush(userId, record)
@@ -299,8 +347,9 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
             : "Someone"
       await doCreateNotification(args.followeeId, {
         type: "new_follower",
-        title: "New follower",
-        body: `${name} started following you.`,
+        titleKey: "notification.follower.title",
+        bodyKey: "notification.follower.body",
+        vars: { name },
         link: `/people/${args.follower.id}`,
       })
     },

@@ -269,6 +269,7 @@ export class PgUserStore implements UserStore {
   async updateSettings(id: string, input: UpdateSettingsInput): Promise<UserRecord> {
     const set: Partial<typeof users.$inferInsert> = {}
     if (input.allowDirectMessages !== undefined) set.allowDirectMessages = input.allowDirectMessages
+    if (input.locale !== undefined) set.locale = input.locale
     const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.updateSettings: user not found")
@@ -428,6 +429,7 @@ interface UserRowLike {
   avatarUrl: string | null
   profileComplete: boolean
   allowDirectMessages: boolean
+  locale: string
   createdAt: Date
   deletedAt: Date | null
 }
@@ -444,6 +446,7 @@ function toUserRecord(r: UserRowLike): UserRecord {
     avatarUrl: r.avatarUrl,
     profileComplete: r.profileComplete,
     allowDirectMessages: r.allowDirectMessages,
+    locale: r.locale,
     createdAt: r.createdAt,
     deletedAt: r.deletedAt,
   }

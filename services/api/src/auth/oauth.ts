@@ -56,6 +56,13 @@ export interface OAuthConfig {
      * and is the audience the web id_token is verified against. Unset => web Apple sign-in is unavailable.
      */
     webClientId?: string
+    /**
+     * Additional accepted ID-token audiences for the NATIVE flow beyond `clientId`. A native iOS Sign in
+     * with Apple identity token's `aud` is the app bundle id (org.civfix.community); when `clientId` is
+     * configured to the WEB Services ID instead, the bundle id is accepted here so native sign-in still
+     * verifies (mirrors Google's `extraAudiences`). `clientId` is always accepted implicitly.
+     */
+    extraAudiences?: string[]
   }
 }
 
@@ -178,7 +185,9 @@ export class OAuthService {
     return this.verifier.verify(identityToken, {
       jwksUrl: APPLE_JWKS_URL,
       issuers: [APPLE_ISSUER],
-      audiences: [apple.clientId],
+      // Native bundle-id `aud` is always valid; a configured iOS bundle id (extraAudiences) is accepted too,
+      // so native sign-in verifies even when clientId is the web Services ID.
+      audiences: [apple.clientId, ...(apple.extraAudiences ?? [])],
       ...(expectedNonce !== undefined ? { expectedNonce } : {}),
     })
   }

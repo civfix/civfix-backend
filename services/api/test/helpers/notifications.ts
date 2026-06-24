@@ -201,6 +201,13 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     }
     return Promise.resolve()
   }
+
+  /** Per-user locale override for tests; absent => the service falls back to 'en'. Set via `locales`. */
+  readonly locales = new Map<string, string>()
+
+  findUserLocale(userId: string): Promise<string | null> {
+    return Promise.resolve(this.locales.get(userId) ?? null)
+  }
 }
 
 /** Parse an `${iso}|${id}` time cursor; null when absent/malformed. Mirrors the Drizzle impl. */

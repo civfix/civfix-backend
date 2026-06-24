@@ -44,6 +44,7 @@ import { makeDrizzleNotificationRepository } from "../services/notification-repo
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
+import { SUPPORTED_LOCALES } from "../i18n/locales.js"
 
 /** Optional injected data-export service (tests) so the POST /me/data-export flow runs offline. */
 export interface DataExportOverride {
@@ -65,6 +66,18 @@ export const DATA_EXPORT_RATE_LIMIT = { max: 5, timeWindow: "1 hour" } as const
 
 /** Path param schema for the routes that take a user UUID in the URL. */
 const UserIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+/**
+ * Optional `locale` on PUT /me/settings. Parsed separately from the shared UpdateSettingsRequestSchema
+ * (which may strip an unknown key) and validated against the backend LocaleEnum {en,es,de,ko} — an
+ * unsupported value is REJECTED (422 with field `locale`), not clamped, so the persisted source-of-truth
+ * is always a known-good code. `.passthrough()` ignores the other settings fields parsed elsewhere.
+ */
+const SettingsLocaleSchema = z
+  .object({
+    locale: z.enum([...SUPPORTED_LOCALES] as [string, ...string[]]).optional(),
+  })
+  .passthrough()
 
 /** Default + cap for user search (the shared request caps `limit` at 20). */
 const USER_SEARCH_DEFAULT_LIMIT = 10
@@ -149,12 +162,18 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
   route(app, "updateSettings", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateSettingsRequestSchema, request.body)
+    // The Profile language switcher's `setLocale` PATCHes `locale` here when authed. The installed
+    // @civfix/shared `UpdateSettingsRequestSchema` may strip an unknown `locale` key, so it is parsed
+    // SEPARATELY against the backend LocaleEnum: a value outside {en,es,de,ko} is REJECTED (422) rather
+    // than silently clamped, keeping the persisted source-of-truth a known-good code. Omitted => no change.
+    const locale = parse(SettingsLocaleSchema, request.body).locale
     const store = app.authServices?.users
     if (!store) throw AppError.unauthorized("Authentication required.")
     const updated = await store.updateSettings(userId, {
       ...(body.allowDirectMessages !== undefined
         ? { allowDirectMessages: body.allowDirectMessages }
         : {}),
+      ...(locale !== undefined ? { locale } : {}),
     })
     const payload: UpdateSettingsResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)

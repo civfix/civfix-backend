@@ -152,6 +152,12 @@ export interface UserRecord {
   profileComplete: boolean
   /** Whether the account accepts NEW direct messages (the DM privacy toggle). Defaults true. */
   allowDirectMessages: boolean
+  /**
+   * Per-account UI/message locale (0033). One supported code {en,es,de,ko}; defaults 'en'. The SOURCE OF
+   * TRUTH for server-generated copy (push titles/bodies, account emails). Stored raw; the write path
+   * validates against the LocaleEnum, so reads may still need clamping (resolveLocale) before render.
+   */
+  locale: string
   createdAt: Date
   deletedAt: Date | null
 }
@@ -233,6 +239,12 @@ export interface UserStore {
 /** Partial settings patch (PUT /me/settings). Only present fields are written. */
 export interface UpdateSettingsInput {
   allowDirectMessages?: boolean
+  /**
+   * The user's chosen UI/message locale (the Profile language switcher's `setLocale` when authed). The
+   * ROUTE validates/clamps it to a supported code {en,es,de,ko} before this is reached; the store writes
+   * it verbatim. Omitted leaves the stored locale unchanged.
+   */
+  locale?: string
 }
 
 /**
@@ -291,6 +303,7 @@ export class InMemoryUserStore implements UserStore {
       avatarUrl: input.avatarUrl ?? null,
       profileComplete: false,
       allowDirectMessages: true,
+      locale: "en",
       createdAt: new Date(),
       deletedAt: null,
     }
@@ -359,6 +372,7 @@ export class InMemoryUserStore implements UserStore {
       ...(input.allowDirectMessages !== undefined
         ? { allowDirectMessages: input.allowDirectMessages }
         : {}),
+      ...(input.locale !== undefined ? { locale: input.locale } : {}),
     }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })
