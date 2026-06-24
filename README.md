@@ -274,6 +274,21 @@ To exercise a real seam locally, run the dev infra (`infra/compose/docker-compos
 PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn the relevant flag off (e.g.
 `USE_FAKE_CHAT=0`).
 
+## Reviewer-OTP bypass (App Review)
+
+So App Store / Play reviewers can sign in to a build that is already in review (no new mobile release),
+the OTP flow has a fixed-credential bypass:
+
+- email `reviewer@civfix.org`, code `000000`
+- requesting a code for that email sends **no** email and stores nothing; verifying with `000000`
+  signs in and, on first use, creates a fully set-up citizen account (handle `@reviewer`, name
+  "Reviewer Reviewer", `email_verified`, `profile_complete`). The fixed code only works for this exact
+  email, and this email never accepts a mailed code.
+
+Paste those credentials into the App Review notes. The bypass is **ON by default**; set
+`REVIEWER_OTP_BYPASS=false` (then redeploy/restart) to disable it — the email then behaves like any
+other. `@reviewer` is on the reserved-handle blocklist so no real user can take it.
+
 ## Phase-1 acceptance
 
 `services/api/PHASE1-ACCEPTANCE.md` maps each Phase-1 done-criterion to the endpoint(s)/code that

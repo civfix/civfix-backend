@@ -11,7 +11,13 @@ import type { Container } from "../di.js"
 import type { OAuthProvider, UserDTO } from "@civfix/shared"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService } from "./session-service.js"
-import { OtpService, type OtpLogger } from "./otp.js"
+import {
+  OtpService,
+  REVIEWER_OTP_CODE,
+  REVIEWER_OTP_EMAIL,
+  type OtpLogger,
+  type ReviewerOtpConfig,
+} from "./otp.js"
 import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
 import { handleChangeableAtFrom, type AuthStores, type UserRecord, type UserStore } from "./stores.js"
@@ -54,6 +60,8 @@ export interface BuildAuthServicesOptions {
   now?: () => number
   /** Optional logger (the pino instance); wired in production so the OTP service can warn. */
   logger?: OtpLogger
+  /** Reviewer-OTP bypass config; omit to disable (the offline/test default). */
+  reviewer?: ReviewerOtpConfig
 }
 
 /** Assemble the auth services from already-constructed seams. Pure wiring; no I/O. */
@@ -71,6 +79,7 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
     mailer: opts.mailer,
     ...(now ? { now } : {}),
     ...(opts.logger ? { logger: opts.logger } : {}),
+    ...(opts.reviewer ? { reviewer: opts.reviewer } : {}),
   })
   const oauth = new OAuthService({
     config: opts.oauthConfig,
@@ -100,6 +109,10 @@ export function buildAuthServicesFromContainer(container: Container): AuthServic
     cache,
     mailer: container.mailer,
     oauthConfig: oauthConfigFromEnv(container.env),
+    // Reviewer-OTP bypass is ON unless explicitly disabled (REVIEWER_OTP_BYPASS=false).
+    ...(container.env.REVIEWER_OTP_BYPASS !== false
+      ? { reviewer: { email: REVIEWER_OTP_EMAIL, code: REVIEWER_OTP_CODE } }
+      : {}),
   })
 }
 

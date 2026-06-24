@@ -218,6 +218,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
     CF_ACCESS_SERVICE_TOKENS: parseCsv(source.CF_ACCESS_SERVICE_TOKENS),
 
+    // Reviewer-OTP bypass (App Review): ON by default; set REVIEWER_OTP_BYPASS=false to disable.
+    REVIEWER_OTP_BYPASS: parseBool(source.REVIEWER_OTP_BYPASS, true),
+
     ...optGroup(source, [
       "R2_INBOUND_BUCKET",
       "R2_PUBLIC_BASE",

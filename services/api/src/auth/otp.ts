@@ -74,6 +74,29 @@ const ARGON_OPTS = {
   parallelism: 1,
 } as const
 
+/**
+ * Reviewer-OTP bypass (App Review): a known email + fixed code that signs in WITHOUT mailing or storing
+ * anything, so App Review can log into the build under review without a new mobile release. The email only
+ * ever accepts REVIEWER_OTP_CODE (no real code is mailed for it) and the code only ever works for this
+ * email. On first use it find-or-creates a fully set-up citizen account (profile_complete, @reviewer). The
+ * bypass is only active when the wiring passes a `reviewer` config (prod defaults it ON; see env
+ * REVIEWER_OTP_BYPASS) — paste these into the App Review notes.
+ */
+export const REVIEWER_OTP_EMAIL = "reviewer@civfix.org"
+export const REVIEWER_OTP_CODE = "000000"
+/** The reviewer account's @handle (also on the reserved blocklist so no real user can take it). */
+export const REVIEWER_HANDLE = "reviewer"
+/** The reviewer account's display name (registration composes "First Last"; both are "Reviewer"). */
+export const REVIEWER_DISPLAY_NAME = "Reviewer Reviewer"
+
+/** Reviewer-OTP bypass config injected at construction. Absent => the bypass is disabled. */
+export interface ReviewerOtpConfig {
+  /** The bypass email (compared case-insensitively against the normalized request email). */
+  email: string
+  /** The fixed code that the bypass email accepts. */
+  code: string
+}
+
 /** Minimal logger seam (the pino instance satisfies it); defaults to a no-op when unwired. */
 export interface OtpLogger {
   warn(obj: unknown, msg?: string): void
@@ -86,6 +109,8 @@ export interface OtpServiceOptions {
   mailer: Mailer
   now?: () => number
   logger?: OtpLogger
+  /** Reviewer-OTP bypass; omit to disable (the default in the offline/test wiring). */
+  reviewer?: ReviewerOtpConfig
 }
 
 export interface IssueResult {
@@ -100,6 +125,8 @@ export class OtpService {
   private readonly mailer: Mailer
   private readonly now: () => number
   private readonly logger?: OtpLogger
+  /** Normalized reviewer-bypass config (email lowercased/trimmed); null when the bypass is disabled. */
+  private readonly reviewer: ReviewerOtpConfig | null
 
   constructor(opts: OtpServiceOptions) {
     this.store = opts.store
@@ -108,6 +135,14 @@ export class OtpService {
     this.mailer = opts.mailer
     this.now = opts.now ?? Date.now
     this.logger = opts.logger
+    this.reviewer = opts.reviewer
+      ? { email: opts.reviewer.email.trim().toLowerCase(), code: opts.reviewer.code }
+      : null
+  }
+
+  /** True when the bypass is enabled AND `normalizedEmail` is the reviewer email. */
+  private isReviewerEmail(normalizedEmail: string): boolean {
+    return this.reviewer !== null && normalizedEmail === this.reviewer.email
   }
 
   /**
@@ -122,6 +157,12 @@ export class OtpService {
    */
   async issueOtp(email: string, ip: string | null): Promise<IssueResult> {
     const normalized = email.trim().toLowerCase()
+
+    // Reviewer-OTP bypass: report success to the client without mailing, storing, or rate-limiting
+    // anything. The reviewer signs in with the fixed code (verifyOtp), never a mailed one.
+    if (this.isReviewerEmail(normalized)) {
+      return { resendAfterSec: OTP_EMAIL_WINDOW_SECONDS }
+    }
 
     // Per-IP hourly cap FIRST (so an IP rejection does not consume the per-email window).
     if (ip) {
@@ -177,6 +218,16 @@ export class OtpService {
     const normalized = email.trim().toLowerCase()
     const now = new Date(this.now())
 
+    // Reviewer-OTP bypass: the reviewer email only ever accepts the fixed code (no stored/mailed code is
+    // ever consulted), and the fixed code only ever works for the reviewer email. On success, find-or-create
+    // the fully set-up reviewer account. Checked BEFORE any throttle/store work.
+    if (this.isReviewerEmail(normalized)) {
+      if (this.reviewer !== null && code === this.reviewer.code) {
+        return this.ensureReviewerUser(normalized)
+      }
+      throw AppError.unauthorized("Invalid or expired code.")
+    }
+
     // OUTER bound (P1-1): per-email + per-IP failed-verify throttle. If either is already over its cap,
     // verification is locked - an attacker cannot keep guessing across newly-issued codes. Checked
     // BEFORE any per-code work (no argon2 hash is spent for a locked-out caller).
@@ -220,6 +271,24 @@ export class OtpService {
       displayName: defaultDisplayName(normalized),
       role: "citizen",
       emailVerified: true,
+    })
+    return created.id
+  }
+
+  /**
+   * Find-or-create the reviewer account. Creates it the SAME way a normal account is created (one
+   * UserStore.create, idempotent on email) but born fully set up: verified email, @reviewer handle,
+   * "Reviewer Reviewer" name, profile_complete (skips first-run registration), citizen role.
+   */
+  private async ensureReviewerUser(normalizedEmail: string): Promise<string> {
+    const existing = await this.users.findByEmail(normalizedEmail)
+    if (existing) return existing.id
+    const created = await this.users.create(normalizedEmail, {
+      displayName: REVIEWER_DISPLAY_NAME,
+      role: "citizen",
+      emailVerified: true,
+      handle: REVIEWER_HANDLE,
+      profileComplete: true,
     })
     return created.id
   }

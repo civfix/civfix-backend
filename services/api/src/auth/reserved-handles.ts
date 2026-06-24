@@ -37,6 +37,9 @@ export const RESERVED_HANDLES: readonly string[] = [
   "moderator",
   "team",
   "staff",
+  // The reviewer-OTP bypass account owns @reviewer; reserve it so no real user can take the handle
+  // (and the bypass account's create() can never collide on the handle unique index).
+  "reviewer",
   "root",
   "system",
   "null",

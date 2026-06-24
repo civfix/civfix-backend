@@ -169,6 +169,19 @@ export interface CreateUserInput {
   emailVerified?: boolean
   /** Provider photo URL captured at OAuth sign-in (Google); null for Apple/OTP. */
   avatarUrl?: string | null
+  /**
+   * An explicit @handle for the new account. Omitted => a generated placeholder derived from the id (the
+   * normal signup path; the user picks their real handle in first-run registration). Supplied only by
+   * special server-provisioned accounts (the reviewer-OTP bypass) that are born fully set up. The CALLER
+   * owns reserved/uniqueness for an explicit handle (e.g. the reviewer handle is on the reserved blocklist
+   * so no real user can hold it); the unique index is the backstop.
+   */
+  handle?: string
+  /**
+   * Whether the account skips first-run registration. Omitted => false (normal signups must finish the
+   * "set username + name" step). Supplied true only for server-provisioned accounts (the reviewer bypass).
+   */
+  profileComplete?: boolean
 }
 
 /** First-run registration update: the username (handle) + display name the user chooses. */
@@ -294,14 +307,15 @@ export class InMemoryUserStore implements UserStore {
       id,
       role: input.role ?? "citizen",
       displayName: input.displayName,
-      // Always set a handle so the NOT-NULL column is satisfied: a generated placeholder derived from the
-      // new id (the user picks their real handle in first-run registration). handle_changed_at stays null.
-      handle: generatePlaceholderHandle(id),
+      // Always set a handle so the NOT-NULL column is satisfied: an explicit handle when the caller
+      // provides one (server-provisioned accounts), else a generated placeholder derived from the new id
+      // (the user picks their real handle in first-run registration). handle_changed_at stays null.
+      handle: input.handle ?? generatePlaceholderHandle(id),
       handleChangedAt: null,
       email: email === null ? null : email.toLowerCase(),
       emailVerified: email !== null && (input.emailVerified ?? false),
       avatarUrl: input.avatarUrl ?? null,
-      profileComplete: false,
+      profileComplete: input.profileComplete ?? false,
       allowDirectMessages: true,
       locale: "en",
       createdAt: new Date(),

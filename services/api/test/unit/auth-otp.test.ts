@@ -40,6 +40,12 @@ class FlakyMailer implements Mailer {
 const EMAIL = "Jane.Doe@example.com"
 const IP = "203.0.113.9"
 
+// The store-reviewer bypass: a known email + fixed code that never mails/stores anything (App Review
+// can sign in without a new mobile build). These are the exact values pasted into the App Review notes.
+const REVIEWER_EMAIL = "reviewer@civfix.org"
+const REVIEWER_CODE = "000000"
+const REVIEWER = { email: REVIEWER_EMAIL, code: REVIEWER_CODE }
+
 // Every OTP issue/verify pays a real argon2id hash (64 MiB / 3 passes), and several tests here chain
 // or fan out multiple of them concurrently. Under full-suite concurrency the vitest worker pool
 // saturates the CPU, so a correct-but-starved run can exceed the default 5s per-test timeout and flip
@@ -64,6 +70,18 @@ function makeOtp(startMs = 1_700_000_000_000) {
     mailer,
     advance: (ms: number) => (clockRef.value += ms),
   }
+}
+
+/** Like makeOtp, but wires the reviewer-OTP bypass config into the service. */
+function makeReviewerOtp(startMs = 1_700_000_000_000) {
+  const clockRef = { value: startMs }
+  const now = (): number => clockRef.value
+  const store = new InMemoryOtpStore()
+  const users = new InMemoryUserStore()
+  const cache = new InMemoryCacheClient(now)
+  const mailer = new FakeMailer()
+  const service = new OtpService({ store, users, cache, mailer, now, reviewer: REVIEWER })
+  return { service, store, users, cache, mailer, advance: (ms: number) => (clockRef.value += ms) }
 }
 
 /** Pull the code captured by the FakeMailer for an address (case-insensitively normalized). */
@@ -310,6 +328,73 @@ describe("OtpService.verifyOtp throttle (P1-1)", () => {
     // No failed-verify counter was created for the email or the IP on the happy path.
     expect(await cache.get(`otp:vf:email:${EMAIL.toLowerCase()}`)).toBeNull()
     expect(await cache.get(`otp:vf:ip:${IP}`)).toBeNull()
+  })
+})
+
+describe("OtpService reviewer-OTP bypass", () => {
+  it("issueOtp for the reviewer email sends no email, stores no code, and is not rate-limited", async () => {
+    const { service, store, mailer, cache } = makeReviewerOtp()
+    const res1 = await service.issueOtp(REVIEWER_EMAIL, IP)
+    expect(res1.resendAfterSec).toBe(OTP_EMAIL_WINDOW_SECONDS)
+    // Nothing was mailed and nothing was persisted: the code is never sent or stored.
+    expect(mailer.lastOtpFor(REVIEWER_EMAIL)).toBeUndefined()
+    expect(store.all().length).toBe(0)
+    // No per-email cooldown was consumed, so an immediate repeat request is NOT rate-limited.
+    expect(await cache.get(`otp:rl:email:${REVIEWER_EMAIL}`)).toBeNull()
+    const res2 = await service.issueOtp(REVIEWER_EMAIL, IP)
+    expect(res2.resendAfterSec).toBe(OTP_EMAIL_WINDOW_SECONDS)
+  })
+
+  it("verifyOtp with the reviewer code creates a fully set-up citizen account", async () => {
+    const { service, users, store } = makeReviewerOtp()
+    const userId = await service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP)
+    const user = await users.findById(userId)
+    expect(user).not.toBeNull()
+    expect(user!.email).toBe(REVIEWER_EMAIL)
+    expect(user!.emailVerified).toBe(true)
+    expect(user!.handle).toBe("reviewer")
+    expect(user!.displayName).toBe("Reviewer Reviewer")
+    expect(user!.profileComplete).toBe(true)
+    expect(user!.role).toBe("citizen")
+    // The OTP store was never touched (no code was ever issued/consumed for the reviewer).
+    expect(store.all().length).toBe(0)
+  })
+
+  it("verifyOtp is idempotent for the reviewer (same account on repeat sign-in)", async () => {
+    const { service, users } = makeReviewerOtp()
+    const id1 = await service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP)
+    const id2 = await service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP)
+    expect(id2).toBe(id1)
+    expect(await users.findByEmail(REVIEWER_EMAIL)).not.toBeNull()
+  })
+
+  it("verifyOtp rejects a wrong code for the reviewer and creates no account", async () => {
+    const { service, users } = makeReviewerOtp()
+    await expectAppError(service.verifyOtp(REVIEWER_EMAIL, "123456", IP), ErrorCode.UNAUTHORIZED)
+    expect(await users.findByEmail(REVIEWER_EMAIL)).toBeNull()
+  })
+
+  it("the reviewer code does NOT grant access to any other email", async () => {
+    const { service, users } = makeReviewerOtp()
+    await expectAppError(
+      service.verifyOtp("someoneelse@example.com", REVIEWER_CODE, IP),
+      ErrorCode.UNAUTHORIZED,
+    )
+    expect(await users.findByEmail("someoneelse@example.com")).toBeNull()
+  })
+
+  it("matches the reviewer email case-insensitively", async () => {
+    const { service, users } = makeReviewerOtp()
+    const id = await service.verifyOtp("Reviewer@CivFix.org", REVIEWER_CODE, IP)
+    const user = await users.findById(id)
+    expect(user!.handle).toBe("reviewer")
+    expect(user!.email).toBe(REVIEWER_EMAIL)
+  })
+
+  it("when the bypass is NOT configured, the reviewer email behaves like a normal email", async () => {
+    const { service, users } = makeOtp() // no reviewer config wired
+    await expectAppError(service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP), ErrorCode.UNAUTHORIZED)
+    expect(await users.findByEmail(REVIEWER_EMAIL)).toBeNull()
   })
 })
 

@@ -131,6 +131,14 @@ export interface Env {
   GLITCHTIP_DSN?: string
   GLITCHTIP_DATABASE_URL?: string
 
+  /**
+   * Reviewer-OTP bypass: when true (the default), `reviewer@civfix.org` signs in with the fixed code
+   * `000000` without any email being sent, creating a fully set-up citizen account on first use (for App
+   * Review of a mobile build already in review). Set REVIEWER_OTP_BYPASS=false to disable it (the reviewer
+   * email then behaves like any other email) with no code redeploy.
+   */
+  REVIEWER_OTP_BYPASS: boolean
+
   USE_FAKE_STORAGE: boolean
   USE_FAKE_MAILER: boolean
   USE_FAKE_PUSH: boolean

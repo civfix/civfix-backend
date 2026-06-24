@@ -163,13 +163,17 @@ export class PgUserStore implements UserStore {
       .insert(users)
       .values({
         id,
-        handle: generatePlaceholderHandle(id),
+        // Explicit handle for server-provisioned accounts (reviewer bypass); else a placeholder derived
+        // from the id. The caller owns reserved/uniqueness for an explicit handle; the unique index backs it.
+        handle: input.handle ?? generatePlaceholderHandle(id),
         displayName: input.displayName,
         role: input.role ?? "citizen",
         email: normalizedEmail,
         emailVerified: email !== null && (input.emailVerified ?? false),
         avatarUrl: input.avatarUrl ?? null,
-        // profile_complete uses the column default (false): new users must finish first-run registration.
+        // profile_complete defaults false (new users finish first-run registration) unless the caller marks
+        // the account already set up (reviewer bypass).
+        ...(input.profileComplete !== undefined ? { profileComplete: input.profileComplete } : {}),
       })
       // The unique index on email is PARTIAL (WHERE email IS NOT NULL), so the conflict target must carry
       // the same predicate for Postgres to infer it. For onConflictDoNothing, Drizzle emits the index
