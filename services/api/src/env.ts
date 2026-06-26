@@ -230,6 +230,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       "CF_TURNSTILE_SECRET",
       "CF_EMAIL_WEBHOOK_SECRET",
       "CF_API_TOKEN",
+      "MAPBOX_TOKEN",
       "APPLE_OAUTH_CLIENT_ID",
       "APPLE_OAUTH_TEAM_ID",
       "APPLE_OAUTH_KEY_ID",

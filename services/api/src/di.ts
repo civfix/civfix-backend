@@ -65,6 +65,9 @@ import { R2Storage } from "./adapters/storage.r2.js"
 import { OciMailer } from "./adapters/mailer.oci.js"
 import { CfInboundMail } from "./adapters/inbound-mail.cf.js"
 import { TigerGeocoder } from "./adapters/geocoder.tiger.js"
+import { makePhotonReverseGeocode } from "./adapters/reverse-geocode.photon.js"
+import { makeMapboxReverseGeocode } from "./adapters/reverse-geocode.mapbox.js"
+import { chainReverse, type ReverseGeocode } from "./adapters/reverse-geocode.chain.js"
 import {
   CensusJurisdictionLookup,
   FakeJurisdictionLookup,
@@ -102,6 +105,8 @@ export interface Container {
   readonly mailer: Mailer
   readonly inboundMail: InboundMail
   readonly geocoder: Geocoder
+  /** Street-level reverse geocoder: Mapbox (if MAPBOX_TOKEN) then Photon. Returns null on miss. */
+  readonly streetReverseGeocode: ReverseGeocode
   /**
    * Write-time jurisdiction fallback (US Census Geocoder) consulted on a local PostGIS miss; best-effort.
    * Fake (returns null) outside production, so dev/test reproduce today's local-only behavior offline.
@@ -231,6 +236,14 @@ export function buildContainer(env: Env): Container {
       ? new TigerGeocoder({ getSql: () => getDb().sql })
       : new FakeGeocoder()
 
+  // Street-level reverse geocoder (coords -> "123 Main St, City, ST"): Mapbox when MAPBOX_TOKEN is set,
+  // then Photon. Runs in every env (both never throw / never block); the local "City, ST" label
+  // (container.geocoder.cityStateLabel) is the final per-call fallback in the routes.
+  const streetReverseGeocode: ReverseGeocode = chainReverse(
+    env.MAPBOX_TOKEN ? makeMapboxReverseGeocode({ token: env.MAPBOX_TOKEN }) : null,
+    makePhotonReverseGeocode(),
+  )
+
   // Reaches the US Census Geographies API on a local resolver miss; the fake returns null so dev/test
   // reproduce today's local-only behavior offline. Holds no resources (fetch + AbortController are
   // per-call), so it needs no close() handling.
@@ -352,6 +365,7 @@ export function buildContainer(env: Env): Container {
     mailer,
     inboundMail,
     geocoder,
+    streetReverseGeocode,
     jurisdictionLookup,
     chatService,
     userChannel,

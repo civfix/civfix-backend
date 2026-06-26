@@ -53,7 +53,6 @@ import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
-import { makePhotonReverseGeocode } from "../adapters/reverse-geocode.photon.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
@@ -61,9 +60,6 @@ import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-e
 // Tighter per-IP cap on authed report-create (vs the global 300/min): a write triggers a jurisdiction
 // resolve + media presign + DB insert. 20/min is ample for a real reporter while bounding spam.
 const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
-
-/** Shared street-level reverse geocoder (Photon). Falls back to the local "City, ST" label per call. */
-const photonReverseGeocode = makePhotonReverseGeocode()
 
 /**
  * Optional injected report-service dependencies (tests). When present, the routes build the service
@@ -314,7 +310,7 @@ export async function registerReportRoutes(
       // Street-level Photon address, falling back to the local "City, ST" label so a report almost
       // always gets a location text even when Photon is unreachable. Best-effort: null leaves addr empty.
       reverseGeocode: async (lat, lng) =>
-        (await photonReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
+        (await container.streetReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
       presignMedia: defaultPresign(container),
       // AUTO-FORWARD (D9 / #56): the Jobs seam + the report_verified gate read. createReport enqueues
       // report.autoforward post-commit ONLY when the reporter is report_verified (singletonKey=reportId).

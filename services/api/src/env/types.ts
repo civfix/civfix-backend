@@ -85,6 +85,9 @@ export interface Env {
   CF_EMAIL_WEBHOOK_SECRET?: string
   CF_API_TOKEN?: string
 
+  /** Mapbox server token for reverse geocoding [OPT] - reverse falls back to Photon when unset. */
+  MAPBOX_TOKEN?: string
+
   APPLE_OAUTH_CLIENT_ID?: string
   APPLE_OAUTH_TEAM_ID?: string
   APPLE_OAUTH_KEY_ID?: string
