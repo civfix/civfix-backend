@@ -15,15 +15,18 @@
 import {
   ResolveJurisdictionRequestSchema,
   ReverseLabelRequestSchema,
+  SuggestPlacesRequestSchema,
   ListCleanupsInBBoxRequestSchema,
   SuggestContactRequestSchema,
   AppError,
   type TileInfoResponse,
   type JurisdictionDTO,
   type ReverseLabelResponse,
+  type SuggestPlacesResponse,
   type MapCleanupsResponse,
   type SuggestContactResponse,
 } from "@civfix/shared"
+import { suggestAddresses } from "@civfix/shared/geocode"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
@@ -139,6 +142,25 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       const { lat, lng } = parse(ReverseLabelRequestSchema, request.body)
       const label = await container.geocoder.cityStateLabel(lat, lng)
       const payload: ReverseLabelResponse = { cityStateLabel: label ?? "" }
+      reply.status(200).send(payload)
+    },
+  )
+
+  // Forward address autocomplete proxy: dispatch Mapbox (when MAPBOX_TOKEN is set) -> Photon server-side
+  // via the shared suggestAddresses helper, so no provider key is ever shipped to the client.
+  route(
+    app,
+    "suggest",
+    { config: { rateLimit: GEOCODER_RATE_LIMIT } },
+    async (request, reply) => {
+      const { q, proximity, proximityZoom, limit } = parse(SuggestPlacesRequestSchema, request.body)
+      const suggestions = await suggestAddresses(q, {
+        ...(proximity ? { proximity } : {}),
+        ...(proximityZoom != null ? { proximityZoom } : {}),
+        ...(limit != null ? { limit } : {}),
+        ...(container.env.MAPBOX_TOKEN ? { mapboxToken: container.env.MAPBOX_TOKEN } : {}),
+      })
+      const payload: SuggestPlacesResponse = { suggestions }
       reply.status(200).send(payload)
     },
   )
