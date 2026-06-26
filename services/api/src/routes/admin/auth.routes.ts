@@ -39,6 +39,7 @@ import type { Container } from "../../di.js"
 import type { AuthServices } from "../../auth/auth-services.js"
 import type { UserRecord } from "../../auth/stores.js"
 import { requireAuth } from "../../auth/context.js"
+import { resolveLocale } from "../../i18n/locales.js"
 import { isAdminEmail } from "../../auth/admin-allowlist.js"
 import { createAccessVerifier, type AccessIdentity, type VerifyAccessJwt } from "../../auth/cf-access.js"
 import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
@@ -252,6 +253,8 @@ function toUserPayload(user: UserRecord): AdminLoginResponse["user"] {
     profileComplete: user.profileComplete,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
+    // Required UserDTO field since @civfix/shared 0.22 (i18n); clamp the stored column to a supported code.
+    locale: resolveLocale(user.locale),
   }
 }
 

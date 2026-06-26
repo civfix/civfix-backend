@@ -257,7 +257,9 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     // [POST /admin/reports/:id/verdict] (D7 report-verification verdict), setUserReportVerified
     // [POST /admin/users/:id/report-verify] (D18 report-verified toggle), and requestEventResources
     // [POST /cleanups/:id/request-resources] (D19 event resource request) — all now ROUTED (#56) = 159.
-    expect(Object.keys(endpoints).length).toBe(159)
+    // + 2 endpoints already shipped in @civfix/shared 0.20.x (count was stale at 159) = 161.
+    // + suggest [POST /map/suggest] (forward-geocode autocomplete proxy, @civfix/shared 0.23.0) = 162.
+    expect(Object.keys(endpoints).length).toBe(162)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

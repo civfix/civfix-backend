@@ -178,7 +178,7 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
  * signups get.
  */
 export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
-  const base: UserDTO = {
+  return {
     id: user.id,
     displayName: user.displayName,
     handle: user.handle,
@@ -189,12 +189,8 @@ export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
     allowDirectMessages: user.allowDirectMessages,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
+    // The user's chosen UI/message locale (clamped to a supported code {en,es,de,ko}) so a fresh authed
+    // client seeds its UI from the server source of truth. Now a required UserDTO field (@civfix/shared 0.22+).
+    locale: resolveLocale(user.locale),
   }
-  // Attach the user's chosen UI/message locale (clamped to a supported code {en,es,de,ko}) so a fresh
-  // authed client seeds its UI from the server source of truth. Attached via a structural widen — not an
-  // inline literal — so this compiles whether or not the currently-installed @civfix/shared `UserDTO`
-  // carries `locale` yet (the shared contract step adds it; this stays forward-compatible against an
-  // older pinned dist that would otherwise reject `locale` as an excess property).
-  ;(base as UserDTO & { locale: string }).locale = resolveLocale(user.locale)
-  return base
 }
