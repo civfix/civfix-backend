@@ -1,4 +1,4 @@
-# Docker build context is the repo ROOT (see infra/compose/docker-compose.yml build.context: ../..).
+# Docker build context is the repo ROOT (the civfix-infra compose sets build.context to this checkout).
 # Keep the context small + reproducible: never ship host node_modules / build outputs / secrets into
 # the build. The Dockerfiles install + build fresh INSIDE the linux image so native binaries (sharp,
 # ffmpeg-static, ffprobe-static) are fetched for the target platform, not copied from the host.
@@ -21,12 +21,14 @@
 **/.env
 **/.env.*
 !**/.env.example
-infra/secrets/*.env
 
 # Docker + compose meta (not needed inside the build)
 **/Dockerfile
 **/.dockerignore
-infra/compose
+
+# Deploy/infra lives in the civfix-infra repo now; the only thing left here is the email-worker
+# (a standalone Cloudflare Worker) which must never be baked into the api/worker image.
+infra
 
 # Tests + fixtures are not needed for a production image build (build stage only runs tsup, not tests)
 **/test

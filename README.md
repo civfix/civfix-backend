@@ -187,24 +187,23 @@ indexes), `0002_chat_partitioning` (range-partitioned `chat_messages`), `0003_us
 guarded by `test/unit/migrate-files.test.ts` (locally), and the resulting schema shape by
 `test/integration/schema.test.ts` (Docker-gated).
 
-## Deploy with Docker Compose
+## Deploy (Docker Compose, via the civfix-infra repo)
 
-The reference deployment is `infra/compose/docker-compose.yml`. Postgres is EXTERNAL (a managed
-PostGIS-enabled instance via `DATABASE_URL`); Redis is provided as a local service by default (or set
-`REDIS_URL` and remove the `redis` service to use a managed one). Caddy terminates TLS in front of the
-API.
+Deployment is owned by the **civfix-infra** repo (`github.com/civfix/civfix-infra`): the compose files,
+the Caddy + Cloudflare Tunnel edge, the local Postgres/Redis services, the SOPS-encrypted secrets, and the
+deploy scripts all live there — NOT in this repo. This repo provides only the two service **Dockerfiles**
+(`services/{api,media-worker}/Dockerfile`); the infra compose sets each image's `build.context` to a
+checkout of this repo and builds the images ON the VPS.
 
 Build contexts are the REPO ROOT (the services are pnpm-workspace packages that need the root
 manifests + lockfile + the root `.npmrc`, so the in-image `pnpm install` resolves `@civfix/shared`
 from `repo.civfix.org`); each service's `Dockerfile` header documents this.
 
+Deploy is a single command on the box (it pulls civfix-infra + this repo, decrypts secrets, builds,
+and brings the stack up — see civfix-infra/README.md):
+
 ```
-# 1) Provide config (gitignored, SOPS-decrypted at deploy):
-#      infra/secrets/api.env           (DATABASE_URL, REDIS_URL, SESSION_SIGNING_KEY, ... see .env.example)
-#      infra/secrets/media-worker.env
-# 2) From infra/compose/:
-docker compose build
-docker compose up -d
+sudo -u civfix /opt/civfix/infra/ops/deploy.sh
 ```
 
 DEPLOY SEQUENCE (enforced by `depends_on` in the compose file):
@@ -236,8 +235,9 @@ header. `TRUST_PROXY` configures that trust:
   source addresses.
 - `true` / `false`: trust all (UNSAFE; private networks only) / trust none (read the raw socket peer).
 
-This pairs with `infra/caddy/Caddyfile`, which STRIPS any inbound `X-Forwarded-*` and sets it fresh to
-the real client remote, so a client cannot pre-seed the header even for the trusted hop. The two must
+This pairs with the Caddyfile in the civfix-infra repo (`edge/caddy/Caddyfile`), which SETS
+`X-Forwarded-For` fresh from Cloudflare's `Cf-Connecting-Ip`, so a client cannot pre-seed the header
+even for the trusted hop. The two must
 ship together: trusting a hop count helps only if Caddy reliably sets the value, and stripping at Caddy
 helps only if Fastify is told which hops to trust.
 
@@ -270,9 +270,9 @@ required (a missing one fails boot with an aggregated error).
 | `USE_FAKE_CHAT`       | in-process chat fan-out           | `DATABASE_URL` + `REDIS_URL` (Drizzle repo + Redis pub/sub) |
 | `USE_FAKE_JOBS`       | in-memory job queue               | `DATABASE_URL` (pg-boss)                               |
 
-To exercise a real seam locally, run the dev infra (`infra/compose/docker-compose.dev.yml` brings up
-PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn the relevant flag off (e.g.
-`USE_FAKE_CHAT=0`).
+To exercise a real seam locally, run the dev infra from the civfix-infra repo
+(`compose/docker-compose.dev.yml` brings up PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn
+the relevant flag off (e.g. `USE_FAKE_CHAT=0`).
 
 ## Reviewer-OTP bypass (App Review)
 
