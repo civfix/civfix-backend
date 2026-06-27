@@ -1,21 +1,13 @@
 import { describe, it, expect } from "vitest"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import {
-  computeRates,
-  buildDomainHealth,
+  buildMailStats,
   mintThreadToken,
   toThreadDTO,
   deriveWho,
   type MailThreadRecord,
 } from "../../src/services/admin/mail-repository.drizzle.js"
 
-/**
- * Offline unit tests for the mail data layer's OBSERVABLE behavior, exercised through the in-memory
- * MailRepository (mirrors the Drizzle impl's contract). The Drizzle/PostGIS-free raw-SQL repo is covered
- * by the Docker-gated integration scaffold; these prove the seam the routers + the OutboundMailService
- * depend on: thread upsert, message-insert side effects (last_message_at bump + inbound unread), list
- * filter/paginate, mark read, set status, the stats aggregation, and the pure mapping helpers.
- */
 
 describe("mintThreadToken", () => {
   it("produces a 12-char lowercase base32 token, distinct per call", () => {
@@ -26,41 +18,11 @@ describe("mintThreadToken", () => {
   })
 })
 
-describe("computeRates", () => {
-  it("returns safe defaults with no sent signal (placement 1, rates 0)", () => {
-    expect(computeRates({ sent: 0, delivered: 0, bounced: 0, complained: 0 })).toEqual({
-      placement7d: 1,
-      bounceRate: 0,
-      complaintRate: 0,
-    })
-  })
-
-  it("derives placement/bounce/complaint over sent", () => {
-    const r = computeRates({ sent: 10, delivered: 9, bounced: 1, complained: 0 })
-    expect(r.placement7d).toBeCloseTo(0.9, 6)
-    expect(r.bounceRate).toBeCloseTo(0.1, 6)
-    expect(r.complaintRate).toBe(0)
-  })
-})
-
-describe("buildDomainHealth", () => {
-  it("reports ok across all surfaces when there are no bounces/complaints", () => {
-    const rows = buildDomainHealth("reply.civfix.org", { delivered: 5, bounced: 0, complained: 0 })
-    expect(rows).toHaveLength(3)
-    expect(rows.every((r) => r.status === "ok")).toBe(true)
-    expect(rows.map((r) => r.domain)).toEqual([
-      "civfix.org",
-      "reply.civfix.org",
-      "OCI Email Delivery",
-    ])
-  })
-
-  it("downgrades the sending domain to warn on a single bounce and bad past the threshold", () => {
-    const warn = buildDomainHealth("reply.civfix.org", { delivered: 4, bounced: 1, complained: 0 })
-    expect(warn[0]?.status).toBe("warn")
-    const bad = buildDomainHealth("reply.civfix.org", { delivered: 0, bounced: 5, complained: 1 })
-    expect(bad[0]?.status).toBe("bad")
-    expect(bad[2]?.status).toBe("warn") // OCI relay flagged past the same threshold
+describe("buildMailStats", () => {
+  it("surfaces only measured signals, clamped non-negative", () => {
+    expect(
+      buildMailStats({ unread: 2, threads: 5, counts: { sent: 10, bounced: 1, failed: 2 } }),
+    ).toEqual({ unread: 2, threads: 5, sent: 10, bounced: 1, failed: 2 })
   })
 })
 
@@ -116,7 +78,7 @@ describe("toThreadDTO", () => {
       },
     ])
     expect(dto.id).toBe(thread.id)
-    expect(dto.dir).toBe("in") // latest message direction
+    expect(dto.dir).toBe("in")
     expect(dto.from).toBe("clerk@city.gov")
     expect(dto.preview).toBe("On it.")
     expect(dto.org).toBe("City of LA")
@@ -136,7 +98,7 @@ describe("InMemoryMailRepository: thread upsert", () => {
     })
     const second = await repo.upsertThreadByToken("geo-0644000", { org: "ignored on hit" })
     expect(second.id).toBe(first.id)
-    expect(second.org).toBe("City of LA") // init ignored when the thread already exists
+    expect(second.org).toBe("City of LA")
     expect(repo.threads.size).toBe(1)
   })
 
@@ -182,9 +144,6 @@ describe("InMemoryMailRepository: insertMessage side effects", () => {
     const repo = new InMemoryMailRepository()
     const t = await repo.createThread({ subject: "S" })
     const newer = await repo.insertMessage({ threadId: t.id, direction: "out", body: "newer" })
-    // Seed an OLDER message via the bump path by forcing an earlier created_at through seedMessage then
-    // re-running the bump logic is not exposed; instead assert the forward-only contract by inserting a
-    // second message (always newer in the monotonic clock) and confirming the timestamp advanced.
     const after1 = await repo.getThreadRecord(t.id)
     expect(after1?.lastMessageAt?.getTime()).toBe(newer.createdAt.getTime())
     const newest = await repo.insertMessage({ threadId: t.id, direction: "out", body: "newest" })
@@ -211,7 +170,6 @@ describe("InMemoryMailRepository: getThread", () => {
 describe("InMemoryMailRepository: listThreads filter + paginate", () => {
   it("orders newest-first by last_message_at and paginates with a stable cursor", async () => {
     const repo = new InMemoryMailRepository()
-    // Three threads; give each a message so last_message_at is set in insertion order.
     const ids: string[] = []
     for (let i = 0; i < 3; i++) {
       const t = await repo.createThread({ subject: `T${i}` })
@@ -220,7 +178,6 @@ describe("InMemoryMailRepository: listThreads filter + paginate", () => {
     }
     const page1 = await repo.listThreads({ limit: 2 })
     expect(page1.items).toHaveLength(2)
-    // Newest message first -> the last-created thread leads.
     expect(page1.items[0]?.id).toBe(ids[2])
     expect(page1.items[1]?.id).toBe(ids[1])
     expect(page1.nextCursor).not.toBeNull()
@@ -312,37 +269,26 @@ describe("InMemoryMailRepository: stats7d", () => {
   it("aggregates events in the rolling window and counts unread + threads", async () => {
     const repo = new InMemoryMailRepository()
     repo.now = new Date("2026-03-10T00:00:00.000Z")
-    // Two threads, one unread.
     const a = await repo.createThread({ subject: "A" })
-    await repo.insertMessage({ threadId: a.id, direction: "in", fromAddr: "c", body: "x" }) // unread
+    await repo.insertMessage({ threadId: a.id, direction: "in", fromAddr: "c", body: "x" })
     await repo.createThread({ subject: "B" })
-    // Events inside the window.
     repo.seedEvent({ type: "sent", createdAt: new Date("2026-03-09T00:00:00.000Z") })
     repo.seedEvent({ type: "sent", createdAt: new Date("2026-03-08T00:00:00.000Z") })
-    repo.seedEvent({ type: "delivered", createdAt: new Date("2026-03-09T00:00:00.000Z") })
+    repo.seedEvent({ type: "failed", createdAt: new Date("2026-03-09T00:00:00.000Z") })
     repo.seedEvent({ type: "bounced", createdAt: new Date("2026-03-09T00:00:00.000Z") })
-    // An event OUTSIDE the 7-day window (should be ignored).
     repo.seedEvent({ type: "sent", createdAt: new Date("2026-02-01T00:00:00.000Z") })
     const stats = await repo.stats7d()
-    expect(stats.delivered7d).toBe(1)
-    expect(stats.bounceRate).toBeCloseTo(0.5, 6) // 1 bounced / 2 sent in window
+    expect(stats.sent).toBe(2)
+    expect(stats.failed).toBe(1)
+    expect(stats.bounced).toBe(1)
     expect(stats.unread).toBe(1)
     expect(stats.threads).toBe(2)
-    expect(stats.domainHealth[0]?.status).toBe("warn") // a bounce occurred
   })
 
-  it("returns honest neutral stats with no events", async () => {
+  it("returns honest zero stats with no events", async () => {
     const repo = new InMemoryMailRepository()
     const stats = await repo.stats7d()
-    expect(stats).toMatchObject({
-      placement7d: 1,
-      delivered7d: 0,
-      bounceRate: 0,
-      complaintRate: 0,
-      unread: 0,
-      threads: 0,
-    })
-    expect(stats.domainHealth.every((d) => d.status === "ok")).toBe(true)
+    expect(stats).toEqual({ unread: 0, threads: 0, sent: 0, bounced: 0, failed: 0 })
   })
 })
 
@@ -354,7 +300,6 @@ describe("InMemoryMailRepository: outreach state", () => {
     const set1 = await repo.setOutreachState("0644000", { lastOutreachAt: at })
     expect(set1.lastOutreachAt?.getTime()).toBe(at.getTime())
     expect(set1.suppressed).toBe(false)
-    // Patch suppressed only; lastOutreachAt must be retained.
     const set2 = await repo.setOutreachState("0644000", { suppressed: true })
     expect(set2.suppressed).toBe(true)
     expect(set2.lastOutreachAt?.getTime()).toBe(at.getTime())

@@ -1,34 +1,3 @@
-/**
- * Postgres-backed ModerationRepository (Phase 2): the production binding of the moderation persistence
- * seam.
- *
- * Written against the raw postgres-js tag (`Sql`) rather than the Drizzle query builder because the
- * action methods must run as a SINGLE transaction (transition the moderation_items row AND apply the
- * underlying effect on the subject report/chat AND write the audit, atomically), and because the detail
- * read joins media_assets and parses jsonb that Drizzle does not model cleanly here. Reads/writes touch
- * moderation_items (owned), reports + report_timeline (the report subject effect), media_assets (detail
- * media), abuse_flags (the appeal/suspension subject), and audit_log (via writeAudit).
- *
- * ACTIONS (each one tx, each audited; items clear from the queue because status moves off 'open'):
- *   - approve -> moderation_items.status='approved' (+ resolved_at/by) AND, for a report subject still
- *                held, reports.status held->published + published_at=now + a report_timeline 'published'
- *                row. Audit moderation.approved.
- *   - remove  -> moderation_items.status='removed' (+ resolved_at/by) AND, for a report subject,
- *                reports.status->rejected + deleted_at=now + a report_timeline 'rejected' row. Audit
- *                moderation.removed.
- *   - hold    -> moderation_items.status='held' (+ resolved_at/by); the report stays held (no publish/
- *                reject). Audit moderation.held.
- *   - appeal  -> moderation_items.status='approved' (+ resolved_at/by); overturn resolves the open
- *                abuse_flag for the chat subject (lifts the suspension), uphold leaves it. Audit
- *                moderation.appeal_decided.
- * Every action targets an item WHERE status='open' (the UPDATE returns 0 rows when it is already
- * resolved or missing -> the service 404s / no-ops), so a double-action is a safe no-op.
- *
- * PRODUCER: createItem inserts one open item (optionally deduping against an existing open item for the
- * subject). The standalone insertModerationItem(sql, input) is exported for the media-worker hold path
- * (it is a tiny parameterized INSERT with no service/DI dependency). backfillFromHeldReports creates one
- * item per currently-held report lacking an open item.
- */
 
 import type postgres from "postgres"
 import type { ReportCategory } from "@civfix/shared"
@@ -45,25 +14,10 @@ import {
   type ModerationUserSnapshot,
 } from "./moderation-service.js"
 
-/** A composable SQL fragment (postgres.js Fragment). */
 type SqlFragment = postgres.Fragment
 
-/**
- * R2 public base for moderation media URLs. The moderation detail returns `${MEDIA_URL_PREFIX}<r2_key>`
- * (a relative `/media/...` path the dashboard rewrites via NEXT_PUBLIC_* to the real object-store/CDN
- * origin at render time). NOTE: this DIFFERS from the admin REPORT path, which now SERVER-SIDE presigns
- * its media keys into absolute URLs (admin-report-service.presignMedia over the Storage seam). If
- * moderation media ever needs to render the same way, presign here too rather than relying on the
- * dashboard rewrite.
- */
 const MEDIA_URL_PREFIX = "/media/"
 
-/**
- * The moderation_items column list, identical across the list SELECT and the approve/remove/appeal/
- * resolveItem RETURNING clauses (a bare column list, valid in both positions). `"similar"` is quoted
- * because it is a reserved-ish identifier. Centralized so the projection cannot drift between the read
- * and the four write paths.
- */
 function itemColumns(sql: Queryable): SqlFragment {
   return sql`
     id, kind, subject_type, subject_id, flag, reason, category, place, priority,
@@ -71,7 +25,6 @@ function itemColumns(sql: Queryable): SqlFragment {
   `
 }
 
-/** A moderation_items row (snake_case columns) as read from Postgres. */
 interface ModerationItemRow {
   id: string
   kind: ModerationItemRecord["kind"]
@@ -90,7 +43,6 @@ interface ModerationItemRow {
   created_at: Date
 }
 
-/** A media_assets row joined for a report subject's detail. */
 interface MediaRow {
   id: string
   kind: "image" | "video"
@@ -98,7 +50,6 @@ interface MediaRow {
   thumb_key: string | null
 }
 
-/** Coerce a jsonb signals array into the typed shape, dropping malformed entries. */
 function parseSignals(raw: unknown): ModerationItemRecord["signals"] {
   if (!Array.isArray(raw)) return []
   const out: ModerationItemRecord["signals"] = []
@@ -118,7 +69,6 @@ function parseSignals(raw: unknown): ModerationItemRecord["signals"] {
   return out
 }
 
-/** Coerce a jsonb similar array into the typed shape, dropping malformed entries. */
 function parseSimilar(raw: unknown): ModerationItemRecord["similar"] {
   if (!Array.isArray(raw)) return []
   const out: ModerationItemRecord["similar"] = []
@@ -133,11 +83,6 @@ function parseSimilar(raw: unknown): ModerationItemRecord["similar"] {
   return out
 }
 
-/**
- * Parse the user-context snapshot + the row-shaping carry fields out of the item's `meta` jsonb. The
- * producer records `{ reporter, desc, user:{...} }` on meta; reporter/desc are read back for the row +
- * detail, and `user` is the priors/device snapshot. Missing/malformed pieces degrade to null.
- */
 function parseMeta(raw: unknown): {
   reporter: string | null
   desc: string | null
@@ -163,17 +108,16 @@ function parseMeta(raw: unknown): {
   return { reporter, desc, user }
 }
 
-/** The 6 canonical categories, used to narrow the free-text category column to the typed union. */
 const CATEGORY_VALUES: readonly string[] = [
   "trash",
   "recycling",
   "graffiti",
   "hazard",
+  "encampment",
   "water",
   "other",
 ]
 
-/** Project a row (+ its media) into the service record. */
 function toRecord(row: ModerationItemRow, media: ModerationMediaRecord[]): ModerationItemRecord {
   const meta = parseMeta(row.meta)
   const category =
@@ -202,7 +146,6 @@ function toRecord(row: ModerationItemRow, media: ModerationMediaRecord[]): Moder
   }
 }
 
-/** Load the held media references for a report subject (decoded from media_assets). */
 async function loadMedia(
   sql: Queryable,
   subjectType: string,
@@ -231,7 +174,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       const limit = clampLimit(args.limit)
       const anchor = decodeCursor(args.cursor, true)
 
-      // Facet: a kind narrows kind; "high" narrows priority; "all" no extra filter.
       const facet =
         args.filter === "high"
           ? sql`AND priority = 'high'`
@@ -249,7 +191,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             )`
             })()
           : sql``
-      // Keyset over (created_at DESC, id DESC): rows strictly before the anchor.
       const keyset = anchor
         ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
         : sql``
@@ -267,7 +208,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
 
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
-      // The list rows do not render media (only the detail does), so no media join per row.
       const records = page.map((r) => toRecord(r, []))
       const last = page[page.length - 1]
       const nextCursor = hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
@@ -294,9 +234,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "approved", input.actorId)
         if (!resolved) return null
-        // Underlying effect: publish the held report subject (only when still held). Gate the timeline
-        // 'published' row on the UPDATE actually matching a held row (RETURNING id) so a report not
-        // published by THIS action (already-published / soft-deleted) gets no misleading history entry.
         if (resolved.subject_type === "report") {
           const published = await tx<{ id: string }[]>`
             UPDATE reports
@@ -333,22 +270,16 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "removed", input.actorId)
         if (!resolved) return null
-        // Underlying effect: reject + soft-delete the report subject. Gate the 'rejected' timeline row on
-        // the UPDATE matching a not-yet-deleted row (RETURNING id) so an already-removed report does not
-        // get a second misleading 'rejected' history entry from this no-op.
-        if (resolved.subject_type === "report") {
-          const rejected = await tx<{ id: string }[]>`
-            UPDATE reports
-            SET status = 'rejected', deleted_at = COALESCE(deleted_at, now())
-            WHERE id = ${resolved.subject_id} AND deleted_at IS NULL
-            RETURNING id
+        const removed = await tombstoneSubject(tx, resolved.subject_type, resolved.subject_id)
+        if (removed && resolved.subject_type === "report") {
+          await tx`
+            INSERT INTO report_timeline (report_id, status, note, actor_id)
+            VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? "Removed in moderation"}, ${input.actorId})
           `
-          if (rejected.length > 0) {
-            await tx`
-              INSERT INTO report_timeline (report_id, status, note, actor_id)
-              VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? "Removed in moderation"}, ${input.actorId})
-            `
-          }
+        }
+        if (removed) {
+          const authorId = await resolveSubjectAuthor(tx, resolved.subject_type, resolved.subject_id)
+          if (authorId != null) await incrementUserModeration(tx, authorId)
         }
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -372,7 +303,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "held", input.actorId)
         if (!resolved) return null
-        // Hold extends the hold: the report stays held (no publish/reject), the item leaves the queue.
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "moderation.held",
@@ -393,7 +323,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       input: { decision: "uphold" | "overturn"; actorId: string | null; note: string | null },
     ): Promise<ModerationItemRecord | null> {
       return sql.begin(async (tx) => {
-        // Only an OPEN appeal-kind item resolves.
         const rows = (await tx`
           UPDATE moderation_items
           SET status = 'approved', resolved_at = now(), resolved_by = ${input.actorId}
@@ -402,8 +331,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         `) as unknown as ModerationItemRow[]
         const resolved = rows[0]
         if (!resolved) return null
-        // overturn lifts the suspension by resolving the open abuse_flag for the chat subject; uphold
-        // leaves the suspension in place.
         if (input.decision === "overturn") {
           await tx`
             UPDATE abuse_flags
@@ -439,9 +366,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
     },
 
     async backfillFromHeldReports(): Promise<number> {
-      // One item per currently-held report (status 'held', not deleted) lacking an OPEN item. The INSERT
-      // ... SELECT is a single statement so a concurrent backfill cannot double-insert (the NOT EXISTS
-      // sees committed open items; the partial-unique-free table tolerates the rare race harmlessly).
       const rows = await sql<{ count: string }[]>`
         WITH inserted AS (
           INSERT INTO moderation_items (
@@ -456,11 +380,24 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
                  THEN 'image' ELSE 'pattern' END,
             'report', r.id, 'Held report', 'Awaiting automated review', r.category,
             j.name, 'med', 'Hidden pending review', '[]'::jsonb, '[]'::jsonb, 'open',
-            jsonb_build_object('reporter', COALESCE(u.display_name, 'Anonymous'), 'desc', COALESCE(r.description, '')),
+            jsonb_build_object(
+              'reporter', COALESCE(u.display_name, 'Anonymous'),
+              'desc', COALESCE(r.description, ''),
+              'user', CASE WHEN u.id IS NOT NULL THEN jsonb_build_object(
+                'handle', COALESCE(u.handle::text, ''),
+                'name', COALESCE(u.display_name, 'Unknown'),
+                'joined', COALESCE(to_char(u.created_at, 'YYYY-MM-DD'), ''),
+                'priorReports', (SELECT COUNT(*) FROM reports rr WHERE rr.reporter_user_id = u.id),
+                'priorRemovals', COALESCE(um.removals, 0),
+                'strikes', COALESCE(um.strikes, 0),
+                'device', COALESCE(um.last_device, '')
+              ) ELSE NULL END
+            ),
             r.created_at
           FROM reports r
           LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
           LEFT JOIN users u ON u.id = r.reporter_user_id
+          LEFT JOIN user_moderation um ON um.user_id = u.id
           WHERE r.status = 'held'
             AND r.deleted_at IS NULL
             AND NOT EXISTS (
@@ -476,10 +413,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
   }
 }
 
-/**
- * Resolve an OPEN moderation_items row to `status` (setting resolved_at/by) and RETURN the row, or null
- * when it was not open / not found. Shared by approve/remove/hold (decideAppeal has its own kind guard).
- */
 async function resolveItem(
   tx: Queryable,
   id: string,
@@ -495,16 +428,162 @@ async function resolveItem(
   return rows[0] ?? null
 }
 
-/**
- * Standalone moderation-item INSERT. Exported as the DOCUMENTED producer integration point for the
- * media-worker hold path (see services/media-worker): it has NO service / DI / container dependency, so
- * a producer that already holds a `Queryable` (the worker's repo SQL tag, or an open transaction) can
- * enqueue an item with one call. The API-side producers (anon hold-then-publish, abuse detection) and
- * the in-tx createItem reuse it. `meta` carries the reporter/desc + optional user snapshot for the
- * detail; signals/similar default to empty arrays.
- *
- * Returns the new item id.
- */
+type SubjectType = ModerationItemRecord["subjectType"]
+
+async function resolveSubjectAuthor(
+  tx: Queryable,
+  subjectType: SubjectType,
+  subjectId: string,
+): Promise<string | null> {
+  switch (subjectType) {
+    case "profile":
+    case "user":
+      return subjectId
+    case "report": {
+      const r = await tx<{ reporter_user_id: string | null }[]>`
+        SELECT reporter_user_id FROM reports WHERE id = ${subjectId} LIMIT 1`
+      return r[0]?.reporter_user_id ?? null
+    }
+    case "comment": {
+      const r = await tx<{ author_user_id: string | null }[]>`
+        SELECT author_user_id FROM report_discussion_messages WHERE id = ${subjectId} LIMIT 1`
+      return r[0]?.author_user_id ?? null
+    }
+    case "chat": {
+      const r = await tx<{ sender_id: string | null }[]>`
+        SELECT sender_id FROM chat_messages WHERE id = ${subjectId} LIMIT 1`
+      return r[0]?.sender_id ?? null
+    }
+    case "message": {
+      const r = await tx<{ sender_id: string | null }[]>`
+        SELECT sender_id FROM dm_messages WHERE id = ${subjectId} LIMIT 1`
+      return r[0]?.sender_id ?? null
+    }
+    case "event": {
+      const r = await tx<{ organizer_user_id: string | null }[]>`
+        SELECT organizer_user_id FROM cleanups WHERE id = ${subjectId} LIMIT 1`
+      return r[0]?.organizer_user_id ?? null
+    }
+    case "photo": {
+      const r = await tx<{ reporter_user_id: string | null; author_user_id: string | null }[]>`
+        SELECT rep.reporter_user_id, d.author_user_id
+        FROM media_assets m
+        LEFT JOIN reports rep ON rep.id = m.report_id
+        LEFT JOIN report_discussion_messages d ON d.id = m.discussion_message_id
+        WHERE m.id = ${subjectId} LIMIT 1`
+      return r[0]?.reporter_user_id ?? r[0]?.author_user_id ?? null
+    }
+    default:
+      return null
+  }
+}
+
+async function buildUserSnapshot(
+  tx: Queryable,
+  userId: string,
+): Promise<ModerationUserSnapshot | null> {
+  const rows = await tx<
+    {
+      handle: string | null
+      name: string | null
+      joined: string | null
+      strikes: number
+      removals: number
+      device: string | null
+      prior_reports: string
+    }[]
+  >`
+    SELECT
+      u.handle AS handle,
+      u.display_name AS name,
+      to_char(u.created_at, 'YYYY-MM-DD') AS joined,
+      COALESCE(um.strikes, 0) AS strikes,
+      COALESCE(um.removals, 0) AS removals,
+      um.last_device AS device,
+      (SELECT COUNT(*)::text FROM reports rr WHERE rr.reporter_user_id = u.id) AS prior_reports
+    FROM users u
+    LEFT JOIN user_moderation um ON um.user_id = u.id
+    WHERE u.id = ${userId}
+    LIMIT 1`
+  const row = rows[0]
+  if (!row) return null
+  return {
+    handle: row.handle ?? "",
+    name: row.name ?? "Unknown",
+    joined: row.joined ?? "",
+    priorReports: Number.parseInt(row.prior_reports ?? "0", 10) || 0,
+    priorRemovals: row.removals ?? 0,
+    strikes: row.strikes ?? 0,
+    device: row.device ?? "",
+  }
+}
+
+async function tombstoneSubject(
+  tx: Queryable,
+  subjectType: SubjectType,
+  subjectId: string,
+): Promise<boolean> {
+  switch (subjectType) {
+    case "report": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE reports SET status = 'rejected', deleted_at = COALESCE(deleted_at, now())
+        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
+      return rows.length > 0
+    }
+    case "comment": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE report_discussion_messages SET deleted_at = now()
+        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
+      return rows.length > 0
+    }
+    case "chat": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE chat_messages SET deleted_at = now()
+        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
+      return rows.length > 0
+    }
+    case "message": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE dm_messages SET deleted_at = now()
+        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
+      return rows.length > 0
+    }
+    case "photo": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE media_assets SET status = 'rejected'
+        WHERE id = ${subjectId} AND status <> 'rejected' RETURNING id`
+      return rows.length > 0
+    }
+    case "event": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE cleanups SET status = 'cancelled'
+        WHERE id = ${subjectId} AND status <> 'cancelled' RETURNING id`
+      return rows.length > 0
+    }
+    case "profile":
+    case "user": {
+      const rows = await tx<{ user_id: string }[]>`
+        INSERT INTO user_moderation (user_id, account_status, flagged, updated_at)
+        VALUES (${subjectId}, 'suspended', true, now())
+        ON CONFLICT (user_id) DO UPDATE SET account_status = 'suspended', flagged = true, updated_at = now()
+        RETURNING user_id`
+      return rows.length > 0
+    }
+    default:
+      return false
+  }
+}
+
+async function incrementUserModeration(tx: Queryable, userId: string): Promise<void> {
+  await tx`
+    INSERT INTO user_moderation (user_id, strikes, removals, updated_at)
+    VALUES (${userId}, 1, 1, now())
+    ON CONFLICT (user_id) DO UPDATE SET
+      strikes = user_moderation.strikes + 1,
+      removals = user_moderation.removals + 1,
+      updated_at = now()`
+}
+
 export async function insertModerationItem(
   tx: Queryable,
   input: CreateModerationItemInput,
@@ -512,7 +591,12 @@ export async function insertModerationItem(
   const meta: Record<string, unknown> = {}
   if (input.reporter != null) meta.reporter = input.reporter
   if (input.desc != null) meta.desc = input.desc
-  if (input.user != null) meta.user = input.user
+  let userSnapshot = input.user ?? null
+  if (userSnapshot == null) {
+    const authorId = await resolveSubjectAuthor(tx, input.subjectType, input.subjectId)
+    if (authorId != null) userSnapshot = await buildUserSnapshot(tx, authorId)
+  }
+  if (userSnapshot != null) meta.user = userSnapshot
 
   const rows = await tx<{ id: string }[]>`
     INSERT INTO moderation_items (

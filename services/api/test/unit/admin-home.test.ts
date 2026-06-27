@@ -8,13 +8,6 @@ import {
   type HomeService,
 } from "../../src/services/admin/home-service.js"
 
-/**
- * Offline unit tests for the admin home / dashboard service over the in-memory repos (no DB, no Docker).
- * Cover: the per-section summary assembly, the analytics-mini block (reusing the analytics repo so the
- * home digest matches the full analytics page), the per-card RESILIENCE (a failing sub-aggregate degrades
- * only that card, never the whole summary), and the live-map pin projection (report vs event, attendees
- * omitted for reports). The raw SQL aggregates are Docker-gated (test/integration/admin-home.test.ts).
- */
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 
@@ -56,7 +49,7 @@ describe("home summary assembly", () => {
     repo.discoveryValue = { queue: 4, reportsWaiting: 11, overSla: 2 }
     repo.reportsValue = { flagged: 3, inProgress: 5, completed: 20 }
     repo.eventsValue = { upcoming: 6, live: 1, attending: 42 }
-    repo.mailValue = { unread: 7, needsAction: 2, bounceRate: 0.03 }
+    repo.mailValue = { unread: 7, needsAction: 2 }
     repo.usersValue = { flagged: 1, highRisk: 2, suspended: 1 }
     repo.livePinsValue = 9
     analytics.kpisValue = {
@@ -73,10 +66,9 @@ describe("home summary assembly", () => {
     expect(res.discovery).toEqual({ queue: 4, reportsWaiting: 11, overSla: 2 })
     expect(res.reports).toEqual({ flagged: 3, inProgress: 5, completed: 20 })
     expect(res.events).toEqual({ upcoming: 6, live: 1, attending: 42 })
-    expect(res.mail).toEqual({ unread: 7, needsAction: 2, bounceRate: 0.03 })
+    expect(res.mail).toEqual({ unread: 7, needsAction: 2 })
     expect(res.users).toEqual({ flagged: 1, highRisk: 2, suspended: 1 })
     expect(res.livePins24h).toBe(9)
-    // Analytics mini reuses the analytics repo aggregates.
     expect(res.analytics.pinsThisMonth).toBe(120)
     expect(res.analytics.resolvedPct).toBe(50)
     expect(res.analytics.coveragePct).toBe(75)
@@ -90,20 +82,16 @@ describe("home summary assembly", () => {
   it("degrades ONE failing section to zeros without sinking the summary", async () => {
     const { repo, svc } = harness()
     repo.reportsValue = { flagged: 3, inProgress: 5, completed: 20 }
-    // The mail sub-aggregate fails.
     repo.mailError = new Error("mail db down")
 
     const res = await svc.summary()
-    // Mail degraded to the neutral zero block...
-    expect(res.mail).toEqual({ unread: 0, needsAction: 0, bounceRate: 0 })
-    // ...while the other sections are intact.
+    expect(res.mail).toEqual({ unread: 0, needsAction: 0 })
     expect(res.reports).toEqual({ flagged: 3, inProgress: 5, completed: 20 })
   })
 
   it("degrades the analytics-mini to zeros when the analytics repo fails", async () => {
     const { repo, analytics, svc } = harness()
     repo.discoveryValue = { queue: 2, reportsWaiting: 3, overSla: 0 }
-    // Make every analytics getter throw.
     analytics.kpis = async () => {
       throw new Error("kpis down")
     }
@@ -138,7 +126,6 @@ describe("home map projection", () => {
       eventKind: null,
     })
     expect(reportPin).not.toHaveProperty("attendees")
-    // A report pin never carries an eventKind.
     expect(reportPin).not.toHaveProperty("eventKind")
     expect(reportPin.category).toBe("trash")
     expect(reportPin.flagged).toBe(true)
@@ -158,7 +145,6 @@ describe("home map projection", () => {
     })
     expect(eventPin.attendees).toBe(12)
     expect(eventPin.category).toBeNull()
-    // An event pin diverges by kind so the live map can render distinct markers.
     expect(eventPin.eventKind).toBe("cleanup")
   })
 
@@ -196,7 +182,6 @@ describe("home map projection", () => {
     expect(res.pins).toHaveLength(2)
     expect(res.pins[0]?.refType).toBe("report")
     expect(res.pins[1]?.attendees).toBe(30)
-    // The event pin's kind flows through so the live map can diverge markers.
     expect(res.pins[1]?.eventKind).toBe("other_volunteer")
   })
 })

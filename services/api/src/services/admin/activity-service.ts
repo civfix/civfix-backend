@@ -1,64 +1,27 @@
-/**
- * Admin activity-feed service (Phase 2): the "Recent activity" feed (#6, enumeration 2.A.7 / 4.9).
- *
- * The feed is a UNION of two kinds of source:
- *   1. audit_log entries (operator / gov actions: contacts saved, status changed, moderation, gov
- *      approve, ...), and
- *   2. recent DOMAIN events that are NOT audit_log actions (a citizen dropping a pin, a cleanup being
- *      planned, an outbound mail bouncing), which the design explicitly calls out as part of the feed
- *      (4.9: "the feed is a UNION of audit_log + recent activity").
- *
- * The repo (ActivityRepository) returns the merged, newest-first, limited list of NORMALIZED source
- * records; the service maps each to the wire ActivityItemDTO ({ kind, who, what, where, ts, hue }). The
- * source -> { kind, what, hue } classification is a PURE helper (classifyActivity) so it is unit-testable
- * with seeded in-memory data; the hue is cosmetic (the design tints the leading icon).
- *
- * This feed is LIMIT-based (a recent window), not deep cursor pagination: the design renders "first 7"
- * with an "All" affordance that opens the audit view (#67). The shared response is still the standard
- * page envelope ({ items, nextCursor }); nextCursor is always null here (the feed is a capped recent
- * window, the audit view is the paginated drill-down).
- */
 
 import { relativeAgo } from "@civfix/shared"
 import type { ActivityItemDTO, ActivityKind, ActivityListResponse } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 
-/** The kind of underlying source a feed record came from (drives the classification). */
 export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"
 
-/**
- * A normalized activity source record (one merged scan across audit_log + the recent domain tables). The
- * service classifies it into an ActivityItemDTO. `who` is the best available human label (the audit
- * actor's name, a report reporter, a cleanup organizer, or "" when unknown); `where` the best place
- * label; `action` / `eventType` carry the audit action / the mail event type for classification.
- */
 export interface ActivitySourceRecord {
   source: ActivitySource
   id: string
   ts: Date
   who: string
   where: string
-  /** audit_log.action (only for source 'audit'). */
   action?: string | null
-  /** mail_events.type (only for source 'mail_event'). */
   eventType?: string | null
-  /** A short subject label (report title/category, cleanup title, audit target) used in `what`. */
   subject?: string | null
 }
 
-/** How many recent items the feed returns by default (the design shows ~7). */
 export const ACTIVITY_DEFAULT_LIMIT = 25
 
-/**
- * Persistence seam for the activity feed. The Drizzle impl runs ONE union query over audit_log + reports +
- * cleanups + mail_events, newest-first, limited; the offline tests pass an in-memory impl.
- */
 export interface ActivityRepository {
-  /** Return the merged, newest-first, limited list of source records (across all sources). */
   recent(limit: number): Promise<ActivitySourceRecord[]>
 }
 
-/** A cosmetic hue per kind (the design tints the leading icon). Stable hex-ish tokens. */
 const KIND_HUE: Record<ActivityKind, string> = {
   pin: "#38bdf8",
   claim: "#a78bfa",
@@ -70,24 +33,14 @@ const KIND_HUE: Record<ActivityKind, string> = {
   cleanup_plan: "#facc15",
 }
 
-/**
- * Map an audit_log action to a feed kind:
- *   - gov_claim.*           -> gov_onboard
- *   - discovery.*           -> discovery_done
- *   - outreach.* / mail.*   -> outreach_open (an outbound mail touch)
- *   - everything else       -> mod_action
- */
 export function classifyAuditAction(action: string): ActivityKind {
   if (action.startsWith("gov_claim.")) return "gov_onboard"
   if (action.startsWith("discovery.")) return "discovery_done"
   if (action.startsWith("outreach.")) return "outreach_open"
   if (action.startsWith("mail.")) return "outreach_open"
-  // Everything else (moderation.* / report.* / event.* / user.* / unrecognized) is a generic operator
-  // action, so the feed never drops a real audited action.
   return "mod_action"
 }
 
-/** A short human verb phrase for an audit action (the design's `what`). */
 export function describeAuditAction(action: string): string {
   const map: Record<string, string> = {
     "operator.login": "Operator signed in",
@@ -128,13 +81,6 @@ export function describeAuditAction(action: string): string {
   return map[action] ?? action
 }
 
-/**
- * Classify a normalized source record into the feed DTO. Pure (clock-injected for the relative `ts`).
- *   - report      -> kind 'pin' ("New <category> report")
- *   - cleanup     -> kind 'cleanup_plan' ("New cleanup planned")
- *   - mail_event  -> 'outreach_bounce' (bounced/complained) | 'outreach_open' (opened) | 'outreach_open'
- *   - audit       -> classifyAuditAction + describeAuditAction
- */
 export function classifyActivity(record: ActivitySourceRecord, ref: Date): ActivityItemDTO {
   const ts = relativeAgo(record.ts, ref)
   if (record.source === "report") {
@@ -147,21 +93,22 @@ export function classifyActivity(record: ActivitySourceRecord, ref: Date): Activ
   }
   if (record.source === "mail_event") {
     const type = record.eventType ?? ""
-    if (type === "bounced" || type === "complained") {
+    if (type === "bounced") {
       return item("outreach_bounce", record.who || "Mail", "Outreach bounced", record.where, ts)
     }
-    if (type === "opened") {
-      return item("outreach_open", record.who || "Mail", "Outreach opened", record.where, ts)
+    if (type === "failed") {
+      return item("outreach_bounce", record.who || "Mail", "Outreach failed", record.where, ts)
     }
-    return item("outreach_open", record.who || "Mail", "Outreach delivered", record.where, ts)
+    if (type === "delivered") {
+      return item("outreach_open", record.who || "Mail", "City replied", record.where, ts)
+    }
+    return item("outreach_open", record.who || "Mail", "Outreach sent", record.where, ts)
   }
-  // audit
   const action = record.action ?? ""
   const kind = classifyAuditAction(action)
   return item(kind, record.who || "Operator", describeAuditAction(action), record.where, ts)
 }
 
-/** Build a strict ActivityItemDTO with the kind's hue. */
 function item(
   kind: ActivityKind,
   who: string,
@@ -174,7 +121,6 @@ function item(
 
 export interface ActivityServiceDeps {
   repo: ActivityRepository
-  /** Injectable clock (defaults to Date.now) so the relative `ts` labels are deterministic. */
   now?: () => Date
 }
 

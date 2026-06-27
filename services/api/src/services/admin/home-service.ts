@@ -1,11 +1,3 @@
-/**
- * Admin home / dashboard service (Phase 2): the dashboard aggregate (#4) + the live-map feed (#5).
- *
- * RESILIENCE (each card can fail independently): every section is computed inside its own guard
- * (safeSection). A failing sub-aggregate degrades ONLY that section to a neutral zero block; it never 500s
- * the whole summary. The analytics mini reuses the AnalyticsRepository (so the home digest and the full
- * analytics page agree); each of its inputs is likewise guarded.
- */
 
 import type {
   AnalyticsCoverageResponse,
@@ -33,7 +25,7 @@ export * from "./home-types.js"
 const ZERO_DISCOVERY: DiscoverySectionCounts = { queue: 0, reportsWaiting: 0, overSla: 0 }
 const ZERO_REPORTS: ReportsSectionCounts = { flagged: 0, inProgress: 0, completed: 0 }
 const ZERO_EVENTS: EventsSectionCounts = { upcoming: 0, live: 0, attending: 0 }
-const ZERO_MAIL: MailSectionCounts = { unread: 0, needsAction: 0, bounceRate: 0 }
+const ZERO_MAIL: MailSectionCounts = { unread: 0, needsAction: 0 }
 const ZERO_USERS: UsersSectionCounts = { flagged: 0, highRisk: 0, suspended: 0 }
 
 interface AnalyticsMini {
@@ -56,10 +48,6 @@ const ZERO_ANALYTICS_MINI: AnalyticsMini = {
   pinsByWeek: new Array<number>(PINS_BY_WEEK_WEEKS).fill(0),
 }
 
-/**
- * Run a section producer, returning its result or the fallback if it throws. The reason is reported via
- * `onError` so a failed card is observable (logged) without sinking the whole summary.
- */
 export async function safeSection<T>(
   produce: () => Promise<T>,
   fallback: T,
@@ -84,22 +72,17 @@ export function toMapPin(record: HomeMapPinRecord): HomeMapPin {
     flagged: record.flagged,
     title: record.title,
     place: record.place,
-    // eventKind is meaningful only for event pins; null/omitted for report pins.
     ...(record.eventKind !== null ? { eventKind: record.eventKind } : {}),
   }
   return record.attendees !== null ? { ...base, attendees: record.attendees } : base
 }
 
-/** Default number of recent pins the live-map feed returns. */
 export const HOME_MAP_PIN_LIMIT = 200
 
 export interface HomeServiceDeps {
   repo: HomeRepository
-  /** Reused for the analytics-mini block so the home digest matches the full analytics page. */
   analytics: AnalyticsRepository
-  /** Injectable clock (defaults to Date.now) so the pins-spark window is deterministic. */
   now?: () => Date
-  /** Optional error sink for a failed sub-aggregate (defaults to a no-op; the route can pass a logger). */
   onSectionError?: (section: string, err: unknown) => void
 }
 
@@ -164,7 +147,6 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
   }
 }
 
-/** Resolved ratio (0-1) -> percentage (0-100) with one decimal, reusing the analytics pct rounding. */
 function round1Pct(ratio: number): number {
   return pct(ratio * 100, 100)
 }

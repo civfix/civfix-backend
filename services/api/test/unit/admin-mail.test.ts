@@ -9,14 +9,6 @@ import {
   type MailService,
 } from "../../src/services/admin/mail-service.js"
 
-/**
- * Offline unit tests for the admin mail SERVICE over the in-memory MailRepository + a FakeMailer-backed
- * OutboundMailService (no DB, no SMTP, no Docker). They prove the orchestration the mail routes call:
- * list/getThread read projections, compose/reply/resend SEND via the OutboundMailService (deliver +
- * record), reply/resend recipient resolution (+ the 422 when no correspondent), mark-read + set-status
- * lifecycle writes (+ their 404s), and the stats passthrough. The Drizzle repo is covered by the
- * Docker-gated integration scaffold; the pure recipient-resolution helpers are exercised directly too.
- */
 
 const FROM_OUTREACH = "outreach@civfix.org"
 
@@ -47,7 +39,6 @@ describe("mail-service recipient-resolution helpers", () => {
       { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [] },
     ]
     expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
-    // Case-insensitive match against the outreach From -> still resolves the inbound party.
     expect(resolveCorrespondent(msgs, "OUTREACH@CIVFIX.ORG")).toBe("clerk@city.gov")
   })
 
@@ -88,7 +79,6 @@ describe("mail-service: list + getThread", () => {
     expect((await svc.list({ dir: "in" })).items.map((i) => i.id)).toEqual([sf.id])
     expect((await svc.list({ geoid: "0644000" })).items.map((i) => i.id)).toEqual([la.id])
     expect((await svc.list({ q: "graffiti" })).items.map((i) => i.id)).toEqual([sf.id])
-    // sf is unread (inbound) -> attn surfaces it.
     expect((await svc.list({ filter: "attn" })).items.map((i) => i.id)).toEqual([sf.id])
   })
 })
@@ -106,12 +96,9 @@ describe("mail-service: compose", () => {
     expect(dto?.messages[0]?.dir).toBe("out")
     expect(mailer.sent).toHaveLength(1)
     expect(mailer.sent[0]?.to).toBe("mayor@city.gov")
-    // Delivery now goes through the first-class sendOutbound envelope (no template), From the
-    // per-thread reply- address (no Reply-To).
     expect(mailer.sent[0]?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
     expect(mailer.sent[0]?.outbound?.replyTo).toBeUndefined()
     expect(repo.events[0]?.type).toBe("sent")
-    // H4: the mail.sent audit was written in-tx with the message insert (recorded on the audit sink).
     expect(repo.audits.at(-1)).toMatchObject({
       actorId: "op-1",
       action: "mail.sent",
@@ -134,15 +121,11 @@ describe("mail-service: reply", () => {
     expect(dto?.messages).toHaveLength(2)
     expect(dto?.messages[1]?.dir).toBe("out")
     expect(dto?.messages[1]?.body).toBe("Here is the answer.")
-    // Delivered to the inbound correspondent, From the per-thread reply- address (no Reply-To).
     expect(mailer.sent[0]?.to).toBe("clerk@city.gov")
     expect(mailer.sent[0]?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
-    // H4: the mail.replied audit was written in-tx with the OUT message insert.
     expect(repo.audits.at(-1)).toMatchObject({ action: "mail.replied", target: `mail:${t.id}` })
   })
 
-  // M1: a composed (outbound-only) thread whose OUT message carries a to_addr CAN be replied to - the
-  // recipient is resolved from that to_addr even though no inbound reply has arrived yet.
   it("M1: replies to a composed outbound-only thread using the stored OUT to_addr", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Intro" })
@@ -163,7 +146,6 @@ describe("mail-service: reply", () => {
     await expect(svc.reply("missing", { body: "b" }, "op-1")).rejects.toMatchObject({
       httpStatus: 404,
     })
-    // An outbound-only thread whose OUT message has NO to_addr cannot resolve a recipient -> 422.
     const t = await repo.createThread({ subject: "S" })
     await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "hi" })
     await expect(svc.reply(t.id, { body: "b" }, "op-1")).rejects.toMatchObject({ httpStatus: 422 })
@@ -184,7 +166,6 @@ describe("mail-service: markRead + setStatus", () => {
     const t = await repo.createThread({ subject: "S" })
     await svc.setStatus(t.id, "needs_action", "op-1")
     expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
-    // H4: the mail.status_changed audit was written in-tx with the status UPDATE.
     expect(repo.audits.at(-1)).toMatchObject({
       action: "mail.status_changed",
       target: `mail:${t.id}`,
@@ -217,11 +198,9 @@ describe("mail-service: resend", () => {
     expect(mailer.sent).toHaveLength(1)
     expect(mailer.sent[0]?.to).toBe("clerk@city.gov")
     expect(repo.events[0]?.type).toBe("sent")
-    // H4: the mail.resent audit was written in-tx with the OUT message insert.
     expect(repo.audits.at(-1)).toMatchObject({ action: "mail.resent", target: `mail:${t.id}` })
   })
 
-  // M1: a composed (outbound-only) thread with a stored OUT to_addr can be resent without an inbound reply.
   it("M1: resends a composed outbound-only thread using the stored OUT to_addr", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Intro" })
@@ -239,7 +218,6 @@ describe("mail-service: resend", () => {
   it("404s an unknown thread and 422s a thread with no outbound message to resend", async () => {
     const { repo, svc } = harness()
     await expect(svc.resend("missing", "op-1")).rejects.toMatchObject({ httpStatus: 404 })
-    // Inbound-only thread: no outbound to resend -> 422.
     const t = await repo.createThread({ subject: "S" })
     await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
     await expect(svc.resend(t.id, "op-1")).rejects.toMatchObject({ httpStatus: 422 })
@@ -247,14 +225,15 @@ describe("mail-service: resend", () => {
 })
 
 describe("mail-service: stats", () => {
-  it("passes through the repository's rolling-window deliverability stats", async () => {
+  it("passes through the repository's rolling-window measured stats", async () => {
     const { repo, svc } = harness()
     repo.now = new Date("2026-03-10T00:00:00.000Z")
     await repo.createThread({ subject: "A", unread: true })
     repo.seedEvent({ type: "sent", createdAt: new Date("2026-03-09T00:00:00.000Z") })
-    repo.seedEvent({ type: "delivered", createdAt: new Date("2026-03-09T00:00:00.000Z") })
+    repo.seedEvent({ type: "bounced", createdAt: new Date("2026-03-09T00:00:00.000Z") })
     const stats = await svc.stats()
-    expect(stats.delivered7d).toBe(1)
+    expect(stats.sent).toBe(1)
+    expect(stats.bounced).toBe(1)
     expect(stats.threads).toBe(1)
     expect(stats.unread).toBe(1)
   })

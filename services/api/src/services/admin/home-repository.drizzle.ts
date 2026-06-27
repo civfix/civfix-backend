@@ -1,17 +1,3 @@
-/**
- * Postgres-backed HomeRepository (Phase 2): the per-section dashboard aggregates (#4) + the live-map feed
- * (#5). Written against the raw postgres-js tag (`Sql`, from container.getDb().sql) like the other admin
- * repos. Each method is one focused query so the home service can guard them independently (a failed card
- * never sinks the summary).
- *
- * Reuse: the mail summary reuses the shared MailRepository.stats7d() (mail-repository.drizzle.ts) for the
- * unread count + bounce rate (the single shared mail data layer), plus a small needs-action count query.
- *
- * Reconciliation (decisions 8): the live-map + events summary map the Phase 1 cleanups.status values
- * (active -> in_progress, done -> completed; upcoming / cancelled unchanged) to the Phase 2 EventStatus
- * the wire DTOs use. "Live" events are in_progress; "attending" sums attendees over non-completed,
- * non-cancelled events.
- */
 
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
@@ -28,26 +14,17 @@ import type {
 } from "./home-types.js"
 import type { EventKind, ReportCategory } from "@civfix/shared"
 
-/** Parse a ::text count to a finite number (0 on NaN/undefined). */
 function num(value: string | null | undefined): number {
   if (value == null) return 0
   const n = Number(value)
   return Number.isFinite(n) ? n : 0
 }
 
-/** Construct the production HomeRepository over the raw postgres-js tag (`container.getDb().sql`). */
 export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
   const mailRepo = makeDrizzleMailRepository(sql)
 
   return {
     async discoverySummary(): Promise<DiscoverySectionCounts> {
-      // A jurisdiction is in the discovery queue when it has waiting reports (open, not yet routed to a
-      // contact). "Waiting" is the SAME canonical predicate the jurisdiction directory uses (status NOT IN
-      // rejected/resolved/acknowledged/in_progress = submitted|held|published): an authed pin is created
-      // `published` (live, awaiting a city contact), so a literal `status = 'submitted'` filter would miss
-      // virtually every real report and report ~0 waiting. We approximate "queue" as distinct jurisdictions
-      // with >=1 waiting report lacking any contact, "reportsWaiting" as the total such reports, "overSla"
-      // as the queue jurisdictions whose oldest waiting report is older than the SLA.
       const rows = await sql<{ queue: string; reports_waiting: string; over_sla: string }[]>`
         WITH waiting AS (
           SELECT r.jurisdiction_geoid AS geoid, r.created_at
@@ -131,8 +108,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async mailSummary(): Promise<MailSectionCounts> {
-      // Reuse the shared mail data layer's rolling stats for unread + bounce rate; one small extra query
-      // for needs-action (threads triaged as needs_action OR bounced).
       const stats = await mailRepo.stats7d()
       const rows = await sql<{ needs_action: string }[]>`
         SELECT COUNT(*)::text AS needs_action
@@ -142,7 +117,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
       return {
         unread: stats.unread,
         needsAction: num(rows[0]?.needs_action),
-        bounceRate: stats.bounceRate,
       }
     },
 
@@ -175,8 +149,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
 
     async recentPins(limit: number): Promise<HomeMapPinRecord[]> {
       const half = Math.max(1, Math.floor(limit / 2))
-      // Recent public reports: pin per report with category + status + flagged (an open abuse_flag) + the
-      // jurisdiction name as `place`.
       const reportRows = await sql<
         {
           id: string
@@ -207,8 +179,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
         ORDER BY r.created_at DESC NULLS LAST
         LIMIT ${half}
       `
-      // Recent events: pin per cleanup with attendees, status mapped to the EventStatus enum, and the
-      // event_kind so the live map can diverge cleanup vs other_volunteer markers.
       const eventRows = await sql<
         {
           id: string

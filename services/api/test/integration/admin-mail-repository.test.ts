@@ -1,20 +1,3 @@
-/**
- * Mail data-layer integration test (Docker-gated). Exercises the REAL Drizzle/raw-SQL MailRepository
- * (makeDrizzleMailRepository) against a live Postgres container via withPg, which applies the canonical
- * 0007_admin_phase2.sql migration (creating mail_threads/mail_messages/mail_events/outreach_state).
- *
- * Proven here against the real schema + constraints:
- *   - upsertThreadByToken is find-or-create on the UNIQUE thread_token;
- *   - insertMessage writes the jsonb `attachments`, bumps the thread's last_message_at, and (inbound)
- *     sets unread=true, all in one transaction;
- *   - getThread returns the thread + ordered messages mapped to the DTO;
- *   - listThreads pages newest-first with the keyset cursor and applies the dir/attn/geoid/q filters;
- *   - stats7d aggregates the mail_events window into the MailStatsResponse shape;
- *   - getOutreachState / setOutreachState upsert the per-jurisdiction throttle row (FK to jurisdictions).
- *
- * When Docker is unavailable the whole describe block SKIPS (describe.skipIf), so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
- */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -26,12 +9,9 @@ import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()
 
-// A seeded jurisdiction geoid is required for the outreach_state FK + the thread geoid column.
 const GEOID = LA_CITY.geoid
 
 describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
-  // Bind the harness + repo inside beforeAll (NOT the describe body), so that when Docker is unavailable
-  // and the suite is skipped, we never dereference the null harness at collection time.
   let h: PgHarness
   let repo: MailRepository
 
@@ -41,7 +21,6 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
   })
 
   beforeEach(async () => {
-    // Each test starts from an empty mail surface (truncate the four tables; CASCADE handles FKs).
     await h.sql`TRUNCATE mail_events, mail_messages, mail_threads, outreach_state RESTART IDENTITY CASCADE`
   })
 
@@ -126,7 +105,7 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
 
     const page1 = await repo.listThreads({ limit: 2 })
     expect(page1.items).toHaveLength(2)
-    expect(page1.items[0]?.id).toBe(c.id) // newest message
+    expect(page1.items[0]?.id).toBe(c.id)
     expect(page1.nextCursor).not.toBeNull()
     const page2 = await repo.listThreads({ limit: 2, cursor: page1.nextCursor })
     expect(page2.items.map((t) => t.id)).toEqual([a.id])
@@ -149,13 +128,13 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
 
     await repo.recordEvent({ threadId: t.id, type: "sent" })
     await repo.recordEvent({ threadId: t.id, type: "sent" })
-    await repo.recordEvent({ threadId: t.id, type: "delivered" })
+    await repo.recordEvent({ threadId: t.id, type: "failed" })
     await repo.recordEvent({ threadId: t.id, type: "bounced" })
     const stats = await repo.stats7d()
-    expect(stats.delivered7d).toBe(1)
-    expect(stats.bounceRate).toBeCloseTo(0.5, 6)
+    expect(stats.sent).toBe(2)
+    expect(stats.failed).toBe(1)
+    expect(stats.bounced).toBe(1)
     expect(stats.threads).toBe(1)
-    expect(stats.domainHealth).toHaveLength(3)
   })
 
   it("upserts outreach_state for a seeded jurisdiction", async () => {

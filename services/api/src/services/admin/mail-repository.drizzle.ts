@@ -1,16 +1,3 @@
-/**
- * Postgres-backed MailRepository (Phase 2): the production binding of the mail / outreach persistence
- * seam (interface in mail-repository.ts; pure mappers/stats in mail-mappers.ts / mail-stats.ts).
- *
- * Written against the RAW postgres-js tag (`Sql`), NOT the Drizzle query builder, because inserts pass
- * real JS values (a Date, a plain object for the jsonb attachments/meta columns) and rely on postgres.js's
- * default serializers, which Drizzle's client replaces with identity passthroughs (drizzle-orm#3108); and
- * because the message-insert + thread-bump runs as ONE postgres-js transaction (sql.begin) so a thread's
- * last_message_at / unread can never drift from its messages. The factory is `makeDrizzleMailRepository(sql)`
- * where `sql` is `container.getDb().sql`.
- *
- * Keyset pagination reuses services/admin/pagination.ts (the "<iso>|<id>" cursor + clampLimit).
- */
 
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
@@ -28,7 +15,7 @@ import {
   type OutreachRowSelect,
   type ThreadRowSelect,
 } from "./mail-mappers.js"
-import { buildDomainHealth, computeRates } from "./mail-stats.js"
+import { buildMailStats } from "./mail-stats.js"
 import {
   MAIL_STATS_WINDOW_DAYS,
   type CreateThreadInput,
@@ -47,10 +34,6 @@ import {
 } from "./mail-repository.js"
 import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
-// Barrel: external importers (mail.routes, reports.routes, discussion.routes, outreach-jobs,
-// inbound-processor, mail-service, outbound-mail-service, outreach-service, home-repository, the contacts
-// memory repo, and mail-repository.memory) imported these from this module before the split — keep them
-// resolvable here.
 export * from "./mail-repository.js"
 export {
   anchorOf,
@@ -63,15 +46,11 @@ export {
   toThreadListItem,
   toThreadRecord,
 } from "./mail-mappers.js"
-export { buildDomainHealth, computeRates } from "./mail-stats.js"
+export { buildMailStats } from "./mail-stats.js"
 
-/** Construct the production MailRepository over the raw postgres-js tag (`container.getDb().sql`). */
 export function makeDrizzleMailRepository(sql: Sql): MailRepository {
   return {
     async upsertThreadByToken(token: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-      // Find-or-create keyed on the UNIQUE thread_token. ON CONFLICT DO NOTHING + a follow-up read keeps
-      // it a single round trip on the create path and correct under a concurrent create (the loser reads
-      // the winner's row).
       const status = init.status ?? "sent"
       const unread = init.unread ?? false
       const inserted = await sql<ThreadRowSelect[]>`
@@ -145,8 +124,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       cleanupId: string,
       init: ThreadInit = {},
     ): Promise<MailThreadRecord> {
-      // The newest per-event thread (cleanup_id matches), else a freshly created one linked to the cleanup
-      // with a minted token. Mirrors findOrCreateReportThread (which threads on report_id).
       const existing = await sql<ThreadRowSelect[]>`
         SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
@@ -172,8 +149,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-      // The newest digest thread for the jurisdiction (report_id IS NULL so per-report threads are not
-      // reused). Replaces the old `geo-{geoid}` token scheme.
       const existing = await sql<ThreadRowSelect[]>`
         SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
@@ -215,9 +190,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async insertMessage(input: InsertMessageInput): Promise<MailMessageRecord> {
-      // One transaction: insert the message, then bump last_message_at to the new message's created_at
-      // and (for inbound) set unread=true. last_message_at only moves forward (GREATEST) so an
-      // out-of-order insert never rewinds the list ordering.
       const attachments = input.attachments ?? []
       return sql.begin(async (tx) => {
         const inserted = await tx<MessageRowSelect[]>`
@@ -246,8 +218,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
               unread = ${setUnread} OR unread
           WHERE id = ${input.threadId}
         `
-        // H4: write the operator audit (mail.sent/replied/resent) IN this same tx as the message insert,
-        // so "delivered-and-recorded" cannot leave a committed message with no audit row.
         if (input.audit) {
           await writeAudit(tx, {
             actorId: input.audit.actorId,
@@ -267,8 +237,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     async listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
       const limit = clampLimit(input.limit)
       const anchor = decodeCursor(input.cursor, true)
-      // Keyset over COALESCE(last_message_at, created_at) DESC, id DESC so a brand-new thread with no
-      // message still orders by its creation time. The cursor anchor's createdAt is that same key.
       const cursorFilter =
         anchor !== null
           ? sql`AND (COALESCE(t.last_message_at, t.created_at), t.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
@@ -281,8 +249,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         input.filter === "attn"
           ? sql`AND (t.unread = true OR t.status IN ('needs_action', 'bounced'))`
           : sql``
-      // `dir` filters by the latest message's direction. A thread with no messages has no direction and is
-      // excluded from a direction-filtered view.
       const dirFilter = input.dir !== undefined ? sql`AND lm.direction = ${input.dir}` : sql``
       const qFilter =
         input.q !== undefined && input.q.trim().length > 0
@@ -291,7 +257,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
               return sql`AND (t.org ILIKE ${like} ESCAPE '\\' OR t.subject ILIKE ${like} ESCAPE '\\' OR lm.from_addr ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
-      // LATERAL latest-message correlation: one row per thread.
       const rows = await sql<
         (ThreadRowSelect & {
           lm_direction: MailDirection | null
@@ -380,7 +345,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async getLastOutboundRecipient(threadId: string): Promise<string | null> {
-      // M1: the reply/resend target on a thread that has only outbound messages so far.
       const rows = await sql<{ to_addr: string | null }[]>`
         SELECT to_addr
         FROM mail_messages
@@ -395,10 +359,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async messageExists(messageId: string): Promise<boolean> {
-      // Read-then-write idempotency; mail_messages.message_id has only a NON-unique partial index, so a
-      // concurrent webhook+sweep can both pass this check and insert. The catch-all path's real backstop
-      // is the inbound_emails UNIQUE index + ON CONFLICT DO NOTHING; if the threaded path ever needs a
-      // hard guard, add a partial UNIQUE(message_id) WHERE direction='in'.
       const rows = await sql<{ exists: boolean }[]>`
         SELECT EXISTS(SELECT 1 FROM mail_messages WHERE message_id = ${messageId}) AS exists
       `
@@ -431,8 +391,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async recordEvent(input: RecordEventInput): Promise<string> {
-      // mail_events.meta is NOT NULL DEFAULT '{}'; an explicit NULL overrides the default and violates the
-      // constraint, so coalesce a missing meta to an empty object.
       const meta = sql.json((input.meta ?? {}) as Parameters<typeof sql.json>[0])
       const rows = await sql<{ id: string }[]>`
         INSERT INTO mail_events (thread_id, message_id, type, meta)
@@ -451,7 +409,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         WHERE created_at >= now() - make_interval(days => ${MAIL_STATS_WINDOW_DAYS})
         GROUP BY type
       `
-      const counts = { sent: 0, delivered: 0, bounced: 0, complained: 0, opened: 0 }
+      const counts = { sent: 0, bounced: 0, failed: 0 }
       for (const row of eventRows) {
         const n = Number.parseInt(row.n, 10)
         if (row.type in counts) counts[row.type as keyof typeof counts] = Number.isNaN(n) ? 0 : n
@@ -464,20 +422,11 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       `
       const unread = Number.parseInt(mailbox[0]?.unread ?? "0", 10)
       const threads = Number.parseInt(mailbox[0]?.threads ?? "0", 10)
-      const rates = computeRates(counts)
-      return {
-        placement7d: rates.placement7d,
-        delivered7d: counts.delivered,
-        bounceRate: rates.bounceRate,
-        complaintRate: rates.complaintRate,
+      return buildMailStats({
         unread: Number.isNaN(unread) ? 0 : unread,
         threads: Number.isNaN(threads) ? 0 : threads,
-        domainHealth: buildDomainHealth("reply.civfix.org", {
-          delivered: counts.delivered,
-          bounced: counts.bounced,
-          complained: counts.complained,
-        }),
-      }
+        counts,
+      })
     },
 
     async getOutreachState(geoid: string): Promise<OutreachStateRecord | null> {
@@ -491,10 +440,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async setOutreachState(geoid: string, patch: OutreachStatePatch): Promise<OutreachStateRecord> {
-      // Upsert on the geoid PK. Both the insert and the conflict-update COALESCE the patch values so an
-      // OMITTED field is a true no-op on EITHER path: an absent `suppressed` falls back to the column
-      // default (false) on a fresh row and to the STORED value on an existing row — so the outreach
-      // worker's first lastOutreachAt stamp can never clobber a pre-suppressed jurisdiction back to false.
       const lastOutreachAt = patch.lastOutreachAt ?? null
       const suppressed = patch.suppressed ?? null
       const rows = await sql<OutreachRowSelect[]>`

@@ -1,23 +1,3 @@
-/**
- * Admin moderation data-layer integration test (Docker-gated). Exercises the REAL Drizzle/raw-SQL
- * ModerationRepository (makeDrizzleModerationRepository) against a live Postgres/PostGIS container via
- * withPg, which applies the canonical migrations + the jurisdiction seed (so moderation_items / reports /
- * report_timeline / media_assets / abuse_flags / audit_log all exist with their real constraints).
- *
- * Proven here against the real schema:
- *   - createItem inserts an OPEN moderation_items row (with the jsonb meta carrying reporter/desc);
- *   - listOpen pages the open items newest-first with the keyset cursor + the kind/high facet + search;
- *   - getItem returns the parsed signals/similar/meta + the joined media_assets references;
- *   - approve publishes the held report subject (held -> published, report_timeline 'published') and the
- *     item leaves the open queue (status 'approved' + resolved_at/by);
- *   - remove rejects + soft-deletes the report subject and the item leaves the queue (status 'removed');
- *   - hold extends the hold (item 'held', report untouched);
- *   - decideAppeal overturn resolves the open chat abuse_flag (lifts the suspension);
- *   - backfillFromHeldReports creates one item per held report lacking an open item.
- *
- * When Docker is unavailable the whole describe block SKIPS (describe.skipIf), so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
- */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -32,13 +12,12 @@ const pg = await withPg()
 
 const GEOID = LA_CITY.geoid
 
-/** Insert a report in the seeded jurisdiction and return its id. */
 async function insertReport(
   h: PgHarness,
-  opts: { category?: string; status?: string },
+  opts: { category?: string; status?: string; reporterUserId?: string },
 ): Promise<string> {
   const rows = await h.sql<{ id: string }[]>`
-    INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+    INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid, reporter_user_id)
     VALUES (
       gen_random_uuid(),
       ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326),
@@ -46,9 +25,17 @@ async function insertReport(
       ${opts.category ?? "trash"},
       ${opts.status ?? "held"},
       'h0',
-      ${GEOID}
+      ${GEOID},
+      ${opts.reporterUserId ?? null}
     )
     RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function insertUser(h: PgHarness, handle: string): Promise<string> {
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO users (display_name, handle) VALUES (${`User ${handle}`}, ${handle}) RETURNING id
   `
   return rows[0]!.id
 }
@@ -63,7 +50,6 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
   })
 
   beforeEach(async () => {
-    // Start each test from an empty surface (the moderation_items + reports + their dependents).
     await h.sql`TRUNCATE moderation_items, report_timeline, media_assets, abuse_flags, reports RESTART IDENTITY CASCADE`
   })
 
@@ -158,6 +144,49 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     expect(page.records).toHaveLength(0)
   })
 
+  it("remove strikes the reporter and createItem captures a real user snapshot", async () => {
+    const userId = await insertUser(h, "rmreporter")
+    const reportId = await insertReport(h, { status: "held", reporterUserId: userId })
+    const id = (await repo.createItem({ kind: "image", subjectType: "report", subjectId: reportId }))!
+
+    const detail = await repo.getItem(id)
+    expect(detail?.user?.handle).toBe("rmreporter")
+    expect(detail?.user?.strikes).toBe(0)
+
+    await repo.remove(id, { actorId: null, reason: "spam" })
+    const [um] = await h.sql<{ strikes: number; removals: number }[]>`
+      SELECT strikes, removals FROM user_moderation WHERE user_id = ${userId}
+    `
+    expect(um?.strikes).toBe(1)
+    expect(um?.removals).toBe(1)
+  })
+
+  it("remove tombstones a reported comment and strikes its author", async () => {
+    const userId = await insertUser(h, "rmcommenter")
+    const reportId = await insertReport(h, { status: "published" })
+    const [msg] = await h.sql<{ id: string }[]>`
+      INSERT INTO report_discussion_messages (report_id, author_user_id, body)
+      VALUES (${reportId}, ${userId}, 'bad comment') RETURNING id
+    `
+    const commentId = msg!.id
+    const id = (await repo.createItem({
+      kind: "user_report",
+      subjectType: "comment",
+      subjectId: commentId,
+    }))!
+
+    await repo.remove(id, { actorId: null, reason: "abuse" })
+
+    const [row] = await h.sql<{ deleted_at: Date | null }[]>`
+      SELECT deleted_at FROM report_discussion_messages WHERE id = ${commentId}
+    `
+    expect(row?.deleted_at).not.toBeNull()
+    const [um] = await h.sql<{ strikes: number }[]>`
+      SELECT strikes FROM user_moderation WHERE user_id = ${userId}
+    `
+    expect(um?.strikes).toBe(1)
+  })
+
   it("hold extends the hold (report stays held; item leaves the queue)", async () => {
     const reportId = await insertReport(h, { status: "held" })
     const id = (await repo.createItem({
@@ -179,7 +208,6 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
   })
 
   it("decideAppeal overturn resolves the open chat abuse_flag (lifts the suspension)", async () => {
-    // A chat subject with an open abuse_flag (the suspension), and an appeal item over it.
     const chatId = (await h.sql<{ id: string }[]>`SELECT gen_random_uuid() AS id`)[0]!.id
     await h.sql`
       INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
@@ -206,10 +234,8 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
   it("backfillFromHeldReports creates one item per held report lacking an open item", async () => {
     const r1 = await insertReport(h, { status: "held", category: "hazard" })
     const r2 = await insertReport(h, { status: "held", category: "trash" })
-    // r3 is held but already has an open item -> not backfilled.
     const r3 = await insertReport(h, { status: "held" })
     await repo.createItem({ kind: "image", subjectType: "report", subjectId: r3 })
-    // A published report is not held -> not backfilled.
     await insertReport(h, { status: "published" })
 
     const created = await repo.backfillFromHeldReports()

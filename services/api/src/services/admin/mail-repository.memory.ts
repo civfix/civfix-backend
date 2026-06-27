@@ -1,18 +1,3 @@
-/**
- * In-memory MailRepository (Phase 2): the offline binding of the mail persistence seam.
- *
- * Mirrors the Drizzle impl's OBSERVABLE contract so the mail routers and the OutboundMailService can be
- * unit-tested with NO database (no Docker), the same way InMemoryReportRepository backs the report
- * service tests:
- *   - upsertThreadByToken is find-or-create on the token;
- *   - insertMessage bumps last_message_at (forward only) and sets unread for an inbound message;
- *   - listThreads pages newest-first over COALESCE(last_message_at, created_at) with the shared
- *     "<iso>|<id>" keyset cursor, and applies the dir / attn / geoid / q filters;
- *   - stats7d aggregates mail_events over a rolling 7-day window from the seeded `now`.
- * The Drizzle-backed repository is covered by the Docker-gated integration test; this fake exercises the
- * same MailRepository seam. Seed/inspect helpers (seedThread, seedMessage, seedEvent, the public maps)
- * let tests arrange + assert state directly.
- */
 
 import { randomUUID } from "node:crypto"
 import {
@@ -37,11 +22,10 @@ import {
   toMessageDTO,
   toThreadListItem,
 } from "./mail-mappers.js"
-import { buildDomainHealth, computeRates } from "./mail-stats.js"
+import { buildMailStats } from "./mail-stats.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import type { MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
-/** A stored mail_events row (the subset the stats aggregation reads). */
 export interface StoredMailEvent {
   id: string
   threadId: string | null
@@ -51,7 +35,6 @@ export interface StoredMailEvent {
   createdAt: Date
 }
 
-/** A recorded operator-audit row (the in-tx writeAudit mirror), inspectable by tests (H4). */
 export interface RecordedMailAudit {
   actorId: string | null
   action: string
@@ -59,28 +42,16 @@ export interface RecordedMailAudit {
   meta: Record<string, unknown> | null
 }
 
-/** An in-memory MailRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryMailRepository implements MailRepository {
   readonly threads = new Map<string, MailThreadRecord>()
   readonly messages: MailMessageRecord[] = []
   readonly events: StoredMailEvent[] = []
-  /** Recorded operator-audit rows (the in-tx writeAudit mirror) so mail tests can assert audits (H4). */
   readonly audits: RecordedMailAudit[] = []
-  /**
-   * The outreach_state store. Defaults to its own map; a test may inject a SHARED map (the one production
-   * backs with the single outreach_state table) so another repo - e.g. the contacts repo's enqueue
-   * throttle - reads the SAME state this repo's setOutreachState stamps on send.
-   */
   readonly outreach: Map<string, OutreachStateRecord>
 
-  /**
-   * Deterministic clock for created_at ordering. Tests can override `now` to anchor the stats window;
-   * each insert advances by one millisecond so ordering within a test is stable + strictly increasing.
-   */
   now = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 0))
   private tick = 0
 
-  /** @param sharedOutreach optional outreach_state store shared with another repo (the production table). */
   constructor(sharedOutreach?: Map<string, OutreachStateRecord>) {
     this.outreach = sharedOutreach ?? new Map<string, OutreachStateRecord>()
   }
@@ -90,7 +61,6 @@ export class InMemoryMailRepository implements MailRepository {
     return new Date(this.now.getTime() + this.tick)
   }
 
-  /** Seed a thread directly. Returns the stored record (a token is minted when absent). */
   seedThread(over: Partial<MailThreadRecord> = {}): MailThreadRecord {
     const createdAt = over.createdAt ?? this.nextDate()
     const record: MailThreadRecord = {
@@ -110,7 +80,6 @@ export class InMemoryMailRepository implements MailRepository {
     return record
   }
 
-  /** Seed a message directly (does NOT bump the thread; use insertMessage for that behavior). */
   seedMessage(over: Partial<MailMessageRecord> & { threadId: string }): MailMessageRecord {
     const record: MailMessageRecord = {
       id: over.id ?? randomUUID(),
@@ -129,7 +98,6 @@ export class InMemoryMailRepository implements MailRepository {
     return record
   }
 
-  /** Seed a mail_events row directly (e.g. to set up stats7d assertions). */
   seedEvent(over: Partial<StoredMailEvent> & { type: MailEventType }): StoredMailEvent {
     const record: StoredMailEvent = {
       id: over.id ?? randomUUID(),
@@ -143,7 +111,6 @@ export class InMemoryMailRepository implements MailRepository {
     return record
   }
 
-  /** Test helper: the messages of a thread, ordered oldest-first (as getThread returns them). */
   messagesOf(threadId: string): MailMessageRecord[] {
     return this.messages.filter((m) => m.threadId === threadId).sort((a, b) => cmpCreated(a, b))
   }
@@ -180,8 +147,6 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   findOrCreateReportThread(reportId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-    // The newest existing per-report thread (report_id matches), else a freshly created one linked to
-    // the report with a minted token. Mirrors the Drizzle ORDER BY created_at DESC, id DESC.
     let best: MailThreadRecord | null = null
     for (const t of this.threads.values()) {
       if (t.reportId !== reportId) continue
@@ -192,8 +157,6 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   findOrCreateEventThread(cleanupId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-    // The newest existing per-event thread (cleanup_id matches), else a freshly created one linked to the
-    // cleanup with a minted token. Mirrors findOrCreateReportThread (ORDER BY created_at DESC, id DESC).
     let best: MailThreadRecord | null = null
     for (const t of this.threads.values()) {
       if (t.cleanupId !== cleanupId) continue
@@ -212,8 +175,6 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-    // The newest digest thread for the jurisdiction (report_id IS NULL so per-report threads are not
-    // reused), else a freshly created one with a minted token.
     let best: MailThreadRecord | null = null
     for (const t of this.threads.values()) {
       if (t.jurisdictionGeoid !== geoid || t.reportId !== null) continue
@@ -233,7 +194,6 @@ export class InMemoryMailRepository implements MailRepository {
   findThreadByOutboundMessageIds(messageIds: string[]): Promise<MailThreadRecord | null> {
     const ids = new Set(messageIds.filter((m) => typeof m === "string" && m.length > 0))
     if (ids.size === 0) return Promise.resolve(null)
-    // The newest thread holding an OUT message whose message_id is in the set.
     let best: MailThreadRecord | null = null
     for (const m of this.messages) {
       if (m.direction !== "out" || m.messageId === null || !ids.has(m.messageId)) continue
@@ -260,7 +220,6 @@ export class InMemoryMailRepository implements MailRepository {
       createdAt,
     }
     this.messages.push(record)
-    // Bump the thread: last_message_at moves forward only; inbound flips unread on.
     const thread = this.threads.get(input.threadId)
     if (thread) {
       const prev = thread.lastMessageAt
@@ -268,7 +227,6 @@ export class InMemoryMailRepository implements MailRepository {
         prev === null || createdAt.getTime() > prev.getTime() ? createdAt : prev
       if (input.direction === "in") thread.unread = true
     }
-    // H4: mirror the in-tx audit so service/route tests can assert the send was recorded.
     this.recordAudit(input.audit)
     return Promise.resolve({ ...record })
   }
@@ -293,7 +251,6 @@ export class InMemoryMailRepository implements MailRepository {
     const limit = clampLimit(input.limit)
     const anchor = decodeCursor(input.cursor)
     const q = input.q !== undefined ? input.q.trim().toLowerCase() : ""
-    // One pass over the messages so the per-thread latest is O(messages) total, not O(threads×messages).
     const latestByThread = this.latestByThread()
 
     const sortKey = (t: MailThreadRecord): number => (t.lastMessageAt ?? t.createdAt).getTime()
@@ -303,7 +260,7 @@ export class InMemoryMailRepository implements MailRepository {
       const k = sortKey(t)
       const a = anchor.createdAt.getTime()
       if (k !== a) return k < a
-      return t.id < anchor.id // tie on the sort key -> id DESC keyset
+      return t.id < anchor.id
     }
 
     const rows = [...this.threads.values()].filter((t) => {
@@ -331,7 +288,7 @@ export class InMemoryMailRepository implements MailRepository {
     rows.sort((a, b) => {
       const cmp = sortKey(b) - sortKey(a)
       if (cmp !== 0) return cmp
-      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0 // id DESC tiebreak
+      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
     const hasMore = rows.length > limit
@@ -388,7 +345,7 @@ export class InMemoryMailRepository implements MailRepository {
     const t = this.threads.get(id)
     if (!t) return Promise.resolve(false)
     t.status = status
-    this.recordAudit(audit) // H4
+    this.recordAudit(audit)
     return Promise.resolve(true)
   }
 
@@ -404,31 +361,14 @@ export class InMemoryMailRepository implements MailRepository {
 
   stats7d(): Promise<MailStatsResponse> {
     const cutoff = this.now.getTime() - MAIL_STATS_WINDOW_DAYS * 24 * 60 * 60 * 1000
-    const counts = { sent: 0, delivered: 0, bounced: 0, complained: 0, opened: 0 }
+    const counts = { sent: 0, bounced: 0, failed: 0 }
     for (const e of this.events) {
       if (e.createdAt.getTime() < cutoff) continue
-      // 'failed' is recorded for the outreach trail but is NOT a deliverability stat, so it is skipped here
-      // (mirrors the Drizzle `if (row.type in counts)` guard).
       if (e.type in counts) counts[e.type as keyof typeof counts] += 1
     }
     let unread = 0
     for (const t of this.threads.values()) if (t.unread) unread += 1
-    const threads = this.threads.size
-    const rates = computeRates(counts)
-    const dto: MailStatsResponse = {
-      placement7d: rates.placement7d,
-      delivered7d: counts.delivered,
-      bounceRate: rates.bounceRate,
-      complaintRate: rates.complaintRate,
-      unread,
-      threads,
-      domainHealth: buildDomainHealth("reply.civfix.org", {
-        delivered: counts.delivered,
-        bounced: counts.bounced,
-        complained: counts.complained,
-      }),
-    }
-    return Promise.resolve(dto)
+    return Promise.resolve(buildMailStats({ unread, threads: this.threads.size, counts }))
   }
 
   getOutreachState(geoid: string): Promise<OutreachStateRecord | null> {
@@ -448,7 +388,6 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve({ ...record })
   }
 
-  /** threadId -> its latest (newest) message, computed in one pass over all messages. */
   private latestByThread(): Map<string, MailMessageRecord> {
     const latest = new Map<string, MailMessageRecord>()
     for (const m of this.messages) {
@@ -459,23 +398,16 @@ export class InMemoryMailRepository implements MailRepository {
   }
 }
 
-/** Compare two messages by (created_at ASC, id ASC). Positive when `a` is newer. */
 function cmpCreated(a: MailMessageRecord, b: MailMessageRecord): number {
   const d = a.createdAt.getTime() - b.createdAt.getTime()
   if (d !== 0) return d
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-/**
- * Compare two threads by (created_at DESC, id DESC) "newest wins": positive when `a` is the newer of
- * the pair, mirroring the Drizzle `ORDER BY created_at DESC, id DESC LIMIT 1` the find-* reads use.
- */
 function cmpThreadNewest(a: MailThreadRecord, b: MailThreadRecord): number {
   const d = a.createdAt.getTime() - b.createdAt.getTime()
   if (d !== 0) return d
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-// Re-export `deriveWho` so tests that assert the message "who" projection can import it from the memory
-// module alongside the repo (keeps the test import surface to one module).
 export { deriveWho }

@@ -8,12 +8,6 @@ import {
   type ActivityService,
 } from "../../src/services/admin/activity-service.js"
 
-/**
- * Offline unit tests for the admin activity-feed service over the in-memory ActivityRepository (no DB, no
- * Docker). Cover the PURE classification (audit action -> kind + verb; domain source -> kind/what/hue) and
- * the service wiring (merge + newest-first + relative ts + the standard page envelope with null cursor).
- * The real UNION query is Docker-gated (test/integration/admin-activity.test.ts).
- */
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 
@@ -36,7 +30,6 @@ describe("classifyAuditAction", () => {
     expect(classifyAuditAction("outreach.digest_sent")).toBe("outreach_open")
     expect(classifyAuditAction("user.banned")).toBe("mod_action")
     expect(classifyAuditAction("report.status_changed")).toBe("mod_action")
-    // Unknown action still classifies (never dropped).
     expect(classifyAuditAction("something.new")).toBe("mod_action")
   })
 })
@@ -79,7 +72,7 @@ describe("classifyActivity (per source)", () => {
     expect(dto.what).toBe("Planned: River cleanup")
   })
 
-  it("classifies mail events as bounce vs open vs delivered", () => {
+  it("labels mail events distinctly: sent, failed, bounced, and inbound replies", () => {
     const bounced = classifyActivity(
       { source: "mail_event", id: "m1", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "bounced" },
       NOW,
@@ -87,18 +80,26 @@ describe("classifyActivity (per source)", () => {
     expect(bounced.kind).toBe("outreach_bounce")
     expect(bounced.what).toBe("Outreach bounced")
 
-    const opened = classifyActivity(
-      { source: "mail_event", id: "m2", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "opened" },
+    const failed = classifyActivity(
+      { source: "mail_event", id: "m2", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "failed" },
       NOW,
     )
-    expect(opened.kind).toBe("outreach_open")
+    expect(failed.kind).toBe("outreach_bounce")
+    expect(failed.what).toBe("Outreach failed")
 
-    const delivered = classifyActivity(
+    const replied = classifyActivity(
       { source: "mail_event", id: "m3", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "delivered" },
       NOW,
     )
-    expect(delivered.kind).toBe("outreach_open")
-    expect(delivered.what).toBe("Outreach delivered")
+    expect(replied.kind).toBe("outreach_open")
+    expect(replied.what).toBe("City replied")
+
+    const sent = classifyActivity(
+      { source: "mail_event", id: "m4", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "sent" },
+      NOW,
+    )
+    expect(sent.kind).toBe("outreach_open")
+    expect(sent.what).toBe("Outreach sent")
   })
 
   it("classifies an audit row via the action map", () => {
@@ -152,7 +153,6 @@ describe("activity service wiring", () => {
 
     const res = await svc.list({})
     expect(res.items).toHaveLength(3)
-    // Newest first: audit (1h) -> cleanup (3h) -> report (5h).
     expect(res.items.map((i) => i.kind)).toEqual(["mod_action", "cleanup_plan", "pin"])
     expect(res.nextCursor).toBeNull()
   })
