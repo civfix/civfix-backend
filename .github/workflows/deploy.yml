@@ -1,0 +1,87 @@
+name: Deploy (production)
+
+# Deploys the civfix backend to the production VPS by SSHing in and running the on-box deploy script
+# (/opt/civfix/ops/deploy.sh, a shim that execs /opt/civfix/infra/ops/deploy.sh). That script git-pulls
+# the infra repo (prod branch) + this backend (origin/main), SOPS-decrypts the secrets, then rebuilds
+# and restarts the docker compose stack. The build happens ON the VPS (4-vCPU arm64 box); this workflow
+# only triggers it and then gates on the public health endpoint.
+#
+# Triggers:
+#   - Every push to main (so a merged change ships to prod, as it did before the infra split).
+#   - Manually via the Actions "Run workflow" button (workflow_dispatch).
+# Both always deploy origin/main — the on-box deploy.sh checks out CIVFIX_REF (default main); the SSH
+# forced command ignores any client-sent command, so a deploy can never target an arbitrary ref.
+#
+# Required repo secret:
+#   DEPLOY_SSH_KEY  Private half of the dedicated CI deploy key (ed25519). Its public half is the
+#                   `deployer` user on the VPS, whose authorized_keys forces this key to run ONLY
+#                   `sudo -n -u civfix -H /opt/civfix/ops/deploy.sh` (sudoers-scoped to that one
+#                   command). A leaked key can at most trigger a deploy of origin/main — never a
+#                   shell, other commands, or root.
+#
+# The VPS origin IP and its SSH host key are pinned in the job below (neither is secret; SSH 22 is
+# firewalled to key-only/no-root and ingress 80/443 is Cloudflare-only).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One production deploy at a time; never cancel an in-flight deploy.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ssh deploy + health gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
+    env:
+      DEPLOY_HOST: 150.136.102.127
+      DEPLOY_USER: deployer
+      HEALTH_URL: https://api.civfix.org/readyz
+    steps:
+      - name: Configure SSH (deploy key + pinned host key)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pin the VPS ed25519 host key so a changed/forged host is rejected.
+          printf '%s\n' "150.136.102.127 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPnwBwOwSYiKv4aVjHxqXPGgETs1RytxrDNGRVEIzMaa" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Run on-box deploy (forced command runs deploy.sh as the civfix service user)
+        run: |
+          set -euo pipefail
+          # No remote command is passed: the deploy key's forced command runs /opt/civfix/ops/deploy.sh.
+          # Its stdout/stderr stream here and its exit code is this step's exit code, so a failed
+          # deploy fails the job. Keepalives keep the connection up during the (quiet) docker build.
+          ssh -i ~/.ssh/deploy_key \
+              -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+              "${DEPLOY_USER}@${DEPLOY_HOST}"
+
+      - name: Health gate (poll public readyz until the new stack is up)
+        run: |
+          set -euo pipefail
+          # deploy.sh returns once `compose up -d` is issued; give the API a moment to come ready and
+          # verify the full ingress path (Cloudflare tunnel -> Caddy -> api) reports db + redis ok.
+          for i in $(seq 1 18); do
+            code="$(curl -fsS -o /tmp/readyz.json -w '%{http_code}' --max-time 10 "$HEALTH_URL" || true)"
+            if [ "$code" = "200" ]; then
+              echo "healthy: $(cat /tmp/readyz.json)"
+              exit 0
+            fi
+            echo "attempt $i: readyz=$code; retrying in 10s"
+            sleep 10
+          done
+          echo "FATAL: $HEALTH_URL did not return 200 within ~3m after deploy" >&2
+          exit 1
+
+      - name: Cleanup deploy key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
