@@ -6,14 +6,6 @@ import {
   type SystemHealthProbes,
 } from "../../src/services/admin/system-health-service.js"
 
-/**
- * Offline unit tests for the admin system-health service (no DB, no Redis, no pg-boss). The probes are
- * INJECTED, so these tests prove the assembly + the degrade-gracefully behavior: API is always ok; a
- * reachable dependency reports its probe stat; a probe that REJECTS becomes a 'down' row (never throws);
- * an absent probe yields the documented fallback; the media worker is 'not_deployed' when jobs are faked;
- * the OCI Email row warns under the fake mailer; GlitchTip / Tile CDN reflect config; routing/VRP is
- * always 'not_deployed' (Phase 3). The real probes are wired in the route + exercised against live infra.
- */
 
 const FULL_ENV: SystemHealthEnv = {
   glitchTipConfigured: true,
@@ -22,7 +14,6 @@ const FULL_ENV: SystemHealthEnv = {
   jobsIsFake: false,
 }
 
-/** Find a service row by name (services are returned in a fixed order). */
 function row(services: { name: string; status: string; val: string }[], name: string) {
   return services.find((s) => s.name === name)
 }
@@ -44,8 +35,10 @@ describe("system health assembly", () => {
     expect(row(services, "Media worker")).toMatchObject({ status: "ok", val: "depth 3" })
     expect(row(services, "OCI Email")).toMatchObject({ status: "ok", val: "12 events 7d" })
     expect(row(services, "GlitchTip")).toMatchObject({ status: "ok" })
-    expect(row(services, "Tile CDN")).toMatchObject({ status: "ok" })
-    // Routing/VRP is always not_deployed (Phase 3).
+    expect(row(services, "Basemap")).toMatchObject({
+      status: "ok",
+      val: "CARTO raster (client default)",
+    })
     expect(row(services, "Routing (VRP)")).toEqual({
       name: "Routing (VRP)",
       status: "not_deployed",
@@ -67,7 +60,6 @@ describe("system health assembly", () => {
     const pg = row(services, "Postgres")!
     expect(pg.status).toBe("down")
     expect(pg.val).toContain("connection refused")
-    // The rest are unaffected.
     expect(row(services, "Redis")?.status).toBe("ok")
   })
 
@@ -80,7 +72,7 @@ describe("system health assembly", () => {
 
   it("media worker is 'not_deployed' when jobs are faked (no real pg-boss queue)", async () => {
     const probes: SystemHealthProbes = {
-      mediaWorker: async () => ({ val: "depth 3" }), // ignored: jobsIsFake suppresses the probe
+      mediaWorker: async () => ({ val: "depth 3" }),
     }
     const svc = makeSystemHealthService({
       probes,
@@ -117,13 +109,13 @@ describe("system health assembly", () => {
     expect(oci.val).toContain("fake relay")
   })
 
-  it("GlitchTip / Tile CDN reflect configuration", async () => {
+  it("GlitchTip / Basemap reflect configuration", async () => {
     const svc = makeSystemHealthService({
       probes: {},
       env: { glitchTipConfigured: false, tileCdnConfigured: false, mailerIsFake: false, jobsIsFake: false },
     })
     const { services } = await svc.health()
     expect(row(services, "GlitchTip")).toMatchObject({ status: "warn", val: "Not configured" })
-    expect(row(services, "Tile CDN")).toMatchObject({ status: "warn" })
+    expect(row(services, "Basemap")).toMatchObject({ status: "warn", val: "No basemap source" })
   })
 })
