@@ -45,6 +45,7 @@ import {
 } from "./cleanup-dto.js"
 import type {
   CleanupRepository,
+  LinkedReportView,
   ListCleanupsFilters,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
@@ -159,6 +160,36 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const thumbUrl = v.thumbKey !== null ? await presignThumb(v.thumbKey) : null
       return toLinkedReportRef(v, thumbUrl)
     })
+  }
+
+  // Batch-hydrate linkedReports for a WHOLE list page (issue #70: the map "blends" an event with its
+  // linked reports into one marker, so the LIST endpoint that feeds the map must carry the links the way
+  // getCleanup already does). ONE grouped repo load for every cleanup-kind id on the page, then ALL of the
+  // page's linked-report thumbs presigned in a SINGLE bounded pass (max concurrency across the page, not a
+  // per-event pass), regrouped by cleanup id. Non-cleanup events carry no links, so they are excluded.
+  async function hydrateLinkedReportsForMany(
+    records: { id: string; eventKind: EventKind }[],
+  ): Promise<Map<string, LinkedReportRef[]>> {
+    const cleanupIds = records.filter((r) => r.eventKind === "cleanup").map((r) => r.id)
+    if (cleanupIds.length === 0) return new Map()
+    const grouped = await deps.repo.loadLinkedReportsForCleanups(cleanupIds)
+    // Flatten so every linked report across the page presigns in ONE mapWithLimit pass, then regroup.
+    const flat: { cleanupId: string; view: LinkedReportView }[] = []
+    for (const [cleanupId, views] of grouped) {
+      for (const view of views) flat.push({ cleanupId, view })
+    }
+    const refs = await mapWithLimit(flat, PRESIGN_CONCURRENCY, async ({ cleanupId, view }) => {
+      const thumbUrl = view.thumbKey !== null ? await presignThumb(view.thumbKey) : null
+      return { cleanupId, ref: toLinkedReportRef(view, thumbUrl) }
+    })
+    // mapWithLimit preserves input order, so regrouping in `refs` order keeps each event's links in order.
+    const out = new Map<string, LinkedReportRef[]>()
+    for (const { cleanupId, ref } of refs) {
+      const list = out.get(cleanupId)
+      if (list) list.push(ref)
+      else out.set(cleanupId, [ref])
+    }
+    return out
   }
 
   // Validate that every requested link id is visible (published+public). Throws a VALIDATION error naming
@@ -346,7 +377,12 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         viewer.userId !== null
           ? await deps.repo.membersOf(records.map((r) => r.id), viewer.userId)
           : new Set<string>()
-      const items = records.map((record) => toCleanupDTO(record, joinedIds.has(record.id)))
+      // Hydrate each event's linkedReports for the page (issue #70: the map blends event+reports), in one
+      // batched load + bounded presign pass — see hydrateLinkedReportsForMany. Events with no links get [].
+      const linkedByCleanup = await hydrateLinkedReportsForMany(records)
+      const items = records.map((record) =>
+        toCleanupDTO(record, joinedIds.has(record.id), linkedByCleanup.get(record.id) ?? []),
+      )
       return { items, nextCursor }
     },
 

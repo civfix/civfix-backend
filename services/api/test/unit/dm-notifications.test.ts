@@ -50,11 +50,12 @@ let push: FakePushSender
 let notifications: NotificationService
 let THREAD: string
 
-/** A faithful copy of chat.routes' onDmDelivered: a `type:"dm"` notification linking to the dm thread. */
+/** A faithful copy of chat.routes' onDmDelivered: a `type:"dm"` notification linking to the dm thread.
+ *  The title is the sender's DISPLAY NAME (then @handle) - mirrors chat-notify-copy `authorDisplay`. */
 const onDmDelivered: OnDmDelivered = async (threadId, recipientId, message) => {
   await notifications.createNotification(recipientId, {
     type: "dm",
-    title: message.from.handle ? `@${message.from.handle}` : message.from.name,
+    title: message.from.name.trim() !== "" ? message.from.name : message.from.handle ? `@${message.from.handle}` : "",
     body: typeof message.body === "string" ? message.body : "Sent you a message",
     link: `/messages/dm/${threadId}`,
   })
@@ -149,7 +150,7 @@ describe("DM bell notifications (#42)", () => {
     const bobNotifs = unreadDmNotifs(BOB)
     expect(bobNotifs).toHaveLength(1)
     expect(bobNotifs[0]!.link).toBe(`/messages/dm/${THREAD}`)
-    expect(bobNotifs[0]!.title).toBe("@alice")
+    expect(bobNotifs[0]!.title).toBe("Alice")
     expect(bobNotifs[0]!.body).toBe("hi bob")
     expect(unreadDmNotifs(ALICE)).toHaveLength(0)
 

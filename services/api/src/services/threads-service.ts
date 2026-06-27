@@ -224,7 +224,14 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
         (agg): { dto: MessageThreadDTO; activity: number } => {
           const lastFromMe = agg.last !== null && agg.last.senderId === userId
           const peer = peerOf(agg.peer)
-          const title = agg.peer.handle !== null ? `@${agg.peer.handle}` : agg.peer.displayName
+          // The DM thread title is the peer's DISPLAY NAME (the @handle is only a fallback when the display
+          // name is blank), so the inbox row + the conversation header name the person, not their @handle.
+          const title =
+            agg.peer.displayName.trim() !== ""
+              ? agg.peer.displayName
+              : agg.peer.handle !== null
+                ? `@${agg.peer.handle}`
+                : agg.peer.displayName
           return {
             dto: {
               id: agg.threadId,

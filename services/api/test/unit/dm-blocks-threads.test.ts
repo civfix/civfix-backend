@@ -88,9 +88,9 @@ describe("threads UNION (cleanup + dm)", () => {
     })
     const { items } = await svc.listThreads(ALICE, 30)
     expect(items).toHaveLength(2)
-    // The dm thread (newer activity) sorts first; it carries kind:"dm", peer + @handle title + unread 1.
+    // The dm thread (newer activity) sorts first; it carries kind:"dm", peer + display-name title + unread 1.
     expect(items[0]!.kind).toBe("dm")
-    expect(items[0]!.title).toBe("@carol")
+    expect(items[0]!.title).toBe("Carol")
     expect(items[0]!.peer?.id).toBe(CAROL)
     expect(items[0]!.unread).toBe(1)
     expect(items[1]!.kind).toBe("cleanup")

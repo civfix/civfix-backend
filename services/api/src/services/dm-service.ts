@@ -9,7 +9,7 @@
  *     keep working). Block and DM-disabled are deliberately INDISTINGUISHABLE: all of these 403s use a
  *     single generic message so neither state leaks.
  *   - Otherwise openOrCreateThread (idempotent) and build a MessageThreadDTO (kind:"dm", peer, refId =
- *     threadId, title = @handle else displayName, members:2, unread:0, last/ago/lastFromMe from the last
+ *     threadId, title = displayName else @handle, members:2, unread:0, last/ago/lastFromMe from the last
  *     message when one exists).
  *
  * All DB access sits behind small seams (DmRepository, BlocksRepository, a user-lookup function) so the
@@ -113,7 +113,15 @@ export function makeDmService(deps: DmServiceDeps): DmService {
       const last = page.items[0] ?? null
 
       const peer = peerOf(target)
-      const title = target.handle !== null ? `@${target.handle}` : target.displayName
+      // The DM thread title is the peer's DISPLAY NAME (the @handle is only a fallback when the display name
+      // is blank), so the inbox row + conversation header name the person, not their @handle (matches
+      // threads-service). A freshly-opened thread therefore opens with the same title the inbox shows.
+      const title =
+        target.displayName.trim() !== ""
+          ? target.displayName
+          : target.handle !== null
+            ? `@${target.handle}`
+            : target.displayName
 
       return {
         id: thread.id,

@@ -198,5 +198,47 @@ describe("report service linkedEvents hydration", () => {
   })
 })
 
+describe("listCleanups linkedReports hydration (#70 map blend)", () => {
+  it("hydrates linkedReports per page item: the linked cleanup gets its reports, others get []", async () => {
+    // A cleanup linked to two visible reports, a plain cleanup with no links, and a non-cleanup event.
+    const linked = await service.createCleanup(
+      baseInput({ title: "Linked cleanup", linkedReportIds: [R1, R2] }),
+      ORG,
+    )
+    const plain = await service.createCleanup(baseInput({ title: "Plain cleanup" }), ORG)
+    const ov = await service.createCleanup(
+      baseInput({ title: "Volunteer day", eventKind: "other_volunteer" }),
+      ORG,
+    )
+    // Force a link onto the non-cleanup event (bypassing the create-time cleanup-only gate) to prove the
+    // eventKind filter in hydrateLinkedReportsForMany still returns [] for it.
+    repo.seedLink(ov.id, R1, ORG)
+
+    const { items } = await service.listCleanups({ when: "upcoming" }, { userId: null })
+    const byId = new Map(items.map((c) => [c.id, c]))
+
+    // The linked cleanup carries its gallery (presigned thumb via the identity pass-through default).
+    const linkedItem = byId.get(linked.id)!
+    expect(linkedItem.linkedReports.map((r) => r.id).sort()).toEqual([R1, R2].sort())
+    expect(linkedItem.linkedReports.find((r) => r.id === R1)!.thumbUrl).toBe("thumb/r1.jpg")
+
+    // Regroup correctness: a report linked to one cleanup never leaks into another's gallery.
+    expect(byId.get(plain.id)!.linkedReports).toEqual([])
+    // eventKind filter: a non-cleanup event carries no links even when one is seeded directly.
+    expect(byId.get(ov.id)!.linkedReports).toEqual([])
+  })
+
+  it("never leaks a held report into a list item's gallery", async () => {
+    const linked = await service.createCleanup(baseInput({ linkedReportIds: [R1] }), ORG)
+    // Seed a link to the held report directly (bypassing the visibility gate) - it must stay hidden in the list.
+    repo.seedLink(linked.id, R3, ORG)
+
+    const { items } = await service.listCleanups({ when: "upcoming" }, { userId: null })
+    const item = items.find((c) => c.id === linked.id)!
+    expect(item.linkedReports.map((r) => r.id)).toEqual([R1])
+    expect(item.linkedReports.some((r) => r.id === R3)).toBe(false)
+  })
+})
+
 // Touch AppError so the import is meaningful even if a future refactor drops a direct reference.
 void AppError

@@ -11,7 +11,7 @@ import type { AppError } from "@civfix/shared"
  *   - disabled target with no existing thread -> 403 (generic message);
  *   - blocked either way -> 403;
  *   - self -> 403; missing target -> 404;
- *   - normal -> creates a thread, MessageThreadDTO with kind:"dm", peer, @handle title;
+ *   - normal -> creates a thread, MessageThreadDTO with kind:"dm", peer, display-name title;
  *   - idempotent: a second openDm returns the SAME thread id;
  *   - DM-disabled but an EXISTING thread still opens (existing threads keep working).
  */
@@ -52,10 +52,10 @@ beforeEach(() => {
 })
 
 describe("DmService.openDm", () => {
-  it("creates a thread and returns a dm MessageThreadDTO with peer + @handle title", async () => {
+  it("creates a thread and returns a dm MessageThreadDTO with peer + display-name title", async () => {
     const thread = await service.openDm(ALICE, BOB)
     expect(thread.kind).toBe("dm")
-    expect(thread.title).toBe("@bob")
+    expect(thread.title).toBe("Bob")
     expect(thread.peer?.id).toBe(BOB)
     expect(thread.members).toBe(2)
     expect(thread.unread).toBe(0)

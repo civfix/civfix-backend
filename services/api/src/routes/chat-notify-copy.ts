@@ -9,13 +9,14 @@ import type { ChatMessageDTO } from "@civfix/shared"
 const PREVIEW_MAX = 80
 
 /**
- * Display name for a bell title: the sender's @handle if present, else their display name, else a generic
- * fallback (the dm bell uses "New message"; the mention bell uses "Someone").
+ * Author name for a message notification: the sender's DISPLAY NAME if present, else their @handle, else a
+ * generic fallback (the dm bell uses "New message"; the mention bell uses "Someone"). Display-name-first so
+ * a "message notification" names the person, not their @handle - matching the messaging header / thread title.
  */
 export function authorDisplay(message: ChatMessageDTO, fallback: string): string {
   const from = message.from
-  if (from.handle) return `@${from.handle}`
   if (from.name.trim() !== "") return from.name
+  if (from.handle) return `@${from.handle}`
   return fallback
 }
 
