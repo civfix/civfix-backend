@@ -222,3 +222,64 @@ describe("MultiPushSender.registerToken", () => {
     await expect(sender.registerToken("u", "tok", "ios", "dev")).resolves.toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// send: Expo-token routing (issue #71). The mobile app registers ExponentPushToken[...] tokens, which
+// can ONLY be delivered through the Expo push service - never the raw APNs/FCM dispatchers.
+// ---------------------------------------------------------------------------
+
+describe("MultiPushSender.send Expo routing", () => {
+  const expoTok = "ExponentPushToken[aaa]"
+  const expoTok2 = "ExponentPushToken[bbb]"
+
+  it("routes Expo-format tokens to the expo dispatcher (not APNs/FCM), across ios + android in one call", async () => {
+    const rows: TokenRow[] = [
+      { userId: "u", platform: "ios", token: expoTok },
+      { userId: "u", platform: "android", token: expoTok2 },
+    ]
+    const ios = recordingDispatcher()
+    const android = recordingDispatcher()
+    const expo = recordingDispatcher()
+    const dispatchers: PushDispatchers = { ios: ios.fn, android: android.fn, expo: expo.fn }
+    const prune: PruneCapture = {}
+
+    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
+    await sender.send("u", PAYLOAD)
+
+    expect(expo.calls).toHaveLength(1)
+    expect(expo.calls[0]!.tokens.slice().sort()).toEqual([expoTok, expoTok2].slice().sort())
+    // The raw APNs/FCM dispatchers must NOT receive Expo tokens.
+    expect(ios.calls).toHaveLength(0)
+    expect(android.calls).toHaveLength(0)
+  })
+
+  it("splits Expo tokens (-> expo) from raw device tokens (-> per-platform) in one send", async () => {
+    const rows: TokenRow[] = [
+      { userId: "u", platform: "ios", token: expoTok },
+      { userId: "u", platform: "web", token: "web-tok" },
+    ]
+    const expo = recordingDispatcher()
+    const web = recordingDispatcher()
+    const dispatchers: PushDispatchers = { expo: expo.fn, web: web.fn }
+    const prune: PruneCapture = {}
+
+    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
+    await sender.send("u", PAYLOAD)
+
+    expect(expo.calls[0]!.tokens).toEqual([expoTok])
+    expect(web.calls[0]!.tokens).toEqual(["web-tok"])
+  })
+
+  it("prunes Expo tokens the expo dispatcher reports invalid", async () => {
+    const rows: TokenRow[] = [{ userId: "u", platform: "ios", token: expoTok }]
+    const expo = recordingDispatcher([expoTok])
+    const dispatchers: PushDispatchers = { expo: expo.fn }
+    const prune: PruneCapture = {}
+
+    const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
+    await sender.send("u", PAYLOAD)
+
+    expect(prune.set).toBeDefined()
+    expect(prune.set!.revokedAt).toBeInstanceOf(Date)
+  })
+})

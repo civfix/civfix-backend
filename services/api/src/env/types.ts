@@ -131,6 +131,10 @@ export interface Env {
   VAPID_PRIVATE_KEY?: string
   VAPID_SUBJECT?: string
 
+  // [OPT] Expo access token for the Expo push service. Push to Expo-managed mobile apps works WITHOUT it
+  // (the mobile app mints ExponentPushToken[...] tokens); set it to enable Expo's enhanced push security.
+  EXPO_ACCESS_TOKEN?: string
+
   GLITCHTIP_DSN?: string
   GLITCHTIP_DATABASE_URL?: string
 

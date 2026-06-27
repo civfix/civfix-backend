@@ -251,6 +251,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       "VAPID_PUBLIC_KEY",
       "VAPID_PRIVATE_KEY",
       "VAPID_SUBJECT",
+      "EXPO_ACCESS_TOKEN",
       "GLITCHTIP_DSN",
       "GLITCHTIP_DATABASE_URL",
     ]),

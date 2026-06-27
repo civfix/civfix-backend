@@ -420,5 +420,10 @@ function buildPushConfig(env: Env) {
       subject: env.VAPID_SUBJECT,
     }
   }
+  // The Expo dispatcher is always active (the mobile app registers Expo push tokens, and the Expo push
+  // API needs no credentials); the access token is optional and only enables enhanced push security.
+  if (env.EXPO_ACCESS_TOKEN) {
+    config.expo = { accessToken: env.EXPO_ACCESS_TOKEN }
+  }
   return config
 }

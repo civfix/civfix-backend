@@ -22,6 +22,7 @@ import { lookup } from "node:dns/promises"
 import { makeApnsDispatcher } from "./push-apns.js"
 import { makeFcmDispatcher } from "./push-fcm.js"
 import { makeWebPushDispatcher } from "./push-webpush.js"
+import { makeExpoDispatcher, isExpoPushToken, type ExpoPushConfig } from "./push-expo.js"
 
 export interface PushSenderConfig {
   apns?: {
@@ -40,6 +41,12 @@ export interface PushSenderConfig {
     privateKey: string
     subject: string
   }
+  /**
+   * Expo push service config. The Expo dispatcher is ALWAYS active (the Expo push API works without an
+   * access token, and the mobile app registers Expo tokens), so this only carries the optional access
+   * token for enhanced push security.
+   */
+  expo?: ExpoPushConfig
 }
 
 /** A logger surface the adapter uses for skip/failure diagnostics. Defaults to console. */
@@ -71,6 +78,8 @@ export interface PushDispatchers {
   ios?: PlatformDispatcher
   android?: PlatformDispatcher
   web?: PlatformDispatcher
+  /** Cross-platform Expo push dispatcher (serves ios + android Expo tokens). */
+  expo?: PlatformDispatcher
 }
 
 /** Deliver to one platform's tokens; resolve with the subset that were invalid/unregistered. */
@@ -135,11 +144,36 @@ export class MultiPushSender implements PushSender {
     const tokens = await this.loadActiveTokens(userIds)
     if (tokens.length === 0) return
 
-    const byPlatform = groupByPlatform(tokens)
     const dispatchers = this.getDispatchers()
-
-    const platforms: PushPlatform[] = ["ios", "android", "web"]
     const invalidAll: string[] = []
+
+    // Expo-managed tokens (what the mobile app registers, for BOTH ios + android) deliver through the Expo
+    // push service regardless of platform; raw device tokens fall through to the per-platform APNs/FCM/Web
+    // Push dispatchers below. Without this, the Expo tokens iOS/Android register can never be delivered.
+    const expoTokens = [
+      ...new Set(tokens.filter((t) => isExpoPushToken(t.token)).map((t) => t.token)),
+    ]
+    if (expoTokens.length > 0) {
+      const expo = dispatchers.expo
+      if (expo) {
+        try {
+          const { invalidTokens } = await expo(expoTokens, payload)
+          for (const t of invalidTokens) invalidAll.push(t)
+        } catch (err) {
+          this.logger.error({ err }, "push: expo dispatch failed")
+        }
+      } else {
+        this.logger.warn(
+          { count: expoTokens.length },
+          "push: expo tokens present but no expo dispatcher; skipping",
+        )
+      }
+    }
+
+    // Raw (non-Expo) device tokens route per platform to APNs / FCM / Web Push.
+    const rawTokens = tokens.filter((t) => !isExpoPushToken(t.token))
+    const byPlatform = groupByPlatform(rawTokens)
+    const platforms: PushPlatform[] = ["ios", "android", "web"]
     await Promise.all(
       platforms.map(async (platform) => {
         const platformTokens = byPlatform[platform]
@@ -196,6 +230,9 @@ export class MultiPushSender implements PushSender {
       ...(this.config.apns ? { ios: makeApnsDispatcher(this.config.apns, this.logger) } : {}),
       ...(this.config.fcm ? { android: makeFcmDispatcher(this.config.fcm, this.logger) } : {}),
       ...(this.config.webPush ? { web: makeWebPushDispatcher(this.config.webPush, this.logger) } : {}),
+      // The Expo dispatcher is always built: the Expo push API needs no credentials (the access token is
+      // optional) and the mobile app registers Expo tokens, so it must always be available to send them.
+      expo: makeExpoDispatcher(this.config.expo ?? {}, this.logger),
     }
     return this.dispatchers
   }
