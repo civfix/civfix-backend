@@ -95,10 +95,10 @@ describe("clusterByZoom", () => {
   // A small fixture: three points clumped near LA and one far away in NYC. "a" carries a title + a
   // first-photo thumb key pair so the carry-through onto the (unsigned) pin can be asserted.
   const pts: ReportMapPoint[] = [
-    { id: "a", lat: 34.10, lng: -118.350, category: "trash", type: "dump", status: "published", title: "Mattress dumped", description: "blocking the sidewalk", thumbKey: "thumbs/a", r2Key: "uploads/a" },
-    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-    { id: "c", lat: 34.12, lng: -118.352, category: "trash", type: "dump", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", type: "encampment", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+    { id: "a", lat: 34.10, lng: -118.350, category: "trash", type: "dump", status: "published", title: "Mattress dumped", description: "blocking the sidewalk", addr: "12 Spring St", referenceCode: "DU-42-000001", thumbKey: "thumbs/a", r2Key: "uploads/a" },
+    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
+    { id: "c", lat: 34.12, lng: -118.352, category: "trash", type: "dump", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
+    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", type: "encampment", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
   ]
 
   it("at/above the threshold returns individual pins and no clusters", () => {
@@ -116,6 +116,8 @@ describe("clusterByZoom", () => {
       lat: 34.1,
       title: "Mattress dumped",
       description: "blocking the sidewalk",
+      addr: "12 Spring St",
+      referenceCode: "DU-42-000001",
       thumbKey: "thumbs/a",
       r2Key: "uploads/a",
     })
@@ -148,9 +150,9 @@ describe("clusterByZoom", () => {
 describe("countByCategory", () => {
   it("counts all candidates per category, omitting zero categories", () => {
     const pts: ReportMapPoint[] = [
-      { id: "a", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-      { id: "b", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
-      { id: "c", lat: 0, lng: 0, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, thumbKey: null, r2Key: null },
+      { id: "a", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
+      { id: "b", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
+      { id: "c", lat: 0, lng: 0, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
     ]
     expect(countByCategory(pts)).toEqual({ trash: 2, graffiti: 1 })
     expect(countByCategory([])).toEqual({})
@@ -776,11 +778,12 @@ describe("listReportsInBBox", () => {
 })
 
 describe("searchReports", () => {
-  it("returns only published+public+non-deleted reports as ReportPinDTOs with description carried", async () => {
+  it("returns only published+public+non-deleted reports as ReportPinDTOs with description/addr/referenceCode carried", async () => {
     const { repo, service } = makeHarness()
     const pub = repo.seedReport({
       status: "published", visibility: "public", category: "trash",
       title: "Broken streetlight", description: "out for a week", addr: "5th Ave",
+      referenceCode: "TR-7-000009",
     })
     // Excluded: a held report, a hidden-visibility report, and a soft-deleted one.
     repo.seedReport({ status: "held", visibility: "public", title: "Held one", publishedAt: null })
@@ -790,13 +793,16 @@ describe("searchReports", () => {
     const res = await service.searchReports({})
     expect(res.items).toHaveLength(1)
     expect(res.items[0]!.id).toBe(pub.id)
-    // Carries the SAME pin fields PLUS the report's description.
+    // Carries the SAME pin fields PLUS the report's description, address, and human reference code (so a
+    // search row can render its location + "<type>: <reference>" headline without a detail fetch).
     expect(res.items[0]).toMatchObject({
       id: pub.id,
       category: "trash",
       status: "published",
       title: "Broken streetlight",
       description: "out for a week",
+      addr: "5th Ave",
+      referenceCode: "TR-7-000009",
     })
     expect(res.nextCursor).toBeNull()
   })

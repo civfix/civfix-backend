@@ -128,6 +128,8 @@ export interface PublicPinRow {
   status: ReportStatus
   title: string | null
   description: string | null
+  addr: string | null
+  reference_code: string | null
   thumb_key: string | null
   r2_key: string | null
   created_at: Date
@@ -143,6 +145,8 @@ export function toMapPoint(r: PublicPinRow): ReportMapPoint {
     status: r.status,
     title: r.title,
     description: r.description,
+    addr: r.addr,
+    referenceCode: r.reference_code,
     thumbKey: r.thumb_key,
     r2Key: r.r2_key,
   }
@@ -169,6 +173,8 @@ export async function selectPublicPins(
       r.status,
       r.title,
       r.description,
+      r.addr,
+      r.reference_code,
       m.thumb_key,
       m.r2_key,
       r.created_at

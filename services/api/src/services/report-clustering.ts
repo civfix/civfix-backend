@@ -37,6 +37,8 @@ export interface UnsignedReportPin {
   status: ReportStatus
   title: string | null
   description: string | null
+  addr: string | null
+  referenceCode: string | null
   thumbKey: string | null
   r2Key: string | null
 }
@@ -51,6 +53,8 @@ export function mapPointToUnsignedPin(p: ReportMapPoint): UnsignedReportPin {
     status: p.status,
     title: p.title,
     description: p.description,
+    addr: p.addr,
+    referenceCode: p.referenceCode,
     thumbKey: p.thumbKey,
     r2Key: p.r2Key,
   }

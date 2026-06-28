@@ -115,6 +115,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(pin.title !== null ? { title: pin.title } : {}),
       description: pin.description,
       thumbUrl,
+      // Search-row enrichment (the /reports/search list reads these to render its location + "<type>:
+      // <reference>" headline). addr stays nullable; referenceCode is omitted when null, mirroring title.
+      // The /map/reports route's fast-json-stringify schema does NOT declare these, so the hot map path
+      // drops them - they ride only on the unschematized search response.
+      addr: pin.addr,
+      ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
     }
   }
 

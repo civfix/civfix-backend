@@ -89,6 +89,10 @@ export interface ReportMapPoint {
   status: ReportStatus
   title: string | null
   description: string | null
+  // Street-level address + immutable human reference, carried so a /reports/search row can render its
+  // location + "<type>: <reference>" headline without a second detail fetch. Null when absent.
+  addr: string | null
+  referenceCode: string | null
   thumbKey: string | null
   r2Key: string | null
 }

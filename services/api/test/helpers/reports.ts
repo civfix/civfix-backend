@@ -368,6 +368,8 @@ export class InMemoryReportRepository implements ReportRepository {
           status: r.status,
           title: r.title,
           description: r.description,
+          addr: r.addr,
+          referenceCode: r.referenceCode,
           thumbKey: firstPhoto?.thumbKey ?? null,
           r2Key: firstPhoto?.r2Key ?? null,
         }
@@ -437,6 +439,8 @@ export class InMemoryReportRepository implements ReportRepository {
         status: r.status,
         title: r.title,
         description: r.description,
+        addr: r.addr,
+        referenceCode: r.referenceCode,
         thumbKey: firstPhoto?.thumbKey ?? null,
         r2Key: firstPhoto?.r2Key ?? null,
       }
