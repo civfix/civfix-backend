@@ -1,17 +1,3 @@
-/**
- * Postgres-backed SocialRepository (the production implementation of the social persistence seam) — plus
- * a thin re-export of the user-search / mention-resolver reads that used to live here (so external
- * importers and the offline tests keep resolving `searchByHandlePrefix`/`searchMentionable`/
- * `resolveHandles`/`resolveMentionTargets`/`resolveUserIdsToMentions` from this path).
- *
- * ALL people/follow/profile access flows through here so the social service stays infra-free and
- * unit-testable with an in-memory repo. The follower/following counts and isFollowing flags are computed
- * inline (correlated subqueries bounded by the page LIMIT) so a single round-trip builds each list page.
- *
- * DIRECTORY (listPeople) and the follower/following lists (connectionsPage) share one row projection +
- * keyset: keyset on (display_name, id) ascending with a `${name}|${id}` cursor; `|` cannot appear in a
- * UUID, and display_name MAY contain `|`, so the cursor parse splits on the LAST `|` (parseNameCursor).
- */
 
 import type { Sql } from "../db/client.js"
 import type {
@@ -20,7 +6,7 @@ import type {
   SocialRepository,
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
-import type { CleanupStatus, CleanupType, EventKind } from "@civfix/shared"
+import type { CleanupStatus, CleanupType, EventKind, SocialLinks } from "@civfix/shared"
 import { parseNameCursor } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
 
@@ -44,9 +30,9 @@ interface PersonRowSelect {
   verified: boolean
   avatar_r2_key: string | null
   avatar_url: string | null
+  social_links?: SocialLinks | null
 }
 
-/** The same shape plus the per-row isFollowing flag for the directory/connection lists. */
 interface PersonRowSelectWithFollow extends PersonRowSelect {
   is_following: boolean
 }
@@ -62,10 +48,10 @@ function toPersonView(r: PersonRowSelect): PersonView {
     verified: r.verified,
     avatarR2Key: r.avatar_r2_key,
     avatarUrl: r.avatar_url,
+    socialLinks: r.social_links ?? null,
   }
 }
 
-/** Split the keyset page (rows fetched with limit+1) into items + the `${name}|${id}` next cursor. */
 function pagePeople(
   rows: PersonRowSelectWithFollow[],
   limit: number,
@@ -129,13 +115,6 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
   }
 }
 
-/**
- * Page a follow-connection list (followers OR following) for a target user. Mirrors listPeople's row
- * shape + (display_name, id) keyset, but the candidate set comes from a JOIN against follows_people via
- * the caller-supplied `joinPredicate` (which ties `f` to `u` AND filters by the target `id`):
- *   - followers:  `f.followee_id = ${id} AND f.follower_id = u.id`  (u is each follower),
- *   - following:  `f.follower_id = ${id} AND f.followee_id = u.id`  (u is each followee).
- */
 async function connectionsPage(
   sql: Sql,
   args: { viewerId: string | null; cursor: string | null; limit: number },
@@ -189,14 +168,10 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       nextCursor: string | null
     }> {
       const cursor = parseNameCursor(args.cursor)
-      // viewerId drives the isFollowing subquery + the self-exclusion. NULL-safe: with no viewer both the
-      // `u.id <> viewerId` filter and the EXISTS subquery collapse to "no exclusion / never following".
       const viewerId = args.viewerId
       const qFilter =
         args.q !== null
-          ? // handle is CITEXT; cast to text so the gin_trgm_ops expression index users_handle_trgm on
-            // (handle::text) (0014_search_trgm.sql) can serve this ILIKE. display_name uses
-            // users_display_name_trgm directly.
+          ?
             sql`AND ((u.handle::text) ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
           : sql``
       const selfFilter = viewerId !== null ? sql`AND u.id <> ${viewerId}` : sql``
@@ -258,7 +233,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
           am.r2_key AS avatar_r2_key,
-          u.avatar_url
+          u.avatar_url,
+          u.social_links
         FROM users u
         LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.id = ${id} AND u.deleted_at IS NULL
@@ -268,8 +244,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     },
 
     async findPersonByHandle(handle: string): Promise<PersonView | null> {
-      // handle is CITEXT, so `u.handle = ${handle}` is case-insensitive at the DB. Same projection/filters
-      // as findPersonById (non-deleted only); backs the /people/<handle> deep link.
       const rows = await sql<PersonRowSelect[]>`
         SELECT
           u.id,
@@ -280,7 +254,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
           am.r2_key AS avatar_r2_key,
-          u.avatar_url
+          u.avatar_url,
+          u.social_links
         FROM users u
         LEFT JOIN media_assets am ON am.id = u.avatar_media_id
         WHERE u.handle = ${handle} AND u.deleted_at IS NULL
@@ -303,8 +278,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       followeeId: string,
     ): Promise<{ exists: boolean; created: boolean }> {
       if (!(await userExists(followeeId))) return { exists: false, created: false }
-      // Idempotent upsert: re-following collides on PK(follower_id, followee_id) -> DO NOTHING. RETURNING
-      // yields a row ONLY when a new edge was actually inserted, so `created` is exact.
       const inserted = await sql<{ follower_id: string }[]>`
         INSERT INTO follows_people (follower_id, followee_id)
         VALUES (${followerId}, ${followeeId})
@@ -330,10 +303,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     },
 
     async pastEventsFor(userId: string, limit: number): Promise<CleanupRecord[]> {
-      // Cleanups the user organized OR was a member of, de-duplicated, most recent first. Gather the
-      // matching ids in a CTE that UNIONs two index-seekable arms (organizer index; cleanup_members PK /
-      // user index) rather than `WHERE organizer = $1 OR EXISTS(member subquery)` — the OR would force a
-      // seq scan + per-row EXISTS. UNION (not UNION ALL) dedupes a user who both organizes AND is a member.
       const rows = await sql<CleanupRowSelect[]>`
         WITH ids AS (
           SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}

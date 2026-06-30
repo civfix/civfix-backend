@@ -1,6 +1,4 @@
 import { describe, it, expect } from "vitest"
-// avatarGradient / stableHash / AVATAR_PALETTE now live in @civfix/shared (the single source of truth);
-// the social service re-uses them, so the avatar assertions below point at the shared symbols.
 import { avatarGradient, stableHash, AVATAR_PALETTE } from "@civfix/shared"
 import {
   makeSocialService,
@@ -14,18 +12,11 @@ import {
   makeCleanupRecord,
 } from "../helpers/social.js"
 
-/**
- * Offline unit tests for the social service + its pure avatar-gradient helper. The pure avatarGradient is
- * tested directly (determinism + palette membership + distinctness); the list/follow/profile flows run
- * against an in-memory SocialRepository with a spy notifier, so they need NO database and NO Docker. The
- * Drizzle repo is covered by the Docker-gated integration suite.
- */
 
 const A = "11111111-1111-1111-1111-111111111111"
 const B = "22222222-2222-2222-2222-222222222222"
 const C = "33333333-3333-3333-3333-333333333333"
 
-/** A capturing notifier so the new_follower hook can be asserted. */
 class SpyNotifier implements SocialNotifier {
   readonly calls: Array<{ followeeId: string; follower: PersonView }> = []
   shouldThrow = false
@@ -47,16 +38,12 @@ function makeHarness(): {
   return { repo, notifier, service }
 }
 
-// ---------------------------------------------------------------------------
-// Pure: avatarGradient / stableHash
-// ---------------------------------------------------------------------------
 
 describe("avatarGradient", () => {
   it("is deterministic: same seed yields the same pair across calls", () => {
     const first = avatarGradient(A)
     const second = avatarGradient(A)
     expect(first).toEqual(second)
-    // And stable to specific literal values (locks the algorithm so a refactor cannot silently shift it).
     expect(first).toEqual(avatarGradient(A))
   })
 
@@ -78,7 +65,6 @@ describe("avatarGradient", () => {
   it("different seeds can yield different gradients (not a constant)", () => {
     const seen = new Set<string>()
     for (let i = 0; i < 50; i++) seen.add(avatarGradient(`user-${i}`).join(">"))
-    // With a 5-color palette and a distinct-pair rule there are 20 ordered pairs; expect good spread.
     expect(seen.size).toBeGreaterThan(5)
   })
 
@@ -102,6 +88,7 @@ describe("toPersonDTO", () => {
       verified: false,
       avatarR2Key: null,
       avatarUrl: null,
+      socialLinks: null,
     }
     const dto = toPersonDTO(view, true)
     expect(dto).toEqual({
@@ -115,7 +102,6 @@ describe("toPersonDTO", () => {
       isFollowing: true,
       verified: false,
     })
-    // avatarUrl is omitted when the canonical column is null (clients fall back to the monogram).
     expect(dto.avatarUrl).toBeUndefined()
   })
 
@@ -130,14 +116,12 @@ describe("toPersonDTO", () => {
       verified: false,
       avatarR2Key: null,
       avatarUrl: "https://cdn.example.test/avatars/jane.jpg",
+      socialLinks: null,
     }
     expect(toPersonDTO(view, false).avatarUrl).toBe("https://cdn.example.test/avatars/jane.jpg")
   })
 })
 
-// ---------------------------------------------------------------------------
-// listPeople
-// ---------------------------------------------------------------------------
 
 describe("listPeople", () => {
   it("excludes the viewer and soft-deleted users", async () => {
@@ -149,8 +133,8 @@ describe("listPeople", () => {
     const res = await service.listPeople({ limit: 20 }, { userId: A })
     const ids = res.items.map((p) => p.id)
     expect(ids).toContain(B)
-    expect(ids).not.toContain(A) // the viewer
-    expect(ids).not.toContain(C) // soft-deleted
+    expect(ids).not.toContain(A)
+    expect(ids).not.toContain(C)
   })
 
   it("filters case-insensitively on handle OR display_name", async () => {
@@ -159,11 +143,9 @@ describe("listPeople", () => {
     repo.seedUser({ id: B, displayName: "Bob Brown", handle: "bobby" })
     repo.seedUser({ id: C, displayName: "Carol", handle: "ALICEX" })
 
-    // Match on display_name (case-insensitive).
     const byName = await service.listPeople({ q: "anders", limit: 20 }, { userId: null })
     expect(byName.items.map((p) => p.id)).toEqual([A])
 
-    // Match on handle (case-insensitive: "alice" matches handle "ALICEX" and "alice").
     const byHandle = await service.listPeople({ q: "alice", limit: 20 }, { userId: null })
     expect(byHandle.items.map((p) => p.id).sort()).toEqual([A, C].sort())
   })
@@ -173,7 +155,7 @@ describe("listPeople", () => {
     repo.seedUser({ id: A, displayName: "Alice" })
     repo.seedUser({ id: B, displayName: "Bob" })
     repo.seedUser({ id: C, displayName: "Carol" })
-    repo.seedFollow(A, B) // A follows B
+    repo.seedFollow(A, B)
 
     const res = await service.listPeople({ limit: 20 }, { userId: A })
     const bob = res.items.find((p) => p.id === B)!
@@ -210,7 +192,7 @@ describe("listPeople", () => {
   it("surfaces the canonical avatar_url on each list row (now that avatar_url is canonical)", async () => {
     const { repo, service } = makeHarness()
     repo.seedUser({ id: A, displayName: "Alice", avatarUrl: "https://cdn.example.test/a.jpg" })
-    repo.seedUser({ id: B, displayName: "Bob" }) // no photo => omitted
+    repo.seedUser({ id: B, displayName: "Bob" })
     const res = await service.listPeople({ limit: 20 }, { userId: null })
     const alice = res.items.find((p) => p.id === A)!
     const bob = res.items.find((p) => p.id === B)!
@@ -219,9 +201,6 @@ describe("listPeople", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// followPerson / unfollowPerson
-// ---------------------------------------------------------------------------
 
 describe("followPerson", () => {
   it("follows, is idempotent, and returns the new follower count", async () => {
@@ -232,7 +211,6 @@ describe("followPerson", () => {
     const first = await service.followPerson(A, B)
     expect(first).toEqual({ isFollowing: true, followers: 1 })
 
-    // Idempotent: following again does not double-count.
     const second = await service.followPerson(A, B)
     expect(second).toEqual({ isFollowing: true, followers: 1 })
   })
@@ -259,7 +237,6 @@ describe("followPerson", () => {
     expect(notifier.calls[0]!.followeeId).toBe(B)
     expect(notifier.calls[0]!.follower.id).toBe(A)
 
-    // Re-follow: no second notification.
     await service.followPerson(A, B)
     expect(notifier.calls).toHaveLength(1)
   })
@@ -286,7 +263,6 @@ describe("unfollowPerson", () => {
     const first = await service.unfollowPerson(A, B)
     expect(first).toEqual({ isFollowing: false, followers: 0 })
 
-    // Idempotent: unfollowing again is still a clean { followers: 0 }.
     const second = await service.unfollowPerson(A, B)
     expect(second).toEqual({ isFollowing: false, followers: 0 })
   })
@@ -307,9 +283,6 @@ describe("unfollowPerson", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// getProfile / getMyProfile
-// ---------------------------------------------------------------------------
 
 describe("getProfile", () => {
   it("returns followers/following, isFollowing, stats, and recent-first pastEvents", async () => {
@@ -317,12 +290,11 @@ describe("getProfile", () => {
     repo.seedUser({ id: A, displayName: "Alice", handle: "alice", bio: "organizer" })
     repo.seedUser({ id: B, displayName: "Bob" })
     repo.seedUser({ id: C, displayName: "Carol" })
-    repo.seedFollow(B, A) // B follows A
-    repo.seedFollow(C, A) // C follows A -> A has 2 followers
-    repo.seedFollow(A, B) // A follows B -> A following 1
+    repo.seedFollow(B, A)
+    repo.seedFollow(C, A)
+    repo.seedFollow(A, B)
     repo.seedReports(A, 4)
 
-    // Two cleanups A organized, different dates; most recent must come first.
     const older = makeCleanupRecord({
       organizerUserId: A,
       title: "Older",
@@ -336,17 +308,15 @@ describe("getProfile", () => {
     repo.seedCleanup(older)
     repo.seedCleanup(newer)
 
-    // Viewer C follows A.
     const { profile } = await service.getProfile(A, { userId: C })
     expect(profile.id).toBe(A)
     expect(profile.name).toBe("Alice")
     expect(profile.followers).toBe(2)
     expect(profile.following).toBe(1)
-    expect(profile.isFollowing).toBe(true) // C follows A
+    expect(profile.isFollowing).toBe(true)
     expect(profile.stats).toEqual({ reports: 4, cleanups: 2 })
     expect(profile.pastEvents.map((e) => e.title)).toEqual(["Newer", "Older"])
     expect(profile.avatar).toEqual(avatarGradient(A))
-    // pastEvents are projected as CleanupDTOs with joined=true (this user attended each).
     expect(profile.pastEvents[0]!.joined).toBe(true)
     expect(profile.pastEvents[0]!.organizer.id).toBe(A)
   })
@@ -373,20 +343,15 @@ describe("getProfile", () => {
     const { repo, service } = makeHarness()
     repo.seedUser({ id: A, displayName: "Alice" })
     repo.seedUser({ id: B, displayName: "Bob" })
-    // B organizes a cleanup A attends.
     const event = makeCleanupRecord({ organizerUserId: B, title: "Bob's sweep" })
     repo.seedCleanup(event, [A])
 
     const { profile } = await service.getProfile(A, { userId: null })
     expect(profile.pastEvents.map((e) => e.title)).toContain("Bob's sweep")
-    // But A organized none, so the organized-count stat is 0.
     expect(profile.stats.cleanups).toBe(0)
   })
 
   it("falls back to the provider avatar_url on the full profile when no custom avatar was uploaded", async () => {
-    // Regression: buildProfile used to omit avatarUrl whenever avatarR2Key was null, dropping the canonical
-    // provider photo (e.g. Google) so the profile screen showed the monogram. It must mirror toPersonDTO and
-    // surface view.avatarUrl as the fallback.
     const { repo, service } = makeHarness()
     repo.seedUser({ id: A, displayName: "Alice", avatarUrl: "https://cdn.example.test/alice.jpg" })
     const { profile } = await service.getProfile(A, { userId: null })
@@ -395,7 +360,7 @@ describe("getProfile", () => {
 
   it("omits avatarUrl on the full profile only when neither an uploaded nor a provider photo exists", async () => {
     const { repo, service } = makeHarness()
-    repo.seedUser({ id: A, displayName: "Alice" }) // no avatarUrl, no avatarR2Key
+    repo.seedUser({ id: A, displayName: "Alice" })
     const { profile } = await service.getProfile(A, { userId: null })
     expect(profile.avatarUrl).toBeUndefined()
   })
