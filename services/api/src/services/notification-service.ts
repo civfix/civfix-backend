@@ -1,8 +1,3 @@
-// Notification service: the in-app feed, read-state, per-user prefs, push-token registration, and the
-// createNotification primitive that records a row and INLINE-SENDS a push (pushes are sent synchronously
-// from the triggering request, not from a worker). All DB access sits behind NotificationRepository so the
-// service is unit-testable with no DB. Pure prefs/quiet-hours/DTO helpers live in notification-helpers.ts
-// (re-exported below so existing importers stay stable).
 
 import type {
   ListNotificationsResponse,
@@ -29,6 +24,8 @@ import { DEFAULT_LOCALE } from "../i18n/locales.js"
 
 export {
   DEFAULT_PREFS,
+  FEED_HIDDEN_NOTIFICATION_TYPES,
+  isFeedVisibleType,
   isWithinQuietHours,
   parseTimeOfDayMinutes,
   toNotificationDTO,
@@ -38,8 +35,6 @@ export {
 
 export const NOTIFICATIONS_DEFAULT_LIMIT = 20
 
-// markRead forwards ids straight into one `id = ANY(...)` — the shared MarkReadRequest does NOT bound the
-// array, so the service caps it to keep a single huge IN-list off the DB.
 const MARK_READ_MAX_IDS = 50
 
 export interface NotificationRecord {
@@ -61,7 +56,6 @@ export interface NewNotificationArgs {
   link: string | null
 }
 
-// quietStart/quietEnd are the pg `time` columns as strings ("HH:MM"/"HH:MM:SS"), or null when disabled.
 export interface NotificationPrefsRecord {
   push: boolean
   cleanupChat: boolean
@@ -78,7 +72,6 @@ export interface NotificationPrefsPatch {
   reportUpdates?: boolean
   follows?: boolean
   mentions?: boolean
-  // undefined leaves quiet hours unchanged; null clears them; an object sets both bounds.
   quietHours?: QuietHours | null
 }
 
@@ -101,11 +94,6 @@ export interface NotificationRepository {
 
   upsertPrefs(userId: string, patch: NotificationPrefsPatch): Promise<NotificationPrefsRecord>
 
-  // OWNERSHIP-SCOPED re-registration (P1-3). A push token is a device secret; re-pointing the row +
-  // clearing revoked_at is allowed ONLY when the caller already owns the row, OR presents the SAME
-  // non-null device_id (a genuine device handoff). A token owned by a DIFFERENT user with no device proof
-  // is NOT silently transferred — the existing owner keeps it and the attempt returns "conflict". This
-  // closes the silent notification-hijack where knowing another user's raw token let you re-point it.
   upsertPushToken(args: {
     userId: string
     platform: PushPlatform
@@ -113,40 +101,19 @@ export interface NotificationRepository {
     deviceId: string | null
   }): Promise<PushTokenUpsertOutcome>
 
-  // Account erasure (DELETE /me): a push token (token + device_id) is a device identifier, so erasure
-  // HARD-deletes the rows rather than soft-revoking (which is what normal rotation does, keeping an audit
-  // trail). Idempotent.
   deletePushTokensForUser(userId: string): Promise<void>
 
-  // The recipient's chosen UI/message locale (users.locale). Loaded just before a localized notification
-  // is rendered so the persisted title/body + the inline push are in the user's language. Returns null
-  // when the user is unknown; the service falls back to the default locale ('en').
   findUserLocale(userId: string): Promise<string | null>
 }
 
 export type PushTokenUpsertOutcome = "stored" | "conflict"
 
-/**
- * Create a notification. Copy is supplied in ONE of two forms:
- *   - LOCALIZED (preferred): `titleKey` (+ optional `bodyKey`) into the i18n catalog, with `vars` for
- *     `{{...}}` interpolation. The service loads the recipient's `users.locale` and renders both the
- *     persisted row AND the inline push in that language, falling back to English.
- *   - RAW (legacy / already-localized): a literal `title` (+ optional `body`). Used where the copy is not
- *     localizable (or for back-compat). When both forms are present the KEYS win.
- * `link` is locale-independent.
- */
 export interface CreateNotificationInput {
   type: NotificationType
-  /** Literal, already-rendered title. Required unless `titleKey` is supplied. */
   title?: string
-  /** Literal, already-rendered body. */
   body?: string
-  /** i18n catalog key for the title; rendered in the recipient's locale. Takes precedence over `title`. */
   titleKey?: MessageKey
-  /** i18n catalog key for the body; rendered in the recipient's locale. Takes precedence over `body`. */
   bodyKey?: MessageKey
-  /** `{{var}}` interpolation values for `titleKey`/`bodyKey`. User content (a DM/mention preview) is
-   * passed here already-truncated by the caller; only the surrounding wrapper copy is translated. */
   vars?: MessageVars
   link?: string
 }
@@ -154,16 +121,11 @@ export interface CreateNotificationInput {
 export interface NotificationServiceDeps {
   repo: NotificationRepository
   pushSender: PushSender
-  // Optional per-user signal channel: when wired, createNotification fires a best-effort
-  // {topic:"notifications"} so a signed-in client refreshes its bell without polling.
   userChannel?: UserChannel
   logger?: Pick<FastifyBaseLogger, "warn" | "error">
-  // Injectable clock so the quiet-hours gate is deterministic in tests.
   now?: () => Date
 }
 
-// Also satisfies SocialNotifier (onNewFollower) so the social service can fire the new_follower hook
-// without importing the concrete service.
 export interface NotificationService extends SocialNotifier {
   listNotifications(userId: string, pagination: PaginationQuery): Promise<ListNotificationsResponse>
   markRead(userId: string, ids: string[]): Promise<{ ok: true }>
@@ -197,7 +159,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       }
       await deps.pushSender.send(userId, payload)
     } catch (err) {
-      // A push failure must never break the triggering request: the row is already persisted.
       deps.logger?.warn(
         { err, userId, notificationId: record.id, type: record.type },
         "inline push send failed (suppressed)",
@@ -205,8 +166,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
-  // UNGATED by prefs/quiet hours — those gate the PUSH (an out-of-app interruption); the in-app bell badge
-  // should always reflect the recorded row. No-op when no channel is wired.
   async function maybeSignalNotification(userId: string): Promise<void> {
     if (!deps.userChannel) return
     try {
@@ -216,8 +175,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
-  // Resolve the recipient's locale (best-effort; falls back to 'en' on any lookup error) ONLY when the
-  // input carries i18n keys. A raw-copy notification needs no locale lookup, so we skip the query.
   async function localeFor(userId: string, input: CreateNotificationInput): Promise<string> {
     if (input.titleKey === undefined && input.bodyKey === undefined) return DEFAULT_LOCALE
     try {
@@ -233,8 +190,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     input: CreateNotificationInput,
   ): Promise<NotificationDTO> {
     const locale = await localeFor(userId, input)
-    // KEYS win over raw copy. A raw `title` is required when no `titleKey` is given (enforced below); the
-    // empty-string fallback only guards an impossible all-undefined case so the column stays NOT NULL.
     const title =
       input.titleKey !== undefined
         ? renderMessage(locale, input.titleKey, input.vars)
@@ -251,8 +206,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       link: input.link ?? null,
     })
     await maybeSendPush(userId, record)
-    // Fire-and-forget the realtime bell signal: the row is already persisted and the publish must not
-    // block the write, so we void the promise (it swallows + logs its own errors; the .catch is a backstop).
     void maybeSignalNotification(userId).catch((err: unknown) => {
       deps.logger?.error({ err, userId }, "notification signal dispatch failed (suppressed)")
     })
@@ -308,9 +261,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         deviceId: req.deviceId ?? null,
       })
       if (outcome === "conflict") {
-        // The token is owned by another user with no device-ownership proof. Do NOT register it with the
-        // PushSender either (that would route the foreign device's pushes here). Still return ok so the
-        // conflict is not an enumeration oracle for which raw tokens exist.
         deps.logger?.warn(
           { userId, platform: req.platform, hasDeviceId: req.deviceId !== undefined },
           "push token re-registration refused: token owned by another user (no device-ownership proof)",
