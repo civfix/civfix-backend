@@ -1,22 +1,3 @@
-/**
- * Report service: the create/get/my-list/clustered-map/follow half of the reports domain. All DB access
- * sits behind the ReportRepository seam (Drizzle impl in report-repository.drizzle.ts; an in-memory impl
- * in the offline tests) so the service is unit-testable with no database.
- *
- * IDEMPOTENCY + NO-DUPLICATE + NO-ORPHAN: createReport keys off idempotency_keys (scope "report_create").
- * On the FIRST submit the repository runs ONE transaction that inserts the report, attaches each
- * media_asset (never stealing media already bound to another report), inserts the initial timeline row,
- * AND writes the resulting ReportDTO into idempotency_keys.response_snapshot — atomically. A retry with
- * the same key replays the stored snapshot verbatim (no second row, no second attach, no orphaned R2
- * object). Two concurrent first-submits race on UNIQUE(idempotency_key); the loser gets the winner's
- * stored snapshot. The stored snapshot includes the presigned media URLs at create time, so a replay
- * returns those same (eventually-expiring) URLs — the deliberate "replay the original response" contract;
- * a client needing a fresh URL re-fetches GET /reports/:id (which always re-presigns).
- *
- * HELD/NON-PUBLIC HIDING: getReport returns 404 (never 403, which would leak existence) for a soft-deleted
- * report and for any report that is not (published AND public) UNLESS the viewer owns it — so a stranger
- * cannot tell a held report from a missing one; the owner can still see their own.
- */
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
@@ -68,11 +49,6 @@ import {
 export * from "./report-service.types.js"
 export * from "./report-clustering.js"
 
-// 8-4-4-4-12 hex shape (the exact set the Postgres `uuid` type accepts on the reports.id column). Used by
-// the resolve-either getReport to decide whether the URL `:id` is a primary key (resolve by id) or a
-// reference_code (resolve by code). Deliberately does NOT enforce the v1-5 version/variant nibbles: every
-// real id is a valid uuid regardless, and a reference code ("DU-42-000001", "EVENT-...") never matches this
-// dash layout + hex-only charset, so the discrimination is unambiguous.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function isUuid(value: string): boolean {
@@ -97,8 +73,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     }
   }
 
-  // A pin with no visible media (both keys null) carries thumbUrl:null and makes no presign call. `title`
-  // is omitted when null (matching the DTO elsewhere); `description` is always emitted (null when absent).
   async function toMapPinDTO(pin: UnsignedReportPin): Promise<ReportPinDTO> {
     let thumbUrl: string | null = null
     if (pin.r2Key !== null) {
@@ -115,10 +89,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(pin.title !== null ? { title: pin.title } : {}),
       description: pin.description,
       thumbUrl,
-      // Search-row enrichment (the /reports/search list reads these to render its location + "<type>:
       // <reference>" headline). addr stays nullable; referenceCode is omitted when null, mirroring title.
-      // The /map/reports route's fast-json-stringify schema does NOT declare these, so the hot map path
-      // drops them - they ride only on the unschematized search response.
       addr: pin.addr,
       ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
     }
@@ -129,8 +100,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       status: view.status,
       at: view.createdAt.toISOString(),
       ...(view.note !== null ? { note: view.note } : {}),
-      // D13: surface the entry kind + the full body when present (an inbound city reply carries
-      // kind='reply' + body). Both are optional non-null on the DTO, so omit when null.
       ...(view.kind !== null ? { kind: view.kind } : {}),
       ...(view.body !== null ? { body: view.body } : {}),
     }
@@ -190,8 +159,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     return (grouped.get(reportId) ?? []).map(toLinkedEventRef)
   }
 
-  // Best-effort: a thrown loader is swallowed (returns null) so the four optional DTO fields are simply
-  // omitted and the core report read never fails because the discussion meta was unavailable.
   async function discussionMetaFor(reportId: string): Promise<ReportDiscussionMeta | null> {
     if (deps.loadDiscussionMeta === undefined) return null
     try {
@@ -203,28 +170,21 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
   const service: ReportService = {
     async createReport(input: CreateReportRequest, owner: { userId: string }): Promise<ReportDTO> {
-      // A non-empty honeypot means a bot filled a hidden field. Reject with a plain VALIDATION envelope
-      // (no hint that it was the honeypot) and persist nothing.
       if (input.honeypot !== undefined && input.honeypot.trim() !== "") {
         throw AppError.validation({ honeypot: "invalid" })
       }
 
-      // Hate-slur content gate (App Store 1.2) on the free-text title/description. Slurs only; general
-      // profanity passes. Each is checked only when present.
       assertNoSlur(input.title ?? null, "title")
       assertNoSlur(input.description ?? null, "description")
 
       const existing = await deps.repo.findIdempotentSnapshot(input.idempotencyKey, REPORT_CREATE_SCOPE)
       if (existing) return existing
 
-      // Jurisdiction resolve + reverse-geocode are independent pre-tx lookups; run them concurrently.
       const wantsReverse = !input.addr?.trim() && deps.reverseGeocode !== undefined
       const [jurisdictionGeoid, reversed] = await Promise.all([
         deps.resolveJurisdictionGeoid(input.lat, input.lng),
         wantsReverse ? deps.reverseGeocode!(input.lat, input.lng) : Promise.resolve(null),
       ])
-      // Resolve the jurisdiction's compact CODE pre-tx (the reference-code JURCODE segment, D4/D5). A null
-      // geoid OR a missing resolver yields UNKNOWN_JURCODE (0) — the unknown bucket, never a crash.
       const jurCode =
         deps.resolveJurisdictionCode !== undefined
           ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
@@ -248,7 +208,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         title: input.title ?? null,
         description: input.description ?? null,
         addr,
-        // Authed pins publish immediately (plan 11.7): skip the hold.
         status: "published",
         visibility: "public",
         h3Cell,
@@ -260,23 +219,22 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           toReportDTO(record, media, timeline, { mine: true, following: false }),
       })
 
-      // AUTO-FORWARD (D9 / #56): AFTER the create tx commits (never inside it), enqueue report.autoforward
-      // ONLY when the reporter is report_verified. Anonymous/unverified reporters are never enqueued. The
-      // singletonKey=reportId dedupes a double-enqueue. Best-effort: a gate-read or enqueue failure is logged
-      // and swallowed — the report is already committed + published, and manual routing stays available.
       await maybeEnqueueAutoForward(deps, reportId, owner.userId)
+
+      await maybeAwardReportHours(
+        deps,
+        result.snapshot.id,
+        owner.userId,
+        result.snapshot.jurisdictionGeoid ?? null,
+      )
 
       return result.snapshot
     },
 
     async getReport(id: string, viewer: ReportOwner): Promise<ReportDTO> {
-      // RESOLVE-EITHER (issue #56 / ROUTING): the URL `:id` segment is an opaque string — a UUID primary
-      // key OR a reference_code. A UUID-shaped id resolves by primary key; anything else resolves by
-      // reference_code. Every MUTATION still keys off the loaded DTO's uuid `id`, so this is read-only.
       const record = isUuid(id)
         ? await deps.repo.findReportById(id)
         : await deps.repo.findReportByReferenceCode(id)
-      // Missing OR soft-deleted -> 404 (a deleted report is gone for everyone, including the owner).
       if (!record || record.deletedAt !== null) {
         throw AppError.notFound("Report not found")
       }
@@ -284,8 +242,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const viewerId = viewer.userId ?? null
       const mine = viewerId !== null && record.reporterUserId === viewerId
 
-      // A report that is not (published AND public) is only visible to its owner; everyone else gets 404
-      // (notFound, not forbidden) so a held/hidden report does not leak its existence.
       const isPublic = record.status === "published" && record.visibility === "public"
       if (!isPublic && !mine) {
         throw AppError.notFound("Report not found")
@@ -301,8 +257,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           discussionMetaFor(record.id),
         ])
 
-      // mediaPending = validating media the viewer sees ONLY as a placeholder (those NOT in media[]). The
-      // owner's own validating tiles ARE in media[] (ownerView), so subtract them; clamp >= 0 defensively.
       const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
       const mediaPending = Math.max(0, validatingCount - validatingShown)
 
@@ -320,8 +274,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const limit = pagination.limit ?? REPORTS_DEFAULT_LIMIT
       const { records, nextCursor } = await deps.repo.listMyReports(userId, cursor, limit)
 
-      // Batched reads (instead of 3 queries per row): fetch media, timeline, and the followed-id set for the
-      // whole page in one query each, preserving per-item order/filtering. The caller owns all (mine=true).
       const ids = records.map((r) => r.id)
       const [mediaById, timelineById, followed, linkedEventsById] = await Promise.all([
         deps.repo.findMediaForReports(ids, true),
@@ -332,8 +284,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           : Promise.resolve(new Map<string, LinkedEventView[]>()),
       ])
 
-      // mapWithLimit preserves input order, so the page keeps its (created_at DESC, id DESC) ordering while
-      // bounding concurrent presign signings.
       const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, (record) =>
         toReportDTO(record, mediaById.get(record.id) ?? [], timelineById.get(record.id) ?? [], {
           mine: true,
@@ -355,8 +305,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const { clusters, pins: unsignedPins } = clusterByZoom(points, zoom)
       const counts = countByCategory(points)
 
-      // Clustered (zoomed-out) views return no pins; only individual pins are presigned. mapWithLimit caps
-      // the concurrent SigV4 signings so a wide pin-zoom view can't fire thousands of R2 ops at once.
       const pins: ReportPinDTO[] = await mapWithLimit(unsignedPins, PRESIGN_CONCURRENCY, toMapPinDTO)
 
       return {
@@ -376,8 +324,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       const { points, nextCursor } = await deps.repo.searchReports({ q, categories, types, cursor, limit })
 
-      // Search is always an individual-row list; render through the SAME toMapPinDTO path so a search row
-      // and a tapped pin render identically, with the presign fan-out bounded.
       const items: ReportPinDTO[] = await mapWithLimit(points, PRESIGN_CONCURRENCY, (p) =>
         toMapPinDTO(mapPointToUnsignedPin(p)),
       )
@@ -422,13 +368,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
   return service
 }
 
-/**
- * Enqueue the report.autoforward job (D9 / #56) for a just-created report, gated on the reporter being
- * report_verified. The jobs seam + the gate read are BOTH optional + wired together; when either is absent
- * (offline tests / a non-forwarding path) this is a no-op. Anonymous/unverified reporters never enqueue.
- * Runs POST-COMMIT, so any failure (a gate-read throw, an enqueue throw) is logged best-effort and
- * swallowed — the report is already committed + published and manual routing remains available.
- */
 async function maybeEnqueueAutoForward(
   deps: ReportServiceDeps,
   reportId: string,
@@ -445,5 +384,19 @@ async function maybeEnqueueAutoForward(
     )
   } catch (err) {
     deps.logger?.warn({ err, reportId }, "report.autoforward enqueue failed")
+  }
+}
+
+async function maybeAwardReportHours(
+  deps: ReportServiceDeps,
+  reportId: string,
+  userId: string,
+  geoid: string | null,
+): Promise<void> {
+  if (deps.awardReportHours === undefined) return
+  try {
+    await deps.awardReportHours(userId, reportId, geoid)
+  } catch (err) {
+    deps.logger?.warn({ err, reportId }, "volunteer-hours: report award failed")
   }
 }
