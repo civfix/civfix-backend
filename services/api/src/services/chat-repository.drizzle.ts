@@ -1,22 +1,3 @@
-/**
- * Postgres-backed ChatRepository (the persistence half of the chat seam: persist + history).
- *
- * Written against the raw postgres-js tag because the read joins the sender's user row to build the
- * ChatMessageDTO.from PersonDTO, and history pages over the partitioned chat_messages table by
- * (created_at, id). The table is declaratively partitioned by RANGE(created_at) with PK(id, created_at)
- * (see 0002_chat_partitioning.sql), so we always carry created_at in the keyset.
- *
- * HISTORY PAGINATION (newest-first):
- *   history(cleanupId, before, limit) returns up to `limit` messages ordered created_at DESC, id DESC.
- *   `before` is the id of the last message the client already has; we resolve its created_at and return
- *   only rows strictly older than (created_at, id). nextCursor is the id of the oldest row returned when
- *   another page may exist, else null. Soft-deleted rows (deleted_at not null) are excluded.
- *
- *   CURSOR IS ROOM-SCOPED (P1-5): the anchor lookup that resolves `before` -> (created_at) is scoped to
- *   the SAME cleanup_id (AND deleted_at IS NULL). A `before` id from another room (a client/relay bug or
- *   a malicious caller) does NOT resolve to a foreign message's timestamp; it simply finds no anchor and
- *   we return the newest page, so a cursor can never seek into / leak the ordering of a different room.
- */
 
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
@@ -35,53 +16,48 @@ import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle
 import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 
-/**
- * Persistence seam for chat: insert a message + page history. The production impl runs Drizzle/PostGIS;
- * the offline tests pass an in-memory implementation so the WsChatService persist/history paths are
- * exercised with no DB. (joinRoom/leaveRoom/broadcast live in the WS adapter, not here.)
- */
 export interface ChatRepository {
-  /** Insert a chat message and return it as a ChatMessageDTO (sender joined into `from`). */
   insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO>
-  /** Page a cleanup's messages newest-first, before the given message id (cursor). `viewerUserId`
-   *  (optional) resolves each message's reaction `mine` flag for the loader. */
   history(
     cleanupId: string,
     before: string | undefined,
     limit: number,
     viewerUserId?: string | null,
   ): Promise<ChatHistoryPage>
-  /**
-   * Load ONE cleanup message (scoped to its cleanup) as a ChatMessageDTO for the viewer, with reactions
-   * aggregated (+ the viewer's `mine` flag). Null when the message does not exist in that cleanup or is
-   * soft-deleted. Used by the reaction toggle to validate the target + return the recomputed message.
-   */
   findMessage(
     cleanupId: string,
     messageId: string,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO | null>
-  /**
-   * Toggle one of a user's emoji reactions on a chat message (insert-or-delete by composite PK). Returns
-   * true when the reaction is now PRESENT (added), false when removed. Mirrors discussion repo.toggleReaction.
-   */
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
-  /**
-   * Soft-delete (tombstone) a cleanup message by its author. SENDER-ONLY + cleanup-scoped + not-already-
-   * deleted (the UPDATE's WHERE is the authorization gate). Returns the tombstoned ChatMessageDTO, or null
-   * when the message is missing / belongs to another cleanup / was not sent by `senderId` / already deleted.
-   */
   softDelete(
     cleanupId: string,
     messageId: string,
     senderId: string,
   ): Promise<ChatMessageDTO | null>
+  reportHistory(
+    reportId: string,
+    before: string | undefined,
+    limit: number,
+    viewerUserId?: string | null,
+  ): Promise<ChatHistoryPage>
+  findReportMessage(
+    reportId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null>
+  softDeleteReport(
+    reportId: string,
+    messageId: string,
+    senderId: string,
+  ): Promise<ChatMessageDTO | null>
+  countReportMessages(reportId: string): Promise<number>
 }
 
-/** A chat row joined with its sender's person fields, as selected for the DTO. */
 interface ChatRowSelect {
   id: string
-  cleanup_id: string
+  cleanup_id: string | null
+  report_id: string | null
   sender_id: string
   body: string | null
   kind: ChatMessageKind
@@ -96,11 +72,6 @@ interface ChatRowSelect {
   sender_deleted_at: Date | null
 }
 
-/**
- * Project a selected chat row into the wire ChatMessageDTO. `reactions` is the aggregated per-emoji summary,
- * `mentions` the resolved USER @-mentions (both empty for a freshly-inserted message; the gateway projects a
- * new send's resolved mentions onto its broadcast copy, and history hydrates them via loadChatMentions).
- */
 function toMessageDTO(
   r: ChatRowSelect,
   reactions: ReactionSummaryDTO[],
@@ -109,7 +80,6 @@ function toMessageDTO(
   clientId?: string,
   attachments: MediaDTO[] = [],
 ): ChatMessageDTO {
-  // PUBLIC author identity: a deleted (tombstoned) sender renders "Deleted User" (no handle/avatar, deleted:true).
   const author = publicAuthorIdentity({
     id: r.sender_id,
     displayName: r.sender_display_name,
@@ -119,7 +89,8 @@ function toMessageDTO(
   })
   return {
     id: r.id,
-    cleanupId: r.cleanup_id,
+    cleanupId: r.cleanup_id ?? r.report_id!,
+    ...(r.report_id !== null ? { roomKind: "report" as const } : {}),
     from: {
       id: r.sender_id,
       name: author.name,
@@ -134,8 +105,6 @@ function toMessageDTO(
     },
     ...(r.body !== null ? { body: r.body } : {}),
     kind: r.kind,
-    // Presigned, status-"ready" media from media_assets (NOT the vestigial chat_messages.attachments jsonb
-    // column, which predates real chat media and is no longer projected). Always an array.
     attachments,
     reactions,
     mentions,
@@ -147,11 +116,11 @@ function toMessageDTO(
   }
 }
 
-/** Shared SELECT list (sender joined) for chat history/find reads (the `cm` alias). */
 function chatColumns(sql: Queryable) {
   return sql`
     cm.id,
     cm.cleanup_id,
+    cm.report_id,
     cm.sender_id,
     cm.body,
     cm.kind,
@@ -167,16 +136,12 @@ function chatColumns(sql: Queryable) {
   `
 }
 
-/**
- * Project a write CTE — an insert/update that RETURNs (id, cleanup_id, sender_id, body, kind, attachments,
- * created_at, edited_at, deleted_at) — joined with the sender into a ChatRowSelect. `cte` is a caller-side
- * module constant (never user input), interpolated as a postgres.js identifier.
- */
 function selectChatRowFrom(tag: Queryable, cte: string) {
   return tag`
     SELECT
       ${tag(cte)}.id,
       ${tag(cte)}.cleanup_id,
+      ${tag(cte)}.report_id,
       ${tag(cte)}.sender_id,
       ${tag(cte)}.body,
       ${tag(cte)}.kind,
@@ -194,36 +159,133 @@ function selectChatRowFrom(tag: Queryable, cte: string) {
   `
 }
 
-/**
- * @param presign OPTIONAL media presigner. When supplied, a message's attachments (media_assets bound by
- *   `chat_message_id`, status "ready") are loaded + presigned into `attachments: MediaDTO[]` on every read,
- *   and a send's `mediaUploadIds` are bound to the new message. Omit it (some offline tests) to skip media
- *   entirely - attachments then project as `[]`.
- */
 export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): ChatRepository {
+  type RoomScope = { column: "cleanup_id" | "report_id"; id: string }
+
+  const anchorScope = (scope: RoomScope) =>
+    scope.column === "report_id" ? sql`report_id = ${scope.id}` : sql`cleanup_id = ${scope.id}`
+  const rowScope = (scope: RoomScope) =>
+    scope.column === "report_id" ? sql`cm.report_id = ${scope.id}` : sql`cm.cleanup_id = ${scope.id}`
+
+  async function historyScoped(
+    scope: RoomScope,
+    before: string | undefined,
+    limit: number,
+    viewerUserId: string | null,
+  ): Promise<ChatHistoryPage> {
+    let anchor: { createdAt: Date; id: string } | null = null
+    if (before !== undefined && isUuid(before)) {
+      const rows = await sql<{ created_at: Date; id: string }[]>`
+        SELECT created_at, id FROM chat_messages
+        WHERE id = ${before} AND ${anchorScope(scope)} AND deleted_at IS NULL
+        LIMIT 1
+      `
+      if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }
+    }
+
+    const cursorFilter =
+      anchor !== null
+        ? sql`AND (cm.created_at, cm.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+        : sql``
+
+    const rows = await sql<ChatRowSelect[]>`
+      SELECT ${chatColumns(sql)}
+      FROM chat_messages cm
+      JOIN users u ON u.id = cm.sender_id
+      WHERE ${rowScope(scope)}
+        AND cm.deleted_at IS NULL
+        ${cursorFilter}
+      ORDER BY cm.created_at DESC, cm.id DESC
+      LIMIT ${limit + 1}
+    `
+    const hasMore = rows.length > limit
+    const page = hasMore ? rows.slice(0, limit) : rows
+    const ids = page.map((r) => r.id)
+    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage] = await Promise.all([
+      presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+      loadChatReactionsFor(sql, ids, viewerUserId),
+      loadChatMentionsFor(sql, ids),
+    ])
+    const items = page.map((r) =>
+      toMessageDTO(
+        r,
+        reactionsByMessage.get(r.id) ?? [],
+        mentionsByMessage.get(r.id) ?? [],
+        viewerUserId,
+        undefined,
+        attachmentsByMessage.get(r.id) ?? [],
+      ),
+    )
+    const last = page[page.length - 1]
+    const nextCursor = hasMore && last ? last.id : null
+    return { items, nextCursor }
+  }
+
+  async function findMessageScoped(
+    scope: RoomScope,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    const rows = await sql<ChatRowSelect[]>`
+      SELECT ${chatColumns(sql)}
+      FROM chat_messages cm
+      JOIN users u ON u.id = cm.sender_id
+      WHERE cm.id = ${messageId} AND ${rowScope(scope)} AND cm.deleted_at IS NULL
+      LIMIT 1
+    `
+    const row = rows[0]
+    if (!row) return null
+    const [reactions, mentions, attachmentsByMessage] = await Promise.all([
+      loadChatReactions(sql, row.id, viewerUserId),
+      loadChatMentions(sql, row.id),
+      presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+    ])
+    return toMessageDTO(row, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(row.id) ?? [])
+  }
+
+  async function softDeleteScoped(
+    scope: RoomScope,
+    messageId: string,
+    senderId: string,
+  ): Promise<ChatMessageDTO | null> {
+    const rows = await sql<ChatRowSelect[]>`
+      WITH updated AS (
+        UPDATE chat_messages
+        SET deleted_at = now()
+        WHERE id = ${messageId}
+          AND ${anchorScope(scope)}
+          AND sender_id = ${senderId}
+          AND deleted_at IS NULL
+        RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+      )
+      ${selectChatRowFrom(sql, "updated")}
+    `
+    const row = rows[0]
+    if (!row) return null
+    return toMessageDTO(row, [], [], senderId)
+  }
+
   return {
     async insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO> {
       const kind: ChatMessageKind = input.kind ?? "text"
       const uploadIds = input.mediaUploadIds ?? []
       const wantsMedia = !!presign && uploadIds.length > 0
-      // Insert, then read back joined with the sender so `from` is populated. created_at defaults to now()
-      // in the DB; we read it back rather than guessing so the DTO matches the persisted row exactly. When
-      // there are media uploads, the INSERT + the media-attach run in ONE transaction (mirroring the
-      // discussion create) so a failed attach rolls the message back too - otherwise a committed-message +
-      // failed-send would orphan a message and the client's retry would duplicate it. Presigning happens
-      // AFTER commit (a network round-trip must not hold the tx open).
+      const isReport = input.roomKind === "report"
+      const cleanupId = isReport ? null : input.cleanupId
+      const reportId = isReport ? input.cleanupId : null
       const run = async (q: Queryable) => q<ChatRowSelect[]>`
         WITH inserted AS (
-          INSERT INTO chat_messages (id, cleanup_id, sender_id, body, kind, attachments)
+          INSERT INTO chat_messages (id, cleanup_id, report_id, sender_id, body, kind, attachments)
           VALUES (
             ${id},
-            ${input.cleanupId},
+            ${cleanupId},
+            ${reportId},
             ${input.userId},
             ${input.body},
             ${kind},
             ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null}
           )
-          RETURNING id, cleanup_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
         )
         ${selectChatRowFrom(q, "inserted")}
       `
@@ -234,128 +296,70 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
             return inserted
           })
         : await run(sql)
-      // Hydrate the just-attached, ready (presigned) attachments for the returned DTO. A freshly-inserted
-      // message has no reactions/mentions persisted yet, so pass [] / []. The sender is the viewer → mine:true.
       const attachments = wantsMedia ? (await loadChatAttachments(sql, [id], presign!)).get(id) ?? [] : []
       return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId, attachments)
     },
 
-    async history(
+    history(
       cleanupId: string,
       before: string | undefined,
       limit: number,
       viewerUserId: string | null = null,
     ): Promise<ChatHistoryPage> {
-      // Resolve the `before` cursor id to its (created_at) so we can keyset strictly older than it. The
-      // anchor lookup is SCOPED TO THIS cleanup (P1-5): a `before` id that belongs to another room (or is
-      // unknown / soft-deleted) finds no anchor, so we just return the newest page (defensive) - a foreign
-      // cursor can never seek into or leak another room's ordering. Scoping also lets the planner use the
-      // (cleanup_id, created_at) access path instead of probing every partition by id alone.
-      let anchor: { createdAt: Date; id: string } | null = null
-      // Only look up the anchor when `before` is a well-formed UUID. The lookup binds it against the uuid
-      // `id` column, so a non-UUID value would raise a Postgres 22P02 cast error -> 500; a malformed
-      // cursor instead degrades to "newest page" (anchor stays null), matching the foreign-cursor handling.
-      if (before !== undefined && isUuid(before)) {
-        const rows = await sql<{ created_at: Date; id: string }[]>`
-          SELECT created_at, id FROM chat_messages
-          WHERE id = ${before} AND cleanup_id = ${cleanupId} AND deleted_at IS NULL
-          LIMIT 1
-        `
-        if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }
-      }
-
-      const cursorFilter =
-        anchor !== null
-          ? sql`AND (cm.created_at, cm.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-          : sql``
-
-      const rows = await sql<ChatRowSelect[]>`
-        SELECT ${chatColumns(sql)}
-        FROM chat_messages cm
-        JOIN users u ON u.id = cm.sender_id
-        WHERE cm.cleanup_id = ${cleanupId}
-          AND cm.deleted_at IS NULL
-          ${cursorFilter}
-        ORDER BY cm.created_at DESC, cm.id DESC
-        LIMIT ${limit + 1}
-      `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      // Batch the three per-message relations into ONE grouped query each (WHERE message_id IN (...)) so a
-      // page is 3 round-trips total, not 3×N. The reaction `mine` flag resolves against the viewer.
-      const ids = page.map((r) => r.id)
-      const [attachmentsByMessage, reactionsByMessage, mentionsByMessage] = await Promise.all([
-        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        loadChatReactionsFor(sql, ids, viewerUserId),
-        loadChatMentionsFor(sql, ids),
-      ])
-      const items = page.map((r) =>
-        toMessageDTO(
-          r,
-          reactionsByMessage.get(r.id) ?? [],
-          mentionsByMessage.get(r.id) ?? [],
-          viewerUserId,
-          undefined,
-          attachmentsByMessage.get(r.id) ?? [],
-        ),
-      )
-      const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? last.id : null
-      return { items, nextCursor }
+      return historyScoped({ column: "cleanup_id", id: cleanupId }, before, limit, viewerUserId)
     },
 
-    async findMessage(
+    findMessage(
       cleanupId: string,
       messageId: string,
       viewerUserId: string | null,
     ): Promise<ChatMessageDTO | null> {
-      const rows = await sql<ChatRowSelect[]>`
-        SELECT ${chatColumns(sql)}
-        FROM chat_messages cm
-        JOIN users u ON u.id = cm.sender_id
-        WHERE cm.id = ${messageId} AND cm.cleanup_id = ${cleanupId} AND cm.deleted_at IS NULL
-        LIMIT 1
-      `
-      const row = rows[0]
-      if (!row) return null
-      const [reactions, mentions, attachmentsByMessage] = await Promise.all([
-        loadChatReactions(sql, row.id, viewerUserId),
-        loadChatMentions(sql, row.id),
-        presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-      ])
-      return toMessageDTO(row, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(row.id) ?? [])
+      return findMessageScoped({ column: "cleanup_id", id: cleanupId }, messageId, viewerUserId)
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
       return toggleChatReaction(sql, messageId, userId, emoji)
     },
 
-    async softDelete(
+    softDelete(
       cleanupId: string,
       messageId: string,
       senderId: string,
     ): Promise<ChatMessageDTO | null> {
-      // SENDER-ONLY, cleanup-scoped, not-already-deleted. The WHERE clause IS the authorization gate, so a
-      // non-sender / wrong cleanup / missing / already-deleted target updates nothing and returns null
-      // (the route maps that to a generic 403). Stamp deleted_at = now() and read the tombstoned row back
-      // joined with the sender so the returned DTO is complete (mirrors dm-repository.softDelete).
-      const rows = await sql<ChatRowSelect[]>`
-        WITH updated AS (
-          UPDATE chat_messages
-          SET deleted_at = now()
-          WHERE id = ${messageId}
-            AND cleanup_id = ${cleanupId}
-            AND sender_id = ${senderId}
-            AND deleted_at IS NULL
-          RETURNING id, cleanup_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
-        )
-        ${selectChatRowFrom(sql, "updated")}
+      return softDeleteScoped({ column: "cleanup_id", id: cleanupId }, messageId, senderId)
+    },
+
+    reportHistory(
+      reportId: string,
+      before: string | undefined,
+      limit: number,
+      viewerUserId: string | null = null,
+    ): Promise<ChatHistoryPage> {
+      return historyScoped({ column: "report_id", id: reportId }, before, limit, viewerUserId)
+    },
+
+    findReportMessage(
+      reportId: string,
+      messageId: string,
+      viewerUserId: string | null,
+    ): Promise<ChatMessageDTO | null> {
+      return findMessageScoped({ column: "report_id", id: reportId }, messageId, viewerUserId)
+    },
+
+    softDeleteReport(
+      reportId: string,
+      messageId: string,
+      senderId: string,
+    ): Promise<ChatMessageDTO | null> {
+      return softDeleteScoped({ column: "report_id", id: reportId }, messageId, senderId)
+    },
+
+    async countReportMessages(reportId: string): Promise<number> {
+      const rows = await sql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count FROM chat_messages
+        WHERE report_id = ${reportId} AND deleted_at IS NULL
       `
-      const row = rows[0]
-      if (!row) return null
-      // A tombstone carries no live reactions/mentions to recompute; return [] / [] (the body is the
-      // deleted marker the client renders via deletedAt).
-      return toMessageDTO(row, [], [], senderId)
+      return rows[0]?.count ?? 0
     },
   }
 }

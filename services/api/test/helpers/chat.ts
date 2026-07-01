@@ -1,15 +1,3 @@
-/**
- * Offline chat test helpers:
- *   - InMemoryChatRepository: a ChatRepository (persist + history) faithful to the Drizzle impl's
- *     observable contract (insert returns a ChatMessageDTO with `from`; history pages newest-first
- *     before a cursor id, excluding soft-deleted rows). Lets the real WsChatService persist/history
- *     paths run with no DB.
- *   - MockConnection: a ChatConnection that records every frame written to it, so a two-connection
- *     real-time test can assert what each side received.
- *
- * The Drizzle-backed repository + the partitioned chat_messages reads are covered by the Docker-gated
- * integration test; these fakes exercise the same seam locally.
- */
 
 import { randomUUID } from "node:crypto"
 import { avatarGradient } from "@civfix/shared"
@@ -18,13 +6,11 @@ import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/
 import type { ChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 
-/** A stored chat message (the persisted fields + the sender person snapshot for the `from` projection). */
 interface StoredMessage {
   dto: ChatMessageDTO
   deleted: boolean
 }
 
-/** Minimal sender person fields the in-memory repo joins into ChatMessageDTO.from. */
 export interface ChatSender {
   id: string
   displayName: string
@@ -32,18 +18,12 @@ export interface ChatSender {
   bio?: string | null
 }
 
-/** An in-memory ChatRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryChatRepository implements ChatRepository {
-  /** cleanupId -> append-ordered messages (oldest first). */
   private readonly log = new Map<string, StoredMessage[]>()
-  /** userId -> sender person fields, so `from` resolves. */
   private readonly senders = new Map<string, ChatSender>()
-  /** messageId -> set of `${userId}:${emoji}` reaction keys (mirrors the chat_message_reactions PK). */
   private readonly reactions = new Map<string, Set<string>>()
-  /** Monotonic clock so created_at ordering is deterministic across inserts. */
   private tick = 0
 
-  /** Register (or update) a sender's person fields so persisted messages carry a real `from`. */
   registerSender(sender: ChatSender): void {
     this.senders.set(sender.id, sender)
   }
@@ -63,6 +43,7 @@ export class InMemoryChatRepository implements ChatRepository {
     const dto: ChatMessageDTO = {
       id,
       cleanupId: input.cleanupId,
+      ...(input.roomKind === "report" ? { roomKind: "report" as const } : {}),
       from: {
         id: sender.id,
         name: sender.displayName,
@@ -75,12 +56,8 @@ export class InMemoryChatRepository implements ChatRepository {
       },
       ...(input.body !== undefined ? { body: input.body } : {}),
       kind: input.kind ?? "text",
-      // In-memory test repo: no media pipeline, so mediaUploadIds don't resolve to MediaDTOs.
       attachments: null,
       reactions: [],
-      // No persisted mentions on a fresh insert; the gateway projects a send's resolved @-mentions onto its
-      // broadcast/ack copy. This in-memory repo keeps no mention store (mention reads are covered offline by
-      // the gateway test's injected chatMentions seam + the discussion fake; history mentions need the DB).
       mentions: [],
       createdAt: this.nextDate().toISOString(),
       editedAt: null,
@@ -94,7 +71,6 @@ export class InMemoryChatRepository implements ChatRepository {
 
   history(cleanupId: string, before: string | undefined, limit: number): Promise<ChatHistoryPage> {
     const list = (this.log.get(cleanupId) ?? []).filter((m) => !m.deleted)
-    // Newest-first.
     const ordered = [...list].reverse().map((m) => m.dto)
     let start = 0
     if (before !== undefined) {
@@ -107,7 +83,6 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve({ items: page, nextCursor })
   }
 
-  /** Aggregate a message's reactions into the wire summary, resolving `mine` for the viewer. */
   private reactionsFor(messageId: string, viewerUserId: string | null): ReactionSummaryDTO[] {
     const set = this.reactions.get(messageId)
     if (!set || set.size === 0) return []
@@ -151,11 +126,6 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve(present)
   }
 
-  /**
-   * Soft-delete (tombstone) a cleanup message by its author. SENDER-ONLY + cleanup-scoped + not-already-
-   * deleted, mirroring the Drizzle gate. Returns the tombstoned DTO, or null when missing / not the
-   * sender's / already deleted.
-   */
   softDelete(
     cleanupId: string,
     messageId: string,
@@ -173,13 +143,40 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve(tombstone)
   }
 
-  /** Test helper: total persisted (non-deleted) messages for a cleanup. */
   count(cleanupId: string): number {
     return (this.log.get(cleanupId) ?? []).filter((m) => !m.deleted).length
   }
+
+  reportHistory(
+    reportId: string,
+    before: string | undefined,
+    limit: number,
+    _viewerUserId?: string | null,
+  ): Promise<ChatHistoryPage> {
+    return this.history(reportId, before, limit)
+  }
+
+  findReportMessage(
+    reportId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    return this.findMessage(reportId, messageId, viewerUserId)
+  }
+
+  softDeleteReport(
+    reportId: string,
+    messageId: string,
+    senderId: string,
+  ): Promise<ChatMessageDTO | null> {
+    return this.softDelete(reportId, messageId, senderId)
+  }
+
+  countReportMessages(reportId: string): Promise<number> {
+    return Promise.resolve(this.count(reportId))
+  }
 }
 
-/** A message in the in-memory threads store (the subset countUnread + last-message need). */
 interface ThreadMessage {
   createdAt: Date
   senderId: string
@@ -187,35 +184,25 @@ interface ThreadMessage {
   deleted: boolean
 }
 
-/** A cleanup thread in the in-memory threads store: members (with joined_at) + its messages. */
 interface ThreadCleanup {
   id: string
   title: string
-  members: Map<string, Date> // userId -> joinedAt
+  members: Map<string, Date>
   messages: ThreadMessage[]
 }
 
-/**
- * A self-contained in-memory ThreadsRepository for the GET /threads tests. Faithful to the Drizzle
- * impl's observable contract: listThreadsFor returns the viewer's cleanups (membership) with the
- * last-message + member-count, most-recent-activity first; countUnread counts others' messages strictly
- * after the watermark, excluding soft-deleted rows.
- */
 export class InMemoryThreadsRepository implements ThreadsRepository {
   private readonly cleanups = new Map<string, ThreadCleanup>()
 
-  /** Seed a cleanup with a title. Returns its id. */
   seedCleanup(title: string, id: string = randomUUID()): string {
     this.cleanups.set(id, { id, title, members: new Map(), messages: [] })
     return id
   }
 
-  /** Add a member (with an optional joined_at) to a seeded cleanup. */
   addMember(cleanupId: string, userId: string, joinedAt: Date = new Date(0)): void {
     this.cleanups.get(cleanupId)?.members.set(userId, joinedAt)
   }
 
-  /** Append a message to a seeded cleanup. */
   addMessage(
     cleanupId: string,
     msg: { senderId: string; body: string | null; createdAt: Date; deleted?: boolean },
@@ -229,7 +216,7 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
     const out: ThreadAggregate[] = []
     for (const c of this.cleanups.values()) {
       const joinedAt = c.members.get(userId)
-      if (joinedAt === undefined) continue // not a member -> not the viewer's thread.
+      if (joinedAt === undefined) continue
       const live = c.messages.filter((m) => !m.deleted)
       const last =
         live.length > 0
@@ -246,7 +233,6 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
             : null,
       })
     }
-    // Most recent activity first (last message, else joined_at).
     out.sort((a, b) => {
       const at = a.last?.createdAt.getTime() ?? a.joinedAt.getTime()
       const bt = b.last?.createdAt.getTime() ?? b.joinedAt.getTime()
@@ -265,10 +251,6 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
   }
 }
 
-/**
- * A ChatConnection that records every frame written to it. Stands in for a real WebSocket so a
- * two-connection test can assert exactly what each side received (the broadcast frame, the ack frame).
- */
 export class MockConnection implements ChatConnection {
   readonly id: string
   readonly sent: string[] = []
@@ -281,12 +263,10 @@ export class MockConnection implements ChatConnection {
     this.sent.push(data)
   }
 
-  /** Parsed view of every frame received, for convenient assertions. */
   get frames(): Array<Record<string, unknown>> {
     return this.sent.map((s) => JSON.parse(s) as Record<string, unknown>)
   }
 
-  /** The frames of a given `type`. */
   framesOfType(type: string): Array<Record<string, unknown>> {
     return this.frames.filter((f) => f.type === type)
   }

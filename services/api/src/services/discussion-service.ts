@@ -1,27 +1,11 @@
-/**
- * Discussion service: the per-report public comment thread (top-level messages + one level of replies),
- * lightweight emoji reactions, attachments, and the @city-mention -> best-effort city-forward path.
- *
- * CITY MENTION + FORWARD (createMessage): the report has (at most) one OWN jurisdiction. If the body
- * @mentions THAT handle we attempt a best-effort forward via OutboundMailService.sendToCity and record a
- * mention row. CRUCIALLY, when no contact email is on file we STILL POST the message (forwardedToCity=false,
- * forwarded_at=null) — we do NOT 422. This DIFFERS from the admin sendFollowup-to-city path, which rejects
- * when no contact exists; a citizen comment is a public post first and a forward second.
- *
- * REPLY DEPTH: one level deep. A parentId must reference a TOP-LEVEL (parent_id IS NULL), non-deleted
- * message of THIS SAME report; a reply-of-a-reply or a cross-report parent is rejected (422).
- *
- * SOFT DELETE: deleteMessage sets deleted_at (a tombstone) so reply subtrees + reaction counts survive
- * moderation. The author OR an operator may delete; the returned DTO is the tombstoned message (author
- * nulled, body blanked) so a caller can render "[removed]" without a refetch.
- */
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type { DiscussionMessageDTO, MediaDTO, UserMentionDTO } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import { buildDiscussionForwardPacket } from "./admin/mail-format.js"
-import { parseCityMention, parseUserMentions } from "./discussion-mentions.js"
+import { forwardReportCityMention } from "./report-city-forward.js"
+import { isReportVisibleTo } from "./report-visibility.js"
+import { parseUserMentions } from "./discussion-mentions.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
   DISCUSSION_MEDIA_MAX,
@@ -33,12 +17,7 @@ import {
   type DiscussionService,
   type DiscussionServiceDeps,
 } from "./discussion-types.js"
-import {
-  clampLimit,
-  effectiveJurisdictionHandle,
-  toMediaDTO,
-  toMessageDTO,
-} from "./discussion-projection.js"
+import { clampLimit, toMediaDTO, toMessageDTO } from "./discussion-projection.js"
 
 export * from "./discussion-types.js"
 export { parseCityMention, jurisdictionHandle } from "./discussion-mentions.js"
@@ -52,8 +31,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
     deps.broadcast?.(reportId, event)
   }
 
-  // Resolve a message's USER @-mentions: parse @handles from the body + the request's explicit ids, resolve
-  // to real, mentionable users (self excluded). Un-wired resolver (offline tests) => no mention rows.
   async function resolveUserMentions(
     body: string,
     mentionedUserIds: string[] | undefined,
@@ -66,9 +43,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
     return deps.resolveMentions({ handles, userIds, authorUserId })
   }
 
-  // VISIBILITY GATE: a mention on a NON-public report must not bell a user who would 404 the report on tap,
-  // so a bell fires only when the report is public OR the mentioned user owns the report (mirroring
-  // loadVisibleReport's read rule). The mention row itself is recorded regardless; this gates only the bell.
   function notifyMentions(
     reportId: string,
     actorUserId: string,
@@ -84,14 +58,10 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
     }
   }
 
-  // Bound the per-message presign fan-out so a 50-record page x 5 attachments can't fire hundreds of
-  // concurrent SigV4 signings; passed into the projector so the cap lives in one place.
   function presignAttachments(views: DiscussionMediaView[]): Promise<MediaDTO[]> {
     return mapWithLimit(views, PRESIGN_CONCURRENCY, (v) => toMediaDTO(v, deps.presignMedia))
   }
 
-  // Bounded per-page projection: cap the number of records presigned concurrently AND (inside each record)
-  // the attachment presigns, so neither dimension fans out unbounded.
   function projectPage(
     records: DiscussionMessageRecord[],
     viewerUserId: string | null,
@@ -108,78 +78,41 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
     return toMessageDTO(record, viewerUserId, presignAttachments)
   }
 
-  // A missing / soft-deleted report, and any report that is not (published AND public) UNLESS the viewer
-  // owns it, yields a 404 (never a 403 that would leak existence) — mirroring report-service.getReport.
   async function loadVisibleReport(
     reportId: string,
     viewerUserId: string | null,
   ): Promise<DiscussionReportView> {
     const report = await deps.repo.findReportForDiscussion(reportId)
-    if (!report || report.deletedAt !== null) {
-      throw AppError.notFound("Report not found")
-    }
-    const mine = viewerUserId !== null && report.reporterUserId === viewerUserId
-    const isPublic = report.status === "published" && report.visibility === "public"
-    if (!isPublic && !mine) {
+    if (report === null || !isReportVisibleTo(report, viewerUserId)) {
       throw AppError.notFound("Report not found")
     }
     return report
   }
 
-  // Resolve the @city mention + best-effort forward for a new message. Only the report's OWN jurisdiction is
-  // mentionable/forwardable. A mention with no contact on file is STILL recorded (and the message still
-  // posts) — we just do not forward; we never 422 here (unlike the admin city follow-up path).
   async function resolveCityForward(
     report: DiscussionReportView,
     body: string,
     reportId: string,
     createdAt: Date,
   ): Promise<{ mention: CreateDiscussionMessageTxArgs["mention"]; forwardedToCity: boolean }> {
-    const jurisdiction = report.jurisdiction
-    if (jurisdiction === null) return { mention: null, forwardedToCity: false }
-    const handle = effectiveJurisdictionHandle(jurisdiction)
-    if (handle === null || parseCityMention(body, handle) === null) {
-      return { mention: null, forwardedToCity: false }
+    const result = await forwardReportCityMention(
+      deps.outboundMail,
+      {
+        reportId,
+        category: report.category,
+        place: report.place,
+        jurisdiction: report.jurisdiction,
+      },
+      body,
+      createdAt,
+    )
+    if (!result.mentioned) return { mention: null, forwardedToCity: false }
+    return {
+      mention: { geoid: result.geoid!, forwarded: result.forwarded, forwardedAt: result.forwardedAt },
+      forwardedToCity: result.forwarded,
     }
-    const contact = jurisdiction.contactEmail
-    let forwarded = false
-    let forwardedAt: Date | null = null
-    if (contact !== null && contact !== "") {
-      // D11: forward onto the PER-REPORT thread (sendReportToJurisdiction), not the rolling per-geoid
-      // digest — so the city's reply threads back into the REPORT timeline (onJurisdictionReply). The body
-      // is a professional packet QUOTING the citizen's comment. A delivery failure must NOT block the post:
-      // a thrown send is swallowed so the comment still lands (forwardedToCity stays false).
-      const packet = buildDiscussionForwardPacket(
-        {
-          reportId,
-          category: report.category,
-          place: report.place,
-          org: jurisdiction.name,
-        },
-        body,
-      )
-      try {
-        await deps.outboundMail.sendReportToJurisdiction({
-          reportId,
-          geoid: jurisdiction.geoid,
-          org: jurisdiction.name,
-          toAddr: contact,
-          subject: packet.subject,
-          text: packet.text,
-          html: packet.html,
-        })
-        forwarded = true
-        forwardedAt = createdAt
-      } catch {
-        forwarded = false
-        forwardedAt = null
-      }
-    }
-    return { mention: { geoid: jurisdiction.geoid, forwarded, forwardedAt }, forwardedToCity: forwarded }
   }
 
-  // A reply must target a TOP-LEVEL, non-deleted message of THIS report (one level deep, same report).
-  // Returns the parent's author id (for the best-effort reply bell) or null for a top-level message.
   async function assertValidParent(
     reportId: string,
     parentId: string | null,
@@ -212,9 +145,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
     },
 
     async listForOperator(reportId, cursor, limit) {
-      // Operator scope already gates the route; we do NOT run loadVisibleReport (an operator can read the
-      // discussion of a held/hidden report). includeDeleted=true so removed rows are returned; toMessageDTO
-      // still tombstones them so their body/author never leak.
       const { records, nextCursor } = await deps.repo.listTopLevel(
         reportId,
         null,
@@ -248,7 +178,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       if (body === "") {
         throw AppError.validation({ body: "Message body is required" })
       }
-      // Hate-slur content gate (App Store 1.2). Slurs only; general profanity passes.
       assertNoSlur(body, "body")
 
       const parentId = input.parentId ?? null
@@ -295,7 +224,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       if (body === "") {
         throw AppError.validation({ body: "Message body is required" })
       }
-      // Hate-slur content gate (App Store 1.2) on the edited body too. Slurs only; profanity passes.
       assertNoSlur(body, "body")
       const mediaUploadIds =
         input.mediaUploadIds !== undefined
@@ -304,9 +232,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
 
       const userMentions = await resolveUserMentions(body, input.mentionedUserIds, userId)
 
-      // The repo's UPDATE is itself the author + not-deleted gate (WHERE author_user_id = userId AND
-      // deleted_at IS NULL); no editable row matched => null => 404. So a missing / foreign / already-removed
-      // message all 404 identically without a pre-read, and a concurrent delete races to the same 404.
       const editedAt = now()
       const record = await deps.repo.editMessage(
         reportId,
@@ -319,9 +244,7 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       )
       if (!record) throw AppError.notFound("Message not found")
       const dto = await projectOne(record, userId)
-      // Re-notify a still-mentioned user on every edit is acceptable + bounded by the write rate limit.
       notifyMentions(reportId, userId, userMentions, report)
-      // An edit reuses the generic "message" change event (no new WS frame type); subscribers refetch + upsert.
       fanOut(reportId, "message")
       return dto
     },
@@ -333,7 +256,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
         throw AppError.notFound("Message not found")
       }
       await deps.repo.toggleReaction(messageId, userId, emoji)
-      // Re-read so the returned DTO reflects the recomputed reaction counts + the viewer's `mine` flags.
       const updated = await deps.repo.findMessage(reportId, messageId, userId)
       if (!updated) throw AppError.notFound("Message not found")
       const dto = await projectOne(updated, userId)
@@ -349,8 +271,6 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       if (!isAuthor && !actor.isOperator) {
         throw AppError.forbidden("You cannot delete this message")
       }
-      // Idempotent re-delete: return the existing tombstone without re-stamping deleted_at, and fan out a
-      // "remove" only when this call ACTUALLY removed the message.
       if (message.deletedAt === null) {
         const deletedAt = now()
         const ok = await deps.repo.softDelete(messageId, deletedAt)

@@ -1,21 +1,3 @@
-/**
- * FULL ROUTE-REGISTRATION AUDIT + BOOT SMOKE TEST.
- *
- * Imports the canonical endpoint registry from @civfix/shared/client (the single source of truth the
- * web + mobile clients call) and, against a server built with ALL fakes/overrides (no Docker, no infra),
- * asserts EVERY one of the 113 endpoints (47 Phase 1 + 66 Phase 2 admin) is REGISTERED and reachable:
- * app.inject for each returns something OTHER than Fastify's route-not-found 404. This proves the entire
- * contract surface is wired.
- *
- * What "registered" means here: a matched route runs SOME handler (auth guard, validation, or the
- * handler body), so the response is NOT produced by Fastify's notFound handler. We discriminate the two
- * 404 kinds precisely: the notFound handler emits the message `Route {METHOD} {URL} not found`, whereas a
- * domain 404 (e.g. GET /reports/:id for a missing id) is an AppError with a different message. A passing
- * endpoint may legitimately answer 200/400/401/403/404(domain)/422 - only the route-missing 404 fails.
- *
- * This also doubles as a BOOT smoke test: buildServer wires the auth bundle + every domain plugin and
- * mounts with zero external services, exercising the whole registration path in one shot.
- */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -45,26 +27,13 @@ import type { ReportOwner } from "../../src/services/report-service.js"
 
 const SIGNING_KEY = "test-anon-signing-key"
 
-/** A concrete value substituted for each `:param` path segment so the route matches. */
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
-/**
- * Endpoints present in the @civfix/shared registry whose BACKEND routes intentionally land in a LATER
- * wave (cross-wave dependency). Now EMPTY: requestEventResources (D19) is routed (#56 email wave), so the
- * per-endpoint registration smoke test below proves EVERY one of the 159 endpoints is wired (0 skips).
- * Keep this set here (rather than deleting it) so a future cross-wave endpoint has an obvious, MINIMAL
- * place to land — an unexpected route-missing endpoint must still fail.
- */
 const NOT_YET_ROUTED = new Set<string>([])
 
-/**
- * Build one server with the FULL fakes/overrides bundle so every domain plugin mounts and resolves with
- * no infra. Auth services are present so the /auth/* routes mount.
- */
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
 
-  // Auth bundle (in-memory) so auth routes mount + the dual-auth context works offline.
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
@@ -77,7 +46,6 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     now: () => Date.now(),
   })
 
-  // Reports (+ media presign) over an in-memory repo.
   const reportRepo = new InMemoryReportRepository()
   const reportOverrides: ReportServiceOverrides = {
     repo: reportRepo,
@@ -85,7 +53,6 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     presignMedia: (r2Key) => Promise.resolve({ url: `memory://${r2Key}` }),
   }
 
-  // Anon + claim services over a shared in-memory store + fakes.
   const anonStore = new InMemoryAnonStore()
   const abuse = new FakeAbuseChecks()
   const counters = new InMemoryCounterStore(() => 0)
@@ -127,7 +94,6 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     getReportForOwner,
   })
 
-  // Cleanups / social / notifications / media / chat over in-memory repos.
   const cleanupRepo = new InMemoryCleanupRepository()
   const socialRepo = new InMemorySocialRepository()
   const notificationRepo = new InMemoryNotificationRepository()
@@ -137,7 +103,6 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     threadsRepo: new InMemoryThreadsRepository(),
   }
 
-  // Default test container: all seams are fakes (chat/push/jobs etc.).
   const container = buildContainer(env)
 
   return buildServer({
@@ -155,7 +120,6 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
   })
 }
 
-/** Substitute every `:param` segment in a path template with a concrete value. */
 function fillPath(path: string): string {
   return path
     .split("/")
@@ -163,13 +127,7 @@ function fillPath(path: string): string {
     .join("/")
 }
 
-/**
- * For a GET/DELETE endpoint inject without a body; for write methods send an empty JSON object. The
- * handler may answer 400/401/422 - all acceptable. We only care the route MATCHED.
- */
 function injectArgs(ep: EndpointDef): InjectOptions {
-  // Inject at the VERSIONED wire path (e.g. /v1/reports), the same path the typed client calls and the
-  // route() helper registers — so this audit proves the contract surface is wired at its real URL.
   const url = fillPath(versionedPath(ep))
   if (ep.method === "GET" || ep.method === "DELETE") {
     return { method: ep.method, url }
@@ -177,8 +135,6 @@ function injectArgs(ep: EndpointDef): InjectOptions {
   return { method: ep.method, url, payload: {} }
 }
 
-// One server for the whole file: built once in beforeAll so endpoint assertions never race on setup
-// order, torn down in afterAll. The inject calls are read-only route matching, so sharing is safe.
 let app: FastifyInstance
 
 beforeAll(async () => {
@@ -191,20 +147,15 @@ afterAll(async () => {
 
 describe("route-coverage: every shared endpoint is registered (offline boot smoke test)", () => {
   it("boots a fully-faked server with no infra (liveness routes)", async () => {
-    // The app is up and routing: /healthz answers 200 with no DB/Redis.
     const res = await app.inject({ method: "GET", url: "/healthz" })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ ok: true })
   })
 
-  // One assertion per endpoint so a failure names exactly which route is unwired. Endpoints whose backend
-  // route lands in a later wave (NOT_YET_ROUTED) are skipped, not asserted as wired.
   for (const [name, ep] of Object.entries(endpoints)) {
     it.skipIf(NOT_YET_ROUTED.has(name))(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
-      // The ONLY failing condition: Fastify's route-not-found handler ran (no route matched). It emits a
-      // body whose message begins with `Route {METHOD} {URL} not found`; a domain 404 does not.
       if (res.statusCode === 404) {
         const body = res.json() as { message?: string }
         const isRouteMissing =
@@ -213,60 +164,18 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
           false,
         )
       }
-      // Any non-404 status (200/400/401/403/422/...) means the route is wired and a handler ran.
       expect(res.statusCode).not.toBe(undefined)
     })
   }
 
   it("covers ALL 155 endpoints in the registry (no endpoint skipped)", () => {
-    // 124 base (47 Phase 1 + 67 Phase 2 admin incl. setEventOutcome + the 7-route DM/privacy surface + the
-    // 3-route inbound-mail surface) + the 7-route report-discussion surface (getReportDiscussion,
-    // getDiscussionReplies, postDiscussionMessage, toggleDiscussionReaction, deleteDiscussionMessage,
-    // getAdminReportDiscussion, removeDiscussionMessage) + the 3-route event<->report linking surface
-    // (updateCleanup [PATCH /cleanups/:id], linkEventReports [POST /admin/events/:id/link-reports],
-    // unlinkEventReport [DELETE /admin/events/:id/reports/:reportId]) = 134, + the 9-route
-    // profiles-verification surface (the /me/verification user routes + GET /people/:id/activity + the
-    // /admin/verifications/* operator routes) = 143, + the 2-route connections surface
-    // (listFollowers [GET /people/:id/followers] + listFollowing [GET /people/:id/following]) = 145, + the
-    // routeReport approve-and-send route (#40) and 3 endpoints already on main but unpublished until
-    // @civfix/shared 0.11.0 = 149. The
-    // admin OTP request/verify routes were replaced by the single Cloudflare Access exchange route
-    // (doc 16); the admin data routes mount under requireOperator (an unauthenticated inject returns 401, a
-    // wired route); the public Access exchange returns 503 when CF_ACCESS_* is unset (also wired, not a
-    // route-missing 404) - exactly what the per-endpoint assertions check.
-    // + the 3-route chat-reactions/@-mention surface (B1/B2): toggleCleanupMessageReaction
-    // [POST /cleanups/:cleanupId/messages/:messageId/reactions], toggleDmMessageReaction
-    // [POST /dm/:threadId/messages/:messageId/reactions], mentionSearch [GET /users/mention-search] = 152.
-    // + the 6-route App-Store-audit remediation surface: reportContent [POST /content-reports],
-    // deleteAccount [DELETE /me], requestDataExport [POST /me/data-export], deleteDmMessage
-    // [DELETE /dm/:threadId/messages/:messageId], deleteCleanupMessage
-    // [DELETE /cleanups/:cleanupId/messages/:messageId], removeUserMessage
-    // [POST /admin/users/:id/messages/:messageId/remove] = 158.
-    // MINUS the verification document/review surface (applyForVerification, myVerificationDocumentUrl,
-    // listAdminVerifications, getAdminVerification, adminVerificationDocumentUrl, approveVerification,
-    // rejectVerification = 7) which was removed when verification became a "schedule a call with the
-    // founder" flow, PLUS setUserVerified [POST /admin/users/:id/verify] = 158 - 7 + 1 = 152.
-    // + the reporter-only resolveReport route [POST /reports/:id/resolve] (the owner marks their own
-    // report resolved / reopens it) = 153.
-    // + the reporter-only unlistReport route [POST /reports/:id/unlist] (the owner hides / re-lists their
-    // own report from the public map) and the host-only cancelCleanup route [POST /cleanups/:id/cancel]
-    // (the organizer cancels their event + notifies attendees) = 155.
-    // + getJurisdictionGeometry [GET /admin/jurisdictions/:geoid/geometry] (the directory's boundary
-    // verification map) = 156.
-    // + the 3-route reference-code/verification surface added in @civfix/shared 0.19.0: setReportVerdict
-    // [POST /admin/reports/:id/verdict] (D7 report-verification verdict), setUserReportVerified
-    // [POST /admin/users/:id/report-verify] (D18 report-verified toggle), and requestEventResources
-    // [POST /cleanups/:id/request-resources] (D19 event resource request) — all now ROUTED (#56) = 159.
-    // + 2 endpoints already shipped in @civfix/shared 0.20.x (count was stale at 159) = 161.
-    // + suggest [POST /map/suggest] (forward-geocode autocomplete proxy, @civfix/shared 0.23.0) = 162.
-    expect(Object.keys(endpoints).length).toBe(162)
+    expect(Object.keys(endpoints).length).toBe(165)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {
     const res = await app.inject({ method: "GET", url: "/this/route/does/not/exist" })
     expect(res.statusCode).toBe(404)
     const body = res.json() as { message?: string; code?: string }
-    // Proves the route-missing 404 is shaped exactly as the assertion above keys on.
     expect(body.message?.startsWith("Route GET ")).toBe(true)
     expect(body.code).toBe("NOT_FOUND")
   })
