@@ -101,6 +101,17 @@ export interface NotificationRepository {
     deviceId: string | null
   }): Promise<PushTokenUpsertOutcome>
 
+  // DEVICE-CLAIM (cross-account leak fix). A device's push token must only deliver to the account that is
+  // currently signed in ON that device. When a user registers a token with a device_id (the device's own
+  // secret, shared across accounts on the device), soft-revoke every OTHER user's active token for that
+  // same device_id — they are no longer the signed-in account on this device. Secure: only this device can
+  // present its device_id, so this cannot revoke a token on a device the caller does not hold. No-op when
+  // no row matches.
+  revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void>
+
+  // Account erasure (DELETE /me): a push token (token + device_id) is a device identifier, so erasure
+  // HARD-deletes the rows rather than soft-revoking (which is what normal rotation does, keeping an audit
+  // trail). Idempotent.
   deletePushTokensForUser(userId: string): Promise<void>
 
   findUserLocale(userId: string): Promise<string | null>
@@ -266,6 +277,16 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
           "push token re-registration refused: token owned by another user (no device-ownership proof)",
         )
         return { ok: true }
+      }
+      // DEVICE-CLAIM (cross-account leak fix): this account is now the one signed in on this device, so any
+      // OTHER user's active token for the SAME device must stop receiving here. Gated on a presented
+      // device_id (the device's own secret) so it can only ever revoke tokens on the caller's own device.
+      if (req.deviceId) {
+        try {
+          await deps.repo.revokeDeviceTokensForOtherUsers(userId, req.deviceId)
+        } catch (err) {
+          deps.logger?.warn({ err, userId }, "device-claim revoke failed (suppressed)")
+        }
       }
       try {
         await deps.pushSender.registerToken(userId, req.token, req.platform, req.deviceId)

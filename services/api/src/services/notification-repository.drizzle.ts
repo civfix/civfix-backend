@@ -230,6 +230,17 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows.length > 0 ? "stored" : "conflict"
     },
 
+    async revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void> {
+      // Soft-revoke (revoked_at = now) every ACTIVE push token on this device owned by a DIFFERENT user, so
+      // a device's token only ever delivers to the account currently signed in on it. device_id is the
+      // device's own secret, so this can never revoke a token on a device the caller does not hold.
+      await sql`
+        UPDATE push_tokens
+        SET revoked_at = now()
+        WHERE device_id = ${deviceId} AND user_id <> ${userId} AND revoked_at IS NULL
+      `
+    },
+
     async deletePushTokensForUser(userId: string): Promise<void> {
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
     },
