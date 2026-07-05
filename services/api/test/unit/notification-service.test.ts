@@ -315,6 +315,34 @@ describe("registerPushToken", () => {
     expect(repo.pushTokens).toHaveLength(1)
     expect(repo.pushTokens[0]).toMatchObject({ userId: V, deviceId: "shared-device", revokedAt: null })
   })
+
+  it("device-claim: registering on a device soft-revokes ANOTHER user's active token on that same device", async () => {
+    const { repo, service } = makeHarness()
+    // U previously signed in on device "shared" and still owns a (distinct-token) row there.
+    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
+    // V now signs in on the SAME physical device and registers its own token.
+    await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "shared" })
+
+    const uRow = repo.pushTokens.find((t) => t.token === "tok-U")
+    const vRow = repo.pushTokens.find((t) => t.token === "tok-V")
+    // U no longer receives on this device; V (the signed-in account) does.
+    expect(uRow?.revokedAt).not.toBeNull()
+    expect(vRow).toMatchObject({ userId: V, revokedAt: null })
+  })
+
+  it("device-claim: does NOT revoke another user's token on a DIFFERENT device", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "device-A" })
+    await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "device-B" })
+    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).toBeNull()
+  })
+
+  it("device-claim: a registration WITHOUT a device_id revokes nobody (no device proof)", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
+    await service.registerPushToken(V, { platform: "ios", token: "tok-V" })
+    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------

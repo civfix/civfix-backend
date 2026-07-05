@@ -193,6 +193,16 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve("stored")
   }
 
+  revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void> {
+    // Mirror the Drizzle UPDATE: soft-revoke active rows on this device owned by a DIFFERENT user.
+    for (const t of this.pushTokens) {
+      if (t.deviceId === deviceId && t.userId !== userId && t.revokedAt === null) {
+        t.revokedAt = this.now()
+      }
+    }
+    return Promise.resolve()
+  }
+
   deletePushTokensForUser(userId: string): Promise<void> {
     // Mirror the Drizzle DELETE: remove every push-token row owned by the user (erasure removes the
     // device identifier outright, not a soft-revoke).
