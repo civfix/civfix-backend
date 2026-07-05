@@ -90,6 +90,7 @@ export interface SocialServiceDeps {
   repo: SocialRepository
   notifier?: SocialNotifier
   presignAvatar?: (avatarKey: string) => Promise<string>
+  volunteerHoursTotalFor?: (userId: string) => Promise<number>
   logger?: { warn(obj: unknown, msg: string): void }
 }
 
@@ -166,10 +167,13 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     viewer: SocialViewer,
     isSelf: boolean,
   ): Promise<UserProfileDTO> {
-    const [isFollowing, pastEventRecords, stats] = await Promise.all([
+    const [isFollowing, pastEventRecords, stats, volunteerHours] = await Promise.all([
       isSelf ? Promise.resolve(false) : viewerFollows(view.id, viewer),
       deps.repo.pastEventsFor(view.id, PROFILE_PAST_EVENTS_LIMIT),
       deps.repo.statsFor(view.id),
+      deps.volunteerHoursTotalFor
+        ? deps.volunteerHoursTotalFor(view.id)
+        : Promise.resolve(undefined),
     ])
     const pastEvents: CleanupDTO[] = pastEventRecords.map((r) => toCleanupDTO(r, true))
     const avatarUrl =
@@ -190,6 +194,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       ...(view.socialLinks ? { socialLinks: view.socialLinks } : {}),
       pastEvents,
       stats,
+      ...(volunteerHours !== undefined ? { volunteerHours } : {}),
     }
   }
 
