@@ -200,7 +200,6 @@ describe("feed excludes conversation-message notifications", () => {
   })
 })
 
-
 describe("getPrefs + updatePrefs", () => {
   it("creates all-true defaults (no quiet hours) on first read", async () => {
     const { repo, service } = makeHarness()
@@ -408,7 +407,7 @@ describe("onNewFollower", () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
     await service.onNewFollower({
       followeeId: U,
-      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, verified: false, avatarR2Key: null, avatarUrl: null },
+      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, verified: false, avatarR2Key: null, avatarUrl: null, socialLinks: null },
     })
     expect(repo.notifications).toHaveLength(1)
     const n = repo.notifications[0]!
