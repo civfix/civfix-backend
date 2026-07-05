@@ -1,6 +1,3 @@
-// Postgres-backed NotificationRepository (the production impl of the notifications seam). All
-// notification/prefs/push-token access flows through here so the service stays infra-free and
-// unit-testable with an in-memory repo. Written against the raw postgres-js tag (`Sql`).
 
 import type { Sql } from "../db/client.js"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
@@ -12,12 +9,10 @@ import type {
   NotificationRepository,
   PushTokenUpsertOutcome,
 } from "./notification-service.js"
-import { DEFAULT_PREFS } from "./notification-service.js"
+import { DEFAULT_PREFS, FEED_HIDDEN_NOTIFICATION_TYPES } from "./notification-service.js"
 import { AppError } from "@civfix/shared"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
-// 24-hour HH:MM(:SS). quietHours values are cast `::time`; an unvalidated bad string would raise a
-// Postgres 22007 -> unhandled 500, so a malformed value is rejected as a 422 before the cast.
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 
 interface NotificationRowSelect {
@@ -91,6 +86,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         SELECT id, user_id, type, title, body, link, read_at, created_at
         FROM notifications
         WHERE user_id = ${userId}
+          AND type <> ALL(${[...FEED_HIDDEN_NOTIFICATION_TYPES]}::text[])
           ${cursorFilter}
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
@@ -101,8 +97,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
 
     async markRead(userId: string, ids: string[]): Promise<void> {
       if (ids.length === 0) return
-      // The user_id predicate is what prevents marking someone else's notifications read; the read_at IS
-      // NULL guard keeps an already-read row's timestamp stable. `id = ANY(...)` takes the uuid[] directly.
       await sql`
         UPDATE notifications
         SET read_at = now()
@@ -147,7 +141,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         RETURNING push, cleanup_chat, report_updates, follows, mentions, quiet_start, quiet_end
       `
       if (rows[0]) return toPrefsRecord(rows[0])
-      // Lost the insert race: the row exists, so read it back.
       const existing = await sql<PrefsRowSelect[]>`
         SELECT push, cleanup_chat, report_updates, follows, mentions, quiet_start, quiet_end
         FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
@@ -159,8 +152,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       userId: string,
       patch: NotificationPrefsPatch,
     ): Promise<NotificationPrefsRecord> {
-      // When the patch is empty (no-op), just ensure-and-return the row. Use INSERT … DO NOTHING then a
-      // SELECT rather than a self-assigning DO UPDATE, so an existing row is not needlessly re-written.
       if (isEmptyPatch(patch)) {
         const inserted = await sql<PrefsRowSelect[]>`
           INSERT INTO notification_prefs (user_id) VALUES (${userId})
@@ -175,8 +166,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         return existing[0] ? toPrefsRecord(existing[0]) : DEFAULT_PREFS
       }
 
-      // Build the DO UPDATE SET list from only the present patch keys, so a partial update leaves the
-      // untouched columns intact. The INSERT side supplies a full row for the first-time case.
       const setFragments: Array<ReturnType<Sql>> = []
       if (patch.push !== undefined) setFragments.push(sql`push = ${patch.push}`)
       if (patch.cleanupChat !== undefined) setFragments.push(sql`cleanup_chat = ${patch.cleanupChat}`)
@@ -227,10 +216,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       token: string
       deviceId: string | null
     }): Promise<PushTokenUpsertOutcome> {
-      // OWNERSHIP-STEAL guard (P1-3). The DO UPDATE … WHERE re-points/reactivates only when the
-      // conflicting row ALREADY belongs to this user OR the caller presents the SAME non-null device_id (a
-      // genuine handoff). Otherwise the WHERE fails, the UPDATE is skipped, no row is returned, and the
-      // existing owner KEEPS the token — a known raw token cannot hijack another user's device.
       const rows = await sql<{ id: string }[]>`
         INSERT INTO push_tokens (user_id, platform, token, device_id)
         VALUES (${args.userId}, ${args.platform}, ${args.token}, ${args.deviceId})
@@ -245,15 +230,22 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows.length > 0 ? "stored" : "conflict"
     },
 
+    async revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void> {
+      // Soft-revoke (revoked_at = now) every ACTIVE push token on this device owned by a DIFFERENT user, so
+      // a device's token only ever delivers to the account currently signed in on it. device_id is the
+      // device's own secret, so this can never revoke a token on a device the caller does not hold.
+      await sql`
+        UPDATE push_tokens
+        SET revoked_at = now()
+        WHERE device_id = ${deviceId} AND user_id <> ${userId} AND revoked_at IS NULL
+      `
+    },
+
     async deletePushTokensForUser(userId: string): Promise<void> {
-      // Account erasure HARD-deletes (a push token is a device identifier), unlike normal rotation which
-      // soft-revokes via revoked_at to keep a device audit trail.
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
     },
 
     async findUserLocale(userId: string): Promise<string | null> {
-      // The recipient's chosen UI/message locale (0033), loaded just before rendering a localized
-      // notification. Returns null when the user is unknown; the service then falls back to 'en'.
       const rows = await sql<{ locale: string }[]>`
         SELECT locale FROM users WHERE id = ${userId} LIMIT 1
       `
@@ -273,8 +265,6 @@ function isEmptyPatch(patch: NotificationPrefsPatch): boolean {
   )
 }
 
-// Join SET assignment fragments with commas. Callers guarantee a non-empty array (the empty-patch case
-// is handled before this is reached).
 function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
   return fragments.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
 }

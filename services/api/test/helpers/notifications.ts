@@ -1,21 +1,3 @@
-/**
- * Offline notifications test helper: an in-memory NotificationRepository (feed, read-state, prefs, push
- * tokens).
- *
- * Mirrors the other in-memory seams so the notification SERVICE and the notification HTTP ROUTES can be
- * exercised with NO database (no Docker). It is faithful to the Drizzle impl's observable contract:
- *   - insertNotification assigns an id + createdAt and stores the row;
- *   - listNotifications pages newest-first (createdAt DESC, id DESC) with a `${iso}|${id}` keyset cursor;
- *   - markRead sets readAt for ONLY the user's own, still-unread ids;
- *   - findPrefs/createDefaultPrefs/upsertPrefs manage the 1:1 prefs row (defaults all-true, no quiet hours);
- *     a partial patch leaves untouched columns intact; quietHours null clears both bounds;
- *   - upsertPushToken keys on (platform, token): ownership-scoped re-registration (P1-3) re-points/reactivates
- *     only for the owner or a caller presenting the same non-null device_id; a foreign-owned token is left
- *     untouched ("conflict").
- *
- * The Drizzle-backed repository is covered by the Docker-gated integration test; this fake exercises the
- * same NotificationRepository seam locally.
- */
 
 import { randomUUID } from "node:crypto"
 import type {
@@ -26,10 +8,9 @@ import type {
   NotificationRepository,
   PushTokenUpsertOutcome,
 } from "../../src/services/notification-service.js"
-import { DEFAULT_PREFS } from "../../src/services/notification-service.js"
+import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
-/** A stored push token row. */
 export interface StoredPushToken {
   userId: string
   platform: PushPlatform
@@ -38,20 +19,15 @@ export interface StoredPushToken {
   revokedAt: Date | null
 }
 
-/** An in-memory NotificationRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryNotificationRepository implements NotificationRepository {
   readonly notifications: NotificationRecord[] = []
   readonly prefs = new Map<string, NotificationPrefsRecord>()
   readonly pushTokens: StoredPushToken[] = []
 
-  /** Injectable clock so createdAt/read timestamps are deterministic. Defaults to real now. */
   now: () => Date = () => new Date()
-  /** Monotonic counter so rows inserted in the same millisecond keep a stable, distinct order. */
   private seq = 0
 
   insertNotification(args: NewNotificationArgs): Promise<NotificationRecord> {
-    // Nudge createdAt forward by the sequence so same-tick inserts have a strict, deterministic order that
-    // matches the DESC, id-tiebreak paging (newer = later in insertion order).
     const createdAt = new Date(this.now().getTime() + this.seq)
     this.seq += 1
     const record: NotificationRecord = {
@@ -74,8 +50,7 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     limit: number,
   ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }> {
     const mine = this.notifications
-      .filter((n) => n.userId === userId)
-      // Newest-first (createdAt DESC, id DESC).
+      .filter((n) => n.userId === userId && isFeedVisibleType(n.type))
       .sort((a, b) => {
         const cmp = b.createdAt.getTime() - a.createdAt.getTime()
         if (cmp !== 0) return cmp
@@ -113,7 +88,6 @@ export class InMemoryNotificationRepository implements NotificationRepository {
   }
 
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
-    // Mirror the Drizzle UPDATE: clear ONLY the user's own, still-unread rows of this (type, link).
     const at = this.now()
     for (const n of this.notifications) {
       if (n.userId === userId && n.type === type && n.link === link && n.readAt === null) {
@@ -170,12 +144,9 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       (t) => t.platform === args.platform && t.token === args.token,
     )
     if (existing) {
-      // OWNERSHIP-SCOPED re-registration (P1-3), mirroring the Drizzle ON CONFLICT ... WHERE: only the
-      // owner, or a caller presenting the SAME non-null device_id, may re-point/reactivate the row.
       const owner = existing.userId === args.userId
       const sameDevice = args.deviceId !== null && existing.deviceId === args.deviceId
       if (!owner && !sameDevice) {
-        // Foreign-owned with no device proof: leave the row untouched (no silent transfer).
         return Promise.resolve("conflict")
       }
       existing.userId = args.userId
@@ -193,16 +164,23 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve("stored")
   }
 
+  revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void> {
+    // Mirror the Drizzle UPDATE: soft-revoke active rows on this device owned by a DIFFERENT user.
+    for (const t of this.pushTokens) {
+      if (t.deviceId === deviceId && t.userId !== userId && t.revokedAt === null) {
+        t.revokedAt = this.now()
+      }
+    }
+    return Promise.resolve()
+  }
+
   deletePushTokensForUser(userId: string): Promise<void> {
-    // Mirror the Drizzle DELETE: remove every push-token row owned by the user (erasure removes the
-    // device identifier outright, not a soft-revoke).
     for (let i = this.pushTokens.length - 1; i >= 0; i--) {
       if (this.pushTokens[i]!.userId === userId) this.pushTokens.splice(i, 1)
     }
     return Promise.resolve()
   }
 
-  /** Per-user locale override for tests; absent => the service falls back to 'en'. Set via `locales`. */
   readonly locales = new Map<string, string>()
 
   findUserLocale(userId: string): Promise<string | null> {
@@ -210,7 +188,6 @@ export class InMemoryNotificationRepository implements NotificationRepository {
   }
 }
 
-/** Parse an `${iso}|${id}` time cursor; null when absent/malformed. Mirrors the Drizzle impl. */
 function parseTimeCursor(cursor: string | null): { at: Date; id: string } | null {
   if (cursor === null) return null
   const idx = cursor.indexOf("|")
