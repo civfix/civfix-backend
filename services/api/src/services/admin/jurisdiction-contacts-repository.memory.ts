@@ -331,7 +331,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     const searched = args.layer !== null ? matched.filter((r) => r.layer === args.layer) : matched
 
     // Routing-posture facet ("routed" = any contact, i.e. method !== "none").
-    let records =
+    const records =
       args.filter === "all"
         ? searched.slice()
         : args.filter === "routed"
