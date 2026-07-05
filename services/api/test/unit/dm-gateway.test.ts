@@ -18,17 +18,6 @@ import {
   type ChatMessageDTO,
 } from "@civfix/shared"
 
-/**
- * DM routing through the WS gateway (handleClientFrame), mirroring chat-realtime.test.ts but for
- * roomKind:"dm". Asserts:
- *   - a participant can JOIN the dm room (namespaced dm:<thread> key) and gets a presence_snapshot carrying
- *     roomKind:"dm";
- *   - SEND persists via the dm seam and broadcasts to the OTHER participant (excludes the sender), with the
- *     DTO carrying cleanupId=threadId + roomKind:"dm"; the sender is acked;
- *   - a BLOCK (either direction) rejects join AND send with a FORBIDDEN error frame and persists nothing;
- *   - ACK with roomKind:"dm" routes to the dm read-state seam (not the cleanup one);
- *   - every outbound frame validates against the shared server schema.
- */
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -44,7 +33,6 @@ let cleanupMarks: Array<{ cleanupId: string; userId: string; upToId: string }>
 let openMarks: Array<{ kind: string; id: string; userId: string }>
 let signals: Array<{ userId: string; topic: string; id?: string | undefined }>
 
-/** Adapt the in-memory dm repo + blocks repo into the gateway's GatewayDmDeps (and capture markRead). */
 function dmDeps(): GatewayDmDeps {
   return {
     isParticipant: (threadId, userId) => dmRepo.isParticipant(threadId, userId),
@@ -60,7 +48,7 @@ function dmDeps(): GatewayDmDeps {
 function depsFor(): GatewayDeps {
   return {
     chat,
-    isMember: () => Promise.resolve(false), // no cleanup membership in these dm tests
+    isMember: () => Promise.resolve(false),
     presence,
     dm: dmDeps(),
     isBlockedEitherWay: (a, b) => blocks.isBlockedEitherWay(a, b),
@@ -68,13 +56,10 @@ function depsFor(): GatewayDeps {
       cleanupMarks.push({ cleanupId, userId, upToId })
       return Promise.resolve()
     },
-    // Mark-read-on-open (#42): the gateway calls this on a cleanup/dm join. Capture the calls.
     markReadOnOpen: (kind, id, userId) => {
       openMarks.push({ kind, id, userId })
       return Promise.resolve()
     },
-    // Per-user signal channel: capture the {topic:"threads"} self-signals the gateway fires to the reader
-    // after a markRead (ack) / markReadOnOpen (join) so the unread badge refetches once the watermark lands.
     userChannel: {
       subscribeUser: () => Promise.resolve(async () => {}),
       publishToUser: (userId, signal) => {
@@ -121,7 +106,6 @@ beforeEach(async () => {
   THREAD = thread.id
 })
 
-/** A no-op cleanup ChatRepository (these tests never persist cleanup chat). */
 function makeUnusedChatRepo() {
   return {
     insertMessage: () => Promise.reject(new Error("cleanup persist not expected in dm tests")),
@@ -129,6 +113,10 @@ function makeUnusedChatRepo() {
     findMessage: () => Promise.resolve(null),
     toggleReaction: () => Promise.reject(new Error("cleanup reaction not expected in dm tests")),
     softDelete: () => Promise.reject(new Error("cleanup delete not expected in dm tests")),
+    reportHistory: () => Promise.resolve({ items: [], nextCursor: null }),
+    findReportMessage: () => Promise.resolve(null),
+    softDeleteReport: () => Promise.reject(new Error("report delete not expected in dm tests")),
+    countReportMessages: () => Promise.resolve(0),
   }
 }
 
@@ -140,7 +128,6 @@ describe("DM gateway routing (join/send/ack/block)", () => {
       aSession,
       JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
     )
-    // The socket joined the NAMESPACED room key so dm and cleanup ids never collide.
     expect(aSession.joined.has(`dm:${THREAD}`)).toBe(true)
     const snaps = aConn.framesOfType("presence_snapshot")
     expect(snaps).toHaveLength(1)
@@ -161,7 +148,6 @@ describe("DM gateway routing (join/send/ack/block)", () => {
       JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "hi bob" }),
     )
 
-    // Bob (the peer) got the broadcast message; it carries cleanupId=thread + roomKind:dm.
     const bMsgs = bConn.framesOfType("message")
     expect(bMsgs).toHaveLength(1)
     const msg = (bMsgs[0] as { message: ChatMessageDTO }).message
@@ -170,11 +156,9 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     expect(msg.roomKind).toBe("dm")
     expect(msg.from.id).toBe(ALICE)
 
-    // Alice (sender) got exactly one ack and NO echoed message (P1-2 exactly-once to sender).
     expect(aConn.framesOfType("ack")).toHaveLength(1)
     expect(aConn.framesOfType("message")).toHaveLength(0)
 
-    // It was persisted in the dm store (history returns it).
     const page = await dmRepo.history(THREAD, undefined, 50)
     expect(page.items).toHaveLength(1)
     expect(page.items[0]!.roomKind).toBe("dm")
@@ -192,26 +176,21 @@ describe("DM gateway routing (join/send/ack/block)", () => {
 
     await handleClientFrame(
       aSession,
-      // A curated hate slur (App Store 1.2a gate). General profanity would pass; this does not.
       JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "you retard" }),
     )
 
-    // Sender got a room-scoped BLOCKED error, NO ack, NO echoed message.
     const errs = aConn.framesOfType("error")
     expect(errs).toHaveLength(1)
     expect((errs[0] as { code: string }).code).toBe("BLOCKED")
     expect((errs[0] as { cleanupId?: string }).cleanupId).toBe(THREAD)
     expect(aConn.framesOfType("ack")).toHaveLength(0)
     expect(aConn.framesOfType("message")).toHaveLength(0)
-    // The peer received nothing, and nothing was persisted.
     expect(bConn.framesOfType("message")).toHaveLength(0)
     expect((await dmRepo.history(THREAD, undefined, 50)).items).toHaveLength(0)
     for (const raw of [...aConn.sent, ...bConn.sent]) assertServerFrame(raw)
   })
 
   it("a slur in a CLEANUP (group) chat send is also BLOCKED — the gate is room-kind-agnostic", async () => {
-    // The slur gate sits in the shared `send` path BEFORE the dm/cleanup kind split and BEFORE
-    // authorizeRoom, so it fires for group chat exactly as for DMs (no join/membership needed to reach it).
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
     await handleClientFrame(
@@ -232,7 +211,6 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
     await handleClientFrame(
       aSession,
-      // Slur-filter is slurs-only; everyday strong language is NOT blocked.
       JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "this is damn slow" }),
     )
     expect(aConn.framesOfType("error")).toHaveLength(0)
@@ -241,7 +219,6 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   })
 
   it("a block (either way) rejects dm join AND send and persists nothing", async () => {
-    // Bob blocks Alice.
     await blocks.block(BOB, ALICE)
 
     const aConn = new MockConnection("A")
@@ -277,7 +254,6 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     )
     expect(dmMarks).toHaveLength(1)
     expect(dmMarks[0]).toMatchObject({ threadId: THREAD, userId: ALICE })
-    // The cleanup read-state was NOT touched.
     expect(cleanupMarks).toHaveLength(0)
   })
 
@@ -289,16 +265,12 @@ describe("DM gateway routing (join/send/ack/block)", () => {
       aSession,
       JSON.stringify({ type: "ack", upToId: "44444444-4444-4444-4444-444444444444" }),
     )
-    // The only joined room is the dm thread, so the ack routes to the dm seam.
     expect(dmMarks).toHaveLength(1)
     expect(dmMarks[0]).toMatchObject({ threadId: THREAD, userId: ALICE })
     expect(cleanupMarks).toHaveLength(0)
   })
 
   it("a NON-participant's dm ack is ignored (read-state write is participation-gated)", async () => {
-    // Carol is not in the Alice<->Bob thread. An ack carrying that thread id must NOT write dm_read_state
-    // for her — the gateway gates the markRead on peerOf (the M1 authorization fix). She need not even
-    // have joined; an attacker would just send the frame.
     const cConn = new MockConnection("C")
     const cSession = sessionFor(CAROL, cConn)
     await handleClientFrame(
@@ -315,14 +287,10 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   })
 
   it("opening (join) a dm marks the room read on open and self-signals the reader's threads (#42)", async () => {
-    // The robust backstop for the stuck unread badge: a quick/cold open can drop the client read-ack (no
-    // message id loaded yet to ack), but the `join` frame always fires — so the watermark advances here, and
-    // the reader's inbox is self-signaled so the badge refetches the decremented count.
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
     await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
     expect(openMarks).toEqual([{ kind: "dm", id: THREAD, userId: ALICE }])
-    // The join self-signal is chained AFTER markReadOnOpen resolves (so the refetch can't race the write).
     await new Promise((r) => setTimeout(r, 0))
     expect(signals).toContainEqual({ userId: ALICE, topic: "threads", id: THREAD })
   })
@@ -331,7 +299,7 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
     await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
-    signals.length = 0 // drop the join's open-signal; assert the ACK's signal specifically
+    signals.length = 0
     await handleClientFrame(
       aSession,
       JSON.stringify({
@@ -346,8 +314,6 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   })
 
   it("a NON-participant's dm ack neither marks read nor self-signals (the signal is gated too)", async () => {
-    // The threads self-signal lives INSIDE the participation-gated branch, so a non-participant's stray ack
-    // emits nothing — no read-state write AND no signal (it would otherwise leak that the thread exists).
     const cConn = new MockConnection("C")
     const cSession = sessionFor(CAROL, cConn)
     await handleClientFrame(

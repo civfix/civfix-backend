@@ -21,6 +21,7 @@ import type { AnonServiceOverride } from "./routes/anon.routes.js"
 import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
+import type { DiscussionServiceOverrides } from "./routes/discussion.routes.js"
 import type { SocialServiceOverrides } from "./routes/social.routes.js"
 import type { VolunteerHoursOverrides } from "./routes/volunteer-hours.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
@@ -49,6 +50,7 @@ export interface BuildServerOptions {
   claimOverride?: ClaimServiceOverride
   cleanupOverrides?: CleanupServiceOverrides
   chatOverrides?: ChatGatewayOverrides
+  discussionOverrides?: DiscussionServiceOverrides
   socialOverrides?: SocialServiceOverrides
   volunteerOverrides?: VolunteerHoursOverrides
   notificationOverrides?: NotificationServiceOverrides
@@ -63,6 +65,7 @@ const OVERRIDE_KEYS = [
   "claimOverride",
   "cleanupOverrides",
   "chatOverrides",
+  "discussionOverrides",
   "socialOverrides",
   "volunteerOverrides",
   "notificationOverrides",

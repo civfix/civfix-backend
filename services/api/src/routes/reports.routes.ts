@@ -32,6 +32,7 @@ import {
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
 import { route } from "../versioning/route.js"
@@ -185,12 +186,13 @@ export async function registerReportRoutes(
     const repo: ReportRepository = makeDrizzleReportRepository(sql)
     const cleanupRepo = makeDrizzleCleanupRepository(sql)
     const discussionRepo = makeDrizzleDiscussionRepository(sql)
+    const chatRepo = makeDrizzleChatRepository(sql)
     return makeReportService({
       repo,
       loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
       loadDiscussionMeta: async (reportId) => {
         const [count, report] = await Promise.all([
-          discussionRepo.countTopLevel(reportId),
+          chatRepo.countReportMessages(reportId),
           discussionRepo.findReportForDiscussion(reportId),
         ])
         const jurisdiction = report?.jurisdiction ?? null
