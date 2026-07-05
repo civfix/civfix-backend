@@ -18,6 +18,7 @@ import { InMemoryReportRepository } from "../helpers/reports.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemorySocialRepository } from "../helpers/social.js"
+import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
@@ -114,6 +115,7 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     claimOverride: { service: claimService },
     cleanupOverrides: { repo: cleanupRepo },
     socialOverrides: { repo: socialRepo },
+    volunteerOverrides: { repo: new InMemoryVolunteerHoursRepository() },
     notificationOverrides: { repo: notificationRepo },
     mediaRepo,
     chatOverrides,

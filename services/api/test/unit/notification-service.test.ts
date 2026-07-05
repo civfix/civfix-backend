@@ -12,17 +12,10 @@ import {
 } from "../../src/services/notification-service.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
 
-/**
- * Offline unit tests for the notification service + its pure helpers. The pure isWithinQuietHours /
- * typeAllowedByPrefs / parseTimeOfDayMinutes are tested directly; the list/read/prefs/register/create
- * flows run against an in-memory NotificationRepository + a FakePushSender, so they need NO database and
- * NO Docker. The Drizzle repo is covered by the Docker-gated integration suite.
- */
 
 const U = "11111111-1111-1111-1111-111111111111"
 const V = "22222222-2222-2222-2222-222222222222"
 
-/** Build a service over a fresh in-memory repo + fake push, with an injectable clock. */
 function makeHarness(nowFn?: () => Date): {
   repo: InMemoryNotificationRepository
   push: FakePushSender
@@ -38,9 +31,6 @@ function makeHarness(nowFn?: () => Date): {
   return { repo, push, service }
 }
 
-// ---------------------------------------------------------------------------
-// Pure: parseTimeOfDayMinutes
-// ---------------------------------------------------------------------------
 
 describe("parseTimeOfDayMinutes", () => {
   it("parses HH:MM and HH:MM:SS", () => {
@@ -52,17 +42,13 @@ describe("parseTimeOfDayMinutes", () => {
 
   it("returns null for malformed input", () => {
     expect(parseTimeOfDayMinutes("nope")).toBeNull()
-    expect(parseTimeOfDayMinutes("24:00")).toBeNull() // hours out of range
-    expect(parseTimeOfDayMinutes("12:60")).toBeNull() // minutes out of range
+    expect(parseTimeOfDayMinutes("24:00")).toBeNull()
+    expect(parseTimeOfDayMinutes("12:60")).toBeNull()
     expect(parseTimeOfDayMinutes("")).toBeNull()
   })
 })
 
-// ---------------------------------------------------------------------------
-// Pure: isWithinQuietHours (wrap-around)
-// ---------------------------------------------------------------------------
 
-/** Build a Date at a UTC HH:MM (quiet hours are evaluated in UTC, independent of the host TZ). */
 function at(hh: number, mm = 0): Date {
   return new Date(Date.UTC(2025, 0, 1, hh, mm, 0, 0))
 }
@@ -70,19 +56,19 @@ function at(hh: number, mm = 0): Date {
 describe("isWithinQuietHours", () => {
   it("same-day window [09:00, 17:00): quiet inside, not at/after the end, not before the start", () => {
     expect(isWithinQuietHours(at(8, 59), "09:00", "17:00")).toBe(false)
-    expect(isWithinQuietHours(at(9, 0), "09:00", "17:00")).toBe(true) // inclusive start
+    expect(isWithinQuietHours(at(9, 0), "09:00", "17:00")).toBe(true)
     expect(isWithinQuietHours(at(12, 0), "09:00", "17:00")).toBe(true)
     expect(isWithinQuietHours(at(16, 59), "09:00", "17:00")).toBe(true)
-    expect(isWithinQuietHours(at(17, 0), "09:00", "17:00")).toBe(false) // exclusive end
+    expect(isWithinQuietHours(at(17, 0), "09:00", "17:00")).toBe(false)
   })
 
   it("wrap-around window [22:00, 07:00): quiet late night and early morning, awake midday", () => {
-    expect(isWithinQuietHours(at(22, 0), "22:00", "07:00")).toBe(true) // inclusive start
+    expect(isWithinQuietHours(at(22, 0), "22:00", "07:00")).toBe(true)
     expect(isWithinQuietHours(at(23, 30), "22:00", "07:00")).toBe(true)
-    expect(isWithinQuietHours(at(0, 0), "22:00", "07:00")).toBe(true) // midnight
+    expect(isWithinQuietHours(at(0, 0), "22:00", "07:00")).toBe(true)
     expect(isWithinQuietHours(at(6, 59), "22:00", "07:00")).toBe(true)
-    expect(isWithinQuietHours(at(7, 0), "22:00", "07:00")).toBe(false) // exclusive end
-    expect(isWithinQuietHours(at(12, 0), "22:00", "07:00")).toBe(false) // midday awake
+    expect(isWithinQuietHours(at(7, 0), "22:00", "07:00")).toBe(false)
+    expect(isWithinQuietHours(at(12, 0), "22:00", "07:00")).toBe(false)
     expect(isWithinQuietHours(at(21, 59), "22:00", "07:00")).toBe(false)
   })
 
@@ -98,9 +84,6 @@ describe("isWithinQuietHours", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Pure: typeAllowedByPrefs / toPrefsDTO
-// ---------------------------------------------------------------------------
 
 describe("typeAllowedByPrefs", () => {
   const base: NotificationPrefsRecord = { ...DEFAULT_PREFS }
@@ -120,7 +103,6 @@ describe("typeAllowedByPrefs", () => {
     expect(typeAllowedByPrefs("cleanup_reminder", { ...base, cleanupChat: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: true })).toBe(true)
-    // system rides on the master switch only.
     expect(typeAllowedByPrefs("system", base)).toBe(true)
   })
 })
@@ -133,9 +115,6 @@ describe("toPrefsDTO", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// listNotifications / markRead
-// ---------------------------------------------------------------------------
 
 describe("listNotifications + markRead", () => {
   it("lists newest-first and reflects read state", async () => {
@@ -168,7 +147,6 @@ describe("listNotifications + markRead", () => {
     const mine = await service.createNotification(U, { type: "system", title: "mine" })
     const theirs = await service.createNotification(V, { type: "system", title: "theirs" })
 
-    // U tries to mark V's notification read -> no effect on V's row.
     await service.markRead(U, [theirs.id, mine.id])
 
     const vPage = await service.listNotifications(V, { limit: 20 })
@@ -196,9 +174,31 @@ describe("listNotifications + markRead", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// getPrefs / updatePrefs
-// ---------------------------------------------------------------------------
+describe("feed excludes conversation-message notifications", () => {
+  it("hides dm + cleanup_chat from the feed read while still recording the row and pushing", async () => {
+    const { repo, push, service } = makeHarness()
+    await service.createNotification(U, { type: "report_update", title: "status changed", link: "/pin/x" })
+    await service.createNotification(U, { type: "dm", title: "Alice", body: "hi", link: "/messages/dm/t1" })
+    await service.createNotification(U, {
+      type: "cleanup_chat",
+      title: "Bob mentioned you",
+      link: "/cleanups/c1",
+    })
+    await service.createNotification(U, { type: "system", title: "welcome" })
+
+    const page = await service.listNotifications(U, { limit: 20 })
+    expect(page.items.map((n) => n.type).sort()).toEqual(["report_update", "system"])
+
+    expect(
+      repo.notifications
+        .filter((n) => n.userId === U)
+        .map((n) => n.type)
+        .sort(),
+    ).toEqual(["cleanup_chat", "dm", "report_update", "system"])
+
+    expect(push.sent.filter((p) => p.userId === U)).toHaveLength(4)
+  })
+})
 
 describe("getPrefs + updatePrefs", () => {
   it("creates all-true defaults (no quiet hours) on first read", async () => {
@@ -211,13 +211,12 @@ describe("getPrefs + updatePrefs", () => {
       follows: true,
       mentions: true,
     })
-    // The default row was persisted.
     expect(repo.prefs.has(U)).toBe(true)
   })
 
   it("applies a partial update, leaving the untouched toggles intact", async () => {
     const { service } = makeHarness()
-    await service.getPrefs(U) // default-create
+    await service.getPrefs(U)
     const updated = await service.updatePrefs(U, { follows: false })
     expect(updated.follows).toBe(false)
     expect(updated.push).toBe(true)
@@ -228,13 +227,11 @@ describe("getPrefs + updatePrefs", () => {
 
   it("carries the dedicated mentions toggle through a partial update", async () => {
     const { service } = makeHarness()
-    await service.getPrefs(U) // default-create
+    await service.getPrefs(U)
     const muted = await service.updatePrefs(U, { mentions: false })
     expect(muted.mentions).toBe(false)
-    // Other toggles untouched.
     expect(muted.push).toBe(true)
     expect(muted.cleanupChat).toBe(true)
-    // It survives a subsequent unrelated update.
     const after = await service.updatePrefs(U, { follows: false })
     expect(after.mentions).toBe(false)
   })
@@ -251,9 +248,6 @@ describe("getPrefs + updatePrefs", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// registerPushToken
-// ---------------------------------------------------------------------------
 
 describe("registerPushToken", () => {
   it("upserts a token and delegates to the PushSender", async () => {
@@ -272,7 +266,6 @@ describe("registerPushToken", () => {
       deviceId: "dev-1",
       revokedAt: null,
     })
-    // Delegated to the PushSender.
     expect(push.tokens).toHaveLength(1)
     expect(push.tokens[0]).toMatchObject({ userId: U, token: "tok-1", platform: "ios" })
   })
@@ -280,10 +273,8 @@ describe("registerPushToken", () => {
   it("the SAME user re-registering re-activates a revoked token (owner update)", async () => {
     const { repo, service } = makeHarness()
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
-    // Simulate a prior revoke (e.g. provider pruned it).
     repo.pushTokens[0]!.revokedAt = new Date()
 
-    // Same user re-registers -> reactivated.
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
     expect(repo.pushTokens).toHaveLength(1)
     expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "d1", revokedAt: null })
@@ -291,18 +282,14 @@ describe("registerPushToken", () => {
 
   it("P1-3: a DIFFERENT user with a different/absent device_id CANNOT hijack the token", async () => {
     const { repo, push, service } = makeHarness()
-    // User U owns tok-x on device d1, registered with the PushSender.
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
     expect(push.tokens).toHaveLength(1)
 
-    // Attacker V knows the raw token and tries to re-point it to themselves with a different device.
     const res = await service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "d2" })
-    expect(res).toEqual({ ok: true }) // not an enumeration oracle: still 200/ok
+    expect(res).toEqual({ ok: true })
 
-    // The row is UNTOUCHED: U still owns it, device unchanged, not revoked.
     expect(repo.pushTokens).toHaveLength(1)
     expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "d1", revokedAt: null })
-    // And V's hijack was NOT registered with the PushSender (no new token routed to V's device).
     expect(push.tokens.some((t) => t.userId === V)).toBe(false)
     expect(push.tokens).toHaveLength(1)
   })
@@ -310,31 +297,53 @@ describe("registerPushToken", () => {
   it("P1-3: a different user presenting the SAME non-null device_id IS allowed (genuine handoff)", async () => {
     const { repo, service } = makeHarness()
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "shared-device" })
-    // V re-provisions the SAME physical device (same device_id) -> ownership transfer is allowed.
     await service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "shared-device" })
     expect(repo.pushTokens).toHaveLength(1)
     expect(repo.pushTokens[0]).toMatchObject({ userId: V, deviceId: "shared-device", revokedAt: null })
   })
+
+  it("device-claim: registering on a device soft-revokes ANOTHER user's active token on that same device", async () => {
+    const { repo, service } = makeHarness()
+    // U previously signed in on device "shared" and still owns a (distinct-token) row there.
+    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
+    // V now signs in on the SAME physical device and registers its own token.
+    await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "shared" })
+
+    const uRow = repo.pushTokens.find((t) => t.token === "tok-U")
+    const vRow = repo.pushTokens.find((t) => t.token === "tok-V")
+    // U no longer receives on this device; V (the signed-in account) does.
+    expect(uRow?.revokedAt).not.toBeNull()
+    expect(vRow).toMatchObject({ userId: V, revokedAt: null })
+  })
+
+  it("device-claim: does NOT revoke another user's token on a DIFFERENT device", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "device-A" })
+    await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "device-B" })
+    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).toBeNull()
+  })
+
+  it("device-claim: a registration WITHOUT a device_id revokes nobody (no device proof)", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
+    await service.registerPushToken(V, { platform: "ios", token: "tok-V" })
+    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).toBeNull()
+  })
 })
 
-// ---------------------------------------------------------------------------
-// createNotification: records the row + gated inline push
-// ---------------------------------------------------------------------------
 
 describe("createNotification (inline-send gating)", () => {
   it("records the row and sends a push when prefs allow + not in quiet hours", async () => {
-    const { repo, push, service } = makeHarness(() => at(12, 0)) // midday
+    const { repo, push, service } = makeHarness(() => at(12, 0))
     const dto = await service.createNotification(U, {
       type: "new_follower",
       title: "New follower",
       body: "Alice started following you.",
       link: "/people/x",
     })
-    // Row recorded.
     expect(repo.notifications).toHaveLength(1)
     expect(dto.title).toBe("New follower")
     expect(dto.read).toBe(false)
-    // Push sent with the mapped payload.
     expect(push.sent).toHaveLength(1)
     expect(push.sent[0]!.userId).toBe(U)
     expect(push.sent[0]!.payload.title).toBe("New follower")
@@ -347,8 +356,8 @@ describe("createNotification (inline-send gating)", () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
     await service.updatePrefs(U, { push: false })
     await service.createNotification(U, { type: "new_follower", title: "x" })
-    expect(repo.notifications).toHaveLength(1) // recorded
-    expect(push.sent).toHaveLength(0) // suppressed
+    expect(repo.notifications).toHaveLength(1)
+    expect(push.sent).toHaveLength(0)
   })
 
   it("does NOT push when the per-type toggle is off (but still records the row)", async () => {
@@ -357,13 +366,11 @@ describe("createNotification (inline-send gating)", () => {
     await service.createNotification(U, { type: "new_follower", title: "x" })
     expect(repo.notifications).toHaveLength(1)
     expect(push.sent).toHaveLength(0)
-    // A different type whose toggle is still on DOES push.
     await service.createNotification(U, { type: "report_update", title: "y" })
     expect(push.sent).toHaveLength(1)
   })
 
   it("does NOT push within quiet hours (but still records the row)", async () => {
-    // now = 23:00, quiet 22:00..07:00 -> suppressed.
     const { repo, push, service } = makeHarness(() => at(23, 0))
     await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00" } })
     await service.createNotification(U, { type: "system", title: "late" })
@@ -377,7 +384,6 @@ describe("createNotification (inline-send gating)", () => {
     await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00" } })
     await service.createNotification(U, { type: "system", title: "late" })
     expect(push.sent).toHaveLength(0)
-    // Move to midday.
     nowMs = at(12, 0).getTime()
     await service.createNotification(U, { type: "system", title: "noon" })
     expect(push.sent).toHaveLength(1)
@@ -395,16 +401,13 @@ describe("createNotification (inline-send gating)", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// onNewFollower (the SocialNotifier surface)
-// ---------------------------------------------------------------------------
 
 describe("onNewFollower", () => {
   it("records a new_follower notification for the followee with a friendly body + link", async () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
     await service.onNewFollower({
       followeeId: U,
-      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, verified: false, avatarR2Key: null, avatarUrl: null },
+      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, verified: false, avatarR2Key: null, avatarUrl: null, socialLinks: null },
     })
     expect(repo.notifications).toHaveLength(1)
     const n = repo.notifications[0]!
@@ -412,17 +415,12 @@ describe("onNewFollower", () => {
     expect(n.type).toBe("new_follower")
     expect(n.body).toContain("Alice")
     expect(n.link).toBe(`/people/${V}`)
-    // And it inline-pushed (follows on by default, midday).
     expect(push.sent).toHaveLength(1)
   })
 })
 
-// ---------------------------------------------------------------------------
-// createNotification: best-effort per-user signal (the realtime invalidate channel)
-// ---------------------------------------------------------------------------
 
 describe("createNotification (per-user signal)", () => {
-  /** Build a service over a fresh in-memory repo + fake push + an injected FakeUserChannel. */
   function makeSignalHarness(): {
     repo: InMemoryNotificationRepository
     channel: FakeUserChannel
@@ -460,7 +458,6 @@ describe("createNotification (per-user signal)", () => {
 
   it("signals even when the PUSH is suppressed (prefs/quiet hours gate push, not the in-app badge)", async () => {
     const { channel, service } = makeSignalHarness()
-    // Master push off: no push, but the in-app feed badge should still refresh -> a signal still fires.
     await service.updatePrefs(U, { push: false })
     await service.createNotification(U, { type: "new_follower", title: "x" })
     expect(channel.published).toHaveLength(1)
@@ -484,7 +481,7 @@ describe("createNotification (per-user signal)", () => {
   })
 
   it("no channel wired -> records the row and publishes nothing", async () => {
-    const { repo, service } = makeHarness(() => at(12, 0)) // makeHarness injects NO userChannel
+    const { repo, service } = makeHarness(() => at(12, 0))
     await service.createNotification(U, { type: "system", title: "ok" })
     expect(repo.notifications).toHaveLength(1)
   })

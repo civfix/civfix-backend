@@ -228,6 +228,8 @@ export async function registerReportRoutes(
       presignMedia: defaultPresign(container),
       jobs: container.jobs,
       isReportVerified: (userId) => isReportVerified(sql, userId),
+      awardReportHours: (userId, reportId, geoid) =>
+        container.getVolunteerHoursRepo().awardReportHours(userId, reportId, geoid),
       logger: app.log,
     })
   }

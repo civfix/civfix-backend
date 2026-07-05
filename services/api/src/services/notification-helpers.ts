@@ -1,6 +1,3 @@
-// Pure (no DB, no IO) helpers for the notifications domain: prefs defaults, the quiet-hours gate, the
-// per-type push allow rule, and the DTO projections. Split out of notification-service.ts so the gating
-// is unit-testable in isolation and the service file carries only the wiring.
 
 import type {
   NotificationDTO,
@@ -19,8 +16,12 @@ export const DEFAULT_PREFS: NotificationPrefsRecord = {
   quietEnd: null,
 }
 
-// Parse "HH:MM"/"HH:MM:SS" into minutes-since-midnight (0..1439); null for a malformed value so the
-// quiet-hours math can fail safe to "not quiet". Seconds are floored into the minute.
+export const FEED_HIDDEN_NOTIFICATION_TYPES: readonly NotificationType[] = ["dm", "cleanup_chat"]
+
+export function isFeedVisibleType(type: NotificationType): boolean {
+  return !FEED_HIDDEN_NOTIFICATION_TYPES.includes(type)
+}
+
 export function parseTimeOfDayMinutes(value: string): number | null {
   const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(value.trim())
   if (!m) return null
@@ -30,11 +31,6 @@ export function parseTimeOfDayMinutes(value: string): number | null {
   return hours * 60 + mins
 }
 
-// Whether `now` falls within the quiet window [start, end). The pg `time` columns are stored wall-clock
-// with no tz; this evaluates them in a FIXED reference (UTC) via getUTCHours/getUTCMinutes, NOT the
-// server process's local tz — a server-local read would suppress pushes at the wrong hours for any
-// deployment not in UTC. Wrap-around-midnight aware; equal bounds = empty window (never quiet, so a
-// misconfigured equal pair does not silently mute every push); malformed input fails open (not quiet).
 export function isWithinQuietHours(
   now: Date,
   start: string | null,
@@ -50,10 +46,6 @@ export function isWithinQuietHours(
   return t >= s || t < e
 }
 
-// Whether the user's prefs permit a push for `type`: the master switch AND the per-type toggle.
-// NOTE: the @-mention bell reuses report_update (discussion) / cleanup_chat (chat) types, so the
-// dedicated `mentions` toggle CANNOT be enforced here (the type alone does not say "mention"); it is
-// enforced where each mention notifier fires, via getPrefs + a !mentions short-circuit.
 export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPrefsRecord): boolean {
   if (!prefs.push) return false
   switch (type) {
@@ -74,8 +66,6 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
 }
 
 export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
-  // quietHours is present on the wire only when BOTH bounds are set (null-vs-undefined: an unset pair is
-  // omitted, not sent as null).
   const hasQuiet = row.quietStart !== null && row.quietEnd !== null
   return {
     push: row.push,
