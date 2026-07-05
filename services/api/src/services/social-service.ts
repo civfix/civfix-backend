@@ -6,6 +6,7 @@ import type {
   ListPeopleRequest,
   ListPeopleResponse,
   PersonDTO,
+  SocialLinks,
   UserProfileDTO,
 } from "@civfix/shared"
 import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
@@ -24,6 +25,7 @@ export interface PersonView {
   verified: boolean
   avatarR2Key: string | null
   avatarUrl: string | null
+  socialLinks: SocialLinks | null
 }
 
 export interface ProfileStats {
@@ -189,6 +191,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       following: view.following,
       isFollowing,
       verified: view.verified,
+      ...(view.socialLinks ? { socialLinks: view.socialLinks } : {}),
       pastEvents,
       stats,
       ...(volunteerHours !== undefined ? { volunteerHours } : {}),
@@ -244,7 +247,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
           try {
             await deps.notifier.onNewFollower({ followeeId: targetId, follower })
           } catch {
-            return { isFollowing: true, followers }
+            void 0
           }
         } else {
           deps.logger?.warn({ viewerId, targetId }, "social: new follower row missing, notification skipped")
