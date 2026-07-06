@@ -1,21 +1,3 @@
-/**
- * Admin home data-layer integration test (Docker-gated). Exercises the REAL raw-SQL HomeRepository
- * (makeDrizzleHomeRepository) against a live Postgres/PostGIS container via withPg (canonical migrations +
- * the jurisdiction seed), so the per-section count queries + the live-map pin query run against the real
- * schema (reports / cleanups / cleanup_members / abuse_flags / user_moderation / mail_threads /
- * mail_events / jurisdiction_contacts).
- *
- * Proven here against the real schema:
- *   - discoverySummary: queue / reportsWaiting / overSla over submitted-but-unrouted reports;
- *   - reportsSummary: flagged (open abuse_flag) / in-progress / completed;
- *   - eventsSummary: upcoming / live / attending (member counts);
- *   - mailSummary: unread + needs-action + bounce rate (reusing the shared mail stats);
- *   - usersSummary: flagged / high-risk / suspended over user_moderation;
- *   - livePins24h: public reports in the last 24h;
- *   - recentPins: report + event pins with the cleanups status mapped to the EventStatus enum.
- *
- * When Docker is unavailable the whole describe block SKIPS, so the local suite stays green; CI runs it.
- */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -67,6 +49,7 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
 
   beforeEach(async () => {
     await h.sql`TRUNCATE cleanup_members, jurisdiction_contacts, user_moderation, abuse_flags, mail_events, mail_messages, mail_threads RESTART IDENTITY CASCADE`
+    await h.sql`DELETE FROM jurisdiction_discovery_tasks`
     await h.sql`DELETE FROM cleanups`
     await h.sql`DELETE FROM reports`
     await h.sql`DELETE FROM users`
@@ -77,15 +60,13 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
     await h.teardown()
   })
 
-  it("discoverySummary: counts unrouted waiting reports (incl. published live pins) + over-SLA", async () => {
-    // Two waiting reports in an unrouted jurisdiction; one old (over SLA), one fresh. The fresh one is
-    // `published` — an authed pin's real status — to guard that the queue counts live-but-unrouted pins,
-    // not only literal `submitted` (which authed reports never have).
+  it("discoverySummary: queue counts open discovery tasks; reportsWaiting/overSla over unrouted waiting reports", async () => {
     await insertReport(h, { status: "submitted", createdAt: new Date(Date.now() - 30 * 3600 * 1000) })
     await insertReport(h, { status: "published", createdAt: new Date() })
+    await h.sql`INSERT INTO jurisdiction_discovery_tasks (geoid) VALUES (${GEOID})`
 
     const d = await repo.discoverySummary()
-    expect(d.queue).toBe(1) // one jurisdiction
+    expect(d.queue).toBe(1)
     expect(d.reportsWaiting).toBe(2)
     expect(d.overSla).toBe(1)
   })
@@ -163,13 +144,10 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
     const event = pins.find((p) => p.refType === "event")
     expect(report).toBeDefined()
     expect(report?.lat).toBeCloseTo(34.1, 3)
-    // A report pin never carries an event kind.
     expect(report?.eventKind).toBeNull()
     expect(event).toBeDefined()
-    // 'done' maps to 'completed'.
     expect(event?.status).toBe("completed")
     expect(event?.attendees).toBe(0)
-    // The event pin carries the cleanup's kind (defaulting to 'cleanup' here) so the live map can diverge.
     expect(event?.eventKind).toBe("cleanup")
   })
 })

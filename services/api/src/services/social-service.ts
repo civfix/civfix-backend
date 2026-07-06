@@ -89,6 +89,7 @@ export interface SocialViewer {
 export interface SocialServiceDeps {
   repo: SocialRepository
   notifier?: SocialNotifier
+  isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
   presignAvatar?: (avatarKey: string) => Promise<string>
   volunteerHoursTotalFor?: (userId: string) => Promise<number>
   logger?: { warn(obj: unknown, msg: string): void }
@@ -235,6 +236,9 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     ): Promise<{ isFollowing: boolean; followers: number }> {
       if (viewerId === targetId) {
         throw AppError.validation({ targetId: "You cannot follow yourself." })
+      }
+      if (deps.isBlockedEitherWay && (await deps.isBlockedEitherWay(viewerId, targetId))) {
+        throw AppError.notFound("Person not found")
       }
       const { exists, created } = await deps.repo.addFollow(viewerId, targetId)
       if (!exists) throw AppError.notFound("Person not found")

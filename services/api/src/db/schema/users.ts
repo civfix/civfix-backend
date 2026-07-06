@@ -35,6 +35,9 @@ export const users = pgTable(
       .on(t.email)
       .where(sql`${t.email} is not null`),
     index("users_created_id_idx").on(t.createdAt.desc(), t.id.desc()),
+    index("users_avatar_media_idx")
+      .on(t.avatarMediaId)
+      .where(sql`${t.avatarMediaId} is not null`),
   ],
 )
 

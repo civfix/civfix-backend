@@ -11,7 +11,7 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js"
-import { AppError, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/shared"
+import { AppError, DELETED_USER_LABEL, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/shared"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 import {
   generatePlaceholderHandle,
@@ -187,11 +187,7 @@ export class PgUserStore implements UserStore {
       if (media[0]) {
         set.avatarMediaId = media[0].id
         if (input.presignAvatar) {
-          try {
-            set.avatarUrl = await input.presignAvatar(media[0].r2Key)
-          } catch {
-            void 0
-          }
+          set.avatarUrl = await input.presignAvatar(media[0].r2Key)
         }
       }
     }
@@ -206,7 +202,13 @@ export class PgUserStore implements UserStore {
       }
       set.socialLinks = Object.keys(clean).length > 0 ? clean : null
     }
-    const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
+    let updated: (typeof users.$inferSelect)[]
+    try {
+      updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
+    } catch (err) {
+      if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
+      throw err
+    }
     const r = updated[0]
     if (!r) throw AppError.notFound("User not found.")
     return toUserRecord(r)
@@ -233,7 +235,18 @@ export class PgUserStore implements UserStore {
     return this.db.transaction(async (tx) => {
       const updated = await tx
         .update(users)
-        .set({ deletedAt: sql`COALESCE(${users.deletedAt}, now())`, allowDirectMessages: false })
+        .set({
+          deletedAt: sql`COALESCE(${users.deletedAt}, now())`,
+          allowDirectMessages: false,
+          email: null,
+          emailVerified: false,
+          displayName: DELETED_USER_LABEL,
+          handle: generatePlaceholderHandle(id),
+          bio: null,
+          avatarUrl: null,
+          avatarMediaId: null,
+          socialLinks: null,
+        })
         .where(eq(users.id, id))
         .returning()
       const r = updated[0]
@@ -412,4 +425,14 @@ function toOtpRecord(r: OtpRowLike): OtpRecord {
 
 function rolesFor(role: Role): Role[] {
   return [role]
+}
+
+const PG_UNIQUE_VIOLATION = "23505"
+
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
+  )
 }

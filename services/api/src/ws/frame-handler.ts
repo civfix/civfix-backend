@@ -170,7 +170,8 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     sendError(conn, "BLOCKED", "This contains language that isn't allowed.", { kind, id })
     return
   }
-  if (kind === "report" && deps.reportSendLimiter && !deps.reportSendLimiter.tryConsume(`${userId}:${id}`)) {
+  const roomKey = roomKeyFor(kind, id)
+  if (deps.reportSendLimiter && !deps.reportSendLimiter.tryConsume(`${userId}:${roomKey}`)) {
     sendError(conn, "RATE_LIMITED", "You're sending messages too fast. Please slow down.", { kind, id })
     return
   }
@@ -179,7 +180,6 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     sendError(conn, auth.code, auth.message, { kind, id })
     return
   }
-  const roomKey = roomKeyFor(kind, id)
   const mediaUploadIds = frame.mediaUploadIds
   let message: ChatMessageDTO
   if (kind === "dm") {
@@ -362,4 +362,4 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
   await (dispatch[frame.type] as (s: GatewaySession, f: ClientFrame) => Promise<void>)(session, frame)
 }
 
-export { serverFrame, sendError }
+export { serverFrame, sendError, decodeRoomKey }

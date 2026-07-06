@@ -1,11 +1,3 @@
-/**
- * The auth service bundle: the single object the auth routes + context hook depend on.
- *
- * Bundling SessionService + OtpService + OAuthService (plus the UserStore used to render UserDTOs)
- * behind one factory is what makes the subsystem testable offline. Production wires Postgres stores +
- * a Redis-backed cache + the real mailer; tests wire the in-memory stores + in-memory cache +
- * FakeMailer and inject the bundle straight into buildServer. Neither path special-cases the other.
- */
 
 import type { Container } from "../di.js"
 import type { OAuthProvider, UserDTO } from "@civfix/shared"
@@ -29,18 +21,10 @@ export interface AuthServices {
   otp: OtpService
   oauth: OAuthService
   users: UserStore
-  /**
-   * Sign-in providers the server has configured, surfaced on /auth/session so the web can show only
-   * the buttons that will work. Derived best-effort from the OAuth config (apple/google) plus email,
-   * which is always available (OTP). Order is stable: apple, google, email.
-   */
+  cache: CacheClient
   enabledProviders: OAuthProvider[]
 }
 
-/**
- * Derive the enabled sign-in providers from the OAuth config. `email` (OTP) is always available;
- * `apple`/`google` are included only when their credentials are present. Best-effort and non-breaking.
- */
 export function enabledProvidersFromConfig(config: OAuthConfig): OAuthProvider[] {
   const providers: OAuthProvider[] = []
   if (config.apple) providers.push("apple")
@@ -54,17 +38,12 @@ export interface BuildAuthServicesOptions {
   cache: CacheClient
   mailer: import("@civfix/shared/interfaces").Mailer
   oauthConfig: OAuthConfig
-  /** Optional JWKS verifier override (tests). Production uses the default remote verifier. */
   verifier?: JwksVerifier
-  /** Optional clock override (tests). */
   now?: () => number
-  /** Optional logger (the pino instance); wired in production so the OTP service can warn. */
   logger?: OtpLogger
-  /** Reviewer-OTP bypass config; omit to disable (the offline/test default). */
   reviewer?: ReviewerOtpConfig
 }
 
-/** Assemble the auth services from already-constructed seams. Pure wiring; no I/O. */
 export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices {
   const now = opts.now
   const sessions = new SessionService({
@@ -92,15 +71,11 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
     otp,
     oauth,
     users: opts.stores.users,
+    cache: opts.cache,
     enabledProviders: enabledProvidersFromConfig(opts.oauthConfig),
   }
 }
 
-/**
- * Production wiring: build the auth services from the DI container. Uses the real Postgres stores
- * (forcing creation of the lazy DB handle) and the Redis-backed cache (forcing the Redis client),
- * plus the container's selected mailer (real OCI or FakeMailer per USE_FAKE_MAILER).
- */
 export function buildAuthServicesFromContainer(container: Container): AuthServices {
   const stores = new PgAuthStores(container.getDb().db)
   const cache = new RedisCacheClient(container.getRedis())
@@ -109,19 +84,15 @@ export function buildAuthServicesFromContainer(container: Container): AuthServic
     cache,
     mailer: container.mailer,
     oauthConfig: oauthConfigFromEnv(container.env),
-    // Reviewer-OTP bypass is ON unless explicitly disabled (REVIEWER_OTP_BYPASS=false).
     ...(container.env.REVIEWER_OTP_BYPASS !== false
       ? { reviewer: { email: REVIEWER_OTP_EMAIL, code: REVIEWER_OTP_CODE } }
       : {}),
   })
 }
 
-/** Project the OAuth credentials out of env into the OAuthService config (omitting absent providers). */
 export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
   const config: OAuthConfig = {}
   if (env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && env.GOOGLE_OAUTH_REDIRECT_URI) {
-    // The native mobile SDK can present a token whose audience is the iOS or Android OAuth client id
-    // (separate Google clients from the web one). Accept those alongside the web client id.
     const extraAudiences = [
       env.GOOGLE_OAUTH_IOS_CLIENT_ID,
       env.GOOGLE_OAUTH_ANDROID_CLIENT_ID,
@@ -139,9 +110,6 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
     env.APPLE_OAUTH_KEY_ID &&
     env.APPLE_OAUTH_PRIVATE_KEY
   ) {
-    // The native iOS Apple id_token's aud is the app bundle id (APPLE_OAUTH_IOS_CLIENT_ID, e.g.
-    // org.civfix.community). Accept it alongside clientId so native sign-in verifies even when clientId is
-    // set to the WEB Services ID (org.civfix.web) — mirrors the Google iOS/Android extraAudiences above.
     const appleExtraAudiences = [env.APPLE_OAUTH_IOS_CLIENT_ID].filter(
       (id): id is string => typeof id === "string" && id.length > 0,
     )
@@ -150,10 +118,7 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
       teamId: env.APPLE_OAUTH_TEAM_ID,
       keyId: env.APPLE_OAUTH_KEY_ID,
       privateKey: env.APPLE_OAUTH_PRIVATE_KEY,
-      // Apple reuses the Google-style redirect under the same public API host when web flow is on.
       redirectUri: `${env.PUBLIC_API_URL}/auth/apple/callback`,
-      // The Services ID (web client id). When present the web redirect flow + web button light up; when
-      // absent only the native/mobile token flow works. Reuses the same team/key/.p8 as above.
       ...(env.APPLE_OAUTH_WEB_CLIENT_ID
         ? { webClientId: env.APPLE_OAUTH_WEB_CLIENT_ID }
         : {}),
@@ -163,20 +128,6 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
   return config
 }
 
-/**
- * Render a user row to the wire DTO. The UUID `id` is carried as a HIDDEN internal key (cache/follow/DM);
- * the user-facing identifier is `handle`. `handleChangeableAt` is the ISO timestamp the user may next
- * change their @handle (null = changeable now), derived from handle_changed_at + 30 days. `now` is
- * injectable so tests can drive that cooldown clock deterministically.
- *
- * This is the SINGLE serializer every sign-in path renders the user through (OTP verify, Apple, Google,
- * the Google web callback, and GET /auth/session), so the first-run gate flag is computed in exactly one
- * place and can never diverge between providers. The clients' first-run gate triggers ONLY on an explicit
- * `profileComplete === false`, so we coerce the stored column to a definite boolean here: a brand-new
- * account (OTP or OAuth) is created with profile_complete=false and MUST serialize as `false` (not
- * undefined), or the OAuth signups would silently skip the "finish setting up your account" step the OTP
- * signups get.
- */
 export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
   return {
     id: user.id,
@@ -189,8 +140,6 @@ export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
     allowDirectMessages: user.allowDirectMessages,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
-    // The user's chosen UI/message locale (clamped to a supported code {en,es,de,ko}) so a fresh authed
-    // client seeds its UI from the server source of truth. Now a required UserDTO field (@civfix/shared 0.22+).
     locale: resolveLocale(user.locale),
   }
 }

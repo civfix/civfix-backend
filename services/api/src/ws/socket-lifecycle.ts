@@ -3,7 +3,9 @@ import type { WebSocket } from "@fastify/websocket"
 import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import { randomUUID } from "node:crypto"
 import { checkWsHandshake, originHeader } from "./handshake.js"
-import { handleClientFrame, leaveRoomAndAnnounce, serverFrame, sendError } from "./frame-handler.js"
+import { handleClientFrame, leaveRoomAndAnnounce, serverFrame, sendError, decodeRoomKey } from "./frame-handler.js"
+import { makeTokenBucketLimiter, type RateLimiter } from "./report-rate-limit.js"
+import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import {
   type GatewaySession,
   type RegisterGatewayOptions,
@@ -14,6 +16,33 @@ import {
 } from "./types.js"
 
 const READY_STATE_OPEN = 1
+
+const CLEANUP_SEND_LIMIT = { capacity: 30, refillPerSec: 0.5 } as const
+
+const DM_SEND_LIMIT = { capacity: 20, refillPerSec: 0.5 } as const
+
+const MAX_CONNECTIONS_PER_USER = 10
+
+const MAX_CONNECTIONS_PER_IP = 30
+
+function makeSendLimiter(reportLimiter: RateLimiter | undefined): RateLimiter {
+  const cleanup = makeTokenBucketLimiter(CLEANUP_SEND_LIMIT)
+  const dm = makeTokenBucketLimiter(DM_SEND_LIMIT)
+  return {
+    tryConsume(key: string): boolean {
+      const { kind } = decodeRoomKey(key.slice(key.indexOf(":") + 1))
+      if (kind === "dm") return dm.tryConsume(key)
+      if (kind === "report") return reportLimiter ? reportLimiter.tryConsume(key) : true
+      return cleanup.tryConsume(key)
+    },
+  }
+}
+
+function bumpCount(counts: Map<string, number>, key: string, delta: number): void {
+  const next = (counts.get(key) ?? 0) + delta
+  if (next <= 0) counts.delete(key)
+  else counts.set(key, next)
+}
 
 const DROPPABLE_FRAME_TYPES = new Set(["presence", "presence_snapshot", "typing", "discussion"])
 
@@ -58,9 +87,17 @@ export async function subscribeUserChannel(
 }
 
 export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayOptions): void {
+  const sendLimiter = makeSendLimiter(opts.reportSendLimiter)
+  const connectionsPerUser = new Map<string, number>()
+  const connectionsPerIp = new Map<string, number>()
+
   app.get("/ws", { websocket: true }, (socket: WebSocket, request: FastifyRequest) => {
     void (async () => {
-      const handshake = await checkWsHandshake(request, { sessions: opts.sessions, webOrigins: opts.webOrigins })
+      const handshake = await checkWsHandshake(request, {
+        sessions: opts.sessions,
+        webOrigins: opts.webOrigins,
+        redeemTicket: opts.redeemTicket,
+      })
       if (!handshake.ok) {
         if (handshake.code === "FORBIDDEN") {
           request.log.warn({ origin: originHeader(request) }, "ws: rejected cross-site Origin")
@@ -74,6 +111,31 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
         return
       }
       const userId = handshake.userId
+      const ipKey = normalizeIp(request.ip)
+
+      if (
+        (connectionsPerUser.get(userId) ?? 0) >= MAX_CONNECTIONS_PER_USER ||
+        (connectionsPerIp.get(ipKey) ?? 0) >= MAX_CONNECTIONS_PER_IP
+      ) {
+        try {
+          socket.send(serverFrame({ type: "error", code: "RATE_LIMITED", message: "Too many open connections." }))
+        } catch (err) {
+          request.log.debug({ err }, "ws: connection-cap reject send failed (socket already closing)")
+        }
+        socket.close(WS_CLOSE_POLICY_VIOLATION, "too many connections")
+        return
+      }
+
+      bumpCount(connectionsPerUser, userId, 1)
+      bumpCount(connectionsPerIp, ipKey, 1)
+      let released = false
+      const releaseConnectionSlot = (): void => {
+        if (released) return
+        released = true
+        bumpCount(connectionsPerUser, userId, -1)
+        bumpCount(connectionsPerIp, ipKey, -1)
+      }
+      socket.on("close", releaseConnectionSlot)
 
       const session: GatewaySession = {
         userId,
@@ -93,7 +155,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           onDmDelivered: opts.onDmDelivered,
           onReportMessage: opts.onReportMessage,
           reportVisible: opts.reportVisible,
-          reportSendLimiter: opts.reportSendLimiter,
+          reportSendLimiter: sendLimiter,
           chatMentions: opts.chatMentions,
         },
       }
@@ -105,6 +167,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           void unsubscribeUser().catch(() => {})
           unsubscribeUser = undefined
         }
+        releaseConnectionSlot()
         return
       }
 

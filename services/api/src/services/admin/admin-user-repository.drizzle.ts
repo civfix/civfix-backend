@@ -42,8 +42,6 @@ interface UserRowSelect {
   id: string
   name: string | null
   handle: string | null
-  email_verified: boolean
-  has_oauth: boolean
   city: string | null
   role: Role
   created_at: Date | null
@@ -68,8 +66,6 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     id: r.id,
     name: r.name ?? "Neighbor",
     handle: r.handle,
-    emailVerified: r.email_verified,
-    hasOauth: r.has_oauth,
     city: r.city ?? "",
     role: r.role,
     joinedAt: r.created_at,
@@ -90,14 +86,24 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
   }
 }
 
-function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFragment): SqlFragment {
+function userSelect(
+  sql: Queryable,
+  extraWhere: SqlFragment,
+  orderLimit: SqlFragment,
+  withMessages: boolean,
+): SqlFragment {
+  const messages = withMessages
+    ? sql`(
+        (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id)
+        + (SELECT COUNT(*) FROM dm_messages dmsg WHERE dmsg.sender_id = u.id)
+        + (SELECT COUNT(*) FROM report_discussion_messages rdm WHERE rdm.author_user_id = u.id)
+      )::text`
+    : sql`'0'::text`
   return sql`
     SELECT
       u.id,
       u.display_name AS name,
       u.handle,
-      u.email_verified,
-      EXISTS (SELECT 1 FROM oauth_identities oi WHERE oi.user_id = u.id) AS has_oauth,
       (
         SELECT j.name FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
@@ -112,11 +118,7 @@ function userSelect(sql: Queryable, extraWhere: SqlFragment, orderLimit: SqlFrag
       COALESCE(um.account_status, 'active') AS account_status,
       (SELECT COUNT(*) FROM reports r WHERE r.reporter_user_id = u.id AND r.deleted_at IS NULL)::text AS reports,
       (SELECT COUNT(*) FROM cleanup_members cm WHERE cm.user_id = u.id)::text AS cleanups,
-      (
-        (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id)
-        + (SELECT COUNT(*) FROM dm_messages dmsg WHERE dmsg.sender_id = u.id)
-        + (SELECT COUNT(*) FROM report_discussion_messages rdm WHERE rdm.author_user_id = u.id)
-      )::text AS messages,
+      ${messages} AS messages,
       COALESCE(um.removals, 0) AS removals,
       COALESCE(um.strikes, 0) AS strikes,
       COALESCE(um.risk, 'low') AS risk,
@@ -154,7 +156,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       const extraWhere = conds.reduce<SqlFragment>((acc, c) => sql`${acc} ${c}`, sql``)
       const orderLimit = sql`ORDER BY u.created_at DESC, u.id DESC LIMIT ${limit + 1}`
 
-      const rows = (await userSelect(sql, extraWhere, orderLimit)) as unknown as UserRowSelect[]
+      const rows = (await userSelect(sql, extraWhere, orderLimit, false)) as unknown as UserRowSelect[]
       const { items, nextCursor } = paginate(rows, limit, (r) => ({
         ...(r.created_at !== null ? { createdAt: r.created_at } : {}),
         id: r.id,
@@ -191,6 +193,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         sql,
         sql`AND u.id = ${id}`,
         sql`LIMIT 1`,
+        true,
       )) as unknown as UserRowSelect[]
       return rows[0] ? toRecord(rows[0]) : null
     },

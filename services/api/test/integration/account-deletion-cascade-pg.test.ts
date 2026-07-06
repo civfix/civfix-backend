@@ -2,15 +2,6 @@ import { describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 
-/**
- * Account-deletion content cascade (Docker-gated). `PgUserStore.softDeleteAndAnonymize` must, in ONE
- * transaction, tombstone the user AND UNLIST (never delete) the content they authored:
- *   - their public reports flip visibility 'public' -> 'hidden' (off the map / search / public detail);
- *   - their still-active events ('upcoming' | 'active') flip status -> 'cancelled' (off the map + lists);
- * while another user's content, the victim's PAST ('done') events, and anon reports are left untouched.
- * Reports are never hard-deleted (a report is already forwarded to the city). Skips when Docker is
- * unavailable so the local suite stays green; CI runs it.
- */
 
 const pg = await withPg()
 
@@ -88,20 +79,22 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
     const cleanupStatus = async (id: string) =>
       (await h.sql<{ status: string }[]>`SELECT status FROM cleanups WHERE id = ${id}`)[0]!.status
 
-    // Victim's content is unlisted (but retained)...
     expect(await reportVis(victimReport)).toBe("hidden")
     expect(await cleanupStatus(upcoming)).toBe("cancelled")
     expect(await cleanupStatus(active)).toBe("cancelled")
-    // ...the victim's PAST event keeps its history; others + anon reports are untouched.
     expect(await cleanupStatus(past)).toBe("done")
     expect(await reportVis(bystanderReport)).toBe("public")
     expect(await reportVis(anonReport)).toBe("public")
     expect(await cleanupStatus(bystanderEvent)).toBe("upcoming")
 
-    // The user row survives, tombstoned (kept for admin truth / "Deleted User" projection).
-    const rows = await h.sql<{ deleted_at: Date | null }[]>`
-      SELECT deleted_at FROM users WHERE id = ${victim}
+    const rows = await h.sql<
+      { deleted_at: Date | null; email: string | null; display_name: string; handle: string }[]
+    >`
+      SELECT deleted_at, email, display_name, handle FROM users WHERE id = ${victim}
     `
     expect(rows[0]!.deleted_at).not.toBeNull()
+    expect(rows[0]!.email).toBeNull()
+    expect(rows[0]!.display_name).toBe("Deleted User")
+    expect(rows[0]!.handle).toMatch(/^user[0-9a-f]{12}$/)
   })
 })

@@ -87,6 +87,19 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     disableRequestLogging: false,
     logger: {
       level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
+      serializers: {
+        req(request) {
+          const acceptVersion = request.headers["accept-version"]
+          return {
+            method: request.method,
+            url: request.url.split("?")[0],
+            version: typeof acceptVersion === "string" ? acceptVersion : undefined,
+            host: request.host,
+            remoteAddress: request.ip,
+            remotePort: request.socket.remotePort,
+          }
+        },
+      },
       redact: {
         paths: [
           "req.headers.authorization",

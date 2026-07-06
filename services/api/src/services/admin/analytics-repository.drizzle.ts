@@ -1,18 +1,3 @@
-/**
- * Postgres-backed AnalyticsRepository (Phase 2): the raw aggregate queries behind the 11 analytics
- * endpoints (#56-#66). Written against the raw postgres-js tag (`Sql`, from container.getDb().sql) like
- * the other admin repos. Each method returns the RAW aggregates; the analytics service does the pure
- * shaping (pct / category fill / deltas / labels). These queries are exercised by the Docker-gated
- * integration test (test/integration/admin-analytics.test.ts); the shaping is unit-tested separately.
- *
- * Conventions:
- *   - "Pins" = public, non-deleted reports (we never count held/hidden/removed reports as pins).
- *   - "This month" / "last month" use date_trunc('month', now()) windows.
- *   - Medians use percentile_cont(0.5) over the resolution duration (resolved/published - created).
- *   - Coverage: a jurisdiction is "mapped" if it has ANY jurisdiction_contacts row OR a non-empty
- *     contact_emails[] (the legacy routing array). Otherwise it "needs mapping".
- *   - Counts are returned as ::text and parsed to avoid postgres.js bigint surprises.
- */
 
 import type { Sql } from "../../db/client.js"
 import type {
@@ -32,18 +17,15 @@ import type {
 } from "./analytics-types.js"
 import type { ReportCategory } from "@civfix/shared"
 
-/** Parse a ::text count to a finite number (0 on NaN/undefined). */
 function num(value: string | null | undefined): number {
   if (value == null) return 0
   const n = Number(value)
   return Number.isFinite(n) ? n : 0
 }
 
-/** Construct the production AnalyticsRepository over the raw postgres-js tag (`container.getDb().sql`). */
 export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
   return {
     async kpis(): Promise<KpiAggregates> {
-      // Three independent scans (reports / cleanups / users); run them concurrently — they share no tx.
       const [reportRows, cleanupRows, newUserRows] = await Promise.all([
         sql<
           {
@@ -154,8 +136,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     },
 
     async funnel(): Promise<FunnelCounts> {
-      // Each stage counts reports that REACHED it. "Routed" = has a jurisdiction assigned (a contact path
-      // exists). "Acknowledged" = status reached acknowledged/in_progress/resolved. "Resolved" = resolved.
       const rows = await sql<
         { dropped: string; routed: string; acknowledged: string; resolved: string }[]
       >`
@@ -201,9 +181,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     },
 
     async resolutionByCategory(): Promise<CategoryMedian[]> {
-      // Median resolution hours per category over resolved reports: COALESCE(published_at, now()) -
-      // created_at. A resolved row that was never published charges created..now (slightly inflating the
-      // median); see the resolutionByCategory finding for the intended-timestamp caveat.
       const rows = await sql<{ category: ReportCategory; median_hours: string | null }[]>`
         SELECT
           category,
@@ -211,14 +188,13 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
             ORDER BY EXTRACT(EPOCH FROM (COALESCE(published_at, now()) - created_at)) / 3600.0
           )::text AS median_hours
         FROM reports
-        WHERE deleted_at IS NULL AND status = 'resolved'
+        WHERE deleted_at IS NULL AND status = 'resolved' AND visibility = 'public'
         GROUP BY category
       `
       return rows.map((r) => ({ category: r.category, medianHours: num(r.median_hours) }))
     },
 
     async events(months: number): Promise<EventAggregates> {
-      // Three independent scans run concurrently (no shared tx).
       const [headline, volunteers, byMonthRows] = await Promise.all([
         sql<{ this_month: string; bags: string }[]>`
           SELECT
@@ -275,8 +251,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     },
 
     async topContributors(limit: number): Promise<TopContributorRow[]> {
-      // Reports filed + cleanups organized, per user, ranked by the combined volume. City is the user's
-      // most-reported jurisdiction name (a best-effort label).
       const rows = await sql<
         { name: string; city: string | null; reports: string; cleanups: string }[]
       >`
@@ -321,8 +295,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     },
 
     async heatmap(limit: number): Promise<HeatmapCellRow[]> {
-      // Per-jurisdiction pin density with the jurisdiction centroid (ST_Centroid of its boundary) so the
-      // dashboard can plot a weighted point per jurisdiction.
       const rows = await sql<
         { geoid: string; name: string; density: string; lat: number; lng: number }[]
       >`
@@ -351,10 +323,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     },
 
     async retention(cohorts: number): Promise<RetentionRow[]> {
-      // Monthly cohorts by signup month (the last `cohorts` months). For each cohort and each trailing
-      // period index p (0 = signup month), count distinct cohort members who were ACTIVE in that month
-      // (filed a report OR joined a cleanup). period count is capped to the cohort's own age so a future
-      // period is not reported.
       const rows = await sql<
         { y: string; m: string; size: string; period: string; active: string }[]
       >`
@@ -402,7 +370,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
         LEFT JOIN active_counts ac ON ac.cohort_month = cs.cohort_month
         ORDER BY cs.cohort_month, period
       `
-      // Group the (cohort, period, active) rows into one RetentionRow per cohort with a dense period array.
       const byCohort = new Map<string, RetentionRow>()
       for (const row of rows) {
         const year = num(row.y)
@@ -418,7 +385,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           cohort.activeByPeriod[period] = num(row.active)
         }
       }
-      // Densify the activeByPeriod arrays (fill gaps with 0).
       const result: RetentionRow[] = []
       for (const cohort of byCohort.values()) {
         const dense: number[] = []

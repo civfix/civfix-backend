@@ -2,6 +2,7 @@
 import { ErrorCode } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
+import { makeWsTicketStore } from "../auth/ws-ticket.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import {
   registerChatGateway,
@@ -261,10 +262,14 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   applyWsUpgradeRateLimit(app)
 
+  const wsTicketCache = app.authServices?.cache
   registerChatGateway(app, {
     chat: container.chatService,
     isMember,
     sessions: app.authServices?.sessions,
+    ...(wsTicketCache
+      ? { redeemTicket: (ticket: string) => makeWsTicketStore(wsTicketCache).redeem(ticket) }
+      : {}),
     markRead: async (cleanupId, userId, upToId) => {
       const at = await resolveReadAt(cleanupId, upToId)
       await readState.markRead(cleanupId, userId, at)

@@ -11,31 +11,21 @@ import {
 } from "../../src/services/media-intake-service.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 
-/**
- * Unit tests for the media-intake service. The pure `precheckUpload` is tested directly; the
- * create/finalize/getMedia flows run against an in-memory repository + FakeStorage + FakeJobs, so they
- * need NO database and NO Docker (mirrors the jurisdiction-service offline pattern). The Drizzle repo
- * and the real R2 adapter are covered by the Docker-gated integration suite and DI tests respectively.
- */
 
 const SHA = "a".repeat(64)
 
-/** A valid image upload request (32 KB JPEG). */
 function imageReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUploadRequest {
   return { kind: "image", contentType: "image/jpeg", byteSize: 32 * 1024, sha256: SHA, ...over }
 }
-/** A valid video upload request (4 MB mp4). */
 function videoReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUploadRequest {
   return { kind: "video", contentType: "video/mp4", byteSize: 4 * 1024 * 1024, sha256: SHA, ...over }
 }
 
-/** Build a service over fresh fakes; returns the service plus the fakes for assertions. */
 function makeHarness() {
   const repo = new InMemoryMediaRepository()
   const storage = new FakeStorage()
   const jobs = new FakeJobs()
   const service: MediaIntakeService = makeMediaIntakeService({ repo, storage, jobs })
-  /** Resolve the inserted row (id + r2Key) for an uploadId; throws if absent so setup fails loudly. */
   async function row(uploadId: string) {
     const found = await repo.findByUploadId(uploadId)
     if (!found) throw new Error(`no media row for uploadId ${uploadId}`)
@@ -69,27 +59,24 @@ describe("precheckUpload (pure)", () => {
   })
 
   it("rejects a disallowed contentType for the kind", () => {
-    // gif is not on the image allowlist...
     expect(() => precheckUpload(imageReq({ contentType: "image/gif" }))).toThrow()
-    // ...HEIC/HEIF are rejected too: the media-worker's prebuilt sharp/libvips cannot decode HEVC-coded
-    // HEIF, so accepting it would yield a report whose served image is an unrenderable HEIC (blank on web).
     expect(() => precheckUpload(imageReq({ contentType: "image/heic" }))).toThrow()
     expect(() => precheckUpload(imageReq({ contentType: "image/heif" }))).toThrow()
-    // ...and an image contentType is not valid for a video upload.
     expect(() => precheckUpload(videoReq({ contentType: "image/jpeg" }))).toThrow()
   })
 
   it("rejects a sha256 that is not 64 hex chars", () => {
     expect(() => precheckUpload(imageReq({ sha256: "deadbeef" }))).toThrow()
     expect(() => precheckUpload(imageReq({ sha256: "g".repeat(64) }))).toThrow()
-    expect(() => precheckUpload(imageReq({ sha256: "A".repeat(64) }))).not.toThrow() // upper-cased hex ok
+    expect(() => precheckUpload(imageReq({ sha256: "A".repeat(64) }))).not.toThrow()
   })
 })
 
 describe("buildR2Key", () => {
-  it("is content-addressed under uploads/<yyyy>/<mm>/<sha>", () => {
-    const key = buildR2Key(SHA, new Date("2026-05-31T12:00:00.000Z"))
-    expect(key).toBe(`uploads/2026/05/${SHA}`)
+  it("keys on the server-issued uploadId under uploads/<yyyy>/<mm>/<uploadId>", () => {
+    const uploadId = "11111111-2222-4333-8444-555555555555"
+    const key = buildR2Key(uploadId, new Date("2026-05-31T12:00:00.000Z"))
+    expect(key).toBe(`uploads/2026/05/${uploadId}`)
   })
 })
 
@@ -98,15 +85,14 @@ describe("createUpload", () => {
     const { repo, service } = makeHarness()
     const res = await service.createUpload(imageReq(), { anonSessionId: "anon-1" })
 
-    // A row was inserted at status "validating" with the content-addressed key and report_id null.
     expect(repo.byId.size).toBe(1)
     const row = [...repo.byId.values()][0]!
     expect(row.status).toBe("validating")
     expect(row.uploadId).toBe(res.uploadId)
-    expect(row.r2Key).toMatch(/^uploads\/\d{4}\/\d{2}\/a{64}$/)
+    expect(row.r2Key).toBe(`uploads/${row.r2Key.split("/")[1]}/${row.r2Key.split("/")[2]}/${res.uploadId}`)
+    expect(row.r2Key.endsWith(res.uploadId)).toBe(true)
     expect(row.byteSize).toBe(32 * 1024)
 
-    // The presign went to FakeStorage for THAT key (memory://<key>) and the headers came back.
     expect(res.putUrl).toBe(`memory://${row.r2Key}`)
     expect(res.headers["content-type"]).toBe("image/jpeg")
     expect(res.headers["content-length"]).toBe(String(32 * 1024))
@@ -127,19 +113,15 @@ describe("finalize", () => {
     const { storage, jobs, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
 
-    // Simulate the client having PUT the bytes: the object now exists at the key with the right size.
     const asset = await row(created.uploadId)
     await storage.put(asset.r2Key, new Uint8Array(32 * 1024), { contentType: "image/jpeg" })
 
     const fin = await service.finalize({ uploadId: created.uploadId }, {})
     expect(fin.mediaId).toBe(asset.id)
 
-    // The row stays VALIDATING (NOT yet public): serving the raw upload would leak the camera's EXIF/GPS.
-    // The worker promotes it to "ready" only after stripping metadata + running the abuse seams.
     const finalized = await row(created.uploadId)
     expect(finalized.status).toBe("validating")
 
-    // Exactly one media.checks job is enqueued, carrying the handles the worker needs, deduped by uploadId.
     const enqueued = jobs.jobsFor(MEDIA_CHECKS_JOB)
     expect(enqueued).toHaveLength(1)
     expect(enqueued[0]?.data).toMatchObject({
@@ -160,7 +142,6 @@ describe("finalize", () => {
     await service.finalize({ uploadId: created.uploadId }, {})
 
     expect((await row(created.uploadId)).status).toBe("validating")
-    // singletonKey=uploadId dedupes in production (pg-boss); assert the checks job was enqueued.
     expect(jobs.jobsFor(MEDIA_CHECKS_JOB).length).toBeGreaterThanOrEqual(1)
   })
 
@@ -175,7 +156,6 @@ describe("finalize", () => {
   it("rejects when the uploaded object is missing in storage", async () => {
     const { jobs, service } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
-    // No storage.put -> head() returns null.
     await expect(
       service.finalize({ uploadId: created.uploadId }, {}),
     ).rejects.toMatchObject({ code: "MEDIA_REJECTED" })
@@ -186,7 +166,6 @@ describe("finalize", () => {
     const { storage, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
     const asset = await row(created.uploadId)
-    // Declared 32 KB, but the object is 1 byte -> gross mismatch.
     await storage.put(asset.r2Key, new Uint8Array(1), { contentType: "image/jpeg" })
     await expect(
       service.finalize({ uploadId: created.uploadId }, {}),
@@ -199,7 +178,6 @@ describe("getMedia", () => {
     const { repo, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
     const asset = await row(created.uploadId)
-    // Mark it ready with dimensions + a thumb_key, as the worker eventually would.
     repo.patch(asset.id, {
       status: "ready",
       width: 1200,

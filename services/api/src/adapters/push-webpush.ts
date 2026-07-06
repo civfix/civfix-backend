@@ -1,30 +1,34 @@
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
-import { isSafePushEndpoint, parseSubscription } from "./push-sender.js"
+import { resolveSafePushTarget, parseSubscription } from "./push-sender.js"
 import { mapWithLimit } from "../services/media-presign.js"
+import { Agent } from "node:https"
 
-// Cap concurrent server-side HTTPS POSTs (one per subscription) so a large recipient fan-out can't open
-// hundreds of sockets at once.
+function pinnedAgent(address: string, family: 4 | 6): Agent {
+  return new Agent({
+    lookup: (_hostname, options, callback) => {
+      if (typeof options === "object" && options?.all) {
+        ;(callback as (err: null, addrs: { address: string; family: number }[]) => void)(null, [
+          { address, family },
+        ])
+      } else {
+        ;(callback as (err: null, address: string, family: number) => void)(null, address, family)
+      }
+    },
+  })
+}
+
 const WEB_PUSH_CONCURRENCY = 16
 
-/**
- * Web Push dispatcher (web-push). Sets VAPID details once (memoized). Each token is a JSON-encoded
- * PushSubscription string (what the browser's pushManager.subscribe() yields, persisted as the token). A
- * 404/410 from the push service means the subscription is gone => prune.
- *
- * SEAM RULE: web-push may ONLY be imported here, via lazy dynamic import.
- */
 export function makeWebPushDispatcher(
   webPush: NonNullable<PushSenderConfig["webPush"]>,
   logger: PushLogger,
 ): PlatformDispatcher {
-  // Loose type: web-push is dynamically imported; we only call setVapidDetails + sendNotification.
   let webpushPromise: Promise<any> | null = null
 
   async function getWebPush() {
     if (!webpushPromise) {
       webpushPromise = (async () => {
         const mod = await import("web-push")
-        // @types/web-push exports a namespace; the default export carries the functions at runtime.
         const wp: any = (mod as { default?: unknown }).default ?? mod
         wp.setVapidDetails(webPush.subject, webPush.publicKey, webPush.privateKey)
         return wp
@@ -46,14 +50,11 @@ export function makeWebPushDispatcher(
     await mapWithLimit(tokens, WEB_PUSH_CONCURRENCY, async (token) => {
       const subscription = parseSubscription(token)
       if (subscription === null) {
-        invalidTokens.push(token) // not a valid subscription JSON => useless, prune it
+        invalidTokens.push(token)
         return
       }
-      // SECURITY (SSRF): the endpoint is attacker-controlled (any authed user registers it) and web-push
-      // does a server-side POST to it. Resolve-then-validate refuses + prunes endpoints that resolve to
-      // internal/loopback/link-local (incl. 169.254.169.254 IMDS)/CGNAT/ULA addresses so the API host
-      // cannot probe/forge requests against the internal network (DNS-rebind defense).
-      if (!(await isSafePushEndpoint(subscription.endpoint))) {
+      const target = await resolveSafePushTarget(subscription.endpoint)
+      if (target === null) {
         logger.warn(
           { endpoint: subscription.endpoint },
           "push(webpush): refusing unsafe/internal endpoint; pruning",
@@ -62,7 +63,9 @@ export function makeWebPushDispatcher(
         return
       }
       try {
-        await wp.sendNotification(subscription, body)
+        await wp.sendNotification(subscription, body, {
+          agent: pinnedAgent(target.address, target.family),
+        })
       } catch (err) {
         const statusCode = (err as { statusCode?: number }).statusCode
         if (statusCode === 404 || statusCode === 410) {

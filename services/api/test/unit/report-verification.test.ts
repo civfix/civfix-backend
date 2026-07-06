@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { randomUUID } from "node:crypto"
 import { FakeJobs, FakeMailer } from "@civfix/shared/fakes"
+import { AppError } from "@civfix/shared"
 import type { CreateReportRequest } from "@civfix/shared"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
 import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
@@ -22,20 +23,9 @@ import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js
 import { makeReportService, REPORT_AUTOFORWARD_JOB } from "../../src/services/report-service.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
-/**
- * Offline unit tests for the report-verification state machine (D7/D8/D9/D18) — the setVerdict
- * write/count/flip, the createReport auto-forward enqueue gate, the report.autoforward handler branches,
- * and the D18 manual report-verified toggle. Everything runs over the in-memory repos + the shared fakes
- * (FakeJobs runs a work() handler synchronously inside enqueue(); FakeMailer captures sends), so no DB
- * and no Docker are needed. The Drizzle/PostGIS repo + the real verdict transaction are covered by the
- * Docker-gated integration suite; here we assert the OBSERVABLE contract the memory repo mirrors.
- */
 
 const NOW = new Date("2026-06-22T00:00:00.000Z")
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function reporter(id: string) {
   return {
@@ -66,9 +56,6 @@ function verdictHarness(): VerdictHarness {
   return { repo, svc }
 }
 
-// ---------------------------------------------------------------------------
-// D7: setVerdict — verdict write + approved-count + report_verified flip
-// ---------------------------------------------------------------------------
 
 describe("setVerdict (D7) — verdict write + count + flip", () => {
   it("approve-once: records the verdict but leaves report_verified false (count=1 < threshold)", async () => {
@@ -81,10 +68,8 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
     const seeded = repo.reports.get("r1")!
     expect(seeded.record.verificationVerdict).toBe("approved")
     expect(seeded.record.verifiedAt).not.toBeNull()
-    // Only one approved report for this reporter -> not yet report-verified.
     expect(REPORT_VERIFIED_THRESHOLD).toBe(2)
     expect(repo.reporterReportVerified.get(uid)).not.toBe(true)
-    // The verdict write was audited.
     expect(repo.audits.at(-1)).toMatchObject({
       action: "report.verdict_set",
       target: "report:r1",
@@ -99,12 +84,11 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
     repo.seedReport({ id: "r2", reporter: reporter(uid) })
 
     await svc.setVerdict({ id: "r1", verdict: "approved", actorId: "op-1" })
-    expect(repo.reporterReportVerified.get(uid)).not.toBe(true) // count=1
+    expect(repo.reporterReportVerified.get(uid)).not.toBe(true)
 
     await svc.setVerdict({ id: "r2", verdict: "approved", actorId: "op-1" })
-    expect(repo.reporterReportVerified.get(uid)).toBe(true) // count=2 -> earned
+    expect(repo.reporterReportVerified.get(uid)).toBe(true)
 
-    // The earned flag is projected onto the report detail (mirrors the Drizzle LEFT JOIN).
     const detail = await svc.get("r1")
     expect(detail.reporterReportVerified).toBe(true)
   })
@@ -117,7 +101,6 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
     await svc.setVerdict({ id: "r1", verdict: "approved", actorId: "op-1" })
     await svc.setVerdict({ id: "r1", verdict: "approved", actorId: "op-1" })
 
-    // Re-approving the same row does not double-count, so the single approved report cannot flip the flag.
     expect(repo.reporterReportVerified.get(uid)).not.toBe(true)
     expect(repo.reports.get("r1")?.record.verificationVerdict).toBe("approved")
   })
@@ -146,7 +129,6 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
     await svc.setVerdict({ id: "r2", verdict: "approved", actorId: "op-1" })
     expect(repo.reporterReportVerified.get(uid)).toBe(true)
 
-    // A later rejection neither counts down nor clears the earned flag.
     await svc.setVerdict({ id: "r3", verdict: "rejected", actorId: "op-1" })
     expect(repo.reporterReportVerified.get(uid)).toBe(true)
   })
@@ -159,7 +141,6 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
     await svc.setVerdict({ id: "anon-1", verdict: "approved", actorId: "op-1" })
     await svc.setVerdict({ id: "anon-2", verdict: "approved", actorId: "op-1" })
 
-    // The verdict is stored on each anon report, but no account exists to flip -> the mirror stays empty.
     expect(repo.reports.get("anon-1")?.record.verificationVerdict).toBe("approved")
     expect(repo.reports.get("anon-2")?.record.verificationVerdict).toBe("approved")
     expect(repo.reporterReportVerified.size).toBe(0)
@@ -175,8 +156,8 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
     await svc.setVerdict({ id: "a2", verdict: "approved", actorId: "op-1" })
     await svc.setVerdict({ id: "b1", verdict: "approved", actorId: "op-1" })
 
-    expect(repo.reporterReportVerified.get("alice")).toBe(true) // 2 approved
-    expect(repo.reporterReportVerified.get("bob")).not.toBe(true) // only 1 approved
+    expect(repo.reporterReportVerified.get("alice")).toBe(true)
+    expect(repo.reporterReportVerified.get("bob")).not.toBe(true)
   })
 
   it("setVerdict on a missing report throws notFound (404)", async () => {
@@ -187,9 +168,6 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// D18: setUserReportVerified — manual override / revoke round-trip
-// ---------------------------------------------------------------------------
 
 describe("setUserReportVerified (D18) — manual override/revoke", () => {
   function userHarness(): { repo: InMemoryAdminUserRepository; svc: AdminUserService } {
@@ -219,7 +197,6 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
     expect(repo.users.get("u1")?.reportVerified).toBe(false)
     expect(repo.audits.at(-1)).toMatchObject({ action: "user.report_unverified", target: "user:u1" })
 
-    // The DTO surfaces the final state.
     const dto = await svc.get("u1")
     expect(dto.reportVerified).toBe(false)
   })
@@ -232,9 +209,6 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// D9: createReport auto-forward enqueue gate
-// ---------------------------------------------------------------------------
 
 describe("createReport auto-forward enqueue gate (D9)", () => {
   const VERIFIED_UID = "11111111-1111-1111-1111-111111111111"
@@ -283,8 +257,6 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
   })
 
   it("does NOT enqueue when the gate seam is absent (anon/non-forwarding paths)", async () => {
-    // No jobs/isReportVerified wired -> the create path never enqueues (mirrors the anon create path,
-    // which goes through a different repo and never auto-forwards).
     const repo = new InMemoryReportRepository()
     const jobs = new FakeJobs()
     const service = makeReportService({
@@ -313,13 +285,9 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// D9: report.autoforward handler branches (runAutoForwardWith)
-// ---------------------------------------------------------------------------
 
 describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
-  /** A handler harness whose AdminReportService is built over the in-memory report repo. */
-  function handlerHarness(opts: { throwingSend?: boolean } = {}) {
+  function handlerHarness(opts: { sendError?: unknown } = {}) {
     const repo = new InMemoryAdminReportRepository()
     repo.now = NOW
     const mailer = new FakeMailer()
@@ -329,21 +297,16 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
       mailer,
       env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
     })
-    // For the failure case, a stub whose per-report send throws (a routing/SMTP failure, e.g. a 409
-    // "sender not approved"); otherwise the real outbound service (asserts the send actually happened).
-    const outboundMail: OutboundMailService = opts.throwingSend
-      ? {
-          ...realOutbound,
-          sendReportToJurisdiction: () => Promise.reject(new Error("SMTP 535 sender not approved")),
-        }
-      : realOutbound
+    const outboundMail: OutboundMailService =
+      opts.sendError !== undefined
+        ? { ...realOutbound, sendReportToJurisdiction: () => Promise.reject(opts.sendError) }
+        : realOutbound
     const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
     return { repo, mailer, mailRepo, svc }
   }
 
   it("(a) no routing contact -> completes as a no-op, no send, no throw", async () => {
     const { repo, mailer, svc } = handlerHarness()
-    // A resolved jurisdiction but NO contact email on file -> not routable.
     repo.seedReport({
       id: "rep-1",
       reporter: reporter("u-1"),
@@ -383,13 +346,10 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
 
     await runAutoForwardWith(svc, "rep-1")
 
-    // The send actually happened: a message went out to the city contact, From the per-report reply
-    // address (report-{token}@), so the city's reply threads back onto the report. No Reply-To.
     const sent = mailer.sent.find((m) => m.to === "311@lacity.gov")
     expect(sent).toBeDefined()
     expect(sent?.outbound?.from).toMatch(/^"civfix Reports" <report-[a-z2-7]{12}@civfix\.org>$/)
     expect(sent?.outbound?.replyTo).toBeUndefined()
-    // It landed on a per-report mail thread (report_id = the report).
     const thread = [...mailRepo.threads.values()].find((t) => t.reportId === "rep-1")
     expect(thread).toBeDefined()
   })
@@ -406,7 +366,6 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
         contact: "311@lacity.gov",
         routed: true,
       },
-      // An existing per-report thread already delivered -> the load-time guard skips the re-send.
       outreach: { threadStatus: "delivered", threadId: "t-1", routedTo: "311@lacity.gov" },
     })
 
@@ -414,8 +373,8 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
     expect(mailer.sent).toHaveLength(0)
   })
 
-  it("(c) a send failure (throwing send) is swallowed — handler completes, never throws", async () => {
-    const { repo, svc } = handlerHarness({ throwingSend: true })
+  it("(c) a TERMINAL send failure (409 sender-not-approved) is swallowed — handler completes, never throws", async () => {
+    const { repo, svc } = handlerHarness({ sendError: AppError.conflict("sender not approved") })
     repo.seedReport({
       id: "rep-1",
       reporter: reporter("u-1"),
@@ -428,11 +387,31 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
       },
     })
 
-    // The never-throw invariant: the routing/SMTP failure is caught and the job completes.
     const warnings: unknown[] = []
     await expect(
       runAutoForwardWith(svc, "rep-1", { info: () => {}, warn: (o) => warnings.push(o) }),
     ).resolves.toBeUndefined()
+    expect(warnings).toHaveLength(1)
+  })
+
+  it("(c') a TRANSIENT infra failure re-throws so pg-boss retries the job", async () => {
+    const { repo, svc } = handlerHarness({ sendError: new Error("ECONNRESET") })
+    repo.seedReport({
+      id: "rep-1",
+      reporter: reporter("u-1"),
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: true,
+      },
+    })
+
+    const warnings: unknown[] = []
+    await expect(
+      runAutoForwardWith(svc, "rep-1", { info: () => {}, warn: (o) => warnings.push(o) }),
+    ).rejects.toThrow("ECONNRESET")
     expect(warnings).toHaveLength(1)
   })
 

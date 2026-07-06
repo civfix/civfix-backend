@@ -48,6 +48,8 @@ export {
 } from "./mail-mappers.js"
 export { buildMailStats } from "./mail-stats.js"
 
+const MAIL_THREAD_MESSAGE_CAP = 500
+
 export function makeDrizzleMailRepository(sql: Sql): MailRepository {
   return {
     async upsertThreadByToken(token: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
@@ -108,32 +110,62 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       reportId: string,
       init: ThreadInit = {},
     ): Promise<MailThreadRecord> {
+      const inserted = await sql<ThreadRowSelect[]>`
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
+        VALUES (
+          ${mintThreadToken()},
+          ${init.jurisdictionGeoid ?? null},
+          ${reportId},
+          ${init.cleanupId ?? null},
+          ${init.org ?? null},
+          ${init.subject ?? null},
+          ${init.status ?? "sent"},
+          ${init.unread ?? false}
+        )
+        ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING
+        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
+                  last_message_at, created_at
+      `
+      if (inserted[0]) return toThreadRecord(inserted[0])
       const existing = await sql<ThreadRowSelect[]>`
         SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
-        FROM mail_threads
-        WHERE report_id = ${reportId}
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1
+        FROM mail_threads WHERE report_id = ${reportId} LIMIT 1
       `
-      if (existing[0]) return toThreadRecord(existing[0])
-      return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
+      const row = existing[0]
+      if (!row) throw new Error("findOrCreateReportThread: row vanished after conflict")
+      return toThreadRecord(row)
     },
 
     async findOrCreateEventThread(
       cleanupId: string,
       init: ThreadInit = {},
     ): Promise<MailThreadRecord> {
+      const inserted = await sql<ThreadRowSelect[]>`
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
+        VALUES (
+          ${mintThreadToken()},
+          ${init.jurisdictionGeoid ?? null},
+          ${init.reportId ?? null},
+          ${cleanupId},
+          ${init.org ?? null},
+          ${init.subject ?? null},
+          ${init.status ?? "sent"},
+          ${init.unread ?? false}
+        )
+        ON CONFLICT (cleanup_id) WHERE cleanup_id IS NOT NULL DO NOTHING
+        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
+                  last_message_at, created_at
+      `
+      if (inserted[0]) return toThreadRecord(inserted[0])
       const existing = await sql<ThreadRowSelect[]>`
         SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
-        FROM mail_threads
-        WHERE cleanup_id = ${cleanupId}
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1
+        FROM mail_threads WHERE cleanup_id = ${cleanupId} LIMIT 1
       `
-      if (existing[0]) return toThreadRecord(existing[0])
-      return this.createThread({ ...init, cleanupId, threadToken: mintThreadToken() })
+      const row = existing[0]
+      if (!row) throw new Error("findOrCreateEventThread: row vanished after conflict")
+      return toThreadRecord(row)
     },
 
     async priorOutboundMessageIds(threadId: string): Promise<string[]> {
@@ -149,16 +181,33 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
+      const inserted = await sql<ThreadRowSelect[]>`
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
+        VALUES (
+          ${mintThreadToken()},
+          ${geoid},
+          ${null},
+          ${null},
+          ${init.org ?? null},
+          ${init.subject ?? null},
+          ${init.status ?? "sent"},
+          ${init.unread ?? false}
+        )
+        ON CONFLICT (jurisdiction_geoid) WHERE report_id IS NULL AND cleanup_id IS NULL AND jurisdiction_geoid IS NOT NULL DO NOTHING
+        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
+                  last_message_at, created_at
+      `
+      if (inserted[0]) return toThreadRecord(inserted[0])
       const existing = await sql<ThreadRowSelect[]>`
         SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
                last_message_at, created_at
         FROM mail_threads
-        WHERE jurisdiction_geoid = ${geoid} AND report_id IS NULL
-        ORDER BY created_at DESC, id DESC
+        WHERE jurisdiction_geoid = ${geoid} AND report_id IS NULL AND cleanup_id IS NULL
         LIMIT 1
       `
-      if (existing[0]) return toThreadRecord(existing[0])
-      return this.createThread({ ...init, jurisdictionGeoid: geoid, threadToken: mintThreadToken() })
+      const row = existing[0]
+      if (!row) throw new Error("upsertThreadByGeoid: row vanished after conflict")
+      return toThreadRecord(row)
     },
 
     async findThreadByToken(token: string): Promise<MailThreadRecord | null> {
@@ -326,8 +375,14 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const messages = await sql<MessageRowSelect[]>`
         SELECT id, thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id,
                in_reply_to, created_at
-        FROM mail_messages
-        WHERE thread_id = ${id}
+        FROM (
+          SELECT id, thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id,
+                 in_reply_to, created_at
+          FROM mail_messages
+          WHERE thread_id = ${id}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${MAIL_THREAD_MESSAGE_CAP}
+        ) recent
         ORDER BY created_at ASC, id ASC
       `
       return toThreadDTO(toThreadRecord(threadRow), messages.map(toMessageRecord))

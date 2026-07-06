@@ -1,20 +1,3 @@
-/**
- * Postgres-backed OutreachRepository (Phase 2): the production binding of the outreach pipeline's READ
- * seam.
- *
- * Written against the raw postgres-js tag (`Sql`) like the sibling admin repos. Two reads, both over the
- * SAME "waiting report" + "usable contact" notions the discovery queue + the save-and-route path use, so
- * the outreach digest never targets a jurisdiction the rest of the system would consider unrouted:
- *
- *   - loadDigest(geoid): aggregate the geoid's waiting reports (non-deleted, status NOT IN
- *     ('rejected','resolved')) into per-category counts + total + the oldest timestamp, and resolve the
- *     routing recipient (the jurisdiction_contacts default/category-NULL email -> any per-category email
- *     -> the legacy jurisdictions.contact_emails[]). Returns null when there is nothing to send.
- *   - listCandidateGeoids(): every geoid that has BOTH at least one waiting report and a usable contact
- *     (the cron-sweep candidates). Throttle/suppression is applied per geoid by the service.
- *
- * This seam never touches outreach_state (the throttle lives on the MailRepository) and never writes.
- */
 
 import type { Sql } from "../../db/client.js"
 import {
@@ -24,7 +7,6 @@ import {
 } from "./outreach-service.js"
 import type { ReportCategory } from "@civfix/shared"
 
-/** A digest aggregate row as selected back from SQL (snake_case; counts as text to avoid bigint). */
 interface DigestRow {
   org: string | null
   to_addr: string | null
@@ -44,12 +26,9 @@ function parseCount(value: string | null | undefined): number {
   return Number.isNaN(n) ? 0 : n
 }
 
-/** Construct the production OutreachRepository over the raw postgres-js tag (`container.getDb().sql`). */
 export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
   return {
     async loadDigest(geoid: string): Promise<OutreachDigest | null> {
-      // One scan: the waiting-report aggregate for the geoid, plus the resolved routing recipient as a
-      // correlated subquery (default contact -> any per-category contact -> legacy contact_emails[0]).
       const rows = await sql<DigestRow[]>`
         SELECT
           j.name AS org,
@@ -61,14 +40,11 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
               LIMIT 1
             ),
             (
-              -- CANONICAL per-category precedence = the OUTREACH_CATEGORIES display order
-              -- (trash,recycling,graffiti,hazard,water,other), NOT alphabetical, so this matches the
-              -- in-memory resolveContact's iteration order exactly (an unmatched category sorts last).
               SELECT cc.email FROM jurisdiction_contacts cc
               WHERE cc.geoid = j.geoid AND cc.category IS NOT NULL
                 AND cc.email IS NOT NULL AND cc.email <> ''
               ORDER BY COALESCE(
-                array_position(ARRAY['trash','recycling','graffiti','hazard','water','other']::text[], cc.category),
+                array_position(${[...OUTREACH_CATEGORIES] as string[]}::text[], cc.category),
                 2147483647
               ), cc.category ASC
               LIMIT 1
@@ -112,7 +88,6 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
       if (!row) return null
       const toAddr = row.to_addr
       const total = parseCount(row.total)
-      // Nothing to send when there is no recipient OR no waiting reports.
       if (toAddr === null || toAddr === "" || total === 0) return null
 
       const counts: Record<ReportCategory, string> = {
@@ -140,17 +115,6 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
     },
 
     async listCandidateGeoids(): Promise<string[]> {
-      // Every geoid with a waiting report AND a usable contact (default/per-category/legacy).
-      //
-      // Drive from the SMALL side: anchoring on `jurisdictions` would seq-scan the whole boundary table
-      // (TIGER-derived, tens of thousands of rows for a national rollout) and run the reports EXISTS probe
-      // for every jurisdiction, even the vast majority with zero waiting reports — cost grows with the
-      // jurisdictions table, not the (much smaller) set that actually has open reports. Instead, the
-      // `candidate` CTE first collapses `reports` to the DISTINCT geoids that have a waiting report
-      // (scanned once and collapsed by DISTINCT — there is no dedicated index for the waiting filter yet;
-      // a partial index on reports WHERE deleted_at IS NULL AND status NOT IN ('rejected','resolved') would
-      // speed this up if the queue grows), then checks the usable-contact predicate only for that bounded
-      // set. Same result set, work bounded by jurisdictions-with-open-reports rather than the full table.
       const rows = await sql<{ geoid: string }[]>`
         WITH candidate AS (
           SELECT DISTINCT r.jurisdiction_geoid AS geoid
@@ -176,6 +140,24 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
         ORDER BY c.geoid ASC
       `
       return rows.map((r) => r.geoid)
+    },
+
+    async claimOutreachWindow(
+      geoid: string,
+      window: { at: Date; windowStart: Date },
+    ): Promise<boolean> {
+      const rows = await sql<{ geoid: string }[]>`
+        INSERT INTO outreach_state (geoid, last_outreach_at, suppressed)
+        VALUES (${geoid}, ${window.at}, false)
+        ON CONFLICT (geoid) DO UPDATE SET last_outreach_at = ${window.at}
+        WHERE outreach_state.suppressed = false
+          AND (
+            outreach_state.last_outreach_at IS NULL
+            OR outreach_state.last_outreach_at < ${window.windowStart}
+          )
+        RETURNING geoid
+      `
+      return rows.length > 0
     },
   }
 }

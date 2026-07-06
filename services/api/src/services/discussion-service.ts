@@ -23,9 +23,35 @@ export * from "./discussion-types.js"
 export { parseCityMention, jurisdictionHandle } from "./discussion-mentions.js"
 export { effectiveJurisdictionHandle } from "./discussion-projection.js"
 
-export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionService {
+const CITY_FORWARD_DEDUP_MS = 10 * 60 * 1000
+
+const CITY_FORWARD_DEDUP_MAX_KEYS = 5000
+
+export type CityForwardGuard = (reportId: string, geoid: string) => boolean
+
+export function makeCityForwardDedup(): CityForwardGuard {
+  const seen = new Map<string, number>()
+  return (reportId, geoid) => {
+    const key = `${reportId}:${geoid}`
+    const t = Date.now()
+    const until = seen.get(key)
+    if (until !== undefined && until > t) return false
+    seen.set(key, t + CITY_FORWARD_DEDUP_MS)
+    if (seen.size > CITY_FORWARD_DEDUP_MAX_KEYS) {
+      for (const [k, exp] of seen) if (exp <= t) seen.delete(k)
+    }
+    return true
+  }
+}
+
+const defaultCityForwardGuard = makeCityForwardDedup()
+
+export function makeDiscussionService(
+  deps: DiscussionServiceDeps & { canForwardCity?: CityForwardGuard },
+): DiscussionService {
   const newId = deps.newId ?? (() => randomUUID())
   const now = deps.now ?? (() => new Date())
+  const canForwardCity = deps.canForwardCity ?? defaultCityForwardGuard
 
   function fanOut(reportId: string, event: DiscussionEvent): void {
     deps.broadcast?.(reportId, event)
@@ -105,6 +131,7 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       },
       body,
       createdAt,
+      { canForward: canForwardCity },
     )
     if (!result.mentioned) return { mention: null, forwardedToCity: false }
     return {
@@ -230,6 +257,9 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
           ? input.mediaUploadIds.slice(0, DISCUSSION_MEDIA_MAX)
           : undefined
 
+      const existing = await deps.repo.findMessage(reportId, messageId, userId)
+      const alreadyMentioned = new Set((existing?.userMentions ?? []).map((m) => m.id))
+
       const userMentions = await resolveUserMentions(body, input.mentionedUserIds, userId)
 
       const editedAt = now()
@@ -244,7 +274,8 @@ export function makeDiscussionService(deps: DiscussionServiceDeps): DiscussionSe
       )
       if (!record) throw AppError.notFound("Message not found")
       const dto = await projectOne(record, userId)
-      notifyMentions(reportId, userId, userMentions, report)
+      const newlyMentioned = userMentions.filter((m) => !alreadyMentioned.has(m.id))
+      notifyMentions(reportId, userId, newlyMentioned, report)
       fanOut(reportId, "message")
       return dto
     },

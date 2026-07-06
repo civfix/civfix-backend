@@ -1,17 +1,3 @@
-/**
- * REAL PushSender adapter: APNs (node-apn) for iOS, FCM (firebase-admin) for Android, and Web Push
- * (web-push) for browsers. Token storage is in Postgres (push_tokens); this adapter is the READ side of
- * that store at send time.
- *
- * SEAM RULE: the vendor SDKs may ONLY be imported in the per-platform dispatcher modules (push-apns.ts /
- * push-fcm.ts / push-webpush.ts), via lazy dynamic import, so merely constructing this adapter (DI wiring)
- * loads no SDK and opens no connection; the first send() to a configured platform initializes that
- * platform's client once (memoized).
- *
- * DI selects FakePushSender when USE_FAKE_PUSH is set (the default in dev/test), so this real adapter is
- * only exercised when the flag is off AND creds are present. The token-selection + platform-routing logic
- * is unit-tested with the vendor dispatchers injected (so no real SDK call is made in tests).
- */
 
 import type { PushSender, PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 import type { Db } from "../db/client.js"
@@ -41,15 +27,9 @@ export interface PushSenderConfig {
     privateKey: string
     subject: string
   }
-  /**
-   * Expo push service config. The Expo dispatcher is ALWAYS active (the Expo push API works without an
-   * access token, and the mobile app registers Expo tokens), so this only carries the optional access
-   * token for enhanced push security.
-   */
   expo?: ExpoPushConfig
 }
 
-/** A logger surface the adapter uses for skip/failure diagnostics. Defaults to console. */
 export interface PushLogger {
   warn(obj: unknown, msg?: string): void
   error(obj: unknown, msg?: string): void
@@ -60,29 +40,19 @@ const consoleLogger: PushLogger = {
   error: (obj, msg) => console.error(msg ?? "", obj),
 }
 
-/** An active push token row as the send flow needs it. */
 export interface ActiveToken {
   userId: string
   platform: PushPlatform
   token: string
 }
 
-/**
- * Per-platform dispatcher seam. Each delivers `payload` to the given tokens for ONE platform and returns
- * the tokens the provider reported as invalid/unregistered (to be pruned). A dispatcher is `undefined`
- * when that platform has no configured creds (so the send flow skips it). Injectable so the
- * routing/selection/pruning logic is unit-tested without the real SDKs. The optional `close()` tears down
- * any long-lived vendor connection on container shutdown.
- */
 export interface PushDispatchers {
   ios?: PlatformDispatcher
   android?: PlatformDispatcher
   web?: PlatformDispatcher
-  /** Cross-platform Expo push dispatcher (serves ios + android Expo tokens). */
   expo?: PlatformDispatcher
 }
 
-/** Deliver to one platform's tokens; resolve with the subset that were invalid/unregistered. */
 export interface PlatformDispatcher {
   (tokens: string[], payload: PushPayload): Promise<{ invalidTokens: string[] }>
   close?(): Promise<void>
@@ -91,7 +61,6 @@ export interface PlatformDispatcher {
 export interface PushSenderDeps {
   db: Db
   config: PushSenderConfig
-  /** Injected dispatchers (tests). When omitted, lazily built from `config` + the vendor SDKs. */
   dispatchers?: PushDispatchers
   logger?: PushLogger
 }
@@ -100,7 +69,6 @@ export class MultiPushSender implements PushSender {
   private readonly db: Db
   private readonly config: PushSenderConfig
   private readonly logger: PushLogger
-  // Memoized dispatchers (built once on first send unless injected).
   private dispatchers: PushDispatchers | undefined
 
   constructor(deps: PushSenderDeps) {
@@ -110,10 +78,6 @@ export class MultiPushSender implements PushSender {
     if (deps.dispatchers) this.dispatchers = deps.dispatchers
   }
 
-  /**
-   * No-op: the canonical push_tokens row is persisted by the notification service before send time, and
-   * APNs/FCM/Web Push need no provider-side pre-registration. Present to satisfy the PushSender contract.
-   */
   registerToken(
     _userId: string,
     _token: string,
@@ -132,7 +96,6 @@ export class MultiPushSender implements PushSender {
     return this.deliver(userIds, payload)
   }
 
-  /** Tear down any long-lived vendor connections (duck-typed by di.ts close()). */
   async close(): Promise<void> {
     if (!this.dispatchers) return
     await Promise.all(
@@ -147,9 +110,6 @@ export class MultiPushSender implements PushSender {
     const dispatchers = this.getDispatchers()
     const invalidAll: string[] = []
 
-    // Expo-managed tokens (what the mobile app registers, for BOTH ios + android) deliver through the Expo
-    // push service regardless of platform; raw device tokens fall through to the per-platform APNs/FCM/Web
-    // Push dispatchers below. Without this, the Expo tokens iOS/Android register can never be delivered.
     const expoTokens = [
       ...new Set(tokens.filter((t) => isExpoPushToken(t.token)).map((t) => t.token)),
     ]
@@ -170,7 +130,6 @@ export class MultiPushSender implements PushSender {
       }
     }
 
-    // Raw (non-Expo) device tokens route per platform to APNs / FCM / Web Push.
     const rawTokens = tokens.filter((t) => !isExpoPushToken(t.token))
     const byPlatform = groupByPlatform(rawTokens)
     const platforms: PushPlatform[] = ["ios", "android", "web"]
@@ -190,7 +149,6 @@ export class MultiPushSender implements PushSender {
           const { invalidTokens } = await dispatcher(platformTokens, payload)
           for (const t of invalidTokens) invalidAll.push(t)
         } catch (err) {
-          // A provider/transport failure for one platform must not break the others or the request.
           this.logger.error({ err, platform }, "push: platform dispatch failed")
         }
       }),
@@ -211,7 +169,6 @@ export class MultiPushSender implements PushSender {
     return rows.map((r) => ({ userId: r.userId, platform: r.platform, token: r.token }))
   }
 
-  /** Soft-revoke (revoked_at = now) the tokens a provider reported as invalid/unregistered. */
   private async pruneTokens(tokens: string[]): Promise<void> {
     try {
       await this.db
@@ -223,22 +180,18 @@ export class MultiPushSender implements PushSender {
     }
   }
 
-  /** Build (once) the per-platform dispatchers from config, or return the injected/memoized set. */
   private getDispatchers(): PushDispatchers {
     if (this.dispatchers) return this.dispatchers
     this.dispatchers = {
       ...(this.config.apns ? { ios: makeApnsDispatcher(this.config.apns, this.logger) } : {}),
       ...(this.config.fcm ? { android: makeFcmDispatcher(this.config.fcm, this.logger) } : {}),
       ...(this.config.webPush ? { web: makeWebPushDispatcher(this.config.webPush, this.logger) } : {}),
-      // The Expo dispatcher is always built: the Expo push API needs no credentials (the access token is
-      // optional) and the mobile app registers Expo tokens, so it must always be available to send them.
       expo: makeExpoDispatcher(this.config.expo ?? {}, this.logger),
     }
     return this.dispatchers
   }
 }
 
-/** Group active tokens by platform into deduplicated token-string lists. */
 export function groupByPlatform(tokens: ActiveToken[]): Record<PushPlatform, string[]> {
   const out: Record<PushPlatform, string[]> = { ios: [], android: [], web: [] }
   const seen: Record<PushPlatform, Set<string>> = {
@@ -258,43 +211,44 @@ export { makeApnsDispatcher } from "./push-apns.js"
 export { makeFcmDispatcher } from "./push-fcm.js"
 export { makeWebPushDispatcher } from "./push-webpush.js"
 
-/**
- * SSRF guard for a Web Push endpoint. The endpoint is fully attacker-controlled (any authed user can
- * register one) and web-push POSTs to it server-side, so we must refuse anything that resolves to a
- * non-public host. Resolve-then-validate (DNS-rebind defense): require https:, then resolve the hostname
- * and reject if ANY resolved address is in the private/loopback/link-local/CGNAT/ULA deny set. Pure of
- * exceptions (any parse/resolve failure => unsafe).
- */
 export async function isSafePushEndpoint(endpoint: string): Promise<boolean> {
+  return (await resolveSafePushTarget(endpoint)) !== null
+}
+
+export async function resolveSafePushTarget(
+  endpoint: string,
+): Promise<{ host: string; address: string; family: 4 | 6 } | null> {
   let host: string
   try {
     const u = new URL(endpoint)
-    if (u.protocol !== "https:") return false
+    if (u.protocol !== "https:") return null
     host = u.hostname.toLowerCase()
-    if (host.length === 0) return false
-    host = host.replace(/^\[|\]$/g, "") // strip IPv6 brackets if URL kept them
-    if (host === "localhost" || host.endsWith(".localhost")) return false
-    if (host.endsWith(".internal") || host.endsWith(".local")) return false
+    if (host.length === 0) return null
+    host = host.replace(/^\[|\]$/g, "")
+    if (host === "localhost" || host.endsWith(".localhost")) return null
+    if (host.endsWith(".internal") || host.endsWith(".local")) return null
   } catch {
-    return false
+    return null
   }
 
-  // A bare IP literal: validate it directly (no DNS lookup).
   const litFam = isIP(host)
-  if (litFam !== 0) return isPublicAddress(host)
+  if (litFam !== 0) {
+    if (!isPublicAddress(host)) return null
+    return { host, address: host, family: litFam as 4 | 6 }
+  }
 
-  // A DNS name: resolve EVERY A/AAAA record and require all to be public (so a name that rebinds to a
-  // private IP can't slip through).
   try {
     const addrs = await lookup(host, { all: true })
-    if (addrs.length === 0) return false
-    return addrs.every((a) => isPublicAddress(a.address))
+    if (addrs.length === 0) return null
+    if (!addrs.every((a) => isPublicAddress(a.address))) return null
+    const first = addrs[0]
+    if (!first) return null
+    return { host, address: first.address, family: first.family as 4 | 6 }
   } catch {
-    return false
+    return null
   }
 }
 
-/** True only for a globally-routable IP literal (blocks loopback/RFC1918/link-local/CGNAT/ULA/reserved). */
 function isPublicAddress(addr: string): boolean {
   const fam = isIP(addr)
   if (fam === 4) return isPublicIpv4(addr)
@@ -308,32 +262,69 @@ function isPublicIpv4(host: string): boolean {
   const o = parts.map((p) => Number(p))
   if (o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
   const [a, b] = o as [number, number, number, number]
-  if (a === 0 || a === 127) return false // "this host" / loopback
-  if (a === 10) return false // RFC1918
-  if (a === 172 && b >= 16 && b <= 31) return false // RFC1918
-  if (a === 192 && b === 168) return false // RFC1918
-  if (a === 169 && b === 254) return false // link-local incl. 169.254.169.254 metadata
-  if (a === 100 && b >= 64 && b <= 127) return false // CGNAT 100.64/10
-  if (a === 192 && b === 0 && o[2] === 0) return false // IETF protocol assignments 192.0.0/24
-  if (a >= 224) return false // multicast 224/4 + reserved 240/4 + 255.255.255.255
+  if (a === 0 || a === 127) return false
+  if (a === 10) return false
+  if (a === 172 && b >= 16 && b <= 31) return false
+  if (a === 192 && b === 168) return false
+  if (a === 169 && b === 254) return false
+  if (a === 100 && b >= 64 && b <= 127) return false
+  if (a === 192 && b === 0 && o[2] === 0) return false
+  if (a >= 224) return false
   return true
+}
+
+function ipv6ToBytes(input: string): number[] | null {
+  let s = input.toLowerCase().split("%")[0] ?? ""
+  if (s.includes(".")) {
+    const cut = s.lastIndexOf(":")
+    if (cut < 0) return null
+    const quad = s.slice(cut + 1).split(".")
+    if (quad.length !== 4) return null
+    const nums = quad.map((p) => Number(p))
+    if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+    const hi = ((nums[0]! << 8) | nums[1]!).toString(16)
+    const lo = ((nums[2]! << 8) | nums[3]!).toString(16)
+    s = `${s.slice(0, cut + 1)}${hi}:${lo}`
+  }
+  const halves = s.split("::")
+  if (halves.length > 2) return null
+  const head = halves[0] ? halves[0].split(":") : []
+  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(":") : []) : null
+  let groups: string[]
+  if (tail === null) {
+    groups = head
+  } else {
+    const fill = 8 - head.length - tail.length
+    if (fill < 1) return null
+    groups = [...head, ...Array<string>(fill).fill("0"), ...tail]
+  }
+  if (groups.length !== 8) return null
+  const bytes: number[] = []
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null
+    const v = parseInt(g, 16)
+    bytes.push((v >> 8) & 0xff, v & 0xff)
+  }
+  return bytes
 }
 
 function isPublicIpv6(addr: string): boolean {
-  const h = addr.toLowerCase()
-  if (h === "::" || h === "::1") return false // unspecified / loopback
-  if (h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb")) {
-    return false // fe80::/10 link-local
+  const b = ipv6ToBytes(addr)
+  if (!b) return false
+  if (b.every((x) => x === 0)) return false
+  const embeddedV4 = () => b.slice(12).join(".")
+  const first10Zero = b.slice(0, 10).every((x) => x === 0)
+  if (first10Zero && b[10] === 0xff && b[11] === 0xff) return isPublicIpv4(embeddedV4())
+  if (first10Zero && b[10] === 0 && b[11] === 0) return isPublicIpv4(embeddedV4())
+  if (b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && b.slice(4, 12).every((x) => x === 0)) {
+    return isPublicIpv4(embeddedV4())
   }
-  if (h.startsWith("fc") || h.startsWith("fd")) return false // fc00::/7 ULA
-  if (h.startsWith("ff")) return false // ff00::/8 multicast
-  // IPv4-mapped (::ffff:a.b.c.d) — validate the embedded v4 against the v4 deny set.
-  const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
-  if (mapped?.[1]) return isPublicIpv4(mapped[1])
+  if (b[0] === 0xfe && (b[1]! & 0xc0) === 0x80) return false
+  if ((b[0]! & 0xfe) === 0xfc) return false
+  if (b[0] === 0xff) return false
   return true
 }
 
-/** Parse a persisted Web Push subscription JSON string; null when malformed or keys are the wrong shape. */
 export function parseSubscription(
   token: string,
 ): { endpoint: string; keys: { p256dh: string; auth: string } } | null {

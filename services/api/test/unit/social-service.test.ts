@@ -253,6 +253,38 @@ describe("followPerson", () => {
   })
 })
 
+describe("followPerson block gate", () => {
+  it("404s and creates no follow or notification when blocked either way", async () => {
+    const repo = new InMemorySocialRepository()
+    const notifier = new SpyNotifier()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    const service = makeSocialService({
+      repo,
+      notifier,
+      isBlockedEitherWay: () => Promise.resolve(true),
+    })
+    await expect(service.followPerson(A, B)).rejects.toMatchObject({ code: "NOT_FOUND" })
+    expect(notifier.calls).toHaveLength(0)
+    expect(await repo.isFollowing(A, B)).toBe(false)
+  })
+
+  it("allows the follow and notifies when not blocked", async () => {
+    const repo = new InMemorySocialRepository()
+    const notifier = new SpyNotifier()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    const service = makeSocialService({
+      repo,
+      notifier,
+      isBlockedEitherWay: () => Promise.resolve(false),
+    })
+    const res = await service.followPerson(A, B)
+    expect(res).toEqual({ isFollowing: true, followers: 1 })
+    expect(notifier.calls).toHaveLength(1)
+  })
+})
+
 describe("unfollowPerson", () => {
   it("unfollows and returns the decremented count; idempotent", async () => {
     const { repo, service } = makeHarness()

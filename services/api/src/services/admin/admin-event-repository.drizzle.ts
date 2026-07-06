@@ -1,18 +1,3 @@
-/**
- * Postgres-backed AdminEventRepository (Phase 2): the production binding of the admin events seam.
- *
- * Written against the raw postgres-js tag (`Sql`) like the discovery/reports repos because every read
- * decodes the cleanup geometry (ST_X/ST_Y) and the list aggregates attendees + the derived flagged state.
- * Mutations run as single transactions so a status change + its cleanup_timeline row never drift.
- *
- * STATUS (H1): cleanups.status is stored in the Phase-1 enum (upcoming|active|done|cancelled); reads map
- * stored -> EventStatus and writes map EventStatus -> the stored value via event-status.ts, and the list
- * status filter matches BOTH the stored value AND any leaked Phase-2 value — so storage stays inside the
- * Phase-1 enum (the drift guard never trips) and a filter never disagrees with a write.
- *
- * FLAGGED: abuse_flags has no `cleanup` subject_type (frozen Phase-1 enum), so flagged state lives in
- * cleanup_timeline (kind 'flag'/'unflag'); flagged = the most recent flag/unflag row is a 'flag'.
- */
 
 import type { Sql } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
@@ -43,9 +28,9 @@ import type {
 
 const MESSAGE_CAP = 100
 
-// Facet counts saturate at this many rows so the per-row flagged correlated subquery can't scan an
-// unbounded set on a large cleanups table; the frontend renders the cap as "N+".
 const FACET_COUNT_CAP = 1000
+
+const LINK_REPORTS_MAX = 100
 
 export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository {
   return {
@@ -57,7 +42,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {
-        // Match BOTH the Phase-1 stored value AND any leaked Phase-2 value (H1).
         conds.push(sql`AND c.status = ANY(${storedVariantsForEventStatus(args.status)})`)
       }
       if (args.flaggedOnly) conds.push(sql`AND ${flaggedEventExpr(sql)}`)
@@ -77,8 +61,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
     },
 
     async countByBucket(args: { q: string | null }): Promise<AdminEventCounts> {
-      // Bound the candidate set first so the per-row flagged subquery runs at most FACET_COUNT_CAP+1 times,
-      // then aggregate the facets over those capped rows.
       const search = searchEventsFragment(sql, args.q)
       const rows = await sql<
         { all: string; upcoming: string; in_progress: string; completed: string; flagged: string }[]
@@ -156,8 +138,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       id: string,
       input: { status: EventStatus; note: string; actorId: string | null },
     ): Promise<boolean> {
-      // Map the Phase-2 EventStatus -> the stored Phase-1 value (H1) so the column never holds a value
-      // outside the Phase-1 enum the drift guard expects.
       const stored = toStoredCleanupStatus(input.status)
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
@@ -182,8 +162,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       id: string,
       input: { bags: number; actorId: string | null },
     ): Promise<boolean> {
-      // The only write path for cleanups.bags. No cleanup_timeline row (the kind enum has no 'outcome'
-      // value); the audit log captures the operator action.
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
           UPDATE cleanups SET bags = ${input.bags} WHERE id = ${id} RETURNING id
@@ -260,8 +238,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       return sql.begin(async (tx) => {
         const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
         if (exists.length === 0) return null
-        // chat_messages.sender_id is NOT NULL: an operator update is posted as the operator (the route's
-        // requireOperator gate guarantees a non-null actorId).
         await tx`
           INSERT INTO chat_messages (cleanup_id, sender_id, body, kind)
           VALUES (${id}, ${input.actorId}, ${input.body}, 'text')
@@ -270,8 +246,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'message', 'Posted an update to attendees', ${input.actorId})
         `
-        // L4: set-based notification fan-out IN-TX (INSERT ... SELECT), one statement regardless of member
-        // count, atomic with the chat message.
         const notified = await tx<{ user_id: string }[]>`
           INSERT INTO notifications (user_id, type, title, body, link)
           SELECT cm.user_id, 'cleanup_chat', 'Cleanup update', ${input.body}, ${`/cleanups/${id}`}
@@ -290,8 +264,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
     },
 
     async loadLinkedReports(id: string): Promise<LinkedReportView[]> {
-      // Only published+public, non-deleted reports leak into the gallery. Same shape as the public cleanup
-      // read (geom decoded + first ready-media thumb key), newest links first.
       const rows = await sql<
         {
           id: string
@@ -352,32 +324,26 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       return sql.begin(async (tx) => {
         const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
         if (exists.length === 0) return null
-        // Only link visible (published+public, non-deleted) reports; a held/hidden/missing id is skipped.
-        const visible =
-          reportIds.length === 0
+        const ids = reportIds.slice(0, LINK_REPORTS_MAX)
+        const insertedRows =
+          ids.length === 0
             ? []
-            : (
-                await tx<{ id: string }[]>`
-                  SELECT id FROM reports
-                  WHERE id = ANY(${reportIds}::uuid[])
-                    AND deleted_at IS NULL AND status = 'published' AND visibility = 'public'
-                `
-              ).map((r) => r.id)
-        const linked: string[] = []
-        for (const reportId of visible) {
-          const inserted = await tx<{ id: string }[]>`
-            INSERT INTO cleanup_reports (cleanup_id, report_id, linked_by_user_id)
-            VALUES (${id}, ${reportId}, ${actorId})
-            ON CONFLICT (cleanup_id, report_id) DO NOTHING
-            RETURNING id
+            : await tx<{ report_id: string }[]>`
+                INSERT INTO cleanup_reports (cleanup_id, report_id, linked_by_user_id)
+                SELECT ${id}, r.id, ${actorId}
+                FROM reports r
+                WHERE r.id = ANY(${ids}::uuid[])
+                  AND r.deleted_at IS NULL AND r.status = 'published' AND r.visibility = 'public'
+                ON CONFLICT (cleanup_id, report_id) DO NOTHING
+                RETURNING report_id
+              `
+        const linked = insertedRows.map((r) => r.report_id)
+        if (linked.length > 0) {
+          await tx`
+            INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+            SELECT ${id}, 'report_linked', 'Linked report ' || rid::text, ${actorId}
+            FROM unnest(${linked}::uuid[]) AS rid
           `
-          if (inserted.length > 0) {
-            linked.push(reportId)
-            await tx`
-              INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
-              VALUES (${id}, 'report_linked', ${`Linked report ${reportId}`}, ${actorId})
-            `
-          }
         }
         await writeAudit(tx, {
           actorId,

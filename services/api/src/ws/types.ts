@@ -109,6 +109,7 @@ export interface RegisterGatewayOptions {
   chat: ChatService
   isMember: IsMemberFn
   sessions: import("../auth/session-service.js").SessionService | undefined
+  redeemTicket?: ((ticket: string) => Promise<string | null>) | undefined
   markRead?: MarkReadFn | undefined
   markReadOnOpen?: MarkReadOnOpenFn | undefined
   presence?: ChatPresence | undefined

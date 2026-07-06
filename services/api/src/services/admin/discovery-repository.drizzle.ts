@@ -1,28 +1,3 @@
-/**
- * Postgres-backed DiscoveryRepository (Phase 2): the production binding of the discovery persistence
- * seam.
- *
- * Written against the raw postgres-js tag (`Sql`) rather than the Drizzle query builder because the
- * sample-pin read decodes report geometry (ST_X/ST_Y), which Drizzle does not model, and because the
- * list aggregates are clearest as one hand-written SQL statement with FILTERed counts. Reads only touch
- * the four tables this domain owns conceptually (jurisdiction_discovery_tasks, jurisdictions,
- * jurisdiction_contacts, reports) plus audit_log for notes; it never writes the frozen schema's shape.
- *
- * WAITING REPORTS: a report is "waiting on contact" for a geoid when it is non-deleted and still open
- * (status NOT IN ('rejected','resolved')) AND its jurisdiction has no usable routing contact (no
- * jurisdiction_contacts row and no non-empty jurisdictions.contact_emails[]). The per-category counts +
- * oldest/newest timestamps are aggregated per task's geoid. This is the SAME "needs a contact" notion
- * the jurisdiction-service resolve path uses, so the queue and the routing decision never drift.
- *
- * NOTES: persisted as audit_log rows (action 'discovery.note_added', target 'discovery:<taskId>',
- * meta = { text, who }); read back ordered by created_at. No notes column is added to the frozen schema.
- *
- * FLAG: opens an abuse_flag against the triggering sample report (subject_type 'report', reason
- * 'manual', source 'api') when the task has a sample_report_id, and marks the task status 'in_progress'.
- *
- * SAVE DRAFT: upserts the per-category + default jurisdiction_contacts rows + the form URL WITHOUT
- * touching contact_updated_at or routing pending pins (that is the contacts service's "save & route").
- */
 
 import type postgres from "postgres"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
@@ -43,13 +18,12 @@ import {
   type ListDiscoveryArgs,
 } from "./discovery-service.js"
 
-/** A composable SQL fragment (postgres.js); what a `sql\`...\`` expression yields. */
 type SqlFragment = postgres.Fragment
 
-/** Max sample pins returned for a detail mini-map. */
 const SAMPLE_PIN_CAP = 50
 
-/** A discovery-task row joined with its jurisdiction + the per-geoid aggregates (snake_case columns). */
+const DISCOVERY_NOTE_CAP = 200
+
 interface TaskAggRow {
   id: string
   geoid: string | null
@@ -71,7 +45,6 @@ interface TaskAggRow {
   has_default_contact: boolean
 }
 
-/** Project an aggregate row into the DiscoveryTaskRecord the service consumes. */
 function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
   const perCategory: Partial<Record<ReportCategory, number>> = {}
   const counts: Record<ReportCategory, string> = {
@@ -107,24 +80,13 @@ function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
   }
 }
 
-/** Max live discovery tasks the list path materializes per fetch (the facet + keyset run in JS over this
- * bounded set; one row per un-onboarded jurisdiction keeps the real count far below it). */
 const LIST_FETCH_CAP = 1000
 
-/**
- * The shared aggregate SELECT: every OPEN discovery task joined with its jurisdiction, plus the
- * per-category waiting counts, the oldest/newest waiting timestamps, the per-category contact category
- * set, and whether a default/legacy contact exists. `WHERE t.status <> 'done'` keeps the queue to live
- * tasks. Reused by listTasks (paged/filtered/sorted) and getDetail/getTask (single id) via `extraWhere`;
- * `extraTail` carries an optional ORDER BY ... LIMIT so the list path is bounded in SQL.
- */
 async function taskAggregateSql(
   sql: Queryable,
   extraWhere: SqlFragment,
   extraTail: SqlFragment = sql``,
 ): Promise<TaskAggRow[]> {
-  // Interpolated into an UNTYPED template (so the `extraWhere` fragment composes without the typed-tag
-  // variance friction), then cast to the known row shape. The column list + the cast are the contract.
   const rows = await sql`
     SELECT
       t.id,
@@ -185,11 +147,6 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     async listTasks(
       args: ListDiscoveryArgs,
     ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
-      // The sort + a LIST_FETCH_CAP LIMIT are pushed into SQL so the fetch is bounded (the per-geoid
-      // LATERAL aggregates do not run for the entire national TIGER set). The attention/clear facet stays
-      // in JS (it depends on per-category contact state, the same predicate the service uses), and the
-      // keyset pages by array position after the anchor id — best-effort, order-fragile under concurrent
-      // task mutation (a row can shift between pages); acceptable for a small operator queue.
       const search =
         args.q !== null
           ? (() => {
@@ -197,8 +154,6 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
               return sql`AND (j.name ILIKE ${like} ESCAPE '\\' OR t.geoid ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
-      // ORDER BY mirrors the queue: pop|reports DESC then id DESC (the stable keyset tiebreak). population
-      // is COALESCE(j.population, t.population) and total the LATERAL count — both selected aliases.
       const order =
         args.sort === "reports"
           ? sql`ORDER BY COALESCE(w.total, 0) DESC, t.id DESC`
@@ -253,14 +208,20 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
 
     async listNotes(id: string): Promise<DiscoveryNoteRecord[]> {
       const rows = await sql<{ text: string | null; who: string | null; created_at: Date }[]>`
-        SELECT
-          meta->>'text' AS text,
-          meta->>'who' AS who,
-          created_at
-        FROM audit_log
-        WHERE action = 'discovery.note_added'
-          AND target = ${"discovery:" + id}
-        ORDER BY created_at ASC
+        SELECT text, who, created_at
+        FROM (
+          SELECT
+            meta->>'text' AS text,
+            meta->>'who' AS who,
+            created_at,
+            id
+          FROM audit_log
+          WHERE action = 'discovery.note_added'
+            AND target = ${"discovery:" + id}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${DISCOVERY_NOTE_CAP}
+        ) recent
+        ORDER BY created_at ASC, id ASC
       `
       return rows
         .filter((r) => r.text !== null)
@@ -268,21 +229,24 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     },
 
     async listContactSuggestions(geoid: string): Promise<DiscoveryContactSuggestionRecord[]> {
-      // Citizen suggestions are audit_log rows keyed by the jurisdiction (NOT a task id), so they survive
-      // even before a discovery task materializes for the geoid. Read newest-last so they interleave with
-      // operator notes by created_at in the service.
       const rows = await sql<
         { email: string | null; form_url: string | null; note: string | null; created_at: Date }[]
       >`
-        SELECT
-          meta->>'email' AS email,
-          meta->>'formUrl' AS form_url,
-          meta->>'note' AS note,
-          created_at
-        FROM audit_log
-        WHERE action = 'discovery.contact_suggested'
-          AND target = ${"jurisdiction:" + geoid}
-        ORDER BY created_at ASC
+        SELECT email, form_url, note, created_at
+        FROM (
+          SELECT
+            meta->>'email' AS email,
+            meta->>'formUrl' AS form_url,
+            meta->>'note' AS note,
+            created_at,
+            id
+          FROM audit_log
+          WHERE action = 'discovery.contact_suggested'
+            AND target = ${"jurisdiction:" + geoid}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${DISCOVERY_NOTE_CAP}
+        ) recent
+        ORDER BY created_at ASC, id ASC
       `
       return rows.map((r) => ({
         email: r.email,
@@ -302,8 +266,6 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       id: string,
       input: { text: string; actorId: string | null; who: string },
     ): Promise<DiscoveryNoteRecord> {
-      // Persist the note as an audit_log row; read its created_at back so the returned DTO's relative
-      // "when" is anchored to the real insert time.
       const auditId = await writeAudit(sql, {
         actorId: input.actorId,
         action: "discovery.note_added",
@@ -328,9 +290,6 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         const task = taskRows[0]
         if (!task) return false
 
-        // Open an abuse_flag against the triggering report when one is on file (the task itself is not an
-        // abuse subject_type). The flag marks the underlying report for review; the task moves to
-        // in_progress so the queue shows it as actively being researched.
         if (task.sample_report_id !== null) {
           await tx`
             INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
@@ -386,11 +345,6 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       geoid: string
       population?: number | null
     }): Promise<boolean> {
-      // Idempotent insert keyed on the partial UNIQUE (geoid) WHERE status <> 'done' (0001_core): at most
-      // one OPEN task per geoid, so a re-run (or a racing report into the same un-onboarded jurisdiction)
-      // never spawns a duplicate. Wires the population (override -> the jurisdiction's own) + a newest
-      // waiting sample report for the detail mini-map. The FROM jurisdictions gate means an unknown geoid
-      // inserts nothing. RETURNING tells us whether a NEW row was created (empty on conflict / unknown geoid).
       const rows = await sql<{ id: string }[]>`
         INSERT INTO jurisdiction_discovery_tasks (geoid, population, sample_report_id)
         SELECT
@@ -408,7 +362,6 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
   }
 }
 
-/** Load the existing per-category routing contacts for a geoid (category-specific rows only). */
 async function loadContacts(sql: Queryable, geoid: string): Promise<DiscoveryContactRecord[]> {
   const rows = await sql<{ category: string | null; email: string | null }[]>`
     SELECT category, email
@@ -423,7 +376,6 @@ async function loadContacts(sql: Queryable, geoid: string): Promise<DiscoveryCon
     .map((r) => ({ category: r.category, email: r.email }))
 }
 
-/** Load up to SAMPLE_PIN_CAP waiting-report points for the mini-map (geometry decoded to lat/lng). */
 async function loadSamplePins(sql: Queryable, geoid: string): Promise<DiscoverySamplePinRecord[]> {
   const rows = await sql<{ category: ReportCategory; lat: number; lng: number }[]>`
     SELECT category, ST_Y(geom) AS lat, ST_X(geom) AS lng
@@ -437,18 +389,11 @@ async function loadSamplePins(sql: Queryable, geoid: string): Promise<DiscoveryS
   return rows.map((r) => ({ category: r.category, lat: r.lat, lng: r.lng }))
 }
 
-/**
- * Load the place geometry (GeoJSON) + a derived center/zoom for the mini-map. Prefers the task's stored
- * place_geojson; the center is the centroid of the jurisdiction geometry when available (ST_Centroid),
- * else null. Zoom is a fixed place-level default when a center exists.
- */
 async function loadGeometry(
   sql: Queryable,
   taskId: string,
   geoid: string,
 ): Promise<{ placeGeojson: unknown | null; center: [number, number] | null; zoom: number | null }> {
-  // The two reads are independent (task place_geojson vs the jurisdiction centroid); run them together.
-  // The jurisdictions.geom may be absent in seed-light envs; tolerate a null centroid (null center).
   const [taskRows, centerRows] = await Promise.all([
     sql<{ place_geojson: unknown | null }[]>`
       SELECT place_geojson FROM jurisdiction_discovery_tasks WHERE id = ${taskId} LIMIT 1
@@ -468,15 +413,6 @@ async function loadGeometry(
   return { placeGeojson, center, zoom }
 }
 
-/**
- * Upsert the per-category + default routing contacts for a geoid + the form URL, mirroring the routing
- * resolution model: one row per non-null category email, one default (category NULL) row carrying the
- * first default email and the form URL. A null/blank category email DELETEs that category's row (the
- * operator cleared it). Exported so the contacts service's "save & route" reuses the exact same upsert.
- *
- * Relies on the two partial UNIQUE indexes from 0007 (one typed contact per (geoid, category); one
- * default per geoid) via ON CONFLICT on the matching index predicate.
- */
 export async function upsertJurisdictionContacts(
   tx: Queryable,
   geoid: string,
@@ -484,20 +420,17 @@ export async function upsertJurisdictionContacts(
   defaultEmails: string[],
   formUrl: string | null,
 ): Promise<void> {
-  // Per-category rows.
   for (const [category, rawEmail] of Object.entries(contacts) as [
     ReportCategory,
     string | null,
   ][]) {
     const email = rawEmail && rawEmail.trim() !== "" ? rawEmail.trim() : null
     if (email === null) {
-      // Clear: remove the category override if present.
       await tx`
         DELETE FROM jurisdiction_contacts WHERE geoid = ${geoid} AND category = ${category}
       `
       continue
     }
-    // A re-entered address is presumed good: clear any prior bounce marker on insert/update (§2.9).
     await tx`
       INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at, bounced_at)
       VALUES (${geoid}, ${category}, ${email}, now(), NULL)
@@ -506,8 +439,6 @@ export async function upsertJurisdictionContacts(
     `
   }
 
-  // Default row (category NULL): the first default email and/or the form URL. Only written when there is
-  // something to store; an all-empty default clears the existing default row.
   const defaultEmail = defaultEmails.find((e) => e.trim() !== "")?.trim() ?? null
   const form = formUrl && formUrl.trim() !== "" ? formUrl.trim() : null
   if (defaultEmail !== null || form !== null) {
@@ -519,8 +450,6 @@ export async function upsertJurisdictionContacts(
     `
   }
 
-  // Mirror the legacy jurisdictions.contact_emails[] + report_form_url so the Phase-1 resolve path that
-  // reads those columns stays consistent with the new per-category rows (backward compatibility).
   if (defaultEmails.length > 0 || form !== null) {
     const emails = defaultEmails.filter((e) => e.trim() !== "")
     await tx`

@@ -20,7 +20,6 @@ function claims(sub: string, email: string | null, name?: string): VerifiedIdTok
   return { sub, email, emailVerified: true, name: name ?? null, picture: null }
 }
 
-/** Verifier that records the params it was called with, so tests can assert the accepted audience set. */
 class CapturingVerifier implements JwksVerifier {
   lastParams: VerifyParams | null = null
   constructor(private readonly result: VerifiedIdToken) {}
@@ -65,7 +64,6 @@ describe("OAuthService", () => {
     expect(u1.displayName).toBe("Person One")
     expect(u1.role).toBe("citizen")
 
-    // Second sign-in with the SAME provider subject returns the same user (no duplicate).
     const u2 = await service.signInWithGoogleIdToken("g-token")
     expect(u2.id).toBe(u1.id)
     expect(await users.findById(u1.id)).not.toBeNull()
@@ -73,16 +71,13 @@ describe("OAuthService", () => {
 
   it("links a new provider identity to an existing account that owns the email", async () => {
     const { service, verifier, oauth } = makeService()
-    // First, an email-only account via Google.
     verifier.register("g1", claims("g-sub", "shared@example.com", "Shared"))
     const viaGoogle = await service.signInWithGoogleIdToken("g1")
 
-    // Now Apple sign-in with a DIFFERENT subject but the SAME verified email links to that account.
     verifier.register("a1", claims("apple-sub", "shared@example.com"))
     const viaApple = await service.signInWithAppleIdToken("a1", undefined)
 
     expect(viaApple.id).toBe(viaGoogle.id)
-    // Both identities now point at the one user.
     const gid = await oauth.findByProvider(PROVIDER_GOOGLE, "g-sub")
     const aid = await oauth.findByProvider(PROVIDER_APPLE, "apple-sub")
     expect(gid?.userId).toBe(viaGoogle.id)
@@ -112,8 +107,6 @@ describe("OAuthService", () => {
   })
 
   it("accepts a native Apple token whose aud is the bundle id via extraAudiences", async () => {
-    // clientId is the WEB Services ID; the native bundle id is supplied as an extra audience. The native
-    // id_token (aud = bundle id) must still verify — the bundle id is in the accepted audience set.
     const verifier = new CapturingVerifier(claims("apple-native-sub", "native@example.com", "Native User"))
     const service = new OAuthService({
       config: {
@@ -133,8 +126,23 @@ describe("OAuthService", () => {
 
     const user = await service.signInWithAppleIdToken("native-token", undefined)
     expect(user.displayName).toBe("Native User")
-    // The bundle id is offered to the verifier alongside the (web) clientId.
     expect(verifier.lastParams?.audiences).toEqual(["org.civfix.web", "org.civfix.community"])
+  })
+
+  it("threads an expectedNonce through Google native sign-in to the verifier, and omits it when absent", async () => {
+    const verifier = new CapturingVerifier(claims("google-nonce-sub", "nonce@example.com", "Nonce User"))
+    const service = new OAuthService({
+      config: { google: { clientId: "gid", clientSecret: "gsecret", redirectUri: "http://localhost/cb" } },
+      oauthStore: new InMemoryOAuthIdentityStore(),
+      users: new InMemoryUserStore(),
+      verifier,
+    })
+
+    await service.signInWithGoogleIdToken("g-nonce-token", "expected-nonce-123")
+    expect(verifier.lastParams?.expectedNonce).toBe("expected-nonce-123")
+
+    await service.signInWithGoogleIdToken("g-no-nonce")
+    expect(verifier.lastParams?.expectedNonce).toBeUndefined()
   })
 })
 

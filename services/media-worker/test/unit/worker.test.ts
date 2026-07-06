@@ -1,7 +1,3 @@
-/**
- * Worker wiring (offline): builds over FakeJobs + offline seams, registers handlers + schedules, and
- * shuts down cleanly. No real queue, no DB (USE_FAKE_* default ON in the test env).
- */
 
 import { describe, it, expect } from "vitest"
 import {
@@ -11,9 +7,14 @@ import {
   ANON_HOLD_RELEASE_JOB,
 } from "../../src/worker.js"
 import { buildJobs } from "../../src/jobs.js"
-import { buildSeams } from "../../src/seams.js"
+import { buildSeams, type WorkerSeams } from "../../src/seams.js"
+import { loadLimits } from "../../src/config.js"
+import { makeDownloader } from "../../src/download.js"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
-import { FakeJobs } from "@civfix/shared/fakes"
+import type { AnonHoldReleaseRepo, HeldReportView } from "@civfix/api/anon-hold-release"
+import { FakeJobs, FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
+import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import * as fx from "../fixtures/make.js"
 
 describe("media-worker wiring", () => {
   it("builds a worker over the fake Jobs seam", async () => {
@@ -33,7 +34,6 @@ describe("media-worker wiring", () => {
 
     await expect(worker.start()).resolves.toBeUndefined()
 
-    // A handler is registered for media.checks (FakeJobs runs handlers on enqueue).
     const beforeEnqueue = fake.enqueued.length
     await fake.enqueue(MEDIA_CHECKS_JOB, {
       mediaId: "x",
@@ -43,7 +43,6 @@ describe("media-worker wiring", () => {
     })
     expect(fake.enqueued.length).toBe(beforeEnqueue + 1)
 
-    // Both crons are scheduled.
     const scheduledNames = fake.scheduled.map((s) => s.name)
     expect(scheduledNames).toContain(ORPHAN_SWEEP_JOB)
     expect(scheduledNames).toContain(CHAT_PARTITION_JOB)
@@ -52,8 +51,6 @@ describe("media-worker wiring", () => {
   })
 
   it("registers media.checks with a bounded retry policy so infra throws retry (not dead-letter)", async () => {
-    // Spy on createQueue to assert the media.checks queue is created with retryLimit + retryBackoff.
-    // Without a retry policy a thrown (infra) handler would NOT retry (pg-boss default retryLimit 0).
     const handle = buildJobs()
     const calls: {
       name: string
@@ -69,31 +66,119 @@ describe("media-worker wiring", () => {
     await worker.start()
 
     const mediaQueue = calls.find((c) => c.name === MEDIA_CHECKS_JOB)
-    // policy "short" MUST match the API's creator (singletonKey dedup is "short"-only); without it the
-    // worker's updateQueue would rewrite the policy to "standard" and break dedup on boot.
     expect(mediaQueue?.options).toEqual({ policy: "short", retryLimit: 5, retryBackoff: true })
-    // anon.hold.release is enqueued with a singletonKey, so it is created with policy "short" (no retry).
     expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({ policy: "short" })
-    // The maintenance queues are created WITHOUT any policy (their handlers do not throw or dedup).
     expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toBeUndefined()
 
     await worker.stop()
   })
 })
 
+describe("F25: post-success hold-release hook is gated on anon+held report state", () => {
+  function heldView(overrides: Partial<HeldReportView> = {}): HeldReportView {
+    return {
+      id: "report-1",
+      reporterUserId: null,
+      anonSessionId: "anontok-1",
+      status: "held",
+      visibility: "public",
+      lat: 34.1,
+      lng: -118.35,
+      deletedAt: null,
+      ...overrides,
+    }
+  }
+
+  function makeAnonHoldRepo(report: HeldReportView): AnonHoldReleaseRepo {
+    return {
+      findReport: () => Promise.resolve(report),
+      findMedia: () => Promise.resolve([{ id: "m1", status: "ready" }]),
+      countOpenAbuseFlags: () => Promise.resolve(0),
+      publishHeldReport: () => Promise.resolve(true),
+      findHeldAnonReportIds: () => Promise.resolve([]),
+    }
+  }
+
+  async function runMediaJobWith(
+    anonHoldRepo: AnonHoldReleaseRepo,
+  ): Promise<{ fake: FakeJobs; repo: InMemoryWorkerRepo }> {
+    const handle = buildJobs()
+    const fake = handle.jobs as unknown as FakeJobs
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const reportId = "report-1"
+    repo.seed({
+      id: "m1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/m1",
+      reportId,
+      status: "validating",
+    })
+    const bytes = await fx.makeValidPng()
+    await storage.put("uploads/m1", bytes, { contentType: "image/png" })
+
+    const seams: WorkerSeams = {
+      storage,
+      abuseChecks: new FakeAbuseChecks(),
+      limits: loadLimits({}),
+      download: makeDownloader(storage),
+      dbHandle: undefined,
+      repo,
+      anonHoldRepo,
+      findPhashDuplicate: undefined,
+      report: () => {},
+      close: () => Promise.resolve(),
+    }
+    const worker = await buildWorker(handle, seams)
+    await worker.start()
+
+    await handle.jobs.enqueue(MEDIA_CHECKS_JOB, {
+      mediaId: "m1",
+      uploadId: "u1",
+      r2Key: "uploads/m1",
+      kind: "image",
+    })
+
+    await worker.stop()
+    return { fake, repo }
+  }
+
+  it("does NOT enqueue anon.hold.release for an authenticated (non-anon) report's media", async () => {
+    const anonHoldRepo = makeAnonHoldRepo(
+      heldView({ reporterUserId: "user-123", status: "published" }),
+    )
+    const { fake, repo } = await runMediaJobWith(anonHoldRepo)
+
+    expect(repo.get("m1")!.status).toBe("ready")
+    expect(fake.jobsFor(ANON_HOLD_RELEASE_JOB)).toHaveLength(0)
+  })
+
+  it("does NOT enqueue anon.hold.release for an anon report that is not held (e.g. already published)", async () => {
+    const anonHoldRepo = makeAnonHoldRepo(heldView({ status: "published" }))
+    const { fake, repo } = await runMediaJobWith(anonHoldRepo)
+
+    expect(repo.get("m1")!.status).toBe("ready")
+    expect(fake.jobsFor(ANON_HOLD_RELEASE_JOB)).toHaveLength(0)
+  })
+
+  it("STILL enqueues anon.hold.release for a genuinely anonymous HELD report (no regression)", async () => {
+    const anonHoldRepo = makeAnonHoldRepo(heldView())
+    const { fake, repo } = await runMediaJobWith(anonHoldRepo)
+
+    expect(repo.get("m1")!.status).toBe("ready")
+    expect(fake.jobsFor(ANON_HOLD_RELEASE_JOB)).toHaveLength(1)
+  })
+})
+
 describe("buildSeams production storage guard", () => {
   it("THROWS when USE_FAKE_STORAGE is on in production (would silently lose media, issue #39)", async () => {
-    // Fake in-memory storage in prod is always empty -> downloads miss -> media is lost (issue #39).
-    // The worker must fail boot loudly, mirroring the API's required-creds enforcement. The guard is
-    // specifically about STORAGE (not the NSFW seam, which stays togglable pre-launch).
     await expect(
       buildSeams({ NODE_ENV: "production", USE_FAKE_STORAGE: "1" } as NodeJS.ProcessEnv),
     ).rejects.toThrow(/USE_FAKE_STORAGE must be 0 in production/)
   })
 
   it("fires on fake storage even when USE_FAKE_ABUSE_NSFW is off (abuse seam is not what is guarded)", async () => {
-    // Prove the guard keys ONLY on storage: real-abuse + fake-storage in prod still throws the storage
-    // error, confirming USE_FAKE_ABUSE_NSFW is left togglable (the intentional pre-launch state).
     await expect(
       buildSeams({
         NODE_ENV: "production",

@@ -77,12 +77,17 @@ export async function registerSocialRoutes(
     const volunteerHoursTotalFor = app.socialOverrides
       ? undefined
       : (userId: string) => container.getVolunteerHoursRepo().totalHoursFor(userId)
+    const isBlockedEitherWay = app.socialOverrides
+      ? undefined
+      : (viewerId: string, targetId: string) =>
+          container.getBlocksRepo().isBlockedEitherWay(viewerId, targetId)
     return makeSocialService({
       repo: repo(),
       logger: app.log,
       ...(n !== undefined ? { notifier: n } : {}),
       ...(presignAvatar !== undefined ? { presignAvatar } : {}),
       ...(volunteerHoursTotalFor !== undefined ? { volunteerHoursTotalFor } : {}),
+      ...(isBlockedEitherWay !== undefined ? { isBlockedEitherWay } : {}),
     })
   }
 

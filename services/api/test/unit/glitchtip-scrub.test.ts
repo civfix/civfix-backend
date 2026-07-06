@@ -38,7 +38,7 @@ describe("scrubEvent (GlitchTip PII scrubbing)", () => {
       },
     })
     const extra = out.extra as Record<string, unknown>
-    expect(extra.requestId).toBe("req-1") // non-sensitive key preserved
+    expect(extra.requestId).toBe("req-1")
     expect(extra.email).toBe("[redacted]")
     expect(extra.lat).toBe("[redacted]")
     expect(extra.lng).toBe("[redacted]")
@@ -53,9 +53,44 @@ describe("scrubEvent (GlitchTip PII scrubbing)", () => {
     const input = { breadcrumbs: [{ category: "http" }], extra: { email: "x@y.com" } }
     const out = scrubEvent(input)
     expect(out.breadcrumbs).toBeUndefined()
-    // input untouched (pure)
     expect(input.breadcrumbs).toEqual([{ category: "http" }])
     expect(input.extra.email).toBe("x@y.com")
+  })
+})
+
+describe("scrubEvent (exception + message redaction)", () => {
+  it("redacts an email embedded in an exception value", () => {
+    const out = scrubEvent({
+      exception: {
+        values: [
+          {
+            type: "error",
+            value:
+              "duplicate key value violates unique constraint: email=user@example.com already exists",
+          },
+        ],
+      },
+    })
+    const values = (out.exception as { values: Array<{ value: string }> }).values
+    expect(values[0]!.value).not.toContain("user@example.com")
+    expect(values[0]!.value).toContain("[redacted]")
+  })
+
+  it("redacts an access_token embedded in event.message", () => {
+    const out = scrubEvent({
+      message: "fetch failed for https://api.mapbox.com/x?access_token=pk.secret123&limit=1",
+    })
+    expect(out.message).not.toContain("pk.secret123")
+    expect(out.message).toContain("access_token=[redacted]")
+  })
+
+  it("does not mutate the input exception (pure)", () => {
+    const input = { exception: { values: [{ value: "x@y.com" }] } }
+    const out = scrubEvent(input)
+    expect((input.exception.values[0] as { value: string }).value).toBe("x@y.com")
+    expect((out.exception as { values: Array<{ value: string }> }).values[0]!.value).toBe(
+      "[redacted]",
+    )
   })
 })
 

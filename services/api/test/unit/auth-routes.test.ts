@@ -3,11 +3,6 @@ import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 import { resolvePostLoginRedirect } from "../../src/routes/auth.routes.js"
 import type { OAuthConfig } from "../../src/auth/oauth.js"
 
-/**
- * Full offline sign-in flows through the real Fastify app (app.inject), wired with the in-memory
- * stores + FakeMailer + in-memory cache + a stub JWKS verifier. No DB, no Redis, no Docker. This is
- * the end-to-end proof that auth works.
- */
 
 let harness: AuthHarness | undefined
 
@@ -18,7 +13,6 @@ afterEach(async () => {
   }
 })
 
-/** Parse the Set-Cookie header(s) into a name -> value map (value only, attributes dropped). */
 function parseCookies(setCookie: string | string[] | undefined): Record<string, string> {
   const out: Record<string, string> = {}
   const list = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : []
@@ -35,7 +29,6 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     harness = await makeAuthHarness()
     const email = "mobile.user@example.com"
 
-    // 1) Request a code.
     const reqRes = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/otp/request",
@@ -44,11 +37,9 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(reqRes.statusCode).toBe(200)
     expect(reqRes.json()).toMatchObject({ sent: true, resendAfterSec: 60 })
 
-    // 2) Read the code straight from the FakeMailer.
     const code = harness.mailer.lastOtpFor(email)
     expect(code).toMatch(/^\d{6}$/)
 
-    // 3) Verify as a MOBILE client -> token in the body, no cookies.
     const verifyRes = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/otp/verify",
@@ -60,15 +51,12 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(typeof session.token).toBe("string")
     expect(session.token.length).toBeGreaterThan(20)
     expect(session.user.role).toBe("citizen")
-    // The real users.email column now backs the account, so the DTO carries the verified email.
     expect(session.user.email).toBe(email)
     expect(session.csrfToken).toBeUndefined()
-    // Mobile transport sets no session cookie.
     expect(verifyRes.headers["set-cookie"]).toBeUndefined()
 
     const token: string = session.token
 
-    // 4) GET /auth/session with the bearer token -> authenticated.
     const checkRes = await harness.app.inject({
       method: "GET",
       url: "/v1/auth/session",
@@ -82,8 +70,6 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(check.roles).toEqual(["citizen"])
   })
 
-  // The OAuth config used to test the Apple WEB flow: the default harness providers PLUS the Services ID
-  // (APPLE_OAUTH_WEB_CLIENT_ID) that the web redirect flow + web Apple button require.
   const OAUTH_WITH_APPLE_WEB: OAuthConfig = {
     google: {
       clientId: "test-google-client",
@@ -102,8 +88,6 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
 
   it("an unauthenticated WEB /auth/session omits apple unless the web Services ID is configured", async () => {
     harness = await makeAuthHarness()
-    // No x-client header => web transport. The default harness configures the NATIVE Apple flow but NOT the
-    // web Services ID, so the web's Apple button (which needs the web redirect flow) is NOT advertised.
     const res = await harness.app.inject({ method: "GET", url: "/v1/auth/session" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -137,9 +121,7 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     const location = String(res.headers["location"])
     expect(location).toContain("appleid.apple.com")
     expect(location).toContain("response_type=code")
-    // Apple REQUIRES form_post whenever scopes are requested; Arctic omits it, so the route adds it.
     expect(location).toContain("response_mode=form_post")
-    // The state cookie must be SameSite=None so it survives Apple's cross-site form POST to the callback.
     const setCookie = res.headers["set-cookie"]
     const rawCookie = (Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie)).toLowerCase()
     expect(rawCookie).toContain("samesite=none")
@@ -148,7 +130,6 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
   it("GET /auth/apple/start is rejected when the web Services ID is not configured", async () => {
     harness = await makeAuthHarness()
     const res = await harness.app.inject({ method: "GET", url: "/auth/apple/start" })
-    // Native-only Apple config => the web flow is unavailable; /start surfaces a clean 4xx, not a 5xx.
     expect(res.statusCode).toBeGreaterThanOrEqual(400)
     expect(res.statusCode).toBeLessThan(500)
   })
@@ -194,7 +175,6 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     })
     expect(verifyRes.statusCode).toBe(200)
     const body = verifyRes.json()
-    // Web transport: no bearer token in the body, csrfToken present.
     expect(body.token).toBeUndefined()
     expect(typeof body.csrfToken).toBe("string")
 
@@ -203,14 +183,12 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     expect(cookies.civfix_session).toBeTruthy()
     expect(cookies.civfix_csrf).toBe(body.csrfToken)
 
-    // The session cookie must be httpOnly; the csrf cookie must NOT be (SPA reads it).
     const lines = Array.isArray(setCookie) ? setCookie : [setCookie as string]
     const sessionLine = lines.find((l) => l.startsWith("civfix_session="))!
     const csrfLine = lines.find((l) => l.startsWith("civfix_csrf="))!
     expect(sessionLine.toLowerCase()).toContain("httponly")
     expect(csrfLine.toLowerCase()).not.toContain("httponly")
 
-    // The web session cookie authenticates /auth/session with no bearer token.
     const checkRes = await harness.app.inject({
       method: "GET",
       url: "/v1/auth/session",
@@ -232,8 +210,6 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     })
     const cookies = parseCookies(verify.headers["set-cookie"])
 
-    // A cookie-authenticated session check surfaces the SAME csrfToken as the readable CSRF cookie, so
-    // the SPA can recover it after a reload/redirect.
     const check = await harness.app.inject({
       method: "GET",
       url: "/v1/auth/session",
@@ -256,8 +232,6 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     })
     const cookies = parseCookies(verify.headers["set-cookie"])
 
-    // Present ONLY the session cookie (CSRF cookie lost, e.g. after an OAuth redirect): the check both
-    // returns a csrfToken and sets a matching readable CSRF cookie.
     const check = await harness.app.inject({
       method: "GET",
       url: "/v1/auth/session",
@@ -306,7 +280,6 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     const csrfToken = verifyRes.json().csrfToken as string
     const cookieHeader = `civfix_session=${cookies.civfix_session}; civfix_csrf=${cookies.civfix_csrf}`
 
-    // Logout WITHOUT the CSRF header -> 403.
     const noCsrf = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/logout",
@@ -314,7 +287,6 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     })
     expect(noCsrf.statusCode).toBe(403)
 
-    // Logout WITH the CSRF header -> 200 + session revoked.
     const ok = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/logout",
@@ -323,7 +295,6 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     expect(ok.statusCode).toBe(200)
     expect(ok.json()).toEqual({ ok: true })
 
-    // The session no longer authenticates.
     const after = await harness.app.inject({
       method: "GET",
       url: "/v1/auth/session",
@@ -388,11 +359,8 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     const body = res.json()
     expect(body.user.displayName).toBe("Google Person")
     expect(typeof body.token).toBe("string")
-    // A brand-new OAuth account is profileComplete:false, exactly like a fresh OTP signup, so the clients'
-    // first-run gate (which triggers ONLY on an explicit `false`) fires for Google/Apple signups too.
     expect(body.user.profileComplete).toBe(false)
 
-    // The minted session authenticates.
     const check = await harness.app.inject({
       method: "GET",
       url: "/v1/auth/session",
@@ -418,7 +386,6 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().user.displayName).toBe("Apple Person")
-    // Brand-new Apple account is profileComplete:false (parity with the OTP + Google signup paths).
     expect(res.json().user.profileComplete).toBe(false)
   })
 
@@ -429,7 +396,6 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
       url: "/v1/auth/google",
       payload: { idToken: "never-registered" },
     })
-    // The stub rejects unknown tokens; the error mapper renders a 500 envelope (no session leaked).
     expect(res.statusCode).toBeGreaterThanOrEqual(400)
     expect(res.json().token).toBeUndefined()
   })
@@ -442,7 +408,6 @@ describe("auth routes: Google web start", () => {
     expect(res.statusCode).toBe(302)
     const location = res.headers.location as string
     expect(location).toContain("accounts.google.com")
-    // A signed oauth handshake cookie is set.
     const setCookie = res.headers["set-cookie"]
     const lines = Array.isArray(setCookie) ? setCookie : [setCookie as string]
     expect(lines.some((l) => l.startsWith("civfix_oauth="))).toBe(true)
@@ -504,19 +469,32 @@ describe("resolvePostLoginRedirect (web OAuth callback target)", () => {
   it("falls back to the site root when there are no web origins", () => {
     expect(resolvePostLoginRedirect(undefined, [])).toBe("/")
   })
+
+  it("rejects a control-character-smuggled protocol-relative host (embedded tab/newline/CR)", () => {
+    expect(resolvePostLoginRedirect("/\t/evil.example.com", origins)).toBe("https://civfix.org")
+    expect(resolvePostLoginRedirect("/\n/evil.example.com", origins)).toBe("https://civfix.org")
+    expect(resolvePostLoginRedirect("/\r/evil.example.com", origins)).toBe("https://civfix.org")
+  })
+
+  it("rejects a backslash-smuggled host and an over-long redirect", () => {
+    expect(resolvePostLoginRedirect("/\\evil.example.com", origins)).toBe("https://civfix.org")
+    expect(resolvePostLoginRedirect("/" + "a".repeat(4096), origins)).toBe("https://civfix.org")
+  })
+
+  it("still honors a relative path carrying a query and fragment", () => {
+    expect(resolvePostLoginRedirect("/reports/42?tab=media#top", origins)).toBe("/reports/42?tab=media#top")
+  })
 })
 
 describe("auth routes: Apple nonce binding (P2-3)", () => {
   it("binds the nonce through the route: matching nonce signs in, mismatched nonce is rejected", async () => {
     harness = await makeAuthHarness()
-    // Register a token bound to nonce "abc123" (the verifier enforces params.expectedNonce against it).
     harness.verifier.register(
       "apple-nonce-token",
       { sub: "apple-nonce-sub", email: "nonce@example.com", emailVerified: true, name: null, picture: null },
       "abc123",
     )
 
-    // Correct nonce -> the route threads body.nonce -> service -> verifier; sign-in succeeds.
     const ok = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/apple",
@@ -526,7 +504,6 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
     expect(ok.statusCode).toBe(200)
     expect(ok.json().user.displayName).toBe("Nonce User")
 
-    // WRONG nonce -> the bind fails -> no session is issued (error envelope, no token leaked).
     const bad = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/apple",
@@ -557,7 +534,6 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
 })
 
 describe("auth routes: first-run registration (handle availability + PUT /me/profile)", () => {
-  /** Sign in a fresh email via the mobile OTP flow (bearer; no CSRF) -> token + session user. */
   async function signIn(
     h: AuthHarness,
     email: string,
@@ -576,8 +552,6 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
   it("a fresh account is profileComplete:false with a generated placeholder handle (the gate trigger)", async () => {
     harness = await makeAuthHarness()
     const { user } = await signIn(harness, "newbie@example.com")
-    // The gate trigger is profileComplete:false (NOT a null handle). The handle column is NOT NULL now, so a
-    // brand-new account carries a generated placeholder ('user' + 12 lowercase hex) until first-run picks one.
     expect(user.profileComplete).toBe(false)
     expect(user.handle).toMatch(/^user[0-9a-f]{12}$/)
   })
@@ -615,7 +589,6 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     expect(user.displayName).toBe("Ana Rivera")
     expect(user.profileComplete).toBe(true)
 
-    // The session now reflects the completed profile.
     const check = await harness.app.inject({ method: "GET", url: "/v1/auth/session", headers })
     expect(check.json().user.profileComplete).toBe(true)
     expect(check.json().user.handle).toBe("ana_99")

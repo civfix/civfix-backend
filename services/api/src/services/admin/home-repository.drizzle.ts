@@ -30,7 +30,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           SELECT r.jurisdiction_geoid AS geoid, r.created_at
           FROM reports r
           WHERE r.deleted_at IS NULL
-            AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
+            AND r.status NOT IN ('rejected', 'resolved')
             AND r.jurisdiction_geoid IS NOT NULL
             AND NOT (
               EXISTS (
@@ -51,7 +51,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           GROUP BY geoid
         )
         SELECT
-          COUNT(*)::text AS queue,
+          (SELECT COUNT(*)::text FROM jurisdiction_discovery_tasks WHERE status <> 'done') AS queue,
           COALESCE(SUM(n), 0)::text AS reports_waiting,
           COUNT(*) FILTER (
             WHERE oldest < now() - make_interval(hours => ${DISCOVERY_SLA_HOURS})

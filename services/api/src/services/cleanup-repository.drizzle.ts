@@ -1,20 +1,3 @@
-/**
- * Postgres-backed CleanupRepository (the production impl of the cleanups persistence seam).
- *
- * ALL cleanup + membership access flows through here so the cleanup service stays infra-free and
- * unit-testable with an in-memory repo. Written against the raw postgres-js tag (`Sql`) rather than the
- * Drizzle query builder because every cleanup touches PostGIS geometry (ST_SetSRID(ST_MakePoint) on
- * write; ST_X/ST_Y on read; ST_MakeEnvelope / ST_Distance for bbox/near), which Drizzle does not model.
- * One tag throughout also lets the create flow run as a SINGLE transaction (sql.begin) — the guarantee
- * that membership == chat membership.
- *
- * CREATE TRANSACTION (createCleanupTx): INSERT cleanup row → INSERT organizer cleanup_members row → link
- * initial reports → read back, ALL in one tx so a failure rolls back the row AND the membership together.
- *
- * PAGINATION is keyset: near listings page by (distance ASC, id ASC) with a `${dist}|${id}` cursor;
- * non-near by scheduled_at (ASC upcoming/none, DESC past) with an `${iso}|${id}` cursor. The id tiebreak
- * keeps a total order when timestamps/distances collide.
- */
 
 import { AppError } from "@civfix/shared"
 import type postgres from "postgres"
@@ -52,7 +35,6 @@ import type {
 } from "@civfix/shared"
 
 export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
-  // Read one cleanup by id (optionally with distance), sharing the given tag (pool or tx).
   async function readById(
     tag: Queryable,
     id: string,
@@ -72,9 +54,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
   return {
     async createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord> {
       return sql.begin(async (tx) => {
-        // D4 LOCK ORDER: allocate the EVENT reference code FIRST — the reference_counters upsert must
-        // precede the cleanups row lock (a consistent acquisition order across every create path rules out
-        // an ABBA deadlock). jurCode is resolved pre-tx (0 = unknown bucket when no jurisdiction, D5).
         const referenceCode = await allocateEventReferenceCode(tx, args.jurCode)
 
         await tx`
@@ -97,14 +76,11 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             ${referenceCode}
           )
         `
-        // Auto-join the organizer in the SAME transaction (membership == chat membership, atomic).
         await tx`
           INSERT INTO cleanup_members (cleanup_id, user_id, role)
           VALUES (${args.cleanupId}, ${args.organizerUserId}, 'organizer')
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
-        // Link the initial reports in the SAME tx. The service has already validated the ids are visible;
-        // ON CONFLICT DO NOTHING keeps a duplicate id idempotent.
         await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
 
         const created = await readById(tx, args.cleanupId, null)
@@ -114,8 +90,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     },
 
     async updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean> {
-      // Build the SET list from only the supplied fields. lat+lng (both present) rebuild geom. An empty
-      // patch still confirms existence (no-op UPDATE) so the service can 404 a missing id.
       const sets: postgres.Fragment[] = []
       if (patch.title !== undefined) sets.push(sql`title = ${patch.title}`)
       if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
@@ -186,7 +160,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
 
         const added = await linkReportsInTx(tx, cleanupId, toAdd, actorId)
         if (toRemove.length > 0) {
-          // Set-based unlink: one DELETE over the array + one multi-row timeline INSERT (was a per-id loop).
           await tx`
             DELETE FROM cleanup_reports
             WHERE cleanup_id = ${cleanupId} AND report_id = ANY(${toRemove}::uuid[])
@@ -206,8 +179,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     ): Promise<Map<string, LinkedReportView[]>> {
       const grouped = new Map<string, LinkedReportView[]>()
       if (cleanupIds.length === 0) return grouped
-      // Only published+public, non-deleted reports leak into the gallery. The thumb is the first ready
-      // media's thumb_key (or its r2_key) via a LATERAL pick. Ordered by linked_at DESC (newest leads).
       const rows = await sql<
         {
           cleanup_id: string
@@ -312,9 +283,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         FROM cleanup_reports cr
         JOIN cleanups c ON c.id = cr.cleanup_id
         JOIN users u ON u.id = c.organizer_user_id
-        LEFT JOIN (
-          SELECT cleanup_id, count(*)::int AS going FROM cleanup_members GROUP BY cleanup_id
-        ) g ON g.cleanup_id = c.id
+        LEFT JOIN LATERAL (
+          SELECT count(*)::int AS going FROM cleanup_members m WHERE m.cleanup_id = c.id
+        ) g ON true
         WHERE cr.report_id = ANY(${reportIds}::uuid[])
         ORDER BY cr.report_id, cr.linked_at DESC, c.id
       `
@@ -361,9 +332,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     },
 
     async findCleanupByReferenceCode(code: string): Promise<CleanupRecord | null> {
-      // reference_code is UNIQUE (cleanups_reference_code_uidx), so this resolves at most one row — the
-      // by-code half of the resolve-either getCleanup (issue #56). No distance (a by-code fetch is not a
-      // near listing).
       const rows = await sql<CleanupRowSelect[]>`
         SELECT ${cleanupColumns(sql, null)}
         FROM cleanups c
@@ -384,16 +352,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       const membershipFilter = buildMembershipFilter(sql, filters.when, filters.viewerId)
 
       if (near !== null) {
+        const point = sql`ST_SetSRID(ST_MakePoint(${near.lng}, ${near.lat}), 4326)`
         const cursor = parseNearCursor(filters.cursor)
         const cursorFilter =
           cursor !== null
-            ? sql`AND (
-                ST_Distance(c.geom::geography, ST_SetSRID(ST_MakePoint(${near.lng}, ${near.lat}), 4326)::geography),
-                c.id
-              ) > (${cursor.dist}::float8, ${cursor.id}::uuid)`
+            ? sql`AND (c.geom <-> ${point}, c.id) > (${cursor.dist}::float8, ${cursor.id}::uuid)`
             : sql``
         const rows = await sql<CleanupRowSelect[]>`
-          SELECT ${cleanupColumns(sql, near)}
+          SELECT ${cleanupColumns(sql, near)}, (c.geom <-> ${point}) AS knn
           FROM cleanups c
           JOIN users u ON u.id = c.organizer_user_id
           ${goingJoin(sql)}
@@ -402,11 +368,11 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             ${membershipFilter}
             ${bboxFilter}
             ${cursorFilter}
-          ORDER BY dist ASC, c.id ASC
+          ORDER BY c.geom <-> ${point} ASC, c.id ASC
           LIMIT ${filters.limit + 1}
         `
         return paginate(rows, filters.limit, (last) =>
-          last.dist === null ? null : `${Number(last.dist)}|${last.id}`,
+          last.knn === null || last.knn === undefined ? null : `${Number(last.knn)}|${last.id}`,
         )
       }
 
@@ -480,7 +446,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     },
 
     async joinCleanupTx(cleanupId: string, userId: string): Promise<boolean> {
-      // Existence check + idempotent upsert in one tx. ON CONFLICT DO NOTHING keeps re-joining a no-op.
       return sql.begin(async (tx) => {
         const exists = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanups WHERE id = ${cleanupId} LIMIT 1
@@ -512,16 +477,20 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
-          UPDATE cleanups SET status = 'cancelled' WHERE id = ${id} RETURNING id
+          UPDATE cleanups SET status = 'cancelled'
+          WHERE id = ${id} AND status <> 'cancelled'
+          RETURNING id
         `
-        if (updated.length === 0) return false
+        if (updated.length === 0) {
+          const existing = await tx<{ id: string }[]>`
+            SELECT id FROM cleanups WHERE id = ${id} LIMIT 1
+          `
+          return existing.length > 0
+        }
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
         `
-        // Set-based fan-out IN-TX (one statement regardless of member count), atomic with the status flip.
-        // The actor (the host) is EXCLUDED so they do not get their own "Event cancelled" bell. The
-        // user-facing title/body are composed by the service and passed in.
         await tx`
           INSERT INTO notifications (user_id, type, title, body, link)
           SELECT cm.user_id, 'cleanup_cancelled', 'Event cancelled', ${input.body}, ${`/cleanups/${id}`}
@@ -538,7 +507,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         viewerId !== null
           ? sql`EXISTS (SELECT 1 FROM follows_people f WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id)`
           : sql`FALSE`
-      // "Not yet RSVP'd" gate: restrict to followed attendees. Anonymous + onlyFollowed => nothing.
       const onlyFollowedFilter = onlyFollowed
         ? viewerId !== null
           ? sql`AND EXISTS (SELECT 1 FROM follows_people f2 WHERE f2.follower_id = ${viewerId} AND f2.followee_id = u.id)`
@@ -572,8 +540,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       geoid: string | null,
     ): Promise<{ contact: string; name: string } | null> {
       if (geoid === null) return null
-      // Precedence mirrors getRouting (events have no per-category, so default -> legacy): the default
-      // (category NULL) jurisdiction_contacts row, then the legacy contact_emails[1].
       const rows = await sql<{ name: string | null; default_email: string | null; legacy_email: string | null }[]>`
         SELECT
           j.name,
@@ -604,10 +570,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
   }
 }
 
-// Insert a cleanup_reports row (ON CONFLICT DO NOTHING) + a 'report_linked' cleanup_timeline row for each
-// report id NOT already linked, using the given tx tag. Returns the newly-linked ids. Set-based: one
-// multi-VALUES INSERT…ON CONFLICT…RETURNING then one multi-row timeline INSERT over the returned ids,
-// rather than a per-id round-trip loop (the create/reconcile tx held one connection per id before).
 async function linkReportsInTx(
   tx: Queryable,
   cleanupId: string,
@@ -633,7 +595,6 @@ async function linkReportsInTx(
   return newlyLinked
 }
 
-// Slice limit+1 rows into a page + next cursor, deriving the cursor from the last kept row.
 function paginate(
   rows: CleanupRowSelect[],
   limit: number,

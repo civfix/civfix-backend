@@ -1,12 +1,3 @@
-/**
- * PURE-ish decode/seam core of the media.checks pipeline.
- *
- * The contract: NO UNTRUSTED INPUT may throw out of here. Every outcome of processing attacker-controlled
- * BYTES is a MediaProcessResult (a terminal status + optional flags/note); the only throw a caller sees is
- * the absolute backstop being itself wrapped into a rejected result. This module is storage/DB-free so it
- * is directly assertable in tests with crafted bytes + a FakeAbuseChecks (the orchestrator in
- * media-checks.ts adds the load/download/persist around it).
- */
 
 import type { AbuseChecks } from "@civfix/shared/interfaces"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
@@ -19,12 +10,10 @@ import { perceptualHash } from "../sandbox/phash.js"
 import { probeBytes } from "../sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../sandbox/ffmpeg-remux.js"
 
-/** A flag the pipeline decided to raise (subject is the media id; source defaults to "worker"). */
 export interface PipelineFlag {
   reason: WorkerAbuseReason
 }
 
-/** Result of processing one asset's bytes. Storage/DB-free so it is directly assertable in tests. */
 export interface MediaProcessResult {
   status: MediaStatus
   width: number | null
@@ -35,40 +24,24 @@ export interface MediaProcessResult {
   processedContentType: string | null
   thumbnailBytes: Buffer | null
   thumbnailContentType: string | null
-  /** GPS read from the ORIGINAL EXIF, kept for the report GPS cross-check note (images only). */
   exifGps: ExifGps | null
   flags: PipelineFlag[]
-  /** Human-readable reason when status is rejected/held (for logs + GlitchTip). */
   note: string | null
 }
 
 export interface ProcessInput {
   bytes: Uint8Array
   kind: MediaKind
-  /**
-   * Excluded from the near-duplicate lookup so a re-delivered job (which recomputes the SAME phash on a
-   * row that already has its phash persisted) never matches the asset against its OWN row (P0-2).
-   */
   selfAssetId?: string
-  /**
-   * Excluded from the near-duplicate lookup so SIBLING photos of the SAME report are never flagged
-   * duplicates of each other (#43 - dedupe is scoped CROSS-report only). Optional/nullable.
-   */
   selfReportId?: string | null
 }
 
 export interface ProcessDeps {
   abuseChecks: AbuseChecks
   limits: WorkerLimits
-  /**
-   * Self-aware near-duplicate lookup (excludes the current asset via excludeAssetId). When provided it is
-   * used INSTEAD of abuseChecks.isNearDuplicate (honoring the P0-2 self-exclusion); when omitted the
-   * pipeline falls back to abuseChecks.isNearDuplicate (e.g. FakeAbuseChecks offline).
-   */
   findPhashDuplicate?: FindPhashDuplicateFn
 }
 
-/** Build a rejected result with a note (keeps the safe-failure paths terse + consistent). */
 export function rejected(note: string): MediaProcessResult {
   return {
     status: "rejected",
@@ -86,20 +59,11 @@ export function rejected(note: string): MediaProcessResult {
   }
 }
 
-/** Stringify an unknown error compactly for a note (no stack, ASCII-only). */
 export function errNote(prefix: string, err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err)
   return `${prefix}: ${msg}`.slice(0, 300)
 }
 
-/**
- * NSFW + near-duplicate seams over an already-validated asset; finalizes the status. Never throws.
- * NSFW fails CLOSED (a scoring error holds the asset for review). The near-duplicate seam is NON-blocking
- * (#43): a hit is detected/logged but never holds the asset and never raises a flag, and a dedupe outage
- * is treated as "not a duplicate" (fail open). Auto-holding a near-duplicate silently hid legitimate
- * report media (a `held` row is stripped from every reader's gallery and wedges anon hold-release), so a
- * cross-report perceptual match - overwhelmingly legitimate on a civic platform - falls through to `ready`.
- */
 async function applyAbuseSeams(
   bytes: Uint8Array,
   phash: string | null,
@@ -126,8 +90,6 @@ async function applyAbuseSeams(
 
   if (phash !== null) {
     try {
-      // Prefer the self-aware lookup (excludes THIS asset's own row, P0-2, and scopes CROSS-report, #43)
-      // so the recorded note is accurate.
       const dup = deps.findPhashDuplicate
         ? await deps.findPhashDuplicate(phash, {
             excludeAssetId: selfAssetId,
@@ -145,7 +107,6 @@ async function applyAbuseSeams(
   return { status: "ready", flags, note }
 }
 
-/** Process an IMAGE: decode-guard, EXIF read+strip, thumbnail, phash, NSFW + dedupe. Never throws. */
 async function processImageBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
@@ -159,7 +120,6 @@ async function processImageBytes(
     return rejected(errNote("image decode/guard failed", err))
   }
 
-  // A phash failure is non-fatal: proceed without dedupe.
   let phash: string | null = null
   try {
     phash = await perceptualHash(bytes, deps.limits)
@@ -185,7 +145,6 @@ async function processImageBytes(
   }
 }
 
-/** Process a VIDEO: ffprobe validate, remux strip, thumbnail grab, NSFW. Never throws. */
 async function processVideoBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
@@ -215,21 +174,34 @@ async function processVideoBytes(
     return rejected(errNote("remux failed", err))
   }
 
-  // Thumbnail through the image path (strip + downsize); a failure is non-fatal (publish the video anyway).
-  let thumbnailBytes: Buffer | null = null
-  let thumbnailContentType: string | null = null
+  let frameJpeg: Buffer | null = null
   try {
     const at = Math.min(1, probe.durationSec / 2)
-    const frame = await grabFrameJpeg(bytes, at, deps.limits)
-    const thumb = await processImage(frame, deps.limits)
-    thumbnailBytes = thumb.thumbnailBytes
-    thumbnailContentType = thumb.thumbnailContentType
+    frameJpeg = await grabFrameJpeg(bytes, at, deps.limits)
   } catch {
-    thumbnailBytes = null
-    thumbnailContentType = null
+    frameJpeg = null
   }
 
-  const seam = await applyAbuseSeams(bytes, null, deps)
+  let thumbnailBytes: Buffer | null = null
+  let thumbnailContentType: string | null = null
+  if (frameJpeg) {
+    try {
+      const thumb = await processImage(frameJpeg, deps.limits)
+      thumbnailBytes = thumb.thumbnailBytes
+      thumbnailContentType = thumb.thumbnailContentType
+    } catch {
+      thumbnailBytes = null
+      thumbnailContentType = null
+    }
+  }
+
+  const seam = frameJpeg
+    ? await applyAbuseSeams(frameJpeg, null, deps)
+    : {
+        status: "held" as MediaStatus,
+        flags: [{ reason: "nsfw" as WorkerAbuseReason }],
+        note: "nsfw scoring failed (held): no decodable frame extracted from video",
+      }
 
   return {
     status: seam.status,
@@ -247,10 +219,6 @@ async function processVideoBytes(
   }
 }
 
-/**
- * PURE-ish core: process `input.bytes` per `input.kind`. NEVER throws; any failure becomes a rejected
- * result. Storage/DB-free so it is unit-testable with crafted bytes + a FakeAbuseChecks.
- */
 export async function processMedia(
   input: ProcessInput,
   deps: ProcessDeps,
@@ -269,7 +237,6 @@ export async function processMedia(
     }
     return await processVideoBytes(input.bytes, deps)
   } catch (err) {
-    // Absolute backstop: even an unexpected error in the dispatch logic must not throw.
     return rejected(errNote("unexpected processing error", err))
   }
 }

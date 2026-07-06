@@ -1,15 +1,5 @@
-/**
- * Drizzle-backed MediaRepository (the production implementation of the media-intake persistence seam).
- *
- * ALL media_assets access for the intake service flows through here so the service itself stays
- * infra-free and unit-testable with an in-memory repo. Keeps the orphan-safety contract intact: a
- * created/finalized row leaves report_id null (the worker cron sweeps never-attached orphans later).
- *
- * byte_size is a bigint(mode:number) column; file sizes are well within the 2^53 safe-integer range,
- * so reading it as a number is safe (matches the schema's documented mode).
- */
 
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import type { Db } from "../db/client.js"
 import type {
@@ -19,7 +9,6 @@ import type {
 } from "./media-intake-service.js"
 import type { MediaStatus } from "@civfix/shared"
 
-/** Project a media_assets Drizzle row to the structural view the service consumes. */
 function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
   return {
     id: row.id,
@@ -46,7 +35,6 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
         r2Key: row.r2Key,
         status: row.status,
         byteSize: row.byteSize,
-        // report_id intentionally left null (orphan-safe until a report commits).
       })
     },
 
@@ -69,12 +57,13 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
     async setStatusByUploadId(
       uploadId: string,
       status: MediaStatus,
+      expectedStatus?: MediaStatus,
     ): Promise<MediaAssetView | null> {
-      const rows = await db
-        .update(mediaAssets)
-        .set({ status })
-        .where(eq(mediaAssets.uploadId, uploadId))
-        .returning()
+      const predicate =
+        expectedStatus === undefined
+          ? eq(mediaAssets.uploadId, uploadId)
+          : and(eq(mediaAssets.uploadId, uploadId), eq(mediaAssets.status, expectedStatus))
+      const rows = await db.update(mediaAssets).set({ status }).where(predicate).returning()
       const row = rows[0]
       return row ? toView(row) : null
     },

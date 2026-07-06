@@ -24,6 +24,7 @@ import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import { requireAuth } from "../auth/context.js"
+import { makeWsTicketStore } from "../auth/ws-ticket.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserved-handles.js"
 import { isProd } from "../env.js"
@@ -87,7 +88,7 @@ export async function registerAuthRoutes(
 
   route(app, "googleSignIn", async (request, reply) => {
     const body = parse(GoogleSignInRequestSchema, request.body)
-    const user = await services.oauth.signInWithGoogleIdToken(body.idToken)
+    const user = await services.oauth.signInWithGoogleIdToken(body.idToken, body.nonce)
     await issueSessionForUser(services, request, reply, user)
   })
 
@@ -192,6 +193,12 @@ export async function registerAuthRoutes(
     clearSessionCookie(reply)
     clearCsrfCookie(reply)
     const payload: LogoutResponse = { ok: true }
+    reply.status(200).send(payload)
+  })
+
+  route(app, "wsTicket", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const payload = await makeWsTicketStore(services.cache).mint(userId)
     reply.status(200).send(payload)
   })
 
@@ -403,11 +410,24 @@ export function resolvePostLoginRedirect(
   return webOrigins[0] ?? "/"
 }
 
+const MAX_POST_LOGIN_REDIRECT_LENGTH = 2048
+
 function isAllowedPostLoginRedirect(redirect: string, webOrigins: readonly string[]): boolean {
+  if (redirect.length > MAX_POST_LOGIN_REDIRECT_LENGTH) return false
   const value = redirect.trim()
   if (value === "") return false
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(value)) return false
   if (value.startsWith("/")) {
-    return !value.startsWith("//") && !value.startsWith("/\\")
+    const base = webOrigins[0]
+    if (base === undefined) return !value.startsWith("//") && !value.startsWith("/\\")
+    let resolved: URL
+    try {
+      resolved = new URL(value, base)
+    } catch {
+      return false
+    }
+    return resolved.origin === new URL(base).origin
   }
   let url: URL
   try {

@@ -1,36 +1,3 @@
-/**
- * Media intake service: the cheap, API-side half of the media pipeline.
- *
- * This step does NOT touch the uploaded bytes. It only:
- *   1. createUpload  - runs CHEAP pre-checks on the client's declared metadata (kind/contentType/size/
- *                      sha256 shape), allocates an uploadId + a content-addressed r2_key, inserts a
- *                      media_assets row, and presigns a direct-to-R2 PUT for the client.
- *   2. finalize      - after the client has PUT the bytes, confirms the object exists (optional HEAD),
- *                      flips status to "validating", and ENQUEUES a single "media.checks" job for the
- *                      later media-worker to do the expensive untrusted-byte processing.
- *   3. getMedia      - renders a MediaDTO with a presigned/CDN URL, subject to the visibility rule.
- *
- * The heavy work (decode, NSFW, phash, transcode, thumbnailing, EXIF/GPS, dimension extraction, orphan
- * sweep) belongs to the SEPARATE media-worker step; here we only pre-check + presign + enqueue.
- *
- * STATUS LIFECYCLE (chosen): a row is inserted at "validating" on createUpload and STAYS "validating"
- * through finalize. Rationale: MediaStatus (shared) is exactly {validating, ready, rejected, held} -
- * there is no "pending" member, and FinalizeMediaResponse.status is the literal "validating". Rather
- * than invent an out-of-contract pre-finalize state, the row is "validating" (a not-yet-usable asset)
- * from creation; the worker later advances it to ready/rejected/held. A never-finalized row simply
- * stays "validating" with report_id null and is swept by the worker cron. finalize is the trigger that
- * actually enqueues the checks job, so "validating" before finalize means "awaiting upload", and after
- * finalize means "awaiting worker"; both are correctly not-usable. See REPORT for the gap note.
- *
- * OWNERSHIP / VISIBILITY (documented; see also the @civfix/shared gap in the REPORT): media_assets has
- * NO owner column (no reporter_user_id / anon_session_id), and the refined contract is frozen, so we do
- * not persist the uploader. Pre-report-commit, ownership is therefore CAPABILITY-BASED: the uploadId is
- * an unguessable client UUID and possessing it is the proof needed to finalize. getMedia enforces a
- * conservative visibility rule: a "ready" asset is public (public report pins surface ready media), but
- * a not-yet-ready asset (validating/held/rejected) is NOT public and, because there is no stored owner
- * to authorize against, is reported as 404 (not found) to every caller of the public GET /media/:id.
- * Owner-scoped previews of in-flight media are deferred to the report step (which DOES own the media).
- */
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
@@ -48,28 +15,14 @@ import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
 import { makeMediaPresigner } from "./media-presign.js"
 
-/** Minimal structural logger so an enqueue failure is surfaced without coupling to a concrete logger. */
 interface IntakeLogger {
   warn(obj: unknown, msg?: string): void
 }
 
-/** Stable job name the media-worker step MUST consume to run the untrusted-byte checks. */
 export const MEDIA_CHECKS_JOB = "media.checks"
 
-/** TTL (seconds) for the presigned GET URL returned by getMedia. 1 hour balances cacheability vs leak. */
 export const MEDIA_GET_URL_TTL_SEC = 60 * 60
 
-/**
- * Allowlisted upload content types per kind. CHEAP gate only: the worker re-validates against the real
- * bytes. Kept narrow to the formats the mobile/web clients produce AND the media-worker can decode +
- * re-encode.
- *
- * HEIC/HEIF are deliberately NOT accepted: the worker's `sharp` ships the prebuilt libvips, which has no
- * libheif/HEVC decoder, so it cannot decode (or EXIF-strip / normalize) iPhone HEIC. Accepting it created
- * a media row whose served object stayed the raw, browser-unrenderable HEIC -> a blank image on web.
- * Mobile already transcodes captures to JPEG before upload; a web pick of a `.heic` file is rejected here
- * with MEDIA_REJECTED so the client fails fast instead of producing a report with an unviewable photo.
- */
 export const ALLOWED_IMAGE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   "image/jpeg",
   "image/png",
@@ -80,13 +33,8 @@ export const ALLOWED_VIDEO_CONTENT_TYPES: ReadonlySet<string> = new Set([
   "video/quicktime",
 ])
 
-/** A lowercase 64-character hex string (a SHA-256 digest). */
 const SHA256_HEX = /^[0-9a-f]{64}$/
 
-/**
- * Payload enqueued on the "media.checks" queue. The worker re-reads the row by id/uploadId; this is the
- * minimal handle set it needs to locate the object and decide how to process it.
- */
 export interface MediaChecksJob {
   mediaId: string
   uploadId: string
@@ -94,16 +42,11 @@ export interface MediaChecksJob {
   kind: MediaKind
 }
 
-/** The owner context (signed-in user or anonymous session) initiating an upload/finalize. */
 export interface MediaOwner {
   userId?: string | undefined
   anonSessionId?: string | undefined
 }
 
-/**
- * The subset of a media_assets row the service reads back. Structural (not the full Drizzle row) so the
- * repository can be faked in unit tests without a DB.
- */
 export interface MediaAssetView {
   id: string
   uploadId: string
@@ -115,15 +58,9 @@ export interface MediaAssetView {
   width: number | null
   height: number | null
   byteSize: number | null
-  /**
-   * What this asset is FOR (0016). "verification" media is a SENSITIVE user-verification document that the
-   * public GET /media/:id path MUST refuse (it is reachable only via the authenticated owner / admin
-   * signed-URL routes). Optional so an in-memory test repo that omits it is treated as a normal "report".
-   */
   purpose?: MediaPurpose
 }
 
-/** Fields inserted for a freshly-created upload row. */
 export interface NewMediaAsset {
   id: string
   uploadId: string
@@ -133,28 +70,23 @@ export interface NewMediaAsset {
   byteSize: number
 }
 
-/**
- * Persistence seam for media_assets. The production impl (makeDrizzleMediaRepository) runs Drizzle; unit
- * tests pass an in-memory implementation. Keeping all media_assets access behind this interface is what
- * makes createUpload/finalize/getMedia testable offline (mirrors the auth step's store seam).
- */
 export interface MediaRepository {
   insert(row: NewMediaAsset): Promise<void>
   findByUploadId(uploadId: string): Promise<MediaAssetView | null>
   findById(id: string): Promise<MediaAssetView | null>
-  /** Set status for a row identified by uploadId. Returns the updated view (null if it vanished). */
-  setStatusByUploadId(uploadId: string, status: MediaStatus): Promise<MediaAssetView | null>
+  setStatusByUploadId(
+    uploadId: string,
+    status: MediaStatus,
+    expectedStatus?: MediaStatus,
+  ): Promise<MediaAssetView | null>
 }
 
 export interface MediaIntakeDeps {
   repo: MediaRepository
   storage: Storage
   jobs: Jobs
-  /** Injectable id factory (defaults to crypto.randomUUID) so tests can assert deterministic ids. */
   newId?: () => string
-  /** Injectable clock for the r2_key date prefix (defaults to Date.now), for deterministic tests. */
   now?: () => Date
-  /** Optional logger; when set, a swallowed checks-job enqueue failure is surfaced at warn level. */
   logger?: IntakeLogger
 }
 
@@ -167,19 +99,6 @@ export interface MediaIntakeService {
   getMedia(id: string, viewer: MediaOwner): Promise<MediaDTO>
 }
 
-/**
- * PURE pre-check on the client-declared upload metadata. No byte parsing, no IO. Throws
- * AppError.mediaRejected (MEDIA_REJECTED -> 422) when the request is not acceptable; returns void when
- * it passes. Exposed standalone so it is unit-testable without a DB or any seam.
- *
- * Checks:
- *   - contentType is on the kind-appropriate allowlist;
- *   - byteSize is a positive integer within the kind-appropriate cap (image <= MAX_IMAGE_BYTES,
- *     video <= MAX_VIDEO_BYTES);
- *   - sha256 looks like a 64-char lowercase hex digest.
- * (The shared Zod schema already enforces the basic shape + the video cap; we re-assert here so the
- * service is safe even when called with an un-validated object, and so image vs video caps are applied.)
- */
 export function precheckUpload(input: CreateMediaUploadRequest): void {
   const max = input.kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES
   const allowed =
@@ -204,21 +123,12 @@ export function precheckUpload(input: CreateMediaUploadRequest): void {
   }
 }
 
-/**
- * Build the content-addressed object key for an upload.
- *
- * Scheme: `uploads/<yyyy>/<mm>/<sha256>`. Content-addressing by the client-declared sha256 dedupes
- * identical bytes to one key and keeps the key independent of the (random) uploadId; the yyyy/mm prefix
- * keeps the bucket listing shardable by month for lifecycle/cleanup. The worker is the one that trusts
- * bytes, so a colliding/incorrect sha only affects key placement, never correctness of validation.
- */
-export function buildR2Key(sha256: string, now: Date): string {
+export function buildR2Key(uploadId: string, now: Date): string {
   const yyyy = String(now.getUTCFullYear()).padStart(4, "0")
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0")
-  return `uploads/${yyyy}/${mm}/${sha256.toLowerCase()}`
+  return `uploads/${yyyy}/${mm}/${uploadId}`
 }
 
-/** Tolerance for the finalize HEAD size check: reject only a GROSS mismatch vs the declared byteSize. */
 const SIZE_MISMATCH_TOLERANCE = 1024
 
 export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeService {
@@ -231,14 +141,11 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
       input: CreateMediaUploadRequest,
       _owner: MediaOwner,
     ): Promise<CreateMediaUploadResponse> {
-      // Cheap pre-checks (throws MEDIA_REJECTED on any failure). No bytes are read.
       precheckUpload(input)
 
       const uploadId = newId()
-      const r2Key = buildR2Key(input.sha256, now())
+      const r2Key = buildR2Key(uploadId, now())
 
-      // Insert the tracking row first (status "validating" = not-yet-usable; see file header). report_id
-      // stays null until a report commits; the worker cron sweeps never-finalized orphans later.
       await deps.repo.insert({
         id: newId(),
         uploadId,
@@ -248,8 +155,6 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         byteSize: input.byteSize,
       })
 
-      // Presign the direct-to-R2 PUT. The returned headers are the ones the client MUST echo (the real
-      // adapter signs content-type + content-length; FakeStorage mirrors that shape).
       const presigned = await deps.storage.presignPut(r2Key, {
         contentType: input.contentType,
         byteSize: input.byteSize,
@@ -266,16 +171,11 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
       input: FinalizeMediaRequest,
       _owner: MediaOwner,
     ): Promise<FinalizeMediaResponse> {
-      // Ownership pre-report-commit is capability-based: knowing the uploadId IS the proof (the row has
-      // no stored owner to compare against; see file header + REPORT). An unknown uploadId is a 404.
       const asset = await deps.repo.findByUploadId(input.uploadId)
       if (!asset) {
         throw AppError.notFound("Unknown upload")
       }
 
-      // Optional existence/size confirmation. Storage.head returns the object's true size; reject a
-      // GROSS mismatch vs what the client declared (a small delta can come from metadata, so we tolerate
-      // a little). A missing object means the client never completed the PUT -> reject.
       const head = await deps.storage.head(asset.r2Key)
       if (!head) {
         throw AppError.mediaRejected("Uploaded object not found in storage")
@@ -287,28 +187,16 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
-      // IDEMPOTENT REPLAY: a re-finalize of an asset the worker already finished is a no-op. Re-flipping a
-      // terminal asset (ready/rejected/held) back to "validating" + re-enqueuing would un-publish a ready,
-      // already-EXIF-stripped object and re-run the untrusted-byte pipeline (singletonKey only collapses
-      // CONCURRENT enqueues, not a fresh finalize after a COMPLETED job). Reachable by anyone holding the
-      // uploadId, so only the non-terminal "validating" state flips+enqueues. The response status literal
-      // is always "validating" per the contract.
       if (asset.status !== "validating") {
         return { mediaId: asset.id, status: "validating" }
       }
 
-      // SECURITY (privacy): the raw client object carries the camera's EXIF/GPS metadata (exact capture
-      // location), so it must NOT be served publicly. Keep it "validating" and enqueue the worker's
-      // untrusted-byte pipeline (media.checks): it strips EXIF/GPS + chapters, runs the NSFW/abuse +
-      // perceptual-dedupe seams, and ONLY THEN promotes the row to ready/held/rejected (overwriting r2_key
-      // in place). The intended lifecycle is "validating -> worker -> ready" (see header).
-      const updated = await deps.repo.setStatusByUploadId(input.uploadId, "validating")
-      const mediaId = updated?.id ?? asset.id
+      const updated = await deps.repo.setStatusByUploadId(input.uploadId, "validating", "validating")
+      if (updated === null) {
+        return { mediaId: asset.id, status: "validating" }
+      }
+      const mediaId = updated.id
 
-      // singletonKey=uploadId dedupes a double-finalize to one job ("short" policy). RELIABILITY: the row
-      // is now "validating" but no checks job is queued for it; the orphan cron only sweeps report_id IS
-      // NULL, so an already-attached asset could stick at "validating" forever. Surface the failure at warn
-      // (it was silently propagated before) and re-throw so the client sees the failure and can retry.
       try {
         await deps.jobs.enqueue(
           MEDIA_CHECKS_JOB,
@@ -330,15 +218,9 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
 
     async getMedia(id: string, _viewer: MediaOwner): Promise<MediaDTO> {
       const asset = await deps.repo.findById(id)
-      // Visibility: only "ready" media is public. Not-yet-ready (validating/held/rejected) media has no
-      // stored owner to authorize a preview against, so it is reported as not found (see file header).
       if (!asset || asset.status !== "ready") {
         throw AppError.notFound("Media not found")
       }
-      // SECURITY (0016): verification documents are SENSITIVE (ID scans / proof of residence) and must
-      // NEVER be served by the public media path, even once the worker promotes them to "ready". They are
-      // reachable only via the authenticated owner / admin signed-URL routes. 404 (not 403) keeps a
-      // verification media id indistinguishable from a non-existent one.
       if (asset.purpose === "verification") {
         throw AppError.notFound("Media not found")
       }

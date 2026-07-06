@@ -1,24 +1,3 @@
-/**
- * Postgres-backed JurisdictionContactsRepository (Phase 2): the production binding of the contacts
- * persistence seam. Raw postgres-js (`Sql`) so save-and-route runs as ONE transaction and so the routing
- * UPDATE/timeline INSERT are issued directly.
- *
- * SAVE & ROUTE (one transaction):
- *   1. upsert jurisdiction_contacts (per-category + default) + mirror the legacy contact_emails[] /
- *      report_form_url - via the shared upsertJurisdictionContacts (also used by discovery save-draft);
- *   2. set jurisdictions.contact_updated_at = now();
- *   3. mark the geoid's open discovery task(s) status = 'done';
- *   4. ROUTE pending pins (ONE set-based CTE statement): every waiting report in the geoid (non-deleted,
- *      status NOT IN ('rejected','resolved','acknowledged','in_progress')) -> status 'acknowledged', with
- *      one report_timeline 'acknowledged' row each noting the route. This is the "saving a contact routes
- *      the next pin" behavior: existing waiting pins flow immediately, and the NEXT pin auto-routes because
- *      the jurisdiction now has a contact (jurisdiction-service.needsDiscovery returns false).
- *
- * C1: save-and-route deliberately does NOT stamp outreach_state.last_outreach_at. The send window is
- * stamped only when a digest is actually sent (OutreachService.runForGeoid), so the immediate outreach the
- * service enqueues after this commit is not throttled-by-construction. Outreach enqueue + audit are the
- * service's / route's responsibility (Jobs + the operator userId).
- */
 
 import type { Sql } from "../../db/client.js"
 import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
@@ -37,18 +16,34 @@ import type {
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { likeContains } from "./like.js"
+import { DISCOVERY_CATEGORIES } from "./discovery-service.js"
 
-/** The 6 canonical categories (local; @civfix/shared exports the zod enum + type but no plain array). */
-const CATEGORIES: readonly ReportCategory[] = [
-  "trash",
-  "recycling",
-  "graffiti",
-  "hazard",
-  "water",
-  "other",
-]
+const DIRECTORY_FACET_TTL_MS = 30_000
 
-/** A directory row as selected (snake_case). */
+interface DirectoryFacetAggregate {
+  total: number
+  facets: { routed: number; unrouted: number }
+}
+
+let defaultFacetCache: { at: number; value: DirectoryFacetAggregate } | null = null
+
+function readDefaultFacetCache(): DirectoryFacetAggregate | null {
+  if (defaultFacetCache === null) return null
+  if (Date.now() - defaultFacetCache.at > DIRECTORY_FACET_TTL_MS) {
+    defaultFacetCache = null
+    return null
+  }
+  return defaultFacetCache.value
+}
+
+function writeDefaultFacetCache(value: DirectoryFacetAggregate): void {
+  defaultFacetCache = { at: Date.now(), value }
+}
+
+function invalidateDefaultFacetCache(): void {
+  defaultFacetCache = null
+}
+
 interface DirectoryRow {
   geoid: string
   name: string
@@ -63,7 +58,6 @@ interface DirectoryRow {
   bounced: boolean
   flagged_at: Date | null
   handle: string | null
-  // COUNT(*) comes back from postgres-js as a string; parsed in toRecord.
   reports_waiting: string
   cat_trash: string
   cat_recycling: string
@@ -77,7 +71,7 @@ interface DirectoryRow {
 function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
   const categoryContacts = (r.category_emails ?? [])
     .filter((c): c is { category: ReportCategory; email: string | null } =>
-      (CATEGORIES as readonly string[]).includes(c.category),
+      (DISCOVERY_CATEGORIES as readonly string[]).includes(c.category),
     )
     .map((c) => ({ category: c.category, email: c.email }))
   const waitingByCat: Record<ReportCategory, string> = {
@@ -90,7 +84,7 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
     other: r.cat_other,
   }
   const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
-  for (const c of CATEGORIES) {
+  for (const c of DISCOVERY_CATEGORIES) {
     const n = Number(waitingByCat[c] ?? "0")
     if (n > 0) perCategoryCounts[c] = n
   }
@@ -113,12 +107,6 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
   }
 }
 
-/**
- * Aggregate the WAITING reports whose jurisdiction did not resolve — jurisdiction_geoid IS NULL OR points
- * at a geoid no longer in the jurisdictions table (orphaned) — for the synthetic Unmapped directory row.
- * Uses the SAME "waiting" predicate as the directory's per-jurisdiction LATERAL (open + un-routed) so the
- * counts are consistent. The LEFT JOIN ... WHERE j.geoid IS NULL covers both the NULL and orphaned cases.
- */
 async function loadUnmappedAggregate(
   sql: Sql,
 ): Promise<{ total: number; perCategoryCounts: Partial<Record<ReportCategory, number>> }> {
@@ -161,7 +149,7 @@ async function loadUnmappedAggregate(
     other: r?.cat_other,
   }
   const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
-  for (const c of CATEGORIES) {
+  for (const c of DISCOVERY_CATEGORIES) {
     const n = Number(waitingByCat[c] ?? "0")
     if (n > 0) perCategoryCounts[c] = n
   }
@@ -184,7 +172,7 @@ export function makeDrizzleJurisdictionContactsRepository(
       input: SaveContactsInput,
       audit: { actorId: string | null },
     ): Promise<{ routedReports: number; taskResolved: boolean }> {
-      return sql.begin(async (tx) => {
+      const result = await sql.begin(async (tx) => {
         await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
         await tx`UPDATE jurisdictions SET contact_updated_at = now() WHERE geoid = ${geoid}`
 
@@ -196,11 +184,6 @@ export function makeDrizzleJurisdictionContactsRepository(
         `
         const taskResolved = tasks.length > 0
 
-        // M6: route every waiting pin in ONE set-based statement (the CTE flips them to 'acknowledged'
-        // RETURNING ids, the inner INSERT...SELECT writes one timeline row each) regardless of N, so a hot
-        // un-onboarded geoid with many waiting pins never holds the tx open across a JS loop. The literal
-        // 'Routed to jurisdiction contact' note text is composed in SQL by design (a single fixed string,
-        // not a per-row computation, so there is no service-side copy to thread in).
         const routed = await tx<{ id: string }[]>`
           WITH routed AS (
             UPDATE reports
@@ -217,13 +200,7 @@ export function makeDrizzleJurisdictionContactsRepository(
           SELECT id FROM routed
         `
 
-        // NOTE (C1): we deliberately do NOT stamp outreach_state.last_outreach_at here. Pre-stamping the
-        // send window at save time made the immediate outreach ALWAYS throttled (the enqueue + the worker
-        // both re-read this row and saw now()), so the first digest could never go out on save. The window
-        // is stamped ONLY when a digest is actually sent (OutreachService.runForGeoid after a successful
-        // send). With no stamp here, the service's enqueue fires and the worker sends, then stamps for real.
 
-        // Audit the save IN-TX (H4): "did + recorded" is atomic - a failed audit rolls back the routing.
         await writeAudit(tx, {
           actorId: audit.actorId,
           action: "discovery.contacts_saved",
@@ -239,6 +216,8 @@ export function makeDrizzleJurisdictionContactsRepository(
 
         return { routedReports: routed.length, taskResolved }
       })
+      invalidateDefaultFacetCache()
+      return result
     },
 
     async patch(
@@ -246,7 +225,7 @@ export function makeDrizzleJurisdictionContactsRepository(
       input: PatchContactsInput,
       audit: { actorId: string | null },
     ): Promise<boolean> {
-      return sql.begin(async (tx) => {
+      const result = await sql.begin(async (tx) => {
         const exists = await tx<{ geoid: string }[]>`
           SELECT geoid FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1
         `
@@ -269,7 +248,6 @@ export function makeDrizzleJurisdictionContactsRepository(
         if (input.notes !== undefined) {
           await tx`UPDATE jurisdictions SET notes = ${input.notes} WHERE geoid = ${geoid}`
         }
-        // Flag / unflag for operator review: set stamps flagged_at + reason; clear nulls both.
         if (input.flagged !== undefined) {
           if (input.flagged) {
             await tx`UPDATE jurisdictions SET flagged_at = now(), flag_reason = ${input.flagReason ?? null} WHERE geoid = ${geoid}`
@@ -277,12 +255,6 @@ export function makeDrizzleJurisdictionContactsRepository(
             await tx`UPDATE jurisdictions SET flagged_at = NULL, flag_reason = NULL WHERE geoid = ${geoid}`
           }
         }
-        // Set / clear the discussion @handle. The shared schema already normalized + shape-checked it; here
-        // we enforce the DB-dependent rules in-transaction so they're atomic with the write: an empty/null
-        // handle clears it; a non-empty handle must be case-insensitively unique across OTHER jurisdictions
-        // (the partial unique index jurisdictions_handle_lower_key is the ultimate guard - this pre-check
-        // turns a would-be 500 into a clean 409) and must not shadow an existing user @handle (discussion
-        // mentions resolve users too). The reserved-word check runs in the service before this.
         if (input.handle !== undefined) {
           const handle = input.handle
           if (handle === null || handle === "") {
@@ -305,7 +277,6 @@ export function makeDrizzleJurisdictionContactsRepository(
             await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
           }
         }
-        // Audit the patch IN-TX (H4), recording which fields changed.
         await writeAudit(tx, {
           actorId: audit.actorId,
           action: "jurisdiction.patched",
@@ -317,6 +288,8 @@ export function makeDrizzleJurisdictionContactsRepository(
         })
         return true
       })
+      invalidateDefaultFacetCache()
+      return result
     },
 
     async getOutreachState(
@@ -331,9 +304,6 @@ export function makeDrizzleJurisdictionContactsRepository(
     },
 
     async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
-      // Directory rows: jurisdictions with their default + per-category contacts, last-routed time (from
-      // the most recent acknowledged report_timeline in the geoid), and a bounce flag (from a bounced
-      // mail_events row for the geoid's thread). Offset-paged under an arbitrary sort (see pagination.ts).
       const search =
         args.q !== null
           ? (() => {
@@ -344,13 +314,6 @@ export function makeDrizzleJurisdictionContactsRepository(
       const offset = decodeOffsetCursor(args.cursor)
       const limit = clampLimit(args.limit)
 
-      // Routing-posture facet pushed into the WHERE (counts only matching rows under OFFSET/LIMIT). The
-      // SQL mirrors jurisdiction-directory-projection.directoryMethod EXACTLY so the filter and the
-      // projected `method` never disagree:
-      //   hasEmail = j.contact_emails has a non-blank entry OR a per-category jurisdiction_contacts row has
-      //              a non-blank email; 'email' = hasEmail; 'form' = !hasEmail AND a non-blank
-      //              report_form_url; 'none' = neither; 'routed' = hasEmail OR hasForm. (btrim(...) <> ''
-      //   mirrors the JS .trim() !== "".)
       const hasEmailExpr = sql`(
         EXISTS (
           SELECT 1 FROM unnest(COALESCE(j.contact_emails, '{}'::text[])) AS e(v)
@@ -374,14 +337,8 @@ export function makeDrizzleJurisdictionContactsRepository(
                 ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
                 : sql``
 
-      // Type facet: narrow to one jurisdiction layer (state/county/place/federal/tribal). A different
-      // dimension than the routing-posture methodFilter, so it joins the list WHERE *and* the facet
-      // aggregate below (the chips count within the selected type). Hits jurisdictions_layer_idx.
       const layerFilter = args.layer !== null ? sql`AND j.layer = ${args.layer}` : sql``
 
-      // Whole-table sort (the page is a window into it). population (default) + reports are DESC with a
-      // geoid tiebreak for a stable order across pages; name is A->Z. COALESCE so NULL population/no-reports
-      // sort last under DESC instead of first.
       const orderBy =
         args.sort === "reports"
           ? sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
@@ -470,34 +427,34 @@ export function makeDrizzleJurisdictionContactsRepository(
         LIMIT ${limit + 1}
       `
 
-      // Fetch limit+1 to detect a further page; the methodFilter is enforced in SQL (no JS post-filter, so
-      // OFFSET/LIMIT slice the matching set directly and a page is never short).
       const hasMore = rows.length > limit
       const page = (hasMore ? rows.slice(0, limit) : rows).map(toRecord)
       const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
 
-      // total + chip facets: computed ONLY on the first page (offset 0), scoped to the search + the active
-      // type (layer) but NOT the active routing filter (so the chips show how the typed search result
-      // splits routed-vs-unrouted within the selected type).
       let total: number | null = null
       let facets: { routed: number; unrouted: number } | null = null
       if (offset === 0) {
-        const agg = await sql<{ total: string; routed: string; unrouted: string }[]>`
-          SELECT
-            COUNT(*)::text AS total,
-            COUNT(*) FILTER (WHERE ${hasEmailExpr} OR ${hasFormExpr})::text AS routed,
-            COUNT(*) FILTER (WHERE NOT (${hasEmailExpr} OR ${hasFormExpr}))::text AS unrouted
-          FROM jurisdictions j
-          WHERE true ${search} ${layerFilter}
-        `
-        const a = agg[0]
-        total = Number(a?.total ?? "0")
-        facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
+        const isDefaultView = args.q === null && args.layer === null
+        const cached = isDefaultView ? readDefaultFacetCache() : null
+        if (cached !== null) {
+          total = cached.total
+          facets = cached.facets
+        } else {
+          const agg = await sql<{ total: string; routed: string; unrouted: string }[]>`
+            SELECT
+              COUNT(*)::text AS total,
+              COUNT(*) FILTER (WHERE ${hasEmailExpr} OR ${hasFormExpr})::text AS routed,
+              COUNT(*) FILTER (WHERE NOT (${hasEmailExpr} OR ${hasFormExpr}))::text AS unrouted
+            FROM jurisdictions j
+            WHERE true ${search} ${layerFilter}
+          `
+          const a = agg[0]
+          total = Number(a?.total ?? "0")
+          facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
+          if (isDefaultView) writeDefaultFacetCache({ total, facets })
+        }
       }
 
-      // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page so reports whose
-      // jurisdiction did not resolve (NULL or orphaned geoid) are visible + triageable. Suppressed when
-      // there are none waiting. (Not paged; it pins to the top of the first page.)
       if (shouldIncludeUnmapped(args)) {
         const unmapped = await loadUnmappedAggregate(sql)
         if (unmapped.total > 0) {
@@ -513,9 +470,6 @@ export function makeDrizzleJurisdictionContactsRepository(
     },
 
     async getGeometry(geoid: string): Promise<JurisdictionGeometryRecord | null> {
-      // Simplify the stored MultiPolygon for the wire (a raw county/state boundary is large); 0.003deg
-      // (~300m) preserves shape for "is this in the right place?" verification at a fraction of the bytes.
-      // ST_PointOnSurface gives an interior label point (never outside the polygon, unlike ST_Centroid).
       const rows = await sql<
         {
           geoid: string
@@ -558,8 +512,6 @@ export function makeDrizzleJurisdictionContactsRepository(
     },
 
     async markContactBounced(email: string): Promise<void> {
-      // Stamp the bounce marker on every contact row carrying this address (the directory then surfaces
-      // 'bounced'). No-op when no row matches (the address is not on file as a contact).
       await sql`
         UPDATE jurisdiction_contacts
         SET bounced_at = now()

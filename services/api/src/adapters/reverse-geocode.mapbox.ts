@@ -18,17 +18,12 @@ interface MapboxReverseProps {
 }
 
 export interface MapboxReverseOptions {
-  /** Mapbox access token (required). */
   token: string
-  /** Override the reverse base URL. */
   url?: string
-  /** Geocode timeout in ms (default 4000). */
   timeoutMs?: number
-  /** Injected fetch (tests). Defaults to the global fetch. */
   fetchImpl?: typeof fetch
 }
 
-/** Normalize a Mapbox v6 reverse feature to "<addr>, City, ST" (US country dropped), or null. */
 export function formatMapboxReverse(p: MapboxReverseProps): string | null {
   const ctx = p.context ?? {}
   const primary = p.name || ctx.address?.name || ctx.street?.name || ctx.place?.name || ""
@@ -43,10 +38,10 @@ export function formatMapboxReverse(p: MapboxReverseProps): string | null {
   return [primary, ...tail].join(", ")
 }
 
-/**
- * Street-level reverse geocoder via Mapbox v6. Never throws / never blocks: any failure -> null.
- * Mirrors the Photon adapter's SSRF + timeout posture (redirect:"error", AbortController).
- */
+export function redactMapboxToken(url: string): string {
+  return url.replace(/([?&]access_token=)[^&#\s]*/gi, "$1[redacted]")
+}
+
 export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeocode {
   const baseUrl = opts.url ?? MAPBOX_REVERSE_URL
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -66,7 +61,6 @@ export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeo
       const res = await doFetch(url.toString(), {
         signal: controller.signal,
         headers: { Accept: "application/json" },
-        // A compromised/MITM endpoint must not be able to 30x us into an internal address (SSRF).
         redirect: "error",
       })
       if (!res.ok) return null

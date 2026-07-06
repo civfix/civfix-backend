@@ -1,6 +1,6 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, DELETED_USER_LABEL } from "@civfix/shared"
 import type { Role, SocialLinks } from "@civfix/shared"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 
@@ -265,6 +265,11 @@ export class InMemoryUserStore implements UserStore {
       ...row,
       deletedAt: row.deletedAt ?? new Date(),
       allowDirectMessages: false,
+      email: null,
+      emailVerified: false,
+      displayName: DELETED_USER_LABEL,
+      handle: generatePlaceholderHandle(id),
+      avatarUrl: null,
     }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })

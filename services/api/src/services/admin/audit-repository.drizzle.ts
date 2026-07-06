@@ -1,17 +1,3 @@
-/**
- * Postgres-backed AuditRepository (Phase 2): the read side of audit_log for the operator audit view (#67).
- *
- * One raw SQL read (LEFT JOIN users for the actor display name) paged newest-first by
- * (created_at DESC, id DESC) with the shared "<iso>|<id>" keyset cursor, plus the optional actor / action
- * / target filters. Written against the raw postgres-js tag (`Sql`, from container.getDb().sql) like the
- * other admin repos so the jsonb `meta` column round-trips through postgres.js's default deserializer.
- *
- * Filters:
- *   - actor:  matches actor_id EXACTLY (a uuid) OR the joined user display_name (case-insensitive
- *             substring), so an operator can filter by either an id or a name fragment.
- *   - action: case-insensitive substring of the dotted action (e.g. "report." or "banned").
- *   - target: case-insensitive substring of the target reference (e.g. "report:" or a specific uuid).
- */
 
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
@@ -19,7 +5,6 @@ import { isUuid } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import { likeContains } from "./like.js"
 
-/** An audit_log row as selected back (snake_case columns + the joined actor name). */
 interface AuditRowSelect {
   id: string
   actor_id: string | null
@@ -42,7 +27,6 @@ function toRecord(r: AuditRowSelect): AuditRecord {
   }
 }
 
-/** Construct the production AuditRepository over the raw postgres-js tag (`container.getDb().sql`). */
 export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
   return {
     async list(
@@ -54,7 +38,6 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
         anchor !== null
           ? sql`AND (a.created_at, a.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
           : sql``
-      // actor matches the exact actor_id (when it parses as a uuid) OR a substring of the display name.
       const actorFilter =
         args.actor !== null
           ? (() => {

@@ -7,7 +7,6 @@ import type {
 } from "./cleanup-repository.types.js"
 import type { CleanupStatus, CleanupType, EventKind } from "@civfix/shared"
 
-// Shape of a cleanup row as selected back (geom decoded, organizer joined, going counted).
 export interface CleanupRowSelect {
   id: string
   organizer_user_id: string
@@ -26,13 +25,13 @@ export interface CleanupRowSelect {
   created_at: Date
   going: number
   dist: number | null
+  knn?: number | null
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
   org_verified: boolean
 }
 
-// Shape of an attendee row selected for the roster (person fields + the viewer's follow flag).
 export interface AttendeeRowSelect {
   id: string
   display_name: string
@@ -66,17 +65,11 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     referenceCode: r.reference_code,
     createdAt: r.created_at,
     going: r.going,
-    // postgres returns numeric distance as a string; normalize to number | null.
     dist: r.dist === null ? null : Number(r.dist),
     organizer,
   }
 }
 
-// The SELECT list shared by every cleanup read. `near` toggles a distance expression (metres via the
-// geography cast); when absent, dist is a literal NULL so the column shape stays stable.
-//
-// INVARIANT: every query selecting these columns MUST also include `goingJoin(sql)` so `g.going`
-// resolves; COALESCE keeps cleanups with zero members at 0 (the LEFT JOIN yields NULL for them).
 export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
   const distExpr =
     near !== null
@@ -110,21 +103,12 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
   `
 }
 
-// Pre-aggregated member-count join used by every query that selects `cleanupColumns`. Replaces a
-// correlated per-row count subquery: the member count is grouped once and joined by cleanup_id, so a list
-// page collapses N correlated counts into one aggregate scan.
 export function goingJoin(sql: Queryable) {
-  return sql`LEFT JOIN (
-    SELECT cleanup_id, count(*)::int AS going FROM cleanup_members GROUP BY cleanup_id
-  ) g ON g.cleanup_id = c.id`
+  return sql`LEFT JOIN LATERAL (
+    SELECT count(*)::int AS going FROM cleanup_members m WHERE m.cleanup_id = c.id
+  ) g ON true`
 }
 
-// Time/status predicate fragment:
-//   - "upcoming" / "attending": scheduled_at >= now() AND status <> 'cancelled' (both future windows;
-//     "attending" adds a separate membership filter via buildMembershipFilter).
-//   - "past":     scheduled_at <  now()
-//   - omitted:    no time filter, but still excludes 'cancelled'.
-// Mirrors the GET /map/cleanups predicate so the list + map feeds agree.
 export function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending" | undefined) {
   if (when === "upcoming" || when === "attending")
     return sql`AND c.scheduled_at >= now() AND c.status <> 'cancelled'`
@@ -132,9 +116,6 @@ export function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending
   return sql`AND c.status <> 'cancelled'`
 }
 
-// Viewer-membership predicate for `when: "attending"`: keep only events the viewer is a member of. Empty
-// for every other `when`, and matches nothing when there is no viewer (a null user id makes the EXISTS
-// false), so an anonymous "attending" list comes back empty.
 export function buildMembershipFilter(
   sql: Sql,
   when: string | undefined,

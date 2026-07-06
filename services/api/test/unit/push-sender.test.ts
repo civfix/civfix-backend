@@ -3,26 +3,15 @@ import type { Db } from "../../src/db/client.js"
 import {
   MultiPushSender,
   groupByPlatform,
+  isSafePushEndpoint,
+  resolveSafePushTarget,
   type ActiveToken,
   type PlatformDispatcher,
   type PushDispatchers,
 } from "../../src/adapters/push-sender.js"
 import type { PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 
-/**
- * Offline unit tests for the REAL MultiPushSender's token-SELECTION + platform-ROUTING + invalid-token
- * PRUNING logic, with the vendor dispatchers INJECTED (so no node-apn/firebase-admin/web-push call is
- * made). A tiny fake Db mimics the Drizzle query-builder chain used by the adapter:
- *   - select({...}).from(table).where(cond)  -> resolves to the seeded active-token rows
- *   - update(table).set({...}).where(cond)   -> captures the prune (revoke) call
- *
- * The real per-platform dispatchers (which DO touch the SDKs) are exercised only when creds + the flag are
- * set in a real deployment; their SDK wiring lives behind lazy dynamic import in the adapter. Here we prove
- * the routing: ios -> the ios dispatcher, android -> fcm, web -> webpush; an absent dispatcher (no creds)
- * is skipped; and the tokens a dispatcher reports invalid are pruned.
- */
 
-/** A recording dispatcher: captures what it was asked to send and reports a fixed invalid set. */
 function recordingDispatcher(invalid: string[] = []): {
   calls: Array<{ tokens: string[]; payload: PushPayload }>
   fn: PlatformDispatcher
@@ -35,29 +24,22 @@ function recordingDispatcher(invalid: string[] = []): {
   return { calls, fn }
 }
 
-/** A row as the adapter's SELECT projects it. */
 interface TokenRow {
   userId: string
   platform: PushPlatform
   token: string
 }
 
-/** Capture of a prune update. */
 interface PruneCapture {
   set?: { revokedAt?: Date }
 }
 
-/**
- * Build a fake Db that returns `rows` for the select chain and records the update (prune) chain. Only the
- * methods the adapter actually calls are implemented.
- */
 function fakeDb(rows: TokenRow[], prune: PruneCapture): Db {
   const selectChain = {
     from() {
       return this
     },
     where() {
-      // Resolve to the seeded rows when awaited.
       return Promise.resolve(rows)
     },
   }
@@ -83,15 +65,12 @@ function fakeDb(rows: TokenRow[], prune: PruneCapture): Db {
 
 const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }
 
-// ---------------------------------------------------------------------------
-// Pure: groupByPlatform
-// ---------------------------------------------------------------------------
 
 describe("groupByPlatform", () => {
   it("groups tokens by platform and de-duplicates within a platform", () => {
     const tokens: ActiveToken[] = [
       { userId: "u", platform: "ios", token: "a" },
-      { userId: "u", platform: "ios", token: "a" }, // dup
+      { userId: "u", platform: "ios", token: "a" },
       { userId: "u", platform: "android", token: "b" },
       { userId: "u", platform: "web", token: "c" },
     ]
@@ -103,9 +82,6 @@ describe("groupByPlatform", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// send: platform routing
-// ---------------------------------------------------------------------------
 
 describe("MultiPushSender.send routing", () => {
   it("routes each platform's tokens to the matching dispatcher (ios->ios, android->fcm, web->webpush)", async () => {
@@ -128,7 +104,6 @@ describe("MultiPushSender.send routing", () => {
     expect(ios.calls[0]!.payload).toEqual(PAYLOAD)
     expect(android.calls[0]!.tokens).toEqual(["and-tok"])
     expect(web.calls[0]!.tokens).toEqual(["web-tok"])
-    // Nothing reported invalid -> no prune.
     expect(prune.set).toBeUndefined()
   })
 
@@ -138,7 +113,6 @@ describe("MultiPushSender.send routing", () => {
       { userId: "u", platform: "web", token: "web-tok" },
     ]
     const web = recordingDispatcher()
-    // No ios dispatcher -> ios creds absent -> ios is skipped, web still delivered.
     const dispatchers: PushDispatchers = { web: web.fn }
     const prune: PruneCapture = {}
 
@@ -147,7 +121,6 @@ describe("MultiPushSender.send routing", () => {
 
     expect(web.calls).toHaveLength(1)
     expect(web.calls[0]!.tokens).toEqual(["web-tok"])
-    // The adapter did not throw; ios was simply skipped.
   })
 
   it("does nothing when the user has no active tokens", async () => {
@@ -162,7 +135,6 @@ describe("MultiPushSender.send routing", () => {
 
   it("prunes (revokes) tokens a dispatcher reports invalid", async () => {
     const rows: TokenRow[] = [{ userId: "u", platform: "ios", token: "dead-tok" }]
-    // The ios dispatcher reports the token invalid.
     const ios = recordingDispatcher(["dead-tok"])
     const dispatchers: PushDispatchers = { ios: ios.fn }
     const prune: PruneCapture = {}
@@ -170,7 +142,6 @@ describe("MultiPushSender.send routing", () => {
     const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
     await sender.send("u", PAYLOAD)
 
-    // The prune update ran (revoked_at set to a Date).
     expect(prune.set).toBeDefined()
     expect(prune.set!.revokedAt).toBeInstanceOf(Date)
   })
@@ -186,9 +157,7 @@ describe("MultiPushSender.send routing", () => {
     const prune: PruneCapture = {}
 
     const sender = new MultiPushSender({ db: fakeDb(rows, prune), config: {}, dispatchers })
-    // Must resolve (not reject) even though ios threw.
     await expect(sender.send("u", PAYLOAD)).resolves.toBeUndefined()
-    // Web still delivered.
     expect(web.calls).toHaveLength(1)
   })
 })
@@ -208,7 +177,6 @@ describe("MultiPushSender.sendMany", () => {
     expect(ios.calls).toHaveLength(1)
     expect(ios.calls[0]!.tokens.sort()).toEqual(["t1", "t2"])
 
-    // Empty list short-circuits (no dispatcher call).
     ios.calls.length = 0
     await sender.sendMany([], PAYLOAD)
     expect(ios.calls).toHaveLength(0)
@@ -223,10 +191,6 @@ describe("MultiPushSender.registerToken", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// send: Expo-token routing (issue #71). The mobile app registers ExponentPushToken[...] tokens, which
-// can ONLY be delivered through the Expo push service - never the raw APNs/FCM dispatchers.
-// ---------------------------------------------------------------------------
 
 describe("MultiPushSender.send Expo routing", () => {
   const expoTok = "ExponentPushToken[aaa]"
@@ -248,7 +212,6 @@ describe("MultiPushSender.send Expo routing", () => {
 
     expect(expo.calls).toHaveLength(1)
     expect(expo.calls[0]!.tokens.slice().sort()).toEqual([expoTok, expoTok2].slice().sort())
-    // The raw APNs/FCM dispatchers must NOT receive Expo tokens.
     expect(ios.calls).toHaveLength(0)
     expect(android.calls).toHaveLength(0)
   })
@@ -282,4 +245,47 @@ describe("MultiPushSender.send Expo routing", () => {
     expect(prune.set).toBeDefined()
     expect(prune.set!.revokedAt).toBeInstanceOf(Date)
   })
+})
+
+describe("isSafePushEndpoint (SSRF guard, IP-literal paths)", () => {
+  const UNSAFE = [
+    "https://[::ffff:127.0.0.1]/x",
+    "https://[::ffff:169.254.169.254]/latest/meta-data/",
+    "https://[::ffff:10.0.0.5]/x",
+    "https://[::ffff:192.168.1.1]/x",
+    "https://[::ffff:7f00:1]/x",
+    "https://[::ffff:a9fe:a9fe]/x",
+    "https://[::1]/x",
+    "https://[::]/x",
+    "https://[64:ff9b::7f00:1]/x",
+    "https://[64:ff9b::a9fe:a9fe]/x",
+    "https://[fe80::1]/x",
+    "https://[fd00::1]/x",
+    "https://[fc00::1]/x",
+    "https://127.0.0.1/x",
+    "https://169.254.169.254/x",
+    "https://10.1.2.3/x",
+    "https://192.168.0.1/x",
+    "https://100.64.0.1/x",
+    "http://[2606:4700:4700::1111]/x",
+    "https://[::a.b.c.d]/x",
+  ]
+  const SAFE = [
+    "https://updates.push.services.mozilla.com/wpush/v2/abc",
+    "https://8.8.8.8/x",
+    "https://[2606:4700:4700::1111]/x",
+    "https://[2001:4860:4860::8888]/x",
+  ]
+
+  for (const e of UNSAFE) {
+    it(`rejects ${e}`, async () => {
+      expect(await isSafePushEndpoint(e)).toBe(false)
+      expect(await resolveSafePushTarget(e)).toBeNull()
+    })
+  }
+  for (const e of SAFE.filter((e) => !e.includes("mozilla"))) {
+    it(`accepts literal ${e}`, async () => {
+      expect(await isSafePushEndpoint(e)).toBe(true)
+    })
+  }
 })

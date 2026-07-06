@@ -14,16 +14,12 @@ import {
 } from "../../src/services/admin/inbound-processor.js"
 import type { Container } from "../../src/di.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
+import {
+  parseMessageIdList,
+  MESSAGE_ID_LIST_CAP,
+} from "../../src/services/admin/inbound-thread-correlation.js"
 
-/**
- * Unit tests for processInboundObject — the shared core of the webhook + sweep. Verifies routing
- * (reply -> mail_threads; no-token -> inbound_emails), idempotency on both paths, parse-failure parking,
- * the missing-object short-circuit, a consumed object's delete, AND the issue-#40 reply/bounce/fallback
- * side-effects (a jurisdiction reply advances the report + notifies the reporter; a no-token reply still
- * correlates by In-Reply-To; a DSN bounce flags the contact + records a 'bounced' event).
- */
 
-/** A 24-hex thread token (the minted shape the real + fake inbound adapters now SHAPE-VALIDATE). */
 const TOKEN = "0123456789abcdef01234567"
 
 function rfc822(opts: {
@@ -54,12 +50,6 @@ interface Ctx {
   db: FakeSqlControl
 }
 
-/**
- * Build a test context. `sqlHandlers` script the raw-SQL repos the inbound side-effects reach through
- * `container.getDb().sql` (the admin report repo + the bounce contact UPDATE) — see test/helpers/fake-sql.
- * The container exposes `getDb()` + `jobs` (for the bounce discovery re-enqueue) on top of the seams the
- * routing tests already use.
- */
 function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlHandler[] = []): Ctx {
   const storage = new FakeStorage()
   const mailRepo = new InMemoryMailRepository()
@@ -130,7 +120,7 @@ describe("processInboundObject: idempotency", () => {
     const key = `${INBOUND_PENDING_PREFIX}c.eml`
     await put(c, key, eml)
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
-    await put(c, key, eml) // re-deliver the same object
+    await put(c, key, eml)
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("replay")
     expect(c.mailRepo.messages).toHaveLength(1)
   })
@@ -174,8 +164,6 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     const reportId = "report-1"
     const reporterId = "user-1"
     const c = ctx()
-    // Seed the report (published, claimed reporter) into the INJECTED in-memory report repo so the
-    // side-effects run against it — no fake-sql for the report path.
     c.adminReportRepo.seedReport({
       id: reportId,
       status: "published",
@@ -188,7 +176,6 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
         joinedAt: new Date("2025-01-01T00:00:00Z"),
       },
     })
-    // A per-report outreach thread (report_id set) on a 24-hex token.
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
 
     const key = `${INBOUND_PENDING_PREFIX}reply.eml`
@@ -206,19 +193,15 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     const r = await processInboundObject(c.container, key, c.deps)
     expect(r.outcome).toBe("threaded")
 
-    // The reply was persisted on the thread, and the thread flipped to 'replied' (memory repo).
     expect(c.mailRepo.messages).toHaveLength(1)
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
 
-    // The report was advanced to in_progress.
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
-    // A timeline row carrying the reply preview note was written.
     expect(
       (c.adminReportRepo.timeline.get(reportId) ?? []).some((t) =>
         (t.note ?? "").includes("Jurisdiction replied"),
       ),
     ).toBe(true)
-    // The reporter was notified (bound to the reporter's user id + the report link).
     expect(
       c.adminReportRepo.notifications.some(
         (n) => n.userId === reporterId && n.link === `/reports/${reportId}`,
@@ -236,19 +219,16 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "Done." }))
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
 
-    // Status unchanged (resolved is past acknowledged) — only a system 'reply' timeline row is added.
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("resolved")
     expect(
       (c.adminReportRepo.timeline.get(reportId) ?? []).some((t) =>
         (t.note ?? "").includes("Jurisdiction replied"),
       ),
     ).toBe(true)
-    // No reporter on the report -> no notification.
     expect(c.adminReportRepo.notifications).toHaveLength(0)
   })
 
   it("a side-effect failure (report repo throws) never breaks routing / the delete", async () => {
-    // The injected report repo's getReport rejects: onJurisdictionReply throws internally and is swallowed.
     const c = ctx()
     c.adminReportRepo.getReport = () => Promise.reject(new Error("db down"))
     c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-x", status: "sent" })
@@ -256,7 +236,7 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "hi" }))
     const r = await processInboundObject(c.container, key, c.deps)
     expect(r.outcome).toBe("threaded")
-    expect(c.storage.get(key)).toBeNull() // the pending object was still consumed
+    expect(c.storage.get(key)).toBeNull()
   })
 
   it("persists the FULL reply body + kind='reply' on the timeline (D13), not just the preview", async () => {
@@ -264,7 +244,6 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     const c = ctx()
     c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
     c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
-    // Spy on the repo's setStatus (the live-report path) to capture the kind + full body it persists.
     const calls: { kind?: string; body?: string | null; note: string }[] = []
     const orig = c.adminReportRepo.setStatus.bind(c.adminReportRepo)
     c.adminReportRepo.setStatus = (id, input) => {
@@ -278,8 +257,8 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
 
     expect(calls).toHaveLength(1)
     expect(calls[0]?.kind).toBe("reply")
-    expect(calls[0]?.body).toBe(fullBody) // full untruncated text
-    expect(calls[0]?.note).toContain("Jurisdiction replied") // the short preview note stays
+    expect(calls[0]?.body).toBe(fullBody)
+    expect(calls[0]?.note).toContain("Jurisdiction replied")
   })
 })
 
@@ -287,7 +266,6 @@ describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () =
   it("writes a 'city_reply' cleanup_timeline row (actor null, full body) for an event thread", async () => {
     const cleanupId = "cleanup-evt-1"
     const c = ctx()
-    // An event thread (cleanup_id set, NO report_id) on a 24-hex token.
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
     const fullBody = "Yes, we can supply 20 bags and gloves; pick them up at the depot Friday morning."
     const key = `${INBOUND_PENDING_PREFIX}evt-reply.eml`
@@ -295,7 +273,6 @@ describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () =
 
     const r = await processInboundObject(c.container, key, c.deps)
     expect(r.outcome).toBe("threaded")
-    // Threaded onto the event thread + flipped to 'replied'; NO report side-effects ran.
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
 
     const row = c.cleanupRepo.timeline.find((t) => t.cleanupId === cleanupId && t.kind === "city_reply")
@@ -308,7 +285,6 @@ describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () =
 describe("processInboundObject: In-Reply-To fallback (#40)", () => {
   it("correlates a NO-token reply to its thread via In-Reply-To matching an OUT message_id", async () => {
     const c = ctx()
-    // A per-report thread whose OUT message carries the RFC822 Message-ID we will reply to.
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, status: "sent" })
     c.mailRepo.seedMessage({
       threadId: thread.id,
@@ -317,7 +293,6 @@ describe("processInboundObject: In-Reply-To fallback (#40)", () => {
     })
 
     const key = `${INBOUND_PENDING_PREFIX}fallback.eml`
-    // No reply+{token}@ recipient; only an In-Reply-To pointing at our OUT message.
     await put(
       c,
       key,
@@ -330,7 +305,6 @@ describe("processInboundObject: In-Reply-To fallback (#40)", () => {
     )
     const r = await processInboundObject(c.container, key, c.deps)
     expect(r.outcome).toBe("threaded")
-    // The IN reply landed on the SAME thread (not the Inbox).
     expect(c.inboundRepo.rows).toHaveLength(0)
     expect(c.mailRepo.messagesOf(thread.id).some((m) => m.direction === "in")).toBe(true)
   })
@@ -358,9 +332,9 @@ describe("processInboundObject: DSN/bounce handling (#40)", () => {
   it("flags the contact (bounced_at), records a 'bounced' event, flips the thread, and STILL files the bounce in the Inbox", async () => {
     const failed = "clerk@lacity.gov"
     const geoid = "0644000"
-    // The bounce correlates to an OUT thread by the original Message-ID; the contact lookup yields a geoid.
     const c = ctx(new FakeInboundMail(), [
       { match: /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i, rows: [] },
+      { match: /FROM\s+mail_messages/i, rows: [{ ok: true }] },
       { match: /SELECT\s+geoid\s+FROM\s+jurisdiction_contacts/i, rows: [{ geoid }] },
     ])
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, jurisdictionGeoid: geoid, status: "sent" })
@@ -371,8 +345,6 @@ describe("processInboundObject: DSN/bounce handling (#40)", () => {
     })
 
     const key = `${INBOUND_PENDING_PREFIX}bounce.eml`
-    // A DSN: from a mailer-daemon, with an X-Failed-Recipients header + the original Message-ID in the body.
-    // Its own Message-ID is fixed so a re-delivery (below) dedups to the same row.
     const dsn = rfc822({
       from: "mailer-daemon@lacity.gov",
       to: "outreach@civfix.org",
@@ -383,38 +355,56 @@ describe("processInboundObject: DSN/bounce handling (#40)", () => {
     await put(c, key, dsn)
 
     const r = await processInboundObject(c.container, key, c.deps)
-    // The bounce is STILL filed in the Inbox for operator visibility.
     expect(r.outcome).toBe("inbox")
     expect(c.inboundRepo.rows).toHaveLength(1)
     expect(c.storage.get(key)).toBeNull()
 
-    // A 'bounced' event was recorded on the correlated thread + the thread flipped to 'bounced'.
     expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(true)
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("bounced")
 
-    // The contact was flagged (UPDATE … bounced_at) bound to the failed recipient.
     const flag = c.db.statements.find((s) => /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql))
     expect(flag).toBeDefined()
     expect(flag?.values).toContain(failed)
 
-    // Discovery was re-opened: the jurisdiction.discovery job was enqueued for the contact's geoid.
     const enq = c.jobs.jobsFor("jurisdiction.discovery")
     expect(enq).toHaveLength(1)
     expect(enq[0]?.data).toMatchObject({ geoid })
 
-    // IDEMPOTENCY: a re-delivered DSN (same bytes -> same Message-ID, e.g. webhook+sweep race / MTA retry)
-    // arriving under a fresh pending key must NOT double-fire the bounce side-effects. routeInbox dedups on
-    // message_id ('replay'), and handleBounce runs ONLY when routeInbox actually inserted ('inbox').
     const key2 = `${INBOUND_PENDING_PREFIX}bounce-redeliver.eml`
     await put(c, key2, dsn)
     const r2 = await processInboundObject(c.container, key2, c.deps)
     expect(r2.outcome).toBe("replay")
-    // No second 'bounced' event, no second contact UPDATE, no second discovery enqueue.
     expect(c.mailRepo.events.filter((e) => e.type === "bounced")).toHaveLength(1)
     expect(
       c.db.statements.filter((s) => /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql)),
     ).toHaveLength(1)
     expect(c.jobs.jobsFor("jurisdiction.discovery")).toHaveLength(1)
+  })
+
+  it("does NOT mutate directory state for a spoofed DSN with no correlated outbound thread", async () => {
+    const c = ctx(new FakeInboundMail(), [
+      { match: /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i, rows: [] },
+      { match: /FROM\s+mail_messages/i, rows: [{ ok: true }] },
+      { match: /SELECT\s+geoid\s+FROM\s+jurisdiction_contacts/i, rows: [{ geoid: "0644000" }] },
+    ])
+    const key = `${INBOUND_PENDING_PREFIX}spoof.eml`
+    const dsn = rfc822({
+      from: "mailer-daemon@evil.example",
+      to: "outreach@civfix.org",
+      messageId: "<spoof-1@evil.example>",
+      headers: { "X-Failed-Recipients": "publicworks@city.gov" },
+      body: "Original-Message-ID: <out-never-sent@civfix.org>",
+    })
+    await put(c, key, dsn)
+
+    const r = await processInboundObject(c.container, key, c.deps)
+    expect(r.outcome).toBe("inbox")
+    expect(c.inboundRepo.rows).toHaveLength(1)
+    expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(false)
+    expect(
+      c.db.statements.some((s) => /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql)),
+    ).toBe(false)
+    expect(c.jobs.jobsFor("jurisdiction.discovery")).toHaveLength(0)
   })
 })
 
@@ -451,5 +441,23 @@ describe("resolveMessageId", () => {
     const noId2 = await parser.parse(rfc822({ from: "a@b", to: "c@d", body: "same" }))
     expect(resolveMessageId(noId)).toMatch(/^derived:[0-9a-f]{64}$/)
     expect(resolveMessageId(noId)).toBe(resolveMessageId(noId2))
+  })
+})
+
+describe("parseMessageIdList", () => {
+  it("caps an oversized References header to MESSAGE_ID_LIST_CAP ids", () => {
+    const header = Array.from({ length: 100 }, (_, i) => `<id-${i}@host>`).join(" ")
+    const ids = parseMessageIdList(header)
+    expect(ids).toHaveLength(MESSAGE_ID_LIST_CAP)
+    expect(ids[0]).toBe("<id-0@host>")
+  })
+
+  it("returns all ids when under the cap", () => {
+    expect(parseMessageIdList("<a@x> <b@y>")).toEqual(["<a@x>", "<b@y>"])
+  })
+
+  it("caps the bare @-token fallback too", () => {
+    const header = Array.from({ length: 50 }, (_, i) => `id${i}@host`).join(" ")
+    expect(parseMessageIdList(header)).toHaveLength(MESSAGE_ID_LIST_CAP)
   })
 })

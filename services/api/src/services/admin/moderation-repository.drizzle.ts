@@ -360,6 +360,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             LIMIT 1
           `
           if (existing[0]) return null
+          return insertModerationItem(tx, input, { dedupeOpen: true })
         }
         return insertModerationItem(tx, input)
       })
@@ -584,10 +585,20 @@ async function incrementUserModeration(tx: Queryable, userId: string): Promise<v
       updated_at = now()`
 }
 
+export function insertModerationItem(
+  tx: Queryable,
+  input: CreateModerationItemInput,
+): Promise<string>
+export function insertModerationItem(
+  tx: Queryable,
+  input: CreateModerationItemInput,
+  opts: { dedupeOpen: true },
+): Promise<string | null>
 export async function insertModerationItem(
   tx: Queryable,
   input: CreateModerationItemInput,
-): Promise<string> {
+  opts: { dedupeOpen?: boolean } = {},
+): Promise<string | null> {
   const meta: Record<string, unknown> = {}
   if (input.reporter != null) meta.reporter = input.reporter
   if (input.desc != null) meta.desc = input.desc
@@ -598,6 +609,7 @@ export async function insertModerationItem(
   }
   if (userSnapshot != null) meta.user = userSnapshot
 
+  const onConflict: SqlFragment = opts.dedupeOpen ? tx`ON CONFLICT DO NOTHING` : tx``
   const rows = await tx<{ id: string }[]>`
     INSERT INTO moderation_items (
       kind, subject_type, subject_id, flag, reason, category, place, priority, auto_action,
@@ -617,9 +629,13 @@ export async function insertModerationItem(
       ${"open"},
       ${tx.json(meta as Parameters<typeof tx.json>[0])}
     )
+    ${onConflict}
     RETURNING id
   `
   const id = rows[0]?.id
-  if (id === undefined) throw new Error("insertModerationItem: insert returned no row")
+  if (id === undefined) {
+    if (opts.dedupeOpen) return null
+    throw new Error("insertModerationItem: insert returned no row")
+  }
   return id
 }

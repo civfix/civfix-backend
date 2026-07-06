@@ -3,17 +3,10 @@ import { makeExpoDispatcher, isExpoPushToken } from "../../src/adapters/push-exp
 import type { PushLogger } from "../../src/adapters/push-sender.js"
 import type { PushPayload } from "@civfix/shared/interfaces"
 
-/**
- * Offline unit tests for the Expo push dispatcher (issue #71). The vendor call is a plain HTTPS POST, so
- * `fetch` is injected/stubbed - no network. We prove: message shaping (title/body/data with link merged in
- * + auth header), DeviceNotRegistered -> invalid (for pruning), >100 tokens chunk into multiple requests,
- * and that a non-OK/throwing transport degrades to a no-op rather than throwing to the caller.
- */
 
 const logger: PushLogger = { warn: () => {}, error: () => {} }
 const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }
 
-/** A small fetch stub returning the given Expo response body as 200 JSON, recording each call. */
 function jsonFetch(body: unknown): { fetchImpl: typeof fetch; calls: Array<{ url: string; init: RequestInit }> } {
   const calls: Array<{ url: string; init: RequestInit }> = []
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
@@ -88,6 +81,17 @@ describe("makeExpoDispatcher", () => {
     await expect(
       makeExpoDispatcher({ fetchImpl: http500 }, logger)(["ExponentPushToken[a]"], PAYLOAD),
     ).resolves.toEqual({ invalidTokens: [] })
+  })
+
+  it("passes an AbortSignal to fetch (per-chunk timeout wiring)", async () => {
+    let init: RequestInit | undefined
+    const fetchImpl = vi.fn(async (_url: string, i: RequestInit) => {
+      init = i
+      return new Response(JSON.stringify({ data: [{ status: "ok" }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    const dispatch = makeExpoDispatcher({ fetchImpl }, logger)
+    await dispatch(["ExponentPushToken[a]"], PAYLOAD)
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
   })
 
   it("chunks more than 100 tokens into multiple requests", async () => {

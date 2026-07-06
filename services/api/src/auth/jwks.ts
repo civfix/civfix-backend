@@ -1,61 +1,28 @@
-/**
- * ID-token verification against a provider JWKS (Apple / Google).
- *
- * Verifying a third-party ID token means: fetch the provider's JSON Web Key Set, pick the key whose
- * `kid` matches the token header, check the RS256 signature over `header.payload`, then validate the
- * standard claims (iss, aud, exp, and nbf when present). All of that lives here so the OAuth service
- * stays free of crypto/network detail and so tests can inject a stub `JwksVerifier`.
- *
- * The JWKS fetch is the only network call; results are cached in-process with a short TTL to avoid
- * hammering the provider. WebCrypto (`crypto.subtle`) does the signature check, importing the JWK
- * directly, so there is no third-party JWT library in the dependency graph.
- */
 
 import { createHash } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { constantTimeStringEqual } from "./crypto.js"
 
-/** The verified, trusted claims a caller may rely on after a successful verify. */
 export interface VerifiedIdToken {
-  /** Stable provider-scoped subject identifier (the account id). */
   sub: string
-  /** Verified email, when the provider asserted one. */
   email: string | null
-  /** Whether the provider marked the email verified (Apple/Google send this as a bool or string). */
   emailVerified: boolean
-  /** Display name, when present (Google `name`). */
   name: string | null
-  /** Profile photo URL, when present (Google `picture`; Apple never sends one). */
   picture: string | null
 }
 
 export interface VerifyParams {
-  /** Provider JWKS endpoint. */
   jwksUrl: string
-  /** Acceptable `iss` values (a provider may use more than one spelling). */
   issuers: string[]
-  /**
-   * Accepted `aud` values — our OAuth client id(s). The token verifies when its `aud` claim matches ANY
-   * entry. Google issues tokens whose audience is the web, iOS, or Android OAuth client id depending on
-   * the platform that minted them, so this set may hold more than one id (see GOOGLE_OAUTH_*_CLIENT_ID).
-   */
   audiences: string[]
-  /**
-   * Optional expected `nonce` (P2-3 replay binding). When set, the token's `nonce` claim MUST match
-   * either this raw value OR its SHA-256 hex (Apple's native Sign in with Apple stores SHA256(nonce) in
-   * the claim). When unset, no nonce check is performed (the caller did not issue one).
-   */
   expectedNonce?: string
-  /** Override "now" (epoch seconds) for deterministic expiry tests. */
   nowSeconds?: number
 }
 
-/** The seam the OAuth service depends on; production uses RemoteJwksVerifier, tests pass a stub. */
 export interface JwksVerifier {
   verify(idToken: string, params: VerifyParams): Promise<VerifiedIdToken>
 }
 
-/** Minimal JWK shape we consume (RSA signing keys). */
 interface Jwk {
   kid?: string
   kty?: string
@@ -84,13 +51,10 @@ interface JwtClaims {
   picture?: string
 }
 
-/** Fetch function shape, injectable so the cache/fetch can be unit-tested without real network. */
 export type FetchLike = (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>
 
 export interface RemoteJwksVerifierOptions {
-  /** Defaults to global fetch. */
   fetchImpl?: FetchLike
-  /** JWKS cache TTL in ms (default 1 hour). */
   cacheTtlMs?: number
   now?: () => number
 }
@@ -100,20 +64,13 @@ interface CachedJwks {
   fetchedAtMs: number
 }
 
-/**
- * Real JWKS verifier: fetches + caches the key set and verifies RS256 with WebCrypto. Confines all
- * network + crypto for token verification to this class.
- */
 export class RemoteJwksVerifier implements JwksVerifier {
   private readonly fetchImpl: FetchLike
   private readonly cacheTtlMs: number
   private readonly now: () => number
   private readonly cache = new Map<string, CachedJwks>()
-  /** Last time we FORCE-refreshed each jwksUrl (unknown-kid path), to throttle fetch amplification. */
   private readonly lastForceRefreshAtMs = new Map<string, number>()
-  /** In-flight fetch per url, so concurrent misses share ONE network call (single-flight). */
   private readonly inFlight = new Map<string, Promise<Jwk[]>>()
-  /** Minimum spacing between forced refreshes per url (bounds unknown-kid DoS amplification). */
   private static readonly FORCE_REFRESH_FLOOR_MS = 60 * 1000
 
   constructor(opts: RemoteJwksVerifierOptions = {}) {
@@ -147,16 +104,10 @@ export class RemoteJwksVerifier implements JwksVerifier {
     return validateClaims(claims, params, this.now)
   }
 
-  /** Return the matching JWK for `kid`, fetching (and caching) the JWKS, with a THROTTLED refresh. */
   private async resolveKey(jwksUrl: string, kid: string): Promise<Jwk> {
     let keys = await this.getKeys(jwksUrl, false)
     let match = keys.find((k) => k.kid === kid)
     if (!match) {
-      // Possible key rotation. SECURITY: an attacker can flood tokens carrying random unknown `kid`s; if
-      // every miss force-refreshed, that would amplify into unbounded outbound JWKS fetches (DoS on us and
-      // the provider). So force-refresh at most once per FORCE_REFRESH_FLOOR_MS per url. The FIRST miss for
-      // a url always refreshes (picking up ALL rotated keys in one fetch); rapid subsequent unknown-kid
-      // misses are rejected from cache without a new fetch.
       const last = this.lastForceRefreshAtMs.get(jwksUrl)
       if (last === undefined || this.now() - last >= RemoteJwksVerifier.FORCE_REFRESH_FLOOR_MS) {
         this.lastForceRefreshAtMs.set(jwksUrl, this.now())
@@ -175,8 +126,6 @@ export class RemoteJwksVerifier implements JwksVerifier {
     if (!forceRefresh && cached && this.now() - cached.fetchedAtMs < this.cacheTtlMs) {
       return cached.keys
     }
-    // Single-flight: N concurrent callers (TTL expiry stampede OR an unknown-kid flood) share ONE
-    // outbound JWKS fetch instead of each firing their own.
     const existing = this.inFlight.get(jwksUrl)
     if (existing) return existing
     const promise = this.fetchKeys(jwksUrl).finally(() => {
@@ -198,14 +147,23 @@ export class RemoteJwksVerifier implements JwksVerifier {
   }
 }
 
-// redirect:"error" so a compromised/MITM provider can't 30x us elsewhere (the JWKS url is hardcoded,
-// not jku/x5u-derived, so this is defense-in-depth not a direct SSRF fix).
+const JWKS_FETCH_TIMEOUT_MS = 5000
+
 const defaultFetch: FetchLike = async (url: string) => {
-  const res = await fetch(url, { redirect: "error" })
-  return { ok: res.ok, json: () => res.json() }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), JWKS_FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, { redirect: "error", signal: controller.signal })
+    if (!res.ok) return { ok: false, json: () => Promise.resolve(null) }
+    const body = await res.json()
+    return { ok: true, json: () => Promise.resolve(body) }
+  } catch {
+    return { ok: false, json: () => Promise.resolve(null) }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
-/** Base64url-decode a JWT segment and JSON.parse it; null on any failure. */
 function decodeJsonSegment<T>(segment: string): T | null {
   try {
     const json = Buffer.from(segment, "base64url").toString("utf8")
@@ -215,11 +173,6 @@ function decodeJsonSegment<T>(segment: string): T | null {
   }
 }
 
-/**
- * Whether a token's `nonce` claim matches the expected nonce. Accepts EITHER the raw expected value OR
- * its SHA-256 hex (Sign in with Apple hashes the client nonce into the claim). Constant-time on the
- * compared bytes. A missing claim never matches.
- */
 function nonceMatches(claimNonce: string | undefined, expected: string): boolean {
   if (typeof claimNonce !== "string" || claimNonce.length === 0) return false
   const expectedHash = createHash("sha256").update(expected).digest("hex")
@@ -229,7 +182,6 @@ function nonceMatches(claimNonce: string | undefined, expected: string): boolean
   )
 }
 
-/** Verify an RS256 signature over `signingInput` using an RSA JWK via WebCrypto. */
 async function verifyRs256(jwk: Jwk, signingInput: string, signatureB64: string): Promise<boolean> {
   if (jwk.kty !== "RSA" || !jwk.n || !jwk.e) return false
   const key = await crypto.subtle.importKey(
@@ -244,7 +196,6 @@ async function verifyRs256(jwk: Jwk, signingInput: string, signatureB64: string)
   return crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, data)
 }
 
-/** Validate iss/aud/exp/nbf and project the trusted subset of claims. */
 function validateClaims(
   claims: JwtClaims,
   params: VerifyParams,
@@ -268,8 +219,6 @@ function validateClaims(
   if (!claims.sub) {
     throw AppError.unauthorized("Identity token is missing a subject.")
   }
-  // P2-3 nonce binding: when the caller issued a nonce, the token MUST carry a matching one (raw or its
-  // SHA-256 hex, since Apple native stores the hash). A missing/mismatched nonce is a replay -> reject.
   if (params.expectedNonce !== undefined) {
     if (!nonceMatches(claims.nonce, params.expectedNonce)) {
       throw AppError.unauthorized("Identity token nonce mismatch.")

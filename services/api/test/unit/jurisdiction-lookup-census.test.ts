@@ -5,28 +5,17 @@ import {
   FakeJurisdictionLookup,
 } from "../../src/adapters/jurisdiction-lookup.census.js"
 
-/**
- * Unit tests for the write-time Census jurisdiction fallback. Fully OFFLINE: the pure response parser is
- * driven by mock JSON bodies, and the HTTP impl is exercised with an INJECTED fake fetch (no network, no
- * DB, no real timers). The two invariants under test:
- *   1. parseCensusGeographies precedence (place > county > state) + null on every malformed/empty shape.
- *   2. CensusJurisdictionLookup.lookup is best-effort: it returns the parsed hit on success and null on a
- *      non-200, a network rejection, a malformed body, or a timeout/abort — and NEVER throws.
- */
 
 const BASE_URL = "https://example.test/geocoder/geographies/coordinates"
 
-/** Build a minimal Census Geographies response body with the supplied collections. */
 function body(geographies: Record<string, unknown>): unknown {
   return { result: { geographies } }
 }
 
-/** A Census feature carries (at least) a GEOID + NAME; we read only those. */
 function feature(geoid: string, name: string): Record<string, unknown> {
   return { GEOID: geoid, NAME: name }
 }
 
-/** Make a Response-like object good enough for the lookup (ok + json()). */
 function fakeResponse(opts: { ok: boolean; json: () => unknown | Promise<unknown> }): Response {
   return {
     ok: opts.ok,
@@ -75,7 +64,6 @@ describe("parseCensusGeographies (pure)", () => {
   })
 
   it("returns null when the most-specific feature is missing GEOID or NAME (no silent degrade)", () => {
-    // A place feature with no GEOID -> null (we do NOT fall through to the county for the same point).
     expect(
       parseCensusGeographies(
         body({
@@ -84,7 +72,6 @@ describe("parseCensusGeographies (pure)", () => {
         }),
       ),
     ).toBeNull()
-    // A place feature with a blank NAME -> null.
     expect(
       parseCensusGeographies(
         body({ "Incorporated Places": [{ GEOID: "0644000", NAME: "   " }] }),
@@ -107,8 +94,6 @@ describe("parseCensusGeographies (pure)", () => {
 describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
   it("returns the parsed result on a 200 + valid body, and hits the injected base URL with the right query", async () => {
     let calledUrl = ""
-    // Type the input via `typeof fetch`'s own parameter type (from @types/node) rather than the DOM
-    // global `RequestInfo`, which is not in this project's lib (ES2022 + node, no DOM).
     const fetchImpl = (async (input: Parameters<typeof fetch>[0]) => {
       calledUrl = String(input)
       return fakeResponse({
@@ -121,7 +106,6 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
     const result = await lookup.lookup(34.05, -118.25)
 
     expect(result).toEqual({ geoid: "0644000", name: "Los Angeles", layer: "place" })
-    // URL uses the injected base + the pinned benchmark/vintage and x=lng, y=lat (note the order).
     expect(calledUrl.startsWith(`${BASE_URL}?`)).toBe(true)
     expect(calledUrl).toContain("x=-118.25")
     expect(calledUrl).toContain("y=34.05")
@@ -158,7 +142,6 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
   })
 
   it("returns null when the request is aborted/times out — never throws", async () => {
-    // Emulate the AbortController firing: fetch rejects with an AbortError once the signal is aborted.
     const fetchImpl = ((_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
       new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal
@@ -168,7 +151,6 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
           })
         }
       })) as unknown as typeof fetch
-    // A 1ms timeout guarantees the controller aborts before any (never-arriving) response.
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 1, fetchImpl })
     await expect(lookup.lookup(1, 2)).resolves.toBeNull()
   })
@@ -178,6 +160,18 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
       fakeResponse({ ok: true, json: () => body({}) })) as unknown as typeof fetch
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 50, fetchImpl })
     await expect(lookup.lookup(1, 2)).resolves.toBeNull()
+  })
+
+  it("returns null for a non-finite coordinate without calling fetch (defensive narrowing)", async () => {
+    let called = false
+    const fetchImpl = (async () => {
+      called = true
+      return fakeResponse({ ok: true, json: () => body({}) })
+    }) as unknown as typeof fetch
+    const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 50, fetchImpl })
+    await expect(lookup.lookup(Number.NaN, -118.25)).resolves.toBeNull()
+    await expect(lookup.lookup(34.05, Number.POSITIVE_INFINITY)).resolves.toBeNull()
+    expect(called).toBe(false)
   })
 })
 

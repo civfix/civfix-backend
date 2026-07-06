@@ -40,6 +40,13 @@ describe("describeAuditAction", () => {
     expect(describeAuditAction("user.banned")).toBe("Banned an account")
     expect(describeAuditAction("totally.unknown")).toBe("totally.unknown")
   })
+
+  it("labels the previously-unmapped event/report actions", () => {
+    expect(describeAuditAction("event.outcome_logged")).toBe("Logged an event outcome")
+    expect(describeAuditAction("event.reports_linked")).toBe("Linked reports to an event")
+    expect(describeAuditAction("event.report_unlinked")).toBe("Unlinked a report from an event")
+    expect(describeAuditAction("report.verdict_set")).toBe("Set a report verdict")
+  })
 })
 
 describe("classifyActivity (per source)", () => {

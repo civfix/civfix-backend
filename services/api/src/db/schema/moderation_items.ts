@@ -1,22 +1,6 @@
-/**
- * moderation_items: the operator moderation queue of held media / coordinated-report patterns /
- * appeals (Phase 2).
- *
- * Producers: the media-worker hold path, anon hold-then-publish, and abuse detection create rows.
- * Operator actions transition `status` (open -> approved|removed|held) and apply the underlying effect
- * (publish/reject a report, uphold/overturn a chat suspension). Items clear from the queue on action.
- *
- *   signals jsonb : array of { label, val, tone:'ok'|'warn'|'bad' }
- *   similar jsonb : array of { id, note, when }
- *   meta    jsonb : user-context snapshot (trust, priorReports, priorRemovals, strikes, device)
- *
- * The kind / subject_type / priority / status CHECKs are enforced in 0007_admin_phase2.sql.
- *
- * CANONICAL DDL: drizzle/0007_admin_phase2.sql. This mirror exists for typed queries / diff inspection.
- */
 
 import { sql } from "drizzle-orm"
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
+import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 import type {
   MODERATION_KIND_VALUES,
@@ -58,6 +42,9 @@ export const moderationItems = pgTable(
     index("moderation_items_subject_idx").on(t.subjectType, t.subjectId),
     index("moderation_items_open_idx")
       .on(t.priority, t.createdAt.desc())
+      .where(sql`${t.status} = 'open'`),
+    uniqueIndex("moderation_items_open_subject_key")
+      .on(t.subjectType, t.subjectId)
       .where(sql`${t.status} = 'open'`),
   ],
 )

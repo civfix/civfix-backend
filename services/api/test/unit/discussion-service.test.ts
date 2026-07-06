@@ -1,16 +1,3 @@
-/**
- * Offline unit tests for the discussion service over the in-memory DiscussionRepository + a spy
- * OutboundMailService (no DB, no SMTP, no Docker). They exercise the DiscussionService seam:
- *   - list / listReplies page top-level vs reply messages, exclude deleted, and respect report visibility;
- *   - createMessage validates body + the report's visibility, enforces one-level replies (no nested /
- *     cross-report parent), links media (unattached/own only), and the @city-mention forward path;
- *   - the KEY city-mention rule: a mention with NO contact on file STILL POSTS (forwardedToCity=false) and
- *     does NOT throw, unlike the admin sendFollowup-to-city 422;
- *   - toggleReaction toggles + returns the recomputed reactions; deleteMessage soft-deletes (author OR
- *     operator) and tombstones the returned DTO.
- *
- * The Drizzle repo is covered by the Docker-gated integration suite; here the fake exercises the same seam.
- */
 
 import { describe, expect, it } from "vitest"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
@@ -19,6 +6,7 @@ import type {
   SendReportInput,
 } from "../../src/services/admin/outbound-mail-service.js"
 import {
+  makeCityForwardDedup,
   makeDiscussionService,
   type DiscussionService,
 } from "../../src/services/discussion-service.js"
@@ -31,11 +19,6 @@ const REPORT = "11111111-1111-1111-1111-111111111111"
 const AUTHOR = "22222222-2222-2222-2222-222222222222"
 const OTHER = "33333333-3333-3333-3333-333333333333"
 
-/**
- * A spy OutboundMailService capturing the @jurisdiction forward. D11: the forward now targets the
- * PER-REPORT thread (sendReportToJurisdiction), not the per-geoid digest (sendToCity), so the city's reply
- * threads back onto the report. We capture sendReportToJurisdiction here; the other methods are stubs.
- */
 class SpyOutboundMail implements OutboundMailService {
   readonly reportCalls: SendReportInput[] = []
   shouldThrow = false
@@ -82,7 +65,6 @@ interface Harness {
   service: DiscussionService
 }
 
-/** Build a harness with a seeded public report (+ optional jurisdiction) and a seeded author. */
 function makeHarness(jurisdiction?: SeededJurisdiction | null): Harness {
   const repo = new InMemoryDiscussionRepository()
   const mail = new SpyOutboundMail()
@@ -93,6 +75,7 @@ function makeHarness(jurisdiction?: SeededJurisdiction | null): Harness {
   const service = makeDiscussionService({
     repo,
     outboundMail: mail,
+    canForwardCity: makeCityForwardDedup(),
     presignMedia: (r2Key, thumbKey) =>
       Promise.resolve(thumbKey === null ? { url: `signed:${r2Key}` } : { url: `signed:${r2Key}`, thumbUrl: `signed:${thumbKey}` }),
     newId: () => `00000000-0000-0000-0000-${String(++n).padStart(12, "0")}`,
@@ -178,7 +161,6 @@ describe("DiscussionService.createMessage", () => {
   it("rejects a parent from another report", async () => {
     const { repo, service } = makeHarness()
     const otherReport = repo.seedReport({ reporterUserId: AUTHOR })
-    // Seed a top-level message directly on the other report.
     const foreign = await service.createMessage(otherReport.id, AUTHOR, { body: "elsewhere" })
     await expect(
       service.createMessage(REPORT, AUTHOR, { body: "x", parentId: foreign.id }),
@@ -225,13 +207,10 @@ describe("DiscussionService.createMessage @city mention + forward", () => {
   it("forwards onto the PER-REPORT thread + records a forwarded mention when a contact is on file", async () => {
     const { mail, service } = makeHarness(JURIS_WITH_CONTACT)
     const dto = await service.createMessage(REPORT, AUTHOR, { body: "pls help @sf" })
-    // D11: the forward targets sendReportToJurisdiction (per-report thread) so the city's reply threads back
-    // onto the report — NOT the per-geoid digest sendToCity.
     expect(mail.reportCalls).toHaveLength(1)
     expect(mail.reportCalls[0]!.reportId).toBe(REPORT)
     expect(mail.reportCalls[0]!.toAddr).toBe("fix@sf.gov")
     expect(mail.reportCalls[0]!.geoid).toBe("0600001")
-    // The body is a professional packet quoting the citizen's comment (not the raw comment).
     expect(mail.reportCalls[0]!.text).toContain("pls help @sf")
     expect(mail.reportCalls[0]!.subject).toContain("civfix report:")
     expect(dto.forwardedToCity).toBe(true)
@@ -243,10 +222,18 @@ describe("DiscussionService.createMessage @city mention + forward", () => {
     })
   })
 
+  it("forwards a report to a jurisdiction AT MOST once per window across repeated comments", async () => {
+    const { mail, service } = makeHarness(JURIS_WITH_CONTACT)
+    await service.createMessage(REPORT, AUTHOR, { body: "pls help @sf" })
+    await service.createMessage(REPORT, AUTHOR, { body: "@sf again" })
+    await service.createMessage(REPORT, OTHER, { body: "@sf still broken" })
+    expect(mail.reportCalls).toHaveLength(1)
+  })
+
   it("STILL POSTS (forwardedToCity=false, no throw) when the city has no contact on file", async () => {
     const { mail, service } = makeHarness(JURIS_NO_CONTACT)
     const dto = await service.createMessage(REPORT, AUTHOR, { body: "hey @sf fix it" })
-    expect(mail.reportCalls).toHaveLength(0) // never attempted - no contact
+    expect(mail.reportCalls).toHaveLength(0)
     expect(dto.forwardedToCity).toBe(false)
     expect(dto.cityMention).toEqual({
       handle: "sf",
@@ -347,8 +334,6 @@ describe("DiscussionService.deleteMessage", () => {
     await service.deleteMessage(REPORT, parent.id, { userId: AUTHOR, isOperator: false })
     const top = await service.list(REPORT, null, null, 20)
     expect(top.items).toHaveLength(0)
-    // The reply survives and is still listable under the (now-deleted) parent? listReplies requires a
-    // non-deleted parent, so it 404s - the reply row survives in storage for moderation/audit.
     await expect(service.listReplies(REPORT, parent.id, null, null, 20)).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
