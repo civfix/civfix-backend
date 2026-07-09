@@ -22,7 +22,7 @@
  */
 
 import type { Sql } from "../db/client.js"
-import type { ChatMessageDTO } from "@civfix/shared"
+import { ReportStatusSchema, type ChatMessageDTO } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
 
 /**
@@ -152,6 +152,11 @@ export function makeReportChatRepository(
       note?: string | null
       body?: string | null
     }): Promise<ChatMessageDTO> {
+      // system_status is a free-text column, so validate against the shared report-status vocabulary
+      // BEFORE writing any row: this throws on an out-of-vocabulary status for EVERY caller (the D-D1
+      // timeline writers to come, not just D-C1), and makes mapSystemRow's `as ReportSystemStatus` cast
+      // sound rather than trusted.
+      const status = ReportStatusSchema.parse(input.status)
       // body (the rendered/fallback text on the DTO) prefers the human note, falling back to the raw
       // system body. sender_id stays NULL (system messages have no author); cleanup_id stays NULL so the
       // chat_messages cleanup/report XOR check holds. id / created_at default in the DB.
@@ -160,7 +165,7 @@ export function makeReportChatRepository(
         INSERT INTO chat_messages
           (cleanup_id, report_id, sender_id, body, kind, system_status, system_kind, system_body)
         VALUES
-          (NULL, ${input.reportId}, NULL, ${body}, 'system', ${input.status}, ${input.kind ?? null}, ${input.body ?? null})
+          (NULL, ${input.reportId}, NULL, ${body}, 'system', ${status}, ${input.kind ?? null}, ${input.body ?? null})
         RETURNING id, report_id, body, created_at, system_status, system_kind, system_body
       `
       return mapSystemRow(rows[0]!)

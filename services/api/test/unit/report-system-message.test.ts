@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, it } from "vitest"
+import { ReportStatusSchema } from "@civfix/shared"
 import { mapSystemRow, type SystemChatRow } from "../../src/services/report-chat-repository.drizzle.js"
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -74,5 +75,35 @@ describe("mapSystemRow", () => {
   it("never marks a system message as mine (no author)", () => {
     const dto = mapSystemRow(baseRow())
     expect(dto.mine ?? false).toBe(false)
+  })
+})
+
+/**
+ * insertSystemMessage validates input.status against ReportStatusSchema BEFORE writing any row, so a
+ * bogus status can never be persisted (making mapSystemRow's status cast sound for the D-D1 timeline
+ * writers). The full insert path needs a DB (Docker-gated integration test); this asserts the pure
+ * validation contract the guard relies on — DB-free.
+ */
+describe("insertSystemMessage status validation (ReportStatusSchema guard)", () => {
+  it("accepts every report-status the system payload can carry", () => {
+    for (const status of [
+      "submitted",
+      "held",
+      "published",
+      "acknowledged",
+      "in_progress",
+      "resolved",
+      "rejected",
+    ] as const) {
+      expect(ReportStatusSchema.parse(status)).toBe(status)
+      // The validated status is exactly what mapSystemRow surfaces on the DTO.
+      const dto = mapSystemRow(baseRow({ system_status: status }))
+      expect(dto.system?.status).toBe(status)
+    }
+  })
+
+  it("rejects an out-of-vocabulary status (throws before any row is written)", () => {
+    expect(() => ReportStatusSchema.parse("not_a_status")).toThrow()
+    expect(() => ReportStatusSchema.parse("")).toThrow()
   })
 })
