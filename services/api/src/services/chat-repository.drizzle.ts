@@ -15,6 +15,7 @@ import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.j
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
+import { mapSystemRow } from "./report-chat-repository.drizzle.js"
 
 export interface ChatRepository {
   insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO>
@@ -58,14 +59,20 @@ interface ChatRowSelect {
   id: string
   cleanup_id: string | null
   report_id: string | null
-  sender_id: string
+  // Nullable: a report SYSTEM message has no author (see report-chat-repository.drizzle.ts). Author
+  // columns below are correspondingly nullable because the report history LEFT JOINs users.
+  sender_id: string | null
   body: string | null
   kind: ChatMessageKind
   attachments: unknown[] | null
   created_at: Date
   edited_at: Date | null
   deleted_at: Date | null
-  sender_display_name: string
+  // System-message payload; NULL on every non-system row. Only ever populated for report system rows.
+  system_status: string | null
+  system_kind: string | null
+  system_body: string | null
+  sender_display_name: string | null
   sender_handle: string | null
   sender_bio: string | null
   sender_avatar_url: string | null
@@ -80,9 +87,24 @@ function toMessageDTO(
   clientId?: string,
   attachments: MediaDTO[] = [],
 ): ChatMessageDTO {
+  // A report SYSTEM message has no author (sender_id NULL); delegate to the pure system mapper so its
+  // from:null / kind:"system" / structured system payload render in history + broadcasts. Only report
+  // rows can reach this branch (cleanup/dm rows always carry a sender), so cleanup/dm mapping is
+  // unchanged. system_status is guaranteed non-null on a real system row.
+  if (r.sender_id === null && r.report_id !== null) {
+    return mapSystemRow({
+      id: r.id,
+      report_id: r.report_id,
+      body: r.body,
+      created_at: r.created_at,
+      system_status: r.system_status ?? "",
+      system_kind: r.system_kind,
+      system_body: r.system_body,
+    })
+  }
   const author = publicAuthorIdentity({
-    id: r.sender_id,
-    displayName: r.sender_display_name,
+    id: r.sender_id!,
+    displayName: r.sender_display_name ?? "",
     handle: r.sender_handle,
     avatarUrl: r.sender_avatar_url,
     deletedAt: r.sender_deleted_at,
@@ -92,7 +114,7 @@ function toMessageDTO(
     cleanupId: r.cleanup_id ?? r.report_id!,
     ...(r.report_id !== null ? { roomKind: "report" as const } : {}),
     from: {
-      id: r.sender_id,
+      id: r.sender_id!,
       name: author.name,
       handle: author.handle,
       bio: author.deleted ? null : r.sender_bio,
@@ -128,6 +150,9 @@ function chatColumns(sql: Queryable) {
     cm.created_at,
     cm.edited_at,
     cm.deleted_at,
+    cm.system_status,
+    cm.system_kind,
+    cm.system_body,
     u.display_name AS sender_display_name,
     u.handle AS sender_handle,
     u.bio AS sender_bio,
@@ -149,13 +174,16 @@ function selectChatRowFrom(tag: Queryable, cte: string) {
       ${tag(cte)}.created_at,
       ${tag(cte)}.edited_at,
       ${tag(cte)}.deleted_at,
+      ${tag(cte)}.system_status,
+      ${tag(cte)}.system_kind,
+      ${tag(cte)}.system_body,
       u.display_name AS sender_display_name,
       u.handle AS sender_handle,
       u.bio AS sender_bio,
       u.avatar_url AS sender_avatar_url,
       u.deleted_at AS sender_deleted_at
     FROM ${tag(cte)}
-    JOIN users u ON u.id = ${tag(cte)}.sender_id
+    LEFT JOIN users u ON u.id = ${tag(cte)}.sender_id
   `
 }
 
@@ -191,7 +219,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     const rows = await sql<ChatRowSelect[]>`
       SELECT ${chatColumns(sql)}
       FROM chat_messages cm
-      JOIN users u ON u.id = cm.sender_id
+      LEFT JOIN users u ON u.id = cm.sender_id
       WHERE ${rowScope(scope)}
         AND cm.deleted_at IS NULL
         ${cursorFilter}
@@ -229,7 +257,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     const rows = await sql<ChatRowSelect[]>`
       SELECT ${chatColumns(sql)}
       FROM chat_messages cm
-      JOIN users u ON u.id = cm.sender_id
+      LEFT JOIN users u ON u.id = cm.sender_id
       WHERE cm.id = ${messageId} AND ${rowScope(scope)} AND cm.deleted_at IS NULL
       LIMIT 1
     `
@@ -256,7 +284,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           AND ${anchorScope(scope)}
           AND sender_id = ${senderId}
           AND deleted_at IS NULL
-        RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+        RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, system_status, system_kind, system_body
       )
       ${selectChatRowFrom(sql, "updated")}
     `
@@ -285,7 +313,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
             ${kind},
             ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null}
           )
-          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, system_status, system_kind, system_body
         )
         ${selectChatRowFrom(q, "inserted")}
       `
