@@ -57,6 +57,22 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     (async (r2Key: string, thumbKey: string | null) =>
       thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
 
+  /**
+   * D-D1 choke point: mirror a timeline event this service just wrote into the report chat (system
+   * message + broadcast + member push). POST-commit, best-effort — the emitter swallows its own errors, so
+   * this can never fail (nor roll back) the mutation. No-op when no emitter is injected (offline / fake).
+   */
+  async function emitTimeline(event: {
+    reportId: string
+    status: AdminReportStatus
+    kind?: ReportTimelineItem["kind"]
+    note?: string | null
+    body?: string | null
+  }): Promise<void> {
+    if (deps.reportChatEmitter === undefined) return
+    await deps.reportChatEmitter.emit(event)
+  }
+
   function toListItem(record: AdminReportRecord, ref: Date): AdminReportListItemDTO {
     const reporter = record.reporter
     return {
@@ -166,12 +182,15 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       id: string,
       input: { status: AdminReportStatus; actorId: string | null },
     ): Promise<void> {
+      const note = statusChangeNote(input.status)
       const ok = await deps.repo.setStatus(id, {
         status: input.status,
-        note: statusChangeNote(input.status),
+        note,
         actorId: input.actorId,
       })
       if (!ok) throw AppError.notFound("Report not found")
+      // Post-commit: mirror the transition into the report chat (best-effort; never throws).
+      await emitTimeline({ reportId: id, status: input.status, kind: timelineKindForStatus(input.status), note })
     },
 
     async flag(
@@ -180,6 +199,17 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     ): Promise<boolean> {
       const flagged = await deps.repo.toggleFlag(id, input)
       if (flagged === null) throw AppError.notFound("Report not found")
+      // The flag toggle writes a timeline row at the report's CURRENT status; reflect it into the chat.
+      // We re-read the report so the system message carries the same status the timeline row got.
+      const record = await deps.repo.getReport(id)
+      if (record) {
+        await emitTimeline({
+          reportId: id,
+          status: record.status,
+          kind: "status",
+          note: flagged ? "Flagged for review" : "Flag cleared",
+        })
+      }
       return flagged
     },
 
@@ -193,6 +223,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           : statusChangeNote("rejected")
       const ok = await deps.repo.remove(id, { note, actorId: input.actorId })
       if (!ok) throw AppError.notFound("Report not found")
+      await emitTimeline({ reportId: id, status: "rejected", kind: timelineKindForStatus("rejected"), note })
     },
 
     async sendFollowup(
@@ -220,6 +251,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           to: "reporter",
           destination: reporterId,
         })
+        await emitTimeline({
+          reportId: id,
+          status: record.status,
+          kind: "status",
+          note: "Follow-up sent to the reporter",
+        })
         return { to: "reporter", destination: reporterId }
       }
 
@@ -241,6 +278,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         actorId: input.actorId,
         to: "city",
         destination: contact,
+      })
+      await emitTimeline({
+        reportId: id,
+        status: record.status,
+        kind: "status",
+        note: `Follow-up sent to ${contact}`,
       })
       return { to: "city", destination: contact }
     },
@@ -291,19 +334,30 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         ...(attachments.length > 0 ? { attachments } : {}),
       })
 
+      const routeNote = `Sent to jurisdiction (${toAddr})`
+      // The transition advances the report to `acknowledged` when it was in a routable state; otherwise the
+      // route is a non-transition system row at the report's CURRENT status. The chat system message must
+      // carry the SAME status the timeline row got.
+      const advances = ROUTABLE_FROM_STATUSES.has(record.status)
       await retryOnce(async () => {
-        if (ROUTABLE_FROM_STATUSES.has(record.status)) {
+        if (advances) {
           await deps.repo.setStatus(id, {
             status: "acknowledged",
-            note: `Sent to jurisdiction (${toAddr})`,
+            note: routeNote,
             actorId: input.actorId,
           })
         } else {
           await deps.repo.appendSystemTimeline(id, {
-            note: `Sent to jurisdiction (${toAddr})`,
+            note: routeNote,
             kind: "route",
           })
         }
+      })
+      await emitTimeline({
+        reportId: id,
+        status: advances ? "acknowledged" : record.status,
+        kind: "route",
+        note: routeNote,
       })
 
       return { threadId: thread.id, routedTo: toAddr }

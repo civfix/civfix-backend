@@ -11,6 +11,7 @@ import type {
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 import type { LinkedEventView } from "../cleanup-service.js"
+import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 
 /** The reporter (author) of a report, as the repo resolves it (or null for an anonymous report). */
 export interface AdminReporterRecord {
@@ -233,6 +234,15 @@ export interface AdminReportServiceDeps {
   loadMediaBytes?: (r2Key: string) => Promise<Uint8Array | null>
   /** Injectable clock (defaults to () => new Date()) so the relative-age labels are deterministic. */
   now?: () => Date
+  /**
+   * D-D1: the report-chat SYSTEM-message emitter (the timeline choke point). After a timeline-writing
+   * mutation commits (setStatus / flag / remove / routeToJurisdiction / sendFollowup), the service fires
+   * `emit({ reportId, status, kind, note })` to mirror the timeline event into the report's group chat +
+   * push the members. OPTIONAL + fully best-effort: when omitted (offline unit tests / fake-chat) nothing
+   * is emitted, and even when present a failure inside emit() never surfaces (it swallows its own errors),
+   * so the status change is independent of the chat reflection.
+   */
+  reportChatEmitter?: ReportChatSystemEmitter
 }
 
 /** The outcome of a follow-up send, so the route can audit + ack with the right target/channel. */

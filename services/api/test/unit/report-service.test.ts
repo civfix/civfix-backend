@@ -31,6 +31,18 @@ function fakePresign(r2Key: string, thumbKey: string | null) {
   )
 }
 
+/**
+ * A recording fake for the D-D1 report-chat SYSTEM-message emitter, so a citizen-mutation test can assert
+ * the owner resolve/reopen/hide event was mirrored into the report chat.
+ */
+class FakeReportChatEmitter {
+  readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
+  emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
+    this.events.push(event)
+    return Promise.resolve()
+  }
+}
+
 /** Build a service over a fresh in-memory repo; jurisdiction resolves to a fixed geoid by default. */
 function makeHarness(
   opts: {
@@ -40,18 +52,20 @@ function makeHarness(
   } = {},
 ) {
   const repo = new InMemoryReportRepository()
+  const emitter = new FakeReportChatEmitter()
   // Distinguish "not provided" (default to a fixed geoid) from "explicitly null" (outside coverage).
   const geoid: string | null = "geoid" in opts ? (opts.geoid ?? null) : "0644000"
   const service: ReportService = makeReportService({
     repo,
     resolveJurisdictionGeoid: () => Promise.resolve(geoid),
     presignMedia: fakePresign,
+    reportChatEmitter: emitter,
     ...(opts.jurCode !== undefined
       ? { resolveJurisdictionCode: () => Promise.resolve(opts.jurCode as number) }
       : {}),
     ...(opts.newId !== undefined ? { newId: opts.newId } : {}),
   })
-  return { repo, service }
+  return { repo, service, emitter }
 }
 
 /** A minimal valid create request. */
@@ -529,6 +543,19 @@ describe("resolveReport (owner status toggle)", () => {
     expect(last.note).toBe("Marked resolved by the reporter")
     // The underlying record was updated.
     expect(repo.reports.get(r.id)!.status).toBe("resolved")
+  })
+
+  it("emits a report-chat system event carrying the resolved status when the owner resolves", async () => {
+    const { repo, service, emitter } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner" })
+    await service.resolveReport("owner", r.id, true)
+    expect(emitter.events).toHaveLength(1)
+    expect(emitter.events[0]).toMatchObject({
+      reportId: r.id,
+      status: "resolved",
+      kind: "done",
+      note: "Marked resolved by the reporter",
+    })
   })
 
   it("reopening a resolved report returns it to published with a 'Reopened' timeline entry", async () => {

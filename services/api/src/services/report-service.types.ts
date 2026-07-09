@@ -13,6 +13,7 @@ import type {
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import type { LinkedEventView } from "./cleanup-service.js"
+import type { ReportChatSystemEmitter } from "./report-timeline-event.js"
 
 export const REPORT_CREATE_SCOPE = "report_create"
 
@@ -201,6 +202,13 @@ export interface ReportServiceDeps {
   // Auto-join the report's creator as an "owner" member of its chat, once the report row is committed.
   // Best-effort (see maybeJoinReportChatAsOwner): a failure here must NOT fail report creation.
   joinReportChatAsOwner?: (reportId: string, userId: string) => Promise<void>
+  /**
+   * D-D1: the report-chat SYSTEM-message emitter (the timeline choke point). After the owner resolve/
+   * reopen or hide/re-list writes its timeline row, the service fires `emit(...)` to mirror the event into
+   * the report's group chat + push the members. OPTIONAL + fully best-effort (the emitter swallows its own
+   * errors), so the status/visibility change is independent of the chat reflection.
+   */
+  reportChatEmitter?: ReportChatSystemEmitter
   logger?: { warn: (obj: unknown, msg?: string) => void }
   newId?: () => string
   now?: () => Date

@@ -356,6 +356,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only change the status of your own report")
       }
+      // Post-commit: mirror the resolve/reopen transition into the report chat (best-effort; never throws).
+      await maybeEmitTimeline(deps, { reportId, status, kind: resolved ? "done" : "status", note })
       return service.getReport(reportId, { userId })
     },
 
@@ -367,7 +369,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only hide your own report")
       }
-      return service.getReport(reportId, { userId })
+      // The visibility change writes a timeline row at the report's CURRENT status; reflect it into the
+      // chat with that same status (read back from the fresh DTO below).
+      const dto = await service.getReport(reportId, { userId })
+      await maybeEmitTimeline(deps, { reportId, status: dto.status, kind: "status", note })
+      return dto
     },
   }
   return service
@@ -417,4 +423,17 @@ async function maybeJoinReportChatAsOwner(
   } catch (err) {
     deps.logger?.warn({ err, reportId }, "report-chat: creator auto-join failed")
   }
+}
+
+/**
+ * D-D1: fire the report-chat SYSTEM-message emitter for an owner timeline event (resolve/reopen/hide/
+ * re-list). No-op when no emitter is injected (offline / fake-chat). The emitter is already best-effort
+ * (swallows its own errors), so this can never fail the owner mutation.
+ */
+async function maybeEmitTimeline(
+  deps: ReportServiceDeps,
+  event: { reportId: string; status: string; kind?: string | null; note?: string | null },
+): Promise<void> {
+  if (deps.reportChatEmitter === undefined) return
+  await deps.reportChatEmitter.emit(event)
 }

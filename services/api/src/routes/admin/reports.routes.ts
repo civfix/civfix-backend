@@ -46,6 +46,8 @@ import {
 import { makeDrizzleDiscussionRepository } from "../../services/discussion-repository.drizzle.js"
 import { roomKeyFor } from "../../ws/gateway.js"
 import { writeAudit } from "../../services/admin/audit.js"
+import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
+import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
 export interface AdminReportRouteOverrides {
   repo: AdminReportRepository
@@ -59,6 +61,8 @@ export interface AdminReportRouteOverrides {
   ) => Promise<Map<string, import("../../services/cleanup-service.js").LinkedEventView[]>>
   discussionRepo?: DiscussionRepository
   now?: () => Date
+  /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
+  reportChatEmitter?: ReportChatSystemEmitter
 }
 
 declare module "fastify" {
@@ -82,6 +86,9 @@ export async function registerAdminReportsRoutes(
           ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
           : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+        ...(overrides.reportChatEmitter !== undefined
+          ? { reportChatEmitter: overrides.reportChatEmitter }
+          : {}),
       })
     }
     const sql = container.getDb().sql
@@ -101,6 +108,9 @@ export async function registerAdminReportsRoutes(
       presignMedia: makeMediaPresigner(container.storage),
       loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
       loadMediaBytes: (k) => container.storage.getObject(k),
+      // D-D1: mirror every timeline event this service writes into the report chat (best-effort, no-op
+      // under fake-chat). Built from container primitives so it needs no chat-gateway wiring instances.
+      reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
     })
   }
 

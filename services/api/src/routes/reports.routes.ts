@@ -37,6 +37,7 @@ import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
 import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import { makeContainerReportChatEmitter } from "../services/report-chat-emitter.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
 import { route } from "../versioning/route.js"
@@ -54,6 +55,8 @@ export interface ReportServiceOverrides {
   loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
   loadDiscussionMeta?: ReportServiceDeps["loadDiscussionMeta"]
   joinReportChatAsOwner?: ReportServiceDeps["joinReportChatAsOwner"]
+  /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
+  reportChatEmitter?: ReportServiceDeps["reportChatEmitter"]
   newId?: ReportServiceDeps["newId"]
   now?: ReportServiceDeps["now"]
 }
@@ -177,6 +180,9 @@ export async function registerReportRoutes(
         ...(overrides.joinReportChatAsOwner !== undefined
           ? { joinReportChatAsOwner: overrides.joinReportChatAsOwner }
           : {}),
+        ...(overrides.reportChatEmitter !== undefined
+          ? { reportChatEmitter: overrides.reportChatEmitter }
+          : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
@@ -232,6 +238,9 @@ export async function registerReportRoutes(
       awardReportHours: (userId, reportId, geoid) =>
         container.getVolunteerHoursRepo().awardReportHours(userId, reportId, geoid),
       joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
+      // D-D1: owner resolve/reopen/hide/re-list posts a system message into the report chat (best-effort,
+      // no-op under fake-chat). Built from container primitives — no chat-gateway wiring instances needed.
+      reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
       logger: app.log,
     })
   }

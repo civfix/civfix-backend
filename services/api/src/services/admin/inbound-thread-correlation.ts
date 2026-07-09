@@ -7,6 +7,7 @@ import { makeDrizzleAdminReportRepository } from "./admin-report-repository.driz
 import type { AdminReportRepository } from "./admin-report-service.js"
 import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"
+import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 
 export async function findThreadByReferences(
   mailRepo: MailRepository,
@@ -60,7 +61,11 @@ export async function onJurisdictionReply(
   const note = `Jurisdiction replied — ${preview}`
   const body = fullBody.length > 0 ? fullBody : null
 
-  if (record.status === "published" || record.status === "acknowledged") {
+  // The inbound reply either ADVANCES the report to in_progress (from published/acknowledged) or is a
+  // non-transition system row at the report's CURRENT status. Track the effective status so the report-chat
+  // system message carries the SAME status the timeline row got.
+  const advances = record.status === "published" || record.status === "acknowledged"
+  if (advances) {
     await reportRepo.setStatus(reportId, {
       status: "in_progress",
       note,
@@ -71,6 +76,17 @@ export async function onJurisdictionReply(
   } else {
     await reportRepo.appendSystemTimeline(reportId, { note, kind: "reply", body })
   }
+
+  // D-D1: mirror the city reply into the report chat (best-effort; the emitter swallows its own errors).
+  // No-op under fake-chat. `injectedReportRepo` present ⇒ an offline test path with no real container chat;
+  // still safe (the emitter degrades to no-op when chat services are the fake variants).
+  await makeContainerReportChatEmitter(container).emit({
+    reportId,
+    status: advances ? "in_progress" : record.status,
+    kind: "reply",
+    note,
+    body,
+  })
 
   const reporterUserId = record.reporter?.id
   if (reporterUserId && reporterUserId !== "") {
