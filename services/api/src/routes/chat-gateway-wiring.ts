@@ -20,6 +20,7 @@ import { makeReportChatRepository, type ReportChatRepository } from "../services
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { forwardReportCityMention } from "../services/report-city-forward.js"
+import { makeReportForwardAudit, type ReportForwardAudit } from "../services/report-forward-audit.drizzle.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../ws/report-rate-limit.js"
 import type { ReportVisibleFn } from "../ws/gateway.js"
@@ -238,6 +239,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   }
 
   let reportOutboundMail: ReturnType<typeof makeOutboundMailService> | undefined
+  let reportForwardAudit: ReportForwardAudit | undefined
   const onReportMessage: OnReportMessage | undefined = useFakeChat
     ? undefined
     : async (reportId, message) => {
@@ -249,9 +251,13 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
             MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
           },
         })
+        reportForwardAudit ??= makeReportForwardAudit(container.getDb().sql)
         const report = await getReportRepo().findReportForDiscussion(reportId)
         if (report === null) return
         const body = typeof message.body === "string" ? message.body : ""
+        // message.id threads the persisted chat_messages row id into the audit table (report_message_forwards
+        // keys on it). forwardReportCityMention writes the mentioned-but-not-forwarded row before the send and
+        // stamps forwarded_at on success; audit failures are swallowed there (message already persisted).
         await forwardReportCityMention(
           reportOutboundMail,
           {
@@ -262,7 +268,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           },
           body,
           new Date(message.createdAt),
-          { canForward: canForwardCity },
+          { canForward: canForwardCity, audit: reportForwardAudit, messageId: message.id },
         )
       }
 
