@@ -133,7 +133,9 @@ export class InMemoryChatRepository implements ChatRepository {
   ): Promise<ChatMessageDTO | null> {
     const list = this.log.get(cleanupId)
     const found = list?.find((m) => m.dto.id === messageId)
-    if (!found || found.deleted || found.dto.from.id !== senderId) return Promise.resolve(null)
+    // Test-registered senders always populate `from`; optional-chain to satisfy the nullable contract
+    // type without changing the WHERE-gate semantics for the normal (author-present) case.
+    if (!found || found.deleted || found.dto.from?.id !== senderId) return Promise.resolve(null)
     found.deleted = true
     const tombstone: ChatMessageDTO = {
       ...found.dto,

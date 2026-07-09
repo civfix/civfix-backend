@@ -113,7 +113,10 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(bMessages).toHaveLength(1)
     const broadcast = bMessages[0]! as { type: "message"; message: ChatMessageDTO }
     expect(broadcast.message.body).toBe("hello bob")
-    expect(broadcast.message.from.id).toBe(ALICE)
+    // This is an Alice-authored chat send, not a sender-less SYSTEM message, so `from` is always present
+    // here; assert that before narrowing so the intent (author == Alice) stays explicit.
+    expect(broadcast.message.from).toBeTruthy()
+    expect(broadcast.message.from?.id).toBe(ALICE)
     expect(broadcast.message.cleanupId).toBe(ROOM)
 
     // ---- A received an {type:"ack"} carrying its clientId + the persisted message ----

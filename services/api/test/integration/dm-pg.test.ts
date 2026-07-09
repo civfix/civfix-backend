@@ -83,7 +83,10 @@ describe.skipIf(!pg)("direct messages (integration)", () => {
       const dto = await repo.persist({ threadId: thread.id, senderId: a, body: `m${i}` })
       expect(dto.roomKind).toBe("dm")
       expect(dto.cleanupId).toBe(thread.id)
-      expect(dto.from.id).toBe(a)
+      // DM messages always have an author (no sender-less SYSTEM messages on the dm path); assert that
+      // before narrowing so the intent (author == a) stays explicit.
+      expect(dto.from).toBeTruthy()
+      expect(dto.from?.id).toBe(a)
       ids.push(dto.id)
     }
     // Force strictly-increasing created_at (back-to-back inserts can tie now()).

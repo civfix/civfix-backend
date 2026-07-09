@@ -154,7 +154,10 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     expect(msg.body).toBe("hi bob")
     expect(msg.cleanupId).toBe(THREAD)
     expect(msg.roomKind).toBe("dm")
-    expect(msg.from.id).toBe(ALICE)
+    // DM messages always have an author (no sender-less SYSTEM messages on the dm path); assert that
+    // before narrowing so the intent (author == Alice) stays explicit.
+    expect(msg.from).toBeTruthy()
+    expect(msg.from?.id).toBe(ALICE)
 
     expect(aConn.framesOfType("ack")).toHaveLength(1)
     expect(aConn.framesOfType("message")).toHaveLength(0)

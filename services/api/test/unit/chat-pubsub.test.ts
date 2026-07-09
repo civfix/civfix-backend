@@ -47,7 +47,10 @@ describe("Redis pub/sub fan-out across two workers (in-memory pub/sub)", () => {
     const frames = bConn.framesOfType("message")
     expect(frames).toHaveLength(1)
     expect((frames[0] as { message: ChatMessageDTO }).message.body).toBe("cross-worker hi")
-    expect((frames[0] as { message: ChatMessageDTO }).message.from.id).toBe(ALICE)
+    // This is an Alice-authored chat send, not a sender-less SYSTEM message, so `from` is always present
+    // here; assert that before narrowing so the intent (author == Alice) stays explicit.
+    expect((frames[0] as { message: ChatMessageDTO }).message.from).toBeTruthy()
+    expect((frames[0] as { message: ChatMessageDTO }).message.from?.id).toBe(ALICE)
   })
 
   it("publishes on the cleanup-scoped channel name", async () => {

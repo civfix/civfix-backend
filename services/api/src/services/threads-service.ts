@@ -209,6 +209,8 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
               lastFromMe,
               unread,
               members: agg.members,
+              // TODO(D-E1/D-E3): stamp real per-conversation mute from conversation_mutes
+              muted: false,
             },
             activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
           }
@@ -244,6 +246,8 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
               lastFromMe,
               unread: agg.unread,
               members: 2,
+              // TODO(D-E1/D-E3): stamp real per-conversation mute from conversation_mutes
+              muted: false,
             },
             activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
           }

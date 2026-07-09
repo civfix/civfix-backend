@@ -127,7 +127,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         randomUUID(),
       )
       ids.push(dto.id)
-      expect(dto.from.id).toBe(organizerId)
+      // This is an organizer-authored message, not a sender-less SYSTEM message, so `from` is always
+      // present here; assert that before narrowing so the intent (author == organizer) stays explicit.
+      expect(dto.from).toBeTruthy()
+      expect(dto.from?.id).toBe(organizerId)
     }
     // insertMessage stamps created_at = now(), which can TIE for back-to-back inserts; the table's uuid
     // id is random, not a send-order tiebreaker, so newest-first ordering of tied rows is unstable. Force
