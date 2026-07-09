@@ -19,6 +19,7 @@ import { registerSocialRoutes } from "./social.routes.js"
 import { registerVolunteerHoursRoutes } from "./volunteer-hours.routes.js"
 import { registerVerificationRoutes } from "./verification.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
+import { registerConversationRoutes } from "./conversations.routes.js"
 import { registerAdminRoutes } from "./admin/index.js"
 import { registerInboundMailWebhook } from "./webhooks/inbound-mail.routes.js"
 
@@ -53,6 +54,7 @@ export async function registerRoutes(
   await registerVolunteerHoursRoutes(app, container)
   await registerVerificationRoutes(app, container)
   await registerNotificationRoutes(app, container)
+  await registerConversationRoutes(app, container)
 
   if (opts.authMounted) {
     await registerAdminRoutes(app, container)
