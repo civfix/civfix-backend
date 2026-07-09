@@ -54,6 +54,7 @@ export interface ReportServiceOverrides {
   presignMedia?: ReportServiceDeps["presignMedia"]
   loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
   loadDiscussionMeta?: ReportServiceDeps["loadDiscussionMeta"]
+  loadReportChatMeta?: ReportServiceDeps["loadReportChatMeta"]
   joinReportChatAsOwner?: ReportServiceDeps["joinReportChatAsOwner"]
   /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
   reportChatEmitter?: ReportServiceDeps["reportChatEmitter"]
@@ -177,6 +178,9 @@ export async function registerReportRoutes(
         ...(overrides.loadDiscussionMeta !== undefined
           ? { loadDiscussionMeta: overrides.loadDiscussionMeta }
           : {}),
+        ...(overrides.loadReportChatMeta !== undefined
+          ? { loadReportChatMeta: overrides.loadReportChatMeta }
+          : {}),
         ...(overrides.joinReportChatAsOwner !== undefined
           ? { joinReportChatAsOwner: overrides.joinReportChatAsOwner }
           : {}),
@@ -217,6 +221,49 @@ export async function registerReportRoutes(
             jurisdiction !== null &&
             jurisdiction.contactEmail !== null &&
             jurisdiction.contactEmail !== "",
+        }
+      },
+      // D-Fmeta: viewer-scoped report-chat metadata for the report-DETAIL DTO only. joined + counts +
+      // unread in ONE query via correlated subqueries. member/message counts are report-wide (viewer
+      // independent). Unread mirrors the threads report source (threads-repository.drizzle.ts): non-deleted
+      // messages from OTHERS (`sender_id IS DISTINCT FROM` so system rows count) strictly after the
+      // viewer's watermark GREATEST(joined_at, COALESCE(last_read_at, epoch)); it is 0 for a non-member /
+      // anonymous viewer (no membership row). The message-count + unread subqueries ride
+      // chat_messages_report_created_idx (report_id, created_at DESC).
+      loadReportChatMeta: async (reportId, viewerUserId) => {
+        const rows = await sql<
+          { joined: boolean; member_count: number; message_count: number; unread: number }[]
+        >`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM report_chat_members m
+              WHERE m.report_id = ${reportId} AND m.user_id = ${viewerUserId}
+            ) AS joined,
+            (
+              SELECT count(*)::int FROM report_chat_members m WHERE m.report_id = ${reportId}
+            ) AS member_count,
+            (
+              SELECT count(*)::int
+              FROM chat_messages cm
+              WHERE cm.report_id = ${reportId} AND cm.deleted_at IS NULL
+            ) AS message_count,
+            COALESCE((
+              SELECT count(*)::int
+              FROM report_chat_members mem
+              JOIN chat_messages cm ON cm.report_id = mem.report_id
+              WHERE mem.report_id = ${reportId}
+                AND mem.user_id = ${viewerUserId}
+                AND cm.deleted_at IS NULL
+                AND cm.sender_id IS DISTINCT FROM ${viewerUserId}
+                AND cm.created_at > GREATEST(mem.joined_at, COALESCE(mem.last_read_at, to_timestamp(0)))
+            ), 0) AS unread
+        `
+        const row = rows[0]
+        return {
+          joined: row?.joined ?? false,
+          memberCount: row?.member_count ?? 0,
+          messageCount: row?.message_count ?? 0,
+          unread: row?.unread ?? 0,
         }
       },
       resolveJurisdictionGeoid: async (lat, lng) => {

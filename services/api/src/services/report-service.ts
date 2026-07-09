@@ -36,6 +36,7 @@ import {
   REPORTS_SEARCH_DEFAULT_LIMIT,
   type BBox,
   type ReportAutoForwardJob,
+  type ReportChatMeta,
   type ReportDiscussionMeta,
   type ReportMediaView,
   type ReportOwner,
@@ -115,10 +116,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       mediaPending?: number
       linkedEvents?: LinkedEventRef[]
       discussionMeta?: ReportDiscussionMeta | null
+      chatMeta?: ReportChatMeta | null
     },
   ): Promise<ReportDTO> {
     const mediaDTOs = await mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO)
     const meta = flags.discussionMeta ?? null
+    const chat = flags.chatMeta ?? null
     return {
       id: record.id,
       category: record.category,
@@ -150,6 +153,16 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
             canForwardToCity: meta.canForwardToCity,
           }
         : {}),
+      // D-Fmeta: report-chat membership + counts — populated ONLY on the report-detail path (getReport
+      // passes chatMeta). The list/pin builders leave chatMeta undefined so these fields are omitted.
+      ...(chat !== null
+        ? {
+            chatJoined: chat.joined,
+            chatMemberCount: chat.memberCount,
+            chatMessageCount: chat.messageCount,
+            chatUnread: chat.unread,
+          }
+        : {}),
     }
   }
 
@@ -163,6 +176,17 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     if (deps.loadDiscussionMeta === undefined) return null
     try {
       return await deps.loadDiscussionMeta(reportId)
+    } catch {
+      return null
+    }
+  }
+
+  // D-Fmeta: viewer-scoped report-chat metadata for the DETAIL DTO. Best-effort (a failure returns null,
+  // leaving the chat* fields undefined) so the detail fetch never fails on the chat metadata alone.
+  async function chatMetaFor(reportId: string, viewerId: string | null): Promise<ReportChatMeta | null> {
+    if (deps.loadReportChatMeta === undefined) return null
+    try {
+      return await deps.loadReportChatMeta(reportId, viewerId)
     } catch {
       return null
     }
@@ -252,7 +276,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.notFound("Report not found")
       }
 
-      const [media, timeline, following, validatingCount, linkedEvents, discussionMeta] =
+      const [media, timeline, following, validatingCount, linkedEvents, discussionMeta, chatMeta] =
         await Promise.all([
           deps.repo.findMediaForReport(record.id, mine),
           deps.repo.findTimelineForReport(record.id),
@@ -260,6 +284,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           deps.repo.countValidatingMediaForReport(record.id),
           linkedEventsFor(record.id),
           discussionMetaFor(record.id),
+          chatMetaFor(record.id, viewerId),
         ])
 
       const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
@@ -271,6 +296,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         mediaPending,
         linkedEvents,
         discussionMeta,
+        chatMeta,
       })
     },
 
