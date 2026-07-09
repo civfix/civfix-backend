@@ -27,6 +27,7 @@ export const de: Partial<Record<MessageKey, string>> = {
 
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "Neue Nachricht",
+  "notification.report_chat.title_fallback": "Neue Nachricht",
 
   "notification.message.no_preview": "Hat dir eine Nachricht gesendet",
 

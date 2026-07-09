@@ -37,6 +37,7 @@ import {
   type ThreadsRepository,
 } from "../services/threads-service.js"
 import type { NotificationService } from "../services/notification-service.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 
 export interface ChatGatewayOverrides {
   isMember: IsMemberFn
@@ -50,6 +51,7 @@ export interface ChatGatewayOverrides {
   chatMentions?: GatewayChatMentions
   reportVisible?: ReportVisibleFn
   reportChat?: ReportChatRepository
+  conversationMutes?: ConversationMutesRepository
 }
 
 declare module "fastify" {
