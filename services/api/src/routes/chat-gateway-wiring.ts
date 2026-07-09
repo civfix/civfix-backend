@@ -16,6 +16,7 @@ import {
 import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
+import { makeReportChatRepository, type ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { forwardReportCityMention } from "../services/report-city-forward.js"
@@ -51,6 +52,7 @@ export interface ChatWiring {
   isBlockedEitherWay: IsBlockedEitherWayFn
   dmPeerOf: (threadId: string, userId: string) => Promise<string | null>
   getChatRepo(): ChatRepository
+  getReportChatRepo(): ReportChatRepository
   listDmThreadsFor: (userId: string, limit?: number) => Promise<Awaited<ReturnType<DmRepository["listThreadsForUser"]>>>
 }
 
@@ -98,6 +100,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   let chatRepo: ChatRepository | undefined
   const getChatRepo = (): ChatRepository =>
     overrides?.chatRepo ?? (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, presignMedia))
+
+  let reportChatRepo: ReportChatRepository | undefined
+  const getReportChatRepo = (): ReportChatRepository =>
+    overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
 
   const dmPeerOf = async (threadId: string, userId: string): Promise<string | null> => {
     const t = await dmRepo.getThread(threadId)
@@ -308,6 +314,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     onReportMessage,
     reportVisible,
     reportSendLimiter,
+    // Injected into the socket so member-only send/typing + ack watermark share ONE instance with the
+    // routes (via getReportChatRepo). Gated on useFakeChat like reportVisible/onReportMessage: the fake
+    // path has no DB, so under fake-chat the socket falls back to public send (matching pre-D-C3).
+    reportChat: overrides?.reportChat ?? (useFakeChat ? undefined : getReportChatRepo()),
     webOrigins: container.env.WEB_ORIGINS,
   })
 
@@ -319,6 +329,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     isBlockedEitherWay,
     dmPeerOf,
     getChatRepo,
+    getReportChatRepo,
     listDmThreadsFor: (userId, limit) => dmRepo.listThreadsForUser(userId, limit),
   }
 }

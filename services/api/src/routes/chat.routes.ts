@@ -19,6 +19,7 @@ import { roomKeyFor } from "../ws/gateway.js"
 import { wireChatGateway } from "./chat-gateway-wiring.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import {
   type GatewayChatMentions,
   type IsMemberFn,
@@ -48,6 +49,7 @@ export interface ChatGatewayOverrides {
   notificationService?: NotificationService
   chatMentions?: GatewayChatMentions
   reportVisible?: ReportVisibleFn
+  reportChat?: ReportChatRepository
 }
 
 declare module "fastify" {

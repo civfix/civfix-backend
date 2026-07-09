@@ -89,6 +89,7 @@ async function authorizeRoom(
   kind: RoomKind,
   id: string,
   userId: string,
+  requireMember = false,
 ): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
   if (kind === "cleanup") {
     const ok = await deps.isMember(id, userId)
@@ -98,8 +99,13 @@ async function authorizeRoom(
     return { ok: true }
   }
   if (kind === "report") {
+    // Join is public: any authed socket that can SEE the report may open the room read-only.
     if (deps.reportVisible && !(await deps.reportVisible(id, userId))) {
       return { ok: false, code: "NOT_FOUND", message: "Report not found." }
+    }
+    // Posting / typing / presence require actual membership (Join button in the client).
+    if (requireMember && deps.reportChat && !(await deps.reportChat.isMember(id, userId))) {
+      return { ok: false, code: "FORBIDDEN", message: "Join this report chat to send messages." }
     }
     return { ok: true }
   }
@@ -175,7 +181,7 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     sendError(conn, "RATE_LIMITED", "You're sending messages too fast. Please slow down.", { kind, id })
     return
   }
-  const auth = await authorizeRoom(deps, kind, id, userId)
+  const auth = await authorizeRoom(deps, kind, id, userId, /* requireMember */ true)
   if (!auth.ok) {
     sendError(conn, auth.code, auth.message, { kind, id })
     return
@@ -291,7 +297,7 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
-  const auth = await authorizeRoom(deps, kind, id, userId)
+  const auth = await authorizeRoom(deps, kind, id, userId, /* requireMember */ kind === "report")
   if (!auth.ok) {
     sendError(conn, auth.code, auth.message, { kind, id })
     return
@@ -323,7 +329,11 @@ async function handleAck(session: GatewaySession, frame: ExtractFrame<"ack">): P
     id = decoded.id
   }
   if (id === undefined) return
-  if (kind === "report_discussion" || kind === "report") return
+  if (kind === "report_discussion") return
+  if (kind === "report") {
+    if (deps.reportChat) await deps.reportChat.advanceReadWatermark(id, userId, frame.upToId)
+    return
+  }
   if (kind === "dm") {
     if (deps.dm && (await deps.dm.peerOf(id, userId)) !== null) {
       await deps.dm.markRead(id, userId, frame.upToId)

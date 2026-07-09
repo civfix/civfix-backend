@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import {
   handleClientFrame,
   type GatewayDeps,
+  type GatewayReportChat,
   type GatewaySession,
   type OnReportMessage,
 } from "../../src/ws/gateway.js"
@@ -86,6 +87,9 @@ let mail: SpyOutboundMail
 let visibleReports: Set<string>
 let sendLimiter: RateLimiter | undefined
 let cityForwardSeen: Map<string, number>
+// Membership repo fake (D-C3): report rooms are member-only to post/type; ack advances a watermark.
+// When left undefined, deps.reportChat is omitted (backward-compat: send/typing fall back to public).
+let reportChat: GatewayReportChat | undefined
 
 function canForwardCity(reportId: string, geoid: string): boolean {
   const key = `${reportId}:${geoid}`
@@ -115,6 +119,7 @@ function sessionFor(userId: string, conn: MockConnection): GatewaySession {
     onReportMessage,
     reportVisible: (reportId: string) => Promise.resolve(visibleReports.has(reportId)),
     ...(sendLimiter ? { reportSendLimiter: sendLimiter } : {}),
+    ...(reportChat ? { reportChat } : {}),
   }
   return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
 }
@@ -128,6 +133,7 @@ beforeEach(() => {
   visibleReports = new Set<string>([REPORT])
   sendLimiter = undefined
   cityForwardSeen = new Map<string, number>()
+  reportChat = undefined
 })
 
 describe("report chat gateway", () => {
@@ -261,6 +267,108 @@ describe("report chat gateway", () => {
     expect(page.items).toHaveLength(1)
     expect(page.items[0]!.roomKind).toBe("report")
     expect(page.items[0]!.body).toBe("public msg")
+  })
+})
+
+describe("report chat gateway — member-only send/typing + read watermark (D-C3)", () => {
+  function makeReportChat(isMember: boolean): GatewayReportChat & { advanceReadWatermark: ReturnType<typeof vi.fn> } {
+    return {
+      isMember: () => Promise.resolve(isMember),
+      advanceReadWatermark: vi.fn(() => Promise.resolve()),
+    }
+  }
+
+  it("still authorizes a report JOIN by a NON-member socket (public join preserved)", async () => {
+    reportChat = makeReportChat(false)
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+
+    expect(conn.framesOfType("error")).toHaveLength(0)
+    expect(conn.framesOfType("presence_snapshot")).toHaveLength(1)
+    expect(session.joined.has(`report:${REPORT}`)).toBe(true)
+  })
+
+  it("refuses a report SEND by a non-member with a single room-scoped FORBIDDEN frame (no persist, no broadcast)", async () => {
+    reportChat = makeReportChat(false)
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "let me in" }),
+    )
+
+    const errors = conn.framesOfType("error")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ type: "error", code: "FORBIDDEN", roomKind: "report", cleanupId: REPORT })
+    expect(conn.framesOfType("ack")).toHaveLength(0)
+    expect(conn.framesOfType("message")).toHaveLength(0)
+    expect(chatRepo.count(REPORT)).toBe(0)
+  })
+
+  it("persists + broadcasts + acks a report SEND by a MEMBER, and still fires the @city forward", async () => {
+    reportChat = makeReportChat(true)
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    // A second socket in the same room to observe the broadcast (excludeConnId omits the sender).
+    const observerConn = new MockConnection("B")
+    const observer = sessionFor(ALICE, observerConn)
+    await handleClientFrame(observer, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "fix it @sf" }),
+    )
+    await new Promise((r) => setTimeout(r, 0))
+
+    // persisted through the shipped deps.chat.persist({ roomKind: "report" }) path
+    expect(chatRepo.count(REPORT)).toBe(1)
+    // ack to the sender
+    const acks = conn.framesOfType("ack")
+    expect(acks).toHaveLength(1)
+    expect((acks[0] as { message: { roomKind?: string } }).message.roomKind).toBe("report")
+    // broadcast (excludeConnId) reaches the other socket, not the sender
+    expect(observerConn.framesOfType("message")).toHaveLength(1)
+    expect(conn.framesOfType("message")).toHaveLength(0)
+    // @city hook still fires
+    expect(mail.reportCalls).toHaveLength(1)
+    expect(mail.reportCalls[0]!.geoid).toBe("0600001")
+  })
+
+  it("advances the report read watermark on ACK (was a no-op)", async () => {
+    const rc = makeReportChat(true)
+    reportChat = rc
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(session, JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "hi" }))
+    const UP_TO = "55555555-5555-5555-5555-555555555555"
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "ack", cleanupId: REPORT, roomKind: "report", upToId: UP_TO }),
+    )
+
+    expect(rc.advanceReadWatermark).toHaveBeenCalledTimes(1)
+    expect(rc.advanceReadWatermark).toHaveBeenCalledWith(REPORT, ALICE, UP_TO)
+  })
+
+  it("suppresses report TYPING from a non-member (error frame, no typing broadcast)", async () => {
+    reportChat = makeReportChat(false)
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    // Observer joins to prove no typing frame is fanned out.
+    const observerConn = new MockConnection("B")
+    const observer = sessionFor(ALICE, observerConn)
+    await handleClientFrame(observer, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    observerConn.sent.length = 0
+    await handleClientFrame(session, JSON.stringify({ type: "typing", cleanupId: REPORT, roomKind: "report" }))
+
+    const errors = conn.framesOfType("error")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ code: "FORBIDDEN", roomKind: "report", cleanupId: REPORT })
+    expect(observerConn.framesOfType("typing")).toHaveLength(0)
   })
 })
 
