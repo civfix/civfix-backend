@@ -16,15 +16,19 @@ export const chatMessages = pgTable(
       .default(sql`gen_random_uuid()`),
     cleanupId: uuid("cleanup_id").references(() => cleanups.id),
     reportId: uuid("report_id").references(() => reports.id),
-    senderId: uuid("sender_id")
-      .notNull()
-      .references(() => users.id),
+    // Nullable: a SYSTEM message (report status/timeline event posted into report chat) has no
+    // author. See drizzle/0040_chat_system_messages.sql.
+    senderId: uuid("sender_id").references(() => users.id),
     body: text("body"),
     kind: text("kind").$type<ChatMessageKind>().notNull().default("text"),
     attachments: jsonb("attachments"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     editedAt: timestamp("edited_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    // Structured payload for kind:"system" rows. Nullable; NULL on every non-system row.
+    systemStatus: text("system_status"),
+    systemKind: text("system_kind"),
+    systemBody: text("system_body"),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.createdAt] }),

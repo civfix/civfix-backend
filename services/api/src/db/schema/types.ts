@@ -123,6 +123,7 @@ export const CHAT_MESSAGE_KIND_VALUES = [
   "share_pin",
   "task_complete",
   "rsvp_change",
+  "system",
 ] as const
 
 /** notifications.type. Mirrors shared NotificationTypeSchema. */
@@ -135,6 +136,7 @@ export const NOTIFICATION_TYPE_VALUES = [
   "claim_available",
   "dm",
   "system",
+  "report_chat",
 ] as const
 
 /** push_tokens.platform. Mirrors the shared PushPlatformSchema. */
@@ -145,6 +147,13 @@ export const OAUTH_PROVIDER_VALUES = ["apple", "google", "email"] as const
 
 /** cleanup_members.role. Mirrors shared CleanupMemberRoleSchema. */
 export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "member"] as const
+
+/**
+ * report_chat_members.role. Used by the report-chat membership table added in the next task
+ * (D-B2 or similar); defined here now so it's available where needed. No shared Zod schema to
+ * mirror yet (report chat membership is backend-internal), so no drift-guard entry.
+ */
+export const REPORT_CHAT_ROLE_VALUES = ["owner", "member"] as const
 
 /** abuse_flags.subject_type. Mirrors shared AbuseSubjectTypeSchema. */
 export const ABUSE_SUBJECT_TYPE_VALUES = ["report", "media", "user", "anon_token"] as const
