@@ -234,6 +234,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "approved", input.actorId)
         if (!resolved) return null
+        let publishedReport = false
         if (resolved.subject_type === "report") {
           const published = await tx<{ id: string }[]>`
             UPDATE reports
@@ -242,6 +243,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             RETURNING id
           `
           if (published.length > 0) {
+            publishedReport = true
             await tx`
               INSERT INTO report_timeline (report_id, status, note, actor_id)
               VALUES (${resolved.subject_id}, 'published', ${"Approved in moderation"}, ${input.actorId})
@@ -259,7 +261,10 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
           },
         })
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
-        return toRecord(resolved, media)
+        const record = toRecord(resolved, media)
+        // D-D1: signal the report-chat mirror ONLY when a held report actually became published.
+        if (publishedReport) record.reportTimelineStatus = "published"
+        return record
       })
     },
 
@@ -271,7 +276,8 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         const resolved = await resolveItem(tx, id, "removed", input.actorId)
         if (!resolved) return null
         const removed = await tombstoneSubject(tx, resolved.subject_type, resolved.subject_id)
-        if (removed && resolved.subject_type === "report") {
+        const removedReport = removed && resolved.subject_type === "report"
+        if (removedReport) {
           await tx`
             INSERT INTO report_timeline (report_id, status, note, actor_id)
             VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? "Removed in moderation"}, ${input.actorId})
@@ -292,7 +298,10 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
           },
         })
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
-        return toRecord(resolved, media)
+        const record = toRecord(resolved, media)
+        // D-D1: signal the report-chat mirror ONLY when a report was actually tombstoned.
+        if (removedReport) record.reportTimelineStatus = "rejected"
+        return record
       })
     },
 

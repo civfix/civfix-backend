@@ -200,15 +200,22 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       const flagged = await deps.repo.toggleFlag(id, input)
       if (flagged === null) throw AppError.notFound("Report not found")
       // The flag toggle writes a timeline row at the report's CURRENT status; reflect it into the chat.
-      // We re-read the report so the system message carries the same status the timeline row got.
-      const record = await deps.repo.getReport(id)
-      if (record) {
-        await emitTimeline({
-          reportId: id,
-          status: record.status,
-          kind: "status",
-          note: flagged ? "Flagged for review" : "Flag cleared",
-        })
+      // We re-read the report so the system message carries the same status the timeline row got. The flag
+      // change has ALREADY committed, so this read-back + emit is fully best-effort: a read failure here
+      // must NOT reject flag() (that would 500 the admin + a retry double-toggles) — swallow it. (emit is
+      // independently best-effort; the try also covers the read that emit itself can't guard.)
+      try {
+        const record = await deps.repo.getReport(id)
+        if (record) {
+          await emitTimeline({
+            reportId: id,
+            status: record.status,
+            kind: "status",
+            note: flagged ? "Flagged for review" : "Flag cleared",
+          })
+        }
+      } catch {
+        /* system-message reflection is best-effort; the flag mutation already committed. */
       }
       return flagged
     },

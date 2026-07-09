@@ -340,6 +340,29 @@ describe("admin reports mutations", () => {
     expect(repo.audits.at(-1)).toMatchObject({ action: "report.unflagged" })
   })
 
+  it("flag emits a report-chat system event carrying the report's current status", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "published", flagged: false })
+    await svc.flag("rep-1", { reason: "looks off", actorId: "op-1" })
+    expect(emitter.events).toEqual([
+      { reportId: "rep-1", status: "published", kind: "status", note: "Flagged for review" },
+    ])
+  })
+
+  it("flag still SUCCEEDS (returns the toggled state) even if the post-commit status read-back throws", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", flagged: false })
+    // The flag toggle has already committed; simulate the read-back (added only to recover the status for
+    // the chat mirror) throwing. It must NOT reject flag() — a 500 here would leave the admin thinking the
+    // flag failed (and a retry would double-toggle).
+    repo.getReport = () => Promise.reject(new Error("read boom"))
+    const on = await svc.flag("rep-1", { reason: "looks off", actorId: "op-1" })
+    expect(on).toBe(true)
+    expect(repo.reports.get("rep-1")?.record.flagged).toBe(true)
+    // The read-back failed, so no system message was mirrored — but the flag change stuck.
+    expect(emitter.events).toHaveLength(0)
+  })
+
   it("remove sets status rejected, appends a timeline row, and audits", async () => {
     const { repo, svc } = harness()
     repo.seedReport({ id: "rep-1", status: "submitted" })
