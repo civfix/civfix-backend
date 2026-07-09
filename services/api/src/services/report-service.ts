@@ -219,6 +219,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           toReportDTO(record, media, timeline, { mine: true, following: false }),
       })
 
+      // Auto-join the creator as an OWNER of the report chat. Done AFTER createReportTx returns (the
+      // report row is committed) because report_chat_members.report_id references reports.id. Best-effort:
+      // a join failure must not fail report creation.
+      await maybeJoinReportChatAsOwner(deps, result.snapshot.id, owner.userId)
+
       await maybeEnqueueAutoForward(deps, reportId, owner.userId)
 
       await maybeAwardReportHours(
@@ -398,5 +403,18 @@ async function maybeAwardReportHours(
     await deps.awardReportHours(userId, reportId, geoid)
   } catch (err) {
     deps.logger?.warn({ err, reportId }, "volunteer-hours: report award failed")
+  }
+}
+
+async function maybeJoinReportChatAsOwner(
+  deps: ReportServiceDeps,
+  reportId: string,
+  userId: string,
+): Promise<void> {
+  if (deps.joinReportChatAsOwner === undefined) return
+  try {
+    await deps.joinReportChatAsOwner(reportId, userId)
+  } catch (err) {
+    deps.logger?.warn({ err, reportId }, "report-chat: creator auto-join failed")
   }
 }

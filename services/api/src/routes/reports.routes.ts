@@ -36,6 +36,7 @@ import { makeDrizzleReportRepository } from "../services/report-repository.drizz
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
 import { route } from "../versioning/route.js"
@@ -52,6 +53,7 @@ export interface ReportServiceOverrides {
   presignMedia?: ReportServiceDeps["presignMedia"]
   loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
   loadDiscussionMeta?: ReportServiceDeps["loadDiscussionMeta"]
+  joinReportChatAsOwner?: ReportServiceDeps["joinReportChatAsOwner"]
   newId?: ReportServiceDeps["newId"]
   now?: ReportServiceDeps["now"]
 }
@@ -172,6 +174,9 @@ export async function registerReportRoutes(
         ...(overrides.loadDiscussionMeta !== undefined
           ? { loadDiscussionMeta: overrides.loadDiscussionMeta }
           : {}),
+        ...(overrides.joinReportChatAsOwner !== undefined
+          ? { joinReportChatAsOwner: overrides.joinReportChatAsOwner }
+          : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
@@ -182,6 +187,7 @@ export async function registerReportRoutes(
     const cleanupRepo = makeDrizzleCleanupRepository(sql)
     const discussionRepo = makeDrizzleDiscussionRepository(sql)
     const chatRepo = makeDrizzleChatRepository(sql)
+    const reportChatRepo = makeReportChatRepository(sql)
     return makeReportService({
       repo,
       loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
@@ -225,6 +231,7 @@ export async function registerReportRoutes(
       isReportVerified: (userId) => isReportVerified(sql, userId),
       awardReportHours: (userId, reportId, geoid) =>
         container.getVolunteerHoursRepo().awardReportHours(userId, reportId, geoid),
+      joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
       logger: app.log,
     })
   }

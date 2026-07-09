@@ -3,6 +3,8 @@ import {
   ReportChatHistoryRequestSchema,
   DeleteReportMessageRequestSchema,
   ToggleReportMessageReactionRequestSchema,
+  JoinReportChatRequestSchema,
+  LeaveReportChatRequestSchema,
   IdSchema,
   AppError,
   type ChatMessageDTO,
@@ -17,6 +19,10 @@ import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import { makeDrizzleChatRepository, type ChatRepository } from "../services/chat-repository.drizzle.js"
+import {
+  makeReportChatRepository,
+  type ReportChatRepository,
+} from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import type { DiscussionRepository } from "../services/discussion-service.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
@@ -36,6 +42,14 @@ export async function registerReportChatRoutes(app: FastifyInstance, container: 
   const getChatRepo = (): ChatRepository =>
     app.chatOverrides?.chatRepo ??
     (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+
+  // Report-chat MEMBERSHIP repo (report_chat_members). Mirrors getChatRepo: an injected fake
+  // (app.chatOverrides.reportChat) wins, else a lazily-built drizzle repo. Fake-chat route tests MUST
+  // supply chatOverrides.reportChat because the real repo touches the DB.
+  let reportChatRepo: ReportChatRepository | undefined
+  const getReportChatRepo = (): ReportChatRepository =>
+    app.chatOverrides?.reportChat ??
+    (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
 
   let discussionRepo: DiscussionRepository | undefined
   const getReportRepo = (): DiscussionRepository =>
@@ -63,6 +77,11 @@ export async function registerReportChatRoutes(app: FastifyInstance, container: 
     const { id, messageId } = parse(ReportChatMessageParamsSchema, request.params)
     parse(DeleteReportMessageRequestSchema, { id, messageId })
     await requireVisibleReport(id, userId)
+    // Report chat is view-only until you Join: a non-member cannot delete (mirrors deleteCleanupMessage's
+    // membership gate). The sender-ownership check inside softDeleteReport is the second gate.
+    if (!(await getReportChatRepo().isMember(id, userId))) {
+      throw AppError.forbidden("You can't delete this message.")
+    }
     const tombstone: ChatMessageDTO | null = await getChatRepo().softDeleteReport(id, messageId, userId)
     if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
     void Promise.resolve(
@@ -84,6 +103,10 @@ export async function registerReportChatRoutes(app: FastifyInstance, container: 
         messageId,
       })
       await requireVisibleReport(id, userId)
+      // View-only until you Join: only members may react to report messages.
+      if (!(await getReportChatRepo().isMember(id, userId))) {
+        throw AppError.forbidden("Join the chat to react to messages.")
+      }
       const reactions = makeChatReactionService({ chat: getChatRepo() })
       const updated: ChatMessageDTO = await reactions.toggleReportReaction(id, messageId, userId, body.emoji)
       void Promise.resolve(
@@ -97,4 +120,26 @@ export async function registerReportChatRoutes(app: FastifyInstance, container: 
       reply.status(200).send(updated)
     },
   )
+
+  route(app, "joinReportChat", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(ReportChatIdParamsSchema, request.params)
+    parse(JoinReportChatRequestSchema, { id })
+    // The report must still be visible to the joiner (do not let a held/private report be joined).
+    await requireVisibleReport(id, userId)
+    await getReportChatRepo().join(id, userId, "member")
+    // Nudge the joiner's own inbox so the newly-joined report chat surfaces (best-effort; the client also
+    // invalidates on the mutation).
+    void Promise.resolve(container.userChannel?.publishToUser(userId, { topic: "threads" })).catch(() => {})
+    reply.status(200).send({ ok: true })
+  })
+
+  route(app, "leaveReportChat", { preHandler: csrfProtect }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(ReportChatIdParamsSchema, request.params)
+    parse(LeaveReportChatRequestSchema, { id })
+    await getReportChatRepo().leave(id, userId)
+    void Promise.resolve(container.userChannel?.publishToUser(userId, { topic: "threads" })).catch(() => {})
+    reply.status(200).send({ ok: true })
+  })
 }

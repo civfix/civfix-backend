@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { buildServer } from "../../src/server.js"
@@ -36,6 +36,7 @@ async function makeHarness(
     geoid?: string | null
     seed?: (repo: InMemoryReportRepository) => void
     reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
+    joinReportChatAsOwner?: ReportServiceOverrides["joinReportChatAsOwner"]
   } = {},
 ): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
@@ -62,6 +63,9 @@ async function makeHarness(
     resolveJurisdictionGeoid: () =>
       Promise.resolve("geoid" in reportOpts ? (reportOpts.geoid ?? null) : "0644000"),
     ...(reportOpts.reverseGeocode ? { reverseGeocode: reportOpts.reverseGeocode } : {}),
+    ...(reportOpts.joinReportChatAsOwner
+      ? { joinReportChatAsOwner: reportOpts.joinReportChatAsOwner }
+      : {}),
     presignMedia: (r2Key, thumbKey) =>
       Promise.resolve(
         thumbKey === null
@@ -309,6 +313,54 @@ describe("POST /reports", () => {
     })
     expect(res.statusCode).toBe(422)
     expect(repo.reports.size).toBe(0)
+  })
+
+  // D-C2: the report's creator is auto-joined as an OWNER of its chat, once the report row is committed.
+  it("auto-joins the creator as an 'owner' of the report chat with the new report id", async () => {
+    const joinReportChatAsOwner = vi.fn(() => Promise.resolve())
+    const { app, token, userId } = await makeHarness({ joinReportChatAsOwner })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "graffiti",
+        type: "graffiti",
+        lat: 34.1,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json()
+    expect(joinReportChatAsOwner).toHaveBeenCalledTimes(1)
+    expect(joinReportChatAsOwner).toHaveBeenCalledWith(dto.id, userId)
+  })
+
+  // Best-effort: a chat auto-join failure must NOT fail report creation.
+  it("still returns 201 when the creator auto-join throws (best-effort side-effect)", async () => {
+    const joinReportChatAsOwner = vi.fn(() => Promise.reject(new Error("chat down")))
+    const { app, repo, token } = await makeHarness({ joinReportChatAsOwner })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "trash",
+        type: "dump",
+        lat: 34.1,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(joinReportChatAsOwner).toHaveBeenCalledTimes(1)
+    // The report was still persisted despite the auto-join failure.
+    expect(repo.reports.size).toBe(1)
   })
 })
 

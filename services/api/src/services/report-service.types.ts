@@ -198,6 +198,9 @@ export interface ReportServiceDeps {
   jobs?: Jobs
   isReportVerified?: (userId: string) => Promise<boolean>
   awardReportHours?: (userId: string, reportId: string, geoid: string | null) => Promise<void>
+  // Auto-join the report's creator as an "owner" member of its chat, once the report row is committed.
+  // Best-effort (see maybeJoinReportChatAsOwner): a failure here must NOT fail report creation.
+  joinReportChatAsOwner?: (reportId: string, userId: string) => Promise<void>
   logger?: { warn: (obj: unknown, msg?: string) => void }
   newId?: () => string
   now?: () => Date
