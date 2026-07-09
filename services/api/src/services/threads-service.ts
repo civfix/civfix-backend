@@ -124,6 +124,49 @@ export interface DmThreadsSource {
   listDmThreadsFor(userId: string, limit?: number): Promise<DmThreadAggregateView[]>
 }
 
+/** A per-thread aggregate row for one of the viewer's REPORT chats (member of report_chat_members). */
+export interface ReportThreadAggregateView {
+  reportId: string
+  /** Category label + short address, pre-formatted by the source (see makeDrizzleReportThreadsSource). */
+  title: string
+  members: number
+  /** Unread = messages after GREATEST(joined_at, last_read_at) not authored by the viewer. */
+  unread: number
+  last: {
+    body: string | null
+    createdAt: Date
+    /** NULL for a system message (report status/timeline event posted into report chat). */
+    senderId: string | null
+  } | null
+  /** Newest-activity baseline when the room has no messages (the viewer's joined_at). */
+  joinedAt: Date
+}
+
+/**
+ * The report half of the inbox: the viewer's report chats (member rows only), each with the report
+ * title + member count + last message + unread already computed in one pass. Optional on the service
+ * so the cleanup/dm-only test paths can omit it. `muted` is stamped by the service from the shared
+ * conversation-mutes seam (deps.mutes), NOT this source, so all three thread families flow through one
+ * batch mute lookup rather than a per-family bespoke query.
+ */
+export interface ReportThreadsSource {
+  listReportThreadsFor(userId: string, limit?: number): Promise<ReportThreadAggregateView[]>
+}
+
+/**
+ * Batch per-conversation mute seam (D-E1's conversation_mutes repo). For a family's `roomIds` (all the
+ * same `roomKind`), returns the subset the viewer has muted. Optional on the service: when absent the
+ * inbox fails open (every thread's `muted` is false). The service issues one call per family
+ * (cleanup / dm / report), each short-circuiting on an empty id list.
+ */
+export interface ThreadsMutesSource {
+  mutedRoomIdsFor(
+    userId: string,
+    roomKind: "cleanup" | "dm" | "report",
+    roomIds: string[],
+  ): Promise<Set<string>>
+}
+
 // The compact "ago" label uses the shared relativeAgo (the single source reconciled across backend + web +
 // mobile) verbatim so the server and both clients emit identical text for the same timestamp.
 
@@ -135,6 +178,14 @@ export interface ThreadsServiceDeps {
   readState: ChatReadState
   /** Optional DM thread source: when wired, the inbox merges DM threads with cleanup threads. */
   dm?: DmThreadsSource
+  /** Optional report-chat thread source: when wired, the inbox also merges the viewer's report chats. */
+  report?: ReportThreadsSource
+  /**
+   * Optional per-conversation mute source (conversation_mutes). When wired, the service stamps each
+   * thread's real `muted` state via one batch lookup per family. When absent, `muted` is false for all
+   * threads (fail-open — a missing mute store must never make the inbox unusable).
+   */
+  mutes?: ThreadsMutesSource
   /** Injectable clock (defaults to Date.now) so `ago` is deterministic in tests. */
   now?: () => Date
 }
@@ -171,6 +222,37 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
       limit: number = THREADS_DEFAULT_LIMIT,
     ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }> {
       const aggregates = await deps.repo.listThreadsFor(userId, limit)
+
+      // Fetch the report + dm aggregate rows up front so the three per-family mute lookups can run
+      // before any DTO is built (each DTO stamps its real `muted` from the family's muted set below).
+      const dmAggregates = deps.dm ? await deps.dm.listDmThreadsFor(userId, limit) : []
+      const reportAggregates = deps.report ? await deps.report.listReportThreadsFor(userId, limit) : []
+
+      // Real per-conversation mute (conversation_mutes): one batch lookup per family, keyed by the
+      // family's room ids (cleanup id / dm thread id / report id). Fails open when no mute source is
+      // wired — every thread is treated as un-muted rather than erroring the whole inbox. Each lookup
+      // short-circuits on an empty id list so an empty family costs no round-trip.
+      const mutedIdsFor = async (
+        roomKind: "cleanup" | "dm" | "report",
+        roomIds: string[],
+      ): Promise<Set<string>> =>
+        deps.mutes && roomIds.length > 0
+          ? await deps.mutes.mutedRoomIdsFor(userId, roomKind, roomIds)
+          : new Set<string>()
+      const [mutedCleanup, mutedDm, mutedReport] = await Promise.all([
+        mutedIdsFor(
+          "cleanup",
+          aggregates.map((a) => a.cleanupId),
+        ),
+        mutedIdsFor(
+          "dm",
+          dmAggregates.map((a) => a.threadId),
+        ),
+        mutedIdsFor(
+          "report",
+          reportAggregates.map((a) => a.reportId),
+        ),
+      ])
 
       // Each merged entry carries its DTO plus the activity timestamp used to sort cleanup + dm threads
       // into one inbox (last message time, else the room/thread creation/join baseline).
@@ -209,8 +291,7 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
               lastFromMe,
               unread,
               members: agg.members,
-              // TODO(D-E1/D-E3): stamp real per-conversation mute from conversation_mutes
-              muted: false,
+              muted: mutedCleanup.has(agg.cleanupId),
             },
             activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
           }
@@ -218,10 +299,9 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
       )
 
       // DM threads (when the source is wired). The dm aggregate already excludes any thread blocked either
-      // way and pre-computes peer + last + unread, so we just project into the MessageThreadDTO. Cap the DM
-      // scan to `limit` (the merge below keeps only the most-recent `limit` across both kinds anyway, so
-      // fetching more DM rows than that can never surface them — it only over-reads).
-      const dmAggregates = deps.dm ? await deps.dm.listDmThreadsFor(userId, limit) : []
+      // way and pre-computes peer + last + unread, so we just project into the MessageThreadDTO. dmAggregates
+      // was fetched above (capped to `limit`) alongside the report rows so the mute lookup could batch; the
+      // merge below keeps only the most-recent `limit` across all kinds anyway.
       const dmEntries = dmAggregates.map(
         (agg): { dto: MessageThreadDTO; activity: number } => {
           const lastFromMe = agg.last !== null && agg.last.senderId === userId
@@ -246,16 +326,42 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
               lastFromMe,
               unread: agg.unread,
               members: 2,
-              // TODO(D-E1/D-E3): stamp real per-conversation mute from conversation_mutes
-              muted: false,
+              muted: mutedDm.has(agg.threadId),
             },
             activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
           }
         },
       )
 
-      // Merge both kinds, most-recent-activity first, capped at `limit` (single page for Phase 1).
-      const merged = [...cleanupEntries, ...dmEntries].sort((a, b) => b.activity - a.activity)
+      // Report threads (when the source is wired). listReportThreadsFor already scoped to the viewer's
+      // report_chat_members rows and pre-computed members/unread/last + the display title; we just project
+      // it and stamp `muted` from the report muted set. A system message has senderId=null, so `=== userId`
+      // is false and lastFromMe stays false for it.
+      const reportEntries = reportAggregates.map(
+        (agg): { dto: MessageThreadDTO; activity: number } => {
+          const lastFromMe = agg.last !== null && agg.last.senderId === userId
+          return {
+            dto: {
+              id: agg.reportId,
+              kind: "report",
+              refId: agg.reportId,
+              title: agg.title,
+              last: agg.last !== null ? (agg.last.body ?? "") : null,
+              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+              lastFromMe,
+              unread: agg.unread,
+              members: agg.members,
+              muted: mutedReport.has(agg.reportId),
+            },
+            activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
+          }
+        },
+      )
+
+      // Merge all kinds, most-recent-activity first, capped at `limit` (single page for Phase 1).
+      const merged = [...cleanupEntries, ...dmEntries, ...reportEntries].sort(
+        (a, b) => b.activity - a.activity,
+      )
       const items = merged.slice(0, limit).map((e) => e.dto)
       return { items, nextCursor: null }
     },

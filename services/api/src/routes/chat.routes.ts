@@ -25,7 +25,10 @@ import {
   type IsMemberFn,
   type ReportVisibleFn,
 } from "../ws/gateway.js"
-import { makeDrizzleThreadsRepository } from "../services/threads-repository.drizzle.js"
+import {
+  makeDrizzleReportThreadsSource,
+  makeDrizzleThreadsRepository,
+} from "../services/threads-repository.drizzle.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
@@ -34,10 +37,14 @@ import {
   THREADS_DEFAULT_LIMIT,
   type ChatReadState,
   type DmThreadsSource,
+  type ReportThreadsSource,
   type ThreadsRepository,
 } from "../services/threads-service.js"
 import type { NotificationService } from "../services/notification-service.js"
-import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
+import {
+  makeConversationMutesRepository,
+  type ConversationMutesRepository,
+} from "../services/conversation-mutes-repository.drizzle.js"
 
 export interface ChatGatewayOverrides {
   isMember: IsMemberFn
@@ -52,6 +59,7 @@ export interface ChatGatewayOverrides {
   reportVisible?: ReportVisibleFn
   reportChat?: ReportChatRepository
   conversationMutes?: ConversationMutesRepository
+  reportThreadsSource?: ReportThreadsSource
 }
 
 declare module "fastify" {
@@ -79,7 +87,24 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     const threadsRepo: ThreadsRepository = overrides
       ? overrides.threadsRepo
       : makeDrizzleThreadsRepository(container.getDb().sql)
-    const threads = makeThreadsService({ repo: threadsRepo, readState: wiring.readState, dm: dmThreadsSource })
+    // The report-chat half of the inbox + the per-conversation mute seam. Both are DB-backed off the
+    // shared sql tag in production. When chatOverrides is present (the no-DB route tests inject only a
+    // fake threadsRepo) we do NOT touch container.getDb() — mirroring the threadsRepo branch above — and
+    // instead honor the optional override fields: an absent reportThreadsSource means "no report half"
+    // and an absent conversationMutes means "fail open" (muted=false), so those tests need not wire them.
+    const reportThreadsSource: ReportThreadsSource | undefined = overrides
+      ? overrides.reportThreadsSource
+      : makeDrizzleReportThreadsSource(container.getDb().sql)
+    const mutes: ConversationMutesRepository | undefined = overrides
+      ? overrides.conversationMutes
+      : makeConversationMutesRepository(container.getDb().sql)
+    const threads = makeThreadsService({
+      repo: threadsRepo,
+      readState: wiring.readState,
+      dm: dmThreadsSource,
+      report: reportThreadsSource,
+      mutes,
+    })
     const result = await threads.listThreads(userId, limit)
     const payload: ListThreadsResponse = { items: result.items, nextCursor: result.nextCursor }
     reply.status(200).send(payload)
