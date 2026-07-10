@@ -1,10 +1,7 @@
 
 import {
   AdminReportListQuerySchema,
-  DiscussionHistoryQuerySchema,
   FlagReportRequestSchema,
-  IdSchema,
-  RemoveDiscussionMessageRequestSchema,
   RemoveReportRequestSchema,
   RouteReportRequestSchema,
   SendFollowupRequestSchema,
@@ -13,13 +10,10 @@ import {
   type AdminOkResponse,
   type AdminReportDTO,
   type AdminReportListResponse,
-  type DiscussionMessageDTO,
-  type DiscussionPageResponse,
   type RouteReportResponse,
   type SetReportVerdictResponse,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
-import { z } from "zod"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
@@ -38,13 +32,6 @@ import {
 import { makeDrizzleMailRepository } from "../../services/admin/mail-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.drizzle.js"
 import { makeMediaPresigner } from "../../services/media-presign.js"
-import {
-  makeDiscussionService,
-  type DiscussionRepository,
-  type DiscussionService,
-} from "../../services/discussion-service.js"
-import { makeDrizzleDiscussionRepository } from "../../services/discussion-repository.drizzle.js"
-import { roomKeyFor } from "../../ws/gateway.js"
 import { writeAudit } from "../../services/admin/audit.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
@@ -59,7 +46,6 @@ export interface AdminReportRouteOverrides {
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, import("../../services/cleanup-service.js").LinkedEventView[]>>
-  discussionRepo?: DiscussionRepository
   now?: () => Date
   /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
   reportChatEmitter?: ReportChatSystemEmitter
@@ -111,37 +97,6 @@ export async function registerAdminReportsRoutes(
       // D-D1: mirror every timeline event this service writes into the report chat (best-effort, no-op
       // under fake-chat). Built from container primitives so it needs no chat-gateway wiring instances.
       reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
-    })
-  }
-
-  function discussionService(): DiscussionService {
-    const overrides = app.adminReportOverrides
-    const sql = overrides ? undefined : container.getDb().sql
-    const repo: DiscussionRepository =
-      overrides?.discussionRepo ?? makeDrizzleDiscussionRepository(sql!)
-    const outboundMail =
-      overrides?.outboundMail ??
-      makeOutboundMailService({
-        repo: makeDrizzleMailRepository(sql!),
-        mailer: container.mailer,
-        env: {
-          MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-          MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-        },
-      })
-    return makeDiscussionService({
-      repo,
-      outboundMail,
-      presignMedia: makeMediaPresigner(container.storage),
-      broadcast: (reportId, event) => {
-        void Promise.resolve(
-          container.chatService.broadcastEvent?.(roomKeyFor("report_discussion", reportId), {
-            type: "discussion",
-            reportId,
-            event,
-          }),
-        ).catch(() => {})
-      },
     })
   }
 
@@ -227,47 +182,5 @@ export async function registerAdminReportsRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "getAdminReportDiscussion", async (request, reply) => {
-    const { id } = idParam(request)
-    const q = parse(DiscussionHistoryQuerySchema, request.query)
-    const payload: DiscussionPageResponse = await discussionService().listForOperator(
-      id,
-      q.cursor ?? null,
-      q.limit ?? 0,
-    )
-    reply.status(200).send(payload)
-  })
-
-  route(app, "removeDiscussionMessage", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, messageId } = parse(MessageParamsSchema, request.params)
-    const body = parse(RemoveDiscussionMessageRequestSchema, {
-      ...(request.body as object),
-      id,
-      messageId,
-    })
-    const dto: DiscussionMessageDTO = await discussionService().deleteMessage(id, messageId, {
-      userId: operatorId,
-      isOperator: true,
-    })
-    if (!app.adminReportOverrides) {
-      try {
-        await writeAudit(container.getDb().sql, {
-          actorId: operatorId,
-          action: "moderation.removed",
-          target: `report_discussion_message:${messageId}`,
-          meta: {
-            reportId: id,
-            ...(body.reason !== undefined && body.reason !== "" ? { reason: body.reason } : {}),
-          },
-        })
-      } catch (err) {
-        request.log.warn({ err }, "removeDiscussionMessage: audit write failed")
-      }
-    }
-    reply.status(200).send(dto)
-  })
 }
-
-const MessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()
 

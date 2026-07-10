@@ -1,6 +1,5 @@
 import { buildDiscussionForwardPacket } from "./admin/mail-format.js"
-import { parseCityMention } from "./discussion-mentions.js"
-import { effectiveJurisdictionHandle } from "./discussion-projection.js"
+import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 import type { OutboundMailService } from "./admin/outbound-mail-service.js"
 import type { ReportForwardAudit } from "./report-forward-audit.drizzle.js"
 import type { ReportJurisdictionView } from "./discussion-types.js"

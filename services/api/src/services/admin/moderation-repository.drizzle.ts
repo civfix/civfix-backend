@@ -455,9 +455,9 @@ async function resolveSubjectAuthor(
       return r[0]?.reporter_user_id ?? null
     }
     case "comment": {
-      const r = await tx<{ author_user_id: string | null }[]>`
-        SELECT author_user_id FROM report_discussion_messages WHERE id = ${subjectId} LIMIT 1`
-      return r[0]?.author_user_id ?? null
+      // The per-report discussion system (report_discussion_messages) was removed; no new "comment"
+      // moderation subjects are created. Left inert so any legacy row resolves to no author.
+      return null
     }
     case "chat": {
       const r = await tx<{ sender_id: string | null }[]>`
@@ -475,13 +475,14 @@ async function resolveSubjectAuthor(
       return r[0]?.organizer_user_id ?? null
     }
     case "photo": {
-      const r = await tx<{ reporter_user_id: string | null; author_user_id: string | null }[]>`
-        SELECT rep.reporter_user_id, d.author_user_id
+      // media_assets.discussion_message_id was dropped with the discussion system; a photo's owner is now
+      // resolved via its report only.
+      const r = await tx<{ reporter_user_id: string | null }[]>`
+        SELECT rep.reporter_user_id
         FROM media_assets m
         LEFT JOIN reports rep ON rep.id = m.report_id
-        LEFT JOIN report_discussion_messages d ON d.id = m.discussion_message_id
         WHERE m.id = ${subjectId} LIMIT 1`
-      return r[0]?.reporter_user_id ?? r[0]?.author_user_id ?? null
+      return r[0]?.reporter_user_id ?? null
     }
     default:
       return null
@@ -541,10 +542,8 @@ async function tombstoneSubject(
       return rows.length > 0
     }
     case "comment": {
-      const rows = await tx<{ id: string }[]>`
-        UPDATE report_discussion_messages SET deleted_at = now()
-        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
-      return rows.length > 0
+      // report_discussion_messages was dropped with the discussion system; nothing to tombstone.
+      return false
     }
     case "chat": {
       const rows = await tx<{ id: string }[]>`

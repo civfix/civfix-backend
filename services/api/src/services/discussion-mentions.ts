@@ -44,6 +44,15 @@ export function jurisdictionHandle(name: string | null | undefined): string | nu
 }
 
 /**
+ * Resolve a jurisdiction's effective @handle: the stored `handle` column, else derived on the fly from the
+ * name via jurisdictionHandle (may be null). Used by the report-chat @city-forward path (report-city-forward
+ * + chat-repository) to decide whether a chat message @mentions its report's own jurisdiction.
+ */
+export function effectiveJurisdictionHandle(j: { handle: string | null; name: string }): string | null {
+  return j.handle ?? jurisdictionHandle(j.name)
+}
+
+/**
  * Word-boundary-ish characters that may precede/follow an "@handle" token. We treat anything that is NOT a
  * handle character (alphanumeric or underscore) as a boundary, so "@sf" matches in "hey @sf please fix" and
  * "(@sf)" but NOT inside "email@sf" (the "@" is preceded by a word char) or "@sfo" (trailing word char).

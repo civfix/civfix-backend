@@ -10,7 +10,6 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core"
-import { reportDiscussionMessages } from "./discussion.js"
 import { reports } from "./reports.js"
 import type { MEDIA_KIND_VALUES, MEDIA_PURPOSE_VALUES, MEDIA_STATUS_VALUES } from "./types.js"
 
@@ -25,10 +24,6 @@ export const mediaAssets = pgTable(
       .primaryKey()
       .default(sql`gen_random_uuid()`),
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
-    discussionMessageId: uuid("discussion_message_id").references(
-      () => reportDiscussionMessages.id,
-      { onDelete: "set null" },
-    ),
     chatMessageId: uuid("chat_message_id"),
     uploadId: uuid("upload_id").notNull(),
     kind: text("kind").$type<MediaKind>().notNull(),
@@ -46,7 +41,6 @@ export const mediaAssets = pgTable(
   (t) => [
     uniqueIndex("media_assets_upload_id_key").on(t.uploadId),
     index("media_assets_report_idx").on(t.reportId),
-    index("media_assets_discussion_message_idx").on(t.discussionMessageId),
     index("media_assets_chat_message_idx")
       .on(t.chatMessageId)
       .where(sql`${t.chatMessageId} is not null`),

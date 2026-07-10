@@ -3,10 +3,10 @@
  *
  *   PUT /conversations/mute   [auth][csrf]   toggle mute for one room   -> ToggleMuteResponse
  *
- * The shared `RoomKind` (ws-frame room kind) carries FOUR values: 'cleanup' | 'dm' | 'report' |
- * 'report_discussion'. The conversation_mutes table (and its repo) only supports THREE mute targets
- * -- 'report_discussion' is intentionally excluded (see src/db/schema/conversation_mutes.ts header) --
- * so a 'report_discussion' roomKind is rejected here as a validation error rather than reaching the repo.
+ * The shared `RoomKind` (ws-frame room kind) carries three values: 'cleanup' | 'dm' | 'report', all of
+ * which the conversation_mutes table models. (The former 'report_discussion' room kind was removed with
+ * the discussion system.) `isMutableRoomKind` still gates defensively so any future non-mutable room kind
+ * is rejected as a validation error rather than reaching the repo.
  *
  * The repo is reached lazily via the container (production: the Drizzle repo) or an injected override
  * (tests: a fake so the route runs with no database), mirroring notifications.routes.ts's repo() seam.

@@ -112,7 +112,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     timeline: ReportTimelineView[],
     flags: {
       mine: boolean
-      following: boolean
       mediaPending?: number
       linkedEvents?: LinkedEventRef[]
       discussionMeta?: ReportDiscussionMeta | null
@@ -140,7 +139,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(record.publishedAt !== null ? { publishedAt: record.publishedAt.toISOString() } : {}),
       mine: flags.mine,
       gov: false,
-      following: flags.following,
+      // `following` is a deprecated, always-false field on ReportDTO: the per-report follow/subscribe
+      // surface (report_follows) was removed with the discussion system. Kept on the DTO so older clients
+      // still parse; report chat is now the notification channel.
+      following: false,
       media: mediaDTOs,
       mediaPending: flags.mediaPending ?? 0,
       timeline: timeline.map(toTimelineDTO),
@@ -240,7 +242,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         timelineNote: null,
         idempotency: { key: input.idempotencyKey, scope: REPORT_CREATE_SCOPE, userOrAnon: owner.userId },
         buildSnapshot: (record, media, timeline) =>
-          toReportDTO(record, media, timeline, { mine: true, following: false }),
+          toReportDTO(record, media, timeline, { mine: true }),
       })
 
       // Auto-join the creator as an OWNER of the report chat. Done AFTER createReportTx returns (the
@@ -276,11 +278,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.notFound("Report not found")
       }
 
-      const [media, timeline, following, validatingCount, linkedEvents, discussionMeta, chatMeta] =
+      const [media, timeline, validatingCount, linkedEvents, discussionMeta, chatMeta] =
         await Promise.all([
           deps.repo.findMediaForReport(record.id, mine),
           deps.repo.findTimelineForReport(record.id),
-          viewerId !== null ? deps.repo.isFollowing(viewerId, record.id) : Promise.resolve(false),
           deps.repo.countValidatingMediaForReport(record.id),
           linkedEventsFor(record.id),
           discussionMetaFor(record.id),
@@ -292,7 +293,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       return toReportDTO(record, media, timeline, {
         mine,
-        following,
         mediaPending,
         linkedEvents,
         discussionMeta,
@@ -306,10 +306,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const { records, nextCursor } = await deps.repo.listMyReports(userId, cursor, limit)
 
       const ids = records.map((r) => r.id)
-      const [mediaById, timelineById, followed, linkedEventsById] = await Promise.all([
+      const [mediaById, timelineById, linkedEventsById] = await Promise.all([
         deps.repo.findMediaForReports(ids, true),
         deps.repo.findTimelineForReports(ids),
-        deps.repo.findFollowedReportIds(userId, ids),
         deps.loadLinkedEventsForReports !== undefined
           ? deps.loadLinkedEventsForReports(ids)
           : Promise.resolve(new Map<string, LinkedEventView[]>()),
@@ -318,7 +317,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, (record) =>
         toReportDTO(record, mediaById.get(record.id) ?? [], timelineById.get(record.id) ?? [], {
           mine: true,
-          following: followed.has(record.id),
           linkedEvents: (linkedEventsById.get(record.id) ?? []).map(toLinkedEventRef),
         }),
       )
@@ -360,18 +358,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       )
 
       return { items, nextCursor }
-    },
-
-    async followReport(userId: string, reportId: string): Promise<{ following: boolean }> {
-      const exists = await deps.repo.addFollow(userId, reportId)
-      if (!exists) throw AppError.notFound("Report not found")
-      return { following: true }
-    },
-
-    async unfollowReport(userId: string, reportId: string): Promise<{ following: boolean }> {
-      const exists = await deps.repo.removeFollow(userId, reportId)
-      if (!exists) throw AppError.notFound("Report not found")
-      return { following: false }
     },
 
     async resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO> {

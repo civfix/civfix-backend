@@ -66,7 +66,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
   })
 
   beforeEach(async () => {
-    await h.sql`TRUNCATE user_moderation, report_timeline, report_follows, abuse_flags, audit_log, cleanup_members, cleanup_timeline, chat_messages, sessions RESTART IDENTITY CASCADE`
+    await h.sql`TRUNCATE user_moderation, report_timeline, abuse_flags, audit_log, cleanup_members, cleanup_timeline, chat_messages, sessions RESTART IDENTITY CASCADE`
     await h.sql`DELETE FROM cleanups`
     await h.sql`DELETE FROM reports`
     await h.sql`DELETE FROM users`

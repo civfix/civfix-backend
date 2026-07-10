@@ -129,8 +129,6 @@ export interface ReportRepository {
   findMediaForReports(reportIds: string[], ownerView?: boolean): Promise<Map<string, ReportMediaView[]>>
   findTimelineForReport(reportId: string): Promise<ReportTimelineView[]>
   findTimelineForReports(reportIds: string[]): Promise<Map<string, ReportTimelineView[]>>
-  isFollowing(userId: string, reportId: string): Promise<boolean>
-  findFollowedReportIds(userId: string, reportIds: string[]): Promise<Set<string>>
   listMyReports(
     userId: string,
     cursor: string | null,
@@ -149,8 +147,6 @@ export interface ReportRepository {
     cursor: string | null
     limit: number
   }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }>
-  addFollow(userId: string, reportId: string): Promise<boolean>
-  removeFollow(userId: string, reportId: string): Promise<boolean>
   resolveByOwner(
     reportId: string,
     userId: string,
@@ -245,8 +241,6 @@ export interface ReportService {
     zoom: number,
   ): Promise<ReportClusterResponse>
   searchReports(request: ReportSearchInput): Promise<ListReportsSearchResponse>
-  followReport(userId: string, reportId: string): Promise<{ following: boolean }>
-  unfollowReport(userId: string, reportId: string): Promise<{ following: boolean }>
   resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO>
   unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO>
 }

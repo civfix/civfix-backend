@@ -24,10 +24,25 @@ import {
   type ReportChatRepository,
 } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "../services/discussion-service.js"
+import type { DiscussionRepository } from "../services/discussion-types.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeMediaPresigner } from "../services/media-presign.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
+
+/**
+ * Test injection seam for the report-lookup the report-chat routes use (visibility + @city forward gating).
+ * A fake `repo` wins over the real drizzle repo so route tests can run without a DB. (Named `discussion*`
+ * for continuity with the fastify decoration key that predates the discussion system's removal.)
+ */
+export interface DiscussionServiceOverrides {
+  repo?: DiscussionRepository
+}
+
+declare module "fastify" {
+  interface FastifyInstance {
+    discussionOverrides?: DiscussionServiceOverrides
+  }
+}
 
 const ReportChatIdParamsSchema = z.object({ id: IdSchema }).strict()
 const ReportChatMessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()

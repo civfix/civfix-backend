@@ -6,7 +6,6 @@ import { registerAuthRoutes } from "./auth.routes.js"
 import { registerMapRoutes } from "./map.routes.js"
 import { registerMediaRoutes } from "./media.routes.js"
 import { registerReportRoutes } from "./reports.routes.js"
-import { registerDiscussionRoutes } from "./discussion.routes.js"
 import { registerAnonRoutes } from "./anon.routes.js"
 import { registerClaimRoutes } from "./claim.routes.js"
 import { registerCleanupRoutes } from "./cleanups.routes.js"
@@ -41,7 +40,6 @@ export async function registerRoutes(
   await registerMapRoutes(app, container)
   await registerMediaRoutes(app, container)
   await registerReportRoutes(app, container)
-  await registerDiscussionRoutes(app, container)
   await registerAnonRoutes(app, container)
   await registerClaimRoutes(app, container)
   await registerCleanupRoutes(app, container)

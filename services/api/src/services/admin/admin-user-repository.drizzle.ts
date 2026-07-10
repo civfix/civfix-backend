@@ -96,7 +96,6 @@ function userSelect(
     ? sql`(
         (SELECT COUNT(*) FROM chat_messages msg WHERE msg.sender_id = u.id)
         + (SELECT COUNT(*) FROM dm_messages dmsg WHERE dmsg.sender_id = u.id)
-        + (SELECT COUNT(*) FROM report_discussion_messages rdm WHERE rdm.author_user_id = u.id)
       )::text`
     : sql`'0'::text`
   return sql`
@@ -332,11 +331,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           FROM chat_messages rcm
           JOIN reports rc ON rc.id = rcm.report_id
           WHERE rcm.sender_id = ${id} AND rcm.report_id IS NOT NULL
-          UNION ALL
-          SELECT rdm.id, rdm.body, r.title AS thread, rdm.created_at, rdm.deleted_at, 'report' AS source
-          FROM report_discussion_messages rdm
-          JOIN reports r ON r.id = rdm.report_id
-          WHERE rdm.author_user_id = ${id}
         ) m
         WHERE TRUE
         ${cursorFilter}
@@ -525,16 +519,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
                 WHERE id = ${messageId} AND sender_id = ${userId} AND deleted_at IS NULL
                 RETURNING id
               `
-        const report =
-          chat.length > 0 || dm.length > 0
-            ? []
-            : await tx<{ id: string }[]>`
-                UPDATE report_discussion_messages
-                SET deleted_at = now()
-                WHERE id = ${messageId} AND author_user_id = ${userId} AND deleted_at IS NULL
-                RETURNING id
-              `
-        if (chat.length === 0 && dm.length === 0 && report.length === 0) return false
+        if (chat.length === 0 && dm.length === 0) return false
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "message.removed",
@@ -554,7 +539,7 @@ function threadFallback(source: "chat" | "dm" | "report"): string {
     case "dm":
       return "Direct message"
     case "report":
-      return "Report discussion"
+      return "Report chat"
     default:
       return "Cleanup chat"
   }

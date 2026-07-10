@@ -464,14 +464,6 @@ describe("getReport: visibility / held hiding", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
-  it("reflects following=true when the viewer follows the report", async () => {
-    const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
-    await repo.addFollow("fan", r.id)
-    const dto = await service.getReport(r.id, { userId: "fan" })
-    expect(dto.following).toBe(true)
-  })
-
   it("carries the report-chat metadata on the DETAIL DTO (joined/member/message/unread) and passes the viewer through", async () => {
     // D-Fmeta: the detail path threads chatMeta from loadReportChatMeta onto the DTO. A recording fake
     // proves getReport calls it with (reportId, viewerId) and the four fields land on the DTO. DB-free
@@ -554,36 +546,6 @@ describe("getReport: visibility / held hiding", () => {
     expect(statusOnly).toBeDefined()
     expect(statusOnly?.note).toBeUndefined()
     expect(statusOnly?.body).toBeUndefined()
-  })
-})
-
-describe("follow toggle", () => {
-  it("follow then unfollow flips the following flag and the underlying set", async () => {
-    const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner" })
-
-    const f = await service.followReport("u2", r.id)
-    expect(f).toEqual({ following: true })
-    expect(repo.follows.has(`u2:${r.id}`)).toBe(true)
-
-    const u = await service.unfollowReport("u2", r.id)
-    expect(u).toEqual({ following: false })
-    expect(repo.follows.has(`u2:${r.id}`)).toBe(false)
-  })
-
-  it("follow is idempotent (re-follow stays following:true, no error)", async () => {
-    const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner" })
-    await service.followReport("u2", r.id)
-    const again = await service.followReport("u2", r.id)
-    expect(again).toEqual({ following: true })
-  })
-
-  it("404s following a missing report", async () => {
-    const { service } = makeHarness()
-    await expect(
-      service.followReport("u2", "00000000-0000-0000-0000-000000000000"),
-    ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 })
 

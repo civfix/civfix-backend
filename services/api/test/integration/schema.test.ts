@@ -30,7 +30,6 @@ const EXPECTED_TABLES = [
   "cleanup_members",
   "chat_messages",
   "follows_people",
-  "report_follows",
   "notifications",
   "notification_prefs",
   "push_tokens",

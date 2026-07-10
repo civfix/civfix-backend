@@ -16,8 +16,7 @@ import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle
 import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
-import { parseCityMention } from "./discussion-mentions.js"
-import { effectiveJurisdictionHandle } from "./discussion-projection.js"
+import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 
 // The report's jurisdiction, resolved ONCE per report-scoped query (it is constant per report). Drives the
 // @city `cityMention` chip on report messages. null when the report has no resolved jurisdiction.

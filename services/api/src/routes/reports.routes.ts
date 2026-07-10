@@ -16,7 +16,6 @@ import {
   type ListMyReportsResponse,
   type ListReportsSearchResponse,
   type ReportClusterResponse,
-  type FollowReportResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -39,7 +38,7 @@ import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.j
 import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeContainerReportChatEmitter } from "../services/report-chat-emitter.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
+import { effectiveJurisdictionHandle } from "../services/discussion-mentions.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
@@ -332,20 +331,6 @@ export async function registerReportRoutes(
   route(app, "searchReports", async (request, reply) => {
     const validated = parse(SearchReportsQuerySchema, request.query)
     const payload: ListReportsSearchResponse = await service().searchReports(validated)
-    reply.status(200).send(payload)
-  })
-
-  route(app, "followReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(ReportIdParamsSchema, request.params)
-    const payload: FollowReportResponse = await service().followReport(userId, id)
-    reply.status(200).send(payload)
-  })
-
-  route(app, "unfollowReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(ReportIdParamsSchema, request.params)
-    const payload: FollowReportResponse = await service().unfollowReport(userId, id)
     reply.status(200).send(payload)
   })
 

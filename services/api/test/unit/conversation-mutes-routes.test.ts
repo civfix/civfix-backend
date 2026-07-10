@@ -138,12 +138,14 @@ describe("PUT /conversations/mute", () => {
     expect(repo.setMuted).toHaveBeenCalledWith(userId, "dm", ROOM_ID, true)
   })
 
-  it("422s a report_discussion roomKind (not a supported mute target) without calling the repo", async () => {
+  it("422s an unknown roomKind (not a valid room kind) without calling the repo", async () => {
     const { app, token, repo } = await makeHarness()
     const res = await app.inject({
       method: "PUT",
       url: "/v1/conversations/mute",
       headers: auth(token),
+      // "report_discussion" was removed from RoomKind with the discussion system, so it is now an invalid
+      // enum value the request schema rejects before the mute-target gate.
       payload: { roomKind: "report_discussion", roomId: ROOM_ID, muted: true },
     })
     expect(res.statusCode).toBe(422)

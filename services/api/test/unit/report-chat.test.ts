@@ -408,7 +408,7 @@ describe("GET /reports/:id/messages visibility gate", () => {
         dmRepo: new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b)),
         blocksRepo: blocks,
       },
-      discussionOverrides: { repo: discussionRepo, outboundMail: new SpyOutboundMail() },
+      discussionOverrides: { repo: discussionRepo },
     })
     app = built
     return built

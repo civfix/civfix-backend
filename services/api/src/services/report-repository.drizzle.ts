@@ -240,24 +240,6 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return loadTimelineForReports(reportIds)
     },
 
-    async isFollowing(userId: string, reportId: string): Promise<boolean> {
-      const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM report_follows
-        WHERE user_id = ${userId} AND report_id = ${reportId}
-        LIMIT 1
-      `
-      return rows.length > 0
-    },
-
-    async findFollowedReportIds(userId: string, reportIds: string[]): Promise<Set<string>> {
-      if (reportIds.length === 0) return new Set()
-      const rows = await sql<{ report_id: string }[]>`
-        SELECT report_id FROM report_follows
-        WHERE user_id = ${userId} AND report_id = ANY(${reportIds}::uuid[])
-      `
-      return new Set(rows.map((r) => r.report_id))
-    },
-
     async listMyReports(
       userId: string,
       cursor: string | null,
@@ -351,24 +333,6 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       return { points: page.map(toMapPoint), nextCursor }
     },
 
-    async addFollow(userId: string, reportId: string): Promise<boolean> {
-      if (!(await followableReportExists(sql, reportId, userId))) return false
-      await sql`
-        INSERT INTO report_follows (user_id, report_id)
-        VALUES (${userId}, ${reportId})
-        ON CONFLICT (user_id, report_id) DO NOTHING
-      `
-      return true
-    },
-
-    async removeFollow(userId: string, reportId: string): Promise<boolean> {
-      if (!(await reportExists(sql, reportId))) return false
-      await sql`
-        DELETE FROM report_follows WHERE user_id = ${userId} AND report_id = ${reportId}
-      `
-      return true
-    },
-
     async resolveByOwner(
       reportId: string,
       userId: string,
@@ -423,28 +387,6 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       })
     },
   }
-}
-
-async function reportExists(sql: Sql, reportId: string): Promise<boolean> {
-  const rows = await sql<{ one: number }[]>`
-    SELECT 1 AS one FROM reports WHERE id = ${reportId} AND deleted_at IS NULL LIMIT 1
-  `
-  return rows.length > 0
-}
-
-async function followableReportExists(
-  sql: Sql,
-  reportId: string,
-  userId: string,
-): Promise<boolean> {
-  const rows = await sql<{ one: number }[]>`
-    SELECT 1 AS one FROM reports
-    WHERE id = ${reportId}
-      AND deleted_at IS NULL
-      AND ((status = 'published' AND visibility = 'public') OR reporter_user_id = ${userId})
-    LIMIT 1
-  `
-  return rows.length > 0
 }
 
 export { REPORT_CREATE_SCOPE }

@@ -12,8 +12,6 @@ import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/ch
 import { InMemoryDiscussionRepository } from "../helpers/discussion.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "../../src/services/dm-repository.memory.js"
 import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import type { OutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
-import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
 
 /**
  * Route-level tests for the report-chat MEMBERSHIP surface (D-C2): Join/Leave and the member-gated
@@ -24,41 +22,6 @@ import type { MailThreadRecord } from "../../src/services/admin/mail-repository.
  */
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-
-/** Discussion overrides require an OutboundMailService; report-chat routes never invoke it here. */
-function stubThread(): MailThreadRecord {
-  return {
-    id: "thread-1",
-    threadToken: "geo-1",
-    reportId: null,
-    cleanupId: null,
-    jurisdictionGeoid: null,
-    org: null,
-    subject: null,
-    status: "sent",
-    unread: false,
-    lastMessageAt: null,
-    createdAt: new Date(),
-  }
-}
-
-class StubOutboundMail implements OutboundMailService {
-  sendReportToJurisdiction(): Promise<{ thread: MailThreadRecord; messageId: string }> {
-    return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
-  }
-  sendEventToJurisdiction(): Promise<{ thread: MailThreadRecord; messageId: string }> {
-    return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
-  }
-  sendToCity(): Promise<MailThreadRecord> {
-    return Promise.resolve(stubThread())
-  }
-  compose(): Promise<MailThreadRecord> {
-    return Promise.resolve(stubThread())
-  }
-  appendOutbound(): Promise<MailThreadRecord> {
-    return Promise.resolve(stubThread())
-  }
-}
 
 /** A fake report-chat membership repo: only the methods each test exercises are real spies. */
 function makeFakeReportChat(over: {
@@ -129,7 +92,7 @@ async function makeHarness(
       blocksRepo: blocks,
       reportChat,
     },
-    discussionOverrides: { repo: discussionRepo, outboundMail: new StubOutboundMail() },
+    discussionOverrides: { repo: discussionRepo },
   })
 
   // Sign in through the real OTP flow (mobile transport -> bearer token in the body).

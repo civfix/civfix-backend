@@ -161,32 +161,6 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     expect(um?.removals).toBe(1)
   })
 
-  it("remove tombstones a reported comment and strikes its author", async () => {
-    const userId = await insertUser(h, "rmcommenter")
-    const reportId = await insertReport(h, { status: "published" })
-    const [msg] = await h.sql<{ id: string }[]>`
-      INSERT INTO report_discussion_messages (report_id, author_user_id, body)
-      VALUES (${reportId}, ${userId}, 'bad comment') RETURNING id
-    `
-    const commentId = msg!.id
-    const id = (await repo.createItem({
-      kind: "user_report",
-      subjectType: "comment",
-      subjectId: commentId,
-    }))!
-
-    await repo.remove(id, { actorId: null, reason: "abuse" })
-
-    const [row] = await h.sql<{ deleted_at: Date | null }[]>`
-      SELECT deleted_at FROM report_discussion_messages WHERE id = ${commentId}
-    `
-    expect(row?.deleted_at).not.toBeNull()
-    const [um] = await h.sql<{ strikes: number }[]>`
-      SELECT strikes FROM user_moderation WHERE user_id = ${userId}
-    `
-    expect(um?.strikes).toBe(1)
-  })
-
   it("hold extends the hold (report stays held; item leaves the queue)", async () => {
     const reportId = await insertReport(h, { status: "held" })
     const id = (await repo.createItem({

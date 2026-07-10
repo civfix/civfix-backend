@@ -737,54 +737,6 @@ describe("GET /map/reports", () => {
   })
 })
 
-describe("POST/DELETE /reports/:id/follow", () => {
-  it("follows then unfollows a report", async () => {
-    let reportId = ""
-    const { app, token } = await makeHarness({
-      seed: (repo) => {
-        reportId = repo.seedReport({ reporterUserId: "owner", status: "published" }).id
-      },
-    })
-
-    const follow = await app.inject({
-      method: "POST",
-      url: `/v1/reports/${reportId}/follow`,
-      headers: auth(token),
-    })
-    expect(follow.statusCode).toBe(200)
-    expect(follow.json()).toEqual({ following: true })
-
-    const unfollow = await app.inject({
-      method: "DELETE",
-      url: `/v1/reports/${reportId}/follow`,
-      headers: auth(token),
-    })
-    expect(unfollow.statusCode).toBe(200)
-    expect(unfollow.json()).toEqual({ following: false })
-  })
-
-  it("404s following a missing report", async () => {
-    const { app, token } = await makeHarness()
-    const res = await app.inject({
-      method: "POST",
-      url: "/v1/reports/00000000-0000-0000-0000-000000000000/follow",
-      headers: auth(token),
-    })
-    expect(res.statusCode).toBe(404)
-  })
-
-  it("401s an anonymous follow", async () => {
-    let reportId = ""
-    const { app } = await makeHarness({
-      seed: (repo) => {
-        reportId = repo.seedReport({ reporterUserId: "owner" }).id
-      },
-    })
-    const res = await app.inject({ method: "POST", url: `/v1/reports/${reportId}/follow` })
-    expect(res.statusCode).toBe(401)
-  })
-})
-
 describe("POST /reports/:id/resolve", () => {
   it("the owner marks their report resolved and gets back the updated ReportDTO", async () => {
     // Seed AFTER the harness signs the user in, so the report is owned by the signed-in user's real id.

@@ -12,8 +12,6 @@ export * from "./reports.js"
 export * from "./media.js"
 export * from "./timeline.js"
 
-export * from "./discussion.js"
-
 export * from "./cleanups.js"
 export * from "./cleanup_members.js"
 export * from "./cleanup_reports.js"
