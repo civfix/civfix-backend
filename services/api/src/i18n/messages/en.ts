@@ -39,6 +39,9 @@ export const en = {
   // {{preview}} = the caller-truncated message preview (user content); the wrapper is what we localize.
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "New message",
+  // Report-chat member bell (report-chat-notifier). Title fallback for a SYSTEM / author-less report
+  // message (e.g. a status/timeline event) that has no sender name to show.
+  "notification.report_chat.title_fallback": "New message",
   // Body shown when the message has no text preview (a non-text frame: share_pin / rsvp / task_complete).
   "notification.message.no_preview": "Sent you a message",
 

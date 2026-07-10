@@ -6,6 +6,7 @@ import { makeWsTicketStore } from "../auth/ws-ticket.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import {
   registerChatGateway,
+  roomKeyFor,
   type GatewayChatMentions,
   type GatewayDmDeps,
   type IsBlockedEitherWayFn,
@@ -16,9 +17,11 @@ import {
 import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
+import { makeReportChatRepository, type ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { forwardReportCityMention } from "../services/report-city-forward.js"
+import { makeReportForwardAudit, type ReportForwardAudit } from "../services/report-forward-audit.drizzle.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../ws/report-rate-limit.js"
 import type { ReportVisibleFn } from "../ws/gateway.js"
@@ -29,6 +32,11 @@ import { recordChatMentions } from "../services/chat-mentions.drizzle.js"
 import { makeDrizzleChatReadState } from "../services/chat-read-state.drizzle.js"
 import { makeNotificationService, type NotificationService } from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
+import {
+  makeConversationMutesRepository,
+  type ConversationMutesRepository,
+} from "../services/conversation-mutes-repository.drizzle.js"
+import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { InMemoryChatPresence, RedisChatPresence, type ChatPresence } from "../adapters/chat-presence.js"
@@ -51,6 +59,7 @@ export interface ChatWiring {
   isBlockedEitherWay: IsBlockedEitherWayFn
   dmPeerOf: (threadId: string, userId: string) => Promise<string | null>
   getChatRepo(): ChatRepository
+  getReportChatRepo(): ReportChatRepository
   listDmThreadsFor: (userId: string, limit?: number) => Promise<Awaited<ReturnType<DmRepository["listThreadsForUser"]>>>
 }
 
@@ -99,6 +108,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const getChatRepo = (): ChatRepository =>
     overrides?.chatRepo ?? (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, presignMedia))
 
+  let reportChatRepo: ReportChatRepository | undefined
+  const getReportChatRepo = (): ReportChatRepository =>
+    overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
+
   const dmPeerOf = async (threadId: string, userId: string): Promise<string | null> => {
     const t = await dmRepo.getThread(threadId)
     if (t === null) return null
@@ -117,6 +130,26 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           userChannel: container.userChannel,
           logger: app.log,
         }))
+
+  // Per-conversation mute store (D-E1). Undefined under fake-chat (no DB); test-injectable via overrides.
+  const conversationMutes: ConversationMutesRepository | undefined =
+    overrides?.conversationMutes ??
+    (useFakeChat ? undefined : makeConversationMutesRepository(container.getDb().sql))
+
+  // Best-effort "has this user muted this room?" gate. Returns false when the store is absent (fake-chat)
+  // and swallows lookup errors so a mute-store hiccup never suppresses/breaks a bell.
+  const isMutedFor = async (
+    userId: string,
+    kind: "dm" | "cleanup" | "report",
+    roomId: string,
+  ): Promise<boolean> => {
+    if (!conversationMutes) return false
+    try {
+      return await conversationMutes.isMuted(userId, kind, roomId)
+    } catch {
+      return false
+    }
+  }
 
   const clearConversationBell = async (kind: "dm" | "cleanup", id: string, userId: string): Promise<void> => {
     if (!notificationService) return
@@ -186,6 +219,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           notifyChatMention: async (input) => {
             const { kind, roomId, actorUserId, mentionedUserId, message } = input
             if (kind === "dm") return
+            if (await isMutedFor(mentionedUserId, "cleanup", roomId)) return
             if (!(await isMember(roomId, mentionedUserId))) return
             if (await blocksRepo.isBlockedEitherWay(actorUserId, mentionedUserId)) return
             if (!(await notificationService.getPrefs(mentionedUserId)).mentions) return
@@ -231,10 +265,29 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     return true
   }
 
+  // Per-member report-chat bell (D-E2). Built once, reused per message. Presence-suppressed + mute-gated
+  // by the notifier; the sender is skipped there. `createNotification` applies push master + quiet hours.
+  // Reuses the SHARED getReportChatRepo() (D-C3) so member lookups hit the same repo the socket uses. Also
+  // the seam D-D1 will reuse for its sender-less SYSTEM (status/timeline) posts. Absent under fake-chat
+  // (no notificationService / mutes), where onReportMessage is undefined anyway.
+  const notifyReportChatMembers =
+    notificationService && conversationMutes
+      ? makeReportChatNotifier({
+          notificationService,
+          reportChatRepo: { listMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId) },
+          isMuted: (userId, roomId) => isMutedFor(userId, "report", roomId),
+          presence,
+          roomKeyFor,
+        })
+      : undefined
+
   let reportOutboundMail: ReturnType<typeof makeOutboundMailService> | undefined
+  let reportForwardAudit: ReportForwardAudit | undefined
   const onReportMessage: OnReportMessage | undefined = useFakeChat
     ? undefined
     : async (reportId, message) => {
+        // Best-effort member bells, fire-and-forget alongside the @city forward below.
+        if (notifyReportChatMembers) void notifyReportChatMembers(reportId, message).catch(() => {})
         reportOutboundMail ??= makeOutboundMailService({
           repo: makeDrizzleMailRepository(container.getDb().sql),
           mailer: container.mailer,
@@ -243,9 +296,13 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
             MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
           },
         })
+        reportForwardAudit ??= makeReportForwardAudit(container.getDb().sql)
         const report = await getReportRepo().findReportForDiscussion(reportId)
         if (report === null) return
         const body = typeof message.body === "string" ? message.body : ""
+        // message.id threads the persisted chat_messages row id into the audit table (report_message_forwards
+        // keys on it). forwardReportCityMention writes the mentioned-but-not-forwarded row before the send and
+        // stamps forwarded_at on success; audit failures are swallowed there (message already persisted).
         await forwardReportCityMention(
           reportOutboundMail,
           {
@@ -256,7 +313,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           },
           body,
           new Date(message.createdAt),
-          { canForward: canForwardCity },
+          { canForward: canForwardCity, audit: reportForwardAudit, messageId: message.id },
         )
       }
 
@@ -282,6 +339,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     threadRecipientsOf,
     onDmDelivered: notificationService
       ? async (threadId, recipientId, message) => {
+          if (await isMutedFor(recipientId, "dm", threadId)) return
           const name = dmAuthorName(message)
           const preview = textPreview(message)
           await notificationService.createNotification(recipientId, {
@@ -308,6 +366,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     onReportMessage,
     reportVisible,
     reportSendLimiter,
+    // Injected into the socket so member-only send/typing + ack watermark share ONE instance with the
+    // routes (via getReportChatRepo). Gated on useFakeChat like reportVisible/onReportMessage: the fake
+    // path has no DB, so under fake-chat the socket falls back to public send (matching pre-D-C3).
+    reportChat: overrides?.reportChat ?? (useFakeChat ? undefined : getReportChatRepo()),
     webOrigins: container.env.WEB_ORIGINS,
   })
 
@@ -319,6 +381,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     isBlockedEitherWay,
     dmPeerOf,
     getChatRepo,
+    getReportChatRepo,
     listDmThreadsFor: (userId, limit) => dmRepo.listThreadsForUser(userId, limit),
   }
 }

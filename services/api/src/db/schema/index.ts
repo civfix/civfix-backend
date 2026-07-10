@@ -12,14 +12,15 @@ export * from "./reports.js"
 export * from "./media.js"
 export * from "./timeline.js"
 
-export * from "./discussion.js"
-
 export * from "./cleanups.js"
 export * from "./cleanup_members.js"
 export * from "./cleanup_reports.js"
 export * from "./chat.js"
 export * from "./chat_reactions.js"
 export * from "./message_mentions.js"
+export * from "./report_chat_members.js"
+export * from "./conversation_mutes.js"
+export * from "./report_message_forwards.js"
 
 export * from "./dm_threads.js"
 export * from "./dm_messages.js"

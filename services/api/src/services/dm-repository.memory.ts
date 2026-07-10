@@ -43,6 +43,17 @@ function orderPair(a: string, b: string): [string, string] {
   return a < b ? [a, b] : [b, a]
 }
 
+/**
+ * The sender id of a DM message. `from` is nullable at the contract-type level (a sender-less SYSTEM
+ * message has no author), but the dm path never persists a SYSTEM message - `persist()` always builds
+ * `from` from a real `input.senderId`. Throwing here documents that invariant instead of silently
+ * mis-attributing an "impossible" null to a fallback user.
+ */
+function lastSenderId(message: ChatMessageDTO): string {
+  if (!message.from) throw new Error("DM message unexpectedly has no author")
+  return message.from.id
+}
+
 export class InMemoryDmRepository implements DmRepository {
   /** threadId -> thread. */
   private readonly threads = new Map<string, DmThread>()
@@ -153,7 +164,9 @@ export class InMemoryDmRepository implements DmRepository {
     // Mirror the Drizzle WHERE gate: the message must exist in THIS thread, be sent by `senderId`, and not be
     // soft-deleted. Otherwise return null (not-found OR forbidden — indistinguishable, like the SQL no-op).
     const stored = (this.log.get(threadId) ?? []).find(
-      (m) => m.dto.id === messageId && m.dto.from.id === senderId && !m.deleted,
+      // DM messages always have an author (no sender-less SYSTEM messages on the dm path); guard the
+      // nullable contract type without weakening the WHERE-gate semantics for the normal case.
+      (m) => m.dto.id === messageId && m.dto.from?.id === senderId && !m.deleted,
     )
     if (!stored) return Promise.resolve(null)
     const edited: ChatMessageDTO = {
@@ -172,7 +185,7 @@ export class InMemoryDmRepository implements DmRepository {
   ): Promise<ChatMessageDTO | null> {
     // Same WHERE gate as editMessage: exist in THIS thread, sent by `senderId`, not already deleted.
     const stored = (this.log.get(threadId) ?? []).find(
-      (m) => m.dto.id === messageId && m.dto.from.id === senderId && !m.deleted,
+      (m) => m.dto.id === messageId && m.dto.from?.id === senderId && !m.deleted,
     )
     if (!stored) return Promise.resolve(null)
     stored.deleted = true
@@ -286,8 +299,10 @@ export class InMemoryDmRepository implements DmRepository {
       const last = live.length > 0 ? live[live.length - 1]! : null
       const lastReadMs = this.reads.get(`${t.id}:${userId}`) ?? 0
       const baseline = Math.max(t.createdAt.getTime(), lastReadMs)
+      // DM messages always have an author (no sender-less SYSTEM messages on the dm path); optional-chain
+      // to satisfy the nullable contract type without changing which messages count as unread.
       const unread = live.filter(
-        (m) => m.from.id === peerId && new Date(m.createdAt).getTime() > baseline,
+        (m) => m.from?.id === peerId && new Date(m.createdAt).getTime() > baseline,
       ).length
 
       out.push({
@@ -302,7 +317,7 @@ export class InMemoryDmRepository implements DmRepository {
         },
         last:
           last !== null
-            ? { body: last.body ?? null, createdAt: new Date(last.createdAt), senderId: last.from.id }
+            ? { body: last.body ?? null, createdAt: new Date(last.createdAt), senderId: lastSenderId(last) }
             : null,
         unread,
       })

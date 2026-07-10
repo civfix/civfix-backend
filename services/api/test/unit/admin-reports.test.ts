@@ -21,10 +21,27 @@ import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
+/**
+ * A recording fake for the D-D1 report-chat SYSTEM-message emitter. Captures every emitted timeline event
+ * so a test can assert the service fired it with the right status/kind after a mutation. `shouldThrow`
+ * makes emit reject INTERNALLY (the real emitter never does — it swallows) so a test can prove the status
+ * change is INDEPENDENT of the emit even if the emit blew up.
+ */
+class FakeReportChatEmitter {
+  readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
+  shouldThrow = false
+  emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
+    this.events.push(event)
+    if (this.shouldThrow) return Promise.reject(new Error("emit boom"))
+    return Promise.resolve()
+  }
+}
+
 interface Harness {
   repo: InMemoryAdminReportRepository
   mailRepo: InMemoryMailRepository
   mailer: FakeMailer
+  emitter: FakeReportChatEmitter
   svc: AdminReportService
 }
 
@@ -33,6 +50,7 @@ function harness(): Harness {
   repo.now = NOW
   const mailRepo = new InMemoryMailRepository()
   const mailer = new FakeMailer()
+  const emitter = new FakeReportChatEmitter()
   const outboundMail = makeOutboundMailService({
     repo: mailRepo,
     mailer,
@@ -42,13 +60,14 @@ function harness(): Harness {
     repo,
     outboundMail,
     now: () => NOW,
+    reportChatEmitter: emitter,
     // A deterministic presigner so the media test asserts the keys are resolved into client URLs.
     presignMedia: async (r2Key, thumbKey) => ({
       url: `https://media.test/${r2Key}`,
       ...(thumbKey !== null ? { thumbUrl: `https://media.test/${thumbKey}` } : {}),
     }),
   })
-  return { repo, mailRepo, mailer, svc }
+  return { repo, mailRepo, mailer, emitter, svc }
 }
 
 /** A timestamp `hours` before NOW. */
@@ -282,6 +301,31 @@ describe("admin reports mutations", () => {
     })
   })
 
+  it("setStatus emits ONE report-chat system event carrying the NEW status", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "submitted" })
+    await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
+    expect(emitter.events).toHaveLength(1)
+    expect(emitter.events[0]).toMatchObject({
+      reportId: "rep-1",
+      status: "in_progress",
+      kind: "status",
+    })
+  })
+
+  it("setStatus still succeeds (and changes the status) even when the emitter rejects internally", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "submitted" })
+    emitter.shouldThrow = true
+    // The real emitter never throws (it swallows), but even if it did the status change must be independent.
+    await expect(
+      svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" }),
+    ).rejects.toThrow("emit boom")
+    // The underlying transition committed BEFORE the emit, so it stuck regardless of the emit failure.
+    expect(repo.reports.get("rep-1")?.record.status).toBe("resolved")
+    expect(repo.timeline.get("rep-1")?.at(-1)).toMatchObject({ status: "resolved" })
+  })
+
   it("flag toggles the abuse marker on then off, each with a timeline row + audit", async () => {
     const { repo, svc } = harness()
     repo.seedReport({ id: "rep-1", flagged: false })
@@ -294,6 +338,29 @@ describe("admin reports mutations", () => {
     expect(off).toBe(false)
     expect(repo.reports.get("rep-1")?.record.flagged).toBe(false)
     expect(repo.audits.at(-1)).toMatchObject({ action: "report.unflagged" })
+  })
+
+  it("flag emits a report-chat system event carrying the report's current status", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "published", flagged: false })
+    await svc.flag("rep-1", { reason: "looks off", actorId: "op-1" })
+    expect(emitter.events).toEqual([
+      { reportId: "rep-1", status: "published", kind: "status", note: "Flagged for review" },
+    ])
+  })
+
+  it("flag still SUCCEEDS (returns the toggled state) even if the post-commit status read-back throws", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", flagged: false })
+    // The flag toggle has already committed; simulate the read-back (added only to recover the status for
+    // the chat mirror) throwing. It must NOT reject flag() — a 500 here would leave the admin thinking the
+    // flag failed (and a retry would double-toggle).
+    repo.getReport = () => Promise.reject(new Error("read boom"))
+    const on = await svc.flag("rep-1", { reason: "looks off", actorId: "op-1" })
+    expect(on).toBe(true)
+    expect(repo.reports.get("rep-1")?.record.flagged).toBe(true)
+    // The read-back failed, so no system message was mirrored — but the flag change stuck.
+    expect(emitter.events).toHaveLength(0)
   })
 
   it("remove sets status rejected, appends a timeline row, and audits", async () => {

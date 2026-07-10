@@ -166,7 +166,11 @@ export class InMemoryModerationRepository implements ModerationRepository {
     const item = this.resolve(id, "approved")
     if (!item) return null
     // Underlying effect: publish the held report subject.
-    if (item.subjectType === "report") this.reportStatus.set(item.subjectId, "published")
+    if (item.subjectType === "report") {
+      this.reportStatus.set(item.subjectId, "published")
+      // D-D1: signal the report-chat mirror (a report subject transitions to published on approve).
+      item.reportTimelineStatus = "published"
+    }
     return item
   }
 
@@ -177,7 +181,11 @@ export class InMemoryModerationRepository implements ModerationRepository {
     const item = this.resolve(id, "removed")
     if (!item) return null
     // Underlying effect: reject the report subject.
-    if (item.subjectType === "report") this.reportStatus.set(item.subjectId, "rejected")
+    if (item.subjectType === "report") {
+      this.reportStatus.set(item.subjectId, "rejected")
+      // D-D1: signal the report-chat mirror (a report subject is tombstoned on remove).
+      item.reportTimelineStatus = "rejected"
+    }
     return item
   }
 

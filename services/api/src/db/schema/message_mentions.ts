@@ -1,45 +1,21 @@
 /**
- * User @-mentions in messages: a user tagged by @handle in a per-report discussion message
- * (report_message_user_mentions) OR in a chat message — cleanup group chat + 1:1 DM
- * (chat_message_mentions, one table for both, message ids being globally-unique uuids).
+ * User @-mentions in a chat message — cleanup group chat + 1:1 DM + report chat (chat_message_mentions,
+ * one table for all, message ids being globally-unique uuids). These are keyed by the mentioned USER and
+ * drive the mention notification (gated by blocks + prefs in the service).
  *
- * SEPARATE from the existing jurisdiction/city @mention (report_message_mentions, schema/discussion.ts),
- * which is keyed by geoid and forwards to the authority. These are keyed by the mentioned USER and drive
- * the mention notification (gated by blocks + prefs in the service).
+ * (The former report_message_user_mentions table — user @-mentions in a per-report DISCUSSION message —
+ * was dropped with the discussion system, 0044_drop_report_discussion.sql.)
  *
- * report_message_user_mentions FKs report_discussion_messages (a plain uuid PK) ON DELETE CASCADE, parallel
- * to report_message_reactions. chat_message_mentions has NO FK on message_id: chat_messages / dm_messages
- * are RANGE-partitioned with composite PK(id, created_at), so there is no single-column key to reference
- * (exactly like chat_message_reactions, schema/chat_reactions.ts). mentioned_user_id FKs users in both.
+ * chat_message_mentions has NO FK on message_id: chat_messages / dm_messages are RANGE-partitioned with
+ * composite PK(id, created_at), so there is no single-column key to reference (exactly like
+ * chat_message_reactions, schema/chat_reactions.ts). mentioned_user_id FKs users.
  *
- * CANONICAL DDL: drizzle/0023_message_mentions.sql. These mirrors exist for typed queries / diff
- * inspection only; they are NOT applied to create the database.
+ * CANONICAL DDL: drizzle/0023_message_mentions.sql. This mirror exists for typed queries / diff
+ * inspection only; it is NOT applied to create the database.
  */
 
 import { index, pgTable, primaryKey, uuid } from "drizzle-orm/pg-core"
-import { reportDiscussionMessages } from "./discussion.js"
 import { users } from "./users.js"
-
-/**
- * report_message_user_mentions: one user @-mentioned in one DISCUSSION message. Composite PK
- * (message_id, mentioned_user_id) de-dupes a user named twice. message_id cascades from the discussion
- * message; mentioned_user_id cascades from the user.
- */
-export const reportMessageUserMentions = pgTable(
-  "report_message_user_mentions",
-  {
-    messageId: uuid("message_id")
-      .notNull()
-      .references(() => reportDiscussionMessages.id, { onDelete: "cascade" }),
-    mentionedUserId: uuid("mentioned_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-  },
-  (t) => [
-    primaryKey({ columns: [t.messageId, t.mentionedUserId] }),
-    index("report_message_user_mentions_user_idx").on(t.mentionedUserId),
-  ],
-)
 
 /**
  * chat_message_mentions: one user @-mentioned in one CHAT message — the cleanup group chat (chat_messages)
@@ -62,7 +38,5 @@ export const chatMessageMentions = pgTable(
   ],
 )
 
-export type ReportMessageUserMentionRow = typeof reportMessageUserMentions.$inferSelect
-export type NewReportMessageUserMentionRow = typeof reportMessageUserMentions.$inferInsert
 export type ChatMessageMentionRow = typeof chatMessageMentions.$inferSelect
 export type NewChatMessageMentionRow = typeof chatMessageMentions.$inferInsert

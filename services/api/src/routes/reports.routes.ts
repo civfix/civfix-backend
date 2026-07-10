@@ -16,7 +16,6 @@ import {
   type ListMyReportsResponse,
   type ListReportsSearchResponse,
   type ReportClusterResponse,
-  type FollowReportResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -36,8 +35,10 @@ import { makeDrizzleReportRepository } from "../services/report-repository.drizz
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import { makeContainerReportChatEmitter } from "../services/report-chat-emitter.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import { effectiveJurisdictionHandle } from "../services/discussion-service.js"
+import { effectiveJurisdictionHandle } from "../services/discussion-mentions.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
@@ -52,6 +53,10 @@ export interface ReportServiceOverrides {
   presignMedia?: ReportServiceDeps["presignMedia"]
   loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
   loadDiscussionMeta?: ReportServiceDeps["loadDiscussionMeta"]
+  loadReportChatMeta?: ReportServiceDeps["loadReportChatMeta"]
+  joinReportChatAsOwner?: ReportServiceDeps["joinReportChatAsOwner"]
+  /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
+  reportChatEmitter?: ReportServiceDeps["reportChatEmitter"]
   newId?: ReportServiceDeps["newId"]
   now?: ReportServiceDeps["now"]
 }
@@ -172,6 +177,15 @@ export async function registerReportRoutes(
         ...(overrides.loadDiscussionMeta !== undefined
           ? { loadDiscussionMeta: overrides.loadDiscussionMeta }
           : {}),
+        ...(overrides.loadReportChatMeta !== undefined
+          ? { loadReportChatMeta: overrides.loadReportChatMeta }
+          : {}),
+        ...(overrides.joinReportChatAsOwner !== undefined
+          ? { joinReportChatAsOwner: overrides.joinReportChatAsOwner }
+          : {}),
+        ...(overrides.reportChatEmitter !== undefined
+          ? { reportChatEmitter: overrides.reportChatEmitter }
+          : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
@@ -182,6 +196,7 @@ export async function registerReportRoutes(
     const cleanupRepo = makeDrizzleCleanupRepository(sql)
     const discussionRepo = makeDrizzleDiscussionRepository(sql)
     const chatRepo = makeDrizzleChatRepository(sql)
+    const reportChatRepo = makeReportChatRepository(sql)
     return makeReportService({
       repo,
       loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
@@ -207,6 +222,49 @@ export async function registerReportRoutes(
             jurisdiction.contactEmail !== "",
         }
       },
+      // D-Fmeta: viewer-scoped report-chat metadata for the report-DETAIL DTO only. joined + counts +
+      // unread in ONE query via correlated subqueries. member/message counts are report-wide (viewer
+      // independent). Unread mirrors the threads report source (threads-repository.drizzle.ts): non-deleted
+      // messages from OTHERS (`sender_id IS DISTINCT FROM` so system rows count) strictly after the
+      // viewer's watermark GREATEST(joined_at, COALESCE(last_read_at, epoch)); it is 0 for a non-member /
+      // anonymous viewer (no membership row). The message-count + unread subqueries ride
+      // chat_messages_report_created_idx (report_id, created_at DESC).
+      loadReportChatMeta: async (reportId, viewerUserId) => {
+        const rows = await sql<
+          { joined: boolean; member_count: number; message_count: number; unread: number }[]
+        >`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM report_chat_members m
+              WHERE m.report_id = ${reportId} AND m.user_id = ${viewerUserId}
+            ) AS joined,
+            (
+              SELECT count(*)::int FROM report_chat_members m WHERE m.report_id = ${reportId}
+            ) AS member_count,
+            (
+              SELECT count(*)::int
+              FROM chat_messages cm
+              WHERE cm.report_id = ${reportId} AND cm.deleted_at IS NULL
+            ) AS message_count,
+            COALESCE((
+              SELECT count(*)::int
+              FROM report_chat_members mem
+              JOIN chat_messages cm ON cm.report_id = mem.report_id
+              WHERE mem.report_id = ${reportId}
+                AND mem.user_id = ${viewerUserId}
+                AND cm.deleted_at IS NULL
+                AND cm.sender_id IS DISTINCT FROM ${viewerUserId}
+                AND cm.created_at > GREATEST(mem.joined_at, COALESCE(mem.last_read_at, to_timestamp(0)))
+            ), 0) AS unread
+        `
+        const row = rows[0]
+        return {
+          joined: row?.joined ?? false,
+          memberCount: row?.member_count ?? 0,
+          messageCount: row?.message_count ?? 0,
+          unread: row?.unread ?? 0,
+        }
+      },
       resolveJurisdictionGeoid: async (lat, lng) => {
         const jurisdiction = makeJurisdictionService({
           sql,
@@ -225,6 +283,10 @@ export async function registerReportRoutes(
       isReportVerified: (userId) => isReportVerified(sql, userId),
       awardReportHours: (userId, reportId, geoid) =>
         container.getVolunteerHoursRepo().awardReportHours(userId, reportId, geoid),
+      joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
+      // D-D1: owner resolve/reopen/hide/re-list posts a system message into the report chat (best-effort,
+      // no-op under fake-chat). Built from container primitives — no chat-gateway wiring instances needed.
+      reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
       logger: app.log,
     })
   }
@@ -269,20 +331,6 @@ export async function registerReportRoutes(
   route(app, "searchReports", async (request, reply) => {
     const validated = parse(SearchReportsQuerySchema, request.query)
     const payload: ListReportsSearchResponse = await service().searchReports(validated)
-    reply.status(200).send(payload)
-  })
-
-  route(app, "followReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(ReportIdParamsSchema, request.params)
-    const payload: FollowReportResponse = await service().followReport(userId, id)
-    reply.status(200).send(payload)
-  })
-
-  route(app, "unfollowReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(ReportIdParamsSchema, request.params)
-    const payload: FollowReportResponse = await service().unfollowReport(userId, id)
     reply.status(200).send(payload)
   })
 

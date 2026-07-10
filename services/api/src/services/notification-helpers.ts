@@ -51,6 +51,7 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
   switch (type) {
     case "report_update":
     case "claim_available":
+    case "report_chat":
       return prefs.reportUpdates
     case "cleanup_chat":
     case "cleanup_reminder":

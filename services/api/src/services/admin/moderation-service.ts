@@ -38,6 +38,8 @@ import type {
   ReportCategory,
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
+import { timelineKindForStatus } from "./admin-report-status.js"
+import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 
 // ---------------------------------------------------------------------------
 // Repository seam (structural records; faked in tests)
@@ -98,6 +100,14 @@ export interface ModerationItemRecord {
   user: ModerationUserSnapshot | null
   media: ModerationMediaRecord[]
   createdAt: Date
+  /**
+   * D-D1: set by approve()/remove() ONLY when the action actually wrote a report_timeline row for a report
+   * subject (approve: a held report was published; remove: a report was tombstoned). Carries the status
+   * that row got ('published' | 'rejected'), so the service can mirror the SAME event into the report chat
+   * and skip the no-op case (e.g. approving an item whose report was already published). Absent on reads
+   * and on non-report / no-transition actions; DTO projections ignore it.
+   */
+  reportTimelineStatus?: "published" | "rejected"
 }
 
 /** What a producer supplies to enqueue a moderation item. Defaults fill the optional shaping fields. */
@@ -215,6 +225,14 @@ export interface ModerationServiceDeps {
   repo: ModerationRepository
   /** Injectable clock (defaults to Date.now) so the relative-age labels are deterministic. */
   now?: () => Date
+  /**
+   * D-D1: the report-chat SYSTEM-message emitter (the timeline choke point). When a queue action publishes
+   * (approve) or tombstones (remove) a REPORT subject, the service mirrors that timeline event into the
+   * report's group chat + pushes the members ("your report is now live" / "removed"). OPTIONAL + fully
+   * best-effort (the emitter swallows its own errors), and only fires when the repo actually wrote a report
+   * timeline row (result.reportTimelineStatus set) — so the queue action is independent of the reflection.
+   */
+  reportChatEmitter?: ReportChatSystemEmitter
 }
 
 export interface ModerationService {
@@ -309,6 +327,16 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.approve(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
+      // D-D1: a held report that just became published — mirror "Approved in moderation" into its chat.
+      // POST-commit, best-effort, and only when the repo actually published it (result.reportTimelineStatus).
+      if (deps.reportChatEmitter && result.reportTimelineStatus === "published") {
+        await deps.reportChatEmitter.emit({
+          reportId: result.subjectId,
+          status: "published",
+          kind: timelineKindForStatus("published"),
+          note: "Approved in moderation",
+        })
+      }
     },
 
     async remove(
@@ -317,6 +345,15 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.remove(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
+      // D-D1: a report just tombstoned — mirror the removal into its chat (note matches the timeline row).
+      if (deps.reportChatEmitter && result.reportTimelineStatus === "rejected") {
+        await deps.reportChatEmitter.emit({
+          reportId: result.subjectId,
+          status: "rejected",
+          kind: timelineKindForStatus("rejected"),
+          note: input.reason ?? "Removed in moderation",
+        })
+      }
     },
 
     async hold(id: string, input: { actorId: string | null; note: string | null }): Promise<void> {

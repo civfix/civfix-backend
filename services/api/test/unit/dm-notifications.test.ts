@@ -37,9 +37,13 @@ let notifications: NotificationService
 let THREAD: string
 
 const onDmDelivered: OnDmDelivered = async (threadId, recipientId, message) => {
+  // DM messages always have an author (no sender-less SYSTEM messages on the dm path); optional-chain to
+  // satisfy the nullable contract type, mirroring src/routes/chat-notify-copy.ts's authorDisplay.
+  const from = message.from
+  const title = from && from.name.trim() !== "" ? from.name : from?.handle ? `@${from.handle}` : ""
   await notifications.createNotification(recipientId, {
     type: "dm",
-    title: message.from.name.trim() !== "" ? message.from.name : message.from.handle ? `@${message.from.handle}` : "",
+    title,
     body: typeof message.body === "string" ? message.body : "Sent you a message",
     link: `/messages/dm/${threadId}`,
   })

@@ -31,27 +31,48 @@ function fakePresign(r2Key: string, thumbKey: string | null) {
   )
 }
 
+/**
+ * A recording fake for the D-D1 report-chat SYSTEM-message emitter, so a citizen-mutation test can assert
+ * the owner resolve/reopen/hide event was mirrored into the report chat.
+ */
+class FakeReportChatEmitter {
+  readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
+  emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
+    this.events.push(event)
+    return Promise.resolve()
+  }
+}
+
 /** Build a service over a fresh in-memory repo; jurisdiction resolves to a fixed geoid by default. */
 function makeHarness(
   opts: {
     geoid?: string | null
     jurCode?: number
     newId?: () => string
+    loadReportChatMeta?: (
+      reportId: string,
+      viewerUserId: string | null,
+    ) => Promise<{ joined: boolean; memberCount: number; messageCount: number; unread: number }>
   } = {},
 ) {
   const repo = new InMemoryReportRepository()
+  const emitter = new FakeReportChatEmitter()
   // Distinguish "not provided" (default to a fixed geoid) from "explicitly null" (outside coverage).
   const geoid: string | null = "geoid" in opts ? (opts.geoid ?? null) : "0644000"
   const service: ReportService = makeReportService({
     repo,
     resolveJurisdictionGeoid: () => Promise.resolve(geoid),
     presignMedia: fakePresign,
+    reportChatEmitter: emitter,
     ...(opts.jurCode !== undefined
       ? { resolveJurisdictionCode: () => Promise.resolve(opts.jurCode as number) }
       : {}),
+    ...(opts.loadReportChatMeta !== undefined
+      ? { loadReportChatMeta: opts.loadReportChatMeta }
+      : {}),
     ...(opts.newId !== undefined ? { newId: opts.newId } : {}),
   })
-  return { repo, service }
+  return { repo, service, emitter }
 }
 
 /** A minimal valid create request. */
@@ -443,12 +464,54 @@ describe("getReport: visibility / held hiding", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
-  it("reflects following=true when the viewer follows the report", async () => {
+  it("carries the report-chat metadata on the DETAIL DTO (joined/member/message/unread) and passes the viewer through", async () => {
+    // D-Fmeta: the detail path threads chatMeta from loadReportChatMeta onto the DTO. A recording fake
+    // proves getReport calls it with (reportId, viewerId) and the four fields land on the DTO. DB-free
+    // (the real correlated-subquery SQL is covered by the Docker-gated integration suite).
+    const calls: { reportId: string; viewerId: string | null }[] = []
+    const { repo, service } = makeHarness({
+      loadReportChatMeta: (reportId, viewerId) => {
+        calls.push({ reportId, viewerId })
+        return Promise.resolve({ joined: true, memberCount: 3, messageCount: 12, unread: 4 })
+      },
+    })
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+
+    const dto = await service.getReport(r.id, { userId: "member" })
+    expect(dto.chatJoined).toBe(true)
+    expect(dto.chatMemberCount).toBe(3)
+    expect(dto.chatMessageCount).toBe(12)
+    expect(dto.chatUnread).toBe(4)
+    // Called exactly once, with the report id + the resolved viewer id.
+    expect(calls).toEqual([{ reportId: r.id, viewerId: "member" }])
+  })
+
+  it("passes viewerId=null for an anonymous detail fetch (joined=false, unread=0, counts still valid)", async () => {
+    const calls: { reportId: string; viewerId: string | null }[] = []
+    const { repo, service } = makeHarness({
+      loadReportChatMeta: (reportId, viewerId) => {
+        calls.push({ reportId, viewerId })
+        return Promise.resolve({ joined: false, memberCount: 2, messageCount: 5, unread: 0 })
+      },
+    })
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+
+    const dto = await service.getReport(r.id, {})
+    expect(dto.chatJoined).toBe(false)
+    expect(dto.chatMemberCount).toBe(2)
+    expect(dto.chatMessageCount).toBe(5)
+    expect(dto.chatUnread).toBe(0)
+    expect(calls).toEqual([{ reportId: r.id, viewerId: null }])
+  })
+
+  it("omits the chat metadata entirely when no loader is wired (offline/fake path)", async () => {
     const { repo, service } = makeHarness()
     const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
-    await repo.addFollow("fan", r.id)
-    const dto = await service.getReport(r.id, { userId: "fan" })
-    expect(dto.following).toBe(true)
+    const dto = await service.getReport(r.id, { userId: "member" })
+    expect(dto.chatJoined).toBeUndefined()
+    expect(dto.chatMemberCount).toBeUndefined()
+    expect(dto.chatMessageCount).toBeUndefined()
+    expect(dto.chatUnread).toBeUndefined()
   })
 
   it("surfaces a city reply's kind + full body on the timeline DTO (D13)", async () => {
@@ -486,36 +549,6 @@ describe("getReport: visibility / held hiding", () => {
   })
 })
 
-describe("follow toggle", () => {
-  it("follow then unfollow flips the following flag and the underlying set", async () => {
-    const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner" })
-
-    const f = await service.followReport("u2", r.id)
-    expect(f).toEqual({ following: true })
-    expect(repo.follows.has(`u2:${r.id}`)).toBe(true)
-
-    const u = await service.unfollowReport("u2", r.id)
-    expect(u).toEqual({ following: false })
-    expect(repo.follows.has(`u2:${r.id}`)).toBe(false)
-  })
-
-  it("follow is idempotent (re-follow stays following:true, no error)", async () => {
-    const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner" })
-    await service.followReport("u2", r.id)
-    const again = await service.followReport("u2", r.id)
-    expect(again).toEqual({ following: true })
-  })
-
-  it("404s following a missing report", async () => {
-    const { service } = makeHarness()
-    await expect(
-      service.followReport("u2", "00000000-0000-0000-0000-000000000000"),
-    ).rejects.toMatchObject({ code: "NOT_FOUND" })
-  })
-})
-
 describe("resolveReport (owner status toggle)", () => {
   it("the owner marks their report resolved (status flips + a timeline entry is appended)", async () => {
     const { repo, service } = makeHarness()
@@ -529,6 +562,19 @@ describe("resolveReport (owner status toggle)", () => {
     expect(last.note).toBe("Marked resolved by the reporter")
     // The underlying record was updated.
     expect(repo.reports.get(r.id)!.status).toBe("resolved")
+  })
+
+  it("emits a report-chat system event carrying the resolved status when the owner resolves", async () => {
+    const { repo, service, emitter } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner" })
+    await service.resolveReport("owner", r.id, true)
+    expect(emitter.events).toHaveLength(1)
+    expect(emitter.events[0]).toMatchObject({
+      reportId: r.id,
+      status: "resolved",
+      kind: "done",
+      note: "Marked resolved by the reporter",
+    })
   })
 
   it("reopening a resolved report returns it to published with a 'Reopened' timeline entry", async () => {
@@ -643,6 +689,30 @@ describe("listMyReports", () => {
     expect(page2.items).toHaveLength(1)
     expect(page2.items[0]!.id).toBe(r1.id)
     expect(page2.nextCursor).toBeNull()
+  })
+
+  it("does NOT populate report-chat metadata on the LIST path even when a loader is wired (detail-only)", async () => {
+    // D-Fmeta: the chat metadata is a DETAIL-path concern; the list builder never calls loadReportChatMeta,
+    // so the four chat* fields stay undefined (and the loader is never invoked).
+    let called = 0
+    const { repo, service } = makeHarness({
+      loadReportChatMeta: () => {
+        called += 1
+        return Promise.resolve({ joined: true, memberCount: 9, messageCount: 9, unread: 9 })
+      },
+    })
+    repo.seedReport({ reporterUserId: "me" })
+    repo.seedReport({ reporterUserId: "me" })
+
+    const page = await service.listMyReports("me", { limit: 10 })
+    expect(page.items.length).toBeGreaterThan(0)
+    for (const item of page.items) {
+      expect(item.chatJoined).toBeUndefined()
+      expect(item.chatMemberCount).toBeUndefined()
+      expect(item.chatMessageCount).toBeUndefined()
+      expect(item.chatUnread).toBeUndefined()
+    }
+    expect(called).toBe(0)
   })
 
   it("does NOT skip a row when two reports share the SAME created_at across a page boundary (P1-3)", async () => {

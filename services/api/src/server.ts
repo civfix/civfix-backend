@@ -21,10 +21,11 @@ import type { AnonServiceOverride } from "./routes/anon.routes.js"
 import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
-import type { DiscussionServiceOverrides } from "./routes/discussion.routes.js"
+import type { DiscussionServiceOverrides } from "./routes/report-chat.routes.js"
 import type { SocialServiceOverrides } from "./routes/social.routes.js"
 import type { VolunteerHoursOverrides } from "./routes/volunteer-hours.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
+import type { ConversationMutesOverrides } from "./routes/conversations.routes.js"
 import type { DataExportOverride } from "./routes/users.routes.js"
 import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.js"
 import { registerRoutes } from "./routes/index.js"
@@ -54,6 +55,7 @@ export interface BuildServerOptions {
   socialOverrides?: SocialServiceOverrides
   volunteerOverrides?: VolunteerHoursOverrides
   notificationOverrides?: NotificationServiceOverrides
+  conversationMutesOverrides?: ConversationMutesOverrides
   dataExportOverride?: DataExportOverride
   moderationOverrides?: ModerationRouteOverrides
 }
@@ -69,6 +71,7 @@ const OVERRIDE_KEYS = [
   "socialOverrides",
   "volunteerOverrides",
   "notificationOverrides",
+  "conversationMutesOverrides",
   "dataExportOverride",
   "moderationOverrides",
 ] as const satisfies readonly (keyof BuildServerOptions)[]

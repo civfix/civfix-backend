@@ -50,6 +50,17 @@ export type OnReportMessage = (
   message: import("@civfix/shared").ChatMessageDTO,
 ) => Promise<void>
 
+/**
+ * Subset of the D-C1 ReportChatRepository the WS gateway needs. Report rooms are PUBLIC to join but
+ * MEMBER-ONLY to post/type; reads advance a per-member watermark. Injected via chat-gateway-wiring so
+ * routes and the socket share one instance. User-message persistence stays on `deps.chat.persist`
+ * ({ roomKind: "report" }) — the shipped #18 path — so this interface deliberately has no insertUserMessage.
+ */
+export interface GatewayReportChat {
+  isMember(reportId: string, userId: string): Promise<boolean>
+  advanceReadWatermark(reportId: string, userId: string, upToId: string): Promise<void>
+}
+
 export interface GatewayChatMentions {
   resolveChatMentions(input: {
     handles: string[]
@@ -91,6 +102,7 @@ export interface GatewayDeps {
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined
+  reportChat?: GatewayReportChat | undefined
 }
 
 export interface GatewaySession {
@@ -122,5 +134,6 @@ export interface RegisterGatewayOptions {
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined
+  reportChat?: GatewayReportChat | undefined
   webOrigins: readonly string[]
 }

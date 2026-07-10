@@ -7,6 +7,7 @@ import { makeDrizzleAdminReportRepository } from "./admin-report-repository.driz
 import { makeOutboundMailService } from "./outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { makeMediaPresigner } from "../media-presign.js"
+import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 
 export { REPORT_AUTOFORWARD_JOB }
 
@@ -86,6 +87,8 @@ function makeAutoForwardService(container: Container): AdminReportService {
     outboundMail,
     presignMedia: makeMediaPresigner(container.storage),
     loadMediaBytes: (k) => container.storage.getObject(k),
+    // D-D1: auto-routing (-> acknowledged) posts a system message into the report chat too (no-op fake).
+    reportChatEmitter: makeContainerReportChatEmitter(container),
   })
 }
 

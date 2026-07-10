@@ -131,9 +131,13 @@ export function makeDmService(deps: DmServiceDeps): DmService {
         peer,
         last: last !== null ? lastPreview(last) : null,
         ago: last !== null ? relativeAgo(new Date(last.createdAt), now()) : null,
-        lastFromMe: last !== null && last.from.id === viewerId,
+        // DM messages always have an author (no sender-less SYSTEM messages on the dm path); optional-chain
+        // to satisfy the nullable contract type without changing the "from me" result.
+        lastFromMe: last !== null && last.from?.id === viewerId,
         unread: 0,
         members: 2,
+        // TODO(D-E1/D-E3): stamp real per-conversation mute from conversation_mutes
+        muted: false,
       }
     },
   }

@@ -71,7 +71,6 @@ export class InMemoryReportRepository implements ReportRepository {
   readonly reports = new Map<string, ReportRecord>()
   readonly media: StoredMediaAsset[] = []
   readonly timeline: StoredTimeline[] = []
-  readonly follows = new Set<string>() // `${userId}:${reportId}`
   readonly idempotency = new Map<string, StoredIdempotency>() // `${scope}:${key}`
   /** Per-scope reference-code counter ("{typecode}:{jurcode}" -> next seq), mirroring reference_counters. */
   private readonly refCounters = new Map<string, number>()
@@ -289,15 +288,6 @@ export class InMemoryReportRepository implements ReportRepository {
     return grouped
   }
 
-  isFollowing(userId: string, reportId: string): Promise<boolean> {
-    return Promise.resolve(this.follows.has(`${userId}:${reportId}`))
-  }
-
-  findFollowedReportIds(userId: string, reportIds: string[]): Promise<Set<string>> {
-    const followed = new Set(reportIds.filter((id) => this.follows.has(`${userId}:${id}`)))
-    return Promise.resolve(followed)
-  }
-
   listMyReports(
     userId: string,
     cursor: string | null,
@@ -448,18 +438,6 @@ export class InMemoryReportRepository implements ReportRepository {
     return Promise.resolve({ points, nextCursor })
   }
 
-  addFollow(userId: string, reportId: string): Promise<boolean> {
-    if (!this.reportExists(reportId)) return Promise.resolve(false)
-    this.follows.add(`${userId}:${reportId}`)
-    return Promise.resolve(true)
-  }
-
-  removeFollow(userId: string, reportId: string): Promise<boolean> {
-    if (!this.reportExists(reportId)) return Promise.resolve(false)
-    this.follows.delete(`${userId}:${reportId}`)
-    return Promise.resolve(true)
-  }
-
   resolveByOwner(
     reportId: string,
     userId: string,
@@ -501,11 +479,6 @@ export class InMemoryReportRepository implements ReportRepository {
       createdAt: this.nextDate(),
     })
     return Promise.resolve("updated")
-  }
-
-  private reportExists(reportId: string): boolean {
-    const r = this.reports.get(reportId)
-    return r !== undefined && r.deletedAt === null
   }
 }
 

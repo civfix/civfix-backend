@@ -157,6 +157,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           reportVisible: opts.reportVisible,
           reportSendLimiter: sendLimiter,
           chatMentions: opts.chatMentions,
+          reportChat: opts.reportChat,
         },
       }
 

@@ -2,12 +2,12 @@
  * Admin reports data-layer integration test (Docker-gated). Exercises the REAL Drizzle/raw-SQL
  * AdminReportRepository (makeDrizzleAdminReportRepository) against a live Postgres/PostGIS container via
  * withPg, which applies the canonical migrations + the jurisdiction seed (so reports / report_timeline /
- * report_follows / media_assets / abuse_flags / jurisdiction_contacts / notifications / audit_log all
- * exist with their real constraints).
+ * media_assets / abuse_flags / jurisdiction_contacts / notifications / audit_log all exist with their
+ * real constraints).
  *
  * Proven here against the real schema:
- *   - listReports computes flagged (open abuse_flag), confirmations (report_follows), hasPhoto
- *     (media_assets), and the status/flagged facet;
+ *   - listReports computes flagged (open abuse_flag), confirmations (deprecated, always 0 since
+ *     report_follows was dropped), hasPhoto (media_assets), and the status/flagged facet;
  *   - getReport + getRouting resolve the per-category -> default -> legacy contact precedence;
  *   - setStatus writes report_timeline + an audit_log row;
  *   - toggleFlag opens/resolves an abuse_flag + a timeline row + audit;
@@ -79,7 +79,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
   })
 
   beforeEach(async () => {
-    await h.sql`TRUNCATE report_timeline, report_follows, abuse_flags, audit_log, jurisdiction_contacts, notifications RESTART IDENTITY CASCADE`
+    await h.sql`TRUNCATE report_timeline, abuse_flags, audit_log, jurisdiction_contacts, notifications RESTART IDENTITY CASCADE`
     await h.sql`DELETE FROM media_assets`
     await h.sql`DELETE FROM reports`
     await h.sql`DELETE FROM users`
@@ -93,10 +93,6 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
   it("lists a report with confirmations, hasPhoto, and the flagged facet", async () => {
     const reporter = await insertUser(h, { name: "Jane", handle: "jane", emailVerified: true })
     const id = await insertReport(h, { reporterId: reporter, title: "Overflowing bin" })
-    // Two confirmations (report_follows).
-    const f1 = await insertUser(h)
-    const f2 = await insertUser(h)
-    await h.sql`INSERT INTO report_follows (user_id, report_id) VALUES (${f1}, ${id}), (${f2}, ${id})`
     // A photo.
     await h.sql`
       INSERT INTO media_assets (report_id, upload_id, kind, r2_key, status)
@@ -111,7 +107,9 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     })
     expect(records).toHaveLength(1)
     const r = records[0]!
-    expect(r.confirmations).toBe(2)
+    // `confirmations` was the report_follows count; that table was dropped with the discussion system, so
+    // the field is a deprecated always-0 value now.
+    expect(r.confirmations).toBe(0)
     expect(r.hasPhoto).toBe(true)
     expect(r.flagged).toBe(false)
     expect(r.reporter?.emailVerified).toBe(true)

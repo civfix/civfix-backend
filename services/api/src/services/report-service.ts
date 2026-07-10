@@ -36,6 +36,7 @@ import {
   REPORTS_SEARCH_DEFAULT_LIMIT,
   type BBox,
   type ReportAutoForwardJob,
+  type ReportChatMeta,
   type ReportDiscussionMeta,
   type ReportMediaView,
   type ReportOwner,
@@ -111,14 +112,15 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     timeline: ReportTimelineView[],
     flags: {
       mine: boolean
-      following: boolean
       mediaPending?: number
       linkedEvents?: LinkedEventRef[]
       discussionMeta?: ReportDiscussionMeta | null
+      chatMeta?: ReportChatMeta | null
     },
   ): Promise<ReportDTO> {
     const mediaDTOs = await mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO)
     const meta = flags.discussionMeta ?? null
+    const chat = flags.chatMeta ?? null
     return {
       id: record.id,
       category: record.category,
@@ -137,7 +139,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(record.publishedAt !== null ? { publishedAt: record.publishedAt.toISOString() } : {}),
       mine: flags.mine,
       gov: false,
-      following: flags.following,
+      // `following` is a deprecated, always-false field on ReportDTO: the per-report follow/subscribe
+      // surface (report_follows) was removed with the discussion system. Kept on the DTO so older clients
+      // still parse; report chat is now the notification channel.
+      following: false,
       media: mediaDTOs,
       mediaPending: flags.mediaPending ?? 0,
       timeline: timeline.map(toTimelineDTO),
@@ -148,6 +153,16 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
             cityHandle: meta.cityHandle,
             cityName: meta.cityName,
             canForwardToCity: meta.canForwardToCity,
+          }
+        : {}),
+      // D-Fmeta: report-chat membership + counts — populated ONLY on the report-detail path (getReport
+      // passes chatMeta). The list/pin builders leave chatMeta undefined so these fields are omitted.
+      ...(chat !== null
+        ? {
+            chatJoined: chat.joined,
+            chatMemberCount: chat.memberCount,
+            chatMessageCount: chat.messageCount,
+            chatUnread: chat.unread,
           }
         : {}),
     }
@@ -163,6 +178,17 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     if (deps.loadDiscussionMeta === undefined) return null
     try {
       return await deps.loadDiscussionMeta(reportId)
+    } catch {
+      return null
+    }
+  }
+
+  // D-Fmeta: viewer-scoped report-chat metadata for the DETAIL DTO. Best-effort (a failure returns null,
+  // leaving the chat* fields undefined) so the detail fetch never fails on the chat metadata alone.
+  async function chatMetaFor(reportId: string, viewerId: string | null): Promise<ReportChatMeta | null> {
+    if (deps.loadReportChatMeta === undefined) return null
+    try {
+      return await deps.loadReportChatMeta(reportId, viewerId)
     } catch {
       return null
     }
@@ -216,8 +242,13 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         timelineNote: null,
         idempotency: { key: input.idempotencyKey, scope: REPORT_CREATE_SCOPE, userOrAnon: owner.userId },
         buildSnapshot: (record, media, timeline) =>
-          toReportDTO(record, media, timeline, { mine: true, following: false }),
+          toReportDTO(record, media, timeline, { mine: true }),
       })
+
+      // Auto-join the creator as an OWNER of the report chat. Done AFTER createReportTx returns (the
+      // report row is committed) because report_chat_members.report_id references reports.id. Best-effort:
+      // a join failure must not fail report creation.
+      await maybeJoinReportChatAsOwner(deps, result.snapshot.id, owner.userId)
 
       await maybeEnqueueAutoForward(deps, reportId, owner.userId)
 
@@ -247,14 +278,14 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         throw AppError.notFound("Report not found")
       }
 
-      const [media, timeline, following, validatingCount, linkedEvents, discussionMeta] =
+      const [media, timeline, validatingCount, linkedEvents, discussionMeta, chatMeta] =
         await Promise.all([
           deps.repo.findMediaForReport(record.id, mine),
           deps.repo.findTimelineForReport(record.id),
-          viewerId !== null ? deps.repo.isFollowing(viewerId, record.id) : Promise.resolve(false),
           deps.repo.countValidatingMediaForReport(record.id),
           linkedEventsFor(record.id),
           discussionMetaFor(record.id),
+          chatMetaFor(record.id, viewerId),
         ])
 
       const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
@@ -262,10 +293,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       return toReportDTO(record, media, timeline, {
         mine,
-        following,
         mediaPending,
         linkedEvents,
         discussionMeta,
+        chatMeta,
       })
     },
 
@@ -275,10 +306,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const { records, nextCursor } = await deps.repo.listMyReports(userId, cursor, limit)
 
       const ids = records.map((r) => r.id)
-      const [mediaById, timelineById, followed, linkedEventsById] = await Promise.all([
+      const [mediaById, timelineById, linkedEventsById] = await Promise.all([
         deps.repo.findMediaForReports(ids, true),
         deps.repo.findTimelineForReports(ids),
-        deps.repo.findFollowedReportIds(userId, ids),
         deps.loadLinkedEventsForReports !== undefined
           ? deps.loadLinkedEventsForReports(ids)
           : Promise.resolve(new Map<string, LinkedEventView[]>()),
@@ -287,7 +317,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, (record) =>
         toReportDTO(record, mediaById.get(record.id) ?? [], timelineById.get(record.id) ?? [], {
           mine: true,
-          following: followed.has(record.id),
           linkedEvents: (linkedEventsById.get(record.id) ?? []).map(toLinkedEventRef),
         }),
       )
@@ -331,18 +360,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       return { items, nextCursor }
     },
 
-    async followReport(userId: string, reportId: string): Promise<{ following: boolean }> {
-      const exists = await deps.repo.addFollow(userId, reportId)
-      if (!exists) throw AppError.notFound("Report not found")
-      return { following: true }
-    },
-
-    async unfollowReport(userId: string, reportId: string): Promise<{ following: boolean }> {
-      const exists = await deps.repo.removeFollow(userId, reportId)
-      if (!exists) throw AppError.notFound("Report not found")
-      return { following: false }
-    },
-
     async resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO> {
       const status: ReportStatus = resolved ? "resolved" : "published"
       const note = resolved ? "Marked resolved by the reporter" : "Reopened by the reporter"
@@ -351,6 +368,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only change the status of your own report")
       }
+      // Post-commit: mirror the resolve/reopen transition into the report chat (best-effort; never throws).
+      await maybeEmitTimeline(deps, { reportId, status, kind: resolved ? "done" : "status", note })
       return service.getReport(reportId, { userId })
     },
 
@@ -362,7 +381,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only hide your own report")
       }
-      return service.getReport(reportId, { userId })
+      // The visibility change writes a timeline row at the report's CURRENT status; reflect it into the
+      // chat with that same status (read back from the fresh DTO below).
+      const dto = await service.getReport(reportId, { userId })
+      await maybeEmitTimeline(deps, { reportId, status: dto.status, kind: "status", note })
+      return dto
     },
   }
   return service
@@ -399,4 +422,30 @@ async function maybeAwardReportHours(
   } catch (err) {
     deps.logger?.warn({ err, reportId }, "volunteer-hours: report award failed")
   }
+}
+
+async function maybeJoinReportChatAsOwner(
+  deps: ReportServiceDeps,
+  reportId: string,
+  userId: string,
+): Promise<void> {
+  if (deps.joinReportChatAsOwner === undefined) return
+  try {
+    await deps.joinReportChatAsOwner(reportId, userId)
+  } catch (err) {
+    deps.logger?.warn({ err, reportId }, "report-chat: creator auto-join failed")
+  }
+}
+
+/**
+ * D-D1: fire the report-chat SYSTEM-message emitter for an owner timeline event (resolve/reopen/hide/
+ * re-list). No-op when no emitter is injected (offline / fake-chat). The emitter is already best-effort
+ * (swallows its own errors), so this can never fail the owner mutation.
+ */
+async function maybeEmitTimeline(
+  deps: ReportServiceDeps,
+  event: { reportId: string; status: string; kind?: string | null; note?: string | null },
+): Promise<void> {
+  if (deps.reportChatEmitter === undefined) return
+  await deps.reportChatEmitter.emit(event)
 }

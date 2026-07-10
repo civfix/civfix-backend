@@ -16,11 +16,25 @@ import {
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
-function harness(): { repo: InMemoryModerationRepository; svc: ModerationService } {
+/** A recording fake for the D-D1 report-chat SYSTEM-message emitter (moderation publish/remove mirror). */
+class FakeReportChatEmitter {
+  readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
+  emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
+    this.events.push(event)
+    return Promise.resolve()
+  }
+}
+
+function harness(): {
+  repo: InMemoryModerationRepository
+  emitter: FakeReportChatEmitter
+  svc: ModerationService
+} {
   const repo = new InMemoryModerationRepository()
   repo.now = NOW
-  const svc = makeModerationService({ repo, now: () => NOW })
-  return { repo, svc }
+  const emitter = new FakeReportChatEmitter()
+  const svc = makeModerationService({ repo, now: () => NOW, reportChatEmitter: emitter })
+  return { repo, emitter, svc }
 }
 
 /** A timestamp `hours` before NOW. */
@@ -169,8 +183,8 @@ describe("moderation detail", () => {
 })
 
 describe("moderation actions", () => {
-  it("approve publishes the underlying report and clears the item from the queue", async () => {
-    const { repo, svc } = harness()
+  it("approve publishes the underlying report, clears the item, and mirrors a system message into its chat", async () => {
+    const { repo, emitter, svc } = harness()
     repo.seedItem({ id: "MOD-1", subjectType: "report", subjectId: "REP-1", status: "open" })
 
     await svc.approve("MOD-1", { actorId: "op-1", note: null })
@@ -180,10 +194,14 @@ describe("moderation actions", () => {
     expect((await svc.list({})).items).toHaveLength(0)
     // Underlying report published.
     expect(repo.reportStatus.get("REP-1")).toBe("published")
+    // D-D1: exactly one report-chat system event carrying the published status.
+    expect(emitter.events).toEqual([
+      { reportId: "REP-1", status: "published", kind: "status", note: "Approved in moderation" },
+    ])
   })
 
-  it("remove rejects the underlying report and clears the item from the queue", async () => {
-    const { repo, svc } = harness()
+  it("remove rejects the underlying report, clears the item, and mirrors a system message into its chat", async () => {
+    const { repo, emitter, svc } = harness()
     repo.seedItem({ id: "MOD-1", subjectType: "report", subjectId: "REP-1", status: "open" })
 
     await svc.remove("MOD-1", { actorId: "op-1", reason: "spam" })
@@ -191,6 +209,26 @@ describe("moderation actions", () => {
     expect(repo.items.get("MOD-1")?.status).toBe("removed")
     expect((await svc.list({})).items).toHaveLength(0)
     expect(repo.reportStatus.get("REP-1")).toBe("rejected")
+    // D-D1: exactly one report-chat system event carrying the rejected status + the removal reason note.
+    expect(emitter.events).toEqual([
+      { reportId: "REP-1", status: "rejected", kind: "remove", note: "spam" },
+    ])
+  })
+
+  it("remove without a reason mirrors the default 'Removed in moderation' note", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedItem({ id: "MOD-1", subjectType: "report", subjectId: "REP-1", status: "open" })
+    await svc.remove("MOD-1", { actorId: "op-1", reason: null })
+    expect(emitter.events).toEqual([
+      { reportId: "REP-1", status: "rejected", kind: "remove", note: "Removed in moderation" },
+    ])
+  })
+
+  it("a NON-report subject (e.g. chat) publishes/removes without emitting any report-chat system message", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedItem({ id: "MOD-1", subjectType: "chat", subjectId: "CHAT-1", status: "open" })
+    await svc.approve("MOD-1", { actorId: "op-1", note: null })
+    expect(emitter.events).toHaveLength(0)
   })
 
   it("hold extends the hold (item leaves the queue; report not published or rejected)", async () => {

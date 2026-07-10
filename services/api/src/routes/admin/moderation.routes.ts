@@ -43,6 +43,8 @@ import {
   type ModerationService,
 } from "../../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../../services/admin/moderation-repository.drizzle.js"
+import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
+import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
 /**
  * Optional injected moderation-service dependencies (tests). When present the routes build the service
@@ -51,6 +53,8 @@ import { makeDrizzleModerationRepository } from "../../services/admin/moderation
 export interface ModerationRouteOverrides {
   repo: ModerationRepository
   now?: () => Date
+  /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
+  reportChatEmitter?: ReportChatSystemEmitter
 }
 
 declare module "fastify" {
@@ -71,10 +75,14 @@ export async function registerAdminModerationRoutes(
       return makeModerationService({
         repo: overrides.repo,
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+        ...(overrides.reportChatEmitter !== undefined
+          ? { reportChatEmitter: overrides.reportChatEmitter }
+          : {}),
       })
     }
     const repo: ModerationRepository = makeDrizzleModerationRepository(container.getDb().sql)
-    return makeModerationService({ repo })
+    // D-D1: publish/remove of a REPORT subject mirrors into the report chat (best-effort, no-op fake-chat).
+    return makeModerationService({ repo, reportChatEmitter: makeContainerReportChatEmitter(container, app.log) })
   }
 
   route(app, "listModeration", async (request, reply) => {

@@ -15,6 +15,9 @@ const PREVIEW_MAX = 80
  */
 export function authorDisplay(message: ChatMessageDTO, fallback: string): string {
   const from = message.from
+  // DM/mention notifications are only ever built from an authored message (a sender-less SYSTEM message
+  // has no dm/mention bell) - a missing author here just falls back like a blank name would.
+  if (!from) return fallback
   if (from.name.trim() !== "") return from.name
   if (from.handle) return `@${from.handle}`
   return fallback

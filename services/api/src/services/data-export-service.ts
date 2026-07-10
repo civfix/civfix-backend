@@ -58,15 +58,13 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
 
-      const comments = sql<
+      // `comments` was the user's per-report DISCUSSION messages; the discussion system (and its
+      // report_discussion_messages table) was removed. The kept `comments: []` field preserves the export
+      // shape. The user's report-CHAT messages (roomKind:"report") already ride chat_messages and are
+      // captured by the `chatMessages` query below (which filters only by sender_id).
+      const comments = Promise.resolve<
         { id: string; report_id: string; body: string; created_at: Date; deleted_at: Date | null }[]
-      >`
-        SELECT id, report_id, body, created_at, deleted_at
-        FROM report_discussion_messages
-        WHERE author_user_id = ${userId}
-        ORDER BY created_at DESC
-        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
-      `
+      >([])
 
       const chatMessages = sql<
         {
