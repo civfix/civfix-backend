@@ -42,8 +42,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: ^0.24.3
-        version: 0.24.3
+        specifier: ^0.25.0
+        version: 0.25.0
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -368,8 +368,8 @@ packages:
     resolution: {integrity: sha512-GlbccKc3ZoT3EiRtp9vlL80GaGG+FB0ksNytcVfk5C1+xg94MrI+xG7X4pb5L5pnS7ma31xW8uCR7y9y5K88TQ==}
     engines: {node: '>=20'}
 
-  '@civfix/shared@0.24.3':
-    resolution: {integrity: sha512-q5lIC5JjtjLB26rTpRR+O9sWJWRycasJps/u8Be9kxZAqMvGzzlSGGz5Q9dRfXHnpWGSfh6Tg8rj+4ZQkmURlQ==}
+  '@civfix/shared@0.25.0':
+    resolution: {integrity: sha512-XJs/ec7yGTisO8JT+1rHi0ui/MMLoSBD8monI5dopZjNC7Wch2owSjtmrAbboiJkW07DyjkjA9IWDYPXyGv4Dw==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4921,7 +4921,7 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  '@civfix/shared@0.24.3':
+  '@civfix/shared@0.25.0':
     dependencies:
       zod: 3.25.76
 
