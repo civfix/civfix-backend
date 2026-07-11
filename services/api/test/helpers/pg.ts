@@ -14,6 +14,7 @@
  */
 
 import { fileURLToPath } from "node:url"
+import { randomUUID } from "node:crypto"
 import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
@@ -82,6 +83,7 @@ export async function withPg(): Promise<PgHarness | null> {
     // Apply the EXACT canonical SQL the production runner applies, then the shared seed.
     await applyMigrations(sql, MIGRATIONS_DIR)
     await seedJurisdictions(sql)
+    await applyTestFixtureDefaults(sql)
   } catch (err) {
     // A migration/seed failure is a real error: clean up and rethrow so the test FAILS (not skips).
     await closeClients()
@@ -118,4 +120,33 @@ export function pgSkipReason(): string | undefined {
 function firstLine(s: string): string {
   const i = s.indexOf("\n")
   return i === -1 ? s : s.slice(0, i)
+}
+
+/**
+ * Test-harness-only column defaults for two NOT-NULL columns the PRODUCTION app always supplies but
+ * that raw fixture inserts here would otherwise have to hand-roll at ~30 call sites:
+ *
+ *   - users.handle   — made NOT NULL (no default) by 0026_user_handle_required.sql. The app assigns a
+ *                      handle during registration; fixtures that insert a bare user don't care about it.
+ *   - reports.type   — 0021_report_type.sql adds it with a default 'other' then DROPS the default, so
+ *                      the app must send a type. Fixtures that set up a report to exercise a read query
+ *                      don't care about the fine type.
+ *
+ * These defaults change ONLY the throwaway test container (never the canonical migrations / production
+ * schema) and weaken NO assertion: the suite has no test that a bare insert of these columns is rejected,
+ * and every place that actually cares supplies an explicit value (which overrides the default). A fixture
+ * that must pin a handle passes one; one that doesn't get a unique generated placeholder.
+ */
+async function applyTestFixtureDefaults(sql: Sql): Promise<void> {
+  await sql`ALTER TABLE users ALTER COLUMN handle SET DEFAULT 'u' || substr(md5(random()::text), 1, 12)`
+  await sql`ALTER TABLE reports ALTER COLUMN type SET DEFAULT 'other'`
+}
+
+/**
+ * A valid, unique-enough @handle (matches HANDLE_REGEX ^[A-Za-z0-9_]{3,20}$) for a fixture user whose
+ * handle is immaterial to the test. Use where a helper passes handle EXPLICITLY (an explicit value —
+ * even null — bypasses the SET DEFAULT above); pass a real handle instead when the test asserts on it.
+ */
+export function testHandle(): string {
+  return "u" + randomUUID().replace(/-/g, "").slice(0, 12)
 }

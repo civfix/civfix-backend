@@ -42,6 +42,7 @@ interface UserRowSelect {
   id: string
   name: string | null
   handle: string | null
+  email_verified: boolean
   city: string | null
   role: Role
   created_at: Date | null
@@ -66,6 +67,7 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     id: r.id,
     name: r.name ?? "Neighbor",
     handle: r.handle,
+    emailVerified: r.email_verified,
     city: r.city ?? "",
     role: r.role,
     joinedAt: r.created_at,
@@ -103,6 +105,7 @@ function userSelect(
       u.id,
       u.display_name AS name,
       u.handle,
+      u.email_verified,
       (
         SELECT j.name FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid

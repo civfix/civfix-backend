@@ -20,7 +20,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { withPg, type PgHarness } from "../helpers/pg.js"
+import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleAdminReportRepository } from "../../src/services/admin/admin-report-repository.drizzle.js"
 import type { AdminReportRepository } from "../../src/services/admin/admin-report-service.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
@@ -37,7 +37,7 @@ async function insertUser(
     INSERT INTO users (display_name, handle, email, email_verified)
     VALUES (
       ${opts.name ?? "Test User"},
-      ${opts.handle ?? null},
+      ${opts.handle ?? testHandle()},
       ${opts.handle ? `${opts.handle}@example.com` : null},
       ${opts.emailVerified ?? false}
     )
