@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { withPg, type PgHarness } from "../helpers/pg.js"
+import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleAdminUserRepository } from "../../src/services/admin/admin-user-repository.drizzle.js"
 import type { AdminUserRepository } from "../../src/services/admin/admin-user-service.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
@@ -36,7 +36,7 @@ async function insertUser(
     INSERT INTO users (display_name, handle, role, email, email_verified)
     VALUES (
       ${opts.name ?? "User"},
-      ${opts.handle ?? null},
+      ${opts.handle ?? testHandle()},
       ${opts.role ?? "citizen"},
       ${opts.handle ? `${opts.handle}@example.com` : null},
       ${opts.emailVerified ?? false}
@@ -109,7 +109,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     // in-memory repo + the documented contract (it previously only matched name/handle — a divergence).
     const inLa = await insertUser(h, { name: "Ada", handle: "ada" })
     await insertReport(h, inLa) // resolves to LA_CITY
-    const elsewhere = await insertUser(h, { name: "Bo", handle: "bo" }) // no reports -> no city
+    const elsewhere = await insertUser(h, { name: "Bo", handle: "bob" }) // no reports -> no city
     const { records } = await repo.listUsers({
       q: LA_CITY.name,
       status: null,

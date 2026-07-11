@@ -63,7 +63,11 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]!.status).toBe("validating")
     expect(rows[0]!.report_id).toBeNull()
-    expect(rows[0]!.r2_key).toMatch(/^uploads\/\d{4}\/\d{2}\/c{64}$/)
+    // Intake keys the object by the server-minted uploadId (uploads/YYYY/MM/<uploadId>), NOT the
+    // client-claimed sha256 — trusting the client's hash as the physical path would let a caller
+    // collide/overwrite another object. The worker later promotes verified bytes to the content-
+    // addressed uploads/YYYY/MM/<sha256> key for dedup (see media-worker-repo).
+    expect(rows[0]!.r2_key).toMatch(new RegExp(`^uploads/\\d{4}/\\d{2}/${uploadId}$`))
     expect(Number(rows[0]!.byte_size)).toBe(1024)
   })
 

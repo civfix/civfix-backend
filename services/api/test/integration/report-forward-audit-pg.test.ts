@@ -11,7 +11,7 @@
  * message id here. When Docker is unavailable the whole block SKIPS so the local suite stays green.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeReportForwardAudit } from "../../src/services/report-forward-audit.drizzle.js"
@@ -24,10 +24,6 @@ describe.skipIf(!pg)("report_message_forwards audit writes (integration)", () =>
 
   beforeAll(() => {
     h = pg as PgHarness
-  })
-
-  afterAll(async () => {
-    await h.teardown()
   })
 
   const GEO = "0600001"
@@ -95,8 +91,10 @@ describe.skipIf(!pg)("report message mapper surfaces forwardedToCity + cityMenti
     h = pg as PgHarness
   })
 
-  afterAll(async () => {
-    await h.teardown()
+  // Each case re-seeds a jurisdiction with the SAME @handle, so clear jurisdictions (and the reports /
+  // messages that FK to them) between tests to avoid colliding on jurisdictions_handle_lower_key.
+  beforeEach(async () => {
+    await h.sql`TRUNCATE jurisdictions RESTART IDENTITY CASCADE`
   })
 
   const HANDLE = "sfaudit"
@@ -197,4 +195,11 @@ describe.skipIf(!pg)("report message mapper surfaces forwardedToCity + cityMenti
     expect(single!.forwardedToCity).toBe(false)
     expect(single!.cityMention).toBeNull()
   })
+})
+
+// Tear down the shared, memoized withPg() harness only AFTER BOTH describe blocks above have run.
+// A per-block afterAll would stop the container (and close h.sql) before the second block executes,
+// so its tests would fail with CONNECTION_ENDED (see schema.test.ts for the same rule).
+afterAll(async () => {
+  if (pg) await pg.teardown()
 })

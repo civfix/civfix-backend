@@ -15,7 +15,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { withPg, type PgHarness } from "../helpers/pg.js"
+import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
 import { searchByHandlePrefix } from "../../src/services/social-repository.drizzle.js"
@@ -42,7 +42,7 @@ describe.skipIf(!pg)("direct messages (integration)", () => {
       INSERT INTO users (display_name, handle, allow_direct_messages, deleted_at)
       VALUES (
         ${name},
-        ${opts.handle ?? null},
+        ${opts.handle ?? testHandle()},
         ${opts.allowDm ?? true},
         ${opts.deleted ? new Date() : null}
       )

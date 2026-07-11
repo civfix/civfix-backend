@@ -73,10 +73,21 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
   })
 
   it("lists threads newest-first with a working keyset cursor + dir/geoid/q filters", async () => {
+    // 0039 enforces at most ONE geoid-only outreach thread per jurisdiction. So `a` is a
+    // report-LINKED thread (report_id set → the geoid-only unique index does not apply) while `b`
+    // is the single geoid-only thread. Both still carry jurisdiction_geoid = GEOID, so the geoid
+    // filter returns the pair {a, b} exactly as before.
+    const [rpt] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash',
+              'submitted', 'h0', ${GEOID})
+      RETURNING id
+    `
     const a = await repo.createThread({
       subject: "Pothole",
       org: "City of LA",
       jurisdictionGeoid: GEOID,
+      reportId: rpt!.id,
     })
     await repo.insertMessage({
       threadId: a.id,

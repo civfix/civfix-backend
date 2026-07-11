@@ -14,7 +14,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
-import { withPg, type PgHarness } from "../helpers/pg.js"
+import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeSocialService } from "../../src/services/social-service.js"
@@ -38,7 +38,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
   /** Insert a user and return its id. */
   async function newUser(name: string, handle?: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
-      INSERT INTO users (display_name, handle) VALUES (${name}, ${handle ?? null}) RETURNING id
+      INSERT INTO users (display_name, handle) VALUES (${name}, ${handle ?? testHandle()}) RETURNING id
     `
     return u!.id
   }
