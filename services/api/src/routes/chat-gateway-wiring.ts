@@ -9,6 +9,7 @@ import {
   roomKeyFor,
   type GatewayChatMentions,
   type GatewayDmDeps,
+  type GatewayReportChat,
   type IsBlockedEitherWayFn,
   type IsMemberFn,
   type OnReportMessage,
@@ -37,6 +38,7 @@ import {
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
+import { clearConversationBellFor, type ConversationBellKind } from "../services/conversation-bell.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { InMemoryChatPresence, RedisChatPresence, type ChatPresence } from "../adapters/chat-presence.js"
@@ -131,13 +133,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           logger: app.log,
         }))
 
-  // Per-conversation mute store (D-E1). Undefined under fake-chat (no DB); test-injectable via overrides.
   const conversationMutes: ConversationMutesRepository | undefined =
     overrides?.conversationMutes ??
     (useFakeChat ? undefined : makeConversationMutesRepository(container.getDb().sql))
 
-  // Best-effort "has this user muted this room?" gate. Returns false when the store is absent (fake-chat)
-  // and swallows lookup errors so a mute-store hiccup never suppresses/breaks a bell.
   const isMutedFor = async (
     userId: string,
     kind: "dm" | "cleanup" | "report",
@@ -151,11 +150,14 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     }
   }
 
-  const clearConversationBell = async (kind: "dm" | "cleanup", id: string, userId: string): Promise<void> => {
+  const clearConversationBell = async (
+    kind: ConversationBellKind,
+    id: string,
+    userId: string,
+  ): Promise<void> => {
     if (!notificationService) return
     try {
-      if (kind === "dm") await notificationService.clearByTypeAndLink(userId, "dm", `/messages/dm/${id}`)
-      else await notificationService.clearByTypeAndLink(userId, "cleanup_chat", `/cleanups/${id}`)
+      await clearConversationBellFor(notificationService, kind, id, userId)
     } catch (err) {
       app.log.warn({ err, kind, id, userId }, "read: clear conversation notifications failed (suppressed)")
     }
@@ -265,11 +267,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     return true
   }
 
-  // Per-member report-chat bell (D-E2). Built once, reused per message. Presence-suppressed + mute-gated
-  // by the notifier; the sender is skipped there. `createNotification` applies push master + quiet hours.
-  // Reuses the SHARED getReportChatRepo() (D-C3) so member lookups hit the same repo the socket uses. Also
-  // the seam D-D1 will reuse for its sender-less SYSTEM (status/timeline) posts. Absent under fake-chat
-  // (no notificationService / mutes), where onReportMessage is undefined anyway.
   const notifyReportChatMembers =
     notificationService && conversationMutes
       ? makeReportChatNotifier({
@@ -286,7 +283,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const onReportMessage: OnReportMessage | undefined = useFakeChat
     ? undefined
     : async (reportId, message) => {
-        // Best-effort member bells, fire-and-forget alongside the @city forward below.
         if (notifyReportChatMembers) void notifyReportChatMembers(reportId, message).catch(() => {})
         reportOutboundMail ??= makeOutboundMailService({
           repo: makeDrizzleMailRepository(container.getDb().sql),
@@ -300,9 +296,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
         const report = await getReportRepo().findReportForDiscussion(reportId)
         if (report === null) return
         const body = typeof message.body === "string" ? message.body : ""
-        // message.id threads the persisted chat_messages row id into the audit table (report_message_forwards
-        // keys on it). forwardReportCityMention writes the mentioned-but-not-forwarded row before the send and
-        // stamps forwarded_at on success; audit failures are swallowed there (message already persisted).
         await forwardReportCityMention(
           reportOutboundMail,
           {
@@ -318,6 +311,17 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       }
 
   applyWsUpgradeRateLimit(app)
+
+  const reportChatSource = overrides?.reportChat ?? (useFakeChat ? undefined : getReportChatRepo())
+  const reportChat: GatewayReportChat | undefined = reportChatSource
+    ? {
+        isMember: (reportId, userId) => reportChatSource.isMember(reportId, userId),
+        advanceReadWatermark: async (reportId, userId, upToId) => {
+          await reportChatSource.advanceReadWatermark(reportId, userId, upToId)
+          await clearConversationBell("report", reportId, userId)
+        },
+      }
+    : undefined
 
   const wsTicketCache = app.authServices?.cache
   registerChatGateway(app, {
@@ -366,10 +370,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     onReportMessage,
     reportVisible,
     reportSendLimiter,
-    // Injected into the socket so member-only send/typing + ack watermark share ONE instance with the
-    // routes (via getReportChatRepo). Gated on useFakeChat like reportVisible/onReportMessage: the fake
-    // path has no DB, so under fake-chat the socket falls back to public send (matching pre-D-C3).
-    reportChat: overrides?.reportChat ?? (useFakeChat ? undefined : getReportChatRepo()),
+    reportChat,
     webOrigins: container.env.WEB_ORIGINS,
   })
 
