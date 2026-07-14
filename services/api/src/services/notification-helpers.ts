@@ -16,7 +16,7 @@ export const DEFAULT_PREFS: NotificationPrefsRecord = {
   quietEnd: null,
 }
 
-export const FEED_HIDDEN_NOTIFICATION_TYPES: readonly NotificationType[] = ["dm", "cleanup_chat"]
+export const FEED_HIDDEN_NOTIFICATION_TYPES: readonly NotificationType[] = ["dm", "cleanup_chat", "report_chat"]
 
 export function isFeedVisibleType(type: NotificationType): boolean {
   return !FEED_HIDDEN_NOTIFICATION_TYPES.includes(type)
