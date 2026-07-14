@@ -314,13 +314,9 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   const reportChatSource = overrides?.reportChat ?? (useFakeChat ? undefined : getReportChatRepo())
   const reportChat: GatewayReportChat | undefined = reportChatSource
-    ? {
-        isMember: (reportId, userId) => reportChatSource.isMember(reportId, userId),
-        advanceReadWatermark: async (reportId, userId, upToId) => {
-          await reportChatSource.advanceReadWatermark(reportId, userId, upToId)
-          await clearConversationBell("report", reportId, userId)
-        },
-      }
+    ? makeGatewayReportChat(reportChatSource, (reportId, userId) =>
+        clearConversationBell("report", reportId, userId),
+      )
     : undefined
 
   const wsTicketCache = app.authServices?.cache
@@ -384,5 +380,18 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     getChatRepo,
     getReportChatRepo,
     listDmThreadsFor: (userId, limit) => dmRepo.listThreadsForUser(userId, limit),
+  }
+}
+
+export function makeGatewayReportChat(
+  source: GatewayReportChat,
+  clearBell: (reportId: string, userId: string) => Promise<void>,
+): GatewayReportChat {
+  return {
+    isMember: (reportId, userId) => source.isMember(reportId, userId),
+    advanceReadWatermark: async (reportId, userId, upToId) => {
+      await source.advanceReadWatermark(reportId, userId, upToId)
+      await clearBell(reportId, userId)
+    },
   }
 }

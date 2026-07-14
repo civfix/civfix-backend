@@ -3,7 +3,7 @@ import type { NotificationService } from "./notification-service.js"
 
 export type ConversationBellKind = "dm" | "cleanup" | "report"
 
-const CONVERSATION_BELL: Record<
+export const CONVERSATION_BELL: Record<
   ConversationBellKind,
   { type: NotificationType; link: (id: string) => string }
 > = {
