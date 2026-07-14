@@ -52,7 +52,9 @@ declare module "fastify" {
 
 const PersonIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(40) }).strict()
+const PERSON_REF_MAX = 40
+
+const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(PERSON_REF_MAX) }).strict()
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -108,6 +110,7 @@ export async function registerSocialRoutes(
 
   async function resolvePersonId(ref: string): Promise<string> {
     if (UUID_RE.test(ref)) return ref
+    if (ref.length > PERSON_REF_MAX) throw AppError.notFound("Person not found")
     return service().resolveHandleToId(ref)
   }
 

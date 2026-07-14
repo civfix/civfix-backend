@@ -289,6 +289,15 @@ describe("GET /people/:id/activity", () => {
     const res = await app.inject({ method: "GET", url: "/v1/people/not-a-real-id/activity" })
     expect(res.statusCode).toBe(404)
   })
+
+  it("404s an over-length non-UUID :id before hitting the handle lookup (parity with getProfile)", async () => {
+    const longRef = "a".repeat(41)
+    const { app } = await makeHarness((repo) => {
+      repo.seedUser({ id: OTHER, displayName: "Pro", handle: longRef })
+    })
+    const res = await app.inject({ method: "GET", url: `/v1/people/${longRef}/activity` })
+    expect(res.statusCode).toBe(404)
+  })
 })
 
 describe("GET /people/:id/followers and /following", () => {
