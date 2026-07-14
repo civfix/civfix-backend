@@ -410,3 +410,18 @@ describe("getMyProfile", () => {
     expect(profile.isFollowing).toBe(false)
   })
 })
+
+describe("resolveHandleToId", () => {
+  it("resolves a handle to the user's id (case-insensitive)", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice", handle: "alice" })
+    expect(await service.resolveHandleToId("Alice")).toBe(A)
+  })
+
+  it("404s an unknown handle", async () => {
+    const { service } = makeHarness()
+    await expect(service.resolveHandleToId("nobody_here")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+})
