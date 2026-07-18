@@ -31,7 +31,7 @@ import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { roomKeyFor } from "../ws/gateway.js"
+import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { makeDmService, type DmService, type DmUserLookup } from "../services/dm-service.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { makeChatEditService } from "../services/chat-edit-service.js"
@@ -228,6 +228,9 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       void Promise.resolve(
         container.chatService.broadcast(roomKeyFor("dm", threadId), tombstone),
       ).catch(() => {})
+      // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
+      // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
+      broadcastMessageUpdate(container.chatService, "dm", threadId, tombstone)
 
       reply.status(200).send(tombstone)
     },

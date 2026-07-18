@@ -29,7 +29,7 @@ import { AppError, EDIT_WINDOW_HOURS, ErrorCode } from "@civfix/shared"
 import type { ChatMessageDTO, ChatMessageKind, RoomKind, WsServerMessage } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { parseUserMentions } from "./discussion-mentions.js"
-import { roomKeyFor } from "../ws/frame-handler.js"
+import { broadcastMessageUpdate } from "../ws/frame-handler.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 import type { ChatRepository } from "./chat-repository.drizzle.js"
 import type { DmRepository } from "./dm-repository.drizzle.js"
@@ -122,10 +122,9 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     }
   }
 
-  /** Fire-and-forget the {type:"message_update"} frame to the room key (mirrors the routes' broadcasts). */
+  /** Fire-and-forget the {type:"message_update"} frame to the room key (SAME helper the delete routes use). */
   function fireMessageUpdate(roomKind: RoomKind, roomId: string, message: ChatMessageDTO): void {
-    const frame: WsServerMessage = { type: "message_update", roomKind, roomId, message }
-    void Promise.resolve(deps.broadcastEvent?.(roomKeyFor(roomKind, roomId), frame)).catch(() => {})
+    broadcastMessageUpdate({ broadcastEvent: deps.broadcastEvent }, roomKind, roomId, message)
   }
 
   async function editDmMessage(input: EditMessageInput): Promise<ChatMessageDTO> {

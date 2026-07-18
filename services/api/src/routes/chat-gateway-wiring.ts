@@ -15,6 +15,7 @@ import {
   type ThreadRecipientsOf,
 } from "../ws/gateway.js"
 import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
+import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { makeReportChatRepository, type ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
@@ -199,21 +200,13 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     (useFakeChat || !notificationService
       ? undefined
       : {
-          resolveChatMentions: async (input) => {
-            if (input.kind === "report") return []
-            const resolved = await resolveMentionTargets(container.getDb().sql, {
-              handles: input.handles,
-              userIds: input.userIds,
-              authorUserId: input.authorUserId,
-            })
-            if (resolved.length === 0) return resolved
-            if (input.kind === "dm") {
-              const peer = await dmPeerOf(input.roomId, input.authorUserId)
-              return peer !== null ? resolved.filter((m) => m.id === peer) : []
-            }
-            const memberIds = new Set(await getCleanupRepo().listMemberIds(input.roomId, THREAD_SIGNAL_MEMBER_CAP))
-            return resolved.filter((m) => memberIds.has(m.id))
-          },
+          // Scope rules (report mention-free, dm peer-only, cleanup members-only) are single-sourced in
+          // makeChatMentionResolver, shared with the PATCH /messages edit route.
+          resolveChatMentions: makeChatMentionResolver({
+            resolveTargets: (input) => resolveMentionTargets(container.getDb().sql, input),
+            dmPeerOf,
+            listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
+          }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
           notifyChatMention: async (input) => {

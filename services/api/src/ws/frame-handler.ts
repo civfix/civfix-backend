@@ -48,6 +48,23 @@ export function roomKeyFor(kind: RoomKind, id: string): string {
   return id
 }
 
+/**
+ * Fire-and-forget a {type:"message_update"} frame (edited or tombstoned DTO — clients upsert/drop by
+ * id) to the room's key. Best-effort: a fan-out failure never fails the calling mutation. ONE shape
+ * for the P0 edit/delete realtime path — used by chat-edit-service and the three delete routes.
+ * `chat` is anything carrying the optional broadcastEvent seam (container.chatService, or the edit
+ * service's injected fn wrapped in an object literal).
+ */
+export function broadcastMessageUpdate(
+  chat: { broadcastEvent?: ((roomKey: string, frame: WsServerMessage) => Promise<void> | void) | undefined },
+  roomKind: RoomKind,
+  roomId: string,
+  message: ChatMessageDTO,
+): void {
+  const frame: WsServerMessage = { type: "message_update", roomKind, roomId, message }
+  void Promise.resolve(chat.broadcastEvent?.(roomKeyFor(roomKind, roomId), frame)).catch(() => {})
+}
+
 function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
   if (roomKey.startsWith(DM_ROOM_PREFIX)) {
     return { kind: "dm", id: roomKey.slice(DM_ROOM_PREFIX.length) }

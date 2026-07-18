@@ -21,12 +21,14 @@ import type { WsServerMessage } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { buildServer } from "../../src/server.js"
+import { buildContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/chat.js"
+import { InMemoryChatRepository, InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
+import { roomKeyFor } from "../../src/ws/gateway.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
@@ -375,5 +377,172 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     } finally {
       await app.close()
     }
+  })
+
+  describe("PATCH /messages route + delete broadcasts (HTTP, P0 Task 0.3)", () => {
+    // One app over real Drizzle repos (chatOverrides) + the container's FakeChatService, whose
+    // joinRoom/broadcastEvent let a MockConnection stand in for a second connected WS client.
+    let app: FastifyInstance
+    let container: Container
+    let authServices: AuthServices
+
+    beforeAll(async () => {
+      const env = loadEnv({ NODE_ENV: "test" })
+      authServices = buildAuthServices({
+        stores: makeInMemoryStores(),
+        cache: new InMemoryCacheClient(() => Date.now()),
+        mailer: new FakeMailer(),
+        oauthConfig: {},
+        verifier: new StubJwksVerifier(),
+        now: () => Date.now(),
+      })
+      const cleanups = makeDrizzleCleanupRepository(h.sql)
+      const overrides: ChatGatewayOverrides = {
+        isMember: (cleanupId, userId) => cleanups.isMember(cleanupId, userId),
+        threadsRepo: new InMemoryThreadsRepository(),
+        dmRepo: makeDrizzleDmRepository(h.sql),
+        chatRepo: makeDrizzleChatRepository(h.sql),
+        blocksRepo: makeDrizzleBlocksRepository(h.sql),
+        reportChat: makeReportChatRepository(h.sql),
+      }
+      container = buildContainer(env)
+      app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+    })
+
+    afterAll(async () => {
+      await app.close()
+    })
+
+    /** Let the fire-and-forget broadcast microtasks flush. */
+    const flush = () => new Promise((resolve) => setImmediate(resolve))
+
+    it("PATCH /messages edits a report-room message: 200 DTO + message_update to a second WS client", async () => {
+      const userId = await newUser("Route Edit Report")
+      const watcherId = await newUser("Route Edit Watcher")
+      const reportId = await newReport()
+      const reportChat = makeReportChatRepository(h.sql)
+      await reportChat.join(reportId, userId)
+      await reportChat.join(reportId, watcherId)
+      const chat = makeDrizzleChatRepository(h.sql)
+      const msg = await chat.insertMessage(
+        { cleanupId: reportId, roomKind: "report", userId, body: "tpyo" },
+        randomUUID(),
+      )
+
+      // A second connected client in the report room (FakeChatService joinRoom keys by room key).
+      const watcher = new MockConnection("watcher")
+      await container.chatService.joinRoom(roomKeyFor("report", reportId), watcher, watcherId)
+
+      const token = await authServices.sessions.createSession(userId, [])
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/v1/messages",
+        headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+        payload: { roomKind: "report", roomId: reportId, messageId: msg.id, body: "typo" },
+      })
+      expect(res.statusCode).toBe(200)
+      const dto = res.json()
+      expect(dto.body).toBe("typo")
+      expect(dto.editedAt).toBeTruthy()
+
+      await flush()
+      const updates = watcher.framesOfType("message_update")
+      expect(updates).toHaveLength(1)
+      expect(updates[0]).toMatchObject({
+        type: "message_update",
+        roomKind: "report",
+        roomId: reportId,
+        message: { id: msg.id, body: "typo" },
+      })
+    })
+
+    it("PATCH /messages with roomKind dm edits a DM (same behavior as the old route)", async () => {
+      const aliceId = await newUser("Route Edit DM Alice")
+      const bobId = await newUser("Route Edit DM Bob")
+      const dm = makeDrizzleDmRepository(h.sql)
+      const thread = await dm.openOrCreateThread(aliceId, bobId)
+      const msg = await dm.persist({ threadId: thread.id, senderId: aliceId, body: "hey bob" })
+
+      const token = await authServices.sessions.createSession(aliceId, [])
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/v1/messages",
+        headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+        payload: { roomKind: "dm", roomId: thread.id, messageId: msg.id, body: "hey bob (edited)" },
+      })
+      expect(res.statusCode).toBe(200)
+      const dto = res.json()
+      expect(dto.body).toBe("hey bob (edited)")
+      expect(dto.editedAt).toBeTruthy()
+
+      // Persisted, not just projected.
+      const reread = await dm.findMessage(thread.id, msg.id, aliceId)
+      expect(reread?.body).toBe("hey bob (edited)")
+      expect(reread?.editedAt).toBeTruthy()
+
+      // Non-sender still 403s through the unified route.
+      const bobToken = await authServices.sessions.createSession(bobId, [])
+      const forbidden = await app.inject({
+        method: "PATCH",
+        url: "/v1/messages",
+        headers: { authorization: `Bearer ${bobToken}`, "x-client": "mobile" },
+        payload: { roomKind: "dm", roomId: thread.id, messageId: msg.id, body: "bob was here" },
+      })
+      expect(forbidden.statusCode).toBe(403)
+    })
+
+    it("DELETE cleanup message broadcasts a message_update whose message has deletedAt set", async () => {
+      const organizerId = await newUser("Route Del Org")
+      const cleanupId = await newCleanup(organizerId)
+      const chat = makeDrizzleChatRepository(h.sql)
+      const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "delete me" }, randomUUID())
+
+      // Cleanup rooms use the BARE cleanupId as their room key.
+      const watcher = new MockConnection("del-watcher")
+      await container.chatService.joinRoom(roomKeyFor("cleanup", cleanupId), watcher, organizerId)
+
+      const token = await authServices.sessions.createSession(organizerId, [])
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/v1/cleanups/${cleanupId}/messages/${msg.id}`,
+        headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().deletedAt).toBeTruthy()
+
+      await flush()
+      const updates = watcher.framesOfType("message_update")
+      expect(updates).toHaveLength(1)
+      expect(updates[0]).toMatchObject({
+        type: "message_update",
+        roomKind: "cleanup",
+        roomId: cleanupId,
+        message: { id: msg.id },
+      })
+      expect((updates[0]!.message as { deletedAt: string | null }).deletedAt).toBeTruthy()
+    })
+
+    it("rate limits PATCH /messages at 30/min: a 429 lands within 40 edits", async () => {
+      const organizerId = await newUser("Route Edit Limit")
+      const cleanupId = await newCleanup(organizerId)
+      const chat = makeDrizzleChatRepository(h.sql)
+      const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "v0" }, randomUUID())
+      const token = await authServices.sessions.createSession(organizerId, [])
+
+      // Same pattern as the anon-routes 30/min test: earlier tests in this app already consumed a few
+      // slots on this route+key, so assert only that a 429 arrives before 40 attempts (limit is 30/min).
+      let saw429 = false
+      for (let i = 1; i <= 40 && !saw429; i++) {
+        const res = await app.inject({
+          method: "PATCH",
+          url: "/v1/messages",
+          headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+          payload: { roomKind: "cleanup", roomId: cleanupId, messageId: msg.id, body: `v${i}` },
+        })
+        if (res.statusCode === 429) saw429 = true
+        else expect(res.statusCode).toBe(200)
+      }
+      expect(saw429).toBe(true)
+    })
   })
 })
