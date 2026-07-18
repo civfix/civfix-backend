@@ -146,7 +146,10 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
     },
 
     async votePoll(input: VotePollInput): Promise<ChatMessageDTO> {
-      const { messageId, optionIdxs, userId } = input
+      const { messageId, userId } = input
+      // Dedupe the ballot up front: a schema-valid repeat idx (e.g. [0,0]) would pass every guard and
+      // then trip the votes PK (23505 -> 500). A deduped repeat is semantically the same vote.
+      const optionIdxs = [...new Set(input.optionIdxs)]
       const { roomKind, roomId } = await resolvePollRoom(messageId)
       // Membership (not send-permission): a channel's read-only member may vote; a public non-member 403s.
       if (!(await deps.isMember(roomKind, roomId, userId))) {
@@ -178,6 +181,10 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
       const pollMeta = await deps.chatPolls.findPollMeta(messageId)
       if (pollMeta === null) throw AppError.notFound("Poll not found")
       const isAuthor = pollMeta.createdBy === userId
+      // RULING (review): the close fallback is isModerator — so a report-chat OWNER (pin-only,
+      // non-operator) CAN close others' polls. Deliberate: close is non-destructive + idempotent and
+      // coherent with their pin power. (The ui only SHOWS Stop-poll to canDeleteOthers holders, which
+      // under-shows for report owners — harmless direction, documented.)
       if (!isAuthor && !(await deps.isModerator(roomKind, roomId, userId))) {
         throw new AppError(ErrorCode.FORBIDDEN, "You can't close this poll.", {
           fields: { code: "poll_close_forbidden" },

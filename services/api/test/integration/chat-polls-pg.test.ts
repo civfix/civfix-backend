@@ -342,6 +342,31 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(retract.json().poll.myVote).toEqual([])
   })
 
+  it("a duplicate idx in a multi ballot dedupes: [0,0] -> 200 with ONE vote row", async () => {
+    const ownerId = await newUser("Dup Owner")
+    const groupId = await newGroup(ownerId, {})
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId, { allowMultiple: true }),
+    )
+    const pollId = created.json().id
+
+    // Schema-valid repeat idx: must NOT 500 on the votes PK — dedupe to a single ballot row.
+    const res = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0, 0],
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().poll.options.map((o: { count: number }) => o.count)).toEqual([1, 0])
+    expect(res.json().poll.myVote).toEqual([0])
+    const rows = await h.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count FROM chat_poll_votes WHERE poll_id = ${pollId}
+    `
+    expect(rows[0]!.count).toBe(1)
+  })
+
   it("a multi-idx ballot on a single-choice poll 422s; an unknown idx 422s", async () => {
     const ownerId = await newUser("Val Owner")
     const groupId = await newGroup(ownerId, {})
@@ -452,6 +477,25 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       SELECT closed_at FROM chat_polls WHERE message_id = ${pollId}
     `
     expect(secondClose!.closed_at.getTime()).toBe(firstClose!.closed_at.getTime())
+  })
+
+  it("close by a REPORT-CHAT OWNER (pin-only, non-operator) on another member's poll 200s (ruling: isModerator)", async () => {
+    const reportOwnerId = await newUser("Rep Close Owner")
+    const memberId = await newUser("Rep Close Member")
+    const reportId = await newReport()
+    const reportChat = makeReportChatRepository(h.sql)
+    await reportChat.join(reportId, reportOwnerId, "owner")
+    await reportChat.join(reportId, memberId, "member")
+
+    // Poll authored by the plain member; the report chat OWNER closes it — isModerator is true for a
+    // report owner (canPin), so close succeeds even though they hold no canDeleteOthers power.
+    const created = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("report", reportId))
+    expect(created.statusCode).toBe(200)
+    const pollId = created.json().id
+
+    const closed = await inject(await token(reportOwnerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    expect(closed.statusCode).toBe(200)
+    expect(closed.json().poll.closed).toBe(true)
   })
 
   // -- TOMBSTONE --------------------------------------------------------------
