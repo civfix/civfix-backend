@@ -10,20 +10,33 @@ import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.js"
 import type { SocialServiceOverrides } from "../../src/routes/social.routes.js"
 import type { SocialNotifier, PersonView } from "../../src/services/social-service.js"
+import type {
+  UserActivityRecord,
+  UserActivityRepository,
+} from "../../src/services/user-activity-service.js"
 
-/**
- * Route-level tests for the social plugin, run with NO database: an in-memory SocialRepository (+ a spy
- * notifier) is injected via buildServer(opts.socialOverrides), and a full in-memory auth bundle gives the
- * [auth] routes a real bearer session. Exercised through app.inject. The Drizzle/PostGIS path is covered by
- * the Docker-gated integration test.
- */
 
-/** A capturing notifier so the route test can assert the new_follower hook fired. */
 class SpyNotifier implements SocialNotifier {
   readonly calls: Array<{ followeeId: string; follower: PersonView }> = []
   onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {
     this.calls.push(args)
     return Promise.resolve()
+  }
+}
+
+class StubUserActivityRepository implements UserActivityRepository {
+  listActivity(args: { userId: string }): Promise<UserActivityRecord[]> {
+    return Promise.resolve([
+      {
+        id: `act-${args.userId}`,
+        kind: "created_report",
+        at: new Date("2025-01-01T00:00:00.000Z"),
+        title: "Reported a pothole",
+        subtitle: null,
+        refKind: "report",
+        refId: "r1",
+      },
+    ])
   }
 }
 
@@ -59,11 +72,14 @@ async function makeHarness(seed?: (repo: InMemorySocialRepository) => void): Pro
   const notifier = new SpyNotifier()
   const socialOverrides: SocialServiceOverrides = { repo, notifier }
 
-  const app = await buildServer({ env, authServices, socialOverrides })
+  const app = await buildServer({
+    env,
+    authServices,
+    socialOverrides,
+    userActivityOverride: { repo: new StubUserActivityRepository() },
+  })
 
-  // Sign in (the viewer) through the real OTP flow (mobile -> bearer token in the body).
   const { token, userId } = await signIn(app, mailer, "viewer@example.com")
-  // Register the signed-in user in the social repo so their profile + self-exclusion resolve.
   repo.seedUser({ id: userId, displayName: "Viewer", handle: "viewer" })
 
   const h: Harness = { app, repo, notifier, mailer, token, userId }
@@ -100,10 +116,9 @@ afterEach(async () => {
 })
 
 const OTHER = "44444444-4444-4444-4444-444444444444"
+const THIRD = "55555555-5555-5555-5555-555555555555"
 
 describe("GET /people", () => {
-  // The directory is now AUTH-REQUIRED and `q` is REQUIRED server-side (no list-everyone form): a
-  // logged-out request 401s, and a missing/blank q 422s, so the endpoint can never enumerate all users.
   it("401s an anonymous request (auth required)", async () => {
     const { app } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Other Person", handle: "other" })
@@ -131,8 +146,7 @@ describe("GET /people", () => {
     const body = hit.json()
     const ids = body.items.map((p: { id: string }) => p.id)
     expect(ids).toEqual([OTHER])
-    expect(ids).not.toContain(userId) // the viewer is excluded
-    // Each item carries an avatar gradient pair.
+    expect(ids).not.toContain(userId)
     expect(body.items[0].avatar).toHaveLength(2)
 
     const miss = await app.inject({ method: "GET", url: "/v1/people?q=nobody", headers: auth(token) })
@@ -166,7 +180,6 @@ describe("POST /people/:id/follow and DELETE", () => {
     const { app, token } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Target" })
     })
-    // Follow then unfollow.
     await app.inject({ method: "POST", url: `/v1/people/${OTHER}/follow`, headers: auth(token) })
     const res = await app.inject({
       method: "DELETE",
@@ -220,7 +233,7 @@ describe("GET /people/:id (profile)", () => {
     expect(body.profile.id).toBe(OTHER)
     expect(body.profile.stats).toEqual({ reports: 2, cleanups: 1 })
     expect(body.profile.pastEvents.map((e: { title: string }) => e.title)).toEqual(["Past sweep"])
-    expect(body.profile.isFollowing).toBe(false) // anonymous viewer
+    expect(body.profile.isFollowing).toBe(false)
   })
 
   it("reflects isFollowing for the signed-in viewer", async () => {
@@ -245,7 +258,6 @@ describe("GET /people/:id (profile)", () => {
     const { app } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Pro", handle: "pro_neighbor" })
     })
-    // /people/<handle> resolves by handle (citext, case-insensitive); the UUID id stays a hidden key.
     const res = await app.inject({ method: "GET", url: "/v1/people/Pro_Neighbor" })
     expect(res.statusCode).toBe(200)
     expect(res.json().profile.handle).toBe("pro_neighbor")
@@ -257,6 +269,60 @@ describe("GET /people/:id (profile)", () => {
     const res = await app.inject({ method: "GET", url: "/v1/people/nobody_here" })
     expect(res.statusCode).toBe(404)
   })
+})
+
+describe("GET /people/:id/activity", () => {
+  it("resolves a non-UUID :id as an @handle and returns the same body as the UUID form", async () => {
+    const { app } = await makeHarness((repo) => {
+      repo.seedUser({ id: OTHER, displayName: "Pro", handle: "pro_neighbor" })
+    })
+    const byHandle = await app.inject({ method: "GET", url: "/v1/people/Pro_Neighbor/activity" })
+    const byUuid = await app.inject({ method: "GET", url: `/v1/people/${OTHER}/activity` })
+    expect(byHandle.statusCode).toBe(200)
+    expect(byUuid.statusCode).toBe(200)
+    expect(byHandle.json()).toEqual(byUuid.json())
+    expect(byHandle.json().items[0].id).toBe(`act-${OTHER}`)
+  })
+
+  it("404s a garbage :id that is neither a UUID nor a known handle (not 500)", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({ method: "GET", url: "/v1/people/not-a-real-id/activity" })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("404s an over-length non-UUID :id before hitting the handle lookup (parity with getProfile)", async () => {
+    const longRef = "a".repeat(41)
+    const { app } = await makeHarness((repo) => {
+      repo.seedUser({ id: OTHER, displayName: "Pro", handle: longRef })
+    })
+    const res = await app.inject({ method: "GET", url: `/v1/people/${longRef}/activity` })
+    expect(res.statusCode).toBe(404)
+  })
+})
+
+describe("GET /people/:id/followers and /following", () => {
+  for (const rel of ["followers", "following"] as const) {
+    it(`${rel}: resolves a non-UUID :id as an @handle (same body as the UUID form)`, async () => {
+      const { app } = await makeHarness((repo) => {
+        repo.seedUser({ id: OTHER, displayName: "Pro", handle: "pro_neighbor" })
+        repo.seedUser({ id: THIRD, displayName: "Other" })
+        if (rel === "followers") repo.seedFollow(THIRD, OTHER)
+        else repo.seedFollow(OTHER, THIRD)
+      })
+      const byHandle = await app.inject({ method: "GET", url: `/v1/people/Pro_Neighbor/${rel}` })
+      const byUuid = await app.inject({ method: "GET", url: `/v1/people/${OTHER}/${rel}` })
+      expect(byHandle.statusCode).toBe(200)
+      expect(byUuid.statusCode).toBe(200)
+      expect(byHandle.json()).toEqual(byUuid.json())
+      expect(byHandle.json().items.map((p: { id: string }) => p.id)).toEqual([THIRD])
+    })
+
+    it(`${rel}: 404s a garbage :id that is neither a UUID nor a known handle (not 500)`, async () => {
+      const { app } = await makeHarness()
+      const res = await app.inject({ method: "GET", url: `/v1/people/not-a-real-id/${rel}` })
+      expect(res.statusCode).toBe(404)
+    })
+  }
 })
 
 describe("GET /me/profile", () => {
