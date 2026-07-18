@@ -15,6 +15,7 @@ import type {
 import type {
   AdminReportStatus,
   AdminUserCounts,
+  CleanupMemberRole,
   ReportCategory,
   Risk,
   Role,
@@ -260,7 +261,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           id: string
           title: string | null
           place: string | null
-          role: "organizer" | "member"
+          role: CleanupMemberRole
           attendees: string
           when_at: Date
         }[]

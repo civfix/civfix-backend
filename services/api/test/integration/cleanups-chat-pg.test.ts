@@ -300,4 +300,54 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       await app.close()
     }
   })
+
+  it("WS4: promote/demote flips cleanup_members.role in Postgres (0045 allows 'cohost') and remove deletes the row", async () => {
+    const organizerId = await newUser("Org Roles")
+    const aliceId = await newUser("Alice Roles")
+    const bobId = await newUser("Bob Roles")
+    const repo = makeDrizzleCleanupRepository(h.sql)
+    const service = makeCleanupService({ repo })
+    const created = await service.createCleanup(
+      {
+        title: "Roles sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.08,
+        lng: -118.28,
+        scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      organizerId,
+    )
+    await service.joinCleanup(created.id, aliceId)
+    await service.joinCleanup(created.id, bobId)
+
+    // Promote against the real table: the stored role is 'cohost' (0045 widened the value set).
+    await service.setMemberRole(created.id, organizerId, aliceId, "cohost")
+    const stored = await h.sql<{ role: string }[]>`
+      SELECT role FROM cleanup_members WHERE cleanup_id = ${created.id} AND user_id = ${aliceId}
+    `
+    expect(stored[0]!.role).toBe("cohost")
+    expect(await repo.roleOf(created.id, aliceId)).toBe("cohost")
+    expect(await repo.rolesOf([created.id], aliceId)).toEqual(new Map([[created.id, "cohost"]]))
+
+    // The attendees read carries the role, cohost sorted after the organizer.
+    const roster = await service.listAttendees(created.id, { userId: organizerId })
+    expect(roster.attendees.map((p) => p.role)).toEqual(["organizer", "cohost", "member"])
+
+    // myRole on the detail read.
+    expect((await service.getCleanup(created.id, { userId: aliceId })).myRole).toBe("cohost")
+    expect((await service.getCleanup(created.id, { userId: organizerId })).myRole).toBe("organizer")
+
+    // The SQL guard refuses to touch the organizer row even when called directly.
+    expect(await repo.setMemberRole(created.id, organizerId, "member")).toBe(false)
+
+    // Demote back, then remove: the row is gone and the count reflects it in the same tx.
+    await service.setMemberRole(created.id, organizerId, aliceId, "member")
+    expect(await repo.roleOf(created.id, aliceId)).toBe("member")
+    const removed = await service.removeMember(created.id, organizerId, bobId)
+    expect(removed).toEqual({ ok: true, going: 2 })
+    expect(await repo.isMember(created.id, bobId)).toBe(false)
+    // Direct repo guard: removing the organizer row is refused.
+    expect((await repo.removeMember(created.id, organizerId)).removed).toBe(false)
+  })
 })

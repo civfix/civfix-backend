@@ -55,6 +55,17 @@ export interface SocialRepository {
     limit: number
   }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
 
+  /**
+   * Follow suggestions for the viewer. The repo returns candidates ALREADY filtered (no self, no
+   * already-followed, no blocked-either-way, no deleted/handle-less users) and ALREADY ranked:
+   * people active near the viewer's own recent activity first — community organizers (cleanup/event
+   * hosts) ahead of ordinary nearby users — then organizers elsewhere, then everyone else by reach.
+   */
+  suggestFollows(args: {
+    viewerId: string
+    limit: number
+  }): Promise<Array<PersonView & { isFollowing: boolean }>>
+
   findPersonById(id: string): Promise<PersonView | null>
 
   findPersonByHandle(handle: string): Promise<PersonView | null>
@@ -97,6 +108,7 @@ export interface SocialServiceDeps {
 
 export interface SocialService {
   listPeople(req: ListPeopleRequest, viewer: SocialViewer): Promise<ListPeopleResponse>
+  followSuggestions(viewerId: string, limit: number): Promise<{ results: PersonDTO[] }>
   listFollowers(
     id: string,
     viewer: SocialViewer,
@@ -212,6 +224,12 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         items: items.map((it) => toPersonDTO(it, it.isFollowing)),
         nextCursor,
       }
+    },
+
+    async followSuggestions(viewerId: string, limit: number): Promise<{ results: PersonDTO[] }> {
+      const items = await deps.repo.suggestFollows({ viewerId, limit })
+      // The repo already excludes followed users, but keep the DTO honest either way.
+      return { results: items.map((it) => toPersonDTO(it, it.isFollowing)) }
     },
 
     async listFollowers(

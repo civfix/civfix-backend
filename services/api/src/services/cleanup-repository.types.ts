@@ -1,4 +1,5 @@
 import type {
+  CleanupMemberRole,
   CleanupStatus,
   CleanupType,
   EventKind,
@@ -82,9 +83,11 @@ export interface CleanupPersonView {
   verified?: boolean
 }
 
-// An attendee row: the same person fields as the organizer view plus the viewer's follow relationship.
+// An attendee row: the same person fields as the organizer view plus the viewer's follow relationship
+// and the attendee's cleanup_members role (organizer|cohost|member) for the role-aware roster UI.
 export interface AttendeeView extends CleanupPersonView {
   isFollowing: boolean
+  role: CleanupMemberRole
 }
 
 // Arguments for the attendee roster read (the service resolves `onlyFollowed`/`limit` from the viewer).
@@ -202,11 +205,22 @@ export interface CleanupRepository {
   listCleanups(
     filters: ListCleanupsFilters,
   ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }>
-  // Whether `userId` is a member of `cleanupId` (member or organizer).
+  // Whether `userId` is a member of `cleanupId` (any role).
   isMember(cleanupId: string, userId: string): Promise<boolean>
-  // Batched membership probe over a page: of the given cleanup ids, which is `userId` a member of?
-  // Empty input ⇒ empty set (no query).
-  membersOf(cleanupIds: string[], userId: string): Promise<Set<string>>
+  // `userId`'s cleanup_members role in `cleanupId`, or null when not a member (or the cleanup is
+  // missing — callers that must 404 a missing cleanup pair this with organizerOf/findCleanupById).
+  roleOf(cleanupId: string, userId: string): Promise<CleanupMemberRole | null>
+  // Batched role probe over a page: of the given cleanup ids, the ones `userId` is a member of, mapped
+  // to their role (drives joined + myRole on list DTOs). Empty input ⇒ empty map (no query).
+  rolesOf(cleanupIds: string[], userId: string): Promise<Map<string, CleanupMemberRole>>
+  // Flip an existing NON-organizer membership row to `role` (promote member→cohost / demote
+  // cohost→member). The organizer row is never touched (guarded in SQL as defense-in-depth on top of
+  // the service gate). Returns false when no such member row exists (or the target is the organizer).
+  setMemberRole(cleanupId: string, userId: string, role: "cohost" | "member"): Promise<boolean>
+  // Remove a NON-organizer member row (the same row that gates chat access, so removal drops the chat
+  // roster too) and return the fresh member count in the SAME transaction. `removed` is false when no
+  // such member row existed (or the target is the organizer — guarded in SQL as defense-in-depth).
+  removeMember(cleanupId: string, userId: string): Promise<{ removed: boolean; going: number }>
   // The user ids of a cleanup's members, capped at `limit` (a soft fan-out bound). Used by the WS gateway
   // to fan a thread-unread signal to the room's members.
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>

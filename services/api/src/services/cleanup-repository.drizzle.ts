@@ -27,6 +27,7 @@ import {
   type CleanupRowSelect,
 } from "./cleanup-sql.js"
 import type {
+  CleanupMemberRole,
   CleanupStatus,
   EventKind,
   ReportCategory,
@@ -412,13 +413,57 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows.length > 0
     },
 
-    async membersOf(cleanupIds: string[], userId: string): Promise<Set<string>> {
-      if (cleanupIds.length === 0) return new Set()
-      const rows = await sql<{ cleanup_id: string }[]>`
-        SELECT cleanup_id FROM cleanup_members
+    async roleOf(cleanupId: string, userId: string): Promise<CleanupMemberRole | null> {
+      const rows = await sql<{ role: CleanupMemberRole }[]>`
+        SELECT role FROM cleanup_members
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows[0]?.role ?? null
+    },
+
+    async rolesOf(cleanupIds: string[], userId: string): Promise<Map<string, CleanupMemberRole>> {
+      if (cleanupIds.length === 0) return new Map()
+      const rows = await sql<{ cleanup_id: string; role: CleanupMemberRole }[]>`
+        SELECT cleanup_id, role FROM cleanup_members
         WHERE user_id = ${userId} AND cleanup_id = ANY(${cleanupIds}::uuid[])
       `
-      return new Set(rows.map((r) => r.cleanup_id))
+      return new Map(rows.map((r) => [r.cleanup_id, r.role]))
+    },
+
+    async setMemberRole(
+      cleanupId: string,
+      userId: string,
+      role: "cohost" | "member",
+    ): Promise<boolean> {
+      // Single-statement (atomic) role flip. `role <> 'organizer'` is defense-in-depth: the service
+      // already refuses to target the organizer, but the SQL can never demote them regardless.
+      const rows = await sql<{ user_id: string }[]>`
+        UPDATE cleanup_members SET role = ${role}
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
+        RETURNING user_id
+      `
+      return rows.length > 0
+    },
+
+    async removeMember(
+      cleanupId: string,
+      userId: string,
+    ): Promise<{ removed: boolean; going: number }> {
+      // Delete + fresh count in ONE transaction so the returned `going` is consistent with the delete.
+      // Deleting the cleanup_members row is the whole removal: the same row gates chat access
+      // (isMember), so the target drops out of the event group chat automatically.
+      return sql.begin(async (tx) => {
+        const deleted = await tx<{ user_id: string }[]>`
+          DELETE FROM cleanup_members
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
+          RETURNING user_id
+        `
+        const counted = await tx<{ count: number }[]>`
+          SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
+        `
+        return { removed: deleted.length > 0, going: counted[0]?.count ?? 0 }
+      })
     },
 
     async listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
@@ -518,13 +563,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           u.display_name,
           u.handle,
           u.bio,
+          m.role,
           ${followingExpr} AS is_following
         FROM cleanup_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.cleanup_id = ${cleanupId}
           AND u.deleted_at IS NULL
           ${onlyFollowedFilter}
-        ORDER BY (m.role = 'organizer') DESC, m.joined_at ASC, u.id ASC
+        ORDER BY (m.role = 'organizer') DESC, (m.role = 'cohost') DESC, m.joined_at ASC, u.id ASC
         LIMIT ${limit}
       `
       return rows.map((r) => ({
@@ -532,6 +578,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         displayName: r.display_name,
         handle: r.handle,
         bio: r.bio,
+        role: r.role,
         isFollowing: r.is_following,
       }))
     },

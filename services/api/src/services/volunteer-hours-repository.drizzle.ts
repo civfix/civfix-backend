@@ -29,41 +29,47 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
     },
 
     async logEventHours(args: LogEventHoursArgs): Promise<number> {
-      if (args.attendeeIds.length === 0) return 0
+      if (args.entries.length === 0) return 0
+      // Parallel arrays for the set-based per-row upsert: unnest(uuid[], float8[]) pairs them up
+      // positionally, so each attendee gets THEIR OWN hours (WS5 per-attendee shape).
+      const userIds = args.entries.map((e) => e.userId)
+      const hoursByRow = args.entries.map((e) => e.hours)
       return sql.begin(async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
         if (args.geoid === null) {
           const upserted = await tx<{ user_id: string }[]>`
             INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-            SELECT u, ${args.hours}, 'event', ${args.cleanupId}, NULL, ${args.hostId}
-            FROM unnest(${args.attendeeIds}::uuid[]) AS u
+            SELECT t.u, t.h, 'event', ${args.cleanupId}, NULL, ${args.actorId}
+            FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
             ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
             DO UPDATE SET hours = EXCLUDED.hours, logged_by_user_id = EXCLUDED.logged_by_user_id
             RETURNING user_id
           `
           return upserted.length
         }
+        // Same delta-based rollup maintenance as before, now per row: each attendee's rollup moves by
+        // (their new hours - their previous event credit), so a re-log overwrites without double-count.
         const upserted = await tx<{ user_id: string }[]>`
           WITH prev AS (
             SELECT user_id, hours AS old_hours
             FROM volunteer_hours
             WHERE cleanup_id = ${args.cleanupId}
               AND source = 'event'
-              AND user_id = ANY(${args.attendeeIds}::uuid[])
+              AND user_id = ANY(${userIds}::uuid[])
           ),
           upsert AS (
             INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-            SELECT u, ${args.hours}, 'event', ${args.cleanupId}, ${args.geoid}, ${args.hostId}
-            FROM unnest(${args.attendeeIds}::uuid[]) AS u
+            SELECT t.u, t.h, 'event', ${args.cleanupId}, ${args.geoid}, ${args.actorId}
+            FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
             ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
             DO UPDATE SET
               hours = EXCLUDED.hours,
               jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
               logged_by_user_id = EXCLUDED.logged_by_user_id
-            RETURNING user_id
+            RETURNING user_id, hours
           )
           INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
-          SELECT up.user_id, ${args.geoid}, ${args.hours} - COALESCE(p.old_hours, 0)
+          SELECT up.user_id, ${args.geoid}, up.hours - COALESCE(p.old_hours, 0)
           FROM upsert up
           LEFT JOIN prev p ON p.user_id = up.user_id
           ON CONFLICT (user_id, jurisdiction_geoid)

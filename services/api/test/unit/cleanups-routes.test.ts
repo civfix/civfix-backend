@@ -563,3 +563,217 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     expect(res.json().items.map((m: { body: string }) => m.body)).toEqual(["hello"])
   })
 })
+
+describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", () => {
+  it("the organizer promotes then demotes a member (200 {ok:true}); role shows on attendees", async () => {
+    const { app, token, mailer, repo } = await makeHarness()
+    const id = await createCleanup(app, token)
+
+    const joiner = await signIn(app, mailer, "joiner@example.com")
+    repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+
+    const promote = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${joiner.userId}`,
+      headers: auth(token),
+      payload: { role: "cohost" },
+    })
+    expect(promote.statusCode).toBe(200)
+    expect(promote.json()).toEqual({ ok: true })
+
+    // The roster row now carries the cohost role (AttendeeDTO.role).
+    const roster = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/attendees`,
+      headers: auth(joiner.token),
+    })
+    const jordan = (roster.json().attendees as { name: string; role: string }[]).find(
+      (p) => p.name === "Jordan",
+    )
+    expect(jordan?.role).toBe("cohost")
+
+    // And the detail DTO surfaces the viewer's own role.
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(joiner.token),
+    })
+    expect(detail.json().myRole).toBe("cohost")
+
+    const demote = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${joiner.userId}`,
+      headers: auth(token),
+      payload: { role: "member" },
+    })
+    expect(demote.statusCode).toBe(200)
+    expect(demote.json()).toEqual({ ok: true })
+  })
+
+  it("403s a non-organizer promoting (organizer-only, D3) and 401s anonymous", async () => {
+    const { app, token, mailer, repo } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const joiner = await signIn(app, mailer, "joiner@example.com")
+    repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+
+    const asMember = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${joiner.userId}`,
+      headers: auth(joiner.token),
+      payload: { role: "cohost" },
+    })
+    expect(asMember.statusCode).toBe(403)
+
+    const anon = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${joiner.userId}`,
+      payload: { role: "cohost" },
+    })
+    expect(anon.statusCode).toBe(401)
+  })
+
+  it("422s a bad role value and 404s a non-member target", async () => {
+    const { app, token, mailer, repo } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const joiner = await signIn(app, mailer, "joiner@example.com")
+    repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+
+    const badRole = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${joiner.userId}`,
+      headers: auth(token),
+      payload: { role: "organizer" },
+    })
+    expect(badRole.statusCode).toBe(422)
+    expect(badRole.json().code).toBe("VALIDATION")
+
+    const notMember = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/99999999-9999-9999-9999-999999999999`,
+      headers: auth(token),
+      payload: { role: "cohost" },
+    })
+    expect(notMember.statusCode).toBe(404)
+  })
+
+  it("DELETE removes an attendee (200 {ok, going}); the removed user loses chat access", async () => {
+    const { app, token, mailer, repo } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const joiner = await signIn(app, mailer, "joiner@example.com")
+    repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+
+    // Pre-removal the member can read the room history.
+    const before = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/messages`,
+      headers: auth(joiner.token),
+    })
+    expect(before.statusCode).toBe(200)
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/v1/cleanups/${id}/members/${joiner.userId}`,
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ ok: true, going: 1 })
+
+    // The same cleanup_members row gated chat: history is now 403 for the removed user.
+    const after = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/messages`,
+      headers: auth(joiner.token),
+    })
+    expect(after.statusCode).toBe(403)
+  })
+
+  it("a cohost can DELETE a plain member but not another cohost; nobody removes the organizer", async () => {
+    const { app, token, userId, mailer, repo } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const cohost = await signIn(app, mailer, "cohost@example.com")
+    const member = await signIn(app, mailer, "member@example.com")
+    repo.seedUser({ id: cohost.userId, displayName: "Cory" })
+    repo.seedUser({ id: member.userId, displayName: "Mel" })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${cohost.userId}`,
+      headers: auth(token),
+      payload: { role: "cohost" },
+    })
+
+    // Cohost removing the organizer: 403.
+    const removeOrg = await app.inject({
+      method: "DELETE",
+      url: `/v1/cleanups/${id}/members/${userId}`,
+      headers: auth(cohost.token),
+    })
+    expect(removeOrg.statusCode).toBe(403)
+
+    // Cohost removes the plain member: 200, going drops to 2.
+    const removeMember = await app.inject({
+      method: "DELETE",
+      url: `/v1/cleanups/${id}/members/${member.userId}`,
+      headers: auth(cohost.token),
+    })
+    expect(removeMember.statusCode).toBe(200)
+    expect(removeMember.json()).toEqual({ ok: true, going: 2 })
+
+    // A plain (non-member now) user removing the cohost: 403.
+    const asStranger = await app.inject({
+      method: "DELETE",
+      url: `/v1/cleanups/${id}/members/${cohost.userId}`,
+      headers: auth(member.token),
+    })
+    expect(asStranger.statusCode).toBe(403)
+  })
+
+  it("a cohost can PATCH the event body (edit) while a member gets 403", async () => {
+    const { app, token, mailer, repo } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const cohost = await signIn(app, mailer, "cohost@example.com")
+    const member = await signIn(app, mailer, "member@example.com")
+    repo.seedUser({ id: cohost.userId, displayName: "Cory" })
+    repo.seedUser({ id: member.userId, displayName: "Mel" })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${cohost.userId}`,
+      headers: auth(token),
+      payload: { role: "cohost" },
+    })
+
+    const asCohost = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(cohost.token),
+      payload: { title: "Retitled by cohost" },
+    })
+    expect(asCohost.statusCode).toBe(200)
+    expect(asCohost.json().title).toBe("Retitled by cohost")
+    expect(asCohost.json().myRole).toBe("cohost")
+
+    const asMember = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(member.token),
+      payload: { title: "Nope" },
+    })
+    expect(asMember.statusCode).toBe(403)
+
+    // Cancel stays organizer-only: the cohost gets 403.
+    const cancelAsCohost = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(cohost.token),
+      payload: {},
+    })
+    expect(cancelAsCohost.statusCode).toBe(403)
+  })
+})

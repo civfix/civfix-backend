@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
+import {
+  makeCleanupService,
+  ATTENDEES_DEFAULT_LIMIT,
+  type CleanupService,
+} from "../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import type { CreateCleanupRequest } from "@civfix/shared"
 
@@ -389,6 +393,32 @@ describe("listAttendees (who's going)", () => {
     expect(res.attendees.map((p) => p.name)).toEqual(["Olive Organizer", "Alice", "Bob", "Carol"])
   })
 
+  it("host-role viewers (organizer + cohost) get the full roster past the 50 default cap; members stay capped", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    const memberIds: string[] = []
+    for (let i = 0; i < 60; i++) {
+      const id = `66666666-6666-4666-8666-${String(i).padStart(12, "0")}`
+      repo.seedUser({ id, displayName: `Member ${i}` })
+      await service.joinCleanup(created.id, id)
+      memberIds.push(id)
+    }
+
+    // Organizer sees everyone (61 = organizer + 60 members).
+    const asOrganizer = await service.listAttendees(created.id, { userId: ORG })
+    expect(asOrganizer.attendees.length).toBe(61)
+    expect(asOrganizer.attendees.length).toBeGreaterThan(ATTENDEES_DEFAULT_LIMIT)
+
+    // A promoted cohost gets the same host-scoped roster.
+    await service.setMemberRole(created.id, ORG, memberIds[0]!, "cohost")
+    const asCohost = await service.listAttendees(created.id, { userId: memberIds[0]! })
+    expect(asCohost.attendees.length).toBe(61)
+
+    // A plain member stays on the default cap (going count is still the real total).
+    const asMember = await service.listAttendees(created.id, { userId: memberIds[1]! })
+    expect(asMember.attendees.length).toBe(ATTENDEES_DEFAULT_LIMIT)
+    expect(asMember.going).toBe(61)
+  })
+
   it("marks isFollowing per attendee for a member viewer", async () => {
     const created = await setupEvent()
     repo.seedFollow(ALICE, BOB)
@@ -539,5 +569,222 @@ describe("requestResources (D19 event resource request)", () => {
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ORG }),
     ).rejects.toMatchObject({ code: "NOT_ROUTABLE" })
     expect(sends).toHaveLength(0)
+  })
+})
+
+describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => {
+  interface Bell {
+    userId: string
+    type: string
+    titleKey?: string
+    bodyKey?: string
+    vars?: Record<string, string | number>
+    link?: string
+  }
+  let bells: Bell[]
+  let svc: CleanupService
+
+  beforeEach(() => {
+    bells = []
+    svc = makeCleanupService({
+      repo,
+      notifier: {
+        createNotification: (userId, input) => {
+          bells.push({
+            userId,
+            type: input.type,
+            ...(input.titleKey !== undefined ? { titleKey: input.titleKey } : {}),
+            ...(input.bodyKey !== undefined ? { bodyKey: input.bodyKey } : {}),
+            ...(input.vars !== undefined ? { vars: input.vars } : {}),
+            ...(input.link !== undefined ? { link: input.link } : {}),
+          })
+          return Promise.resolve({
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          })
+        },
+      },
+    })
+  })
+
+  async function setup(): Promise<string> {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    const created = await svc.createCleanup(baseInput({ title: "Creek sweep" }), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+    return created.id
+  }
+
+  it("the organizer promotes a member to cohost (role flips + cleanup_role bell)", async () => {
+    const id = await setup()
+    const res = await svc.setMemberRole(id, ORG, ALICE, "cohost")
+    expect(res).toEqual({ ok: true })
+    expect(await repo.roleOf(id, ALICE)).toBe("cohost")
+
+    expect(bells).toEqual([
+      {
+        userId: ALICE,
+        type: "cleanup_role",
+        titleKey: "notification.cleanup_role.promoted.title",
+        bodyKey: "notification.cleanup_role.promoted.body",
+        vars: { title: "Creek sweep" },
+        link: `/cleanups/${id}`,
+      },
+    ])
+  })
+
+  it("the organizer demotes a cohost back to member (bell: demoted)", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+    bells.length = 0
+
+    await svc.setMemberRole(id, ORG, ALICE, "member")
+    expect(await repo.roleOf(id, ALICE)).toBe("member")
+    expect(bells.map((b) => b.bodyKey)).toEqual(["notification.cleanup_role.demoted.body"])
+  })
+
+  it("setting the role a member already has is an idempotent no-op (no bell)", async () => {
+    const id = await setup()
+    const res = await svc.setMemberRole(id, ORG, ALICE, "member")
+    expect(res).toEqual({ ok: true })
+    expect(bells).toHaveLength(0)
+  })
+
+  it("403s a cohost or plain member trying to promote/demote (organizer-only, D3)", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+    await expect(svc.setMemberRole(id, ALICE, BOB, "cohost")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    await expect(svc.setMemberRole(id, BOB, ALICE, "member")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    expect(await repo.roleOf(id, BOB)).toBe("member")
+  })
+
+  it("the organizer's own role is immutable (403 self-target)", async () => {
+    const id = await setup()
+    await expect(svc.setMemberRole(id, ORG, ORG, "cohost")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    expect(await repo.roleOf(id, ORG)).toBe("organizer")
+  })
+
+  it("404s a target who is not attending, and a missing cleanup", async () => {
+    const id = await setup()
+    await expect(
+      svc.setMemberRole(id, ORG, "99999999-9999-9999-9999-999999999999", "cohost"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+    await expect(
+      svc.setMemberRole("00000000-0000-0000-0000-000000000000", ORG, ALICE, "cohost"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("the organizer removes a plain member (row gone -> chat access gone; bell: removed)", async () => {
+    const id = await setup()
+    const res = await svc.removeMember(id, ORG, BOB)
+    expect(res).toEqual({ ok: true, going: 2 })
+    expect(await repo.isMember(id, BOB)).toBe(false)
+    expect(bells).toEqual([
+      {
+        userId: BOB,
+        type: "cleanup_role",
+        titleKey: "notification.cleanup_role.removed.title",
+        bodyKey: "notification.cleanup_role.removed.body",
+        vars: { title: "Creek sweep" },
+        link: `/cleanups/${id}`,
+      },
+    ])
+  })
+
+  it("the organizer can remove a cohost; a cohost can remove a plain member", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+
+    // Cohost removes a plain member.
+    const byCohost = await svc.removeMember(id, ALICE, BOB)
+    expect(byCohost).toEqual({ ok: true, going: 2 })
+    expect(await repo.isMember(id, BOB)).toBe(false)
+
+    // Organizer removes the cohost.
+    const byOrg = await svc.removeMember(id, ORG, ALICE)
+    expect(byOrg).toEqual({ ok: true, going: 1 })
+    expect(await repo.isMember(id, ALICE)).toBe(false)
+  })
+
+  it("403s a cohost removing another cohost (organizer-only), and a plain-member actor", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+    const CAROL = "44444444-4444-4444-4444-444444444444"
+    await svc.joinCleanup(id, CAROL)
+    await svc.setMemberRole(id, ORG, CAROL, "cohost")
+
+    await expect(svc.removeMember(id, ALICE, CAROL)).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(svc.removeMember(id, BOB, ALICE)).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect(await repo.isMember(id, CAROL)).toBe(true)
+  })
+
+  it("nobody removes the organizer; self-removal is a 409 (use leave)", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+    await expect(svc.removeMember(id, ALICE, ORG)).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(svc.removeMember(id, ORG, ORG)).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(svc.removeMember(id, ALICE, ALICE)).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(await repo.isMember(id, ORG)).toBe(true)
+  })
+
+  it("404s removing someone who is not attending", async () => {
+    const id = await setup()
+    await expect(
+      svc.removeMember(id, ORG, "99999999-9999-9999-9999-999999999999"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("a cohost CAN edit the event; a plain member cannot (D3)", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+
+    const updated = await svc.updateCleanup(id, { title: "New title" }, ALICE)
+    expect(updated.title).toBe("New title")
+    expect(updated.myRole).toBe("cohost")
+
+    await expect(svc.updateCleanup(id, { title: "Nope" }, BOB)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+  })
+
+  it("a cohost CANNOT cancel (organizer-only, D3) but CAN leave", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+    await expect(svc.cancelCleanup(id, null, ALICE)).rejects.toMatchObject({ code: "FORBIDDEN" })
+
+    const left = await svc.leaveCleanup(id, ALICE)
+    expect(left).toEqual({ joined: false, going: 2 })
+    expect(await repo.isMember(id, ALICE)).toBe(false)
+  })
+
+  it("surfaces myRole on getCleanup + listCleanups and role on the attendees roster", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+
+    expect((await svc.getCleanup(id, { userId: ORG })).myRole).toBe("organizer")
+    expect((await svc.getCleanup(id, { userId: ALICE })).myRole).toBe("cohost")
+    expect((await svc.getCleanup(id, { userId: BOB })).myRole).toBe("member")
+    const STRANGER = "99999999-9999-9999-9999-999999999999"
+    expect((await svc.getCleanup(id, { userId: STRANGER })).myRole).toBeUndefined()
+    expect((await svc.getCleanup(id, { userId: null })).myRole).toBeUndefined()
+
+    const listed = await svc.listCleanups({ when: "upcoming" }, { userId: ALICE })
+    expect(listed.items.find((c) => c.id === id)?.myRole).toBe("cohost")
+
+    const roster = await svc.listAttendees(id, { userId: ALICE })
+    const rolesByName = Object.fromEntries(roster.attendees.map((p) => [p.name, p.role]))
+    expect(rolesByName).toEqual({ "Olive Organizer": "organizer", Alice: "cohost", Bob: "member" })
+    // Cohorts sort after the organizer, before plain members.
+    expect(roster.attendees.map((p) => p.name)).toEqual(["Olive Organizer", "Alice", "Bob"])
   })
 })

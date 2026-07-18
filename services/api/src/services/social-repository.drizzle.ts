@@ -20,6 +20,9 @@ export {
   resolveUserIdsToMentions,
 } from "./mention-resolver.drizzle.js"
 
+/** "In the viewer's area" radius for follow suggestions (~25 km). */
+const SUGGEST_NEARBY_METERS = 25_000
+
 interface PersonRowSelect {
   id: string
   display_name: string
@@ -206,6 +209,87 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         LIMIT ${args.limit + 1}
       `
       return pagePeople(rows, args.limit)
+    },
+
+    async suggestFollows(args): Promise<Array<PersonView & { isFollowing: boolean }>> {
+      const viewerId = args.viewerId
+      // "The viewer's area" = the point of their most recent activity (a report they filed, or a
+      // cleanup they organized/joined). Each CANDIDATE's area = their most recent report or hosted
+      // cleanup. `is_near` = both points exist and are within SUGGEST_NEARBY_METERS of each other;
+      // `is_organizer` = the candidate hosts at least one cleanup/event. Ranking tiers:
+      //   1. nearby organizers  2. nearby people  3. organizers elsewhere  4. everyone else
+      // within a tier: closer first (NULL distances last), then higher follower count, then newest.
+      // Exclusions: self, soft-deleted, handle-less, already-followed, blocked either way.
+      const rows = await sql<
+        Array<PersonRowSelect & { is_organizer: boolean }>
+      >`
+        WITH viewer_point AS (
+          SELECT p.geom FROM (
+            SELECT r.geom, r.created_at FROM reports r
+              WHERE r.reporter_user_id = ${viewerId} AND r.deleted_at IS NULL
+            UNION ALL
+            SELECT c.geom, c.created_at FROM cleanups c
+              WHERE c.organizer_user_id = ${viewerId}
+            UNION ALL
+            SELECT c.geom, c.created_at
+              FROM cleanups c JOIN cleanup_members m ON m.cleanup_id = c.id
+              WHERE m.user_id = ${viewerId}
+          ) p
+          ORDER BY p.created_at DESC NULLS LAST
+          LIMIT 1
+        )
+        SELECT
+          u.id,
+          u.display_name,
+          u.handle,
+          u.bio,
+          (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
+          (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
+          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
+          am.r2_key AS avatar_r2_key,
+          u.avatar_url,
+          EXISTS (SELECT 1 FROM cleanups oc WHERE oc.organizer_user_id = u.id) AS is_organizer
+        FROM users u
+        LEFT JOIN media_assets am ON am.id = u.avatar_media_id
+        LEFT JOIN LATERAL (
+          SELECT p.geom FROM (
+            SELECT r.geom, r.created_at FROM reports r
+              WHERE r.reporter_user_id = u.id AND r.deleted_at IS NULL
+            UNION ALL
+            SELECT c.geom, c.created_at FROM cleanups c
+              WHERE c.organizer_user_id = u.id
+          ) p
+          ORDER BY p.created_at DESC NULLS LAST
+          LIMIT 1
+        ) cand ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT ST_Distance(vp.geom::geography, cand.geom::geography) AS meters
+          FROM viewer_point vp
+          WHERE cand.geom IS NOT NULL
+        ) dist ON TRUE
+        WHERE u.deleted_at IS NULL
+          AND u.handle IS NOT NULL
+          AND u.id <> ${viewerId}
+          AND NOT EXISTS (
+            SELECT 1 FROM follows_people f
+            WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
+               OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
+          )
+        ORDER BY
+          ((dist.meters IS NOT NULL AND dist.meters <= ${SUGGEST_NEARBY_METERS})
+             AND EXISTS (SELECT 1 FROM cleanups oc WHERE oc.organizer_user_id = u.id)) DESC,
+          (dist.meters IS NOT NULL AND dist.meters <= ${SUGGEST_NEARBY_METERS}) DESC,
+          EXISTS (SELECT 1 FROM cleanups oc WHERE oc.organizer_user_id = u.id) DESC,
+          dist.meters ASC NULLS LAST,
+          (SELECT count(*) FROM follows_people f WHERE f.followee_id = u.id) DESC,
+          u.created_at DESC
+        LIMIT ${args.limit}
+      `
+      return rows.map((r) => ({ ...toPersonView(r), isFollowing: false }))
     },
 
     async listFollowers(args): Promise<{

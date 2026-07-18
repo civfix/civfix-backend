@@ -45,6 +45,15 @@ export const en = {
   // Body shown when the message has no text preview (a non-text frame: share_pin / rsvp / task_complete).
   "notification.message.no_preview": "Sent you a message",
 
+  // Cleanup membership-role bells (WS4, type 'cleanup_role'): the organizer promoted/demoted you, or a
+  // host removed you from the event. {{title}} = the event title.
+  "notification.cleanup_role.promoted.title": "You're now a co-host",
+  "notification.cleanup_role.promoted.body": "You're now a co-host of {{title}}.",
+  "notification.cleanup_role.demoted.title": "Co-host role removed",
+  "notification.cleanup_role.demoted.body": "You're no longer a co-host of {{title}}.",
+  "notification.cleanup_role.removed.title": "Removed from event",
+  "notification.cleanup_role.removed.body": "You were removed from {{title}}.",
+
   // ---- Account / OTP emails (backend-emails) -----------------------------------------------------
   // Sign-in passcode email. {{code}} = the numeric OTP.
   "email.otp.subject": "Your civfix sign-in code",

@@ -123,6 +123,90 @@ export class InMemorySocialRepository implements SocialRepository {
     return Promise.resolve({ items, nextCursor })
   }
 
+  /** Users the viewer has blocked / been blocked by (either way), excluded from suggestions. */
+  readonly blockedPairs: Array<{ a: string; b: string }> = []
+
+  seedBlock(a: string, b: string): void {
+    this.blockedPairs.push({ a, b })
+  }
+
+  /** The user's most recent activity point (their latest cleanup, organized or attended). */
+  private activityPoint(userId: string, organizedOnly: boolean): { lat: number; lng: number } | null {
+    const mine = this.cleanups
+      .filter((c) =>
+        organizedOnly
+          ? c.record.organizerUserId === userId
+          : c.record.organizerUserId === userId || c.attendees.has(userId),
+      )
+      .sort((a, b) => b.record.createdAt.getTime() - a.record.createdAt.getTime())
+    const rec = mine[0]?.record
+    return rec ? { lat: rec.lat, lng: rec.lng } : null
+  }
+
+  private isOrganizer(userId: string): boolean {
+    return this.cleanups.some((c) => c.record.organizerUserId === userId)
+  }
+
+  /**
+   * In-memory mirror of the drizzle suggestFollows ranking (nearby organizers > nearby > organizers >
+   * rest; within a tier closer first, then follower count). Locations come from seeded cleanups.
+   */
+  suggestFollows(args: {
+    viewerId: string
+    limit: number
+  }): Promise<Array<PersonView & { isFollowing: boolean }>> {
+    const NEARBY_METERS = 25_000
+    const viewerPoint = this.activityPoint(args.viewerId, false)
+    const haversine = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): number => {
+      const toRad = (d: number): number => (d * Math.PI) / 180
+      const dLat = toRad(b.lat - a.lat)
+      const dLng = toRad(b.lng - a.lng)
+      const s =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
+      return 2 * 6371000 * Math.asin(Math.sqrt(s))
+    }
+    const candidates = [...this.users.values()]
+      .filter((u) => {
+        if (u.deletedAt !== null || u.handle === null || u.id === args.viewerId) return false
+        if (this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id)) {
+          return false
+        }
+        if (
+          this.blockedPairs.some(
+            (p) =>
+              (p.a === args.viewerId && p.b === u.id) || (p.a === u.id && p.b === args.viewerId),
+          )
+        ) {
+          return false
+        }
+        return true
+      })
+      .map((u) => {
+        const point = this.activityPoint(u.id, true)
+        const meters = viewerPoint && point ? haversine(viewerPoint, point) : null
+        return {
+          u,
+          meters,
+          near: meters !== null && meters <= NEARBY_METERS,
+          organizer: this.isOrganizer(u.id),
+        }
+      })
+      .sort((a, b) => {
+        const tier = (c: typeof a): number =>
+          c.near && c.organizer ? 0 : c.near ? 1 : c.organizer ? 2 : 3
+        if (tier(a) !== tier(b)) return tier(a) - tier(b)
+        const da = a.meters ?? Number.POSITIVE_INFINITY
+        const db = b.meters ?? Number.POSITIVE_INFINITY
+        if (da !== db) return da - db
+        const fa = this.follows.filter((f) => f.followeeId === a.u.id).length
+        const fb = this.follows.filter((f) => f.followeeId === b.u.id).length
+        return fb - fa
+      })
+      .slice(0, args.limit)
+    return Promise.resolve(candidates.map((c) => ({ ...this.toView(c.u), isFollowing: false })))
+  }
+
   listFollowers(args: {
     id: string
     viewerId: string | null

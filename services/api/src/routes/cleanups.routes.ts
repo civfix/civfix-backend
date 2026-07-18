@@ -8,6 +8,8 @@
  *   GET   /cleanups/:id           [anon-ok]            fetch one cleanup.
  *   POST  /cleanups/:id/join      [auth][csrf]         join (idempotent); returns {joined, going}.
  *   POST  /cleanups/:id/leave     [auth][csrf]         leave (organizer cannot leave); {joined, going}.
+ *   PATCH  /cleanups/:id/members/:userId [auth][csrf]  organizer promote/demote member<->cohost; {ok}.
+ *   DELETE /cleanups/:id/members/:userId [auth][csrf]  organizer/cohost remove attendee; {ok, going}.
  *   GET   /cleanups/:id/attendees [anon-ok]            the "who's going" roster (viewer-scoped).
  *   GET   /cleanups/:id/messages  [auth][MEMBER-gated] chat history -> ChatHistoryResponse.
  *
@@ -22,6 +24,8 @@ import {
   CancelCleanupRequestSchema,
   ListCleanupsRequestSchema,
   RequestEventResourcesRequestSchema,
+  SetMemberRoleRequestSchema,
+  RemoveMemberRequestSchema,
   ChatHistoryQuerySchema,
   IdSchema,
   ReportRefOrIdSchema,
@@ -32,7 +36,9 @@ import {
   type LeaveCleanupResponse,
   type CleanupAttendeesResponse,
   type ChatHistoryResponse,
+  type RemoveMemberResponse,
   type RequestEventResourcesResponse,
+  type SetMemberRoleResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -53,6 +59,8 @@ import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
+import { makeNotificationService } from "../services/notification-service.js"
+import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
 import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
@@ -68,6 +76,9 @@ export interface CleanupServiceOverrides {
   // wires them from the container (outbound mail over the Drizzle mail repo + the verification repo).
   outboundMail?: CleanupServiceDeps["outboundMail"]
   isVerified?: CleanupServiceDeps["isVerified"]
+  // WS4: the cleanup_role bell seam (promote/demote/remove). Tests inject a recording fake; unset in a
+  // test harness means "no bells" (the service treats the notifier as optional).
+  notifier?: CleanupServiceDeps["notifier"]
 }
 
 declare module "fastify" {
@@ -77,6 +88,9 @@ declare module "fastify" {
 }
 
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+// Path params for the member-management routes (WS4): /cleanups/:id/members/:userId.
+const MemberParamsSchema = z.object({ id: IdSchema, userId: IdSchema }).strict()
 
 // GET /cleanups/:id is resolve-either (issue #56 / ROUTING): the URL id may be a UUID OR an EVENT
 // reference_code. Validate it with the looser shared ReportRefOrIdSchema (a 1..64-char opaque string,
@@ -153,10 +167,20 @@ export async function registerCleanupRoutes(
             }),
             isVerified: (userId: string) =>
               makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
+            // WS4 cleanup_role bells (promote/demote/remove) ride the real notification pipeline
+            // (in-app row + push + user-channel signal), same wiring as social.routes' notifier.
+            notifier: makeNotificationService({
+              repo: makeDrizzleNotificationRepository(container.getDb().sql),
+              pushSender: container.pushSender,
+              userChannel: container.userChannel,
+              logger: app.log,
+            }),
           }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
       ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
+      ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      logger: app.log,
     })
   }
 
@@ -167,8 +191,8 @@ export async function registerCleanupRoutes(
     reply.status(201).send(dto)
   })
 
-  // Organizer-only: the service throws FORBIDDEN (403) for a non-organizer and NOT_FOUND (404) for a
-  // missing event; the route only resolves auth + validates the body.
+  // Host-only (organizer OR cohost, WS4/D3): the service throws FORBIDDEN (403) for a non-host and
+  // NOT_FOUND (404) for a missing event; the route only resolves auth + validates the body.
   route(app, "updateCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
@@ -199,6 +223,33 @@ export async function registerCleanupRoutes(
       message: body.message,
       actorId: userId,
     })
+    reply.status(200).send(payload)
+  })
+
+  // WS4 (D3): organizer-only promote/demote — PATCH /cleanups/:id/members/:userId. Path params are
+  // merged into the body BEFORE parsing (the CancelCleanupRequest pattern: the typed client extracts
+  // both into the path, the route reconciles them back). The service enforces the whole matrix.
+  route(app, "setCleanupMemberRole", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireAuth(request)
+    const { id, userId } = parse(MemberParamsSchema, request.params)
+    const body = parse(SetMemberRoleRequestSchema, { ...(request.body as object), id, userId })
+    const payload: SetMemberRoleResponse = await service().setMemberRole(
+      id,
+      actorId,
+      body.userId,
+      body.role,
+    )
+    reply.status(200).send(payload)
+  })
+
+  // WS4 (D3): remove an attendee — DELETE /cleanups/:id/members/:userId (organizer: cohosts+members;
+  // cohost: plain members only; the organizer is irremovable). Same path-param merge; a DELETE body is
+  // typically absent, and `{ ...(null|undefined) }` spreads to {} so the merge stays safe.
+  route(app, "removeCleanupMember", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireAuth(request)
+    const { id, userId } = parse(MemberParamsSchema, request.params)
+    const body = parse(RemoveMemberRequestSchema, { ...(request.body as object), id, userId })
+    const payload: RemoveMemberResponse = await service().removeMember(id, actorId, body.userId)
     reply.status(200).send(payload)
   })
 
