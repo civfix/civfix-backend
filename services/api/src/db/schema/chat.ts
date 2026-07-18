@@ -27,6 +27,10 @@ export const chatMessages = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     // Quoted-reply target. Nullable; no FK (partitioned table, see drizzle/0045_chat_reply_to.sql).
     replyToId: uuid("reply_to_id"),
+    // Pin state (P3): pinned_at NULL = not pinned; doubles as the pin-list sort key. pinned_by has
+    // no FK (partitioned table, same stance as reply_to_id — see drizzle/0046_chat_pins.sql).
+    pinnedAt: timestamp("pinned_at", { withTimezone: true }),
+    pinnedBy: uuid("pinned_by"),
     // Structured payload for kind:"system" rows. Nullable; NULL on every non-system row.
     systemStatus: text("system_status"),
     systemKind: text("system_kind"),
@@ -37,6 +41,13 @@ export const chatMessages = pgTable(
     index("chat_messages_cleanup_created_idx").on(t.cleanupId, t.createdAt.desc()),
     index("chat_messages_report_created_idx").on(t.reportId, t.createdAt.desc()),
     index("chat_messages_sender_created_idx").on(t.senderId, t.createdAt.desc(), t.id.desc()),
+    // Partial pin-list indexes (0046): only pinned rows are indexed.
+    index("chat_messages_cleanup_pinned_idx")
+      .on(t.cleanupId, t.pinnedAt.desc())
+      .where(sql`pinned_at IS NOT NULL`),
+    index("chat_messages_report_pinned_idx")
+      .on(t.reportId, t.pinnedAt.desc())
+      .where(sql`pinned_at IS NOT NULL`),
   ],
 )
 
