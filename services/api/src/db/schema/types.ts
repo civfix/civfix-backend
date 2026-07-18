@@ -117,13 +117,19 @@ export const CLEANUP_STATUS_VALUES = ["upcoming", "active", "done", "cancelled"]
 /** cleanups.event_kind. Mirrors shared EventKindSchema (EVENT_KIND_VALUES). */
 export const EVENT_KIND_VALUES = ["cleanup", "other_volunteer"] as const
 
-/** chat_messages.kind. Mirrors shared ChatMessageKindSchema. */
+/**
+ * chat_messages.kind. Mirrors shared ChatMessageKindSchema. NOTE: 'poll' (P6 polls) ships here
+ * AHEAD of the shared enum — Task 6.2 adds it to ChatMessageKindSchema in a parallel shared release;
+ * test/unit/enums.test.ts tolerates exactly this one pending value until the bumped shared lands,
+ * then collapses back to exact equality (same precedent as NOTIFICATION_TYPE_VALUES / 'group_chat').
+ */
 export const CHAT_MESSAGE_KIND_VALUES = [
   "text",
   "share_pin",
   "task_complete",
   "rsvp_change",
   "system",
+  "poll",
 ] as const
 
 /**
