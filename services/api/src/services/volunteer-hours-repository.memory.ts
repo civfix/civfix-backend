@@ -40,13 +40,13 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   }
 
   logEventHours(args: LogEventHoursArgs): Promise<number> {
-    for (const attendee of args.attendeeIds) {
-      const key = `${args.cleanupId}|${attendee}`
+    for (const entry of args.entries) {
+      const key = `${args.cleanupId}|${entry.userId}`
       const previous = this.eventLedger.get(key) ?? 0
-      this.eventLedger.set(key, args.hours)
-      if (args.geoid !== null) this.addRollup(attendee, args.geoid, args.hours - previous)
+      this.eventLedger.set(key, entry.hours)
+      if (args.geoid !== null) this.addRollup(entry.userId, args.geoid, entry.hours - previous)
     }
-    return Promise.resolve(args.attendeeIds.length)
+    return Promise.resolve(args.entries.length)
   }
 
   totalsFor(userId: string): Promise<MyVolunteerHoursDTO> {

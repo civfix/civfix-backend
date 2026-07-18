@@ -90,8 +90,6 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["CleanupType", CLEANUP_TYPE_VALUES, CleanupTypeSchema.options],
     ["CleanupStatus", CLEANUP_STATUS_VALUES, CleanupStatusSchema.options],
     ["EventKind", EVENT_KIND_VALUES, EventKindSchema.options],
-    ["ChatMessageKind", CHAT_MESSAGE_KIND_VALUES, ChatMessageKindSchema.options],
-    ["NotificationType", NOTIFICATION_TYPE_VALUES, NotificationTypeSchema.options],
     ["OAuthProvider", OAUTH_PROVIDER_VALUES, OAuthProviderSchema.options],
     ["CleanupMemberRole", CLEANUP_MEMBER_ROLE_VALUES, CleanupMemberRoleSchema.options],
     ["AbuseSubjectType", ABUSE_SUBJECT_TYPE_VALUES, AbuseSubjectTypeSchema.options],
@@ -115,6 +113,26 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["MailDirection", MAIL_DIRECTION_VALUES, MailDirectionSchema.options],
   ])("%s matches the shared enum exactly", (_name, mirrored, shared) => {
     expect([...mirrored]).toEqual([...shared])
+  })
+
+  it("ChatMessageKind matches the shared enum (tolerating the P6 'poll' value shipping ahead)", () => {
+    // P6 Task 6.1 adds 'poll' to the backend mirror; the shared ChatMessageKindSchema gains it in the
+    // parallel Task 6.2 shared release. Until that bumped shared is installed here, the guard tolerates
+    // EXACTLY this one backend-ahead value (appended last); once shared includes 'poll', the
+    // expectation collapses back to byte-for-byte equality automatically.
+    const shared: string[] = [...ChatMessageKindSchema.options]
+    const expected = shared.includes("poll") ? shared : [...shared, "poll"]
+    expect([...CHAT_MESSAGE_KIND_VALUES]).toEqual(expected)
+  })
+
+  it("NotificationType matches the shared enum (tolerating the P4 'group_chat' value shipping ahead)", () => {
+    // P4 Task 4.1 adds 'group_chat' to the backend mirror; the shared NotificationTypeSchema gains
+    // it in the parallel Task 4.2 shared release. Until that bumped shared is installed here, the
+    // guard tolerates EXACTLY this one backend-ahead value (appended last); once shared includes
+    // 'group_chat', the expectation collapses back to byte-for-byte equality automatically.
+    const shared: string[] = [...NotificationTypeSchema.options]
+    const expected = shared.includes("group_chat") ? shared : [...shared, "group_chat"]
+    expect([...NOTIFICATION_TYPE_VALUES]).toEqual(expected)
   })
 
   it("PushPlatform matches the shared register-push-token platform enum", () => {

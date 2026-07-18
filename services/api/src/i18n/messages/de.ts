@@ -24,12 +24,21 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.body": "Jemand hat dich in einer Berichtsdiskussion erwähnt.",
 
   "notification.chat_mention.title": "{{name}} hat dich erwähnt",
+  "notification.chat_reply.title": "{{name}} hat dir geantwortet",
 
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "Neue Nachricht",
   "notification.report_chat.title_fallback": "Neue Nachricht",
+  "notification.group_chat.title_fallback": "Neue Nachricht",
 
   "notification.message.no_preview": "Hat dir eine Nachricht gesendet",
+
+  "notification.cleanup_role.promoted.title": "Du bist jetzt Co-Host",
+  "notification.cleanup_role.promoted.body": "Du bist jetzt Co-Host von {{title}}.",
+  "notification.cleanup_role.demoted.title": "Co-Host-Rolle entfernt",
+  "notification.cleanup_role.demoted.body": "Du bist nicht mehr Co-Host von {{title}}.",
+  "notification.cleanup_role.removed.title": "Aus dem Event entfernt",
+  "notification.cleanup_role.removed.body": "Du wurdest aus {{title}} entfernt.",
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Dein civfix-Anmeldecode",

@@ -24,12 +24,21 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.body": "누군가 제보 토론에서 회원님을 언급했어요.",
 
   "notification.chat_mention.title": "{{name}}님이 회원님을 언급했어요",
+  "notification.chat_reply.title": "{{name}}님이 회원님에게 답장했어요",
 
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "새 메시지",
   "notification.report_chat.title_fallback": "새 메시지",
+  "notification.group_chat.title_fallback": "새 메시지",
 
   "notification.message.no_preview": "메시지를 보냈어요",
+
+  "notification.cleanup_role.promoted.title": "이제 공동 주최자입니다",
+  "notification.cleanup_role.promoted.body": "{{title}}의 공동 주최자가 되었어요.",
+  "notification.cleanup_role.demoted.title": "공동 주최자 역할 해제",
+  "notification.cleanup_role.demoted.body": "더 이상 {{title}}의 공동 주최자가 아니에요.",
+  "notification.cleanup_role.removed.title": "이벤트에서 제외됨",
+  "notification.cleanup_role.removed.body": "{{title}}에서 제외되었어요.",
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",

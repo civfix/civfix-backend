@@ -31,6 +31,7 @@ export interface GatewayDmDeps {
     kind?: import("@civfix/shared").ChatMessageKind
     clientId?: string
     mediaUploadIds?: string[]
+    replyToId?: string
   }): Promise<import("@civfix/shared").ChatMessageDTO>
   markRead(threadId: string, userId: string, upToId: string): Promise<void>
 }
@@ -51,6 +52,30 @@ export type OnReportMessage = (
 ) => Promise<void>
 
 /**
+ * P4 4.5: post-send effect for GROUP rooms — the member bell fan-out (group-chat-notifier), fired
+ * fire-and-forget from frame-handler after a group send, mirroring onReportMessage for report rooms.
+ */
+export type OnGroupMessage = (
+  groupId: string,
+  message: import("@civfix/shared").ChatMessageDTO,
+) => Promise<void>
+
+/**
+ * P2 2.5 reply bell seam: fired after a send whose message replies to another user's message.
+ * `targetUserId` is the replied-to message's SENDER (from the hydrated replyTo preview — never the
+ * author themself, never a sender-less SYSTEM target; frame-handler filters those). Implemented by
+ * chat-bells makeChatReplyNotifier in the wiring; dm rooms are a no-op (the dm delivered bell owns
+ * dm reply flavor).
+ */
+export type OnChatReply = (input: {
+  kind: RoomKind
+  roomId: string
+  actorUserId: string
+  targetUserId: string
+  message: import("@civfix/shared").ChatMessageDTO
+}) => Promise<void>
+
+/**
  * Subset of the D-C1 ReportChatRepository the WS gateway needs. Report rooms are PUBLIC to join but
  * MEMBER-ONLY to post/type; reads advance a per-member watermark. Injected via chat-gateway-wiring so
  * routes and the socket share one instance. User-message persistence stays on `deps.chat.persist`
@@ -59,6 +84,29 @@ export type OnReportMessage = (
 export interface GatewayReportChat {
   isMember(reportId: string, userId: string): Promise<boolean>
   advanceReadWatermark(reportId: string, userId: string, upToId: string): Promise<void>
+}
+
+/** The WS group lane's read-vs-send decision inputs (P5): membership, post permission, and public-ness. */
+export interface GroupRoomAccess {
+  /** Has a chat_group_members row (read watermark / reactions require this). */
+  isMember: boolean
+  /** May POST/type (member of a 'group', or owner/admin of a 'channel'). Read-only channel members: false. */
+  canPost: boolean
+  /** 'public' rooms admit non-member read-only joins; 'private' stay member-only. */
+  visibility: "private" | "public"
+}
+
+/**
+ * Subset of the P4 ChatGroupRepository the WS gateway needs. P5: join relaxes to public read-only
+ * (non-members may open a visibility='public' room for presence + reads); send/typing require post
+ * permission (`access.canPost` — channels are owner/admin-only). `access` resolves kind+visibility+role
+ * in one round trip (null when the group is gone); `isMember` stays for the ack watermark's member scope.
+ * Injected via chat-gateway-wiring so routes and the socket share one repo instance.
+ */
+export interface GatewayGroupChat {
+  isMember(groupId: string, userId: string): Promise<boolean>
+  access(groupId: string, userId: string): Promise<GroupRoomAccess | null>
+  advanceReadWatermark(groupId: string, userId: string, upToId: string): Promise<void>
 }
 
 export interface GatewayChatMentions {
@@ -99,10 +147,13 @@ export interface GatewayDeps {
   threadRecipientsOf?: ThreadRecipientsOf | undefined
   onDmDelivered?: OnDmDelivered | undefined
   onReportMessage?: OnReportMessage | undefined
+  onGroupMessage?: OnGroupMessage | undefined
+  onChatReply?: OnChatReply | undefined
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined
   reportChat?: GatewayReportChat | undefined
+  groupChat?: GatewayGroupChat | undefined
 }
 
 export interface GatewaySession {
@@ -131,9 +182,12 @@ export interface RegisterGatewayOptions {
   threadRecipientsOf?: ThreadRecipientsOf | undefined
   onDmDelivered?: OnDmDelivered | undefined
   onReportMessage?: OnReportMessage | undefined
+  onGroupMessage?: OnGroupMessage | undefined
+  onChatReply?: OnChatReply | undefined
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined
   reportChat?: GatewayReportChat | undefined
+  groupChat?: GatewayGroupChat | undefined
   webOrigins: readonly string[]
 }

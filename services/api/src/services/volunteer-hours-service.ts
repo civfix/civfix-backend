@@ -1,6 +1,8 @@
-import { AppError } from "@civfix/shared"
+import { AppError, MAX_EVENT_HOURS } from "@civfix/shared"
 import type {
+  CleanupMemberRole,
   CleanupStatus,
+  EventHoursEntry,
   LeaderboardEntryDTO,
   LeaderboardQuery,
   LeaderboardResponse,
@@ -13,12 +15,14 @@ export const LEADERBOARD_MAX_LIMIT = 50
 export const LEADERBOARD_MAX_OFFSET = 500
 export const EVENT_HOURS_MEMBER_CAP = 2000
 
+// WS5 per-attendee shape: one {userId, hours} entry per credited attendee, upserted per row on the
+// (cleanup_id, user_id) WHERE source='event' partial-unique index. `actorId` is the logging host
+// (organizer or cohost) recorded as logged_by_user_id.
 export interface LogEventHoursArgs {
-  hostId: string
+  actorId: string
   cleanupId: string
   geoid: string | null
-  attendeeIds: string[]
-  hours: number
+  entries: EventHoursEntry[]
 }
 
 export interface LeaderboardPage {
@@ -44,6 +48,9 @@ export interface CleanupHoursView {
 export interface CleanupHoursLookup {
   load(cleanupId: string): Promise<CleanupHoursView | null>
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
+  // The acting user's cleanup_members role (null = not a member). Gates WS5/D4 logging: the ACTOR must
+  // be organizer or cohost (and themselves verified) to credit hours.
+  roleOf(cleanupId: string, userId: string): Promise<CleanupMemberRole | null>
 }
 
 export interface VolunteerHoursServiceDeps {
@@ -57,8 +64,8 @@ export interface VolunteerHoursService {
   getMyHours(userId: string): Promise<MyVolunteerHoursDTO>
   logEventHours(input: {
     cleanupId: string
-    hostId: string
-    hours: number
+    actorId: string
+    entries: EventHoursEntry[]
   }): Promise<LogEventHoursResponse>
   leaderboard(geoid: string, query: LeaderboardQuery): Promise<LeaderboardResponse>
 }
@@ -81,16 +88,22 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
 
     async logEventHours(input: {
       cleanupId: string
-      hostId: string
-      hours: number
+      actorId: string
+      entries: EventHoursEntry[]
     }): Promise<LogEventHoursResponse> {
       const cleanup = await deps.cleanups.load(input.cleanupId)
       if (cleanup === null) throw AppError.notFound("Event not found")
 
-      if (cleanup.organizerUserId !== input.hostId) {
-        throw AppError.forbidden("Only the event host can log volunteer hours.")
+      // WS4/WS5: organizer OR cohost may log hours (was organizer-only).
+      const actorRole = await deps.cleanups.roleOf(input.cleanupId, input.actorId)
+      if (actorRole !== "organizer" && actorRole !== "cohost") {
+        throw AppError.forbidden("Only the event hosts can log volunteer hours.")
       }
-      const verified = await deps.isVerified(input.hostId)
+      // D4: the ACTING user must THEMSELVES be a verified community organizer (this deliberately
+      // replaced the old check on the ORGANIZER's verification — a verified cohost can log hours even
+      // for an unverified organizer's event, and an unverified cohost cannot piggyback on a verified
+      // organizer).
+      const verified = await deps.isVerified(input.actorId)
       if (!verified) {
         throw AppError.forbidden("Only verified hosts can log volunteer hours.")
       }
@@ -98,13 +111,37 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         throw AppError.conflict("Volunteer hours can only be logged for a completed event.")
       }
 
-      const attendeeIds = await deps.cleanups.listMemberIds(input.cleanupId, EVENT_HOURS_MEMBER_CAP)
+      // Per-entry validation (the shared schema already enforces shape/bounds; re-checked here so the
+      // service is safe under direct construction): hours in (0, MAX_EVENT_HOURS], no duplicate
+      // userIds (a duplicate would also break the single-statement per-row upsert), and every entry
+      // must be a CURRENT member of the cleanup.
+      const seen = new Set<string>()
+      for (const entry of input.entries) {
+        if (!(entry.hours > 0) || entry.hours > MAX_EVENT_HOURS) {
+          throw AppError.validation({
+            entries: `hours must be greater than 0 and at most ${MAX_EVENT_HOURS}`,
+          })
+        }
+        if (seen.has(entry.userId)) {
+          throw AppError.validation({ entries: `duplicate userId: ${entry.userId}` })
+        }
+        seen.add(entry.userId)
+      }
+      const memberIds = new Set(
+        await deps.cleanups.listMemberIds(input.cleanupId, EVENT_HOURS_MEMBER_CAP),
+      )
+      const nonMembers = input.entries.filter((e) => !memberIds.has(e.userId))
+      if (nonMembers.length > 0) {
+        throw AppError.validation({
+          entries: `not attending this event: ${nonMembers.map((e) => e.userId).join(", ")}`,
+        })
+      }
+
       const credited = await deps.repo.logEventHours({
-        hostId: input.hostId,
+        actorId: input.actorId,
         cleanupId: input.cleanupId,
         geoid: cleanup.jurisdictionGeoid,
-        attendeeIds,
-        hours: input.hours,
+        entries: input.entries,
       })
       return { credited }
     },

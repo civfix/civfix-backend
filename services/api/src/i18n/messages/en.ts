@@ -33,8 +33,11 @@ export const en = {
   "notification.report_mention.title": "You were mentioned",
   "notification.report_mention.body": "Someone mentioned you in a report discussion.",
 
-  // @-mention in a cleanup group chat (chat-gateway-wiring notifyChatMention). {{name}} = author handle/name.
+  // @-mention in a cleanup/report group chat (chat-bells makeChatMentionNotifier). {{name}} = author handle/name.
   "notification.chat_mention.title": "{{name}} mentioned you",
+  // Reply to YOUR message in any chat room (chat-bells makeChatReplyNotifier / makeDmBellNotifier,
+  // P2 2.5 — the bell that pierces conversation mutes). {{name}} = author handle/name.
+  "notification.chat_reply.title": "{{name}} replied to you",
   // Direct message delivered bell (chat-gateway-wiring onDmDelivered). {{name}} = sender handle/name.
   // {{preview}} = the caller-truncated message preview (user content); the wrapper is what we localize.
   "notification.dm.title": "{{name}}",
@@ -42,8 +45,18 @@ export const en = {
   // Report-chat member bell (report-chat-notifier). Title fallback for a SYSTEM / author-less report
   // message (e.g. a status/timeline event) that has no sender name to show.
   "notification.report_chat.title_fallback": "New message",
+  "notification.group_chat.title_fallback": "New message",
   // Body shown when the message has no text preview (a non-text frame: share_pin / rsvp / task_complete).
   "notification.message.no_preview": "Sent you a message",
+
+  // Cleanup membership-role bells (WS4, type 'cleanup_role'): the organizer promoted/demoted you, or a
+  // host removed you from the event. {{title}} = the event title.
+  "notification.cleanup_role.promoted.title": "You're now a co-host",
+  "notification.cleanup_role.promoted.body": "You're now a co-host of {{title}}.",
+  "notification.cleanup_role.demoted.title": "Co-host role removed",
+  "notification.cleanup_role.demoted.body": "You're no longer a co-host of {{title}}.",
+  "notification.cleanup_role.removed.title": "Removed from event",
+  "notification.cleanup_role.removed.body": "You were removed from {{title}}.",
 
   // ---- Account / OTP emails (backend-emails) -----------------------------------------------------
   // Sign-in passcode email. {{code}} = the numeric OTP.

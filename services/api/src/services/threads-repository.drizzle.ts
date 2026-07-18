@@ -17,6 +17,8 @@ import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import type {
+  GroupThreadAggregateView,
+  GroupThreadsSource,
   ReportThreadAggregateView,
   ReportThreadsSource,
   ThreadAggregate,
@@ -40,6 +42,19 @@ interface ReportThreadRowSelect {
   report_id: string
   category: string
   addr: string | null
+  joined_at: Date
+  members: number
+  unread: number
+  last_body: string | null
+  last_created_at: Date | null
+  last_sender_id: string | null
+}
+
+/** Selected group-thread aggregate row (member's group + last-message + members + unread). */
+interface GroupThreadRowSelect {
+  group_id: string
+  name: string
+  kind: "group" | "channel"
   joined_at: Date
   members: number
   unread: number
@@ -177,6 +192,69 @@ export function makeDrizzleReportThreadsSource(sql: Sql): ReportThreadsSource {
       return rows.map((r) => ({
         reportId: r.report_id,
         title: reportThreadTitle(r.category, r.addr),
+        members: r.members,
+        unread: r.unread,
+        joinedAt: r.joined_at,
+        last:
+          r.last_created_at !== null
+            ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id }
+            : null,
+      }))
+    },
+  }
+}
+
+/**
+ * Group-chat half of the threads inbox (P4 4.5). listGroupThreadsFor returns the viewer's groups (via
+ * chat_group_members) joined with the group name, a member count, a lateral latest-message lookup, and
+ * the unread count — one query, newest-activity first, the exact report-source shape scoped on
+ * chat_messages.group_id. The watermark is GREATEST(joined_at, last_read_at) off the membership row
+ * (stamped by the WS ack / mark-read-on-open, 4.4). Unread uses `IS DISTINCT FROM` like the report
+ * family so a hypothetical sender-less row still counts as "from others". `muted` is NOT computed
+ * here; the service stamps it from conversation_mutes ('group') in the shared batch lookup. The group
+ * avatar deliberately does not ride here — MessageThreadDTO has no avatar field (UI limitation noted
+ * in the service).
+ */
+export function makeDrizzleGroupThreadsSource(sql: Sql): GroupThreadsSource {
+  return {
+    async listGroupThreadsFor(userId: string, limit = 30): Promise<GroupThreadAggregateView[]> {
+      const rows = await sql<GroupThreadRowSelect[]>`
+        SELECT
+          g.id AS group_id,
+          g.name,
+          g.kind,
+          mem.joined_at,
+          (SELECT count(*)::int FROM chat_group_members m WHERE m.group_id = g.id) AS members,
+          -- Unread = messages from OTHERS strictly after the viewer's watermark (max of joined_at and
+          -- the durable last_read_at the WS 'ack'/mark-read-on-open stamp).
+          (
+            SELECT count(*)::int
+            FROM chat_messages cm
+            WHERE cm.group_id = g.id
+              AND cm.deleted_at IS NULL
+              AND cm.sender_id IS DISTINCT FROM ${userId}
+              AND cm.created_at > GREATEST(mem.joined_at, COALESCE(mem.last_read_at, to_timestamp(0)))
+          ) AS unread,
+          last_msg.body AS last_body,
+          last_msg.created_at AS last_created_at,
+          last_msg.sender_id AS last_sender_id
+        FROM chat_group_members mem
+        JOIN chat_groups g ON g.id = mem.group_id
+        LEFT JOIN LATERAL (
+          SELECT cm.body, cm.created_at, cm.sender_id
+          FROM chat_messages cm
+          WHERE cm.group_id = g.id AND cm.deleted_at IS NULL
+          ORDER BY cm.created_at DESC, cm.id DESC
+          LIMIT 1
+        ) last_msg ON TRUE
+        WHERE mem.user_id = ${userId}
+        ORDER BY COALESCE(last_msg.created_at, mem.joined_at) DESC
+        LIMIT ${limit}
+      `
+      return rows.map((r) => ({
+        groupId: r.group_id,
+        title: r.name,
+        kind: r.kind,
         members: r.members,
         unread: r.unread,
         joinedAt: r.joined_at,

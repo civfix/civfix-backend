@@ -1,7 +1,7 @@
 import type { NotificationType } from "@civfix/shared"
 import type { NotificationService } from "./notification-service.js"
 
-export type ConversationBellKind = "dm" | "cleanup" | "report"
+export type ConversationBellKind = "dm" | "cleanup" | "report" | "group"
 
 export const CONVERSATION_BELL: Record<
   ConversationBellKind,
@@ -10,6 +10,8 @@ export const CONVERSATION_BELL: Record<
   dm: { type: "dm", link: (id) => `/messages/dm/${id}` },
   cleanup: { type: "cleanup_chat", link: (id) => `/cleanups/${id}` },
   report: { type: "report_chat", link: (id) => `/messages/report/${id}` },
+  // P4 group lane (chat-p0): opening a group room clears its group_chat bells, same clear-on-open pattern.
+  group: { type: "group_chat", link: (id) => `/messages/group/${id}` },
 }
 
 export function clearConversationBellFor(

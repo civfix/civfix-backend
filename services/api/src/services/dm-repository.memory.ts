@@ -12,10 +12,18 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { avatarGradient } from "@civfix/shared"
-import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
+import { avatarGradient, AppError } from "@civfix/shared"
+import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
+import {
+  REPLY_EXCERPT_MAX,
+  replyDeletedTarget,
+  replyWrongRoom,
+} from "./chat-reply-hydration.js"
+import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
+import { aroundLimits } from "./chat-history-window.js"
 import type {
+  DmMessageMeta,
   DmPersistInput,
   DmRepository,
   DmThread,
@@ -36,6 +44,13 @@ export interface DmUser {
 interface StoredDmMessage {
   dto: ChatMessageDTO
   deleted: boolean
+  /**
+   * REAL wall-clock insertion time. The dto's createdAt rides the deterministic 2026-01-01 tick clock
+   * (stable ordering for assertions), which would make every fake message look months old to the
+   * chat-edit-service EDIT_WINDOW_HOURS gate; findMessageMeta reports this instead so a just-sent
+   * message is editable on the offline dev/test path.
+   */
+  insertedAtMs: number
 }
 
 /** Order a user pair so (lo, hi) is stable regardless of who initiates. */
@@ -85,6 +100,28 @@ export class InMemoryDmRepository implements DmRepository {
     return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
   }
 
+  /**
+   * Recompute the reply preview for a target id from the CURRENT store state (mirrors the drizzle
+   * hydration: tombstoned target -> deleted:true + excerpt ""; excerpt = first 120 chars of body).
+   */
+  private replyToFor(threadId: string, replyToId: string): ReplyToDTO | null {
+    const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === replyToId)
+    if (!stored) return null
+    return {
+      id: replyToId,
+      from: stored.dto.from ? { id: stored.dto.from.id, displayName: stored.dto.from.name } : null,
+      excerpt: stored.deleted ? "" : (stored.dto.body ?? "").slice(0, REPLY_EXCERPT_MAX),
+      kind: stored.dto.kind,
+      ...(stored.deleted ? { deleted: true } : {}),
+    }
+  }
+
+  /** Project a stored DTO with its live reply preview (no-op for non-replies). */
+  private withReply(threadId: string, dto: ChatMessageDTO): ChatMessageDTO {
+    if (dto.replyToId == null) return dto
+    return { ...dto, replyTo: this.replyToFor(threadId, dto.replyToId) }
+  }
+
   openOrCreateThread(userA: string, userB: string): Promise<DmThread> {
     const [lo, hi] = orderPair(userA, userB)
     const key = `${lo}:${hi}`
@@ -121,6 +158,13 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   persist(input: DmPersistInput): Promise<ChatMessageDTO> {
+    // Reply validation (P2), mirroring the drizzle repo: target must exist in THIS thread (else 422
+    // reply_wrong_room) and not be tombstoned (else 422 reply_deleted_target).
+    if (input.replyToId !== undefined) {
+      const target = (this.log.get(input.threadId) ?? []).find((m) => m.dto.id === input.replyToId)
+      if (!target) return Promise.reject(replyWrongRoom())
+      if (target.deleted) return Promise.reject(replyDeletedTarget())
+    }
     const sender = this.userOf(input.senderId)
     const dto: ChatMessageDTO = {
       id: randomUUID(),
@@ -147,12 +191,13 @@ export class InMemoryDmRepository implements DmRepository {
       mentions: [],
       createdAt: this.nextDate().toISOString(),
       editedAt: null,
+      ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
     }
     const list = this.log.get(input.threadId) ?? []
-    list.push({ dto, deleted: false })
+    list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.threadId, list)
-    return Promise.resolve(dto)
+    return Promise.resolve(this.withReply(input.threadId, dto))
   }
 
   editMessage(
@@ -175,7 +220,27 @@ export class InMemoryDmRepository implements DmRepository {
       editedAt: this.nextDate().toISOString(),
     }
     stored.dto = edited
-    return Promise.resolve(edited)
+    return Promise.resolve(this.withReply(threadId, edited))
+  }
+
+  findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
+    // Id-only scan across threads (mirrors the drizzle id-only seek), INCLUDING soft-deleted entries.
+    for (const [threadId, list] of this.log) {
+      const stored = list.find((m) => m.dto.id === messageId)
+      if (stored) {
+        return Promise.resolve({
+          id: messageId,
+          threadId,
+          senderId: lastSenderId(stored.dto),
+          kind: stored.dto.kind,
+          // Real insertion time, NOT the deterministic dto clock (see StoredDmMessage.insertedAtMs).
+          createdAt: new Date(stored.insertedAtMs),
+          // The store keeps a boolean, not a tombstone timestamp; any non-null Date marks "deleted".
+          deletedAt: stored.deleted ? new Date(stored.insertedAtMs) : null,
+        })
+      }
+    }
+    return Promise.resolve(null)
   }
 
   softDelete(
@@ -194,7 +259,47 @@ export class InMemoryDmRepository implements DmRepository {
       deletedAt: this.nextDate().toISOString(),
       mine: true,
     }
-    return Promise.resolve(tombstone)
+    return Promise.resolve(this.withReply(threadId, tombstone))
+  }
+
+  /**
+   * Pin/unpin (P3), mirroring the drizzle gate: thread-scoped, live, non-system, and only an ACTUAL
+   * state change flips pinnedAt (a repeat pin keeps the original stamp). Returns the CURRENT DTO either
+   * way; null when missing/deleted.
+   */
+  setPinned(
+    threadId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    const found = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId)
+    if (!found || found.deleted) return Promise.resolve(null)
+    const currentlyPinned = found.dto.pinnedAt != null
+    if (found.dto.kind !== "system" && currentlyPinned !== pinned) {
+      found.dto = pinned
+        ? { ...found.dto, pinnedAt: this.nextDate().toISOString() }
+        : (({ pinnedAt: _dropped, ...rest }) => rest)(found.dto)
+    }
+    return Promise.resolve(
+      this.withReply(threadId, { ...found.dto, reactions: this.reactionsFor(messageId, userId) }),
+    )
+  }
+
+  /** The thread's pins, newest-pin first, capped at PIN_LIST_CAP (mirrors the drizzle partial-index query). */
+  listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    const pins = (this.log.get(threadId) ?? [])
+      .filter((m) => !m.deleted && m.dto.pinnedAt != null)
+      .sort((a, b) => {
+        const at = a.dto.pinnedAt!
+        const bt = b.dto.pinnedAt!
+        return at === bt ? (a.dto.id < b.dto.id ? 1 : -1) : at < bt ? 1 : -1
+      })
+      .slice(0, PIN_LIST_CAP)
+      .map((m) =>
+        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+      )
+    return Promise.resolve(pins)
   }
 
   history(
@@ -202,22 +307,64 @@ export class InMemoryDmRepository implements DmRepository {
     before: string | undefined,
     limit: number,
     viewerUserId: string | null = null,
+    around?: string,
   ): Promise<ChatHistoryPage> {
-    const list = (this.log.get(threadId) ?? []).filter((m) => !m.deleted)
+    if (around !== undefined) return this.historyAround(threadId, around, limit, viewerUserId)
+    const allDesc = [...(this.log.get(threadId) ?? [])].reverse()
+    // Anchor resolves against ALL rows, tombstones included (2.4 review): the anchor is only a keyset
+    // position, so a deleted cursor id still pages correctly instead of falling back to the newest page.
+    let afterAnchor = allDesc
+    if (before !== undefined) {
+      const idx = allDesc.findIndex((m) => m.dto.id === before)
+      if (idx >= 0) afterAnchor = allDesc.slice(idx + 1)
+    }
     // Recompute each item's reactions against the viewer so `mine` is resolved on the history page (the
     // stored DTO's reactions were last computed for whoever toggled). Mirrors the drizzle history path.
-    const ordered = [...list]
-      .reverse()
-      .map((m) => ({ ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }))
-    let start = 0
-    if (before !== undefined) {
-      const idx = ordered.findIndex((m) => m.id === before)
-      if (idx >= 0) start = idx + 1
-    }
-    const page = ordered.slice(start, start + limit)
-    const nextIndex = start + limit
-    const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
+    const ordered = afterAnchor
+      .filter((m) => !m.deleted)
+      .map((m) =>
+        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+      )
+    const page = ordered.slice(0, limit)
+    const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
+  }
+
+  /**
+   * Around-mode window (P2 2.4), mirroring the drizzle semantics: ceil(limit/2) at-or-older rows (the
+   * target INCLUDED — even a tombstoned target anchors, riding as a tombstone while every OTHER deleted
+   * row stays filtered) + floor(limit/2) strictly newer, newest-first. nextCursor = older end,
+   * prevCursor = newer end (null when that side reaches the edge). Missing/foreign-thread target -> 404.
+   */
+  private historyAround(
+    threadId: string,
+    around: string,
+    limit: number,
+    viewerUserId: string | null,
+  ): Promise<ChatHistoryPage> {
+    const all = this.log.get(threadId) ?? []
+    if (!all.some((m) => m.dto.id === around)) {
+      return Promise.reject(AppError.notFound("Message not found"))
+    }
+    const ordered = [...all].filter((m) => !m.deleted || m.dto.id === around).reverse()
+    const idx = ordered.findIndex((m) => m.dto.id === around)
+    const { olderLimit, newerLimit } = aroundLimits(limit)
+    const newerStart = Math.max(0, idx - newerLimit)
+    const window = ordered.slice(newerStart, idx + olderLimit)
+    const items = window.map((m) =>
+      this.withReply(threadId, {
+        ...m.dto,
+        reactions: this.reactionsFor(m.dto.id, viewerUserId),
+        // The store keeps a deleted boolean, not a timestamp; stamp a deletedAt so the tombstone
+        // projects like a drizzle tombstone row.
+        ...(m.deleted ? { deletedAt: new Date(m.insertedAtMs).toISOString() } : {}),
+      }),
+    )
+    return Promise.resolve({
+      items,
+      nextCursor: idx + olderLimit < ordered.length ? (items[items.length - 1]?.id ?? null) : null,
+      prevCursor: newerStart > 0 ? (items[0]?.id ?? null) : null,
+    })
   }
 
   /** Aggregate a message's reactions into the wire summary, resolving `mine` for the viewer. */
@@ -246,7 +393,9 @@ export class InMemoryDmRepository implements DmRepository {
   ): Promise<ChatMessageDTO | null> {
     const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
-    return Promise.resolve({ ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) })
+    return Promise.resolve(
+      this.withReply(threadId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+    )
   }
 
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {

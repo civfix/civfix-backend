@@ -1,6 +1,8 @@
 
 import {
   ListPeopleRequestSchema,
+  FollowSuggestionsRequestSchema,
+  type FollowSuggestionsResponse,
   UserActivityListQuerySchema,
   ConnectionsListQuerySchema,
   IdSchema,
@@ -57,6 +59,9 @@ const PERSON_REF_MAX = 40
 const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(PERSON_REF_MAX) }).strict()
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Default page size for GET /users/follow-suggestions (the shared request caps `limit` at 20). */
+export const FOLLOW_SUGGESTIONS_DEFAULT_LIMIT = 10
 
 export async function registerSocialRoutes(
   app: FastifyInstance,
@@ -127,6 +132,19 @@ export async function registerSocialRoutes(
       throw AppError.validation({ q: "A non-empty search query is required." })
     }
     const payload: ListPeopleResponse = await service().listPeople(validated, { userId })
+    reply.status(200).send(payload)
+  })
+
+  // GET /users/follow-suggestions [auth] — recommended people to follow. Nearby (viewer's recent
+  // activity area) first, community organizers ranked above ordinary nearby users, then organizers
+  // elsewhere, then everyone else; excludes self / already-followed / blocked / deleted.
+  route(app, "followSuggestions", async (request, reply) => {
+    const userId = requireAuth(request)
+    const q = parse(FollowSuggestionsRequestSchema, request.query)
+    const payload: FollowSuggestionsResponse = await service().followSuggestions(
+      userId,
+      q.limit ?? FOLLOW_SUGGESTIONS_DEFAULT_LIMIT,
+    )
     reply.status(200).send(payload)
   })
 

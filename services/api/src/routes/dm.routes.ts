@@ -31,10 +31,10 @@ import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { roomKeyFor } from "../ws/gateway.js"
+import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { makeDmService, type DmService, type DmUserLookup } from "../services/dm-service.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
-import { assertNoSlur } from "../abuse/slur-filter.js"
+import { makeChatEditService } from "../services/chat-edit-service.js"
 import type { DmRepository, DmThread } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 
@@ -127,12 +127,27 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
 
     const limit = q.limit ?? DM_HISTORY_DEFAULT_LIMIT
     // Pass the viewer so each message's reactions resolve the viewer's own `mine` flag on the first page.
-    const page = await dmRepo().history(id, q.before, limit, userId)
-    const payload: ChatHistoryResponse = { items: page.items, nextCursor: page.nextCursor }
+    // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
+    // Pins (P3) ride ONLY the initial page (no before, no around) — see report-chat.routes.ts.
+    const isInitialPage = q.before === undefined && q.around === undefined
+    const [page, pins] = await Promise.all([
+      dmRepo().history(id, q.before, limit, userId, q.around),
+      isInitialPage ? dmRepo().listPins(id, userId) : Promise.resolve(undefined),
+    ])
+    // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
+    // present — possibly null (window reaches the live head) — on around-mode pages.
+    const payload: ChatHistoryResponse = {
+      items: page.items,
+      nextCursor: page.nextCursor,
+      ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
+      ...(pins !== undefined ? { pins } : {}),
+    }
     reply.status(200).send(payload)
   })
 
-  // Sender-only edit (the repo's WHERE gates on sender_id); a null return is mapped to a generic 403.
+  // Sender-only edit, delegated to the unified chat-edit-service (P0 Task 0.2): the full gate ladder
+  // (room-ref 404, not_sender 403, deleted 409, kind 422, edit window 403, peer + block re-check, slur
+  // filter) plus the {type:"message_update"} broadcast live there. Route shape/response unchanged.
   route(
     app,
     "editDmMessage",
@@ -143,15 +158,29 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       // The body schema carries threadId/messageId (the typed client fills the path-param keys); the
       // authoritative ids are the URL path, so stamp them before validating the bounded body.
       const body = parse(EditChatMessageRequestSchema, { ...(request.body as object), threadId, messageId })
-      // Hate-slur content gate (App Store 1.2a) on the edited DM body — mirrors discussion-service.editMessage.
-      assertNoSlur(body.body, "body")
 
-      await authorizePeer(threadId, userId, "You can't edit this message.")
-      const updated = await dmRepo().editMessage(threadId, messageId, userId, body.body)
-      if (updated === null) throw AppError.forbidden("You can't edit this message.")
+      const repo = dmRepo()
+      const edits = makeChatEditService({
+        dm: repo,
+        dmPeerOf: async (tid, uid) => {
+          const t = await repo.getThread(tid)
+          return t !== null ? peerOf(t, uid) : null
+        },
+        isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
+        broadcastEvent: (roomKey, frame) => container.chatService.broadcastEvent?.(roomKey, frame),
+      })
+      const updated = await edits.editMessage({
+        roomKind: "dm",
+        roomId: threadId,
+        messageId,
+        userId,
+        body: body.body,
+        mentionedUserIds: body.mentionedUserIds,
+      })
 
-      // REALTIME: re-broadcast over the SAME {type:"message"} dm frame the gateway `send` uses; clients
-      // upsert by id (the editor reconciles from this 200 response). Best-effort fire-and-forget.
+      // LEGACY REALTIME compat: also re-broadcast the SAME {type:"message"} dm frame the gateway `send`
+      // uses, so pre-message_update clients still upsert the edit by id (the editor reconciles from this
+      // 200 response). Best-effort fire-and-forget. Removed once P0 clients are everywhere.
       void Promise.resolve(
         container.chatService.broadcast(roomKeyFor("dm", threadId), updated),
       ).catch(() => {})
@@ -212,6 +241,9 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       void Promise.resolve(
         container.chatService.broadcast(roomKeyFor("dm", threadId), tombstone),
       ).catch(() => {})
+      // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
+      // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
+      broadcastMessageUpdate(container.chatService, "dm", threadId, tombstone)
 
       reply.status(200).send(tombstone)
     },

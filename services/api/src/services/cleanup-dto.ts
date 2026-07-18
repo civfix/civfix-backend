@@ -1,6 +1,14 @@
 import { avatarGradient } from "@civfix/shared"
-import type { CleanupDTO, LinkedEventRef, LinkedReportRef, PersonDTO } from "@civfix/shared"
 import type {
+  AttendeeDTO,
+  CleanupDTO,
+  CleanupMemberRole,
+  LinkedEventRef,
+  LinkedReportRef,
+  PersonDTO,
+} from "@civfix/shared"
+import type {
+  AttendeeView,
   CleanupPersonView,
   CleanupRecord,
   LinkedEventView,
@@ -47,10 +55,19 @@ export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
   return toAttendeePersonDTO(view, false)
 }
 
+// An attendees-roster row: the PersonDTO plus the attendee's cleanup_members role (WS4 — drives the
+// co-host badge + the permission-aware kebab in the roster UI).
+export function toAttendeeDTO(view: AttendeeView, isFollowing: boolean): AttendeeDTO {
+  return { ...toAttendeePersonDTO(view, isFollowing), role: view.role }
+}
+
 export function toCleanupDTO(
   record: CleanupRecord,
   joined: boolean,
   linkedReports: LinkedReportRef[] = [],
+  // The VIEWER's membership role (WS4): null/omitted when the viewer is not a member (incl. anonymous)
+  // or when a call site has no viewer context (the DTO field is optional in the shared contract).
+  myRole: CleanupMemberRole | null = null,
 ): CleanupDTO {
   return {
     id: record.id,
@@ -65,6 +82,7 @@ export function toCleanupDTO(
     organizer: toOrganizerPerson(record.organizer),
     going: record.going,
     joined,
+    ...(myRole !== null ? { myRole } : {}),
     bring: record.bring ?? [],
     address: record.address,
     ...(record.dist !== null ? { dist: record.dist } : {}),

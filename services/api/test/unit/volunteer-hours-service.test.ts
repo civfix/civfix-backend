@@ -19,10 +19,19 @@ const GEOID_B = "0667000"
 function makeCleanups(
   view: CleanupHoursView | null,
   members: string[],
+  cohosts: string[] = [],
 ): CleanupHoursLookup {
   return {
     load: () => Promise.resolve(view),
     listMemberIds: () => Promise.resolve(members),
+    // Role derivation for tests: the view's organizer is 'organizer', listed cohosts are 'cohost',
+    // any other listed member is 'member', everyone else null (not attending).
+    roleOf: (_cleanupId: string, userId: string) => {
+      if (view !== null && view.organizerUserId === userId) return Promise.resolve("organizer" as const)
+      if (cohosts.includes(userId)) return Promise.resolve("cohost" as const)
+      if (members.includes(userId)) return Promise.resolve("member" as const)
+      return Promise.resolve(null)
+    },
   }
 }
 
@@ -30,13 +39,22 @@ function makeService(opts: {
   repo: InMemoryVolunteerHoursRepository
   view: CleanupHoursView | null
   members?: string[]
-  verified?: boolean
+  cohosts?: string[]
+  // Per-user verification map; a plain boolean applies to every caller (default: verified).
+  verified?: boolean | Record<string, boolean>
 }): VolunteerHoursService {
+  const verified = opts.verified ?? true
   return makeVolunteerHoursService({
     repo: opts.repo,
-    cleanups: makeCleanups(opts.view, opts.members ?? []),
-    isVerified: () => Promise.resolve(opts.verified ?? true),
+    cleanups: makeCleanups(opts.view, opts.members ?? [], opts.cohosts ?? []),
+    isVerified: (userId: string) =>
+      Promise.resolve(typeof verified === "boolean" ? verified : (verified[userId] ?? false)),
   })
+}
+
+/** Shorthand: entries crediting the same `hours` to each listed user (the old bulk behavior). */
+function flat(userIds: string[], hours: number): { userId: string; hours: number }[] {
+  return userIds.map((userId) => ({ userId, hours }))
 }
 
 describe("volunteer hours: awardReportHours (once per report)", () => {
@@ -71,33 +89,89 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     jurisdictionGeoid: GEOID_A,
   }
 
-  it("credits every attendee (including the organizer) and reports the count", async () => {
+  it("credits each listed attendee their OWN hours and reports the row count", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL] })
 
-    const result = await service.logEventHours({ cleanupId: CLEANUP, hostId: HOST, hours: 2 })
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [
+        { userId: HOST, hours: 2 },
+        { userId: BOB, hours: 4.5 },
+        { userId: CAROL, hours: 1 },
+      ],
+    })
     expect(result.credited).toBe(3)
 
     expect((await repo.totalsFor(HOST)).totalHours).toBe(2)
-    expect((await repo.totalsFor(BOB)).totalHours).toBe(2)
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(4.5)
+    expect((await repo.totalsFor(CAROL)).totalHours).toBe(1)
+  })
+
+  it("credits a SUBSET of attendees without touching the rest", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL] })
+
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [{ userId: BOB, hours: 3 }],
+    })
+    expect(result.credited).toBe(1)
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(3)
+    expect((await repo.totalsFor(CAROL)).totalHours).toBe(0)
+  })
+
+  it("re-logging overwrites per row via the rollup delta (no double-count)", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([HOST, BOB], 2) })
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: [{ userId: BOB, hours: 3 }] })
+
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(3)
+    expect((await repo.totalsFor(HOST)).totalHours).toBe(2)
+  })
+
+  it("a VERIFIED cohost can log hours (D4: actor gate is organizer|cohost)", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB, CAROL],
+      cohosts: [BOB],
+      verified: { [BOB]: true },
+    })
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: BOB,
+      entries: [{ userId: CAROL, hours: 2 }],
+    })
+    expect(result.credited).toBe(1)
     expect((await repo.totalsFor(CAROL)).totalHours).toBe(2)
   })
 
-  it("re-logging corrects the hours via the rollup delta (no double-count)", async () => {
-    const repo = new InMemoryVolunteerHoursRepository()
-    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
-
-    await service.logEventHours({ cleanupId: CLEANUP, hostId: HOST, hours: 2 })
-    await service.logEventHours({ cleanupId: CLEANUP, hostId: HOST, hours: 3 })
-
-    expect((await repo.totalsFor(BOB)).totalHours).toBe(3)
-  })
-
-  it("rejects a non-organizer caller (403)", async () => {
+  it("rejects a plain-member caller (403)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
     await expect(
-      service.logEventHours({ cleanupId: CLEANUP, hostId: BOB, hours: 1 }),
+      service.logEventHours({ cleanupId: CLEANUP, actorId: BOB, entries: flat([BOB], 1) }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+  })
+
+  it("rejects an unverified ACTOR even when the organizer is verified (D4 rule change)", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    // The organizer (HOST) is verified, but the acting cohost (BOB) is not: 403.
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB],
+      cohosts: [BOB],
+      verified: { [HOST]: true },
+    })
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: BOB, entries: flat([HOST], 1) }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
   })
 
@@ -105,8 +179,46 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST], verified: false })
     await expect(
-      service.logEventHours({ cleanupId: CLEANUP, hostId: HOST, hours: 1 }),
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([HOST], 1) }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
+  })
+
+  it("422s an entry whose userId is not a current member", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
+    await expect(
+      service.logEventHours({
+        cleanupId: CLEANUP,
+        actorId: HOST,
+        entries: [
+          { userId: BOB, hours: 2 },
+          { userId: CAROL, hours: 2 }, // never joined
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    // Nothing partial was written.
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(0)
+  })
+
+  it("422s out-of-range hours and duplicate userIds", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 25) }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 0) }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(
+      service.logEventHours({
+        cleanupId: CLEANUP,
+        actorId: HOST,
+        entries: [
+          { userId: BOB, hours: 1 },
+          { userId: BOB, hours: 2 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
   })
 
   it("rejects an event that is not done yet (409)", async () => {
@@ -117,7 +229,7 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
       members: [HOST],
     })
     await expect(
-      service.logEventHours({ cleanupId: CLEANUP, hostId: HOST, hours: 1 }),
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([HOST], 1) }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
@@ -125,7 +237,7 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: null })
     await expect(
-      service.logEventHours({ cleanupId: CLEANUP, hostId: HOST, hours: 1 }),
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([HOST], 1) }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 })
@@ -139,19 +251,17 @@ describe("volunteer hours: leaderboard", () => {
     repo.seedUser(CAROL, { name: "Carol", handle: null, avatarUrl: null, verified: false })
 
     await repo.logEventHours({
-      hostId: HOST,
+      actorId: HOST,
       cleanupId: CLEANUP,
       geoid: GEOID_A,
-      attendeeIds: [HOST, BOB, CAROL],
-      hours: 1,
+      entries: flat([HOST, BOB, CAROL], 1),
     })
     await repo.awardReportHours(BOB, REPORT, GEOID_A)
     await repo.logEventHours({
-      hostId: HOST,
+      actorId: HOST,
       cleanupId: "cccccccc-cccc-cccc-cccc-cccccccccccc",
       geoid: GEOID_A,
-      attendeeIds: [CAROL],
-      hours: 5,
+      entries: flat([CAROL], 5),
     })
 
     const service = makeService({ repo, view: null })
@@ -177,11 +287,10 @@ describe("volunteer hours: leaderboard", () => {
     repo.seedUser(BOB, { name: "Bob", handle: null, avatarUrl: null, verified: false })
     repo.seedUser(CAROL, { name: "Carol", handle: null, avatarUrl: null, verified: false })
     await repo.logEventHours({
-      hostId: HOST,
+      actorId: HOST,
       cleanupId: CLEANUP,
       geoid: GEOID_A,
-      attendeeIds: [HOST, BOB, CAROL],
-      hours: 3,
+      entries: flat([HOST, BOB, CAROL], 3),
     })
 
     const service = makeService({ repo, view: null })
@@ -204,11 +313,10 @@ describe("volunteer hours: totalsFor aggregates per jurisdiction", () => {
     repo.seedJurisdiction(GEOID_B, "Oakland")
 
     await repo.logEventHours({
-      hostId: HOST,
+      actorId: HOST,
       cleanupId: CLEANUP,
       geoid: GEOID_A,
-      attendeeIds: [HOST],
-      hours: 2,
+      entries: flat([HOST], 2),
     })
     await repo.awardReportHours(HOST, REPORT, GEOID_B)
 

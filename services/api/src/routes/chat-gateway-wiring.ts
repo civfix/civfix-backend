@@ -12,13 +12,22 @@ import {
   type GatewayReportChat,
   type IsBlockedEitherWayFn,
   type IsMemberFn,
+  type OnChatReply,
+  type OnGroupMessage,
   type OnReportMessage,
   type ThreadRecipientsOf,
 } from "../ws/gateway.js"
 import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
+import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { makeReportChatRepository, type ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import {
+  canPostToGroup,
+  makeChatGroupRepository,
+  type ChatGroupRepository,
+} from "../services/chat-group-repository.drizzle.js"
+import type { GatewayGroupChat } from "../ws/types.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { forwardReportCityMention } from "../services/report-city-forward.js"
@@ -38,12 +47,18 @@ import {
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
+import { makeGroupChatNotifier } from "../services/group-chat-notifier.js"
+import {
+  makeChatMentionNotifier,
+  makeChatReplyNotifier,
+  makeDmBellNotifier,
+  type ChatBellDeps,
+} from "../services/chat-bells.js"
 import { clearConversationBellFor, type ConversationBellKind } from "../services/conversation-bell.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { InMemoryChatPresence, RedisChatPresence, type ChatPresence } from "../adapters/chat-presence.js"
 import { InMemoryChatReadState, type ChatReadState } from "../services/threads-service.js"
-import { dmAuthorName, mentionAuthorName, textPreview } from "./chat-notify-copy.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
@@ -114,6 +129,32 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const getReportChatRepo = (): ReportChatRepository =>
     overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
 
+  // P4 4.4: the group management repo backing the WS group lane (join/send member gate, ack watermark,
+  // mention scoping, mark-read-on-join). One instance shared with nothing route-side (the group routes
+  // build their own like the report routes do) but every WS consumer below shares THIS one. When
+  // chatOverrides is present WITHOUT a groups fake we must not touch getDb() (offline harness) — group
+  // frames then fail closed in authorizeRoom, mirroring the reportChat gating.
+  let lazyGroupsRepo: ChatGroupRepository | undefined
+  const getGroupsRepo = (): ChatGroupRepository | undefined =>
+    overrides
+      ? overrides.groups
+      : useFakeChat
+        ? undefined
+        : (lazyGroupsRepo ??= makeChatGroupRepository(container.getDb().sql, presignMedia))
+  const groupWired = overrides ? overrides.groups !== undefined : !useFakeChat
+  const groupChat: GatewayGroupChat | undefined = groupWired
+    ? {
+        isMember: async (groupId, userId) => (await getGroupsRepo()!.roleOf(groupId, userId)) !== null,
+        access: async (groupId, userId) => {
+          const a = await getGroupsRepo()!.accessOf(groupId, userId)
+          if (a === null) return null
+          return { isMember: a.role !== null, canPost: canPostToGroup(a), visibility: a.visibility }
+        },
+        advanceReadWatermark: (groupId, userId, upToId) =>
+          getGroupsRepo()!.advanceReadWatermark(groupId, userId, upToId),
+      }
+    : undefined
+
   const dmPeerOf = async (threadId: string, userId: string): Promise<string | null> => {
     const t = await dmRepo.getThread(threadId)
     if (t === null) return null
@@ -139,7 +180,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   const isMutedFor = async (
     userId: string,
-    kind: "dm" | "cleanup" | "report",
+    kind: "dm" | "cleanup" | "report" | "group",
     roomId: string,
   ): Promise<boolean> => {
     if (!conversationMutes) return false
@@ -157,6 +198,8 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   ): Promise<void> => {
     if (!notificationService) return
     try {
+      // Single-sourced (type, link) mapping in conversation-bell.ts (PR #21), extended for the P4 group
+      // lane. report joins dm/cleanup/group here so opening a report room clears its report_chat bells.
       await clearConversationBellFor(notificationService, kind, id, userId)
     } catch (err) {
       app.log.warn({ err, kind, id, userId }, "read: clear conversation notifications failed (suppressed)")
@@ -191,55 +234,63 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       return peer !== null ? [peer] : []
     }
     if (kind === "report") return []
+    if (kind === "group") {
+      // Group inbox rows refresh live like cleanup ones; uncapped (chat_group_members is the
+      // same fan-out set the D-E2-style notifier will use in 4.5).
+      const repo = getGroupsRepo()
+      if (!repo) return []
+      const members = await repo.listMemberIds(id)
+      return members.filter((m) => m !== senderId)
+    }
     if (useFakeChat) return []
     const members = await getCleanupRepo().listMemberIds(id, THREAD_SIGNAL_MEMBER_CAP)
     return members.filter((m) => m !== senderId)
   }
 
-  const chatMentions: GatewayChatMentions | undefined =
-    overrides?.chatMentions ??
-    (useFakeChat || !notificationService
+  // Shared dep set for the P2 2.5 bell notifiers (mention/reply). Only built when the real
+  // notification stack exists (mirrors the pre-2.5 chatMentions gating): under fake-chat there is no
+  // DB for members/mutes and no notificationService.
+  const bellDeps: ChatBellDeps | undefined =
+    useFakeChat || !notificationService
       ? undefined
       : {
-          resolveChatMentions: async (input) => {
-            if (input.kind === "report") return []
-            const resolved = await resolveMentionTargets(container.getDb().sql, {
-              handles: input.handles,
-              userIds: input.userIds,
-              authorUserId: input.authorUserId,
-            })
-            if (resolved.length === 0) return resolved
-            if (input.kind === "dm") {
-              const peer = await dmPeerOf(input.roomId, input.authorUserId)
-              return peer !== null ? resolved.filter((m) => m.id === peer) : []
-            }
-            const memberIds = new Set(await getCleanupRepo().listMemberIds(input.roomId, THREAD_SIGNAL_MEMBER_CAP))
-            return resolved.filter((m) => memberIds.has(m.id))
-          },
+          notificationService,
+          isMutedFor,
+          isCleanupMember: isMember,
+          isReportChatMember: (reportId, userId) => getReportChatRepo().isMember(reportId, userId),
+          // Fail closed when the group repo is unwired (offline harness): a group mention/reply then
+          // never bells, mirroring authorizeRoom's fail-closed stance for group frames.
+          isChatGroupMember: async (groupId, userId) =>
+            (await getGroupsRepo()?.roleOf(groupId, userId) ?? null) !== null,
+          isBlockedEitherWay,
+          presence,
+          roomKeyFor,
+        }
+
+  const chatMentions: GatewayChatMentions | undefined =
+    overrides?.chatMentions ??
+    (!bellDeps
+      ? undefined
+      : {
+          // Scope rules (report chat-members-only [D11], dm peer-only, cleanup members-only) are
+          // single-sourced in makeChatMentionResolver, shared with the PATCH /messages edit route.
+          resolveChatMentions: makeChatMentionResolver({
+            resolveTargets: (input) => resolveMentionTargets(container.getDb().sql, input),
+            dmPeerOf,
+            listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
+            listReportChatMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
+            // Empty when the group repo is unwired (offline harness): a group mention then resolves
+            // to nothing rather than touching getDb().
+            listGroupMemberIds: (groupId) => getGroupsRepo()?.listMemberIds(groupId) ?? Promise.resolve([]),
+          }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
-          notifyChatMention: async (input) => {
-            const { kind, roomId, actorUserId, mentionedUserId, message } = input
-            if (kind === "dm") return
-            if (await isMutedFor(mentionedUserId, "cleanup", roomId)) return
-            if (!(await isMember(roomId, mentionedUserId))) return
-            if (await blocksRepo.isBlockedEitherWay(actorUserId, mentionedUserId)) return
-            if (!(await notificationService.getPrefs(mentionedUserId)).mentions) return
-            {
-              const name = mentionAuthorName(message)
-              const preview = textPreview(message)
-              await notificationService.createNotification(mentionedUserId, {
-                type: "cleanup_chat",
-                titleKey: "notification.chat_mention.title",
-                vars: { name },
-                ...(preview !== null
-                  ? { body: preview }
-                  : { bodyKey: "notification.message.no_preview" }),
-                link: `/cleanups/${roomId}`,
-              })
-            }
-          },
+          notifyChatMention: makeChatMentionNotifier(bellDeps),
         })
+
+  // P2 2.5 reply bell: pierces conversation mutes (chat-bells makeChatReplyNotifier owns the gates);
+  // frame-handler fires it for group rooms and dedupes the mention bell for the same target.
+  const onChatReply: OnChatReply | undefined = bellDeps ? makeChatReplyNotifier(bellDeps) : undefined
 
   let reportRepo: ReturnType<typeof makeDrizzleDiscussionRepository> | undefined
   const getReportRepo = (): ReturnType<typeof makeDrizzleDiscussionRepository> =>
@@ -277,6 +328,25 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           roomKeyFor,
         })
       : undefined
+
+  // Per-member group-chat bell (P4 4.5, the D-E2 twin over chat_group_members). Same gating stance as
+  // notifyReportChatMembers, plus the group repo must be wired (offline harnesses leave it undefined,
+  // where onGroupMessage is then absent and group sends simply raise no fan-out bells).
+  const notifyGroupChatMembers =
+    notificationService && conversationMutes && groupWired
+      ? makeGroupChatNotifier({
+          notificationService,
+          groupRepo: { listMemberIds: (groupId) => getGroupsRepo()!.listMemberIds(groupId) },
+          isMuted: (userId, roomId) => isMutedFor(userId, "group", roomId),
+          presence,
+          roomKeyFor,
+        })
+      : undefined
+  const onGroupMessage: OnGroupMessage | undefined = notifyGroupChatMembers
+    ? async (groupId, message) => {
+        void notifyGroupChatMembers(groupId, message).catch(() => {})
+      }
+    : undefined
 
   let reportOutboundMail: ReturnType<typeof makeOutboundMailService> | undefined
   let reportForwardAudit: ReportForwardAudit | undefined
@@ -337,20 +407,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     isBlockedEitherWay,
     userChannel: container.userChannel,
     threadRecipientsOf,
+    // DM delivered bell, now via chat-bells (P2 2.5): carries the reply override — a reply TO the
+    // recipient pierces a muted thread; an unmuted thread keeps its single normal bell.
     onDmDelivered: notificationService
-      ? async (threadId, recipientId, message) => {
-          if (await isMutedFor(recipientId, "dm", threadId)) return
-          const name = dmAuthorName(message)
-          const preview = textPreview(message)
-          await notificationService.createNotification(recipientId, {
-            type: "dm",
-            ...(name !== "" ? { title: name } : { titleKey: "notification.dm.title_fallback" }),
-            ...(preview !== null
-              ? { body: preview }
-              : { bodyKey: "notification.message.no_preview" }),
-            link: `/messages/dm/${threadId}`,
-          })
-        }
+      ? makeDmBellNotifier({ notificationService, isMutedFor })
       : undefined,
     markReadOnOpen: async (kind, id, userId) => {
       const at = new Date()
@@ -360,13 +420,28 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       } else if (kind === "cleanup") {
         await readState.markRead(id, userId, at)
         await clearConversationBell("cleanup", id, userId)
+      } else if (kind === "group") {
+        // P4 4.4/4.5: opening a group room marks it read (member-scoped in the repo's WHERE) and
+        // clears the room's group_chat bells (the dm/cleanup clear-on-open pattern).
+        await getGroupsRepo()?.markRead(id, userId, at)
+        await clearConversationBell("group", id, userId)
       }
     },
     chatMentions,
     onReportMessage,
+    onGroupMessage,
+    onChatReply,
     reportVisible,
     reportSendLimiter,
+    // Wrapped (PR #21) so the ack watermark also clears the reader's report_chat bells, while still
+    // sharing ONE underlying repo instance with the routes (via getReportChatRepo). Gated on useFakeChat
+    // like reportVisible/onReportMessage: the fake path has no DB, so the wrapper is undefined and the
+    // socket falls back to public send (matching pre-D-C3).
     reportChat,
+    // P4 4.4: member gate + ack watermark for group rooms, same one-instance stance as reportChat.
+    // Absent under fake-chat / an override set without a groups fake, where authorizeRoom fails
+    // group frames closed.
+    groupChat,
     webOrigins: container.env.WEB_ORIGINS,
   })
 

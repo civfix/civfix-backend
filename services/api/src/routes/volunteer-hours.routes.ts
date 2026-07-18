@@ -65,6 +65,9 @@ export async function registerVolunteerHoursRoutes(
       },
       listMemberIds: (cleanupId: string, limit: number) =>
         makeDrizzleCleanupRepository(container.getDb().sql).listMemberIds(cleanupId, limit),
+      // WS4/WS5: the acting user's membership role — gates logging to organizer|cohost (D4).
+      roleOf: (cleanupId: string, userId: string) =>
+        makeDrizzleCleanupRepository(container.getDb().sql).roleOf(cleanupId, userId),
     }
   }
 
@@ -91,14 +94,17 @@ export async function registerVolunteerHoursRoutes(
     reply.status(200).send(payload)
   })
 
+  // WS5 per-attendee shape: {entries: [{userId, hours}]} (the flat bulk `hours` body is gone). The
+  // service enforces the D4 gate (actor organizer|cohost AND the ACTOR verified), the status 'done'
+  // gate, and per-entry membership; `credited` = attendee rows written.
   route(app, "logEventHours", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(LogEventHoursRequestSchema, { ...(request.body as object), id })
     const payload: LogEventHoursResponse = await service().logEventHours({
       cleanupId: body.id,
-      hostId: userId,
-      hours: body.hours,
+      actorId: userId,
+      entries: body.entries,
     })
     reply.status(200).send(payload)
   })

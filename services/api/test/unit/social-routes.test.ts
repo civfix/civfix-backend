@@ -340,3 +340,52 @@ describe("GET /me/profile", () => {
     expect(res.statusCode).toBe(401)
   })
 })
+
+describe("GET /users/follow-suggestions", () => {
+  const ORGANIZER = "55555555-5555-5555-5555-555555555555"
+
+  it("401s an anonymous request (auth required)", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({ method: "GET", url: "/v1/users/follow-suggestions" })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it("returns ranked suggestions (organizers first), excluding self and already-followed users", async () => {
+    const { app, repo, token, userId } = await makeHarness((r) => {
+      r.seedUser({ id: OTHER, displayName: "Other Person", handle: "other" })
+      r.seedUser({ id: ORGANIZER, displayName: "Host", handle: "host" })
+      r.seedCleanup(makeCleanupRecord({ organizerUserId: ORGANIZER }))
+    })
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/users/follow-suggestions",
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { results: Array<{ id: string; isFollowing: boolean }> }
+    const ids = body.results.map((p) => p.id)
+    expect(ids[0]).toBe(ORGANIZER)
+    expect(ids).toContain(OTHER)
+    expect(ids).not.toContain(userId)
+
+    // Following ORGANIZER removes them from the next fetch.
+    repo.seedFollow(userId, ORGANIZER)
+    const res2 = await app.inject({
+      method: "GET",
+      url: "/v1/users/follow-suggestions",
+      headers: auth(token),
+    })
+    const ids2 = (res2.json() as { results: Array<{ id: string }> }).results.map((p) => p.id)
+    expect(ids2).not.toContain(ORGANIZER)
+  })
+
+  it("422s a bad limit", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/users/follow-suggestions?limit=999",
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(422)
+  })
+})

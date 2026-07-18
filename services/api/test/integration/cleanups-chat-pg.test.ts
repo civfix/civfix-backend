@@ -300,4 +300,127 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       await app.close()
     }
   })
+
+  it("P1: reaction toggle honors the WIDENED allowlist end-to-end (laugh -> 200 + summary; unknown -> 422)", async () => {
+    // Full server against the real DB (same wiring as the membership-gated route test above) so the
+    // POST /cleanups/:id/messages/:messageId/reactions path — shared-schema parse included — runs for real.
+    const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
+    const container = buildContainer(env)
+    const stores = makeInMemoryStores()
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const authServices = buildAuthServices({
+      stores,
+      cache,
+      mailer: container.mailer as never,
+      oauthConfig: {},
+      verifier: new StubJwksVerifier(),
+      now: () => Date.now(),
+    })
+    const app: FastifyInstance = await buildServer({ env, container, authServices })
+
+    try {
+      const organizerId = await newUser("Org Reaction")
+      const organizerToken = await authServices.sessions.createSession(organizerId, [])
+
+      const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
+      const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+        {
+          title: "Reaction sweep",
+          type: "site",
+          eventKind: "cleanup",
+          lat: 34.1,
+          lng: -118.3,
+          scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        },
+        organizerId,
+      )
+      const msg = await makeDrizzleChatRepository(h.sql).insertMessage(
+        { cleanupId: created.id, userId: organizerId, body: "react to me" },
+        randomUUID(),
+      )
+
+      // "laugh" is one of the two P1 additions (append-only widening 6 -> 8): the shared schema at the
+      // route boundary must accept it and the toggle must land in chat_reactions.
+      const on = await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${created.id}/messages/${msg.id}/reactions`,
+        headers: { authorization: `Bearer ${organizerToken}`, "x-client": "mobile" },
+        payload: { emoji: "laugh" },
+      })
+      expect(on.statusCode).toBe(200)
+      const summary = on.json().reactions as { emoji: string; count: number; mine: boolean }[]
+      expect(summary).toContainEqual({ emoji: "laugh", count: 1, mine: true })
+
+      // Second toggle removes it (same endpoint, same emoji).
+      const off = await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${created.id}/messages/${msg.id}/reactions`,
+        headers: { authorization: `Bearer ${organizerToken}`, "x-client": "mobile" },
+        payload: { emoji: "laugh" },
+      })
+      expect(off.statusCode).toBe(200)
+      expect((off.json().reactions as { emoji: string }[]).some((r) => r.emoji === "laugh")).toBe(false)
+
+      // The allowlist is widened, not open: a name outside the 8 still fails schema parse.
+      const rejected = await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${created.id}/messages/${msg.id}/reactions`,
+        headers: { authorization: `Bearer ${organizerToken}`, "x-client": "mobile" },
+        payload: { emoji: "angry" },
+      })
+      expect(rejected.statusCode).toBe(422)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it("WS4: promote/demote flips cleanup_members.role in Postgres (cohost value) and remove deletes the row", async () => {
+    const organizerId = await newUser("Org Roles")
+    const aliceId = await newUser("Alice Roles")
+    const bobId = await newUser("Bob Roles")
+    const repo = makeDrizzleCleanupRepository(h.sql)
+    const service = makeCleanupService({ repo })
+    const created = await service.createCleanup(
+      {
+        title: "Roles sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.08,
+        lng: -118.28,
+        scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      organizerId,
+    )
+    await service.joinCleanup(created.id, aliceId)
+    await service.joinCleanup(created.id, bobId)
+
+    // Promote against the real table: the stored role is 'cohost' (0045 widened the value set).
+    await service.setMemberRole(created.id, organizerId, aliceId, "cohost")
+    const stored = await h.sql<{ role: string }[]>`
+      SELECT role FROM cleanup_members WHERE cleanup_id = ${created.id} AND user_id = ${aliceId}
+    `
+    expect(stored[0]!.role).toBe("cohost")
+    expect(await repo.roleOf(created.id, aliceId)).toBe("cohost")
+    expect(await repo.rolesOf([created.id], aliceId)).toEqual(new Map([[created.id, "cohost"]]))
+
+    // The attendees read carries the role, cohost sorted after the organizer.
+    const roster = await service.listAttendees(created.id, { userId: organizerId })
+    expect(roster.attendees.map((p) => p.role)).toEqual(["organizer", "cohost", "member"])
+
+    // myRole on the detail read.
+    expect((await service.getCleanup(created.id, { userId: aliceId })).myRole).toBe("cohost")
+    expect((await service.getCleanup(created.id, { userId: organizerId })).myRole).toBe("organizer")
+
+    // The SQL guard refuses to touch the organizer row even when called directly.
+    expect(await repo.setMemberRole(created.id, organizerId, "member")).toBe(false)
+
+    // Demote back, then remove: the row is gone and the count reflects it in the same tx.
+    await service.setMemberRole(created.id, organizerId, aliceId, "member")
+    expect(await repo.roleOf(created.id, aliceId)).toBe("member")
+    const removed = await service.removeMember(created.id, organizerId, bobId)
+    expect(removed).toEqual({ ok: true, going: 2 })
+    expect(await repo.isMember(created.id, bobId)).toBe(false)
+    // Direct repo guard: removing the organizer row is refused.
+    expect((await repo.removeMember(created.id, organizerId)).removed).toBe(false)
+  })
 })

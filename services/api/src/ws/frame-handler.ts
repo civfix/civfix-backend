@@ -1,4 +1,5 @@
 import {
+  AppError,
   WsClientMessageSchema,
   type RoomKind,
   type WsClientMessage,
@@ -42,10 +43,30 @@ const DM_ROOM_PREFIX = "dm:"
 
 const REPORT_ROOM_PREFIX = "report:"
 
+const GROUP_ROOM_PREFIX = "group:"
+
 export function roomKeyFor(kind: RoomKind, id: string): string {
   if (kind === "dm") return `${DM_ROOM_PREFIX}${id}`
   if (kind === "report") return `${REPORT_ROOM_PREFIX}${id}`
+  if (kind === "group") return `${GROUP_ROOM_PREFIX}${id}`
   return id
+}
+
+/**
+ * Fire-and-forget a {type:"message_update"} frame (edited or tombstoned DTO — clients upsert/drop by
+ * id) to the room's key. Best-effort: a fan-out failure never fails the calling mutation. ONE shape
+ * for the P0 edit/delete realtime path — used by chat-edit-service and the three delete routes.
+ * `chat` is anything carrying the optional broadcastEvent seam (container.chatService, or the edit
+ * service's injected fn wrapped in an object literal).
+ */
+export function broadcastMessageUpdate(
+  chat: { broadcastEvent?: ((roomKey: string, frame: WsServerMessage) => Promise<void> | void) | undefined },
+  roomKind: RoomKind,
+  roomId: string,
+  message: ChatMessageDTO,
+): void {
+  const frame: WsServerMessage = { type: "message_update", roomKind, roomId, message }
+  void Promise.resolve(chat.broadcastEvent?.(roomKeyFor(roomKind, roomId), frame)).catch(() => {})
 }
 
 function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
@@ -54,6 +75,9 @@ function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
   }
   if (roomKey.startsWith(REPORT_ROOM_PREFIX)) {
     return { kind: "report", id: roomKey.slice(REPORT_ROOM_PREFIX.length) }
+  }
+  if (roomKey.startsWith(GROUP_ROOM_PREFIX)) {
+    return { kind: "group", id: roomKey.slice(GROUP_ROOM_PREFIX.length) }
   }
   return { kind: "cleanup", id: roomKey }
 }
@@ -97,6 +121,35 @@ async function authorizeRoom(
     // Posting / typing / presence require actual membership (Join button in the client).
     if (requireMember && deps.reportChat && !(await deps.reportChat.isMember(id, userId))) {
       return { ok: false, code: "FORBIDDEN", message: "Join this report chat to send messages." }
+    }
+    return { ok: true }
+  }
+  if (kind === "group") {
+    // P5: two gate levels keyed on `requireMember`. READ level (join): a member of any room OR a
+    // non-member of a PUBLIC room (read-only presence join). SEND level (send/typing): must be a
+    // member AND hold post permission — a channel's read-only members (canPost=false) get
+    // channel_read_only; a public non-member gets the plain "not a member" 403.
+    if (!deps.groupChat) {
+      // No group deps wired (fake-chat/no-DB harnesses): FAIL CLOSED so a group frame can never
+      // fall through to the dm lane below.
+      return { ok: false, code: "FORBIDDEN", message: "Group chat is not available." }
+    }
+    const access = await deps.groupChat.access(id, userId)
+    // Unknown group: uniform "not a member" 403 (no existence oracle, matching the pre-P5 stance).
+    if (access === null) {
+      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+    }
+    if (!requireMember) {
+      // Read/join level: members always; non-members only when the room is public.
+      if (access.isMember || access.visibility === "public") return { ok: true }
+      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+    }
+    // Send/typing level: membership first (a public non-member reader can't post), then post power.
+    if (!access.isMember) {
+      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+    }
+    if (!access.canPost) {
+      return { ok: false, code: "channel_read_only", message: "Only owners and admins can post in this channel." }
     }
     return { ok: true }
   }
@@ -175,25 +228,38 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   }
   const mediaUploadIds = frame.mediaUploadIds
   let message: ChatMessageDTO
-  if (kind === "dm") {
-    message = await deps.dm!.persist({
-      threadId: id,
-      senderId: userId,
-      body: frame.body,
-      ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
-      clientId: frame.clientId,
-      ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
-    })
-  } else {
-    message = await deps.chat.persist({
-      cleanupId: id,
-      roomKind: kind === "report" ? "report" : "cleanup",
-      userId,
-      body: frame.body,
-      ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
-      clientId: frame.clientId,
-      ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
-    })
+  try {
+    if (kind === "dm") {
+      message = await deps.dm!.persist({
+        threadId: id,
+        senderId: userId,
+        body: frame.body,
+        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+        clientId: frame.clientId,
+        ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
+        ...(frame.replyToId !== undefined ? { replyToId: frame.replyToId } : {}),
+      })
+    } else {
+      message = await deps.chat.persist({
+        cleanupId: id,
+        roomKind: kind,
+        userId,
+        body: frame.body,
+        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+        clientId: frame.clientId,
+        ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
+        ...(frame.replyToId !== undefined ? { replyToId: frame.replyToId } : {}),
+      })
+    }
+  } catch (err) {
+    // Domain rejections from persist (e.g. P2 reply validation: reply_wrong_room /
+    // reply_deleted_target) surface as a room-stamped error frame carrying the machine subcode
+    // (fields.code when present, the coarse ErrorCode otherwise) instead of a generic INTERNAL.
+    if (err instanceof AppError) {
+      sendError(conn, err.fields?.code ?? err.code, err.message, { kind, id })
+      return
+    }
+    throw err
   }
   let mentions: UserMentionDTO[] = []
   if (deps.chatMentions) {
@@ -216,10 +282,55 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   await deps.chat.broadcast(roomKey, message, { excludeConnId: conn.id })
   conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
 
-  fireMentionBells(deps, kind, id, userId, mentions, message)
+  const replyTargetUserId = replyBellTarget(message, userId)
+  fireMentionBells(deps, kind, id, userId, mentions, message, replyTargetUserId)
   fireThreadSignal(deps, kind, id, userId)
   fireDmBell(deps, kind, id, userId, roomKey, message)
+  fireReplyBell(deps, kind, id, userId, replyTargetUserId, message)
   fireReportCityForward(deps, kind, id, message)
+  fireGroupFanOut(deps, kind, id, message)
+}
+
+/**
+ * The reply-bell target (P2 2.5): the replied-to message's SENDER, read off the hydrated replyTo
+ * preview the persist path returned — null when the message is not a reply, when the target is a
+ * sender-less SYSTEM message or a deleted account (both hydrate from:null), or when the author
+ * replied to their own message.
+ */
+function replyBellTarget(message: ChatMessageDTO, authorUserId: string): string | null {
+  const target = message.replyTo?.from?.id
+  return target !== undefined && target !== authorUserId ? target : null
+}
+
+/**
+ * Fire the P2 2.5 reply bell for GROUP rooms (dm replies ride fireDmBell -> onDmDelivered, the single
+ * dm bell site). Fire-and-forget like every other post-send bell.
+ */
+function fireReplyBell(
+  deps: GatewayDeps,
+  kind: RoomKind,
+  roomId: string,
+  actorUserId: string,
+  targetUserId: string | null,
+  message: ChatMessageDTO,
+): void {
+  if (kind === "dm" || targetUserId === null || !deps.onChatReply) return
+  void deps.onChatReply({ kind, roomId, actorUserId, targetUserId, message }).catch(() => {})
+}
+
+/**
+ * Fire the P4 4.5 group member bell fan-out (group-chat-notifier via the wiring's onGroupMessage) —
+ * the group twin of fireReportCityForward's onReportMessage hook. Fire-and-forget like every other
+ * post-send effect; the notifier itself owns the sender/present/muted/reply-target/mention dedupe.
+ */
+function fireGroupFanOut(
+  deps: GatewayDeps,
+  kind: RoomKind,
+  groupId: string,
+  message: ChatMessageDTO,
+): void {
+  if (kind !== "group" || !deps.onGroupMessage) return
+  void deps.onGroupMessage(groupId, message).catch(() => {})
 }
 
 function fireReportCityForward(
@@ -239,10 +350,17 @@ function fireMentionBells(
   actorUserId: string,
   mentions: UserMentionDTO[],
   message: ChatMessageDTO,
+  replyTargetUserId: string | null,
 ): void {
   if (!deps.chatMentions || mentions.length === 0) return
   const { chatMentions } = deps
   for (const m of mentions) {
+    // MENTION-vs-REPLY DEDUPE POINT (P2 2.5): when the replied-to user is ALSO @-mentioned in the same
+    // message, only the (mute-piercing) REPLY bell fires — chosen here because this is the one place
+    // that sees both the resolved mentions and the reply target. The mention ROW was still recorded and
+    // broadcast above; only the duplicate bell is dropped. Gated on the reply seam being wired so a
+    // deployment without onChatReply keeps its mention bell.
+    if (deps.onChatReply && kind !== "dm" && m.id === replyTargetUserId) continue
     void chatMentions
       .notifyChatMention({ kind, roomId, actorUserId, mentionedUserId: m.id, message })
       .catch(() => {})
@@ -284,7 +402,15 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
-  const auth = await authorizeRoom(deps, kind, id, userId, /* requireMember */ kind === "report")
+  // Typing carries the SAME restriction as send: report members-only, and group send-permission
+  // (a read-only channel member must not emit typing) — so gate at send level for both.
+  const auth = await authorizeRoom(
+    deps,
+    kind,
+    id,
+    userId,
+    /* requireMember */ kind === "report" || kind === "group",
+  )
   if (!auth.ok) {
     sendError(conn, auth.code, auth.message, { kind, id })
     return
@@ -318,6 +444,15 @@ async function handleAck(session: GatewaySession, frame: ExtractFrame<"ack">): P
   if (id === undefined) return
   if (kind === "report") {
     if (deps.reportChat) await deps.reportChat.advanceReadWatermark(id, userId, frame.upToId)
+    return
+  }
+  if (kind === "group") {
+    // Member-scoped in the repo's WHERE (a non-member ack matches no chat_group_members row). The
+    // threads self-signal mirrors dm/cleanup so an open inbox refreshes its unread badge.
+    if (deps.groupChat) {
+      await deps.groupChat.advanceReadWatermark(id, userId, frame.upToId)
+      selfSignalThreads(deps.userChannel, userId, id)
+    }
     return
   }
   if (kind === "dm") {

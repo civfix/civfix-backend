@@ -15,32 +15,38 @@ import { requireAuth } from "../auth/context.js"
 import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { roomKeyFor } from "../ws/gateway.js"
+import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { wireChatGateway } from "./chat-gateway-wiring.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
 import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import type { ChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
 import {
   type GatewayChatMentions,
   type IsMemberFn,
   type ReportVisibleFn,
 } from "../ws/gateway.js"
 import {
+  makeDrizzleGroupThreadsSource,
   makeDrizzleReportThreadsSource,
   makeDrizzleThreadsRepository,
 } from "../services/threads-repository.drizzle.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import {
   makeThreadsService,
   THREADS_DEFAULT_LIMIT,
   type ChatReadState,
   type DmThreadsSource,
+  type GroupThreadsSource,
   type ReportThreadsSource,
   type ThreadsRepository,
 } from "../services/threads-service.js"
 import type { NotificationService } from "../services/notification-service.js"
+import type { ResolveChatPowers } from "../services/chat-room-roles.js"
+import { wireChatPowers } from "./chat-powers-wiring.js"
 import {
   makeConversationMutesRepository,
   type ConversationMutesRepository,
@@ -60,6 +66,17 @@ export interface ChatGatewayOverrides {
   reportChat?: ReportChatRepository
   conversationMutes?: ConversationMutesRepository
   reportThreadsSource?: ReportThreadsSource
+  /** P4 4.5: the group half of the threads inbox (absent => no group threads, like the report seam). */
+  groupThreadsSource?: GroupThreadsSource
+  /** P4: chat_groups management repo (group routes + the powers resolver's group lane). */
+  groups?: ChatGroupRepository
+  /** P6: chat_polls write repo (poll create/vote/close). When absent, built over the container sql. */
+  chatPolls?: ChatPollRepository
+  /**
+   * P3: injected chat-powers resolver (pin / delete-others). When absent, wireChatPowers builds a
+   * fail-closed resolver over the other override seams (offline) or the real Drizzle lookups (prod).
+   */
+  chatPowers?: ResolveChatPowers
 }
 
 declare module "fastify" {
@@ -95,6 +112,9 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     const reportThreadsSource: ReportThreadsSource | undefined = overrides
       ? overrides.reportThreadsSource
       : makeDrizzleReportThreadsSource(container.getDb().sql)
+    const groupThreadsSource: GroupThreadsSource | undefined = overrides
+      ? overrides.groupThreadsSource
+      : makeDrizzleGroupThreadsSource(container.getDb().sql)
     const mutes: ConversationMutesRepository | undefined = overrides
       ? overrides.conversationMutes
       : makeConversationMutesRepository(container.getDb().sql)
@@ -103,6 +123,7 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
       readState: wiring.readState,
       dm: dmThreadsSource,
       report: reportThreadsSource,
+      group: groupThreadsSource,
       mutes,
     })
     const result = await threads.listThreads(userId, limit)
@@ -141,17 +162,32 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     },
   )
 
+  const resolveChatPowers = wireChatPowers(app, container)
+
   route(app, "deleteCleanupMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { cleanupId, messageId } = parse(ThreadMessageParamsSchema, request.params)
     if (!(await wiring.isMember(cleanupId, userId))) {
       throw AppError.forbidden("You can't delete this message.")
     }
-    const tombstone: ChatMessageDTO | null = await wiring.getChatRepo().softDelete(cleanupId, messageId, userId)
+    // Sender self-delete first (the common path — no role lookups). When the sender-gated UPDATE
+    // matches nothing, consult the chat-powers resolver (P3 Task 3.5): a cleanup ORGANIZER may delete
+    // other members' messages (bypassing the sender gate; system rows stay untouchable in the repo).
+    let tombstone: ChatMessageDTO | null = await wiring.getChatRepo().softDelete(cleanupId, messageId, userId)
+    if (tombstone === null) {
+      const powers = await resolveChatPowers({ roomKind: "cleanup", roomId: cleanupId, userId })
+      if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
+      tombstone = await wiring
+        .getChatRepo()
+        .softDelete(cleanupId, messageId, userId, { bypassSenderGate: true })
+    }
     if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
     void Promise.resolve(
       container.chatService.broadcast(roomKeyFor("cleanup", cleanupId), tombstone),
     ).catch(() => {})
+    // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
+    // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
+    broadcastMessageUpdate(container.chatService, "cleanup", cleanupId, tombstone)
     reply.status(200).send(tombstone)
   })
 }

@@ -170,8 +170,11 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 162 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(162)
+  // 181 = 178 (Telegram-style chat backend, P0–P6: unified message edit/pin/react + polls + 9 group
+  // routes + joinChatGroup) + 3 (follow-suggestions/cohort batch: followSuggestions + cleanup
+  // setMemberRole/removeMember). Both streams meet here; shared 0.26.0 registers exactly these 181.
+  it("covers ALL 181 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(181)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

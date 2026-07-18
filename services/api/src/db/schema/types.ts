@@ -117,16 +117,27 @@ export const CLEANUP_STATUS_VALUES = ["upcoming", "active", "done", "cancelled"]
 /** cleanups.event_kind. Mirrors shared EventKindSchema (EVENT_KIND_VALUES). */
 export const EVENT_KIND_VALUES = ["cleanup", "other_volunteer"] as const
 
-/** chat_messages.kind. Mirrors shared ChatMessageKindSchema. */
+/**
+ * chat_messages.kind. Mirrors shared ChatMessageKindSchema. NOTE: 'poll' (P6 polls) ships here
+ * AHEAD of the shared enum — Task 6.2 adds it to ChatMessageKindSchema in a parallel shared release;
+ * test/unit/enums.test.ts tolerates exactly this one pending value until the bumped shared lands,
+ * then collapses back to exact equality (same precedent as NOTIFICATION_TYPE_VALUES / 'group_chat').
+ */
 export const CHAT_MESSAGE_KIND_VALUES = [
   "text",
   "share_pin",
   "task_complete",
   "rsvp_change",
   "system",
+  "poll",
 ] as const
 
-/** notifications.type. Mirrors shared NotificationTypeSchema. */
+/**
+ * notifications.type. Mirrors shared NotificationTypeSchema. NOTE: 'group_chat' (P4 group-chat
+ * bells) ships here AHEAD of the shared enum — Task 4.2 adds it to NotificationTypeSchema in a
+ * parallel shared release; test/unit/enums.test.ts tolerates exactly this one pending value until
+ * the bumped shared lands, then collapses back to exact equality.
+ */
 export const NOTIFICATION_TYPE_VALUES = [
   "report_update",
   "cleanup_chat",
@@ -137,6 +148,8 @@ export const NOTIFICATION_TYPE_VALUES = [
   "dm",
   "system",
   "report_chat",
+  "group_chat",
+  "cleanup_role",
 ] as const
 
 /** push_tokens.platform. Mirrors the shared PushPlatformSchema. */
@@ -146,7 +159,7 @@ export const PUSH_PLATFORM_VALUES = ["ios", "android", "web"] as const
 export const OAUTH_PROVIDER_VALUES = ["apple", "google", "email"] as const
 
 /** cleanup_members.role. Mirrors shared CleanupMemberRoleSchema. */
-export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "member"] as const
+export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "cohost", "member"] as const
 
 /**
  * report_chat_members.role. Used by the report-chat membership table added in the next task
@@ -154,6 +167,14 @@ export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "member"] as const
  * mirror yet (report chat membership is backend-internal), so no drift-guard entry.
  */
 export const REPORT_CHAT_ROLE_VALUES = ["owner", "member"] as const
+
+/**
+ * chat_group_members.role (P4 groups). Three-tier ladder: owner (creator, exactly one), admins
+ * (moderate + post in channels), members. Matches the CHECK in drizzle/0047_chat_groups.sql.
+ * Backend-internal for now (the shared GroupMemberRole schema lands with Task 4.2), so no
+ * drift-guard entry yet.
+ */
+export const GROUP_MEMBER_ROLE_VALUES = ["owner", "admin", "member"] as const
 
 /** abuse_flags.subject_type. Mirrors shared AbuseSubjectTypeSchema. */
 export const ABUSE_SUBJECT_TYPE_VALUES = ["report", "media", "user", "anon_token"] as const

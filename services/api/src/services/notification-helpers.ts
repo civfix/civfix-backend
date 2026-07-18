@@ -16,7 +16,16 @@ export const DEFAULT_PREFS: NotificationPrefsRecord = {
   quietEnd: null,
 }
 
-export const FEED_HIDDEN_NOTIFICATION_TYPES: readonly NotificationType[] = ["dm", "cleanup_chat", "report_chat"]
+// dm/cleanup_chat/group_chat/report_chat are all private-messaging bells: push + badge, cleared on
+// open, surfaced via the Messages inbox — NOT the notifications feed. report_chat joins the hidden
+// set per PR #21 (product decision): report chat is inbox-surfaced messaging like the others,
+// superseding the earlier "reports are public civic objects, keep feed-visible" rationale.
+export const FEED_HIDDEN_NOTIFICATION_TYPES: readonly NotificationType[] = [
+  "dm",
+  "cleanup_chat",
+  "group_chat",
+  "report_chat",
+]
 
 export function isFeedVisibleType(type: NotificationType): boolean {
   return !FEED_HIDDEN_NOTIFICATION_TYPES.includes(type)
@@ -53,9 +62,14 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
     case "claim_available":
     case "report_chat":
       return prefs.reportUpdates
+    // cleanup_role (promoted/demoted/removed, WS4) rides the same "cleanups" pref bucket as the other
+    // cleanup lifecycle bells — there is no dedicated pref field for it.
     case "cleanup_chat":
     case "cleanup_reminder":
     case "cleanup_cancelled":
+    case "cleanup_role":
+    case "group_chat":
+      // group_chat (P4 4.5, plan D8) rides the chat-message pref until a dedicated toggle exists.
       return prefs.cleanupChat
     case "new_follower":
       return prefs.follows

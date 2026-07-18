@@ -25,6 +25,7 @@ import type {
   MediaDTO,
   ReactionEmoji,
   ReactionSummaryDTO,
+  ReplyToDTO,
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
@@ -32,7 +33,12 @@ import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./c
 import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import { monotonicReadWatermark } from "./chat-read-state.drizzle.js"
+import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
+import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
+import { AppError } from "@civfix/shared"
+import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
+import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
 
 /** A dm thread row (the participant pair ordered lo < hi). */
 export interface DmThread {
@@ -74,6 +80,22 @@ export interface DmPersistInput {
   attachments?: unknown[] | null
   /** Finalized media upload ids to bind to this message (mirrors PersistChatInput.mediaUploadIds). */
   mediaUploadIds?: string[]
+  /** Reply threading (P2): id of the dm message this one replies to (same thread; mirrors PersistChatInput). */
+  replyToId?: string
+}
+
+/**
+ * Lightweight per-message metadata for the edit gate ladder (chat-edit-service). Resolved by message id
+ * ALONE (no thread scope, INCLUDING soft-deleted rows) so the caller can distinguish wrong-thread (404) /
+ * deleted (409) / non-text (422) / stale (window) before writing. DM rows always carry a sender.
+ */
+export interface DmMessageMeta {
+  id: string
+  threadId: string
+  senderId: string
+  kind: ChatMessageKind
+  createdAt: Date
+  deletedAt: Date | null
 }
 
 /**
@@ -104,6 +126,8 @@ export interface DmRepository {
     senderId: string,
     body: string,
   ): Promise<ChatMessageDTO | null>
+  /** Resolve edit-gate metadata by message id alone (soft-deleted rows included). Null when unknown. */
+  findMessageMeta(messageId: string): Promise<DmMessageMeta | null>
   /**
    * Soft-delete (tombstone) a dm message by its author. SENDER-ONLY + thread-scoped + not-already-deleted
    * (same WHERE gate as editMessage). Returns the tombstoned ChatMessageDTO, or null when the message is
@@ -114,13 +138,30 @@ export interface DmRepository {
     messageId: string,
     senderId: string,
   ): Promise<ChatMessageDTO | null>
+  /**
+   * Pin/unpin a dm message (P3), mirroring the chat repo's setPinned: the gated UPDATE flips
+   * (pinned_at, pinned_by) only when the row is in THIS thread, live, non-system, and the pin state
+   * actually changes (idempotent — a repeat pin keeps the original pinned_at). Returns the CURRENT
+   * hydrated DTO either way (null when missing from the thread or tombstoned). Authorization (both
+   * participants may pin) lives in the route via the chat-powers resolver.
+   */
+  setPinned(
+    threadId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null>
+  /** The thread's pinned messages, newest-pin first (pinned_at DESC), capped at PIN_LIST_CAP. */
+  listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
   /** Page a thread's messages newest-first, before the given message id (cursor). roomKind:"dm".
-   *  `viewerUserId` (optional) resolves each message's reaction `mine` flag for the loader. */
+   *  `viewerUserId` (optional) resolves each message's reaction `mine` flag for the loader.
+   *  `around` (P2 2.4) centers the page on that message id instead (mutually exclusive with `before`). */
   history(
     threadId: string,
     before: string | undefined,
     limit: number,
     viewerUserId?: string | null,
+    around?: string,
   ): Promise<ChatHistoryPage>
   /**
    * Load ONE dm message (scoped to its thread) as a ChatMessageDTO for the viewer, with reactions aggregated
@@ -163,6 +204,10 @@ interface DmRowSelect {
   created_at: Date
   edited_at: Date | null
   deleted_at: Date | null
+  // Reply threading (P2): the quoted dm message's id (same table), or NULL for a plain message.
+  reply_to_id: string | null
+  // Pin state (P3): when the message was pinned to its thread; NULL = not pinned.
+  pinned_at: Date | null
   sender_display_name: string
   sender_handle: string | null
   sender_bio: string | null
@@ -182,6 +227,8 @@ function toMessageDTO(
   viewerUserId?: string | null,
   clientId?: string,
   attachments: MediaDTO[] = [],
+  // Hydrated reply preview for r.reply_to_id (chat-reply-hydration); null = target unavailable.
+  replyTo?: ReplyToDTO | null,
 ): ChatMessageDTO {
   // PUBLIC author identity: a deleted (tombstoned) sender renders "Deleted User" (no handle/avatar, deleted:true).
   const author = publicAuthorIdentity({
@@ -217,6 +264,10 @@ function toMessageDTO(
     createdAt: r.created_at.toISOString(),
     ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
     ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
+    // Reply threading (P2): target id passthrough + the hydrated preview (mirrors the chat repo).
+    ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
+    // Pinning (P3): pinnedAt rides on every read so history rows and message_update broadcasts agree.
+    ...(r.pinned_at != null ? { pinnedAt: r.pinned_at.toISOString() } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(clientId !== undefined ? { clientId } : {}),
   }
@@ -228,7 +279,119 @@ function toMessageDTO(
  *   send's `mediaUploadIds` are bound to the new message. Omit it (offline tests) to project `[]`.
  */
 export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRepository {
-  return {
+  /** The dm row + sender column list for reads off the `dm` alias (history/around/findMessage). */
+  const dmColumns = sql`
+    dm.id,
+    dm.thread_id,
+    dm.sender_id,
+    dm.body,
+    dm.kind,
+    dm.attachments,
+    dm.created_at,
+    dm.edited_at,
+    dm.deleted_at,
+    dm.reply_to_id,
+    dm.pinned_at,
+    u.display_name AS sender_display_name,
+    u.handle AS sender_handle,
+    u.bio AS sender_bio,
+    u.avatar_url AS sender_avatar_url,
+    u.deleted_at AS sender_deleted_at
+  `
+
+  /**
+   * Batch-hydrate a page of dm rows into wire DTOs (attachments/reactions/mentions/reply previews, ONE
+   * grouped query each — 4 round-trips per page, not 4×N). Shared by the before-mode page and the
+   * around-mode window so both hydrate identically. The reaction `mine` flag resolves for the viewer.
+   */
+  async function hydrateDmRows(
+    page: DmRowSelect[],
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO[]> {
+    const ids = page.map((r) => r.id)
+    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
+      await Promise.all([
+        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        loadChatReactionsFor(sql, ids, viewerUserId),
+        loadChatMentionsFor(sql, ids),
+        replyMapForRows(sql, "dm_messages", page),
+      ])
+    return page.map((r) =>
+      toMessageDTO(
+        r,
+        reactionsByMessage.get(r.id) ?? [],
+        mentionsByMessage.get(r.id) ?? [],
+        viewerUserId,
+        undefined,
+        attachmentsByMessage.get(r.id) ?? [],
+        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
+      ),
+    )
+  }
+
+  /**
+   * Around-mode dm history (P2 2.4): mirror of the chat repo's aroundScoped over dm_messages/thread_id.
+   * Window = ceil(limit/2) at-or-older rows (target INCLUDED — even when it is a tombstone; jumping to
+   * a deleted message's position is valid and its tombstone rides in the window) + floor(limit/2)
+   * strictly newer, merged newest-first. nextCursor = older end, prevCursor = newer end (see
+   * chat-history-window.ts — prevCursor is today a "there are newer messages" signal, not a follow
+   * cursor). A missing/foreign-thread target is a 404 (a jump target the client named must exist).
+   */
+  async function historyAround(
+    threadId: string,
+    around: string,
+    limit: number,
+    viewerUserId: string | null,
+  ): Promise<ChatHistoryPage> {
+    if (!isUuid(around)) throw AppError.notFound("Message not found")
+    const anchorRows = await sql<{ id: string }[]>`
+      SELECT id FROM dm_messages
+      WHERE id = ${around} AND thread_id = ${threadId}
+      LIMIT 1
+    `
+    if (!anchorRows[0]) throw AppError.notFound("Message not found")
+    // Anchor tuple stays in SQL (see history's cursor comment): a ms-truncated round-trip would eject
+    // the target from its own <=-window whenever its timestamp carries sub-millisecond precision.
+    const anchorTuple = sql`(
+      SELECT a.created_at, a.id
+      FROM dm_messages a
+      WHERE a.id = ${around} AND a.thread_id = ${threadId}
+    )`
+
+    const limits = aroundLimits(limit)
+    // Fetch +1 on EACH side so has-more resolves independently per end.
+    const [olderDesc, newerAsc] = await Promise.all([
+      sql<DmRowSelect[]>`
+        SELECT ${dmColumns}
+        FROM dm_messages dm
+        JOIN users u ON u.id = dm.sender_id
+        WHERE dm.thread_id = ${threadId}
+          AND (dm.deleted_at IS NULL OR dm.id = ${around})
+          AND (dm.created_at, dm.id) <= ${anchorTuple}
+        ORDER BY dm.created_at DESC, dm.id DESC
+        LIMIT ${limits.olderLimit + 1}
+      `,
+      sql<DmRowSelect[]>`
+        SELECT ${dmColumns}
+        FROM dm_messages dm
+        JOIN users u ON u.id = dm.sender_id
+        WHERE dm.thread_id = ${threadId}
+          AND dm.deleted_at IS NULL
+          AND (dm.created_at, dm.id) > ${anchorTuple}
+        ORDER BY dm.created_at ASC, dm.id ASC
+        LIMIT ${limits.newerLimit + 1}
+      `,
+    ])
+    const { rows, hasOlder, hasNewer } = mergeAroundWindow(olderDesc, newerAsc, limits)
+    const items = await hydrateDmRows(rows, viewerUserId)
+    return {
+      items,
+      nextCursor: hasOlder ? rows[rows.length - 1]!.id : null,
+      prevCursor: hasNewer ? rows[0]!.id : null,
+    }
+  }
+
+  const repo: DmRepository = {
     async openOrCreateThread(userA: string, userB: string): Promise<DmThread> {
       // Order the pair so the unique (user_lo, user_hi) key is stable regardless of who initiates.
       const lo = userA < userB ? userA : userB
@@ -287,17 +450,30 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       // media, the INSERT + the media-attach run in ONE transaction (mirroring the cleanup chat repo +
       // discussion create) so a failed attach rolls the message back rather than orphaning it (a duplicate on
       // the client's retry). Presigning happens AFTER commit (a network round-trip must not hold the tx open).
+      // Reply validation (P2): the target must exist in THIS thread and not be tombstoned — 422 with
+      // fields.code reply_wrong_room / reply_deleted_target otherwise. Returns the hydrated preview so
+      // the ack/broadcast DTO carries replyTo without a re-read.
+      const replyTo =
+        input.replyToId !== undefined
+          ? await assertReplyTarget(
+              sql,
+              "dm_messages",
+              { column: "thread_id", id: input.threadId },
+              input.replyToId,
+            )
+          : null
       const run = async (q: Queryable) => q<DmRowSelect[]>`
         WITH inserted AS (
-          INSERT INTO dm_messages (thread_id, sender_id, body, kind, attachments)
+          INSERT INTO dm_messages (thread_id, sender_id, body, kind, attachments, reply_to_id)
           VALUES (
             ${input.threadId},
             ${input.senderId},
             ${input.body},
             ${kind},
-            ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null}
+            ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null},
+            ${input.replyToId ?? null}
           )
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
         SELECT
           inserted.id,
@@ -309,6 +485,8 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           inserted.created_at,
           inserted.edited_at,
           inserted.deleted_at,
+          inserted.reply_to_id,
+          inserted.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -330,7 +508,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const attachments = wantsMedia
         ? (await loadChatAttachments(sql, [messageId], presign!)).get(messageId) ?? []
         : []
-      return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId, attachments)
+      return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId, attachments, replyTo)
     },
 
     async editMessage(
@@ -356,7 +534,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND thread_id = ${threadId}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
         SELECT
           updated.id,
@@ -368,6 +546,8 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           updated.created_at,
           updated.edited_at,
           updated.deleted_at,
+          updated.reply_to_id,
+          updated.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -381,12 +561,51 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       // An edit changes neither reactions/mentions nor attachments, but read them all back so the returned
       // DTO is complete (the client reconciles the edited message in place, so dropping its media here would
       // blank the bubble's attachments).
-      const [reactions, mentions, attachmentsByMessage] = await Promise.all([
+      const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
         loadChatReactions(sql, row.id, senderId),
         loadChatMentions(sql, row.id),
         presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        replyMapForRows(sql, "dm_messages", [row]),
       ])
-      return toMessageDTO(row, reactions, mentions, senderId, undefined, attachmentsByMessage.get(row.id) ?? [])
+      return toMessageDTO(
+        row,
+        reactions,
+        mentions,
+        senderId,
+        undefined,
+        attachmentsByMessage.get(row.id) ?? [],
+        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      )
+    },
+
+    async findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
+      // Id-only seek (probes every partition, like editMessage — acceptable for the rare edit path),
+      // INCLUDING soft-deleted rows so the caller can 409 a tombstone rather than 404 it.
+      const rows = await sql<
+        {
+          id: string
+          thread_id: string
+          sender_id: string
+          kind: ChatMessageKind
+          created_at: Date
+          deleted_at: Date | null
+        }[]
+      >`
+        SELECT id, thread_id, sender_id, kind, created_at, deleted_at
+        FROM dm_messages
+        WHERE id = ${messageId}
+        LIMIT 1
+      `
+      const r = rows[0]
+      if (!r) return null
+      return {
+        id: r.id,
+        threadId: r.thread_id,
+        senderId: r.sender_id,
+        kind: r.kind,
+        createdAt: r.created_at,
+        deletedAt: r.deleted_at,
+      }
     },
 
     async softDelete(
@@ -405,7 +624,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND thread_id = ${threadId}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
         SELECT
           updated.id,
@@ -417,6 +636,8 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           updated.created_at,
           updated.edited_at,
           updated.deleted_at,
+          updated.reply_to_id,
+          updated.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -428,8 +649,18 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const row = rows[0]
       if (!row) return null
       // A tombstone carries no live reactions/mentions to recompute; the body is the deleted marker the
-      // client renders via deletedAt.
-      return toMessageDTO(row, [], [], senderId)
+      // client renders via deletedAt. Its replyTo preview is kept so the message_update DTO stays
+      // shape-consistent with history rows.
+      const replyByTarget = await replyMapForRows(sql, "dm_messages", [row])
+      return toMessageDTO(
+        row,
+        [],
+        [],
+        senderId,
+        undefined,
+        [],
+        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      )
     },
 
     async history(
@@ -437,42 +668,39 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       before: string | undefined,
       limit: number,
       viewerUserId: string | null = null,
+      around?: string,
     ): Promise<ChatHistoryPage> {
-      // Resolve the `before` cursor id to its (created_at) so we can keyset strictly older than it. The
-      // anchor lookup is SCOPED TO THIS thread: a `before` id from another thread (or unknown/soft-deleted)
-      // finds no anchor, so we return the newest page (defensive), and a foreign cursor can never seek into
-      // or leak another thread's ordering. Mirrors the cleanup chat repo (P1-5).
-      let anchor: { createdAt: Date; id: string } | null = null
+      // Around-mode (P2 2.4): center-window fetch on a separate path; the before-mode fast path below
+      // stays untouched. The route schema rejects around+before together, so `before` is undefined here.
+      if (around !== undefined) return historyAround(threadId, around, limit, viewerUserId)
+
+      // Resolve the `before` cursor id to a keyset anchor. The anchor lookup is SCOPED TO THIS thread:
+      // a `before` id from another thread (or unknown) finds no anchor, so we return the newest page
+      // (defensive), and a foreign cursor can never seek into or leak another thread's ordering. The
+      // anchor's (created_at, id) tuple deliberately NEVER leaves the database (row-valued subquery):
+      // a driver round-trip truncates created_at's microseconds, so same-millisecond messages could
+      // repeat/skip across pages. Mirrors the cleanup chat repo (P1-5). No deleted_at filter (2.4
+      // review): the anchor is only a keyset position, so a tombstoned cursor id still pages correctly.
+      let cursorFilter = sql``
       if (before !== undefined) {
-        const rows = await sql<{ created_at: Date; id: string }[]>`
-          SELECT created_at, id FROM dm_messages
-          WHERE id = ${before} AND thread_id = ${threadId} AND deleted_at IS NULL
+        const anchorRows = await sql<{ id: string }[]>`
+          SELECT id FROM dm_messages
+          WHERE id = ${before} AND thread_id = ${threadId}
           LIMIT 1
         `
-        if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }
+        if (anchorRows[0]) {
+          cursorFilter = sql`
+            AND (dm.created_at, dm.id) < (
+              SELECT a.created_at, a.id
+              FROM dm_messages a
+              WHERE a.id = ${before} AND a.thread_id = ${threadId}
+            )
+          `
+        }
       }
 
-      const cursorFilter =
-        anchor !== null
-          ? sql`AND (dm.created_at, dm.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-          : sql``
-
       const rows = await sql<DmRowSelect[]>`
-        SELECT
-          dm.id,
-          dm.thread_id,
-          dm.sender_id,
-          dm.body,
-          dm.kind,
-          dm.attachments,
-          dm.created_at,
-          dm.edited_at,
-          dm.deleted_at,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
+        SELECT ${dmColumns}
         FROM dm_messages dm
         JOIN users u ON u.id = dm.sender_id
         WHERE dm.thread_id = ${threadId}
@@ -483,24 +711,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
-      // Batch the three per-message relations into ONE grouped query each (WHERE message_id IN (...)) so a
-      // page is 3 round-trips total, not 3×N. The reaction `mine` flag resolves against the viewer.
-      const ids = page.map((r) => r.id)
-      const [attachmentsByMessage, reactionsByMessage, mentionsByMessage] = await Promise.all([
-        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        loadChatReactionsFor(sql, ids, viewerUserId),
-        loadChatMentionsFor(sql, ids),
-      ])
-      const items = page.map((r) =>
-        toMessageDTO(
-          r,
-          reactionsByMessage.get(r.id) ?? [],
-          mentionsByMessage.get(r.id) ?? [],
-          viewerUserId,
-          undefined,
-          attachmentsByMessage.get(r.id) ?? [],
-        ),
-      )
+      const items = await hydrateDmRows(page, viewerUserId)
       const last = page[page.length - 1]
       const nextCursor = hasMore && last ? last.id : null
       return { items, nextCursor }
@@ -522,6 +733,8 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           dm.created_at,
           dm.edited_at,
           dm.deleted_at,
+          dm.reply_to_id,
+          dm.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -534,12 +747,21 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       `
       const row = rows[0]
       if (!row) return null
-      const [reactions, mentions, attachmentsByMessage] = await Promise.all([
+      const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
         loadChatReactions(sql, row.id, viewerUserId),
         loadChatMentions(sql, row.id),
         presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        replyMapForRows(sql, "dm_messages", [row]),
       ])
-      return toMessageDTO(row, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(row.id) ?? [])
+      return toMessageDTO(
+        row,
+        reactions,
+        mentions,
+        viewerUserId,
+        undefined,
+        attachmentsByMessage.get(row.id) ?? [],
+        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      )
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
@@ -652,5 +874,42 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         unread: Number(r.unread),
       }))
     },
+
+    async setPinned(
+      threadId: string,
+      messageId: string,
+      userId: string,
+      pinned: boolean,
+    ): Promise<ChatMessageDTO | null> {
+      // Mirror of the chat repo's setPinnedScoped: gated on thread scope + live row + non-system kind +
+      // an ACTUAL state change ((pinned_at IS NULL) = pin), so a repeat pin is a no-op that keeps the
+      // original pinned_at. Re-read the CURRENT hydrated DTO either way (idempotent responses).
+      await sql`
+        UPDATE dm_messages
+        SET pinned_at = CASE WHEN ${pinned} THEN now() END,
+            pinned_by = CASE WHEN ${pinned} THEN ${userId}::uuid END
+        WHERE id = ${messageId}
+          AND thread_id = ${threadId}
+          AND deleted_at IS NULL
+          AND kind <> 'system'
+          AND (pinned_at IS NULL) = ${pinned}
+      `
+      return repo.findMessage(threadId, messageId, userId)
+    },
+
+    async listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+      const rows = await sql<DmRowSelect[]>`
+        SELECT ${dmColumns}
+        FROM dm_messages dm
+        JOIN users u ON u.id = dm.sender_id
+        WHERE dm.thread_id = ${threadId}
+          AND dm.pinned_at IS NOT NULL
+          AND dm.deleted_at IS NULL
+        ORDER BY dm.pinned_at DESC, dm.id DESC
+        LIMIT ${PIN_LIST_CAP}
+      `
+      return hydrateDmRows(rows, viewerUserId)
+    },
   }
+  return repo
 }

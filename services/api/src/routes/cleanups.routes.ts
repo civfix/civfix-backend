@@ -8,6 +8,8 @@
  *   GET   /cleanups/:id           [anon-ok]            fetch one cleanup.
  *   POST  /cleanups/:id/join      [auth][csrf]         join (idempotent); returns {joined, going}.
  *   POST  /cleanups/:id/leave     [auth][csrf]         leave (organizer cannot leave); {joined, going}.
+ *   PATCH  /cleanups/:id/members/:userId [auth][csrf]  organizer promote/demote member<->cohost; {ok}.
+ *   DELETE /cleanups/:id/members/:userId [auth][csrf]  organizer/cohost remove attendee; {ok, going}.
  *   GET   /cleanups/:id/attendees [anon-ok]            the "who's going" roster (viewer-scoped).
  *   GET   /cleanups/:id/messages  [auth][MEMBER-gated] chat history -> ChatHistoryResponse.
  *
@@ -22,6 +24,8 @@ import {
   CancelCleanupRequestSchema,
   ListCleanupsRequestSchema,
   RequestEventResourcesRequestSchema,
+  SetMemberRoleRequestSchema,
+  RemoveMemberRequestSchema,
   ChatHistoryQuerySchema,
   IdSchema,
   ReportRefOrIdSchema,
@@ -32,7 +36,9 @@ import {
   type LeaveCleanupResponse,
   type CleanupAttendeesResponse,
   type ChatHistoryResponse,
+  type RemoveMemberResponse,
   type RequestEventResourcesResponse,
+  type SetMemberRoleResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -48,11 +54,18 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import {
+  makeDrizzleChatRepository,
+  type ChatRepository,
+} from "../services/chat-repository.drizzle.js"
+import { makeMediaPresigner } from "../services/media-presign.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
+import { makeNotificationService } from "../services/notification-service.js"
+import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
 import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
@@ -68,6 +81,9 @@ export interface CleanupServiceOverrides {
   // wires them from the container (outbound mail over the Drizzle mail repo + the verification repo).
   outboundMail?: CleanupServiceDeps["outboundMail"]
   isVerified?: CleanupServiceDeps["isVerified"]
+  // WS4: the cleanup_role bell seam (promote/demote/remove). Tests inject a recording fake; unset in a
+  // test harness means "no bells" (the service treats the notifier as optional).
+  notifier?: CleanupServiceDeps["notifier"]
 }
 
 declare module "fastify" {
@@ -77,6 +93,9 @@ declare module "fastify" {
 }
 
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+// Path params for the member-management routes (WS4): /cleanups/:id/members/:userId.
+const MemberParamsSchema = z.object({ id: IdSchema, userId: IdSchema }).strict()
 
 // GET /cleanups/:id is resolve-either (issue #56 / ROUTING): the URL id may be a UUID OR an EVENT
 // reference_code. Validate it with the looser shared ReportRefOrIdSchema (a 1..64-char opaque string,
@@ -107,6 +126,20 @@ export async function registerCleanupRoutes(
     const overrides = app.cleanupOverrides
     if (overrides) return overrides.repo
     return makeDrizzleCleanupRepository(container.getDb().sql)
+  }
+
+  // Pins (P3): the cleanup history ITEMS come from container.chatService (FakeChatService offline), but
+  // the pin rail reads the chat REPOSITORY (pins live on message rows). An injected chatOverrides.chatRepo
+  // wins; else the lazily-built Drizzle repo — except under USE_FAKE_CHAT (offline dev, no DB), where
+  // there is no chat repo at all and the initial page simply omits the `pins` key.
+  let pinsChatRepo: ChatRepository | undefined
+  function pinsRepo(): ChatRepository | null {
+    if (app.chatOverrides?.chatRepo) return app.chatOverrides.chatRepo
+    if (container.env.USE_FAKE_CHAT) return null
+    return (pinsChatRepo ??= makeDrizzleChatRepository(
+      container.getDb().sql,
+      makeMediaPresigner(container.storage),
+    ))
   }
 
   function service(): CleanupService {
@@ -153,10 +186,20 @@ export async function registerCleanupRoutes(
             }),
             isVerified: (userId: string) =>
               makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
+            // WS4 cleanup_role bells (promote/demote/remove) ride the real notification pipeline
+            // (in-app row + push + user-channel signal), same wiring as social.routes' notifier.
+            notifier: makeNotificationService({
+              repo: makeDrizzleNotificationRepository(container.getDb().sql),
+              pushSender: container.pushSender,
+              userChannel: container.userChannel,
+              logger: app.log,
+            }),
           }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
       ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
+      ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      logger: app.log,
     })
   }
 
@@ -167,8 +210,8 @@ export async function registerCleanupRoutes(
     reply.status(201).send(dto)
   })
 
-  // Organizer-only: the service throws FORBIDDEN (403) for a non-organizer and NOT_FOUND (404) for a
-  // missing event; the route only resolves auth + validates the body.
+  // Host-only (organizer OR cohost, WS4/D3): the service throws FORBIDDEN (403) for a non-host and
+  // NOT_FOUND (404) for a missing event; the route only resolves auth + validates the body.
   route(app, "updateCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
@@ -199,6 +242,33 @@ export async function registerCleanupRoutes(
       message: body.message,
       actorId: userId,
     })
+    reply.status(200).send(payload)
+  })
+
+  // WS4 (D3): organizer-only promote/demote — PATCH /cleanups/:id/members/:userId. Path params are
+  // merged into the body BEFORE parsing (the CancelCleanupRequest pattern: the typed client extracts
+  // both into the path, the route reconciles them back). The service enforces the whole matrix.
+  route(app, "setCleanupMemberRole", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireAuth(request)
+    const { id, userId } = parse(MemberParamsSchema, request.params)
+    const body = parse(SetMemberRoleRequestSchema, { ...(request.body as object), id, userId })
+    const payload: SetMemberRoleResponse = await service().setMemberRole(
+      id,
+      actorId,
+      body.userId,
+      body.role,
+    )
+    reply.status(200).send(payload)
+  })
+
+  // WS4 (D3): remove an attendee — DELETE /cleanups/:id/members/:userId (organizer: cohosts+members;
+  // cohost: plain members only; the organizer is irremovable). Same path-param merge; a DELETE body is
+  // typically absent, and `{ ...(null|undefined) }` spreads to {} so the merge stays safe.
+  route(app, "removeCleanupMember", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireAuth(request)
+    const { id, userId } = parse(MemberParamsSchema, request.params)
+    const body = parse(RemoveMemberRequestSchema, { ...(request.body as object), id, userId })
+    const payload: RemoveMemberResponse = await service().removeMember(id, actorId, body.userId)
     reply.status(200).send(payload)
   })
 
@@ -259,8 +329,23 @@ export async function registerCleanupRoutes(
     if (!isMember) throw AppError.forbidden("You are not a member of this cleanup.")
 
     const limit = q.limit ?? HISTORY_DEFAULT_LIMIT
-    const page = await container.chatService.history(id, q.before, limit, userId)
-    const payload: ChatHistoryResponse = { items: page.items, nextCursor: page.nextCursor }
+    // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
+    // Pins (P3) ride ONLY the initial page (no before, no around) — see report-chat.routes.ts. Absent
+    // entirely when no chat repo is reachable (offline dev path).
+    const isInitialPage = q.before === undefined && q.around === undefined
+    const repoForPins = isInitialPage ? pinsRepo() : null
+    const [page, pins] = await Promise.all([
+      container.chatService.history(id, q.before, limit, userId, q.around),
+      repoForPins !== null ? repoForPins.listPins(id, userId) : Promise.resolve(undefined),
+    ])
+    // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
+    // present — possibly null (window reaches the live head) — on around-mode pages.
+    const payload: ChatHistoryResponse = {
+      items: page.items,
+      nextCursor: page.nextCursor,
+      ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
+      ...(pins !== undefined ? { pins } : {}),
+    }
     reply.status(200).send(payload)
   })
 }

@@ -38,8 +38,8 @@ declare module "fastify" {
   }
 }
 
-/** conversation_mutes only models these three mute targets (see module header). */
-const MUTABLE_ROOM_KINDS = new Set<ConversationMuteRoomKind>(["cleanup", "dm", "report"])
+/** conversation_mutes only models these four mute targets (P4 added 'group'; see module header). */
+const MUTABLE_ROOM_KINDS = new Set<ConversationMuteRoomKind>(["cleanup", "dm", "report", "group"])
 
 function isMutableRoomKind(roomKind: string): roomKind is ConversationMuteRoomKind {
   return MUTABLE_ROOM_KINDS.has(roomKind as ConversationMuteRoomKind)

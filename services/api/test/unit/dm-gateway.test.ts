@@ -113,10 +113,23 @@ function makeUnusedChatRepo() {
     findMessage: () => Promise.resolve(null),
     toggleReaction: () => Promise.reject(new Error("cleanup reaction not expected in dm tests")),
     softDelete: () => Promise.reject(new Error("cleanup delete not expected in dm tests")),
+    findMessageMeta: () => Promise.resolve(null),
+    editMessage: () => Promise.reject(new Error("cleanup edit not expected in dm tests")),
+    editReportMessage: () => Promise.reject(new Error("report edit not expected in dm tests")),
+    editGroupMessage: () => Promise.reject(new Error("group edit not expected in dm tests")),
     reportHistory: () => Promise.resolve({ items: [], nextCursor: null }),
     findReportMessage: () => Promise.resolve(null),
     softDeleteReport: () => Promise.reject(new Error("report delete not expected in dm tests")),
     countReportMessages: () => Promise.resolve(0),
+    setPinned: () => Promise.reject(new Error("cleanup pin not expected in dm tests")),
+    setReportPinned: () => Promise.reject(new Error("report pin not expected in dm tests")),
+    listPins: () => Promise.resolve([]),
+    listReportPins: () => Promise.resolve([]),
+    groupHistory: () => Promise.resolve({ items: [], nextCursor: null }),
+    findGroupMessage: () => Promise.resolve(null),
+    softDeleteGroup: () => Promise.reject(new Error("group delete not expected in dm tests")),
+    setGroupPinned: () => Promise.reject(new Error("group pin not expected in dm tests")),
+    listGroupPins: () => Promise.resolve([]),
   }
 }
 

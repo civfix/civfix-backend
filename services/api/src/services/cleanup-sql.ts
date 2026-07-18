@@ -5,7 +5,7 @@ import type {
   CleanupRecord,
   NearPoint,
 } from "./cleanup-repository.types.js"
-import type { CleanupStatus, CleanupType, EventKind } from "@civfix/shared"
+import type { CleanupMemberRole, CleanupStatus, CleanupType, EventKind } from "@civfix/shared"
 
 export interface CleanupRowSelect {
   id: string
@@ -37,6 +37,7 @@ export interface AttendeeRowSelect {
   display_name: string
   handle: string | null
   bio: string | null
+  role: CleanupMemberRole
   is_following: boolean
 }
 

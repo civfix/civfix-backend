@@ -1,14 +1,31 @@
 
 import { randomUUID } from "node:crypto"
-import { avatarGradient } from "@civfix/shared"
+import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
-import type { ChatRepository } from "../../src/services/chat-repository.drizzle.js"
+import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
+import {
+  PIN_LIST_CAP,
+  type ChatMessageMeta,
+  type ChatRepository,
+  type SoftDeleteOpts,
+} from "../../src/services/chat-repository.drizzle.js"
+import {
+  REPLY_EXCERPT_MAX,
+  replyDeletedTarget,
+  replyWrongRoom,
+} from "../../src/services/chat-reply-hydration.js"
+import { aroundLimits } from "../../src/services/chat-history-window.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 
 interface StoredMessage {
   dto: ChatMessageDTO
   deleted: boolean
+  /**
+   * REAL wall-clock insertion time. The dto's createdAt rides the deterministic 2026-01-01 tick clock
+   * (stable ordering for assertions), which would make every fake message look months old to the
+   * chat-edit-service EDIT_WINDOW_HOURS gate; findMessageMeta reports this instead.
+   */
+  insertedAtMs: number
 }
 
 export interface ChatSender {
@@ -33,7 +50,36 @@ export class InMemoryChatRepository implements ChatRepository {
     return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
   }
 
+  /**
+   * Recompute the reply preview for a target id from the CURRENT store state (mirrors the drizzle
+   * hydration: tombstoned target -> deleted:true + excerpt ""; excerpt = first 120 chars of body).
+   */
+  private replyToFor(roomId: string, replyToId: string): ReplyToDTO | null {
+    const stored = (this.log.get(roomId) ?? []).find((m) => m.dto.id === replyToId)
+    if (!stored) return null
+    return {
+      id: replyToId,
+      from: stored.dto.from ? { id: stored.dto.from.id, displayName: stored.dto.from.name } : null,
+      excerpt: stored.deleted ? "" : (stored.dto.body ?? "").slice(0, REPLY_EXCERPT_MAX),
+      kind: stored.dto.kind,
+      ...(stored.deleted ? { deleted: true } : {}),
+    }
+  }
+
+  /** Project a stored DTO with its live reply preview (no-op for non-replies). */
+  private withReply(roomId: string, dto: ChatMessageDTO): ChatMessageDTO {
+    if (dto.replyToId == null) return dto
+    return { ...dto, replyTo: this.replyToFor(roomId, dto.replyToId) }
+  }
+
   insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO> {
+    // Reply validation (P2), mirroring the drizzle repo: target must exist in THIS room (else 422
+    // reply_wrong_room) and not be tombstoned (else 422 reply_deleted_target).
+    if (input.replyToId !== undefined) {
+      const target = (this.log.get(input.cleanupId) ?? []).find((m) => m.dto.id === input.replyToId)
+      if (!target) return Promise.reject(replyWrongRoom())
+      if (target.deleted) return Promise.reject(replyDeletedTarget())
+    }
     const sender = this.senders.get(input.userId) ?? {
       id: input.userId,
       displayName: `User ${input.userId.slice(0, 4)}`,
@@ -44,6 +90,7 @@ export class InMemoryChatRepository implements ChatRepository {
       id,
       cleanupId: input.cleanupId,
       ...(input.roomKind === "report" ? { roomKind: "report" as const } : {}),
+      ...(input.roomKind === "group" ? { roomKind: "group" as const } : {}),
       from: {
         id: sender.id,
         name: sender.displayName,
@@ -61,26 +108,66 @@ export class InMemoryChatRepository implements ChatRepository {
       mentions: [],
       createdAt: this.nextDate().toISOString(),
       editedAt: null,
+      ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
     }
     const list = this.log.get(input.cleanupId) ?? []
-    list.push({ dto, deleted: false })
+    list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.cleanupId, list)
-    return Promise.resolve(dto)
+    return Promise.resolve(this.withReply(input.cleanupId, dto))
   }
 
-  history(cleanupId: string, before: string | undefined, limit: number): Promise<ChatHistoryPage> {
-    const list = (this.log.get(cleanupId) ?? []).filter((m) => !m.deleted)
-    const ordered = [...list].reverse().map((m) => m.dto)
-    let start = 0
+  history(
+    cleanupId: string,
+    before: string | undefined,
+    limit: number,
+    _viewerUserId?: string | null,
+    around?: string,
+  ): Promise<ChatHistoryPage> {
+    if (around !== undefined) return this.historyAround(cleanupId, around, limit)
+    const allDesc = [...(this.log.get(cleanupId) ?? [])].reverse()
+    // Anchor resolves against ALL rows, tombstones included (2.4 review): the anchor is only a keyset
+    // position, so a deleted cursor id still pages correctly instead of falling back to the newest page.
+    let afterAnchor = allDesc
     if (before !== undefined) {
-      const idx = ordered.findIndex((m) => m.id === before)
-      if (idx >= 0) start = idx + 1
+      const idx = allDesc.findIndex((m) => m.dto.id === before)
+      if (idx >= 0) afterAnchor = allDesc.slice(idx + 1)
     }
-    const page = ordered.slice(start, start + limit)
-    const nextIndex = start + limit
-    const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
+    const ordered = afterAnchor.filter((m) => !m.deleted).map((m) => this.withReply(cleanupId, m.dto))
+    const page = ordered.slice(0, limit)
+    const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
+  }
+
+  /**
+   * Around-mode window (P2 2.4), mirroring the drizzle semantics: ceil(limit/2) at-or-older rows (the
+   * target INCLUDED — even a tombstoned target anchors, riding as a tombstone while every OTHER deleted
+   * row stays filtered) + floor(limit/2) strictly newer, newest-first. nextCursor = older end,
+   * prevCursor = newer end (null when that side reaches the edge). Missing/foreign-room target -> 404.
+   */
+  private historyAround(roomId: string, around: string, limit: number): Promise<ChatHistoryPage> {
+    const all = this.log.get(roomId) ?? []
+    if (!all.some((m) => m.dto.id === around)) {
+      return Promise.reject(AppError.notFound("Message not found"))
+    }
+    const ordered = [...all].filter((m) => !m.deleted || m.dto.id === around).reverse()
+    const idx = ordered.findIndex((m) => m.dto.id === around)
+    const { olderLimit, newerLimit } = aroundLimits(limit)
+    const newerStart = Math.max(0, idx - newerLimit)
+    const window = ordered.slice(newerStart, idx + olderLimit)
+    const items = window.map((m) =>
+      this.withReply(
+        roomId,
+        // The store keeps a deleted boolean, not a timestamp; stamp a deletedAt so the tombstone
+        // projects like a drizzle tombstone row.
+        m.deleted ? { ...m.dto, deletedAt: new Date(m.insertedAtMs).toISOString() } : m.dto,
+      ),
+    )
+    return Promise.resolve({
+      items,
+      nextCursor: idx + olderLimit < ordered.length ? (items[items.length - 1]?.id ?? null) : null,
+      prevCursor: newerStart > 0 ? (items[0]?.id ?? null) : null,
+    })
   }
 
   private reactionsFor(messageId: string, viewerUserId: string | null): ReactionSummaryDTO[] {
@@ -108,7 +195,9 @@ export class InMemoryChatRepository implements ChatRepository {
   ): Promise<ChatMessageDTO | null> {
     const stored = (this.log.get(cleanupId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
-    return Promise.resolve({ ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) })
+    return Promise.resolve(
+      this.withReply(cleanupId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+    )
   }
 
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
@@ -126,23 +215,138 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve(present)
   }
 
+  findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {
+    // Id-only scan across rooms (mirrors the drizzle id-only seek), INCLUDING soft-deleted entries. The
+    // store keys BOTH cleanup and report rooms by their room id in `log`; roomKind on the stored DTO tells
+    // them apart (insertMessage stamps roomKind:"report" for report rows).
+    for (const [roomId, list] of this.log) {
+      const stored = list.find((m) => m.dto.id === messageId)
+      if (stored) {
+        const isReport = stored.dto.roomKind === "report"
+        const isGroup = stored.dto.roomKind === "group"
+        return Promise.resolve({
+          id: messageId,
+          cleanupId: isReport || isGroup ? null : roomId,
+          reportId: isReport ? roomId : null,
+          groupId: isGroup ? roomId : null,
+          senderId: stored.dto.from?.id ?? null,
+          kind: stored.dto.kind,
+          // Real insertion time, NOT the deterministic dto clock (see StoredMessage.insertedAtMs).
+          createdAt: new Date(stored.insertedAtMs),
+          // The store keeps a boolean, not a tombstone timestamp; any non-null Date marks "deleted".
+          deletedAt: stored.deleted ? new Date(stored.insertedAtMs) : null,
+        })
+      }
+    }
+    return Promise.resolve(null)
+  }
+
+  editMessage(
+    cleanupId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    // Same WHERE gate as softDelete (sender-only, room-scoped, not deleted) but SET body + editedAt.
+    const list = this.log.get(cleanupId)
+    const found = list?.find((m) => m.dto.id === messageId)
+    if (!found || found.deleted || found.dto.from?.id !== senderId) return Promise.resolve(null)
+    found.dto = { ...found.dto, body, editedAt: this.nextDate().toISOString() }
+    return Promise.resolve(
+      this.withReply(cleanupId, {
+        ...found.dto,
+        reactions: this.reactionsFor(messageId, senderId),
+        mine: true,
+      }),
+    )
+  }
+
+  editReportMessage(
+    reportId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    return this.editMessage(reportId, messageId, senderId, body)
+  }
+
   softDelete(
     cleanupId: string,
     messageId: string,
     senderId: string,
+    opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null> {
     const list = this.log.get(cleanupId)
     const found = list?.find((m) => m.dto.id === messageId)
-    // Test-registered senders always populate `from`; optional-chain to satisfy the nullable contract
-    // type without changing the WHERE-gate semantics for the normal (author-present) case.
-    if (!found || found.deleted || found.dto.from?.id !== senderId) return Promise.resolve(null)
+    if (!found || found.deleted) return Promise.resolve(null)
+    // Sender gate (mirrors the drizzle WHERE): sender-only by default; a moderator bypass (Task 3.5)
+    // still refuses sender-less SYSTEM rows. Test-registered senders always populate `from`;
+    // optional-chain to satisfy the nullable contract type.
+    if (opts?.bypassSenderGate) {
+      if (found.dto.from == null) return Promise.resolve(null)
+    } else if (found.dto.from?.id !== senderId) {
+      return Promise.resolve(null)
+    }
     found.deleted = true
     const tombstone: ChatMessageDTO = {
       ...found.dto,
       deletedAt: this.nextDate().toISOString(),
-      mine: true,
+      mine: found.dto.from?.id === senderId,
     }
-    return Promise.resolve(tombstone)
+    return Promise.resolve(this.withReply(cleanupId, tombstone))
+  }
+
+  /**
+   * Pin/unpin (P3), mirroring the drizzle gate: room-scoped, live, non-system, and only an ACTUAL state
+   * change flips pinnedAt (a repeat pin keeps the original stamp). Returns the CURRENT DTO either way;
+   * null when missing/deleted.
+   */
+  setPinned(
+    roomId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    const found = (this.log.get(roomId) ?? []).find((m) => m.dto.id === messageId)
+    if (!found || found.deleted) return Promise.resolve(null)
+    const currentlyPinned = found.dto.pinnedAt != null
+    if (found.dto.kind !== "system" && currentlyPinned !== pinned) {
+      found.dto = pinned
+        ? { ...found.dto, pinnedAt: this.nextDate().toISOString() }
+        : (({ pinnedAt: _dropped, ...rest }) => rest)(found.dto)
+    }
+    return Promise.resolve(
+      this.withReply(roomId, { ...found.dto, reactions: this.reactionsFor(messageId, userId) }),
+    )
+  }
+
+  setReportPinned(
+    reportId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    return this.setPinned(reportId, messageId, userId, pinned)
+  }
+
+  /** The room's pins, newest-pin first, capped at PIN_LIST_CAP (mirrors the drizzle partial-index query). */
+  listPins(roomId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    const pins = (this.log.get(roomId) ?? [])
+      .filter((m) => !m.deleted && m.dto.pinnedAt != null)
+      .sort((a, b) => {
+        const at = a.dto.pinnedAt!
+        const bt = b.dto.pinnedAt!
+        return at === bt ? (a.dto.id < b.dto.id ? 1 : -1) : at < bt ? 1 : -1
+      })
+      .slice(0, PIN_LIST_CAP)
+      .map((m) =>
+        this.withReply(roomId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+      )
+    return Promise.resolve(pins)
+  }
+
+  listReportPins(reportId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    return this.listPins(reportId, viewerUserId)
   }
 
   count(cleanupId: string): number {
@@ -154,8 +358,9 @@ export class InMemoryChatRepository implements ChatRepository {
     before: string | undefined,
     limit: number,
     _viewerUserId?: string | null,
+    around?: string,
   ): Promise<ChatHistoryPage> {
-    return this.history(reportId, before, limit)
+    return this.history(reportId, before, limit, _viewerUserId, around)
   }
 
   findReportMessage(
@@ -170,12 +375,64 @@ export class InMemoryChatRepository implements ChatRepository {
     reportId: string,
     messageId: string,
     senderId: string,
+    opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null> {
-    return this.softDelete(reportId, messageId, senderId)
+    return this.softDelete(reportId, messageId, senderId, opts)
   }
 
   countReportMessages(reportId: string): Promise<number> {
     return Promise.resolve(this.count(reportId))
+  }
+
+  // P4 group-room twins: like the report twins above, the store keys every room by its room id, so
+  // the group methods delegate to the shared room-scoped implementations.
+  groupHistory(
+    groupId: string,
+    before: string | undefined,
+    limit: number,
+    _viewerUserId?: string | null,
+    around?: string,
+  ): Promise<ChatHistoryPage> {
+    return this.history(groupId, before, limit, _viewerUserId, around)
+  }
+
+  findGroupMessage(
+    groupId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    return this.findMessage(groupId, messageId, viewerUserId)
+  }
+
+  editGroupMessage(
+    groupId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    return this.editMessage(groupId, messageId, senderId, body)
+  }
+
+  softDeleteGroup(
+    groupId: string,
+    messageId: string,
+    senderId: string,
+    opts?: SoftDeleteOpts,
+  ): Promise<ChatMessageDTO | null> {
+    return this.softDelete(groupId, messageId, senderId, opts)
+  }
+
+  setGroupPinned(
+    groupId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    return this.setPinned(groupId, messageId, userId, pinned)
+  }
+
+  listGroupPins(groupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    return this.listPins(groupId, viewerUserId)
   }
 }
 

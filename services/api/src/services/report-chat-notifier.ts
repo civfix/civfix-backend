@@ -5,7 +5,7 @@ import { CONVERSATION_BELL } from "./conversation-bell.js"
 import { textPreview } from "../routes/chat-notify-copy.js"
 
 export interface ReportChatNotifierDeps {
-  notificationService: NotificationService
+  notificationService: Pick<NotificationService, "createNotification">
   reportChatRepo: { listMemberIds(reportId: string): Promise<string[]> }
   isMuted: (userId: string, roomId: string) => Promise<boolean>
   presence?: { online(roomKey: string): Promise<string[]> }
@@ -29,7 +29,18 @@ export function makeReportChatNotifier(
     }
     const presentSet = new Set(present)
 
-    const candidates = memberIds.filter((m) => m !== actorId && !presentSet.has(m))
+    // GROUP-ROOM DEDUPE POINT (P2 2.5): the replied-to user gets the richer, mute-piercing REPLY bell
+    // (chat-bells makeChatReplyNotifier) and @-mentioned members get the MENTION bell (D11) — both
+    // fired from the same send. Excluding them from THIS fan-out keeps it to exactly one bell per
+    // member per message. (If their `prefs.mentions` is off, that richer bell is suppressed and they
+    // get no bell at all — their choice; mirrors how a mention-only message behaves.)
+    const replyTargetId = message.replyTo?.from?.id ?? null
+    const mentionedIds = new Set(message.mentions.map((m) => m.id))
+
+    // Skip the sender, the reply target, mentioned members, and anyone watching the room live.
+    const candidates = memberIds.filter(
+      (m) => m !== actorId && m !== replyTargetId && !mentionedIds.has(m) && !presentSet.has(m),
+    )
     if (candidates.length === 0) return
 
     const name = message.from?.name?.trim() ? message.from.name : null

@@ -41,6 +41,7 @@ function makeReportChatSource(
   }
   return {
     isMember: () => Promise.resolve(true),
+    roleOf: notImpl("roleOf") as never,
     advanceReadWatermark,
     join: notImpl("join") as never,
     leave: notImpl("leave") as never,
