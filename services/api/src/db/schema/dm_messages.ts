@@ -25,6 +25,8 @@ export const dmMessages = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     editedAt: timestamp("edited_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    // Quoted-reply target. Nullable; no FK (see drizzle/0045_chat_reply_to.sql).
+    replyToId: uuid("reply_to_id"),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.createdAt] }),

@@ -25,6 +25,8 @@ export const chatMessages = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     editedAt: timestamp("edited_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    // Quoted-reply target. Nullable; no FK (partitioned table, see drizzle/0045_chat_reply_to.sql).
+    replyToId: uuid("reply_to_id"),
     // Structured payload for kind:"system" rows. Nullable; NULL on every non-system row.
     systemStatus: text("system_status"),
     systemKind: text("system_kind"),
