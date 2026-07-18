@@ -20,6 +20,7 @@ import { wireChatGateway } from "./chat-gateway-wiring.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
 import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import type { ChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
 import {
   type GatewayChatMentions,
   type IsMemberFn,
@@ -69,6 +70,8 @@ export interface ChatGatewayOverrides {
   groupThreadsSource?: GroupThreadsSource
   /** P4: chat_groups management repo (group routes + the powers resolver's group lane). */
   groups?: ChatGroupRepository
+  /** P6: chat_polls write repo (poll create/vote/close). When absent, built over the container sql. */
+  chatPolls?: ChatPollRepository
   /**
    * P3: injected chat-powers resolver (pin / delete-others). When absent, wireChatPowers builds a
    * fail-closed resolver over the other override seams (offline) or the real Drizzle lookups (prod).

@@ -6,6 +6,7 @@ import type {
   ChatMessageDTO,
   ChatMessageKind,
   MediaDTO,
+  PollDTO,
   ReactionEmoji,
   ReactionSummaryDTO,
   ReplyToDTO,
@@ -21,6 +22,7 @@ import { mapSystemRow } from "./report-chat-repository.drizzle.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
 import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
+import { loadPollsFor } from "./chat-poll-repository.drizzle.js"
 
 // The report's jurisdiction, resolved ONCE per report-scoped query (it is constant per report). Drives the
 // @city `cityMention` chip on report messages. null when the report has no resolved jurisdiction.
@@ -237,6 +239,9 @@ function toMessageDTO(
   // Hydrated reply preview for r.reply_to_id (chat-reply-hydration). Only meaningful when the row IS a
   // reply; null renders the quote header as unavailable.
   replyTo?: ReplyToDTO | null,
+  // P6 poll payload for a kind:"poll" row (chat-poll-repository loadPollsFor). Absent for every other
+  // kind and for a tombstoned poll (a deleted poll hydrates as a plain tombstone, no poll body).
+  poll?: PollDTO | null,
 ): ChatMessageDTO {
   // A report SYSTEM message has no author (sender_id NULL); delegate to the pure system mapper so its
   // from:null / kind:"system" / structured system payload render in history + broadcasts. Only report
@@ -294,6 +299,8 @@ function toMessageDTO(
     ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
     // Pinning (P3): pinnedAt rides on every read so history rows and message_update broadcasts agree.
     ...(r.pinned_at != null ? { pinnedAt: r.pinned_at.toISOString() } : {}),
+    // Polls (P6): the viewer-aware poll DTO on a kind:"poll" row; absent everywhere else.
+    ...(poll != null ? { poll } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     // @city forward surfacing (report rows only). forwardedToCity = the pill (an audit row for this message
     // has forwarded_at set). cityMention = the tinted chip when the body @mentions the report's jurisdiction
@@ -436,13 +443,17 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     reportCity: ReportCityContext | null,
   ): Promise<ChatMessageDTO[]> {
     const ids = page.map((r) => r.id)
-    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
+    // Poll hydration (P6): only LIVE poll-kind rows attach a poll DTO — a tombstoned poll hydrates as a
+    // plain deleted row (its question must not survive deletion).
+    const pollIds = page.filter((r) => r.kind === "poll" && r.deleted_at === null).map((r) => r.id)
+    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget, pollsByMessage] =
       await Promise.all([
         presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
         loadChatReactionsFor(sql, ids, viewerUserId),
         loadChatMentionsFor(sql, ids),
         // Reply previews: ONE id=ANY(...) fetch over the SAME table for the page's distinct targets.
         replyMapForRows(sql, "chat_messages", page),
+        loadPollsFor(sql, pollIds, viewerUserId),
       ])
     return page.map((r) =>
       toMessageDTO(
@@ -454,6 +465,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         attachmentsByMessage.get(r.id) ?? [],
         reportCity,
         r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
+        pollsByMessage.get(r.id) ?? null,
       ),
     )
   }
@@ -602,13 +614,16 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     `
     const row = rows[0]
     if (!row) return null
-    const [reactions, mentions, attachmentsByMessage, reportCity, replyByTarget] = await Promise.all([
-      loadChatReactions(sql, row.id, viewerUserId),
-      loadChatMentions(sql, row.id),
-      presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-      resolveReportCity(scope),
-      replyMapForRows(sql, "chat_messages", [row]),
-    ])
+    const pollIds = row.kind === "poll" && row.deleted_at === null ? [row.id] : []
+    const [reactions, mentions, attachmentsByMessage, reportCity, replyByTarget, pollsByMessage] =
+      await Promise.all([
+        loadChatReactions(sql, row.id, viewerUserId),
+        loadChatMentions(sql, row.id),
+        presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        resolveReportCity(scope),
+        replyMapForRows(sql, "chat_messages", [row]),
+        loadPollsFor(sql, pollIds, viewerUserId),
+      ])
     return toMessageDTO(
       row,
       reactions,
@@ -618,6 +633,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       attachmentsByMessage.get(row.id) ?? [],
       reportCity,
       row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      pollsByMessage.get(row.id) ?? null,
     )
   }
 

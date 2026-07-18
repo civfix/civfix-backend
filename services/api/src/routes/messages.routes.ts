@@ -18,12 +18,16 @@
 
 import {
   AppError,
+  ClosePollRequestSchema,
+  CreatePollRequestSchema,
   EditMessageRequestSchema,
   ErrorCode,
   SetMessagePinnedRequestSchema,
   ToggleMessageReactionRequestSchema,
+  VotePollRequestSchema,
   type ChatMessageDTO,
 } from "@civfix/shared"
+import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -52,6 +56,9 @@ import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
+import { makeChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
+import { makeChatPollService, type PollRoomKind } from "../services/chat-poll-service.js"
+import { makeContainerPollNotifier } from "../services/chat-poll-notifier.js"
 
 /**
  * Tighter per-key limit for edits (reaction-route style): a human edits a handful of messages; 30/min
@@ -61,6 +68,15 @@ export const EDIT_MESSAGE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as co
 
 /** Unified reaction toggle: 60/min per key, matching the legacy per-room toggle routes. */
 export const TOGGLE_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+
+/** Poll create (P6): 10/min per key — a poll is a deliberate, heavier action than a chat send. */
+export const CREATE_POLL_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
+
+/** Poll vote (P6): 60/min per key — voting/retracting is lightweight and interactive. */
+export const VOTE_POLL_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+
+/** Poll close (P6): 30/min per key — a rare author/moderator action. */
+export const CLOSE_POLL_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 export async function registerMessagesRoutes(
   app: FastifyInstance,
@@ -322,6 +338,94 @@ export async function registerMessagesRoutes(
       ).catch(() => {})
 
       reply.status(200).send(updated)
+    },
+  )
+
+  // P6 Tasks 6.3/6.4: poll create / vote / close. The poll repo owns the DB writes; the poll service
+  // orchestrates the gate ladder + re-reads the hydrated DTO through the SHARED chat repo (which now
+  // attaches the poll payload) + broadcasts. Lazily built over the container sql (offline harnesses with
+  // chatOverrides but no groups/DB seam fail the group lane closed, mirroring the reaction lane).
+  let pollService: ReturnType<typeof makeChatPollService> | undefined
+  const pollNotifier = makeContainerPollNotifier(container, app.log)
+  const getReportChatMember = (roomId: string, userId: string) =>
+    getReportChatRepo().isMember(roomId, userId)
+  const getPollService = (): ReturnType<typeof makeChatPollService> =>
+    (pollService ??= makeChatPollService({
+      chat: getChatRepo(),
+      chatPolls: overrides?.chatPolls ?? makeChatPollRepository(container.getDb().sql),
+      // SEND permission (create): cleanup/report member, group member+canPost (channel owner/admin only).
+      canSend: (roomKind, roomId, userId) =>
+        roomKind === "report"
+          ? getReportChatMember(roomId, userId)
+          : roomKind === "group"
+            ? canSendGroup(roomId, userId)
+            : isCleanupMember(roomId, userId),
+      // MEMBERSHIP (vote): bare member incl. a channel's read-only readers; a public non-member is false.
+      isMember: (roomKind, roomId, userId) =>
+        roomKind === "report"
+          ? getReportChatMember(roomId, userId)
+          : roomKind === "group"
+            ? isGroupMember(roomId, userId)
+            : isCleanupMember(roomId, userId),
+      // Room moderator (close fallback) via the shared chat-powers resolver.
+      isModerator: async (roomKind, roomId, userId) =>
+        (await resolveChatPowers({ roomKind, roomId, userId })).isModerator,
+      newId: () => randomUUID(),
+      broadcastMessage: (roomKind, roomId, message) => {
+        void Promise.resolve(
+          container.chatService.broadcast(roomKeyFor(roomKind, roomId), message),
+        ).catch(() => {})
+      },
+      broadcastUpdate: (roomKind, roomId, message) =>
+        broadcastMessageUpdate(container.chatService, roomKind, roomId, message),
+      notifyRoom: (roomKind, roomId, message) => pollNotifier(roomKind, roomId, message),
+    }))
+
+  route(
+    app,
+    "createPoll",
+    { preHandler: csrfProtect, config: { rateLimit: CREATE_POLL_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(CreatePollRequestSchema, request.body)
+      const created = await getPollService().createPoll({
+        roomKind: body.roomKind as PollRoomKind,
+        roomId: body.roomId,
+        question: body.question,
+        options: body.options,
+        allowMultiple: body.allowMultiple,
+        anonymous: body.anonymous,
+        userId,
+      })
+      reply.status(200).send(created)
+    },
+  )
+
+  route(
+    app,
+    "votePoll",
+    { preHandler: csrfProtect, config: { rateLimit: VOTE_POLL_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(VotePollRequestSchema, request.body)
+      const updated = await getPollService().votePoll({
+        messageId: body.messageId,
+        optionIdxs: body.optionIdxs,
+        userId,
+      })
+      reply.status(200).send(updated)
+    },
+  )
+
+  route(
+    app,
+    "closePoll",
+    { preHandler: csrfProtect, config: { rateLimit: CLOSE_POLL_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(ClosePollRequestSchema, request.body)
+      const closed = await getPollService().closePoll({ messageId: body.messageId, userId })
+      reply.status(200).send(closed)
     },
   )
 }

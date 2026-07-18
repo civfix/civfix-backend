@@ -67,6 +67,9 @@ export const replyDeletedTarget = (): AppError =>
     fields: { code: "reply_deleted_target" },
   })
 
+/** The poll reply-excerpt prefix (P6): a bar-chart glyph so a quoted poll reads as "📊 <question>". */
+const POLL_EXCERPT_PREFIX = "\u{1F4CA} "
+
 /** Pure mapper: one target row -> the denormalized reply preview (see DTO MAPPING above). */
 export function toReplyToDTO(row: ReplyTargetRow): ReplyToDTO {
   const deleted = row.deleted_at !== null
@@ -74,10 +77,17 @@ export function toReplyToDTO(row: ReplyTargetRow): ReplyToDTO {
     row.sender_id !== null && row.sender_deleted_at === null
       ? { id: row.sender_id, displayName: row.sender_display_name ?? "" }
       : null
+  // A poll's body IS its question; prefix the chart glyph so the quote reads as a poll, truncated at the
+  // shared cap. Every other kind excerpts its raw body (client renders a kind descriptor for empty ones).
+  const excerpt = deleted
+    ? ""
+    : row.kind === "poll"
+      ? (POLL_EXCERPT_PREFIX + (row.body ?? "")).slice(0, REPLY_EXCERPT_MAX)
+      : (row.body ?? "").slice(0, REPLY_EXCERPT_MAX)
   return {
     id: row.id,
     from,
-    excerpt: deleted ? "" : (row.body ?? "").slice(0, REPLY_EXCERPT_MAX),
+    excerpt,
     kind: row.kind,
     ...(deleted ? { deleted: true } : {}),
   }
