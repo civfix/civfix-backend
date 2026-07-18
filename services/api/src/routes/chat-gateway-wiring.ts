@@ -22,6 +22,7 @@ import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.dri
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { makeReportChatRepository, type ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import {
+  canPostToGroup,
   makeChatGroupRepository,
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
@@ -142,6 +143,11 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const groupChat: GatewayGroupChat | undefined = groupWired
     ? {
         isMember: async (groupId, userId) => (await getGroupsRepo()!.roleOf(groupId, userId)) !== null,
+        access: async (groupId, userId) => {
+          const a = await getGroupsRepo()!.accessOf(groupId, userId)
+          if (a === null) return null
+          return { isMember: a.role !== null, canPost: canPostToGroup(a), visibility: a.visibility }
+        },
         advanceReadWatermark: (groupId, userId, upToId) =>
           getGroupsRepo()!.advanceReadWatermark(groupId, userId, upToId),
       }

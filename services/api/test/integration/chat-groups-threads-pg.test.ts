@@ -46,7 +46,7 @@ import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
-import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import { canPostToGroup, makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
@@ -295,6 +295,12 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
         presence,
         groupChat: {
           isMember: async (groupId, userId) => (await groupRepo.roleOf(groupId, userId)) !== null,
+          access: async (groupId, userId) => {
+            const a = await groupRepo.accessOf(groupId, userId)
+            return a === null
+              ? null
+              : { isMember: a.role !== null, canPost: canPostToGroup(a), visibility: a.visibility }
+          },
           advanceReadWatermark: (groupId, userId, upToId) =>
             groupRepo.advanceReadWatermark(groupId, userId, upToId),
         },

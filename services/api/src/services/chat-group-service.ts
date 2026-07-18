@@ -78,6 +78,12 @@ export interface ChatGroupService {
   ): Promise<GroupMemberDTO>
   listMembers(viewerId: string, req: ListGroupMembersRequest): Promise<ListGroupMembersResponse>
   /**
+   * P5 self-serve join: any authed user may join a visibility='public' group/channel (403 not_public
+   * otherwise). Idempotent — a re-join keeps the caller's existing role (no dupe row) and returns the
+   * current state; a fresh join inserts role 'member'. Returns the refreshed ChatGroupDTO with myRole.
+   */
+  joinGroup(userId: string, groupId: string): Promise<ChatGroupDTO>
+  /**
    * Readability gate shared with the message routes (history / pins): members always; non-members
    * only when the group is public. Throws 404 (unknown group) / 403 (private, not a member).
    * Returns the viewer's role (null = non-member of a public group).
@@ -282,6 +288,22 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       )
       const page = await groups.listMembers(req.id, viewerId, req.cursor ?? null, limit)
       return { members: page.members.map(toMemberDTO), nextCursor: page.nextCursor }
+    },
+
+    async joinGroup(userId, groupId) {
+      const view = await requireGroup(groupId)
+      if (view.visibility !== "public") {
+        throw forbidden("This group isn't open to join.", "not_public")
+      }
+      // Idempotent: addMembers is ON CONFLICT DO NOTHING as role 'member', so a re-join keeps an
+      // existing owner/admin/member row untouched (no dupe, no demotion). Blocks are deliberately NOT
+      // consulted — joining a PUBLIC room is the joiner's own action on a public civic surface, mirroring
+      // the WS report lane (public join, blocks gate the DM lane only); a block never hides a public group.
+      const role = await groups.roleOf(groupId, userId)
+      if (role === null) await groups.addMembers(groupId, [userId])
+      // Re-read so memberCount / myRole reflect the (possibly) new membership row.
+      const refreshed = await requireGroup(groupId)
+      return toGroupDTO(refreshed, userId, role ?? "member")
     },
 
     requireReadable,

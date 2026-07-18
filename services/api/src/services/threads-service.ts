@@ -164,6 +164,8 @@ export interface GroupThreadAggregateView {
   groupId: string
   /** The group's display name (chat_groups.name). */
   title: string
+  /** 'channel' rooms surface MessageThreadDTO.channel:true so the inbox can badge them (P5). */
+  kind: "group" | "channel"
   members: number
   unread: number
   last: {
@@ -415,6 +417,8 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
               unread: agg.unread,
               members: agg.members,
               muted: mutedGroup.has(agg.groupId),
+              // Optional flag: present only for channels (matches the optional shared schema).
+              ...(agg.kind === "channel" ? { channel: true as const } : {}),
             },
             activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
           }

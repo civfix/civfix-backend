@@ -125,19 +125,33 @@ async function authorizeRoom(
     return { ok: true }
   }
   if (kind === "group") {
-    // P4 Task 4.4: group rooms are MEMBER-ONLY for join AND send/typing (join == read implies
-    // membership until P5's public-channel read-joins loosen the join gate).
-    // P5 SEAM: channel posting is owner/admin-only — when it lands, branch on `requireMember` here
-    // (join stays member/public-read; send consults the role ladder for kind='channel' rooms).
+    // P5: two gate levels keyed on `requireMember`. READ level (join): a member of any room OR a
+    // non-member of a PUBLIC room (read-only presence join). SEND level (send/typing): must be a
+    // member AND hold post permission — a channel's read-only members (canPost=false) get
+    // channel_read_only; a public non-member gets the plain "not a member" 403.
     if (!deps.groupChat) {
       // No group deps wired (fake-chat/no-DB harnesses): FAIL CLOSED so a group frame can never
       // fall through to the dm lane below.
       return { ok: false, code: "FORBIDDEN", message: "Group chat is not available." }
     }
-    const ok = await deps.groupChat.isMember(id, userId)
-    return ok
-      ? { ok: true }
-      : { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+    const access = await deps.groupChat.access(id, userId)
+    // Unknown group: uniform "not a member" 403 (no existence oracle, matching the pre-P5 stance).
+    if (access === null) {
+      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+    }
+    if (!requireMember) {
+      // Read/join level: members always; non-members only when the room is public.
+      if (access.isMember || access.visibility === "public") return { ok: true }
+      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+    }
+    // Send/typing level: membership first (a public non-member reader can't post), then post power.
+    if (!access.isMember) {
+      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+    }
+    if (!access.canPost) {
+      return { ok: false, code: "channel_read_only", message: "Only owners and admins can post in this channel." }
+    }
+    return { ok: true }
   }
   if (!deps.dm) {
     return { ok: false, code: "FORBIDDEN", message: "Direct messages are not available." }
@@ -388,7 +402,15 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
-  const auth = await authorizeRoom(deps, kind, id, userId, /* requireMember */ kind === "report")
+  // Typing carries the SAME restriction as send: report members-only, and group send-permission
+  // (a read-only channel member must not emit typing) — so gate at send level for both.
+  const auth = await authorizeRoom(
+    deps,
+    kind,
+    id,
+    userId,
+    /* requireMember */ kind === "report" || kind === "group",
+  )
   if (!auth.ok) {
     sendError(conn, auth.code, auth.message, { kind, id })
     return

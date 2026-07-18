@@ -86,14 +86,26 @@ export interface GatewayReportChat {
   advanceReadWatermark(reportId: string, userId: string, upToId: string): Promise<void>
 }
 
+/** The WS group lane's read-vs-send decision inputs (P5): membership, post permission, and public-ness. */
+export interface GroupRoomAccess {
+  /** Has a chat_group_members row (read watermark / reactions require this). */
+  isMember: boolean
+  /** May POST/type (member of a 'group', or owner/admin of a 'channel'). Read-only channel members: false. */
+  canPost: boolean
+  /** 'public' rooms admit non-member read-only joins; 'private' stay member-only. */
+  visibility: "private" | "public"
+}
+
 /**
- * Subset of the P4 ChatGroupRepository the WS gateway needs. Group rooms (Task 4.4) are MEMBER-ONLY
- * for BOTH join and send (public-channel read-joins arrive in P5); reads advance the per-member
- * chat_group_members.last_read_at watermark. Injected via chat-gateway-wiring so routes and the
- * socket share one repo instance (the GatewayReportChat pattern).
+ * Subset of the P4 ChatGroupRepository the WS gateway needs. P5: join relaxes to public read-only
+ * (non-members may open a visibility='public' room for presence + reads); send/typing require post
+ * permission (`access.canPost` — channels are owner/admin-only). `access` resolves kind+visibility+role
+ * in one round trip (null when the group is gone); `isMember` stays for the ack watermark's member scope.
+ * Injected via chat-gateway-wiring so routes and the socket share one repo instance.
  */
 export interface GatewayGroupChat {
   isMember(groupId: string, userId: string): Promise<boolean>
+  access(groupId: string, userId: string): Promise<GroupRoomAccess | null>
   advanceReadWatermark(groupId: string, userId: string, upToId: string): Promise<void>
 }
 

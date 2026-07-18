@@ -51,7 +51,7 @@ import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzl
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import { canPostToGroup, makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatMentionResolver } from "../../src/services/chat-mention-resolver.js"
 import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
@@ -118,6 +118,12 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
         presence: new InMemoryChatPresence(),
         groupChat: {
           isMember: async (groupId, userId) => (await groups.roleOf(groupId, userId)) !== null,
+          access: async (groupId, userId) => {
+            const a = await groups.accessOf(groupId, userId)
+            return a === null
+              ? null
+              : { isMember: a.role !== null, canPost: canPostToGroup(a), visibility: a.visibility }
+          },
           advanceReadWatermark: (groupId, userId, upToId) =>
             groups.advanceReadWatermark(groupId, userId, upToId),
         },

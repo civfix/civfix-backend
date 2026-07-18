@@ -77,6 +77,8 @@ const GROUP_HISTORY_MAX = 50
 export const CREATE_GROUP_RATE_LIMIT = { max: 10, timeWindow: "1 hour" } as const
 /** Bulk invites: bounded so a hijacked session can't blast invite sweeps; ample for normal use. */
 export const ADD_GROUP_MEMBERS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+/** Self-serve join (P5): 20/min bounds scripted join sweeps across public rooms; ample for a real user. */
+export const JOIN_GROUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
 export async function registerChatGroupRoutes(
   app: FastifyInstance,
@@ -134,6 +136,18 @@ export async function registerChatGroupRoutes(
     const body = parse(UpdateChatGroupRequestSchema, { ...(request.body as object), id })
     reply.status(200).send(await svc().updateGroup(userId, body))
   })
+
+  route(
+    app,
+    "joinChatGroup",
+    { preHandler: csrfProtect, config: { rateLimit: JOIN_GROUP_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      // Same params shape as getChatGroup ({ id }); the body is empty on the wire.
+      const { id } = parse(GetChatGroupRequestSchema, request.params)
+      reply.status(200).send(await svc().joinGroup(userId, id))
+    },
+  )
 
   route(app, "listGroupMembers", async (request, reply) => {
     const userId = requireAuth(request)

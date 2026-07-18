@@ -38,6 +38,7 @@ import {
 } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import {
+  canPostToGroup,
   makeChatGroupRepository,
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
@@ -98,6 +99,16 @@ export async function registerMessagesRoutes(
     if (!repo) return false
     return (await repo.roleOf(groupId, userId)) !== null
   }
+  // P5 send-permission (edit lane): member AND post power — a channel's read-only members can't edit
+  // (belt-and-braces: they can't have authored posts, but the gate must 403 the SAME as WS send). For a
+  // regular 'group' this collapses to membership, so non-channel behavior is unchanged. Reactions
+  // deliberately keep `isGroupMember` (a joined read-only channel member CAN react; a public non-member can't).
+  const canSendGroup: IsRoomMemberFn = async (groupId, userId) => {
+    const repo = getGroupsRepo()
+    if (!repo) return false
+    const access = await repo.accessOf(groupId, userId)
+    return access !== null && canPostToGroup(access)
+  }
 
   const dmRepo = (): DmRepository => overrides?.dmRepo ?? container.getDmRepo()
   const blocksRepo = (): BlocksRepository => overrides?.blocksRepo ?? container.getBlocksRepo()
@@ -143,7 +154,8 @@ export async function registerMessagesRoutes(
         dm: dmRepo(),
         isCleanupMember,
         isReportMember: (reportId, uid) => getReportChatRepo().isMember(reportId, uid),
-        isGroupMember,
+        // Edit reuses the SEND-permission gate (channels: owner/admin only), not bare membership.
+        isGroupMember: canSendGroup,
         dmPeerOf,
         isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
         ...(chatMentions ? { chatMentions } : {}),

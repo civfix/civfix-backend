@@ -54,6 +54,7 @@ interface ReportThreadRowSelect {
 interface GroupThreadRowSelect {
   group_id: string
   name: string
+  kind: "group" | "channel"
   joined_at: Date
   members: number
   unread: number
@@ -221,6 +222,7 @@ export function makeDrizzleGroupThreadsSource(sql: Sql): GroupThreadsSource {
         SELECT
           g.id AS group_id,
           g.name,
+          g.kind,
           mem.joined_at,
           (SELECT count(*)::int FROM chat_group_members m WHERE m.group_id = g.id) AS members,
           -- Unread = messages from OTHERS strictly after the viewer's watermark (max of joined_at and
@@ -252,6 +254,7 @@ export function makeDrizzleGroupThreadsSource(sql: Sql): GroupThreadsSource {
       return rows.map((r) => ({
         groupId: r.group_id,
         title: r.name,
+        kind: r.kind,
         members: r.members,
         unread: r.unread,
         joinedAt: r.joined_at,

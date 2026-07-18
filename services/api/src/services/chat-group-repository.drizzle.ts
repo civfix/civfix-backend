@@ -34,6 +34,27 @@ import { isUuid } from "../db/cursor-helpers.js"
 
 export type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
 
+/**
+ * The kind + visibility of a group plus the viewer's role in it (null = not a member), resolved in ONE
+ * query — the P5 channel/public-read gate needs all three at once (the WS group lane's read-vs-send
+ * decision and the edit route's send-permission check). `null` from accessOf = the group row is gone.
+ */
+export interface GroupRoomAccess {
+  kind: ChatGroupKind
+  visibility: ChatGroupVisibility
+  role: GroupMemberRole | null
+}
+
+/**
+ * P5 send-permission predicate: who may POST (and type / edit) in a group room. A regular group
+ * ('group') is member-writable; a CHANNEL is owner/admin-only (members are read-only). Single-sourced
+ * so the WS send lane, the edit route, and any future caller all agree — a non-member never posts.
+ */
+export function canPostToGroup(access: { kind: ChatGroupKind; role: GroupMemberRole | null }): boolean {
+  if (access.role === null) return false
+  return access.kind === "group" || access.role === "owner" || access.role === "admin"
+}
+
 /** A chat_groups row with its avatar hydrated (null = none or not yet 'ready') and live member count. */
 export interface ChatGroupView {
   id: string
@@ -82,6 +103,11 @@ export interface ChatGroupRepository {
   update(id: string, patch: UpdateChatGroupPatch): Promise<void>
   /** The user's chat_group_members.role, or null when not a member (feeds the chat-powers resolver). */
   roleOf(groupId: string, userId: string): Promise<GroupMemberRole | null>
+  /**
+   * P5: the group's kind + visibility + the viewer's role in ONE round trip; null when the group row is
+   * gone. Backs the WS group lane's read-vs-send/channel gate and the edit route's send-permission check.
+   */
+  accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null>
   /** Idempotent bulk insert as role 'member' (ON CONFLICT DO NOTHING keeps existing roles). */
   addMembers(groupId: string, userIds: string[]): Promise<void>
   /** Delete the membership row; true when a row was actually removed. */
@@ -293,6 +319,19 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
         LIMIT 1
       `
       return rows[0]?.role ?? null
+    },
+
+    async accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null> {
+      if (!isUuid(groupId)) return null
+      const rows = await sql<{ kind: ChatGroupKind; visibility: ChatGroupVisibility; role: GroupMemberRole | null }[]>`
+        SELECT g.kind, g.visibility, m.role
+        FROM chat_groups g
+        LEFT JOIN chat_group_members m ON m.group_id = g.id AND m.user_id = ${userId}
+        WHERE g.id = ${groupId}
+        LIMIT 1
+      `
+      const row = rows[0]
+      return row ? { kind: row.kind, visibility: row.visibility, role: row.role ?? null } : null
     },
 
     async addMembers(groupId: string, userIds: string[]): Promise<void> {
