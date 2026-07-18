@@ -300,4 +300,77 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       await app.close()
     }
   })
+
+  it("P1: reaction toggle honors the WIDENED allowlist end-to-end (laugh -> 200 + summary; unknown -> 422)", async () => {
+    // Full server against the real DB (same wiring as the membership-gated route test above) so the
+    // POST /cleanups/:id/messages/:messageId/reactions path — shared-schema parse included — runs for real.
+    const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
+    const container = buildContainer(env)
+    const stores = makeInMemoryStores()
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const authServices = buildAuthServices({
+      stores,
+      cache,
+      mailer: container.mailer as never,
+      oauthConfig: {},
+      verifier: new StubJwksVerifier(),
+      now: () => Date.now(),
+    })
+    const app: FastifyInstance = await buildServer({ env, container, authServices })
+
+    try {
+      const organizerId = await newUser("Org Reaction")
+      const organizerToken = await authServices.sessions.createSession(organizerId, [])
+
+      const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
+      const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+        {
+          title: "Reaction sweep",
+          type: "site",
+          eventKind: "cleanup",
+          lat: 34.1,
+          lng: -118.3,
+          scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        },
+        organizerId,
+      )
+      const msg = await makeDrizzleChatRepository(h.sql).insertMessage(
+        { cleanupId: created.id, userId: organizerId, body: "react to me" },
+        randomUUID(),
+      )
+
+      // "laugh" is one of the two P1 additions (append-only widening 6 -> 8): the shared schema at the
+      // route boundary must accept it and the toggle must land in chat_reactions.
+      const on = await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${created.id}/messages/${msg.id}/reactions`,
+        headers: { authorization: `Bearer ${organizerToken}`, "x-client": "mobile" },
+        payload: { emoji: "laugh" },
+      })
+      expect(on.statusCode).toBe(200)
+      const summary = on.json().reactions as { emoji: string; count: number; mine: boolean }[]
+      expect(summary).toContainEqual({ emoji: "laugh", count: 1, mine: true })
+
+      // Second toggle removes it (same endpoint, same emoji).
+      const off = await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${created.id}/messages/${msg.id}/reactions`,
+        headers: { authorization: `Bearer ${organizerToken}`, "x-client": "mobile" },
+        payload: { emoji: "laugh" },
+      })
+      expect(off.statusCode).toBe(200)
+      expect((off.json().reactions as { emoji: string }[]).some((r) => r.emoji === "laugh")).toBe(false)
+
+      // The allowlist is widened, not open: a name outside the 8 still fails schema parse.
+      const rejected = await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${created.id}/messages/${msg.id}/reactions`,
+        headers: { authorization: `Bearer ${organizerToken}`, "x-client": "mobile" },
+        payload: { emoji: "angry" },
+      })
+      expect(rejected.statusCode).toBe(422)
+    } finally {
+      await app.close()
+    }
+  })
 })
