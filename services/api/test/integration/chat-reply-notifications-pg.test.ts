@@ -267,6 +267,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       dmPeerOf: () => Promise.resolve(null),
       listCleanupMemberIds: () => Promise.resolve([]),
       listReportChatMemberIds: (id) => reportChatRepo.listMemberIds(id),
+      listGroupMemberIds: () => Promise.resolve([]),
     })
 
     // NON-member: the handle exists but is outside report_chat_members -> resolves to NOTHING.

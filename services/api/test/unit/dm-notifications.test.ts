@@ -96,6 +96,7 @@ function makeUnusedChatRepo() {
     findMessageMeta: () => Promise.resolve(null),
     editMessage: () => Promise.reject(new Error("cleanup edit not expected here")),
     editReportMessage: () => Promise.reject(new Error("report edit not expected here")),
+    editGroupMessage: () => Promise.reject(new Error("group edit not expected here")),
     reportHistory: () => Promise.resolve({ items: [], nextCursor: null }),
     findReportMessage: () => Promise.resolve(null),
     softDeleteReport: () => Promise.reject(new Error("report delete not expected here")),

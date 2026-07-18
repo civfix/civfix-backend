@@ -5,10 +5,11 @@
  *   - report rooms resolve only current report_chat_members (D11, P2 2.5): a @mention of a non-member
  *     silently resolves to nothing — no row, no bell;
  *   - dm resolves only the thread PEER (a @mention of anyone else silently drops);
- *   - cleanup resolves only current MEMBERS (capped at THREAD_SIGNAL_MEMBER_CAP).
+ *   - cleanup resolves only current MEMBERS (capped at THREAD_SIGNAL_MEMBER_CAP);
+ *   - group rooms (P4 4.4) resolve only current chat_group_members (uncapped, like report).
  *
  * The user lookup, dm-peer lookup, and member listings are injected so each call site wires its own repo
- * instances; only the scope rules live here. Room kinds added later (P4 gov rooms) extend THIS file.
+ * instances; only the scope rules live here. Room kinds added later extend THIS file.
  */
 
 import type { UserMentionDTO } from "@civfix/shared"
@@ -28,6 +29,8 @@ export interface ChatMentionResolverDeps {
   listCleanupMemberIds(cleanupId: string, cap: number): Promise<string[]>
   /** Member ids of a report chat (report_chat_members; uncapped in the repo, like the D-E2 fan-out). */
   listReportChatMemberIds(reportId: string): Promise<string[]>
+  /** Member ids of a group room (chat_group_members; P4 4.4). */
+  listGroupMemberIds(groupId: string): Promise<string[]>
 }
 
 /** Build the seam's `resolveChatMentions` half over the injected lookups. */
@@ -47,6 +50,10 @@ export function makeChatMentionResolver(
     }
     if (input.kind === "report") {
       const memberIds = new Set(await deps.listReportChatMemberIds(input.roomId))
+      return resolved.filter((m) => memberIds.has(m.id))
+    }
+    if (input.kind === "group") {
+      const memberIds = new Set(await deps.listGroupMemberIds(input.roomId))
       return resolved.filter((m) => memberIds.has(m.id))
     }
     const memberIds = new Set(await deps.listCleanupMemberIds(input.roomId, THREAD_SIGNAL_MEMBER_CAP))

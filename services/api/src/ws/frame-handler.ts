@@ -125,9 +125,19 @@ async function authorizeRoom(
     return { ok: true }
   }
   if (kind === "group") {
-    // P4 Task 4.3: the group HTTP surface is live but the WS join/send lane lands in Task 4.4.
-    // FAIL CLOSED explicitly so a group frame can never fall through to the dm lane below.
-    return { ok: false, code: "FORBIDDEN", message: "Group chat realtime is not available yet." }
+    // P4 Task 4.4: group rooms are MEMBER-ONLY for join AND send/typing (join == read implies
+    // membership until P5's public-channel read-joins loosen the join gate).
+    // P5 SEAM: channel posting is owner/admin-only — when it lands, branch on `requireMember` here
+    // (join stays member/public-read; send consults the role ladder for kind='channel' rooms).
+    if (!deps.groupChat) {
+      // No group deps wired (fake-chat/no-DB harnesses): FAIL CLOSED so a group frame can never
+      // fall through to the dm lane below.
+      return { ok: false, code: "FORBIDDEN", message: "Group chat is not available." }
+    }
+    const ok = await deps.groupChat.isMember(id, userId)
+    return ok
+      ? { ok: true }
+      : { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
   }
   if (!deps.dm) {
     return { ok: false, code: "FORBIDDEN", message: "Direct messages are not available." }
@@ -218,7 +228,7 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     } else {
       message = await deps.chat.persist({
         cleanupId: id,
-        roomKind: kind === "report" ? "report" : "cleanup",
+        roomKind: kind,
         userId,
         body: frame.body,
         ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
@@ -396,6 +406,15 @@ async function handleAck(session: GatewaySession, frame: ExtractFrame<"ack">): P
   if (id === undefined) return
   if (kind === "report") {
     if (deps.reportChat) await deps.reportChat.advanceReadWatermark(id, userId, frame.upToId)
+    return
+  }
+  if (kind === "group") {
+    // Member-scoped in the repo's WHERE (a non-member ack matches no chat_group_members row). The
+    // threads self-signal mirrors dm/cleanup so an open inbox refreshes its unread badge.
+    if (deps.groupChat) {
+      await deps.groupChat.advanceReadWatermark(id, userId, frame.upToId)
+      selfSignalThreads(deps.userChannel, userId, id)
+    }
     return
   }
   if (kind === "dm") {

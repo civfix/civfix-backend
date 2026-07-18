@@ -77,6 +77,17 @@ export interface GatewayReportChat {
   advanceReadWatermark(reportId: string, userId: string, upToId: string): Promise<void>
 }
 
+/**
+ * Subset of the P4 ChatGroupRepository the WS gateway needs. Group rooms (Task 4.4) are MEMBER-ONLY
+ * for BOTH join and send (public-channel read-joins arrive in P5); reads advance the per-member
+ * chat_group_members.last_read_at watermark. Injected via chat-gateway-wiring so routes and the
+ * socket share one repo instance (the GatewayReportChat pattern).
+ */
+export interface GatewayGroupChat {
+  isMember(groupId: string, userId: string): Promise<boolean>
+  advanceReadWatermark(groupId: string, userId: string, upToId: string): Promise<void>
+}
+
 export interface GatewayChatMentions {
   resolveChatMentions(input: {
     handles: string[]
@@ -120,6 +131,7 @@ export interface GatewayDeps {
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined
   reportChat?: GatewayReportChat | undefined
+  groupChat?: GatewayGroupChat | undefined
 }
 
 export interface GatewaySession {
@@ -153,5 +165,6 @@ export interface RegisterGatewayOptions {
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined
   reportChat?: GatewayReportChat | undefined
+  groupChat?: GatewayGroupChat | undefined
   webOrigins: readonly string[]
 }

@@ -7,7 +7,7 @@
  *   1. Resolve the message by id in the correct table (dm_messages for "dm", chat_messages otherwise)
  *      and verify its room ref matches roomId -> 404 otherwise (also plain-missing).
  *   2. Room-send permission still held (the SAME checks the WS send path runs): cleanup member, report
- *      chat member, dm thread peer + not blocked either way -> plain 403. This runs BEFORE the per-row
+ *      chat member, group member (P4 4.4), dm thread peer + not blocked either way -> plain 403. This runs BEFORE the per-row
  *      state gates so a non-member probing leaked UUIDs learns nothing about a message's deleted-ness
  *      or kind — they only ever see the generic 403.
  *   3. Sender-only -> 403 (machine code "not_sender" in the error envelope's `fields.code`). A
@@ -43,6 +43,8 @@ export interface ChatEditServiceDeps {
   dm?: DmRepository
   isCleanupMember?: IsRoomMemberFn
   isReportMember?: IsRoomMemberFn
+  /** P4 4.4 group lane: chat_group_members membership (the SAME gate the WS group send runs). */
+  isGroupMember?: IsRoomMemberFn
   dmPeerOf?: (threadId: string, userId: string) => Promise<string | null>
   isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>
   /**
@@ -161,9 +163,15 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     const chat = deps.chat
     if (!chat) throw new Error("chat-edit-service: chat deps not wired")
     const isReport = roomKind === "report"
+    const isGroup = roomKind === "group"
     const meta = await chat.findMessageMeta(messageId)
     const roomMatches =
-      meta !== null && (isReport ? meta.reportId === roomId : meta.cleanupId === roomId)
+      meta !== null &&
+      (isReport
+        ? meta.reportId === roomId
+        : isGroup
+          ? meta.groupId === roomId
+          : meta.cleanupId === roomId)
     if (meta === null || !roomMatches) throw AppError.notFound("Message not found")
     // Room-send permission still held: the SAME membership checks the WS send path runs. BEFORE the
     // per-row state gates so a non-member probing leaked UUIDs learns nothing about a message's
@@ -172,6 +180,10 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
       const isReportMember = deps.isReportMember
       if (!isReportMember) throw new Error("chat-edit-service: report deps not wired")
       if (!(await isReportMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
+    } else if (isGroup) {
+      const isGroupMember = deps.isGroupMember
+      if (!isGroupMember) throw new Error("chat-edit-service: group deps not wired")
+      if (!(await isGroupMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
     } else {
       const isCleanupMember = deps.isCleanupMember
       if (!isCleanupMember) throw new Error("chat-edit-service: cleanup deps not wired")
@@ -185,7 +197,9 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     await rerecordMentions(roomKind, roomId, userId, messageId, body, input.mentionedUserIds)
     const updated = isReport
       ? await chat.editReportMessage(roomId, messageId, userId, body)
-      : await chat.editMessage(roomId, messageId, userId, body)
+      : isGroup
+        ? await chat.editGroupMessage(roomId, messageId, userId, body)
+        : await chat.editMessage(roomId, messageId, userId, body)
     if (updated === null) throw AppError.conflict("This message was deleted.")
     fireMessageUpdate(roomKind, roomId, updated)
     return updated

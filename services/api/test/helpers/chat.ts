@@ -404,6 +404,15 @@ export class InMemoryChatRepository implements ChatRepository {
     return this.findMessage(groupId, messageId, viewerUserId)
   }
 
+  editGroupMessage(
+    groupId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    return this.editMessage(groupId, messageId, senderId, body)
+  }
+
   softDeleteGroup(
     groupId: string,
     messageId: string,

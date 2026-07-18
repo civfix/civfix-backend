@@ -33,6 +33,7 @@ function makeSendLimiter(reportLimiter: RateLimiter | undefined): RateLimiter {
       const { kind } = decodeRoomKey(key.slice(key.indexOf(":") + 1))
       if (kind === "dm") return dm.tryConsume(key)
       if (kind === "report") return reportLimiter ? reportLimiter.tryConsume(key) : true
+      // cleanup AND group rooms share the cleanup bucket shape (30 burst, 0.5/s refill, per user+room).
       return cleanup.tryConsume(key)
     },
   }
@@ -159,6 +160,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           reportSendLimiter: sendLimiter,
           chatMentions: opts.chatMentions,
           reportChat: opts.reportChat,
+          groupChat: opts.groupChat,
         },
       }
 

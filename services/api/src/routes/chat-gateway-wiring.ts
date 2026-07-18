@@ -20,6 +20,11 @@ import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { makeReportChatRepository, type ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import {
+  makeChatGroupRepository,
+  type ChatGroupRepository,
+} from "../services/chat-group-repository.drizzle.js"
+import type { GatewayGroupChat } from "../ws/types.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { forwardReportCityMention } from "../services/report-city-forward.js"
@@ -119,6 +124,27 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const getReportChatRepo = (): ReportChatRepository =>
     overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
 
+  // P4 4.4: the group management repo backing the WS group lane (join/send member gate, ack watermark,
+  // mention scoping, mark-read-on-join). One instance shared with nothing route-side (the group routes
+  // build their own like the report routes do) but every WS consumer below shares THIS one. When
+  // chatOverrides is present WITHOUT a groups fake we must not touch getDb() (offline harness) — group
+  // frames then fail closed in authorizeRoom, mirroring the reportChat gating.
+  let lazyGroupsRepo: ChatGroupRepository | undefined
+  const getGroupsRepo = (): ChatGroupRepository | undefined =>
+    overrides
+      ? overrides.groups
+      : useFakeChat
+        ? undefined
+        : (lazyGroupsRepo ??= makeChatGroupRepository(container.getDb().sql, presignMedia))
+  const groupWired = overrides ? overrides.groups !== undefined : !useFakeChat
+  const groupChat: GatewayGroupChat | undefined = groupWired
+    ? {
+        isMember: async (groupId, userId) => (await getGroupsRepo()!.roleOf(groupId, userId)) !== null,
+        advanceReadWatermark: (groupId, userId, upToId) =>
+          getGroupsRepo()!.advanceReadWatermark(groupId, userId, upToId),
+      }
+    : undefined
+
   const dmPeerOf = async (threadId: string, userId: string): Promise<string | null> => {
     const t = await dmRepo.getThread(threadId)
     if (t === null) return null
@@ -196,6 +222,14 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       return peer !== null ? [peer] : []
     }
     if (kind === "report") return []
+    if (kind === "group") {
+      // Group inbox rows refresh live like cleanup ones; uncapped (chat_group_members is the
+      // same fan-out set the D-E2-style notifier will use in 4.5).
+      const repo = getGroupsRepo()
+      if (!repo) return []
+      const members = await repo.listMemberIds(id)
+      return members.filter((m) => m !== senderId)
+    }
     if (useFakeChat) return []
     const members = await getCleanupRepo().listMemberIds(id, THREAD_SIGNAL_MEMBER_CAP)
     return members.filter((m) => m !== senderId)
@@ -229,6 +263,9 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
             dmPeerOf,
             listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
             listReportChatMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
+            // Empty when the group repo is unwired (offline harness): a group mention then resolves
+            // to nothing rather than touching getDb().
+            listGroupMemberIds: (groupId) => getGroupsRepo()?.listMemberIds(groupId) ?? Promise.resolve([]),
           }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
@@ -350,6 +387,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       } else if (kind === "cleanup") {
         await readState.markRead(id, userId, at)
         await clearConversationBell("cleanup", id, userId)
+      } else if (kind === "group") {
+        // P4 4.4: opening a group room marks it read (member-scoped in the repo's WHERE). No bell
+        // clear yet — group notifications land in 4.5.
+        await getGroupsRepo()?.markRead(id, userId, at)
       }
     },
     chatMentions,
@@ -361,6 +402,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     // routes (via getReportChatRepo). Gated on useFakeChat like reportVisible/onReportMessage: the fake
     // path has no DB, so under fake-chat the socket falls back to public send (matching pre-D-C3).
     reportChat: overrides?.reportChat ?? (useFakeChat ? undefined : getReportChatRepo()),
+    // P4 4.4: member gate + ack watermark for group rooms, same one-instance stance as reportChat.
+    // Absent under fake-chat / an override set without a groups fake, where authorizeRoom fails
+    // group frames closed.
+    groupChat,
     webOrigins: container.env.WEB_ORIGINS,
   })
 

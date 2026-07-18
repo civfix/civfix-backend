@@ -153,6 +153,13 @@ export interface ChatRepository {
     messageId: string,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO | null>
+  /** Group-room twin of editMessage (same WHERE gate, scoped on group_id; P4 4.4). */
+  editGroupMessage(
+    groupId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null>
   /** Group-room twin of softDelete (scoped on group_id; same SoftDeleteOpts moderator bypass). */
   softDeleteGroup(
     groupId: string,
@@ -938,6 +945,15 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       viewerUserId: string | null,
     ): Promise<ChatMessageDTO | null> {
       return findMessageScoped({ column: "group_id", id: groupId }, messageId, viewerUserId)
+    },
+
+    editGroupMessage(
+      groupId: string,
+      messageId: string,
+      senderId: string,
+      body: string,
+    ): Promise<ChatMessageDTO | null> {
+      return editScoped({ column: "group_id", id: groupId }, messageId, senderId, body)
     },
 
     softDeleteGroup(

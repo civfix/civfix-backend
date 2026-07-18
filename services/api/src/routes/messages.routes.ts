@@ -21,6 +21,7 @@ import {
   EditMessageRequestSchema,
   ErrorCode,
   SetMessagePinnedRequestSchema,
+  ToggleMessageReactionRequestSchema,
   type ChatMessageDTO,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
@@ -36,6 +37,11 @@ import {
   type ReportChatRepository,
 } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import {
+  makeChatGroupRepository,
+  type ChatGroupRepository,
+} from "../services/chat-group-repository.drizzle.js"
+import { CHAT_REACTION_FORBIDDEN } from "../services/chat-reaction-service.js"
 import { makeMediaPresigner } from "../services/media-presign.js"
 import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
 import { recordChatMentions } from "../services/chat-mentions.drizzle.js"
@@ -43,7 +49,7 @@ import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
-import { broadcastMessageUpdate } from "../ws/gateway.js"
+import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
 /**
@@ -51,6 +57,9 @@ import { wireChatPowers } from "./chat-powers-wiring.js"
  * bounds scripted rewrite sweeps while staying ample for normal use.
  */
 export const EDIT_MESSAGE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+
+/** Unified reaction toggle: 60/min per key, matching the legacy per-room toggle routes. */
+export const TOGGLE_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
 export async function registerMessagesRoutes(
   app: FastifyInstance,
@@ -75,6 +84,20 @@ export async function registerMessagesRoutes(
   const isCleanupMember: IsRoomMemberFn = overrides
     ? overrides.isMember
     : (cleanupId, userId) => getCleanupRepo().isMember(cleanupId, userId)
+
+  // P4 4.4 group lane. Same override stance as the mutes/report repos: when chatOverrides is present
+  // WITHOUT a groups fake we must not touch getDb() (offline harness) — group membership then fails
+  // closed, mirroring the WS gateway's unwired-group behavior.
+  let groupsRepo: ChatGroupRepository | undefined
+  const getGroupsRepo = (): ChatGroupRepository | undefined =>
+    overrides
+      ? overrides.groups
+      : (groupsRepo ??= makeChatGroupRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+  const isGroupMember: IsRoomMemberFn = async (groupId, userId) => {
+    const repo = getGroupsRepo()
+    if (!repo) return false
+    return (await repo.roleOf(groupId, userId)) !== null
+  }
 
   const dmRepo = (): DmRepository => overrides?.dmRepo ?? container.getDmRepo()
   const blocksRepo = (): BlocksRepository => overrides?.blocksRepo ?? container.getBlocksRepo()
@@ -101,6 +124,7 @@ export async function registerMessagesRoutes(
             dmPeerOf,
             listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
             listReportChatMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
+            listGroupMemberIds: (groupId) => getGroupsRepo()?.listMemberIds(groupId) ?? Promise.resolve([]),
           }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
@@ -119,6 +143,7 @@ export async function registerMessagesRoutes(
         dm: dmRepo(),
         isCleanupMember,
         isReportMember: (reportId, uid) => getReportChatRepo().isMember(reportId, uid),
+        isGroupMember,
         dmPeerOf,
         isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
         ...(chatMentions ? { chatMentions } : {}),
@@ -202,6 +227,80 @@ export async function registerMessagesRoutes(
       // Realtime: the SAME {type:"message_update"} frame the edit/delete paths use — clients reconcile
       // the bubble (and their pin rail) from message.pinnedAt. Best-effort fire-and-forget.
       broadcastMessageUpdate(container.chatService, roomKind, roomId, updated)
+
+      reply.status(200).send(updated)
+    },
+  )
+
+  // P4 Task 4.4: POST /messages/reactions — the unified roomKind-scoped reaction toggle. Group rooms
+  // are the driver (they have no per-room reaction route); cleanup/report/dm get the unified path for
+  // free (their legacy per-room toggles stay mounted for pre-P4 clients). chat_message_reactions is
+  // room-agnostic (keyed on message id), so ONE toggle serves every kind; only the resolve + permission
+  // steps dispatch. Ladder mirrors the edit route's no-leak ordering:
+  //   1. resolve the message in the correct table + room-ref match -> 404;
+  //   2. room-SEND permission (the SAME checks the edit ladder runs: cleanup/report/group member, dm
+  //      peer + not blocked either way) -> generic 403 (CHAT_REACTION_FORBIDDEN);
+  //   3. toggle + re-read the hydrated DTO (refreshed reaction summary, viewer-aware `mine*` bits);
+  //   4. broadcast the LEGACY {type:"reaction"} frame — exactly what the per-room toggles fan out
+  //      (cleanup omits roomKind; every other kind stamps it) so connected clients are agnostic to
+  //      which route toggled.
+  route(
+    app,
+    "toggleMessageReaction",
+    { preHandler: csrfProtect, config: { rateLimit: TOGGLE_REACTION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(ToggleMessageReactionRequestSchema, request.body)
+      const { roomKind, roomId, messageId, emoji } = body
+
+      let updated: ChatMessageDTO | null
+      if (roomKind === "dm") {
+        const meta = await dmRepo().findMessageMeta(messageId)
+        if (meta === null || meta.threadId !== roomId) throw AppError.notFound("Message not found")
+        const peer = await dmPeerOf(roomId, userId)
+        if (peer === null) throw AppError.forbidden(CHAT_REACTION_FORBIDDEN)
+        if (await blocksRepo().isBlockedEitherWay(userId, peer)) {
+          throw AppError.forbidden(CHAT_REACTION_FORBIDDEN)
+        }
+        await dmRepo().toggleReaction(messageId, userId, emoji)
+        updated = await dmRepo().findMessage(roomId, messageId, userId)
+      } else {
+        const meta = await getChatRepo().findMessageMeta(messageId)
+        const roomMatches =
+          meta !== null &&
+          (roomKind === "report"
+            ? meta.reportId === roomId
+            : roomKind === "group"
+              ? meta.groupId === roomId
+              : meta.cleanupId === roomId)
+        if (meta === null || !roomMatches) throw AppError.notFound("Message not found")
+        const allowed =
+          roomKind === "report"
+            ? await getReportChatRepo().isMember(roomId, userId)
+            : roomKind === "group"
+              ? await isGroupMember(roomId, userId)
+              : await isCleanupMember(roomId, userId)
+        if (!allowed) throw AppError.forbidden(CHAT_REACTION_FORBIDDEN)
+        await getChatRepo().toggleReaction(messageId, userId, emoji)
+        updated =
+          roomKind === "report"
+            ? await getChatRepo().findReportMessage(roomId, messageId, userId)
+            : roomKind === "group"
+              ? await getChatRepo().findGroupMessage(roomId, messageId, userId)
+              : await getChatRepo().findMessage(roomId, messageId, userId)
+      }
+      // The gates above passed, so a null re-read is a lost race (row vanished underneath us).
+      if (updated === null) throw AppError.notFound("Message not found")
+
+      const frame = {
+        type: "reaction" as const,
+        cleanupId: roomId,
+        ...(roomKind === "cleanup" ? {} : { roomKind }),
+        message: updated,
+      }
+      void Promise.resolve(
+        container.chatService.broadcastEvent?.(roomKeyFor(roomKind, roomId), frame),
+      ).catch(() => {})
 
       reply.status(200).send(updated)
     },

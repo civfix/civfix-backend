@@ -99,6 +99,16 @@ export interface ChatGroupRepository {
   ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
   /** Resolve a presign-flow uploadId to its media_assets id; null when unknown (silently ignored). */
   findMediaIdByUploadId(uploadId: string): Promise<string | null>
+  /** Member user ids of a group (mention scoping + thread signals; mirrors report listMemberIds). */
+  listMemberIds(groupId: string): Promise<string[]>
+  /**
+   * WS ack (4.4): set chat_group_members.last_read_at to the target message's created_at, only ever
+   * moving the watermark FORWARD (the report-chat advanceReadWatermark twin, scoped on group_id).
+   * No-op for non-members or when the message id does not resolve to a row in THIS group.
+   */
+  advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void>
+  /** Mark-read-on-join (4.4): monotonic last_read_at = max(current, at). No-op for non-members. */
+  markRead(groupId: string, userId: string, at: Date): Promise<void>
 }
 
 interface GroupRowSelect {
@@ -372,6 +382,37 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
         SELECT id FROM media_assets WHERE upload_id = ${uploadId} LIMIT 1
       `
       return rows[0]?.id ?? null
+    },
+
+    async listMemberIds(groupId: string): Promise<string[]> {
+      const rows = await sql<{ user_id: string }[]>`
+        SELECT user_id FROM chat_group_members
+        WHERE group_id = ${groupId}
+        ORDER BY joined_at ASC, user_id ASC
+      `
+      return rows.map((r) => r.user_id)
+    },
+
+    async advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void> {
+      // Monotonic (GREATEST against the current value, floored at epoch 0 so a NULL prior watermark is
+      // treated as the floor) — the exact report_chat_members twin, scoped on chat_messages.group_id.
+      await sql`
+        UPDATE chat_group_members m
+        SET last_read_at = GREATEST(COALESCE(m.last_read_at, to_timestamp(0)), cm.created_at)
+        FROM chat_messages cm
+        WHERE m.group_id = ${groupId}
+          AND m.user_id = ${userId}
+          AND cm.id = ${upToMessageId}
+          AND cm.group_id = ${groupId}
+      `
+    },
+
+    async markRead(groupId: string, userId: string, at: Date): Promise<void> {
+      await sql`
+        UPDATE chat_group_members
+        SET last_read_at = GREATEST(COALESCE(last_read_at, to_timestamp(0)), ${at})
+        WHERE group_id = ${groupId} AND user_id = ${userId}
+      `
     },
   }
 }

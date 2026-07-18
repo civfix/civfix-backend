@@ -116,6 +116,7 @@ function makeUnusedChatRepo() {
     findMessageMeta: () => Promise.resolve(null),
     editMessage: () => Promise.reject(new Error("cleanup edit not expected in dm tests")),
     editReportMessage: () => Promise.reject(new Error("report edit not expected in dm tests")),
+    editGroupMessage: () => Promise.reject(new Error("group edit not expected in dm tests")),
     reportHistory: () => Promise.resolve({ items: [], nextCursor: null }),
     findReportMessage: () => Promise.resolve(null),
     softDeleteReport: () => Promise.reject(new Error("report delete not expected in dm tests")),
