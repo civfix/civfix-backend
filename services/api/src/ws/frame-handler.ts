@@ -247,10 +247,39 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   await deps.chat.broadcast(roomKey, message, { excludeConnId: conn.id })
   conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
 
-  fireMentionBells(deps, kind, id, userId, mentions, message)
+  const replyTargetUserId = replyBellTarget(message, userId)
+  fireMentionBells(deps, kind, id, userId, mentions, message, replyTargetUserId)
   fireThreadSignal(deps, kind, id, userId)
   fireDmBell(deps, kind, id, userId, roomKey, message)
+  fireReplyBell(deps, kind, id, userId, replyTargetUserId, message)
   fireReportCityForward(deps, kind, id, message)
+}
+
+/**
+ * The reply-bell target (P2 2.5): the replied-to message's SENDER, read off the hydrated replyTo
+ * preview the persist path returned — null when the message is not a reply, when the target is a
+ * sender-less SYSTEM message or a deleted account (both hydrate from:null), or when the author
+ * replied to their own message.
+ */
+function replyBellTarget(message: ChatMessageDTO, authorUserId: string): string | null {
+  const target = message.replyTo?.from?.id
+  return target !== undefined && target !== authorUserId ? target : null
+}
+
+/**
+ * Fire the P2 2.5 reply bell for GROUP rooms (dm replies ride fireDmBell -> onDmDelivered, the single
+ * dm bell site). Fire-and-forget like every other post-send bell.
+ */
+function fireReplyBell(
+  deps: GatewayDeps,
+  kind: RoomKind,
+  roomId: string,
+  actorUserId: string,
+  targetUserId: string | null,
+  message: ChatMessageDTO,
+): void {
+  if (kind === "dm" || targetUserId === null || !deps.onChatReply) return
+  void deps.onChatReply({ kind, roomId, actorUserId, targetUserId, message }).catch(() => {})
 }
 
 function fireReportCityForward(
@@ -270,10 +299,17 @@ function fireMentionBells(
   actorUserId: string,
   mentions: UserMentionDTO[],
   message: ChatMessageDTO,
+  replyTargetUserId: string | null,
 ): void {
   if (!deps.chatMentions || mentions.length === 0) return
   const { chatMentions } = deps
   for (const m of mentions) {
+    // MENTION-vs-REPLY DEDUPE POINT (P2 2.5): when the replied-to user is ALSO @-mentioned in the same
+    // message, only the (mute-piercing) REPLY bell fires — chosen here because this is the one place
+    // that sees both the resolved mentions and the reply target. The mention ROW was still recorded and
+    // broadcast above; only the duplicate bell is dropped. Gated on the reply seam being wired so a
+    // deployment without onChatReply keeps its mention bell.
+    if (deps.onChatReply && kind !== "dm" && m.id === replyTargetUserId) continue
     void chatMentions
       .notifyChatMention({ kind, roomId, actorUserId, mentionedUserId: m.id, message })
       .catch(() => {})

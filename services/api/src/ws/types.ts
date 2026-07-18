@@ -31,6 +31,7 @@ export interface GatewayDmDeps {
     kind?: import("@civfix/shared").ChatMessageKind
     clientId?: string
     mediaUploadIds?: string[]
+    replyToId?: string
   }): Promise<import("@civfix/shared").ChatMessageDTO>
   markRead(threadId: string, userId: string, upToId: string): Promise<void>
 }
@@ -49,6 +50,21 @@ export type OnReportMessage = (
   reportId: string,
   message: import("@civfix/shared").ChatMessageDTO,
 ) => Promise<void>
+
+/**
+ * P2 2.5 reply bell seam: fired after a send whose message replies to another user's message.
+ * `targetUserId` is the replied-to message's SENDER (from the hydrated replyTo preview — never the
+ * author themself, never a sender-less SYSTEM target; frame-handler filters those). Implemented by
+ * chat-bells makeChatReplyNotifier in the wiring; dm rooms are a no-op (the dm delivered bell owns
+ * dm reply flavor).
+ */
+export type OnChatReply = (input: {
+  kind: RoomKind
+  roomId: string
+  actorUserId: string
+  targetUserId: string
+  message: import("@civfix/shared").ChatMessageDTO
+}) => Promise<void>
 
 /**
  * Subset of the D-C1 ReportChatRepository the WS gateway needs. Report rooms are PUBLIC to join but
@@ -99,6 +115,7 @@ export interface GatewayDeps {
   threadRecipientsOf?: ThreadRecipientsOf | undefined
   onDmDelivered?: OnDmDelivered | undefined
   onReportMessage?: OnReportMessage | undefined
+  onChatReply?: OnChatReply | undefined
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined
@@ -131,6 +148,7 @@ export interface RegisterGatewayOptions {
   threadRecipientsOf?: ThreadRecipientsOf | undefined
   onDmDelivered?: OnDmDelivered | undefined
   onReportMessage?: OnReportMessage | undefined
+  onChatReply?: OnChatReply | undefined
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined
   chatMentions?: GatewayChatMentions | undefined

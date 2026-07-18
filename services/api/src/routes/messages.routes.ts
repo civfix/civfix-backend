@@ -92,6 +92,7 @@ export async function registerMessagesRoutes(
             resolveTargets: (input) => resolveMentionTargets(container.getDb().sql, input),
             dmPeerOf,
             listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
+            listReportChatMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
           }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),

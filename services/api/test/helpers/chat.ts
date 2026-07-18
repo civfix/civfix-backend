@@ -119,16 +119,17 @@ export class InMemoryChatRepository implements ChatRepository {
     around?: string,
   ): Promise<ChatHistoryPage> {
     if (around !== undefined) return this.historyAround(cleanupId, around, limit)
-    const list = (this.log.get(cleanupId) ?? []).filter((m) => !m.deleted)
-    const ordered = [...list].reverse().map((m) => this.withReply(cleanupId, m.dto))
-    let start = 0
+    const allDesc = [...(this.log.get(cleanupId) ?? [])].reverse()
+    // Anchor resolves against ALL rows, tombstones included (2.4 review): the anchor is only a keyset
+    // position, so a deleted cursor id still pages correctly instead of falling back to the newest page.
+    let afterAnchor = allDesc
     if (before !== undefined) {
-      const idx = ordered.findIndex((m) => m.id === before)
-      if (idx >= 0) start = idx + 1
+      const idx = allDesc.findIndex((m) => m.dto.id === before)
+      if (idx >= 0) afterAnchor = allDesc.slice(idx + 1)
     }
-    const page = ordered.slice(start, start + limit)
-    const nextIndex = start + limit
-    const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
+    const ordered = afterAnchor.filter((m) => !m.deleted).map((m) => this.withReply(cleanupId, m.dto))
+    const page = ordered.slice(0, limit)
+    const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
   }
 

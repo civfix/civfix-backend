@@ -24,6 +24,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.body": "누군가 제보 토론에서 회원님을 언급했어요.",
 
   "notification.chat_mention.title": "{{name}}님이 회원님을 언급했어요",
+  "notification.chat_reply.title": "{{name}}님이 회원님에게 답장했어요",
 
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "새 메시지",

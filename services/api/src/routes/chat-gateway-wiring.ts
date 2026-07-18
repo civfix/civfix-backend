@@ -11,6 +11,7 @@ import {
   type GatewayDmDeps,
   type IsBlockedEitherWayFn,
   type IsMemberFn,
+  type OnChatReply,
   type OnReportMessage,
   type ThreadRecipientsOf,
 } from "../ws/gateway.js"
@@ -38,11 +39,16 @@ import {
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
+import {
+  makeChatMentionNotifier,
+  makeChatReplyNotifier,
+  makeDmBellNotifier,
+  type ChatBellDeps,
+} from "../services/chat-bells.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { InMemoryChatPresence, RedisChatPresence, type ChatPresence } from "../adapters/chat-presence.js"
 import { InMemoryChatReadState, type ChatReadState } from "../services/threads-service.js"
-import { dmAuthorName, mentionAuthorName, textPreview } from "./chat-notify-copy.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
@@ -195,42 +201,43 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     return members.filter((m) => m !== senderId)
   }
 
-  const chatMentions: GatewayChatMentions | undefined =
-    overrides?.chatMentions ??
-    (useFakeChat || !notificationService
+  // Shared dep set for the P2 2.5 bell notifiers (mention/reply). Only built when the real
+  // notification stack exists (mirrors the pre-2.5 chatMentions gating): under fake-chat there is no
+  // DB for members/mutes and no notificationService.
+  const bellDeps: ChatBellDeps | undefined =
+    useFakeChat || !notificationService
       ? undefined
       : {
-          // Scope rules (report mention-free, dm peer-only, cleanup members-only) are single-sourced in
-          // makeChatMentionResolver, shared with the PATCH /messages edit route.
+          notificationService,
+          isMutedFor,
+          isCleanupMember: isMember,
+          isReportChatMember: (reportId, userId) => getReportChatRepo().isMember(reportId, userId),
+          isBlockedEitherWay,
+          presence,
+          roomKeyFor,
+        }
+
+  const chatMentions: GatewayChatMentions | undefined =
+    overrides?.chatMentions ??
+    (!bellDeps
+      ? undefined
+      : {
+          // Scope rules (report chat-members-only [D11], dm peer-only, cleanup members-only) are
+          // single-sourced in makeChatMentionResolver, shared with the PATCH /messages edit route.
           resolveChatMentions: makeChatMentionResolver({
             resolveTargets: (input) => resolveMentionTargets(container.getDb().sql, input),
             dmPeerOf,
             listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
+            listReportChatMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
           }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
-          notifyChatMention: async (input) => {
-            const { kind, roomId, actorUserId, mentionedUserId, message } = input
-            if (kind === "dm") return
-            if (await isMutedFor(mentionedUserId, "cleanup", roomId)) return
-            if (!(await isMember(roomId, mentionedUserId))) return
-            if (await blocksRepo.isBlockedEitherWay(actorUserId, mentionedUserId)) return
-            if (!(await notificationService.getPrefs(mentionedUserId)).mentions) return
-            {
-              const name = mentionAuthorName(message)
-              const preview = textPreview(message)
-              await notificationService.createNotification(mentionedUserId, {
-                type: "cleanup_chat",
-                titleKey: "notification.chat_mention.title",
-                vars: { name },
-                ...(preview !== null
-                  ? { body: preview }
-                  : { bodyKey: "notification.message.no_preview" }),
-                link: `/cleanups/${roomId}`,
-              })
-            }
-          },
+          notifyChatMention: makeChatMentionNotifier(bellDeps),
         })
+
+  // P2 2.5 reply bell: pierces conversation mutes (chat-bells makeChatReplyNotifier owns the gates);
+  // frame-handler fires it for group rooms and dedupes the mention bell for the same target.
+  const onChatReply: OnChatReply | undefined = bellDeps ? makeChatReplyNotifier(bellDeps) : undefined
 
   let reportRepo: ReturnType<typeof makeDrizzleDiscussionRepository> | undefined
   const getReportRepo = (): ReturnType<typeof makeDrizzleDiscussionRepository> =>
@@ -330,20 +337,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     isBlockedEitherWay,
     userChannel: container.userChannel,
     threadRecipientsOf,
+    // DM delivered bell, now via chat-bells (P2 2.5): carries the reply override — a reply TO the
+    // recipient pierces a muted thread; an unmuted thread keeps its single normal bell.
     onDmDelivered: notificationService
-      ? async (threadId, recipientId, message) => {
-          if (await isMutedFor(recipientId, "dm", threadId)) return
-          const name = dmAuthorName(message)
-          const preview = textPreview(message)
-          await notificationService.createNotification(recipientId, {
-            type: "dm",
-            ...(name !== "" ? { title: name } : { titleKey: "notification.dm.title_fallback" }),
-            ...(preview !== null
-              ? { body: preview }
-              : { bodyKey: "notification.message.no_preview" }),
-            link: `/messages/dm/${threadId}`,
-          })
-        }
+      ? makeDmBellNotifier({ notificationService, isMutedFor })
       : undefined,
     markReadOnOpen: async (kind, id, userId) => {
       const at = new Date()
@@ -357,6 +354,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     },
     chatMentions,
     onReportMessage,
+    onChatReply,
     reportVisible,
     reportSendLimiter,
     // Injected into the socket so member-only send/typing + ack watermark share ONE instance with the

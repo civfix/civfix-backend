@@ -269,22 +269,23 @@ export class InMemoryDmRepository implements DmRepository {
     around?: string,
   ): Promise<ChatHistoryPage> {
     if (around !== undefined) return this.historyAround(threadId, around, limit, viewerUserId)
-    const list = (this.log.get(threadId) ?? []).filter((m) => !m.deleted)
+    const allDesc = [...(this.log.get(threadId) ?? [])].reverse()
+    // Anchor resolves against ALL rows, tombstones included (2.4 review): the anchor is only a keyset
+    // position, so a deleted cursor id still pages correctly instead of falling back to the newest page.
+    let afterAnchor = allDesc
+    if (before !== undefined) {
+      const idx = allDesc.findIndex((m) => m.dto.id === before)
+      if (idx >= 0) afterAnchor = allDesc.slice(idx + 1)
+    }
     // Recompute each item's reactions against the viewer so `mine` is resolved on the history page (the
     // stored DTO's reactions were last computed for whoever toggled). Mirrors the drizzle history path.
-    const ordered = [...list]
-      .reverse()
+    const ordered = afterAnchor
+      .filter((m) => !m.deleted)
       .map((m) =>
         this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
       )
-    let start = 0
-    if (before !== undefined) {
-      const idx = ordered.findIndex((m) => m.id === before)
-      if (idx >= 0) start = idx + 1
-    }
-    const page = ordered.slice(start, start + limit)
-    const nextIndex = start + limit
-    const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
+    const page = ordered.slice(0, limit)
+    const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
   }
 

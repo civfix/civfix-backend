@@ -154,6 +154,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           threadRecipientsOf: opts.threadRecipientsOf,
           onDmDelivered: opts.onDmDelivered,
           onReportMessage: opts.onReportMessage,
+          onChatReply: opts.onChatReply,
           reportVisible: opts.reportVisible,
           reportSendLimiter: sendLimiter,
           chatMentions: opts.chatMentions,

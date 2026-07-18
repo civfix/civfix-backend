@@ -23,6 +23,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.body": "Alguien te mencionó en una discusión de reporte.",
 
   "notification.chat_mention.title": "{{name}} te mencionó",
+  "notification.chat_reply.title": "{{name}} te respondió",
 
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "Nuevo mensaje",

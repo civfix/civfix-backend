@@ -33,8 +33,11 @@ export const en = {
   "notification.report_mention.title": "You were mentioned",
   "notification.report_mention.body": "Someone mentioned you in a report discussion.",
 
-  // @-mention in a cleanup group chat (chat-gateway-wiring notifyChatMention). {{name}} = author handle/name.
+  // @-mention in a cleanup/report group chat (chat-bells makeChatMentionNotifier). {{name}} = author handle/name.
   "notification.chat_mention.title": "{{name}} mentioned you",
+  // Reply to YOUR message in any chat room (chat-bells makeChatReplyNotifier / makeDmBellNotifier,
+  // P2 2.5 — the bell that pierces conversation mutes). {{name}} = author handle/name.
+  "notification.chat_reply.title": "{{name}} replied to you",
   // Direct message delivered bell (chat-gateway-wiring onDmDelivered). {{name}} = sender handle/name.
   // {{preview}} = the caller-truncated message preview (user content); the wrapper is what we localize.
   "notification.dm.title": "{{name}}",

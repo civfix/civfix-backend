@@ -378,9 +378,11 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
 
     let anchor: { createdAt: Date; id: string } | null = null
     if (before !== undefined && isUuid(before)) {
+      // No deleted_at filter (2.4 review): the anchor is used solely for its keyset position, so a
+      // tombstoned cursor id must still page correctly rather than silently falling back to the newest page.
       const rows = await sql<{ created_at: Date; id: string }[]>`
         SELECT created_at, id FROM chat_messages
-        WHERE id = ${before} AND ${anchorScope(scope)} AND deleted_at IS NULL
+        WHERE id = ${before} AND ${anchorScope(scope)}
         LIMIT 1
       `
       if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }

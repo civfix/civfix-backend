@@ -645,14 +645,15 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       if (around !== undefined) return historyAround(threadId, around, limit, viewerUserId)
 
       // Resolve the `before` cursor id to its (created_at) so we can keyset strictly older than it. The
-      // anchor lookup is SCOPED TO THIS thread: a `before` id from another thread (or unknown/soft-deleted)
-      // finds no anchor, so we return the newest page (defensive), and a foreign cursor can never seek into
-      // or leak another thread's ordering. Mirrors the cleanup chat repo (P1-5).
+      // anchor lookup is SCOPED TO THIS thread: a `before` id from another thread (or unknown) finds no
+      // anchor, so we return the newest page (defensive), and a foreign cursor can never seek into or
+      // leak another thread's ordering. Mirrors the cleanup chat repo (P1-5). No deleted_at filter (2.4
+      // review): the anchor is only a keyset position, so a tombstoned cursor id still pages correctly.
       let anchor: { createdAt: Date; id: string } | null = null
       if (before !== undefined) {
         const rows = await sql<{ created_at: Date; id: string }[]>`
           SELECT created_at, id FROM dm_messages
-          WHERE id = ${before} AND thread_id = ${threadId} AND deleted_at IS NULL
+          WHERE id = ${before} AND thread_id = ${threadId}
           LIMIT 1
         `
         if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }
