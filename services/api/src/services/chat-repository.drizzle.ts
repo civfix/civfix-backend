@@ -469,22 +469,31 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     // stays byte-identical. The route schemas reject around+before together, so `before` is undefined here.
     if (around !== undefined) return aroundScoped(scope, around, limit, viewerUserId)
 
-    let anchor: { createdAt: Date; id: string } | null = null
+    // Resolve the `before` cursor to a keyset anchor. The anchor's (created_at, id) tuple deliberately
+    // NEVER leaves the database (a row-valued subquery on the anchor id): round-tripping created_at
+    // through the driver truncates microseconds to milliseconds (postgres-js serializes Date params via
+    // a JS Date), so same-millisecond messages could repeat/skip across pages — the exact bug the group
+    // member-list cursor fixed. The existence pre-check preserves the stale-cursor fallback (an
+    // unknown/foreign-room `before` returns the newest page; without it the NULL-row subquery would
+    // instead produce an all-NULL filter => empty page). No deleted_at filter (2.4 review): the anchor
+    // is used solely for its keyset position, so a tombstoned cursor id must still page correctly.
+    let cursorFilter = sql``
     if (before !== undefined && isUuid(before)) {
-      // No deleted_at filter (2.4 review): the anchor is used solely for its keyset position, so a
-      // tombstoned cursor id must still page correctly rather than silently falling back to the newest page.
-      const rows = await sql<{ created_at: Date; id: string }[]>`
-        SELECT created_at, id FROM chat_messages
+      const anchorRows = await sql<{ id: string }[]>`
+        SELECT id FROM chat_messages
         WHERE id = ${before} AND ${anchorScope(scope)}
         LIMIT 1
       `
-      if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }
+      if (anchorRows[0]) {
+        cursorFilter = sql`
+          AND (cm.created_at, cm.id) < (
+            SELECT a.created_at, a.id
+            FROM chat_messages a
+            WHERE a.id = ${before} AND a.${sql(scope.column)} = ${scope.id}
+          )
+        `
+      }
     }
-
-    const cursorFilter =
-      anchor !== null
-        ? sql`AND (cm.created_at, cm.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-        : sql``
 
     const isReport = scope.column === "report_id"
     const [rows, reportCity] = await Promise.all([
@@ -528,13 +537,20 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
   ): Promise<ChatHistoryPage> {
     // Non-uuid ids can never match; short-circuit to the same 404 (avoids a 22P02 cast error -> 500).
     if (!isUuid(around)) throw AppError.notFound("Message not found")
-    const anchorRows = await sql<{ created_at: Date; id: string }[]>`
-      SELECT created_at, id FROM chat_messages
+    const anchorRows = await sql<{ id: string }[]>`
+      SELECT id FROM chat_messages
       WHERE id = ${around} AND ${anchorScope(scope)}
       LIMIT 1
     `
-    const anchor = anchorRows[0]
-    if (!anchor) throw AppError.notFound("Message not found")
+    if (!anchorRows[0]) throw AppError.notFound("Message not found")
+    // The anchor tuple stays entirely in SQL (row-valued subquery) — see historyScoped: a driver
+    // round-trip truncates created_at's microseconds, which here would eject the target from its own
+    // <=-window whenever its timestamp carries sub-millisecond precision.
+    const anchorTuple = sql`(
+      SELECT a.created_at, a.id
+      FROM chat_messages a
+      WHERE a.id = ${around} AND a.${sql(scope.column)} = ${scope.id}
+    )`
 
     const limits = aroundLimits(limit)
     const isReport = scope.column === "report_id"
@@ -546,7 +562,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         LEFT JOIN users u ON u.id = cm.sender_id
         WHERE ${rowScope(scope)}
           AND (cm.deleted_at IS NULL OR cm.id = ${around})
-          AND (cm.created_at, cm.id) <= (${anchor.created_at}, ${anchor.id}::uuid)
+          AND (cm.created_at, cm.id) <= ${anchorTuple}
         ORDER BY cm.created_at DESC, cm.id DESC
         LIMIT ${limits.olderLimit + 1}
       `,
@@ -556,7 +572,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         LEFT JOIN users u ON u.id = cm.sender_id
         WHERE ${rowScope(scope)}
           AND cm.deleted_at IS NULL
-          AND (cm.created_at, cm.id) > (${anchor.created_at}, ${anchor.id}::uuid)
+          AND (cm.created_at, cm.id) > ${anchorTuple}
         ORDER BY cm.created_at ASC, cm.id ASC
         LIMIT ${limits.newerLimit + 1}
       `,

@@ -56,6 +56,8 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
     case "cleanup_chat":
     case "cleanup_reminder":
     case "cleanup_cancelled":
+    case "group_chat":
+      // group_chat (P4 4.5, plan D8) rides the chat-message pref until a dedicated toggle exists.
       return prefs.cleanupChat
     case "new_follower":
       return prefs.follows

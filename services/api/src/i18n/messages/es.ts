@@ -28,6 +28,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "Nuevo mensaje",
   "notification.report_chat.title_fallback": "Nuevo mensaje",
+  "notification.group_chat.title_fallback": "Nuevo mensaje",
 
   "notification.message.no_preview": "Te envió un mensaje",
 

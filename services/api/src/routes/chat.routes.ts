@@ -26,6 +26,7 @@ import {
   type ReportVisibleFn,
 } from "../ws/gateway.js"
 import {
+  makeDrizzleGroupThreadsSource,
   makeDrizzleReportThreadsSource,
   makeDrizzleThreadsRepository,
 } from "../services/threads-repository.drizzle.js"
@@ -38,6 +39,7 @@ import {
   THREADS_DEFAULT_LIMIT,
   type ChatReadState,
   type DmThreadsSource,
+  type GroupThreadsSource,
   type ReportThreadsSource,
   type ThreadsRepository,
 } from "../services/threads-service.js"
@@ -63,6 +65,8 @@ export interface ChatGatewayOverrides {
   reportChat?: ReportChatRepository
   conversationMutes?: ConversationMutesRepository
   reportThreadsSource?: ReportThreadsSource
+  /** P4 4.5: the group half of the threads inbox (absent => no group threads, like the report seam). */
+  groupThreadsSource?: GroupThreadsSource
   /** P4: chat_groups management repo (group routes + the powers resolver's group lane). */
   groups?: ChatGroupRepository
   /**
@@ -105,6 +109,9 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     const reportThreadsSource: ReportThreadsSource | undefined = overrides
       ? overrides.reportThreadsSource
       : makeDrizzleReportThreadsSource(container.getDb().sql)
+    const groupThreadsSource: GroupThreadsSource | undefined = overrides
+      ? overrides.groupThreadsSource
+      : makeDrizzleGroupThreadsSource(container.getDb().sql)
     const mutes: ConversationMutesRepository | undefined = overrides
       ? overrides.conversationMutes
       : makeConversationMutesRepository(container.getDb().sql)
@@ -113,6 +120,7 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
       readState: wiring.readState,
       dm: dmThreadsSource,
       report: reportThreadsSource,
+      group: groupThreadsSource,
       mutes,
     })
     const result = await threads.listThreads(userId, limit)

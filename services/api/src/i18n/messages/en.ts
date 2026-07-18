@@ -45,6 +45,7 @@ export const en = {
   // Report-chat member bell (report-chat-notifier). Title fallback for a SYSTEM / author-less report
   // message (e.g. a status/timeline event) that has no sender name to show.
   "notification.report_chat.title_fallback": "New message",
+  "notification.group_chat.title_fallback": "New message",
   // Body shown when the message has no text preview (a non-text frame: share_pin / rsvp / task_complete).
   "notification.message.no_preview": "Sent you a message",
 

@@ -154,15 +154,46 @@ export interface ReportThreadsSource {
 }
 
 /**
+ * A per-thread aggregate row for one of the viewer's GROUP chats (member of chat_group_members, P4).
+ * Same watermark/unread contract as the report family: unread = messages after
+ * GREATEST(joined_at, last_read_at) not authored by the viewer. NOTE: the group's avatar media does
+ * NOT ride here — MessageThreadDTO has no avatar field (known UI limitation; the conversation header
+ * fetches the group for it).
+ */
+export interface GroupThreadAggregateView {
+  groupId: string
+  /** The group's display name (chat_groups.name). */
+  title: string
+  members: number
+  unread: number
+  last: {
+    body: string | null
+    createdAt: Date
+    senderId: string | null
+  } | null
+  /** Newest-activity baseline when the room has no messages (the viewer's joined_at). */
+  joinedAt: Date
+}
+
+/**
+ * The group half of the inbox (P4 4.5): the viewer's chat groups (chat_group_members rows), each with
+ * name + member count + last message + unread computed in one pass. Optional on the service like the
+ * dm/report sources; `muted` is stamped by the service from the shared conversation-mutes seam.
+ */
+export interface GroupThreadsSource {
+  listGroupThreadsFor(userId: string, limit?: number): Promise<GroupThreadAggregateView[]>
+}
+
+/**
  * Batch per-conversation mute seam (D-E1's conversation_mutes repo). For a family's `roomIds` (all the
  * same `roomKind`), returns the subset the viewer has muted. Optional on the service: when absent the
  * inbox fails open (every thread's `muted` is false). The service issues one call per family
- * (cleanup / dm / report), each short-circuiting on an empty id list.
+ * (cleanup / dm / report / group), each short-circuiting on an empty id list.
  */
 export interface ThreadsMutesSource {
   mutedRoomIdsFor(
     userId: string,
-    roomKind: "cleanup" | "dm" | "report",
+    roomKind: "cleanup" | "dm" | "report" | "group",
     roomIds: string[],
   ): Promise<Set<string>>
 }
@@ -180,6 +211,8 @@ export interface ThreadsServiceDeps {
   dm?: DmThreadsSource
   /** Optional report-chat thread source: when wired, the inbox also merges the viewer's report chats. */
   report?: ReportThreadsSource
+  /** Optional group thread source (P4 4.5): when wired, the inbox also merges the viewer's groups. */
+  group?: GroupThreadsSource
   /**
    * Optional per-conversation mute source (conversation_mutes). When wired, the service stamps each
    * thread's real `muted` state via one batch lookup per family. When absent, `muted` is false for all
@@ -223,23 +256,24 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
     ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }> {
       const aggregates = await deps.repo.listThreadsFor(userId, limit)
 
-      // Fetch the report + dm aggregate rows up front so the three per-family mute lookups can run
+      // Fetch the report + dm + group aggregate rows up front so the per-family mute lookups can run
       // before any DTO is built (each DTO stamps its real `muted` from the family's muted set below).
       const dmAggregates = deps.dm ? await deps.dm.listDmThreadsFor(userId, limit) : []
       const reportAggregates = deps.report ? await deps.report.listReportThreadsFor(userId, limit) : []
+      const groupAggregates = deps.group ? await deps.group.listGroupThreadsFor(userId, limit) : []
 
       // Real per-conversation mute (conversation_mutes): one batch lookup per family, keyed by the
       // family's room ids (cleanup id / dm thread id / report id). Fails open when no mute source is
       // wired — every thread is treated as un-muted rather than erroring the whole inbox. Each lookup
       // short-circuits on an empty id list so an empty family costs no round-trip.
       const mutedIdsFor = async (
-        roomKind: "cleanup" | "dm" | "report",
+        roomKind: "cleanup" | "dm" | "report" | "group",
         roomIds: string[],
       ): Promise<Set<string>> =>
         deps.mutes && roomIds.length > 0
           ? await deps.mutes.mutedRoomIdsFor(userId, roomKind, roomIds)
           : new Set<string>()
-      const [mutedCleanup, mutedDm, mutedReport] = await Promise.all([
+      const [mutedCleanup, mutedDm, mutedReport, mutedGroup] = await Promise.all([
         mutedIdsFor(
           "cleanup",
           aggregates.map((a) => a.cleanupId),
@@ -251,6 +285,10 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
         mutedIdsFor(
           "report",
           reportAggregates.map((a) => a.reportId),
+        ),
+        mutedIdsFor(
+          "group",
+          groupAggregates.map((a) => a.groupId),
         ),
       ])
 
@@ -358,8 +396,33 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
         },
       )
 
+      // Group threads (when the source is wired, P4 4.5). listGroupThreadsFor already scoped to the
+      // viewer's chat_group_members rows and pre-computed members/unread/last + the group name; we just
+      // project it and stamp `muted` from the group muted set. senderId is null-safe like the report
+      // family (group rooms have no system rows today, but the shape allows them).
+      const groupEntries = groupAggregates.map(
+        (agg): { dto: MessageThreadDTO; activity: number } => {
+          const lastFromMe = agg.last !== null && agg.last.senderId === userId
+          return {
+            dto: {
+              id: agg.groupId,
+              kind: "group",
+              refId: agg.groupId,
+              title: agg.title,
+              last: agg.last !== null ? (agg.last.body ?? "") : null,
+              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+              lastFromMe,
+              unread: agg.unread,
+              members: agg.members,
+              muted: mutedGroup.has(agg.groupId),
+            },
+            activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
+          }
+        },
+      )
+
       // Merge all kinds, most-recent-activity first, capped at `limit` (single page for Phase 1).
-      const merged = [...cleanupEntries, ...dmEntries, ...reportEntries].sort(
+      const merged = [...cleanupEntries, ...dmEntries, ...reportEntries, ...groupEntries].sort(
         (a, b) => b.activity - a.activity,
       )
       const items = merged.slice(0, limit).map((e) => e.dto)

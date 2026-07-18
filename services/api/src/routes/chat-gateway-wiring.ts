@@ -12,6 +12,7 @@ import {
   type IsBlockedEitherWayFn,
   type IsMemberFn,
   type OnChatReply,
+  type OnGroupMessage,
   type OnReportMessage,
   type ThreadRecipientsOf,
 } from "../ws/gateway.js"
@@ -44,6 +45,7 @@ import {
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
+import { makeGroupChatNotifier } from "../services/group-chat-notifier.js"
 import {
   makeChatMentionNotifier,
   makeChatReplyNotifier,
@@ -173,7 +175,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   // and swallows lookup errors so a mute-store hiccup never suppresses/breaks a bell.
   const isMutedFor = async (
     userId: string,
-    kind: "dm" | "cleanup" | "report",
+    kind: "dm" | "cleanup" | "report" | "group",
     roomId: string,
   ): Promise<boolean> => {
     if (!conversationMutes) return false
@@ -184,10 +186,16 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     }
   }
 
-  const clearConversationBell = async (kind: "dm" | "cleanup", id: string, userId: string): Promise<void> => {
+  const clearConversationBell = async (
+    kind: "dm" | "cleanup" | "group",
+    id: string,
+    userId: string,
+  ): Promise<void> => {
     if (!notificationService) return
     try {
       if (kind === "dm") await notificationService.clearByTypeAndLink(userId, "dm", `/messages/dm/${id}`)
+      else if (kind === "group")
+        await notificationService.clearByTypeAndLink(userId, "group_chat", `/messages/group/${id}`)
       else await notificationService.clearByTypeAndLink(userId, "cleanup_chat", `/cleanups/${id}`)
     } catch (err) {
       app.log.warn({ err, kind, id, userId }, "read: clear conversation notifications failed (suppressed)")
@@ -246,6 +254,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           isMutedFor,
           isCleanupMember: isMember,
           isReportChatMember: (reportId, userId) => getReportChatRepo().isMember(reportId, userId),
+          // Fail closed when the group repo is unwired (offline harness): a group mention/reply then
+          // never bells, mirroring authorizeRoom's fail-closed stance for group frames.
+          isChatGroupMember: async (groupId, userId) =>
+            (await getGroupsRepo()?.roleOf(groupId, userId) ?? null) !== null,
           isBlockedEitherWay,
           presence,
           roomKeyFor,
@@ -318,6 +330,25 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
         })
       : undefined
 
+  // Per-member group-chat bell (P4 4.5, the D-E2 twin over chat_group_members). Same gating stance as
+  // notifyReportChatMembers, plus the group repo must be wired (offline harnesses leave it undefined,
+  // where onGroupMessage is then absent and group sends simply raise no fan-out bells).
+  const notifyGroupChatMembers =
+    notificationService && conversationMutes && groupWired
+      ? makeGroupChatNotifier({
+          notificationService,
+          groupRepo: { listMemberIds: (groupId) => getGroupsRepo()!.listMemberIds(groupId) },
+          isMuted: (userId, roomId) => isMutedFor(userId, "group", roomId),
+          presence,
+          roomKeyFor,
+        })
+      : undefined
+  const onGroupMessage: OnGroupMessage | undefined = notifyGroupChatMembers
+    ? async (groupId, message) => {
+        void notifyGroupChatMembers(groupId, message).catch(() => {})
+      }
+    : undefined
+
   let reportOutboundMail: ReturnType<typeof makeOutboundMailService> | undefined
   let reportForwardAudit: ReportForwardAudit | undefined
   const onReportMessage: OnReportMessage | undefined = useFakeChat
@@ -388,13 +419,15 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
         await readState.markRead(id, userId, at)
         await clearConversationBell("cleanup", id, userId)
       } else if (kind === "group") {
-        // P4 4.4: opening a group room marks it read (member-scoped in the repo's WHERE). No bell
-        // clear yet — group notifications land in 4.5.
+        // P4 4.4/4.5: opening a group room marks it read (member-scoped in the repo's WHERE) and
+        // clears the room's group_chat bells (the dm/cleanup clear-on-open pattern).
         await getGroupsRepo()?.markRead(id, userId, at)
+        await clearConversationBell("group", id, userId)
       }
     },
     chatMentions,
     onReportMessage,
+    onGroupMessage,
     onChatReply,
     reportVisible,
     reportSendLimiter,

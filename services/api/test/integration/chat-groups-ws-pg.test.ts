@@ -542,5 +542,48 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       })
       expect(wrongRoom.statusCode).toBe(404)
     })
+
+    it("POST /messages/reactions on a TOMBSTONE 404s and inserts no orphan reaction row (group + dm)", async () => {
+      // Group branch: sender tombstones their own message, a member then reacts -> 404, zero rows.
+      const senderId = await newUser("Tomb Sender")
+      const reactorId = await newUser("Tomb Reactor")
+      const groupId = await newGroup(senderId, [reactorId])
+      const msg = await chat().insertMessage(
+        { cleanupId: groupId, roomKind: "group", userId: senderId, body: "soon gone" },
+        randomUUID(),
+      )
+      expect(await chat().softDeleteGroup(groupId, msg.id, senderId)).not.toBeNull()
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/messages/reactions",
+        headers: { authorization: `Bearer ${await token(reactorId)}`, "x-client": "mobile" },
+        payload: { roomKind: "group", roomId: groupId, messageId: msg.id, emoji: "heart" },
+      })
+      expect(res.statusCode).toBe(404)
+      const orphaned = await h.sql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count FROM chat_message_reactions WHERE message_id = ${msg.id}
+      `
+      expect(orphaned[0]!.count).toBe(0)
+
+      // DM branch: same gate on the dm lane of the unified route.
+      const dmRepo = makeDrizzleDmRepository(h.sql)
+      const peerId = await newUser("Tomb DM Peer")
+      const thread = await dmRepo.openOrCreateThread(senderId, peerId)
+      const dmMsg = await dmRepo.persist({ threadId: thread.id, senderId, body: "dm soon gone" })
+      expect(await dmRepo.softDelete(thread.id, dmMsg.id, senderId)).not.toBeNull()
+
+      const dmRes = await app.inject({
+        method: "POST",
+        url: "/v1/messages/reactions",
+        headers: { authorization: `Bearer ${await token(peerId)}`, "x-client": "mobile" },
+        payload: { roomKind: "dm", roomId: thread.id, messageId: dmMsg.id, emoji: "heart" },
+      })
+      expect(dmRes.statusCode).toBe(404)
+      const dmOrphaned = await h.sql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count FROM chat_message_reactions WHERE message_id = ${dmMsg.id}
+      `
+      expect(dmOrphaned[0]!.count).toBe(0)
+    })
   })
 })

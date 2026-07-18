@@ -344,13 +344,19 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     viewerUserId: string | null,
   ): Promise<ChatHistoryPage> {
     if (!isUuid(around)) throw AppError.notFound("Message not found")
-    const anchorRows = await sql<{ created_at: Date; id: string }[]>`
-      SELECT created_at, id FROM dm_messages
+    const anchorRows = await sql<{ id: string }[]>`
+      SELECT id FROM dm_messages
       WHERE id = ${around} AND thread_id = ${threadId}
       LIMIT 1
     `
-    const anchor = anchorRows[0]
-    if (!anchor) throw AppError.notFound("Message not found")
+    if (!anchorRows[0]) throw AppError.notFound("Message not found")
+    // Anchor tuple stays in SQL (see history's cursor comment): a ms-truncated round-trip would eject
+    // the target from its own <=-window whenever its timestamp carries sub-millisecond precision.
+    const anchorTuple = sql`(
+      SELECT a.created_at, a.id
+      FROM dm_messages a
+      WHERE a.id = ${around} AND a.thread_id = ${threadId}
+    )`
 
     const limits = aroundLimits(limit)
     // Fetch +1 on EACH side so has-more resolves independently per end.
@@ -361,7 +367,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         JOIN users u ON u.id = dm.sender_id
         WHERE dm.thread_id = ${threadId}
           AND (dm.deleted_at IS NULL OR dm.id = ${around})
-          AND (dm.created_at, dm.id) <= (${anchor.created_at}, ${anchor.id}::uuid)
+          AND (dm.created_at, dm.id) <= ${anchorTuple}
         ORDER BY dm.created_at DESC, dm.id DESC
         LIMIT ${limits.olderLimit + 1}
       `,
@@ -371,7 +377,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         JOIN users u ON u.id = dm.sender_id
         WHERE dm.thread_id = ${threadId}
           AND dm.deleted_at IS NULL
-          AND (dm.created_at, dm.id) > (${anchor.created_at}, ${anchor.id}::uuid)
+          AND (dm.created_at, dm.id) > ${anchorTuple}
         ORDER BY dm.created_at ASC, dm.id ASC
         LIMIT ${limits.newerLimit + 1}
       `,
@@ -668,25 +674,30 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       // stays untouched. The route schema rejects around+before together, so `before` is undefined here.
       if (around !== undefined) return historyAround(threadId, around, limit, viewerUserId)
 
-      // Resolve the `before` cursor id to its (created_at) so we can keyset strictly older than it. The
-      // anchor lookup is SCOPED TO THIS thread: a `before` id from another thread (or unknown) finds no
-      // anchor, so we return the newest page (defensive), and a foreign cursor can never seek into or
-      // leak another thread's ordering. Mirrors the cleanup chat repo (P1-5). No deleted_at filter (2.4
+      // Resolve the `before` cursor id to a keyset anchor. The anchor lookup is SCOPED TO THIS thread:
+      // a `before` id from another thread (or unknown) finds no anchor, so we return the newest page
+      // (defensive), and a foreign cursor can never seek into or leak another thread's ordering. The
+      // anchor's (created_at, id) tuple deliberately NEVER leaves the database (row-valued subquery):
+      // a driver round-trip truncates created_at's microseconds, so same-millisecond messages could
+      // repeat/skip across pages. Mirrors the cleanup chat repo (P1-5). No deleted_at filter (2.4
       // review): the anchor is only a keyset position, so a tombstoned cursor id still pages correctly.
-      let anchor: { createdAt: Date; id: string } | null = null
+      let cursorFilter = sql``
       if (before !== undefined) {
-        const rows = await sql<{ created_at: Date; id: string }[]>`
-          SELECT created_at, id FROM dm_messages
+        const anchorRows = await sql<{ id: string }[]>`
+          SELECT id FROM dm_messages
           WHERE id = ${before} AND thread_id = ${threadId}
           LIMIT 1
         `
-        if (rows[0]) anchor = { createdAt: rows[0].created_at, id: rows[0].id }
+        if (anchorRows[0]) {
+          cursorFilter = sql`
+            AND (dm.created_at, dm.id) < (
+              SELECT a.created_at, a.id
+              FROM dm_messages a
+              WHERE a.id = ${before} AND a.thread_id = ${threadId}
+            )
+          `
+        }
       }
-
-      const cursorFilter =
-        anchor !== null
-          ? sql`AND (dm.created_at, dm.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-          : sql``
 
       const rows = await sql<DmRowSelect[]>`
         SELECT ${dmColumns}

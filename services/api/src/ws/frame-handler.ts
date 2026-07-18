@@ -274,6 +274,7 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   fireDmBell(deps, kind, id, userId, roomKey, message)
   fireReplyBell(deps, kind, id, userId, replyTargetUserId, message)
   fireReportCityForward(deps, kind, id, message)
+  fireGroupFanOut(deps, kind, id, message)
 }
 
 /**
@@ -301,6 +302,21 @@ function fireReplyBell(
 ): void {
   if (kind === "dm" || targetUserId === null || !deps.onChatReply) return
   void deps.onChatReply({ kind, roomId, actorUserId, targetUserId, message }).catch(() => {})
+}
+
+/**
+ * Fire the P4 4.5 group member bell fan-out (group-chat-notifier via the wiring's onGroupMessage) —
+ * the group twin of fireReportCityForward's onReportMessage hook. Fire-and-forget like every other
+ * post-send effect; the notifier itself owns the sender/present/muted/reply-target/mention dedupe.
+ */
+function fireGroupFanOut(
+  deps: GatewayDeps,
+  kind: RoomKind,
+  groupId: string,
+  message: ChatMessageDTO,
+): void {
+  if (kind !== "group" || !deps.onGroupMessage) return
+  void deps.onGroupMessage(groupId, message).catch(() => {})
 }
 
 function fireReportCityForward(

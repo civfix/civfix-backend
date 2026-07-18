@@ -262,6 +262,10 @@ export async function registerMessagesRoutes(
         if (await blocksRepo().isBlockedEitherWay(userId, peer)) {
           throw AppError.forbidden(CHAT_REACTION_FORBIDDEN)
         }
+        // Tombstone gate (4.4 review, AFTER the permission check so it leaks nothing to outsiders):
+        // the legacy per-room toggles 404 a deleted message BEFORE writing (their re-read filters
+        // deleted_at); without this the room-agnostic toggle would insert an orphan reaction row.
+        if (meta.deletedAt !== null) throw AppError.notFound("Message not found")
         await dmRepo().toggleReaction(messageId, userId, emoji)
         updated = await dmRepo().findMessage(roomId, messageId, userId)
       } else {
@@ -281,6 +285,9 @@ export async function registerMessagesRoutes(
               ? await isGroupMember(roomId, userId)
               : await isCleanupMember(roomId, userId)
         if (!allowed) throw AppError.forbidden(CHAT_REACTION_FORBIDDEN)
+        // Tombstone gate (4.4 review): 404 BEFORE the toggle so a reaction to a deleted message never
+        // inserts an orphan chat_message_reactions row (legacy per-room toggle parity).
+        if (meta.deletedAt !== null) throw AppError.notFound("Message not found")
         await getChatRepo().toggleReaction(messageId, userId, emoji)
         updated =
           roomKind === "report"

@@ -52,6 +52,15 @@ export type OnReportMessage = (
 ) => Promise<void>
 
 /**
+ * P4 4.5: post-send effect for GROUP rooms — the member bell fan-out (group-chat-notifier), fired
+ * fire-and-forget from frame-handler after a group send, mirroring onReportMessage for report rooms.
+ */
+export type OnGroupMessage = (
+  groupId: string,
+  message: import("@civfix/shared").ChatMessageDTO,
+) => Promise<void>
+
+/**
  * P2 2.5 reply bell seam: fired after a send whose message replies to another user's message.
  * `targetUserId` is the replied-to message's SENDER (from the hydrated replyTo preview — never the
  * author themself, never a sender-less SYSTEM target; frame-handler filters those). Implemented by
@@ -126,6 +135,7 @@ export interface GatewayDeps {
   threadRecipientsOf?: ThreadRecipientsOf | undefined
   onDmDelivered?: OnDmDelivered | undefined
   onReportMessage?: OnReportMessage | undefined
+  onGroupMessage?: OnGroupMessage | undefined
   onChatReply?: OnChatReply | undefined
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined
@@ -160,6 +170,7 @@ export interface RegisterGatewayOptions {
   threadRecipientsOf?: ThreadRecipientsOf | undefined
   onDmDelivered?: OnDmDelivered | undefined
   onReportMessage?: OnReportMessage | undefined
+  onGroupMessage?: OnGroupMessage | undefined
   onChatReply?: OnChatReply | undefined
   reportVisible?: ReportVisibleFn | undefined
   reportSendLimiter?: RateLimiter | undefined

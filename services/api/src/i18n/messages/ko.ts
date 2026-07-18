@@ -29,6 +29,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "새 메시지",
   "notification.report_chat.title_fallback": "새 메시지",
+  "notification.group_chat.title_fallback": "새 메시지",
 
   "notification.message.no_preview": "메시지를 보냈어요",
 

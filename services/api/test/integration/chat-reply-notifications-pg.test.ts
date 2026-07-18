@@ -24,6 +24,7 @@ import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzl
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
+import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
@@ -101,6 +102,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const mutes = makeConversationMutesRepository(h.sql)
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
     const reportChatRepo = makeReportChatRepository(h.sql)
+    const groups = makeChatGroupRepository(h.sql)
     const blocks = makeDrizzleBlocksRepository(h.sql)
     return {
       notificationService: makeNotificationService({
@@ -110,6 +112,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       isMutedFor: (userId, kind, roomId) => mutes.isMuted(userId, kind, roomId),
       isCleanupMember: (cleanupId, userId) => cleanupRepo.isMember(cleanupId, userId),
       isReportChatMember: (reportId, userId) => reportChatRepo.isMember(reportId, userId),
+      isChatGroupMember: async (groupId, userId) => (await groups.roleOf(groupId, userId)) !== null,
       isBlockedEitherWay: (a, b) => blocks.isBlockedEitherWay(a, b),
       roomKeyFor,
     }

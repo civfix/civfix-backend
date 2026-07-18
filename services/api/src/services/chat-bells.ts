@@ -3,10 +3,11 @@
  * gate logic is single-sourced and testable (unit + pg-integration) instead of living in inline
  * closures. Three factories, one per bell shape:
  *
- *   - makeChatMentionNotifier — the @-mention bell for GROUP rooms (cleanup + report; dm is a no-op:
- *     a dm message already bells via the delivered-bell). Mute-gated, membership-gated, block-gated,
- *     and `prefs.mentions`-gated. Report rooms bell as `report_chat` -> /messages/report/:id, cleanup
- *     rooms as `cleanup_chat` -> /cleanups/:id (D11 re-enables report mentions; the resolver in
+ *   - makeChatMentionNotifier — the @-mention bell for GROUP rooms (cleanup + report + group; dm is a
+ *     no-op: a dm message already bells via the delivered-bell). Mute-gated, membership-gated,
+ *     block-gated, and `prefs.mentions`-gated. Report rooms bell as `report_chat` ->
+ *     /messages/report/:id, cleanup rooms as `cleanup_chat` -> /cleanups/:id, group rooms (P4 4.5) as
+ *     `group_chat` -> /messages/group/:id (D11 re-enables report mentions; the resolver in
  *     chat-mention-resolver.ts scopes WHO can be mentioned).
  *   - makeChatReplyNotifier — the reply bell for GROUP rooms: when a sent message replies to YOUR
  *     message you get a bell EVEN IF you muted the room. This is deliberately the ONE bell path with
@@ -24,6 +25,9 @@
  *   - report-room member fan-out           -> report-chat-notifier excludes the reply target and the
  *                                             @-mentioned members from the fan-out set (they get the
  *                                             richer reply/mention bell instead).
+ *   - group-room member fan-out (P4 4.5)   -> group-chat-notifier excludes the reply target and the
+ *                                             @-mentioned members from the fan-out set (same shape as
+ *                                             the report fan-out; one bell per member per message).
  *   - dm reply vs dm delivered bell        -> one call site (makeDmBellNotifier), one bell by
  *                                             construction.
  */
@@ -34,21 +38,23 @@ import { dmAuthorName, mentionAuthorName, textPreview } from "../routes/chat-not
 import type { GatewayChatMentions, OnChatReply, OnDmDelivered } from "../ws/types.js"
 
 /** Notification type + deep link for a group-room bell, per room kind. */
-function groupBellRoute(kind: "cleanup" | "report", roomId: string): {
-  type: "cleanup_chat" | "report_chat"
+function groupBellRoute(kind: "cleanup" | "report" | "group", roomId: string): {
+  type: "cleanup_chat" | "report_chat" | "group_chat"
   link: string
 } {
-  return kind === "report"
-    ? { type: "report_chat", link: `/messages/report/${roomId}` }
-    : { type: "cleanup_chat", link: `/cleanups/${roomId}` }
+  if (kind === "report") return { type: "report_chat", link: `/messages/report/${roomId}` }
+  if (kind === "group") return { type: "group_chat", link: `/messages/group/${roomId}` }
+  return { type: "cleanup_chat", link: `/cleanups/${roomId}` }
 }
 
 export interface ChatBellDeps {
   notificationService: Pick<NotificationService, "createNotification" | "getPrefs">
   /** Best-effort "has this user muted this room?" (absent store / lookup error => false). */
-  isMutedFor(userId: string, kind: "dm" | "cleanup" | "report", roomId: string): Promise<boolean>
+  isMutedFor(userId: string, kind: "dm" | "cleanup" | "report" | "group", roomId: string): Promise<boolean>
   isCleanupMember(cleanupId: string, userId: string): Promise<boolean>
   isReportChatMember(reportId: string, userId: string): Promise<boolean>
+  /** P4 4.5: chat_group_members membership (fail-closed false when the group repo is unwired). */
+  isChatGroupMember(groupId: string, userId: string): Promise<boolean>
   isBlockedEitherWay(a: string, b: string): Promise<boolean>
   /** Optional presence source; when absent no one is treated as present. */
   presence?: { online(roomKey: string): Promise<string[]> } | undefined
@@ -58,13 +64,13 @@ export interface ChatBellDeps {
 /** True when `userId` is a member of the group room (kind-aware). */
 async function isGroupMember(
   deps: ChatBellDeps,
-  kind: "cleanup" | "report",
+  kind: "cleanup" | "report" | "group",
   roomId: string,
   userId: string,
 ): Promise<boolean> {
-  return kind === "report"
-    ? deps.isReportChatMember(roomId, userId)
-    : deps.isCleanupMember(roomId, userId)
+  if (kind === "report") return deps.isReportChatMember(roomId, userId)
+  if (kind === "group") return deps.isChatGroupMember(roomId, userId)
+  return deps.isCleanupMember(roomId, userId)
 }
 
 /**
@@ -74,8 +80,8 @@ async function isGroupMember(
 export function makeChatMentionNotifier(deps: ChatBellDeps): GatewayChatMentions["notifyChatMention"] {
   return async (input) => {
     const { kind, roomId, actorUserId, mentionedUserId, message } = input
-    // dm bells ride makeDmBellNotifier; group-room bells land in P4 Task 4.5 (no-op until then).
-    if (kind === "dm" || kind === "group") return
+    // dm bells ride makeDmBellNotifier (a dm message already bells via the delivered bell).
+    if (kind === "dm") return
     if (await deps.isMutedFor(mentionedUserId, kind, roomId)) return
     if (!(await isGroupMember(deps, kind, roomId, mentionedUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, mentionedUserId)) return
@@ -102,8 +108,8 @@ export function makeChatMentionNotifier(deps: ChatBellDeps): GatewayChatMentions
 export function makeChatReplyNotifier(deps: ChatBellDeps): OnChatReply {
   return async (input) => {
     const { kind, roomId, actorUserId, targetUserId, message } = input
-    // dm replies ride makeDmBellNotifier; group-room bells land in P4 Task 4.5 (no-op until then).
-    if (kind === "dm" || kind === "group") return
+    // dm replies ride makeDmBellNotifier (the single dm bell site owns dm reply flavor).
+    if (kind === "dm") return
     if (!(await isGroupMember(deps, kind, roomId, targetUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, targetUserId)) return
     // Reply urgency is mention-class: the mentions pref gates the bell entirely (row + push); push
