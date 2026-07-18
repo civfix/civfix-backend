@@ -118,6 +118,7 @@ export interface SocialService {
   getProfile(id: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }>
   getProfileByHandle(handle: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }>
   getMyProfile(viewerId: string): Promise<{ profile: UserProfileDTO }>
+  resolveHandleToId(handle: string): Promise<string>
 }
 
 export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
@@ -293,6 +294,12 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       const view = await deps.repo.findPersonById(viewerId)
       if (!view) throw AppError.notFound("Person not found")
       return { profile: await buildProfile(view, { userId: viewerId }, true) }
+    },
+
+    async resolveHandleToId(handle: string): Promise<string> {
+      const view = await deps.repo.findPersonByHandle(handle)
+      if (!view) throw AppError.notFound("Person not found")
+      return view.id
     },
   }
 }

@@ -22,7 +22,7 @@ import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
 import type { DiscussionServiceOverrides } from "./routes/report-chat.routes.js"
-import type { SocialServiceOverrides } from "./routes/social.routes.js"
+import type { SocialServiceOverrides, UserActivityOverride } from "./routes/social.routes.js"
 import type { VolunteerHoursOverrides } from "./routes/volunteer-hours.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
 import type { ConversationMutesOverrides } from "./routes/conversations.routes.js"
@@ -53,6 +53,7 @@ export interface BuildServerOptions {
   chatOverrides?: ChatGatewayOverrides
   discussionOverrides?: DiscussionServiceOverrides
   socialOverrides?: SocialServiceOverrides
+  userActivityOverride?: UserActivityOverride
   volunteerOverrides?: VolunteerHoursOverrides
   notificationOverrides?: NotificationServiceOverrides
   conversationMutesOverrides?: ConversationMutesOverrides
@@ -69,6 +70,7 @@ const OVERRIDE_KEYS = [
   "chatOverrides",
   "discussionOverrides",
   "socialOverrides",
+  "userActivityOverride",
   "volunteerOverrides",
   "notificationOverrides",
   "conversationMutesOverrides",

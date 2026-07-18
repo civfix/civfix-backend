@@ -25,7 +25,10 @@ import {
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeNotificationService } from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
-import { makeUserActivityService } from "../services/user-activity-service.js"
+import {
+  makeUserActivityService,
+  type UserActivityRepository,
+} from "../services/user-activity-service.js"
 import { makeDrizzleUserActivityRepository } from "../services/user-activity-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
@@ -36,15 +39,22 @@ export interface SocialServiceOverrides {
   notifier?: SocialNotifier
 }
 
+export interface UserActivityOverride {
+  repo: UserActivityRepository
+}
+
 declare module "fastify" {
   interface FastifyInstance {
     socialOverrides?: SocialServiceOverrides
+    userActivityOverride?: UserActivityOverride
   }
 }
 
 const PersonIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(40) }).strict()
+const PERSON_REF_MAX = 40
+
+const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(PERSON_REF_MAX) }).strict()
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -98,6 +108,18 @@ export async function registerSocialRoutes(
     })
   }
 
+  async function resolvePersonId(ref: string): Promise<string> {
+    if (UUID_RE.test(ref)) return ref
+    if (ref.length > PERSON_REF_MAX) throw AppError.notFound("Person not found")
+    return service().resolveHandleToId(ref)
+  }
+
+  function userActivityRepo(): UserActivityRepository {
+    const override = app.userActivityOverride
+    if (override) return override.repo
+    return makeDrizzleUserActivityRepository(container.getDb().sql)
+  }
+
   route(app, "listPeople", async (request, reply) => {
     const userId = requireAuth(request)
     const validated = parse(ListPeopleRequestSchema, request.query)
@@ -139,11 +161,10 @@ export async function registerSocialRoutes(
 
   route(app, "listUserActivity", async (request, reply) => {
     const input = mergeIdParam(UserActivityListQuerySchema, request)
-    const activity = makeUserActivityService({
-      repo: makeDrizzleUserActivityRepository(container.getDb().sql),
-    })
+    const userId = await resolvePersonId(input.id)
+    const activity = makeUserActivityService({ repo: userActivityRepo() })
     const payload: UserActivityListResponse = await activity.list(
-      input.id,
+      userId,
       input.cursor ?? null,
       input.limit,
     )
@@ -152,8 +173,9 @@ export async function registerSocialRoutes(
 
   route(app, "listFollowers", async (request, reply) => {
     const input = mergeIdParam(ConnectionsListQuerySchema, request)
+    const userId = await resolvePersonId(input.id)
     const payload: ListPeopleResponse = await service().listFollowers(
-      input.id,
+      userId,
       viewerOf(request),
       input,
     )
@@ -162,8 +184,9 @@ export async function registerSocialRoutes(
 
   route(app, "listFollowing", async (request, reply) => {
     const input = mergeIdParam(ConnectionsListQuerySchema, request)
+    const userId = await resolvePersonId(input.id)
     const payload: ListPeopleResponse = await service().listFollowing(
-      input.id,
+      userId,
       viewerOf(request),
       input,
     )
