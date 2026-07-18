@@ -23,8 +23,9 @@
  * fails group frames closed (see ws/frame-handler authorizeRoom).
  *
  * Repo wiring mirrors messages.routes: injected chatOverrides fakes win (chatOverrides.groups /
- * chatRepo / blocksRepo / conversationMutes), else lazily-built Drizzle repos over the container's
- * sql tag — lazy so the offline route-coverage boot never touches getDb().
+ * chatRepo / conversationMutes), else lazily-built Drizzle repos over the container's sql tag —
+ * lazy so the offline route-coverage boot never touches getDb(). Invitee validation (existence +
+ * blocked-pair) is one bulk query inside the group repo (invitableIdsOf), so no blocks repo here.
  */
 
 import {
@@ -63,7 +64,6 @@ import {
   makeConversationMutesRepository,
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
 const GroupIdParamsSchema = z.object({ id: IdSchema }).strict()
@@ -94,8 +94,6 @@ export async function registerChatGroupRoutes(
     overrides?.chatRepo ??
     (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
 
-  const getBlocks = (): BlocksRepository => overrides?.blocksRepo ?? container.getBlocksRepo()
-
   // Mute lookup for ChatGroupDTO.muted. When chatOverrides is present WITHOUT a mutes fake we must
   // not touch getDb() (offline harness) — fail open to muted:false, mirroring listThreads' stance.
   let mutesRepo: ConversationMutesRepository | undefined
@@ -108,7 +106,6 @@ export async function registerChatGroupRoutes(
     const mutes = getMutes()
     return makeChatGroupService({
       groups: getGroups(),
-      isBlockedEitherWay: (a, b) => getBlocks().isBlockedEitherWay(a, b),
       ...(mutes ? { isMutedFor: (userId, groupId) => mutes.isMuted(userId, "group", groupId) } : {}),
     })
   }

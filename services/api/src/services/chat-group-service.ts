@@ -50,7 +50,6 @@ export const GROUP_MEMBERS_MAX_LIMIT = 50
 
 export interface ChatGroupServiceDeps {
   groups: ChatGroupRepository
-  isBlockedEitherWay(a: string, b: string): Promise<boolean>
   /** conversation_mutes lookup for roomKind 'group'. Absent (offline harnesses) => never muted. */
   isMutedFor?: (userId: string, groupId: string) => Promise<boolean>
 }
@@ -122,13 +121,14 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     return groups.findMediaIdByUploadId(uploadId)
   }
 
-  /** Dedupe + drop self + drop anyone the actor is blocked-either-way with. Order preserved. */
+  /**
+   * Dedupe + drop self, then ONE bulk repo query drops unknown/deleted users (a schema-valid but
+   * nonexistent uuid would otherwise 500 on the membership FK) and blocked-either-way pairs.
+   * Order preserved; dropped ids are silently skipped, never errors.
+   */
   async function filterInvitees(actorId: string, memberIds: string[]): Promise<string[]> {
     const unique = [...new Set(memberIds)].filter((id) => id !== actorId)
-    const allowed = await Promise.all(
-      unique.map(async (id) => ((await deps.isBlockedEitherWay(actorId, id)) ? null : id)),
-    )
-    return allowed.filter((id): id is string => id !== null)
+    return groups.invitableIdsOf(actorId, unique)
   }
 
   async function requireGroup(groupId: string): Promise<ChatGroupView> {
@@ -224,10 +224,11 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
         groups.roleOf(groupId, actorId),
         groups.roleOf(groupId, targetId),
       ])
-      if (targetRole === null) throw AppError.notFound("That user isn't a member of this group.")
 
       if (actorId === targetId) {
-        // Self-remove = leave. Any role EXCEPT the owner (the room must always have its owner).
+        // Self-remove = leave: the 404 is about the caller's OWN row, so it leaks nothing.
+        if (targetRole === null) throw AppError.notFound("That user isn't a member of this group.")
+        // Any role EXCEPT the owner may leave (the room must always have its owner).
         if (actorRole === "owner") {
           throw new AppError(ErrorCode.CONFLICT, "The owner can't leave their own group.", {
             fields: { code: "owner_must_stay" },
@@ -237,9 +238,13 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
         return
       }
 
+      // Review fix (membership oracle): gate the ACTOR'S power BEFORE looking at the target, so a
+      // stranger probing a private group's roster gets a uniform 403 — never a 404-vs-403 signal
+      // revealing whether some user is a member.
       if (actorRole !== "owner" && actorRole !== "admin") {
         throw forbidden("Only the owner or an admin can remove members.", "remove_forbidden")
       }
+      if (targetRole === null) throw AppError.notFound("That user isn't a member of this group.")
       // The owner is never removable; admins are removable ONLY by the owner.
       if (targetRole === "owner" || (targetRole === "admin" && actorRole !== "owner")) {
         throw forbidden("You can't remove this member.", "remove_forbidden")

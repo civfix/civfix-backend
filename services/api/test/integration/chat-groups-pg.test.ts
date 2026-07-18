@@ -256,6 +256,8 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       })
       expect(ok.statusCode).toBe(200)
       expect(ok.json().name).toBe("Crew v2")
+      // UI contract: the update response always carries the caller's myRole (cache seeding).
+      expect(ok.json().myRole).toBe("admin")
 
       const denied = await inject(await token(memberId), "PATCH", `/v1/groups/${groupId}`, {
         name: "Nope",
@@ -329,6 +331,30 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       expect(ownerLeave.json().fields).toMatchObject({ code: "owner_must_stay" })
     })
 
+    it("a STRANGER removing someone from a private group gets 403, never a membership-oracle 404", async () => {
+      const { groupId, memberId } = await groupWithAdminAndMember()
+      const strangerId = await newUser("Remove Stranger")
+      const nonMemberId = await newUser("Remove Nobody")
+
+      // Target IS a member: the stranger must not learn that — 403, not a role-specific error.
+      const onMember = await inject(
+        await token(strangerId),
+        "DELETE",
+        `/v1/groups/${groupId}/members/${memberId}`,
+      )
+      expect(onMember.statusCode).toBe(403)
+      expect(onMember.json().fields).toMatchObject({ code: "remove_forbidden" })
+
+      // Target is NOT a member: the response must be indistinguishable from the member case.
+      const onNonMember = await inject(
+        await token(strangerId),
+        "DELETE",
+        `/v1/groups/${groupId}/members/${nonMemberId}`,
+      )
+      expect(onNonMember.statusCode).toBe(403)
+      expect(onNonMember.json().fields).toMatchObject({ code: "remove_forbidden" })
+    })
+
     it("owner removes an admin 200; an admin removing an admin 403 remove_forbidden", async () => {
       const { groupId, ownerId, adminId, memberId } = await groupWithAdminAndMember()
       // Promote the member so there are two admins.
@@ -372,6 +398,59 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       const roster = ok.json().members as Array<{ user: { id: string }; role: string }>
       expect(roster.map((m) => m.user.id)).toContain(newbieId)
       expect(roster).toHaveLength(4) // owner + admin + member + newbie
+    })
+
+    it("an UNKNOWN uuid and a blocked pair are silently skipped (200, no FK 500)", async () => {
+      const { groupId, ownerId } = await groupWithAdminAndMember()
+      const newbieId = await newUser("Add Real")
+      const blockedId = await newUser("Add Blocked")
+      await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${ownerId}, ${blockedId})`
+      const unknownId = randomUUID() // schema-valid, no users row — must not trip the membership FK
+
+      const res = await inject(await token(ownerId), "POST", `/v1/groups/${groupId}/members`, {
+        memberIds: [unknownId, blockedId, newbieId],
+      })
+      expect(res.statusCode).toBe(200)
+      const ids = (res.json().members as Array<{ user: { id: string } }>).map((m) => m.user.id)
+      expect(ids).toContain(newbieId)
+      expect(ids).not.toContain(unknownId)
+      expect(ids).not.toContain(blockedId)
+      expect(ids).toHaveLength(4) // owner + admin + member + newbie
+    })
+  })
+
+  describe("GET /groups/:id/members (keyset pagination)", () => {
+    it("pages in the documented ordering and resumes at the cursor without dupes or gaps", async () => {
+      const ownerId = await newUser("Page Owner")
+      const invitees: string[] = []
+      for (let i = 0; i < 5; i++) invitees.push(await newUser(`Page Member ${i}`))
+      const dto = await newGroup(ownerId, { name: "Big Room", memberIds: invitees })
+
+      const tok = await token(ownerId)
+      const page1 = await inject(tok, "GET", `/v1/groups/${dto.id}/members?limit=3`)
+      expect(page1.statusCode).toBe(200)
+      const p1 = page1.json() as {
+        members: Array<{ user: { id: string }; role: string }>
+        nextCursor: string | null
+      }
+      expect(p1.members).toHaveLength(3)
+      // Ordering: owner first, then members by joined_at ASC (insertion order within the create tx).
+      expect(p1.members[0]).toMatchObject({ user: { id: ownerId }, role: "owner" })
+      expect(p1.nextCursor).toBe(p1.members[2]!.user.id)
+
+      const page2 = await inject(tok, "GET", `/v1/groups/${dto.id}/members?limit=3&cursor=${p1.nextCursor}`)
+      expect(page2.statusCode).toBe(200)
+      const p2 = page2.json() as {
+        members: Array<{ user: { id: string } }>
+        nextCursor: string | null
+      }
+      expect(p2.members).toHaveLength(3)
+      expect(p2.nextCursor).toBeNull()
+
+      // Resume correctness: the two pages tile the full roster exactly — no dupes, no gaps.
+      const seen = [...p1.members, ...p2.members].map((m) => m.user.id)
+      expect(new Set(seen).size).toBe(6)
+      expect(seen.sort()).toEqual([ownerId, ...invitees].sort())
     })
   })
 

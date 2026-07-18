@@ -99,6 +99,14 @@ export interface ChatGroupRepository {
   ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
   /** Resolve a presign-flow uploadId to its media_assets id; null when unknown (silently ignored). */
   findMediaIdByUploadId(uploadId: string): Promise<string | null>
+  /**
+   * The subset of `candidateIds` the actor may actually invite, in input order — ONE round trip
+   * (review fix: replaces a per-candidate blocked-pair fan-out). A candidate survives only when it
+   * EXISTS in users (a schema-valid but unknown uuid would otherwise trip the membership FK -> 500),
+   * is not soft-deleted, and is not blocked either way with `actorId`. Dropped ids are silently
+   * skipped, never errors (the create/addMembers "skip, don't leak" contract).
+   */
+  invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]>
   /** Member user ids of a group (mention scoping + thread signals; mirrors report listMemberIds). */
   listMemberIds(groupId: string): Promise<string[]>
   /**
@@ -142,9 +150,6 @@ interface MemberRowSelect {
   verified: boolean
   is_following: boolean
 }
-
-/** role -> its position in the member-list ordering (owner first). */
-const ROLE_RANK: Record<GroupMemberRole, number> = { owner: 0, admin: 1, member: 2 }
 
 function toMemberView(r: MemberRowSelect): GroupMemberView {
   const author = publicAuthorIdentity({
@@ -343,18 +348,27 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       limit: number,
     ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }> {
       // Resolve the cursor row's keyset position; a stale/foreign cursor falls back to page one.
+      // The anchor's (rank, joined_at, user_id) tuple deliberately NEVER leaves the database (a
+      // row-valued subquery): round-tripping joined_at through the driver truncates microseconds to
+      // milliseconds (postgres-js serializes Date/`::timestamptz`-hinted params via a JS Date), and a
+      // same-tx roster shares ONE microsecond timestamp — a truncated anchor would compare "less
+      // than" every tied row and re-include the previous page. The existence pre-check keeps the
+      // page-one fallback (a vanished cursor must not turn the filter into an all-NULL empty page).
       let cursorFilter = sql``
       if (cursor !== null && isUuid(cursor)) {
-        const anchorRows = await sql<{ role: GroupMemberRole; joined_at: Date }[]>`
-          SELECT role, joined_at FROM chat_group_members
+        const anchorRows = await sql<{ user_id: string }[]>`
+          SELECT user_id FROM chat_group_members
           WHERE group_id = ${groupId} AND user_id = ${cursor}
           LIMIT 1
         `
-        const anchor = anchorRows[0]
-        if (anchor) {
+        if (anchorRows[0]) {
           cursorFilter = sql`
             AND (CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, m.joined_at, m.user_id)
-              > (${ROLE_RANK[anchor.role]}, ${anchor.joined_at}, ${cursor}::uuid)
+              > (
+                SELECT CASE c.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, c.joined_at, c.user_id
+                FROM chat_group_members c
+                WHERE c.group_id = ${groupId} AND c.user_id = ${cursor}
+              )
           `
         }
       }
@@ -382,6 +396,24 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
         SELECT id FROM media_assets WHERE upload_id = ${uploadId} LIMIT 1
       `
       return rows[0]?.id ?? null
+    },
+
+    async invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]> {
+      if (candidateIds.length === 0) return []
+      const rows = await sql<{ id: string }[]>`
+        SELECT u.id
+        FROM users u
+        WHERE u.id IN ${sql(candidateIds)}
+          AND u.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = ${actorId} AND b.blocked_id = u.id)
+               OR (b.blocker_id = u.id AND b.blocked_id = ${actorId})
+          )
+      `
+      const allowed = new Set(rows.map((r) => r.id))
+      // Re-project onto the caller's order (the SELECT returns rows in arbitrary order).
+      return candidateIds.filter((id) => allowed.has(id))
     },
 
     async listMemberIds(groupId: string): Promise<string[]> {
