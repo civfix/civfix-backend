@@ -34,6 +34,9 @@ import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.j
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import { monotonicReadWatermark } from "./chat-read-state.drizzle.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
+import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
+import { AppError } from "@civfix/shared"
+import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 
 /** A dm thread row (the participant pair ordered lo < hi). */
@@ -135,12 +138,14 @@ export interface DmRepository {
     senderId: string,
   ): Promise<ChatMessageDTO | null>
   /** Page a thread's messages newest-first, before the given message id (cursor). roomKind:"dm".
-   *  `viewerUserId` (optional) resolves each message's reaction `mine` flag for the loader. */
+   *  `viewerUserId` (optional) resolves each message's reaction `mine` flag for the loader.
+   *  `around` (P2 2.4) centers the page on that message id instead (mutually exclusive with `before`). */
   history(
     threadId: string,
     before: string | undefined,
     limit: number,
     viewerUserId?: string | null,
+    around?: string,
   ): Promise<ChatHistoryPage>
   /**
    * Load ONE dm message (scoped to its thread) as a ChatMessageDTO for the viewer, with reactions aggregated
@@ -254,6 +259,111 @@ function toMessageDTO(
  *   send's `mediaUploadIds` are bound to the new message. Omit it (offline tests) to project `[]`.
  */
 export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRepository {
+  /** The dm row + sender column list for reads off the `dm` alias (history/around/findMessage). */
+  const dmColumns = sql`
+    dm.id,
+    dm.thread_id,
+    dm.sender_id,
+    dm.body,
+    dm.kind,
+    dm.attachments,
+    dm.created_at,
+    dm.edited_at,
+    dm.deleted_at,
+    dm.reply_to_id,
+    u.display_name AS sender_display_name,
+    u.handle AS sender_handle,
+    u.bio AS sender_bio,
+    u.avatar_url AS sender_avatar_url,
+    u.deleted_at AS sender_deleted_at
+  `
+
+  /**
+   * Batch-hydrate a page of dm rows into wire DTOs (attachments/reactions/mentions/reply previews, ONE
+   * grouped query each — 4 round-trips per page, not 4×N). Shared by the before-mode page and the
+   * around-mode window so both hydrate identically. The reaction `mine` flag resolves for the viewer.
+   */
+  async function hydrateDmRows(
+    page: DmRowSelect[],
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO[]> {
+    const ids = page.map((r) => r.id)
+    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
+      await Promise.all([
+        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        loadChatReactionsFor(sql, ids, viewerUserId),
+        loadChatMentionsFor(sql, ids),
+        replyMapForRows(sql, "dm_messages", page),
+      ])
+    return page.map((r) =>
+      toMessageDTO(
+        r,
+        reactionsByMessage.get(r.id) ?? [],
+        mentionsByMessage.get(r.id) ?? [],
+        viewerUserId,
+        undefined,
+        attachmentsByMessage.get(r.id) ?? [],
+        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
+      ),
+    )
+  }
+
+  /**
+   * Around-mode dm history (P2 2.4): mirror of the chat repo's aroundScoped over dm_messages/thread_id.
+   * Window = ceil(limit/2) at-or-older rows (target INCLUDED — even when it is a tombstone; jumping to
+   * a deleted message's position is valid and its tombstone rides in the window) + floor(limit/2)
+   * strictly newer, merged newest-first. nextCursor = older end, prevCursor = newer end (see
+   * chat-history-window.ts — prevCursor is today a "there are newer messages" signal, not a follow
+   * cursor). A missing/foreign-thread target is a 404 (a jump target the client named must exist).
+   */
+  async function historyAround(
+    threadId: string,
+    around: string,
+    limit: number,
+    viewerUserId: string | null,
+  ): Promise<ChatHistoryPage> {
+    if (!isUuid(around)) throw AppError.notFound("Message not found")
+    const anchorRows = await sql<{ created_at: Date; id: string }[]>`
+      SELECT created_at, id FROM dm_messages
+      WHERE id = ${around} AND thread_id = ${threadId}
+      LIMIT 1
+    `
+    const anchor = anchorRows[0]
+    if (!anchor) throw AppError.notFound("Message not found")
+
+    const limits = aroundLimits(limit)
+    // Fetch +1 on EACH side so has-more resolves independently per end.
+    const [olderDesc, newerAsc] = await Promise.all([
+      sql<DmRowSelect[]>`
+        SELECT ${dmColumns}
+        FROM dm_messages dm
+        JOIN users u ON u.id = dm.sender_id
+        WHERE dm.thread_id = ${threadId}
+          AND (dm.deleted_at IS NULL OR dm.id = ${around})
+          AND (dm.created_at, dm.id) <= (${anchor.created_at}, ${anchor.id}::uuid)
+        ORDER BY dm.created_at DESC, dm.id DESC
+        LIMIT ${limits.olderLimit + 1}
+      `,
+      sql<DmRowSelect[]>`
+        SELECT ${dmColumns}
+        FROM dm_messages dm
+        JOIN users u ON u.id = dm.sender_id
+        WHERE dm.thread_id = ${threadId}
+          AND dm.deleted_at IS NULL
+          AND (dm.created_at, dm.id) > (${anchor.created_at}, ${anchor.id}::uuid)
+        ORDER BY dm.created_at ASC, dm.id ASC
+        LIMIT ${limits.newerLimit + 1}
+      `,
+    ])
+    const { rows, hasOlder, hasNewer } = mergeAroundWindow(olderDesc, newerAsc, limits)
+    const items = await hydrateDmRows(rows, viewerUserId)
+    return {
+      items,
+      nextCursor: hasOlder ? rows[rows.length - 1]!.id : null,
+      prevCursor: hasNewer ? rows[0]!.id : null,
+    }
+  }
+
   return {
     async openOrCreateThread(userA: string, userB: string): Promise<DmThread> {
       // Order the pair so the unique (user_lo, user_hi) key is stable regardless of who initiates.
@@ -528,7 +638,12 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       before: string | undefined,
       limit: number,
       viewerUserId: string | null = null,
+      around?: string,
     ): Promise<ChatHistoryPage> {
+      // Around-mode (P2 2.4): center-window fetch on a separate path; the before-mode fast path below
+      // stays untouched. The route schema rejects around+before together, so `before` is undefined here.
+      if (around !== undefined) return historyAround(threadId, around, limit, viewerUserId)
+
       // Resolve the `before` cursor id to its (created_at) so we can keyset strictly older than it. The
       // anchor lookup is SCOPED TO THIS thread: a `before` id from another thread (or unknown/soft-deleted)
       // finds no anchor, so we return the newest page (defensive), and a foreign cursor can never seek into
@@ -549,22 +664,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           : sql``
 
       const rows = await sql<DmRowSelect[]>`
-        SELECT
-          dm.id,
-          dm.thread_id,
-          dm.sender_id,
-          dm.body,
-          dm.kind,
-          dm.attachments,
-          dm.created_at,
-          dm.edited_at,
-          dm.deleted_at,
-          dm.reply_to_id,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
+        SELECT ${dmColumns}
         FROM dm_messages dm
         JOIN users u ON u.id = dm.sender_id
         WHERE dm.thread_id = ${threadId}
@@ -575,27 +675,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
-      // Batch the per-message relations into ONE grouped query each (WHERE message_id IN (...)) so a
-      // page is 4 round-trips total, not 4×N. The reaction `mine` flag resolves against the viewer.
-      const ids = page.map((r) => r.id)
-      const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
-        await Promise.all([
-          presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-          loadChatReactionsFor(sql, ids, viewerUserId),
-          loadChatMentionsFor(sql, ids),
-          replyMapForRows(sql, "dm_messages", page),
-        ])
-      const items = page.map((r) =>
-        toMessageDTO(
-          r,
-          reactionsByMessage.get(r.id) ?? [],
-          mentionsByMessage.get(r.id) ?? [],
-          viewerUserId,
-          undefined,
-          attachmentsByMessage.get(r.id) ?? [],
-          r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
-        ),
-      )
+      const items = await hydrateDmRows(page, viewerUserId)
       const last = page[page.length - 1]
       const nextCursor = hasMore && last ? last.id : null
       return { items, nextCursor }

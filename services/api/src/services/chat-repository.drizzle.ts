@@ -1,6 +1,7 @@
 
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { AppError } from "@civfix/shared"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
@@ -19,6 +20,7 @@ import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
+import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
 
 // The report's jurisdiction, resolved ONCE per report-scoped query (it is constant per report). Drives the
 // @city `cityMention` chip on report messages. null when the report has no resolved jurisdiction.
@@ -54,6 +56,8 @@ export interface ChatRepository {
     before: string | undefined,
     limit: number,
     viewerUserId?: string | null,
+    /** Around-mode (P2 2.4): center the page on this message id; mutually exclusive with `before`. */
+    around?: string,
   ): Promise<ChatHistoryPage>
   findMessage(
     cleanupId: string,
@@ -83,6 +87,8 @@ export interface ChatRepository {
     before: string | undefined,
     limit: number,
     viewerUserId?: string | null,
+    /** Around-mode (P2 2.4): center the page on this message id; mutually exclusive with `before`. */
+    around?: string,
   ): Promise<ChatHistoryPage>
   findReportMessage(
     reportId: string,
@@ -326,12 +332,50 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     return { geoid: row.geoid, name: row.name ?? row.geoid, handle: row.handle }
   }
 
+  /**
+   * Batch-hydrate a page of selected rows into wire DTOs: attachments + reactions + mentions + reply
+   * previews in ONE grouped query each. Shared by the before-mode page and the around-mode window so
+   * both hydrate identically (Task 2.3 reply hydration included).
+   */
+  async function hydrateRows(
+    page: ChatRowSelect[],
+    viewerUserId: string | null,
+    reportCity: ReportCityContext | null,
+  ): Promise<ChatMessageDTO[]> {
+    const ids = page.map((r) => r.id)
+    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
+      await Promise.all([
+        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        loadChatReactionsFor(sql, ids, viewerUserId),
+        loadChatMentionsFor(sql, ids),
+        // Reply previews: ONE id=ANY(...) fetch over the SAME table for the page's distinct targets.
+        replyMapForRows(sql, "chat_messages", page),
+      ])
+    return page.map((r) =>
+      toMessageDTO(
+        r,
+        reactionsByMessage.get(r.id) ?? [],
+        mentionsByMessage.get(r.id) ?? [],
+        viewerUserId,
+        undefined,
+        attachmentsByMessage.get(r.id) ?? [],
+        reportCity,
+        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
+      ),
+    )
+  }
+
   async function historyScoped(
     scope: RoomScope,
     before: string | undefined,
     limit: number,
     viewerUserId: string | null,
+    around?: string,
   ): Promise<ChatHistoryPage> {
+    // Around-mode (P2 2.4): a center-window fetch is a separate path; the before-mode fast path below
+    // stays byte-identical. The route schemas reject around+before together, so `before` is undefined here.
+    if (around !== undefined) return aroundScoped(scope, around, limit, viewerUserId)
+
     let anchor: { createdAt: Date; id: string } | null = null
     if (before !== undefined && isUuid(before)) {
       const rows = await sql<{ created_at: Date; id: string }[]>`
@@ -363,30 +407,73 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     ])
     const hasMore = rows.length > limit
     const page = hasMore ? rows.slice(0, limit) : rows
-    const ids = page.map((r) => r.id)
-    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
-      await Promise.all([
-        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        loadChatReactionsFor(sql, ids, viewerUserId),
-        loadChatMentionsFor(sql, ids),
-        // Reply previews: ONE id=ANY(...) fetch over the SAME table for the page's distinct targets.
-        replyMapForRows(sql, "chat_messages", page),
-      ])
-    const items = page.map((r) =>
-      toMessageDTO(
-        r,
-        reactionsByMessage.get(r.id) ?? [],
-        mentionsByMessage.get(r.id) ?? [],
-        viewerUserId,
-        undefined,
-        attachmentsByMessage.get(r.id) ?? [],
-        reportCity,
-        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
-      ),
-    )
+    const items = await hydrateRows(page, viewerUserId, reportCity)
     const last = page[page.length - 1]
     const nextCursor = hasMore && last ? last.id : null
     return { items, nextCursor }
+  }
+
+  /**
+   * Around-mode history (P2 2.4): a window of ceil(limit/2) rows at-or-older than the target (the
+   * target row INCLUDED) + floor(limit/2) strictly newer, merged newest-first — the same ordering as a
+   * before-mode page. See chat-history-window.ts for the window/cursor semantics (nextCursor = older
+   * end, prevCursor = newer end, each null when that side reaches the edge).
+   *
+   * The anchor lookup is scoped to THIS room and — unlike the `before` anchor — INCLUDES soft-deleted
+   * targets: jumping to a deleted message's position is valid, and its tombstone rides in the window
+   * (every OTHER deleted row stays filtered out, as in before-mode). A missing/foreign-room id is a
+   * 404: a jump target the client explicitly named must exist, whereas an unknown `before` cursor just
+   * falls back to the newest page.
+   */
+  async function aroundScoped(
+    scope: RoomScope,
+    around: string,
+    limit: number,
+    viewerUserId: string | null,
+  ): Promise<ChatHistoryPage> {
+    // Non-uuid ids can never match; short-circuit to the same 404 (avoids a 22P02 cast error -> 500).
+    if (!isUuid(around)) throw AppError.notFound("Message not found")
+    const anchorRows = await sql<{ created_at: Date; id: string }[]>`
+      SELECT created_at, id FROM chat_messages
+      WHERE id = ${around} AND ${anchorScope(scope)}
+      LIMIT 1
+    `
+    const anchor = anchorRows[0]
+    if (!anchor) throw AppError.notFound("Message not found")
+
+    const limits = aroundLimits(limit)
+    const isReport = scope.column === "report_id"
+    // Fetch +1 on EACH side so has-more resolves independently per end.
+    const [olderDesc, newerAsc, reportCity] = await Promise.all([
+      sql<ChatRowSelect[]>`
+        SELECT ${chatColumns(sql, isReport)}
+        FROM chat_messages cm
+        LEFT JOIN users u ON u.id = cm.sender_id
+        WHERE ${rowScope(scope)}
+          AND (cm.deleted_at IS NULL OR cm.id = ${around})
+          AND (cm.created_at, cm.id) <= (${anchor.created_at}, ${anchor.id}::uuid)
+        ORDER BY cm.created_at DESC, cm.id DESC
+        LIMIT ${limits.olderLimit + 1}
+      `,
+      sql<ChatRowSelect[]>`
+        SELECT ${chatColumns(sql, isReport)}
+        FROM chat_messages cm
+        LEFT JOIN users u ON u.id = cm.sender_id
+        WHERE ${rowScope(scope)}
+          AND cm.deleted_at IS NULL
+          AND (cm.created_at, cm.id) > (${anchor.created_at}, ${anchor.id}::uuid)
+        ORDER BY cm.created_at ASC, cm.id ASC
+        LIMIT ${limits.newerLimit + 1}
+      `,
+      resolveReportCity(scope),
+    ])
+    const { rows, hasOlder, hasNewer } = mergeAroundWindow(olderDesc, newerAsc, limits)
+    const items = await hydrateRows(rows, viewerUserId, reportCity)
+    return {
+      items,
+      nextCursor: hasOlder ? rows[rows.length - 1]!.id : null,
+      prevCursor: hasNewer ? rows[0]!.id : null,
+    }
   }
 
   async function findMessageScoped(
@@ -579,8 +666,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       before: string | undefined,
       limit: number,
       viewerUserId: string | null = null,
+      around?: string,
     ): Promise<ChatHistoryPage> {
-      return historyScoped({ column: "cleanup_id", id: cleanupId }, before, limit, viewerUserId)
+      return historyScoped({ column: "cleanup_id", id: cleanupId }, before, limit, viewerUserId, around)
     },
 
     editMessage(
@@ -626,8 +714,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       before: string | undefined,
       limit: number,
       viewerUserId: string | null = null,
+      around?: string,
     ): Promise<ChatHistoryPage> {
-      return historyScoped({ column: "report_id", id: reportId }, before, limit, viewerUserId)
+      return historyScoped({ column: "report_id", id: reportId }, before, limit, viewerUserId, around)
     },
 
     findReportMessage(

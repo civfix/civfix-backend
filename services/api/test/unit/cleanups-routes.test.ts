@@ -546,6 +546,61 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     })
   })
 
+  it("P2 2.4: around-mode returns the centered window with prevCursor through the chat seam", async () => {
+    const { app, token, userId, chat } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const sent = []
+    for (let i = 1; i <= 5; i++) {
+      sent.push(await chat.persist({ cleanupId: id, userId, body: `f${i}` }))
+    }
+
+    // limit 2 around f3: ceil(2/2)=1 at-or-older (f3 itself) + floor(2/2)=1 newer (f4), newest-first.
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/messages?around=${sent[2]!.id}&limit=2`,
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.items.map((m: { body: string }) => m.body)).toEqual(["f4", "f3"])
+    expect(body.nextCursor).toBe(sent[2]!.id) // f2/f1 remain older
+    expect(body.prevCursor).toBe(sent[3]!.id) // f5 remains newer
+
+    // Before-mode responses stay byte-identical: NO prevCursor key at all.
+    const plain = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/messages?limit=2`,
+      headers: auth(token),
+    })
+    expect(plain.statusCode).toBe(200)
+    expect("prevCursor" in plain.json()).toBe(false)
+  })
+
+  it("P2 2.4: around + before together -> 422 (mutually exclusive)", async () => {
+    const { app, token, userId, chat } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const msg = await chat.persist({ cleanupId: id, userId, body: "only" })
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/messages?around=${msg.id}&before=${msg.id}`,
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+
+  it("P2 2.4: around an id that is not in the room -> 404", async () => {
+    const { app, token, userId, chat } = await makeHarness()
+    const id = await createCleanup(app, token)
+    await chat.persist({ cleanupId: id, userId, body: "here" })
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/messages?around=00000000-0000-4000-8000-000000000000`,
+      headers: auth(token),
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
   it("P2: tolerates an extra `cleanupId` query key (the shared client's redundant path-param echo)", async () => {
     const { app, token, userId, chat } = await makeHarness()
     const id = await createCleanup(app, token)

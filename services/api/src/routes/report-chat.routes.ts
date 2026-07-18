@@ -82,8 +82,15 @@ export async function registerReportChatRoutes(app: FastifyInstance, container: 
     const limit = Math.min(Math.max(q.limit ?? REPORT_CHAT_HISTORY_DEFAULT, 1), REPORT_CHAT_HISTORY_MAX)
     const viewerUserId = request.auth?.userId ?? null
     await requireVisibleReport(id, viewerUserId)
-    const page = await getChatRepo().reportHistory(id, q.before, limit, viewerUserId)
-    const payload: ChatHistoryResponse = { items: page.items, nextCursor: page.nextCursor }
+    // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
+    const page = await getChatRepo().reportHistory(id, q.before, limit, viewerUserId, q.around)
+    // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
+    // present — possibly null (window reaches the live head) — on around-mode pages.
+    const payload: ChatHistoryResponse = {
+      items: page.items,
+      nextCursor: page.nextCursor,
+      ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
+    }
     reply.status(200).send(payload)
   })
 

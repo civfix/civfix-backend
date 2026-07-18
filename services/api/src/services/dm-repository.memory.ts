@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { avatarGradient } from "@civfix/shared"
+import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
 import {
@@ -20,6 +20,7 @@ import {
   replyDeletedTarget,
   replyWrongRoom,
 } from "./chat-reply-hydration.js"
+import { aroundLimits } from "./chat-history-window.js"
 import type {
   DmMessageMeta,
   DmPersistInput,
@@ -265,7 +266,9 @@ export class InMemoryDmRepository implements DmRepository {
     before: string | undefined,
     limit: number,
     viewerUserId: string | null = null,
+    around?: string,
   ): Promise<ChatHistoryPage> {
+    if (around !== undefined) return this.historyAround(threadId, around, limit, viewerUserId)
     const list = (this.log.get(threadId) ?? []).filter((m) => !m.deleted)
     // Recompute each item's reactions against the viewer so `mine` is resolved on the history page (the
     // stored DTO's reactions were last computed for whoever toggled). Mirrors the drizzle history path.
@@ -283,6 +286,43 @@ export class InMemoryDmRepository implements DmRepository {
     const nextIndex = start + limit
     const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
+  }
+
+  /**
+   * Around-mode window (P2 2.4), mirroring the drizzle semantics: ceil(limit/2) at-or-older rows (the
+   * target INCLUDED — even a tombstoned target anchors, riding as a tombstone while every OTHER deleted
+   * row stays filtered) + floor(limit/2) strictly newer, newest-first. nextCursor = older end,
+   * prevCursor = newer end (null when that side reaches the edge). Missing/foreign-thread target -> 404.
+   */
+  private historyAround(
+    threadId: string,
+    around: string,
+    limit: number,
+    viewerUserId: string | null,
+  ): Promise<ChatHistoryPage> {
+    const all = this.log.get(threadId) ?? []
+    if (!all.some((m) => m.dto.id === around)) {
+      return Promise.reject(AppError.notFound("Message not found"))
+    }
+    const ordered = [...all].filter((m) => !m.deleted || m.dto.id === around).reverse()
+    const idx = ordered.findIndex((m) => m.dto.id === around)
+    const { olderLimit, newerLimit } = aroundLimits(limit)
+    const newerStart = Math.max(0, idx - newerLimit)
+    const window = ordered.slice(newerStart, idx + olderLimit)
+    const items = window.map((m) =>
+      this.withReply(threadId, {
+        ...m.dto,
+        reactions: this.reactionsFor(m.dto.id, viewerUserId),
+        // The store keeps a deleted boolean, not a timestamp; stamp a deletedAt so the tombstone
+        // projects like a drizzle tombstone row.
+        ...(m.deleted ? { deletedAt: new Date(m.insertedAtMs).toISOString() } : {}),
+      }),
+    )
+    return Promise.resolve({
+      items,
+      nextCursor: idx + olderLimit < ordered.length ? (items[items.length - 1]?.id ?? null) : null,
+      prevCursor: newerStart > 0 ? (items[0]?.id ?? null) : null,
+    })
   }
 
   /** Aggregate a message's reactions into the wire summary, resolving `mine` for the viewer. */

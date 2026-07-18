@@ -174,14 +174,16 @@ export class WsChatService implements ChatService {
   }
 
   /** Page a cleanup's history newest-first before the cursor. Delegates to the persistence seam.
-   *  Forwards `viewerUserId` so each message's reactions resolve the loader's own `mine` flag. */
+   *  Forwards `viewerUserId` so each message's reactions resolve the loader's own `mine` flag, and
+   *  `around` (P2 2.4) so a center-window jump fetch reaches the repo's around path. */
   history(
     cleanupId: string,
     before: string | undefined,
     limit: number,
     viewerUserId?: string | null,
+    around?: string,
   ): Promise<ChatHistoryPage> {
-    return this.repo.history(cleanupId, before, limit, viewerUserId)
+    return this.repo.history(cleanupId, before, limit, viewerUserId, around)
   }
 
   /**

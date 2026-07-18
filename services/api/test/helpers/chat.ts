@@ -1,6 +1,6 @@
 
 import { randomUUID } from "node:crypto"
-import { avatarGradient } from "@civfix/shared"
+import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatMessageMeta, ChatRepository } from "../../src/services/chat-repository.drizzle.js"
@@ -9,6 +9,7 @@ import {
   replyDeletedTarget,
   replyWrongRoom,
 } from "../../src/services/chat-reply-hydration.js"
+import { aroundLimits } from "../../src/services/chat-history-window.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 
 interface StoredMessage {
@@ -110,7 +111,14 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve(this.withReply(input.cleanupId, dto))
   }
 
-  history(cleanupId: string, before: string | undefined, limit: number): Promise<ChatHistoryPage> {
+  history(
+    cleanupId: string,
+    before: string | undefined,
+    limit: number,
+    _viewerUserId?: string | null,
+    around?: string,
+  ): Promise<ChatHistoryPage> {
+    if (around !== undefined) return this.historyAround(cleanupId, around, limit)
     const list = (this.log.get(cleanupId) ?? []).filter((m) => !m.deleted)
     const ordered = [...list].reverse().map((m) => this.withReply(cleanupId, m.dto))
     let start = 0
@@ -122,6 +130,37 @@ export class InMemoryChatRepository implements ChatRepository {
     const nextIndex = start + limit
     const nextCursor = nextIndex < ordered.length ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
+  }
+
+  /**
+   * Around-mode window (P2 2.4), mirroring the drizzle semantics: ceil(limit/2) at-or-older rows (the
+   * target INCLUDED — even a tombstoned target anchors, riding as a tombstone while every OTHER deleted
+   * row stays filtered) + floor(limit/2) strictly newer, newest-first. nextCursor = older end,
+   * prevCursor = newer end (null when that side reaches the edge). Missing/foreign-room target -> 404.
+   */
+  private historyAround(roomId: string, around: string, limit: number): Promise<ChatHistoryPage> {
+    const all = this.log.get(roomId) ?? []
+    if (!all.some((m) => m.dto.id === around)) {
+      return Promise.reject(AppError.notFound("Message not found"))
+    }
+    const ordered = [...all].filter((m) => !m.deleted || m.dto.id === around).reverse()
+    const idx = ordered.findIndex((m) => m.dto.id === around)
+    const { olderLimit, newerLimit } = aroundLimits(limit)
+    const newerStart = Math.max(0, idx - newerLimit)
+    const window = ordered.slice(newerStart, idx + olderLimit)
+    const items = window.map((m) =>
+      this.withReply(
+        roomId,
+        // The store keeps a deleted boolean, not a timestamp; stamp a deletedAt so the tombstone
+        // projects like a drizzle tombstone row.
+        m.deleted ? { ...m.dto, deletedAt: new Date(m.insertedAtMs).toISOString() } : m.dto,
+      ),
+    )
+    return Promise.resolve({
+      items,
+      nextCursor: idx + olderLimit < ordered.length ? (items[items.length - 1]?.id ?? null) : null,
+      prevCursor: newerStart > 0 ? (items[0]?.id ?? null) : null,
+    })
   }
 
   private reactionsFor(messageId: string, viewerUserId: string | null): ReactionSummaryDTO[] {
@@ -250,8 +289,9 @@ export class InMemoryChatRepository implements ChatRepository {
     before: string | undefined,
     limit: number,
     _viewerUserId?: string | null,
+    around?: string,
   ): Promise<ChatHistoryPage> {
-    return this.history(reportId, before, limit)
+    return this.history(reportId, before, limit, _viewerUserId, around)
   }
 
   findReportMessage(
