@@ -1,16 +1,3 @@
-/**
- * Social + notifications integration test (Docker-gated). Boots against a live PostGIS container (via
- * withPg) and exercises the DB-backed paths the offline suite covers only with in-memory fakes:
- *
- *   - the Drizzle SocialRepository: listPeople (q filter + viewer exclusion + isFollowing + counts +
- *     keyset paging), follow/unfollow idempotency + the `created` flag, follower counts, pastEvents
- *     (organized OR attended, recent-first), and profile stats;
- *   - the Drizzle NotificationRepository: insert + newest-first paging, markRead (own-only), prefs
- *     default-create + partial upsert + quiet-hours set/clear, and push-token upsert/re-activate;
- *   - the full new_follower hook end to end: a NEW follow records a notification row for the followee.
- *
- * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
- */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
@@ -35,7 +22,6 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string, handle?: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name, handle) VALUES (${name}, ${handle ?? testHandle()}) RETURNING id
@@ -48,15 +34,14 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const alice = await newUser("Alice Zephyr", "alicez")
     const bob = await newUser("Bob Zephyr", "bobz")
     const carol = await newUser("Carol Other", "carol")
-    // alice follows bob.
     await repo.addFollow(alice, bob)
 
     const service = makeSocialService({ repo })
     const res = await service.listPeople({ q: "Zephyr", limit: 50 }, { userId: alice })
     const ids = res.items.map((p) => p.id)
     expect(ids).toContain(bob)
-    expect(ids).not.toContain(alice) // viewer excluded
-    expect(ids).not.toContain(carol) // filtered out by q
+    expect(ids).not.toContain(alice)
+    expect(ids).not.toContain(carol)
     const bobItem = res.items.find((p) => p.id === bob)!
     expect(bobItem.isFollowing).toBe(true)
     expect(bobItem.followers).toBe(1)
@@ -71,14 +56,13 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const first = await repo.addFollow(a, b)
     expect(first).toEqual({ exists: true, created: true })
     const again = await repo.addFollow(a, b)
-    expect(again).toEqual({ exists: true, created: false }) // idempotent, no second hook
+    expect(again).toEqual({ exists: true, created: false })
     expect(await repo.followerCount(b)).toBe(1)
 
     const removed = await repo.removeFollow(a, b)
     expect(removed).toEqual({ exists: true })
     expect(await repo.followerCount(b)).toBe(0)
 
-    // Unknown followee -> exists:false.
     const missing = await repo.addFollow(a, "00000000-0000-0000-0000-000000000000")
     expect(missing.exists).toBe(false)
   })
@@ -91,7 +75,6 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const organizer = await newUser("Profile Organizer", "proforg")
     const attendee = await newUser("Profile Attendee", "profatt")
 
-    // organizer creates two cleanups (different dates).
     const older = await cleanupService.createCleanup(
       { title: "Older Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z" },
       organizer,
@@ -100,17 +83,14 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       { title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z" },
       organizer,
     )
-    // attendee joins the older one.
     await cleanupService.joinCleanup(older.id, attendee)
 
     const socialService = makeSocialService({ repo: socialRepo })
 
-    // Organizer's profile: organized 2, recent-first.
     const orgProfile = (await socialService.getProfile(organizer, { userId: null })).profile
     expect(orgProfile.stats.cleanups).toBe(2)
     expect(orgProfile.pastEvents.map((e) => e.title)).toEqual(["Newer Sweep", "Older Sweep"])
 
-    // Attendee's profile: organized 0 but the attended cleanup shows in pastEvents.
     const attProfile = (await socialService.getProfile(attendee, { userId: null })).profile
     expect(attProfile.stats.cleanups).toBe(0)
     expect(attProfile.pastEvents.map((e) => e.title)).toContain("Older Sweep")
@@ -143,16 +123,21 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       body: null,
       link: null,
     })
+    await repo.insertNotification({
+      userId: user,
+      type: "report_chat",
+      title: "hidden",
+      body: null,
+      link: null,
+    })
 
     const list = await repo.listNotifications(user, null, 50)
     expect(list.records.map((r) => r.title)).toEqual(["second", "first"])
 
-    // markRead only the user's own; a foreign id is ignored.
     await repo.markRead(user, [n1.id, foreign.id])
     const after = await repo.listNotifications(user, null, 50)
     expect(after.records.find((r) => r.id === n1.id)!.readAt).not.toBeNull()
     expect(after.records.find((r) => r.id === n2.id)!.readAt).toBeNull()
-    // The foreign row stays unread.
     const otherList = await repo.listNotifications(other, null, 50)
     expect(otherList.records.find((r) => r.id === foreign.id)!.readAt).toBeNull()
   })
@@ -173,25 +158,21 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       quietEnd: null,
     })
 
-    // Partial upsert leaves others intact.
     const patched = await repo.upsertPrefs(user, { follows: false })
     expect(patched.follows).toBe(false)
     expect(patched.push).toBe(true)
     expect(patched.mentions).toBe(true)
 
-    // The dedicated mentions toggle round-trips and survives a later unrelated upsert.
     const muted = await repo.upsertPrefs(user, { mentions: false })
     expect(muted.mentions).toBe(false)
     expect((await repo.upsertPrefs(user, { push: true })).mentions).toBe(false)
 
-    // Set quiet hours (the time columns round-trip as strings).
     const withQuiet = await repo.upsertPrefs(user, {
       quietHours: { start: "22:00", end: "07:00" },
     })
     expect(withQuiet.quietStart).toMatch(/^22:00/)
     expect(withQuiet.quietEnd).toMatch(/^07:00/)
 
-    // Clear them.
     const cleared = await repo.upsertPrefs(user, { quietHours: null })
     expect(cleared.quietStart).toBeNull()
     expect(cleared.quietEnd).toBeNull()
@@ -202,14 +183,11 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const userA = await newUser("Token Owner A")
     const userB = await newUser("Token Owner B")
 
-    // userA owns tok-int on device d1.
     expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
       "stored",
     )
-    // Revoke it directly (e.g. provider pruned it).
     await h.sql`UPDATE push_tokens SET revoked_at = now() WHERE token = ${"tok-int"}`
 
-    // userB (a DIFFERENT user) tries to re-point it with a different device -> REFUSED, row untouched.
     expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d2" })).toBe(
       "conflict",
     )
@@ -217,11 +195,10 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
     `
     expect(rows).toHaveLength(1)
-    expect(rows[0]!.user_id).toBe(userA) // still A
-    expect(rows[0]!.device_id).toBe("d1") // unchanged
-    expect(rows[0]!.revoked_at).not.toBeNull() // not reactivated by the foreign attempt
+    expect(rows[0]!.user_id).toBe(userA)
+    expect(rows[0]!.device_id).toBe("d1")
+    expect(rows[0]!.revoked_at).not.toBeNull()
 
-    // The OWNER re-registering reactivates it.
     expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
       "stored",
     )
@@ -231,7 +208,6 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(rows[0]!.user_id).toBe(userA)
     expect(rows[0]!.revoked_at).toBeNull()
 
-    // A genuine device handoff: userB presents the SAME device_id (d1) -> allowed to take ownership.
     expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
       "stored",
     )
@@ -256,7 +232,6 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(list.records[0]!.type).toBe("new_follower")
     expect(list.records[0]!.body).toContain("Hook Follower")
 
-    // A re-follow does NOT add a second notification.
     await social.followPerson(follower, followee)
     const list2 = await notifRepo.listNotifications(followee, null, 50)
     expect(list2.records).toHaveLength(1)

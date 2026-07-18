@@ -1,15 +1,3 @@
-// Notifications route plugin.
-//
-//   GET  /notifications        [auth]       caller's notifications, newest-first -> ListNotificationsResponse
-//   POST /notifications/read   [auth][csrf] mark notifications read (own only)   -> MarkReadResponse
-//   GET  /notifications/prefs  [auth]       caller's prefs (default-created)      -> GetNotificationPrefsResponse
-//   PUT  /notifications/prefs  [auth][csrf] update prefs (partial)               -> NotificationPrefsDTO
-//   POST /push/register        [auth][csrf] register a device push token         -> RegisterPushTokenResponse
-//
-// The DB handle + push seam are reached lazily inside handlers (via container) so merely mounting the
-// plugin opens no connection. The service is built per request from either an injected override (tests:
-// an in-memory repo + FakePushSender so the whole flow runs offline) or from the container (production:
-// the Drizzle repo + the selected push seam).
 
 import {
   PaginationQuerySchema,
@@ -35,11 +23,6 @@ import { makeDrizzleNotificationRepository } from "../services/notification-repo
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
-// Response JSON schema for the feed list, so the per-user array serializes via fast-json-stringify rather
-// than slow JSON.stringify. Mirrors ListNotificationsResponseSchema / NotificationDTOSchema; the type/
-// nullable shapes match the shared DTO. fast-json-stringify DROPS any property not declared here, so the
-// optional body/link MUST be listed for them to reach the wire (they are NOT in `required`, preserving
-// the prior {id,type,title,read,createdAt} contract).
 const ListNotificationsResponseJsonSchema = {
   type: "object",
   properties: {
@@ -60,6 +43,7 @@ const ListNotificationsResponseJsonSchema = {
               "claim_available",
               "dm",
               "system",
+              "report_chat",
             ],
           },
           title: { type: "string" },
@@ -76,9 +60,6 @@ const ListNotificationsResponseJsonSchema = {
   required: ["items", "nextCursor"],
 } as const
 
-// Optional injected notification-service dependencies (tests): the routes build the service from these
-// instead of the container, so the whole list/read/prefs/register HTTP flow runs offline. Unset in
-// production, where the routes build the Drizzle repo + the container push seam lazily.
 export interface NotificationServiceOverrides {
   repo: NotificationRepository
 }

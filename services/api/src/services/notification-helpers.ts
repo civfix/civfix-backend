@@ -16,13 +16,15 @@ export const DEFAULT_PREFS: NotificationPrefsRecord = {
   quietEnd: null,
 }
 
-// group_chat mirrors cleanup_chat/dm (private-messaging bells: push + badge, cleared on open,
-// surfaced via the Messages inbox — not the notifications feed). report_chat stays feed-visible
-// because reports are public civic objects.
+// dm/cleanup_chat/group_chat/report_chat are all private-messaging bells: push + badge, cleared on
+// open, surfaced via the Messages inbox — NOT the notifications feed. report_chat joins the hidden
+// set per PR #21 (product decision): report chat is inbox-surfaced messaging like the others,
+// superseding the earlier "reports are public civic objects, keep feed-visible" rationale.
 export const FEED_HIDDEN_NOTIFICATION_TYPES: readonly NotificationType[] = [
   "dm",
   "cleanup_chat",
   "group_chat",
+  "report_chat",
 ]
 
 export function isFeedVisibleType(type: NotificationType): boolean {
