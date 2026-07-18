@@ -1,6 +1,7 @@
 
 import { sql } from "drizzle-orm"
 import { index, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
+import { chatGroups } from "./chat-groups.js"
 import { cleanups } from "./cleanups.js"
 import { reports } from "./reports.js"
 import { users } from "./users.js"
@@ -16,6 +17,9 @@ export const chatMessages = pgTable(
       .default(sql`gen_random_uuid()`),
     cleanupId: uuid("cleanup_id").references(() => cleanups.id),
     reportId: uuid("report_id").references(() => reports.id),
+    // Third scope (P4): a standalone group chat. Exactly ONE of (cleanup_id, report_id, group_id)
+    // is set — chat_messages_scope_chk, see drizzle/0047_chat_groups.sql.
+    groupId: uuid("group_id").references(() => chatGroups.id),
     // Nullable: a SYSTEM message (report status/timeline event posted into report chat) has no
     // author. See drizzle/0040_chat_system_messages.sql.
     senderId: uuid("sender_id").references(() => users.id),
@@ -40,6 +44,7 @@ export const chatMessages = pgTable(
     primaryKey({ columns: [t.id, t.createdAt] }),
     index("chat_messages_cleanup_created_idx").on(t.cleanupId, t.createdAt.desc()),
     index("chat_messages_report_created_idx").on(t.reportId, t.createdAt.desc()),
+    index("chat_messages_group_created_idx").on(t.groupId, t.createdAt.desc()),
     index("chat_messages_sender_created_idx").on(t.senderId, t.createdAt.desc(), t.id.desc()),
     // Partial pin-list indexes (0046): only pinned rows are indexed.
     index("chat_messages_cleanup_pinned_idx")
@@ -47,6 +52,9 @@ export const chatMessages = pgTable(
       .where(sql`pinned_at IS NOT NULL`),
     index("chat_messages_report_pinned_idx")
       .on(t.reportId, t.pinnedAt.desc())
+      .where(sql`pinned_at IS NOT NULL`),
+    index("chat_messages_group_pinned_idx")
+      .on(t.groupId, t.pinnedAt.desc())
       .where(sql`pinned_at IS NOT NULL`),
   ],
 )
