@@ -20,11 +20,13 @@ import {
   makeNotificationService,
   type NotificationService,
 } from "../../src/services/notification-service.js"
+import { clearConversationBellFor } from "../../src/services/conversation-bell.js"
 
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
 const CLEANUP = "55555555-5555-5555-5555-555555555555"
+const REPORT = "66666666-6666-6666-6666-666666666666"
 
 let chat: WsChatService
 let pubsub: InMemoryChatPubSub
@@ -37,8 +39,6 @@ let notifications: NotificationService
 let THREAD: string
 
 const onDmDelivered: OnDmDelivered = async (threadId, recipientId, message) => {
-  // DM messages always have an author (no sender-less SYSTEM messages on the dm path); optional-chain to
-  // satisfy the nullable contract type, mirroring src/routes/chat-notify-copy.ts's authorDisplay.
   const from = message.from
   const title = from && from.name.trim() !== "" ? from.name : from?.handle ? `@${from.handle}` : ""
   await notifications.createNotification(recipientId, {
@@ -72,6 +72,12 @@ function depsFor(): GatewayDeps {
     onDmDelivered,
     markRead: async (cleanupId, userId) => {
       await notifications.clearByTypeAndLink(userId, "cleanup_chat", `/cleanups/${cleanupId}`)
+    },
+    reportChat: {
+      isMember: () => Promise.resolve(true),
+      advanceReadWatermark: async (reportId, userId) => {
+        await clearConversationBellFor(notifications, "report", reportId, userId)
+      },
     },
   }
 }
@@ -212,6 +218,35 @@ describe("DM bell notifications (#42)", () => {
     )
     const after = notifRepo.notifications.filter(
       (n) => n.userId === BOB && n.type === "cleanup_chat" && n.readAt === null,
+    )
+    expect(after).toHaveLength(0)
+  })
+
+  it("reading a report conversation clears its `report_chat` notification", async () => {
+    await notifications.createNotification(BOB, {
+      type: "report_chat",
+      title: "New message",
+      body: "Someone replied on your report.",
+      link: `/messages/report/${REPORT}`,
+    })
+    const before = notifRepo.notifications.filter(
+      (n) => n.userId === BOB && n.type === "report_chat" && n.readAt === null,
+    )
+    expect(before).toHaveLength(1)
+
+    const bConn = new MockConnection("B")
+    const bSession = sessionFor(BOB, bConn)
+    await handleClientFrame(
+      bSession,
+      JSON.stringify({
+        type: "ack",
+        upToId: "44444444-4444-4444-4444-444444444444",
+        cleanupId: REPORT,
+        roomKind: "report",
+      }),
+    )
+    const after = notifRepo.notifications.filter(
+      (n) => n.userId === BOB && n.type === "report_chat" && n.readAt === null,
     )
     expect(after).toHaveLength(0)
   })

@@ -175,7 +175,7 @@ describe("listNotifications + markRead", () => {
 })
 
 describe("feed excludes conversation-message notifications", () => {
-  it("hides dm + cleanup_chat from the feed read while still recording the row and pushing", async () => {
+  it("hides dm + cleanup_chat + report_chat from the feed read while still recording the row and pushing", async () => {
     const { repo, push, service } = makeHarness()
     await service.createNotification(U, { type: "report_update", title: "status changed", link: "/pin/x" })
     await service.createNotification(U, { type: "dm", title: "Alice", body: "hi", link: "/messages/dm/t1" })
@@ -183,6 +183,12 @@ describe("feed excludes conversation-message notifications", () => {
       type: "cleanup_chat",
       title: "Bob mentioned you",
       link: "/cleanups/c1",
+    })
+    await service.createNotification(U, {
+      type: "report_chat",
+      title: "Alice",
+      body: "hi",
+      link: "/messages/report/r1",
     })
     await service.createNotification(U, { type: "system", title: "welcome" })
 
@@ -194,9 +200,9 @@ describe("feed excludes conversation-message notifications", () => {
         .filter((n) => n.userId === U)
         .map((n) => n.type)
         .sort(),
-    ).toEqual(["cleanup_chat", "dm", "report_update", "system"])
+    ).toEqual(["cleanup_chat", "dm", "report_chat", "report_update", "system"])
 
-    expect(push.sent.filter((p) => p.userId === U)).toHaveLength(4)
+    expect(push.sent.filter((p) => p.userId === U)).toHaveLength(5)
   })
 })
 
@@ -304,14 +310,11 @@ describe("registerPushToken", () => {
 
   it("device-claim: registering on a device soft-revokes ANOTHER user's active token on that same device", async () => {
     const { repo, service } = makeHarness()
-    // U previously signed in on device "shared" and still owns a (distinct-token) row there.
     await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
-    // V now signs in on the SAME physical device and registers its own token.
     await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "shared" })
 
     const uRow = repo.pushTokens.find((t) => t.token === "tok-U")
     const vRow = repo.pushTokens.find((t) => t.token === "tok-V")
-    // U no longer receives on this device; V (the signed-in account) does.
     expect(uRow?.revokedAt).not.toBeNull()
     expect(vRow).toMatchObject({ userId: V, revokedAt: null })
   })
