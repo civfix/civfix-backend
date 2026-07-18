@@ -33,6 +33,13 @@ export const de: Partial<Record<MessageKey, string>> = {
 
   "notification.message.no_preview": "Hat dir eine Nachricht gesendet",
 
+  "notification.cleanup_role.promoted.title": "Du bist jetzt Co-Host",
+  "notification.cleanup_role.promoted.body": "Du bist jetzt Co-Host von {{title}}.",
+  "notification.cleanup_role.demoted.title": "Co-Host-Rolle entfernt",
+  "notification.cleanup_role.demoted.body": "Du bist nicht mehr Co-Host von {{title}}.",
+  "notification.cleanup_role.removed.title": "Aus dem Event entfernt",
+  "notification.cleanup_role.removed.body": "Du wurdest aus {{title}} entfernt.",
+
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Dein civfix-Anmeldecode",
   "email.otp.body_line1": "Dein civfix-Anmeldecode lautet {{code}}.",

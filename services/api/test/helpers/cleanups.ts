@@ -32,7 +32,7 @@ import type {
   NearPoint,
   UpdateCleanupPatch,
 } from "../../src/services/cleanup-service.js"
-import type { EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
+import type { CleanupMemberRole, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
 
 /** A stored cleanup (the persisted fields; geom is kept decoded as lat/lng). */
@@ -58,7 +58,7 @@ interface StoredCleanup {
 interface StoredMember {
   cleanupId: string
   userId: string
-  role: "organizer" | "member"
+  role: CleanupMemberRole
 }
 
 /** A stored user (the subset the organizer person join needs). */
@@ -160,6 +160,14 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   /** Test helper: record that `followerId` follows `followeeId` (drives listAttendees' isFollowing). */
   seedFollow(followerId: string, followeeId: string): void {
     this.follows.add(`${followerId}:${followeeId}`)
+  }
+
+  /** Test helper: seed a membership row directly with an explicit role (default plain member). */
+  seedMember(cleanupId: string, userId: string, role: CleanupMemberRole = "member"): void {
+    if (!this.users.has(userId)) this.seedUser({ id: userId })
+    const existing = this.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)
+    if (existing) existing.role = role
+    else this.members.push({ cleanupId, userId, role })
   }
 
   /** Test helper: seed a report so the link galleries + visibility filter resolve. Defaults to visible. */
@@ -509,19 +517,34 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
-  roleOf(cleanupId: string, userId: string): Promise<"organizer" | "member" | null> {
-    const row = this.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)
-    return Promise.resolve(row?.role ?? null)
+  roleOf(cleanupId: string, userId: string): Promise<CleanupMemberRole | null> {
+    const m = this.members.find((x) => x.cleanupId === cleanupId && x.userId === userId)
+    return Promise.resolve(m?.role ?? null)
   }
 
-  membersOf(cleanupIds: string[], userId: string): Promise<Set<string>> {
+  rolesOf(cleanupIds: string[], userId: string): Promise<Map<string, CleanupMemberRole>> {
     const ids = new Set(cleanupIds)
-    const joined = new Set(
-      this.members
-        .filter((m) => m.userId === userId && ids.has(m.cleanupId))
-        .map((m) => m.cleanupId),
+    const roles = new Map<string, CleanupMemberRole>()
+    for (const m of this.members) {
+      if (m.userId === userId && ids.has(m.cleanupId)) roles.set(m.cleanupId, m.role)
+    }
+    return Promise.resolve(roles)
+  }
+
+  setMemberRole(cleanupId: string, userId: string, role: "cohost" | "member"): Promise<boolean> {
+    // Mirrors the Drizzle UPDATE's `role <> 'organizer'` defense-in-depth guard.
+    const m = this.members.find((x) => x.cleanupId === cleanupId && x.userId === userId)
+    if (!m || m.role === "organizer") return Promise.resolve(false)
+    m.role = role
+    return Promise.resolve(true)
+  }
+
+  removeMember(cleanupId: string, userId: string): Promise<{ removed: boolean; going: number }> {
+    const idx = this.members.findIndex(
+      (m) => m.cleanupId === cleanupId && m.userId === userId && m.role !== "organizer",
     )
-    return Promise.resolve(joined)
+    if (idx >= 0) this.members.splice(idx, 1)
+    return Promise.resolve({ removed: idx >= 0, going: this.memberCountOf(cleanupId) })
   }
 
   listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
@@ -576,21 +599,23 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const follows = (userId: string): boolean =>
       viewerId !== null && this.follows.has(`${viewerId}:${userId}`)
 
-    // Members of this cleanup, organizer-first then insertion order (mirrors joined_at ASC in the
-    // Drizzle impl, since members are appended in join order).
+    // Members of this cleanup, organizer-first then cohosts then insertion order (mirrors the Drizzle
+    // ORDER BY (role='organizer') DESC, (role='cohost') DESC, joined_at ASC, since members are appended
+    // in join order).
+    const rank = (role: CleanupMemberRole): number =>
+      role === "organizer" ? 0 : role === "cohost" ? 1 : 2
     const ordered = this.members
       .map((m, idx) => ({ m, idx }))
       .filter((x) => x.m.cleanupId === cleanupId)
       .sort((a, b) => {
-        const aOrg = a.m.role === "organizer" ? 1 : 0
-        const bOrg = b.m.role === "organizer" ? 1 : 0
-        if (aOrg !== bOrg) return bOrg - aOrg
+        const cmp = rank(a.m.role) - rank(b.m.role)
+        if (cmp !== 0) return cmp
         return a.idx - b.idx
       })
 
     let views: AttendeeView[] = ordered.map((x) => {
       const view = this.personView(x.m.userId)
-      return { ...view, isFollowing: follows(x.m.userId) }
+      return { ...view, isFollowing: follows(x.m.userId), role: x.m.role }
     })
     if (onlyFollowed) views = views.filter((v) => v.isFollowing)
     return Promise.resolve(views.slice(0, limit))

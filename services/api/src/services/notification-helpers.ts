@@ -62,9 +62,12 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
     case "claim_available":
     case "report_chat":
       return prefs.reportUpdates
+    // cleanup_role (promoted/demoted/removed, WS4) rides the same "cleanups" pref bucket as the other
+    // cleanup lifecycle bells — there is no dedicated pref field for it.
     case "cleanup_chat":
     case "cleanup_reminder":
     case "cleanup_cancelled":
+    case "cleanup_role":
     case "group_chat":
       // group_chat (P4 4.5, plan D8) rides the chat-message pref until a dedicated toggle exists.
       return prefs.cleanupChat

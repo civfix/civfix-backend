@@ -5,7 +5,7 @@
  *
  *   dm       participant        -> pin YES,  delete-others NO (always), not a moderator
  *   dm       non-participant    -> nothing
- *   cleanup  organizer          -> pin YES,  delete-others YES
+ *   cleanup  organizer/cohost   -> pin YES,  delete-others YES
  *   cleanup  member             -> nothing
  *   report   owner              -> pin YES,  delete-others NO (public civic space)
  *   report   member             -> nothing
@@ -71,6 +71,15 @@ describe("resolveChatPowers — dm rooms", () => {
 describe("resolveChatPowers — cleanup rooms", () => {
   it("organizer: canPin AND canDeleteOthers (room moderator)", async () => {
     const resolve = makeChatPowersResolver(deps({ cleanupRoleOf: async () => "organizer" }))
+    await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual({
+      canPin: true,
+      canDeleteOthers: true,
+      isModerator: true,
+    })
+  })
+
+  it("cohost: canPin AND canDeleteOthers (organizer-equivalent for chat)", async () => {
+    const resolve = makeChatPowersResolver(deps({ cleanupRoleOf: async () => "cohost" }))
     await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual({
       canPin: true,
       canDeleteOthers: true,

@@ -10,7 +10,7 @@
  *   room     | who                     | canPin | canDeleteOthers
  *   ---------+-------------------------+--------+----------------
  *   dm       | thread participant      |  yes   |  NO — always (your peer's words are theirs)
- *   cleanup  | organizer               |  yes   |  yes
+ *   cleanup  | organizer / cohost      |  yes   |  yes  (co-host = organizer-equivalent for chat)
  *   cleanup  | member                  |  no    |  no
  *   report   | owner                   |  yes   |  NO — a report room is a PUBLIC civic space;
  *            |                         |        |  the reporter curates pins but never erases
@@ -94,8 +94,11 @@ export function makeChatPowersResolver(deps: ChatRoomRoleDeps): ResolveChatPower
       }
       case "cleanup": {
         // ONLY the cleanup role decides — no global-role lookup on purpose (see banner).
-        const organizer = (await deps.cleanupRoleOf(roomId, userId)) === "organizer"
-        return { canPin: organizer, canDeleteOthers: organizer, isModerator: organizer }
+        // Co-host is organizer-equivalent for chat moderation: cleanup-service already lets a cohost
+        // edit the event + manage the roster, so a cohost holds the same pin/delete-others powers.
+        const role = await deps.cleanupRoleOf(roomId, userId)
+        const host = role === "organizer" || role === "cohost"
+        return { canPin: host, canDeleteOthers: host, isModerator: host }
       }
       case "report": {
         const [role, globalRole] = await Promise.all([

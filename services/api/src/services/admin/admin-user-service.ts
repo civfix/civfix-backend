@@ -18,6 +18,7 @@ import type {
   UserSubListQuery,
   AdminReportStatus,
   ReportCategory,
+  CleanupMemberRole,
 } from "@civfix/shared"
 import { toRelAbs } from "./admin-format.js"
 
@@ -59,7 +60,7 @@ export interface UserEventRecord {
   id: string
   title: string
   place: string
-  role: "organizer" | "member"
+  role: CleanupMemberRole
   attendees: number
   whenAt: Date
 }

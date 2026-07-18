@@ -425,3 +425,78 @@ describe("resolveHandleToId", () => {
     })
   })
 })
+
+describe("followSuggestions", () => {
+  const D = "44444444-4444-4444-4444-444444444444"
+  const E = "55555555-5555-5555-5555-555555555555"
+
+  // Santa Monica-ish viewer point; "far" = New York.
+  const NEAR = { lat: 34.01, lng: -118.49 }
+  const FAR = { lat: 40.7, lng: -74.0 }
+
+  it("ranks nearby organizers first, then nearby people, then organizers elsewhere, then the rest", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "Nearby organizer", handle: "org_near" })
+    repo.seedUser({ id: C, displayName: "Far organizer", handle: "org_far" })
+    repo.seedUser({ id: D, displayName: "Nearby neighbor", handle: "neighbor" })
+    repo.seedUser({ id: E, displayName: "Random person", handle: "random" })
+    // The viewer's area: they attended B's cleanup at NEAR. C hosts an event far away. D and E have
+    // no activity signal at all (no known location, not organizers) so they land in the last tier.
+    repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, ...NEAR }), [A])
+    repo.seedCleanup(makeCleanupRecord({ organizerUserId: C, ...FAR }))
+
+    const { results } = await service.followSuggestions(A, 10)
+    const ids = results.map((r) => r.id)
+    expect(ids[0]).toBe(B) // nearby organizer first
+    expect(ids).toContain(C)
+    expect(ids.indexOf(B)).toBeLessThan(ids.indexOf(C)) // nearby organizer beats far organizer
+    expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(E)) // organizer beats no-signal person
+    expect(ids).not.toContain(A) // never self
+  })
+
+  it("excludes already-followed and blocked users, and returns isFollowing=false rows", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "Followed", handle: "followed" })
+    repo.seedUser({ id: C, displayName: "Blocked", handle: "blocked" })
+    repo.seedUser({ id: D, displayName: "Fresh", handle: "fresh" })
+    repo.seedFollow(A, B)
+    repo.seedBlock(C, A)
+    const { results } = await service.followSuggestions(A, 10)
+    const ids = results.map((r) => r.id)
+    expect(ids).toContain(D)
+    expect(ids).not.toContain(B)
+    expect(ids).not.toContain(C)
+    for (const r of results) expect(r.isFollowing).toBe(false)
+  })
+
+  it("excludes handle-less and deleted users and respects the limit", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "No handle" }) // handle defaults to null
+    repo.seedUser({ id: C, displayName: "Deleted", handle: "gone", deletedAt: new Date() })
+    repo.seedUser({ id: D, displayName: "One", handle: "one" })
+    repo.seedUser({ id: E, displayName: "Two", handle: "two" })
+    const { results } = await service.followSuggestions(A, 1)
+    expect(results).toHaveLength(1)
+    const all = await service.followSuggestions(A, 10)
+    const ids = all.results.map((r) => r.id)
+    expect(ids).not.toContain(B)
+    expect(ids).not.toContain(C)
+  })
+
+  it("with no viewer location, organizers still rank above non-organizers", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "Organizer", handle: "org" })
+    repo.seedUser({ id: C, displayName: "Popular", handle: "pop" })
+    repo.seedUser({ id: D, displayName: "Fan", handle: "fan" })
+    repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, ...FAR }))
+    repo.seedFollow(D, C) // C has a follower, but B is an organizer
+    const { results } = await service.followSuggestions(A, 10)
+    const ids = results.map((r) => r.id)
+    expect(ids.indexOf(B)).toBeLessThan(ids.indexOf(C))
+    expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(D)) // follower count breaks the tie in the last tier
+  })
+})

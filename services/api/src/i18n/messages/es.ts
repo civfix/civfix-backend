@@ -32,6 +32,13 @@ export const es: Partial<Record<MessageKey, string>> = {
 
   "notification.message.no_preview": "Te envió un mensaje",
 
+  "notification.cleanup_role.promoted.title": "Ahora eres coanfitrión",
+  "notification.cleanup_role.promoted.body": "Ahora eres coanfitrión de {{title}}.",
+  "notification.cleanup_role.demoted.title": "Rol de coanfitrión retirado",
+  "notification.cleanup_role.demoted.body": "Ya no eres coanfitrión de {{title}}.",
+  "notification.cleanup_role.removed.title": "Eliminado del evento",
+  "notification.cleanup_role.removed.body": "Se te eliminó de {{title}}.",
+
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Tu código de acceso a civfix",
   "email.otp.body_line1": "Tu código de acceso a civfix es {{code}}.",

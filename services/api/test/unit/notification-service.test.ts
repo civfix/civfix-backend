@@ -101,6 +101,9 @@ describe("typeAllowedByPrefs", () => {
     expect(typeAllowedByPrefs("claim_available", { ...base, reportUpdates: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_chat", { ...base, cleanupChat: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_reminder", { ...base, cleanupChat: false })).toBe(false)
+    // WS4: role bells (promoted/demoted/removed) ride the cleanups pref bucket.
+    expect(typeAllowedByPrefs("cleanup_role", { ...base, cleanupChat: false })).toBe(false)
+    expect(typeAllowedByPrefs("cleanup_role", { ...base, cleanupChat: true })).toBe(true)
     expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: true })).toBe(true)
     expect(typeAllowedByPrefs("system", base)).toBe(true)

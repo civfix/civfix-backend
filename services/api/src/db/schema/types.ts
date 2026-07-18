@@ -149,6 +149,7 @@ export const NOTIFICATION_TYPE_VALUES = [
   "system",
   "report_chat",
   "group_chat",
+  "cleanup_role",
 ] as const
 
 /** push_tokens.platform. Mirrors the shared PushPlatformSchema. */
@@ -158,7 +159,7 @@ export const PUSH_PLATFORM_VALUES = ["ios", "android", "web"] as const
 export const OAUTH_PROVIDER_VALUES = ["apple", "google", "email"] as const
 
 /** cleanup_members.role. Mirrors shared CleanupMemberRoleSchema. */
-export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "member"] as const
+export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "cohost", "member"] as const
 
 /**
  * report_chat_members.role. Used by the report-chat membership table added in the next task

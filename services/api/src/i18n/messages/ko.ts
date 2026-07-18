@@ -33,6 +33,13 @@ export const ko: Partial<Record<MessageKey, string>> = {
 
   "notification.message.no_preview": "메시지를 보냈어요",
 
+  "notification.cleanup_role.promoted.title": "이제 공동 주최자입니다",
+  "notification.cleanup_role.promoted.body": "{{title}}의 공동 주최자가 되었어요.",
+  "notification.cleanup_role.demoted.title": "공동 주최자 역할 해제",
+  "notification.cleanup_role.demoted.body": "더 이상 {{title}}의 공동 주최자가 아니에요.",
+  "notification.cleanup_role.removed.title": "이벤트에서 제외됨",
+  "notification.cleanup_role.removed.body": "{{title}}에서 제외되었어요.",
+
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",
   "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",
