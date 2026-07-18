@@ -43,9 +43,12 @@ const DM_ROOM_PREFIX = "dm:"
 
 const REPORT_ROOM_PREFIX = "report:"
 
+const GROUP_ROOM_PREFIX = "group:"
+
 export function roomKeyFor(kind: RoomKind, id: string): string {
   if (kind === "dm") return `${DM_ROOM_PREFIX}${id}`
   if (kind === "report") return `${REPORT_ROOM_PREFIX}${id}`
+  if (kind === "group") return `${GROUP_ROOM_PREFIX}${id}`
   return id
 }
 
@@ -72,6 +75,9 @@ function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
   }
   if (roomKey.startsWith(REPORT_ROOM_PREFIX)) {
     return { kind: "report", id: roomKey.slice(REPORT_ROOM_PREFIX.length) }
+  }
+  if (roomKey.startsWith(GROUP_ROOM_PREFIX)) {
+    return { kind: "group", id: roomKey.slice(GROUP_ROOM_PREFIX.length) }
   }
   return { kind: "cleanup", id: roomKey }
 }
@@ -117,6 +123,11 @@ async function authorizeRoom(
       return { ok: false, code: "FORBIDDEN", message: "Join this report chat to send messages." }
     }
     return { ok: true }
+  }
+  if (kind === "group") {
+    // P4 Task 4.3: the group HTTP surface is live but the WS join/send lane lands in Task 4.4.
+    // FAIL CLOSED explicitly so a group frame can never fall through to the dm lane below.
+    return { ok: false, code: "FORBIDDEN", message: "Group chat realtime is not available yet." }
   }
   if (!deps.dm) {
     return { ok: false, code: "FORBIDDEN", message: "Direct messages are not available." }

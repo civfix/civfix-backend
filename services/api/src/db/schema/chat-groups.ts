@@ -37,6 +37,10 @@ export const chatGroups = pgTable("chat_groups", {
   avatarMediaId: uuid("avatar_media_id").references(() => mediaAssets.id, {
     onDelete: "set null",
   }),
+  // Non-cascading on purpose, and VERIFIED SAFE (4.3): account deletion is a SOFT delete everywhere
+  // in the product (users.routes deleteAccount -> softDeleteAndAnonymize; admin bans likewise keep the
+  // row), so this FK can never block a deletion path — hard `DELETE FROM users` exists only in test
+  // teardowns. A tombstoned owner simply renders as "Deleted User"; ownership transfer is future work.
   ownerId: uuid("owner_id")
     .notNull()
     .references(() => users.id),

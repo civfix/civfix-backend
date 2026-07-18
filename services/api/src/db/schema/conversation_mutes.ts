@@ -20,8 +20,8 @@
 import { pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 
-/** conversation_mutes.room_kind: which table room_id points into. */
-export type ConversationMuteRoomKind = "cleanup" | "dm" | "report"
+/** conversation_mutes.room_kind: which table room_id points into (P4 adds 'group' -> chat_groups.id). */
+export type ConversationMuteRoomKind = "cleanup" | "dm" | "report" | "group"
 
 export const conversationMutes = pgTable(
   "conversation_mutes",

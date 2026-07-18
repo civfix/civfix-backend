@@ -31,6 +31,7 @@ import {
 } from "../services/threads-repository.drizzle.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import {
   makeThreadsService,
@@ -62,6 +63,8 @@ export interface ChatGatewayOverrides {
   reportChat?: ReportChatRepository
   conversationMutes?: ConversationMutesRepository
   reportThreadsSource?: ReportThreadsSource
+  /** P4: chat_groups management repo (group routes + the powers resolver's group lane). */
+  groups?: ChatGroupRepository
   /**
    * P3: injected chat-powers resolver (pin / delete-others). When absent, wireChatPowers builds a
    * fail-closed resolver over the other override seams (offline) or the real Drizzle lookups (prod).

@@ -40,6 +40,7 @@ function deps(overrides: Partial<ChatRoomRoleDeps>): ChatRoomRoleDeps {
     cleanupRoleOf: never("cleanupRoleOf"),
     reportChatRoleOf: never("reportChatRoleOf"),
     globalRoleOf: never("globalRoleOf"),
+    groupRoleOf: never("groupRoleOf"),
     ...overrides,
   }
 }
@@ -158,6 +159,37 @@ describe("resolveChatPowers — report rooms", () => {
       canDeleteOthers: false,
       isModerator: true,
     })
+  })
+})
+
+describe("resolveChatPowers — group rooms (P4)", () => {
+  it("owner: both powers + moderator (only groupRoleOf consulted — throwing stubs prove isolation)", async () => {
+    const resolve = makeChatPowersResolver(deps({ groupRoleOf: async () => "owner" }))
+    await expect(resolve({ roomKind: "group", roomId: ROOM, userId: USER })).resolves.toEqual({
+      canPin: true,
+      canDeleteOthers: true,
+      isModerator: true,
+    })
+  })
+
+  it("admin: both powers + moderator", async () => {
+    const resolve = makeChatPowersResolver(deps({ groupRoleOf: async () => "admin" }))
+    await expect(resolve({ roomKind: "group", roomId: ROOM, userId: USER })).resolves.toEqual({
+      canPin: true,
+      canDeleteOthers: true,
+      isModerator: true,
+    })
+  })
+
+  it("member: nothing", async () => {
+    const resolve = makeChatPowersResolver(deps({ groupRoleOf: async () => "member" }))
+    await expect(resolve({ roomKind: "group", roomId: ROOM, userId: USER })).resolves.toEqual(NONE)
+  })
+
+  it("non-member: nothing; operators get NOTHING extra (globalRoleOf never consulted)", async () => {
+    // deps() leaves globalRoleOf throwing: resolving proves the group lane never looks at it.
+    const resolve = makeChatPowersResolver(deps({ groupRoleOf: async () => null }))
+    await expect(resolve({ roomKind: "group", roomId: ROOM, userId: USER })).resolves.toEqual(NONE)
   })
 })
 

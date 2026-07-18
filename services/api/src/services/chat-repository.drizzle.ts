@@ -41,6 +41,8 @@ export interface ChatMessageMeta {
   id: string
   cleanupId: string | null
   reportId: string | null
+  /** P4: the group room's id when the row is group-scoped (exactly one of the three refs is set). */
+  groupId: string | null
   senderId: string | null
   kind: ChatMessageKind
   createdAt: Date
@@ -137,6 +139,36 @@ export interface ChatRepository {
     opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null>
   countReportMessages(reportId: string): Promise<number>
+  /** Group-room twin of history (P4, scoped on group_id). */
+  groupHistory(
+    groupId: string,
+    before: string | undefined,
+    limit: number,
+    viewerUserId?: string | null,
+    around?: string,
+  ): Promise<ChatHistoryPage>
+  /** Group-room twin of findMessage (scoped on group_id). */
+  findGroupMessage(
+    groupId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null>
+  /** Group-room twin of softDelete (scoped on group_id; same SoftDeleteOpts moderator bypass). */
+  softDeleteGroup(
+    groupId: string,
+    messageId: string,
+    senderId: string,
+    opts?: SoftDeleteOpts,
+  ): Promise<ChatMessageDTO | null>
+  /** Group-room twin of setPinned (scoped on group_id). */
+  setGroupPinned(
+    groupId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null>
+  /** Group-room twin of listPins (scoped on group_id). */
+  listGroupPins(groupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
 }
 
 /**
@@ -156,6 +188,8 @@ interface ChatRowSelect {
   id: string
   cleanup_id: string | null
   report_id: string | null
+  // P4: group room scope; exactly one of cleanup_id / report_id / group_id is set per row.
+  group_id: string | null
   // Nullable: a report SYSTEM message has no author (see report-chat-repository.drizzle.ts). Author
   // columns below are correspondingly nullable because the report history LEFT JOINs users.
   sender_id: string | null
@@ -221,10 +255,13 @@ function toMessageDTO(
     deletedAt: r.sender_deleted_at,
   })
   const isReport = r.report_id !== null
+  const isGroup = r.group_id !== null
   return {
     id: r.id,
-    cleanupId: r.cleanup_id ?? r.report_id!,
+    // `cleanupId` is the wire field for "room id" across all kinds (legacy name); roomKind disambiguates.
+    cleanupId: r.cleanup_id ?? r.report_id ?? r.group_id!,
     ...(isReport ? { roomKind: "report" as const } : {}),
+    ...(isGroup ? { roomKind: "group" as const } : {}),
     from: {
       id: r.sender_id!,
       name: author.name,
@@ -303,6 +340,7 @@ function chatColumns(sql: Queryable, includeForward: boolean) {
     cm.id,
     cm.cleanup_id,
     cm.report_id,
+    cm.group_id,
     cm.sender_id,
     cm.body,
     cm.kind,
@@ -331,6 +369,7 @@ function selectChatRowFrom(tag: Queryable, cte: string, includeForward: boolean)
       ${tag(cte)}.id,
       ${tag(cte)}.cleanup_id,
       ${tag(cte)}.report_id,
+      ${tag(cte)}.group_id,
       ${tag(cte)}.sender_id,
       ${tag(cte)}.body,
       ${tag(cte)}.kind,
@@ -355,12 +394,11 @@ function selectChatRowFrom(tag: Queryable, cte: string, includeForward: boolean)
 }
 
 export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): ChatRepository {
-  type RoomScope = { column: "cleanup_id" | "report_id"; id: string }
+  type RoomScope = { column: "cleanup_id" | "report_id" | "group_id"; id: string }
 
-  const anchorScope = (scope: RoomScope) =>
-    scope.column === "report_id" ? sql`report_id = ${scope.id}` : sql`cleanup_id = ${scope.id}`
-  const rowScope = (scope: RoomScope) =>
-    scope.column === "report_id" ? sql`cm.report_id = ${scope.id}` : sql`cm.cleanup_id = ${scope.id}`
+  // scope.column is a trusted internal identifier from the closed union above, rendered as an ident.
+  const anchorScope = (scope: RoomScope) => sql`${sql(scope.column)} = ${scope.id}`
+  const rowScope = (scope: RoomScope) => sql`cm.${sql(scope.column)} = ${scope.id}`
 
   // The report's jurisdiction (geoid/name/handle) is constant per report, so we resolve it ONCE per
   // report-scoped query to drive the @city cityMention chip. cleanup/dm scope skips this entirely (returns
@@ -654,7 +692,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
             AND ${anchorScope(scope)}
             ${senderGate}
             AND deleted_at IS NULL
-          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
+          RETURNING id, cleanup_id, report_id, group_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
         )
         ${selectChatRowFrom(sql, "updated", isReport)}
       `,
@@ -683,8 +721,11 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       const uploadIds = input.mediaUploadIds ?? []
       const wantsMedia = !!presign && uploadIds.length > 0
       const isReport = input.roomKind === "report"
-      const cleanupId = isReport ? null : input.cleanupId
+      const isGroup = input.roomKind === "group"
+      // input.cleanupId is the generic "room id" (legacy field name); exactly one scope column is set.
+      const cleanupId = isReport || isGroup ? null : input.cleanupId
       const reportId = isReport ? input.cleanupId : null
+      const groupId = isGroup ? input.cleanupId : null
       // Reply validation (P2): the target must exist in THIS room and not be tombstoned — 422 with
       // fields.code reply_wrong_room / reply_deleted_target otherwise. Returns the hydrated preview so
       // the ack/broadcast DTO carries replyTo without a re-read. (Validate-then-insert races a
@@ -694,24 +735,28 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           ? await assertReplyTarget(
               sql,
               "chat_messages",
-              { column: isReport ? "report_id" : "cleanup_id", id: input.cleanupId },
+              {
+                column: isReport ? "report_id" : isGroup ? "group_id" : "cleanup_id",
+                id: input.cleanupId,
+              },
               input.replyToId,
             )
           : null
       const run = async (q: Queryable) => q<ChatRowSelect[]>`
         WITH inserted AS (
-          INSERT INTO chat_messages (id, cleanup_id, report_id, sender_id, body, kind, attachments, reply_to_id)
+          INSERT INTO chat_messages (id, cleanup_id, report_id, group_id, sender_id, body, kind, attachments, reply_to_id)
           VALUES (
             ${id},
             ${cleanupId},
             ${reportId},
+            ${groupId},
             ${input.userId},
             ${input.body},
             ${kind},
             ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null},
             ${input.replyToId ?? null}
           )
-          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
+          RETURNING id, cleanup_id, report_id, group_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
         )
         ${selectChatRowFrom(q, "inserted", isReport)}
       `
@@ -741,13 +786,14 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           id: string
           cleanup_id: string | null
           report_id: string | null
+          group_id: string | null
           sender_id: string | null
           kind: ChatMessageKind
           created_at: Date
           deleted_at: Date | null
         }[]
       >`
-        SELECT id, cleanup_id, report_id, sender_id, kind, created_at, deleted_at
+        SELECT id, cleanup_id, report_id, group_id, sender_id, kind, created_at, deleted_at
         FROM chat_messages
         WHERE id = ${messageId}
         LIMIT 1
@@ -758,6 +804,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         id: r.id,
         cleanupId: r.cleanup_id,
         reportId: r.report_id,
+        groupId: r.group_id,
         senderId: r.sender_id,
         kind: r.kind,
         createdAt: r.created_at,
@@ -873,6 +920,46 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         WHERE report_id = ${reportId} AND deleted_at IS NULL
       `
       return rows[0]?.count ?? 0
+    },
+
+    groupHistory(
+      groupId: string,
+      before: string | undefined,
+      limit: number,
+      viewerUserId: string | null = null,
+      around?: string,
+    ): Promise<ChatHistoryPage> {
+      return historyScoped({ column: "group_id", id: groupId }, before, limit, viewerUserId, around)
+    },
+
+    findGroupMessage(
+      groupId: string,
+      messageId: string,
+      viewerUserId: string | null,
+    ): Promise<ChatMessageDTO | null> {
+      return findMessageScoped({ column: "group_id", id: groupId }, messageId, viewerUserId)
+    },
+
+    softDeleteGroup(
+      groupId: string,
+      messageId: string,
+      senderId: string,
+      opts?: SoftDeleteOpts,
+    ): Promise<ChatMessageDTO | null> {
+      return softDeleteScoped({ column: "group_id", id: groupId }, messageId, senderId, opts)
+    },
+
+    setGroupPinned(
+      groupId: string,
+      messageId: string,
+      userId: string,
+      pinned: boolean,
+    ): Promise<ChatMessageDTO | null> {
+      return setPinnedScoped({ column: "group_id", id: groupId }, messageId, userId, pinned)
+    },
+
+    listGroupPins(groupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+      return listPinsScoped({ column: "group_id", id: groupId }, viewerUserId)
     },
   }
 }

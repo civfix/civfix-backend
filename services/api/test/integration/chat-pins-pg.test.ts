@@ -48,6 +48,7 @@ import { makeReportChatRepository } from "../../src/services/report-chat-reposit
 import { makeDrizzleDiscussionRepository } from "../../src/services/discussion-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
+import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
 
 const pg = await withPg()
@@ -87,6 +88,8 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
         reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
         globalRoleOf: (userId) => globalRoleOf(h.sql, userId),
+        // P4 group lane, wired to the real repo for parity (this file exercises no group rooms).
+        groupRoleOf: (groupId, userId) => makeChatGroupRepository(h.sql).roleOf(groupId, userId),
       }),
     }
     container = buildContainer(env)

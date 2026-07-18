@@ -124,6 +124,11 @@ function makeUnusedChatRepo() {
     setReportPinned: () => Promise.reject(new Error("report pin not expected in dm tests")),
     listPins: () => Promise.resolve([]),
     listReportPins: () => Promise.resolve([]),
+    groupHistory: () => Promise.resolve({ items: [], nextCursor: null }),
+    findGroupMessage: () => Promise.resolve(null),
+    softDeleteGroup: () => Promise.reject(new Error("group delete not expected in dm tests")),
+    setGroupPinned: () => Promise.reject(new Error("group pin not expected in dm tests")),
+    listGroupPins: () => Promise.resolve([]),
   }
 }
 

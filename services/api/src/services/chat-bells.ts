@@ -74,7 +74,8 @@ async function isGroupMember(
 export function makeChatMentionNotifier(deps: ChatBellDeps): GatewayChatMentions["notifyChatMention"] {
   return async (input) => {
     const { kind, roomId, actorUserId, mentionedUserId, message } = input
-    if (kind === "dm") return
+    // dm bells ride makeDmBellNotifier; group-room bells land in P4 Task 4.5 (no-op until then).
+    if (kind === "dm" || kind === "group") return
     if (await deps.isMutedFor(mentionedUserId, kind, roomId)) return
     if (!(await isGroupMember(deps, kind, roomId, mentionedUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, mentionedUserId)) return
@@ -101,7 +102,8 @@ export function makeChatMentionNotifier(deps: ChatBellDeps): GatewayChatMentions
 export function makeChatReplyNotifier(deps: ChatBellDeps): OnChatReply {
   return async (input) => {
     const { kind, roomId, actorUserId, targetUserId, message } = input
-    if (kind === "dm") return
+    // dm replies ride makeDmBellNotifier; group-room bells land in P4 Task 4.5 (no-op until then).
+    if (kind === "dm" || kind === "group") return
     if (!(await isGroupMember(deps, kind, roomId, targetUserId))) return
     if (await deps.isBlockedEitherWay(actorUserId, targetUserId)) return
     // Reply urgency is mention-class: the mentions pref gates the bell entirely (row + push); push

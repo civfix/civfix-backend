@@ -21,6 +21,8 @@
  *   cleanup  | global operator         |  ——— NOTHING beyond their cleanup_members role ———
  *            |                         |  (§3.4 grants operators powers in REPORT rooms only;
  *            |                         |   a private cleanup crew moderates itself)
+ *   group    | owner / admin (P4)      |  yes   |  yes — user-created rooms moderate themselves
+ *   group    | member                  |  no    |  no  (no global-role lookup, same as cleanup)
  *   any      | non-member / unknown    |  no    |  no
  *
  * `isModerator` semantics (documented choice): TRUE iff the user holds ELEVATED STANDING in a
@@ -34,11 +36,17 @@
  */
 
 import type { RoomKind } from "@civfix/shared"
-import type { ROLE_VALUES, CLEANUP_MEMBER_ROLE_VALUES, REPORT_CHAT_ROLE_VALUES } from "../db/schema/types.js"
+import type {
+  ROLE_VALUES,
+  CLEANUP_MEMBER_ROLE_VALUES,
+  REPORT_CHAT_ROLE_VALUES,
+  GROUP_MEMBER_ROLE_VALUES,
+} from "../db/schema/types.js"
 
 type GlobalRole = (typeof ROLE_VALUES)[number]
 type CleanupRole = (typeof CLEANUP_MEMBER_ROLE_VALUES)[number]
 type ReportChatRole = (typeof REPORT_CHAT_ROLE_VALUES)[number]
+type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
 
 /** What the resolved user may do in the room. */
 export interface ChatPowers {
@@ -57,6 +65,8 @@ export interface ChatRoomRoleDeps {
   reportChatRoleOf(reportId: string, userId: string): Promise<ReportChatRole | null>
   /** report lane: users.role, or null when the user row is missing. */
   globalRoleOf(userId: string): Promise<GlobalRole | null>
+  /** group lane (P4): the user's chat_group_members.role, or null when not a member. */
+  groupRoleOf(groupId: string, userId: string): Promise<GroupMemberRole | null>
 }
 
 export interface ResolveChatPowersInput {
@@ -96,6 +106,13 @@ export function makeChatPowersResolver(deps: ChatRoomRoleDeps): ResolveChatPower
         const canPin = role === "owner" || operator
         const canDeleteOthers = operator // owners never delete others in the public room
         return { canPin, canDeleteOthers, isModerator: canPin || canDeleteOthers }
+      }
+      case "group": {
+        // P4 group rooms: owner/admin hold both powers, members neither. ONLY the group role decides —
+        // no global-role lookup (a user-created group moderates itself, same stance as cleanup rooms).
+        const role = await deps.groupRoleOf(roomId, userId)
+        const moderator = role === "owner" || role === "admin"
+        return { canPin: moderator, canDeleteOthers: moderator, isModerator: moderator }
       }
       default:
         // RoomKind is exhaustive above; this guards any-typed / forged kinds at runtime.

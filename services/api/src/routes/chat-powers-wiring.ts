@@ -29,6 +29,10 @@ import {
   makeReportChatRepository,
   type ReportChatRepository,
 } from "../services/report-chat-repository.drizzle.js"
+import {
+  makeChatGroupRepository,
+  type ChatGroupRepository,
+} from "../services/chat-group-repository.drizzle.js"
 
 type GlobalRole = (typeof ROLE_VALUES)[number]
 
@@ -57,11 +61,14 @@ export function wireChatPowers(app: FastifyInstance, container: Container): Reso
       reportChatRoleOf: (reportId, userId) =>
         overrides.reportChat ? overrides.reportChat.roleOf(reportId, userId) : Promise.resolve(null),
       globalRoleOf: () => Promise.resolve(null),
+      groupRoleOf: (groupId, userId) =>
+        overrides.groups ? overrides.groups.roleOf(groupId, userId) : Promise.resolve(null),
     })
   }
 
   let cleanups: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   let reportChat: ReportChatRepository | undefined
+  let groups: ChatGroupRepository | undefined
   return makeChatPowersResolver({
     isDmParticipant: (threadId, userId) => container.getDmRepo().isParticipant(threadId, userId),
     cleanupRoleOf: (cleanupId, userId) =>
@@ -69,5 +76,7 @@ export function wireChatPowers(app: FastifyInstance, container: Container): Reso
     reportChatRoleOf: (reportId, userId) =>
       (reportChat ??= makeReportChatRepository(container.getDb().sql)).roleOf(reportId, userId),
     globalRoleOf: (userId) => globalRoleOf(container.getDb().sql, userId),
+    groupRoleOf: (groupId, userId) =>
+      (groups ??= makeChatGroupRepository(container.getDb().sql)).roleOf(groupId, userId),
   })
 }

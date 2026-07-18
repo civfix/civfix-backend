@@ -90,6 +90,7 @@ export class InMemoryChatRepository implements ChatRepository {
       id,
       cleanupId: input.cleanupId,
       ...(input.roomKind === "report" ? { roomKind: "report" as const } : {}),
+      ...(input.roomKind === "group" ? { roomKind: "group" as const } : {}),
       from: {
         id: sender.id,
         name: sender.displayName,
@@ -222,10 +223,12 @@ export class InMemoryChatRepository implements ChatRepository {
       const stored = list.find((m) => m.dto.id === messageId)
       if (stored) {
         const isReport = stored.dto.roomKind === "report"
+        const isGroup = stored.dto.roomKind === "group"
         return Promise.resolve({
           id: messageId,
-          cleanupId: isReport ? null : roomId,
+          cleanupId: isReport || isGroup ? null : roomId,
           reportId: isReport ? roomId : null,
+          groupId: isGroup ? roomId : null,
           senderId: stored.dto.from?.id ?? null,
           kind: stored.dto.kind,
           // Real insertion time, NOT the deterministic dto clock (see StoredMessage.insertedAtMs).
@@ -379,6 +382,48 @@ export class InMemoryChatRepository implements ChatRepository {
 
   countReportMessages(reportId: string): Promise<number> {
     return Promise.resolve(this.count(reportId))
+  }
+
+  // P4 group-room twins: like the report twins above, the store keys every room by its room id, so
+  // the group methods delegate to the shared room-scoped implementations.
+  groupHistory(
+    groupId: string,
+    before: string | undefined,
+    limit: number,
+    _viewerUserId?: string | null,
+    around?: string,
+  ): Promise<ChatHistoryPage> {
+    return this.history(groupId, before, limit, _viewerUserId, around)
+  }
+
+  findGroupMessage(
+    groupId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    return this.findMessage(groupId, messageId, viewerUserId)
+  }
+
+  softDeleteGroup(
+    groupId: string,
+    messageId: string,
+    senderId: string,
+    opts?: SoftDeleteOpts,
+  ): Promise<ChatMessageDTO | null> {
+    return this.softDelete(groupId, messageId, senderId, opts)
+  }
+
+  setGroupPinned(
+    groupId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    return this.setPinned(groupId, messageId, userId, pinned)
+  }
+
+  listGroupPins(groupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    return this.listPins(groupId, viewerUserId)
   }
 }
 

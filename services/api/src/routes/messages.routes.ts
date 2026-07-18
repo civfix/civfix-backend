@@ -164,7 +164,11 @@ export async function registerMessagesRoutes(
         const meta = await getChatRepo().findMessageMeta(messageId)
         const roomMatches =
           meta !== null &&
-          (roomKind === "report" ? meta.reportId === roomId : meta.cleanupId === roomId)
+          (roomKind === "report"
+            ? meta.reportId === roomId
+            : roomKind === "group"
+              ? meta.groupId === roomId
+              : meta.cleanupId === roomId)
         if (meta === null || !roomMatches) throw AppError.notFound("Message not found")
         ;({ kind, deletedAt } = meta)
       }
@@ -190,7 +194,9 @@ export async function registerMessagesRoutes(
           ? await dmRepo().setPinned(roomId, messageId, userId, pinned)
           : roomKind === "report"
             ? await getChatRepo().setReportPinned(roomId, messageId, userId, pinned)
-            : await getChatRepo().setPinned(roomId, messageId, userId, pinned)
+            : roomKind === "group"
+              ? await getChatRepo().setGroupPinned(roomId, messageId, userId, pinned)
+              : await getChatRepo().setPinned(roomId, messageId, userId, pinned)
       if (updated === null) throw AppError.validation({ messageId: "This message was deleted." })
 
       // Realtime: the SAME {type:"message_update"} frame the edit/delete paths use — clients reconcile

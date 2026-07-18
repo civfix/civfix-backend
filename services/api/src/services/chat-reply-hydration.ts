@@ -35,11 +35,11 @@ import { isUuid } from "../db/cursor-helpers.js"
 export type ReplyTable = "chat_messages" | "dm_messages"
 
 /**
- * The room-equality column for reply validation: chat rooms scope on cleanup_id/report_id,
+ * The room-equality column for reply validation: chat rooms scope on cleanup_id/report_id/group_id,
  * dm threads on thread_id. Column names are trusted internal identifiers.
  */
 export interface ReplyRoomScope {
-  column: "cleanup_id" | "report_id" | "thread_id"
+  column: "cleanup_id" | "report_id" | "group_id" | "thread_id"
   id: string
 }
 
