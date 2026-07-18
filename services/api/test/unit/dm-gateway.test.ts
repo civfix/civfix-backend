@@ -120,6 +120,10 @@ function makeUnusedChatRepo() {
     findReportMessage: () => Promise.resolve(null),
     softDeleteReport: () => Promise.reject(new Error("report delete not expected in dm tests")),
     countReportMessages: () => Promise.resolve(0),
+    setPinned: () => Promise.reject(new Error("cleanup pin not expected in dm tests")),
+    setReportPinned: () => Promise.reject(new Error("report pin not expected in dm tests")),
+    listPins: () => Promise.resolve([]),
+    listReportPins: () => Promise.resolve([]),
   }
 }
 

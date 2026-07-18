@@ -79,6 +79,11 @@ export function mapSystemRow(row: SystemChatRow): ChatMessageDTO {
 
 export interface ReportChatRepository {
   isMember(reportId: string, userId: string): Promise<boolean>
+  /**
+   * The user's report_chat_members.role, or null when not a member (P3: feeds the chat-powers
+   * resolver — report OWNERS hold pin power; delete-others in report rooms is operator-only).
+   */
+  roleOf(reportId: string, userId: string): Promise<"owner" | "member" | null>
   /** Idempotent upsert; keeps the existing role on conflict. Default role 'member'. */
   join(reportId: string, userId: string, role?: "owner" | "member"): Promise<void>
   leave(reportId: string, userId: string): Promise<void>
@@ -111,6 +116,15 @@ export function makeReportChatRepository(
         ) AS exists
       `
       return rows[0]?.exists ?? false
+    },
+
+    async roleOf(reportId: string, userId: string): Promise<"owner" | "member" | null> {
+      const rows = await sql<{ role: "owner" | "member" }[]>`
+        SELECT role FROM report_chat_members
+        WHERE report_id = ${reportId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows[0]?.role ?? null
     },
 
     async join(reportId: string, userId: string, role: "owner" | "member" = "member"): Promise<void> {

@@ -41,6 +41,8 @@ import {
   type ThreadsRepository,
 } from "../services/threads-service.js"
 import type { NotificationService } from "../services/notification-service.js"
+import type { ResolveChatPowers } from "../services/chat-room-roles.js"
+import { wireChatPowers } from "./chat-powers-wiring.js"
 import {
   makeConversationMutesRepository,
   type ConversationMutesRepository,
@@ -60,6 +62,11 @@ export interface ChatGatewayOverrides {
   reportChat?: ReportChatRepository
   conversationMutes?: ConversationMutesRepository
   reportThreadsSource?: ReportThreadsSource
+  /**
+   * P3: injected chat-powers resolver (pin / delete-others). When absent, wireChatPowers builds a
+   * fail-closed resolver over the other override seams (offline) or the real Drizzle lookups (prod).
+   */
+  chatPowers?: ResolveChatPowers
 }
 
 declare module "fastify" {
@@ -141,13 +148,25 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     },
   )
 
+  const resolveChatPowers = wireChatPowers(app, container)
+
   route(app, "deleteCleanupMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { cleanupId, messageId } = parse(ThreadMessageParamsSchema, request.params)
     if (!(await wiring.isMember(cleanupId, userId))) {
       throw AppError.forbidden("You can't delete this message.")
     }
-    const tombstone: ChatMessageDTO | null = await wiring.getChatRepo().softDelete(cleanupId, messageId, userId)
+    // Sender self-delete first (the common path — no role lookups). When the sender-gated UPDATE
+    // matches nothing, consult the chat-powers resolver (P3 Task 3.5): a cleanup ORGANIZER may delete
+    // other members' messages (bypassing the sender gate; system rows stay untouchable in the repo).
+    let tombstone: ChatMessageDTO | null = await wiring.getChatRepo().softDelete(cleanupId, messageId, userId)
+    if (tombstone === null) {
+      const powers = await resolveChatPowers({ roomKind: "cleanup", roomId: cleanupId, userId })
+      if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
+      tombstone = await wiring
+        .getChatRepo()
+        .softDelete(cleanupId, messageId, userId, { bypassSenderGate: true })
+    }
     if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
     void Promise.resolve(
       container.chatService.broadcast(roomKeyFor("cleanup", cleanupId), tombstone),

@@ -28,6 +28,7 @@ import type { DiscussionRepository } from "../services/discussion-types.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeMediaPresigner } from "../services/media-presign.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
+import { wireChatPowers } from "./chat-powers-wiring.js"
 
 /**
  * Test injection seam for the report-lookup the report-chat routes use (visibility + @city forward gating).
@@ -83,28 +84,44 @@ export async function registerReportChatRoutes(app: FastifyInstance, container: 
     const viewerUserId = request.auth?.userId ?? null
     await requireVisibleReport(id, viewerUserId)
     // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
-    const page = await getChatRepo().reportHistory(id, q.before, limit, viewerUserId, q.around)
+    // Pins (P3) ride ONLY the initial page (no before, no around): pagination/around pages stay lean
+    // and the client refreshes its pin rail exactly when it (re)opens the room.
+    const isInitialPage = q.before === undefined && q.around === undefined
+    const [page, pins] = await Promise.all([
+      getChatRepo().reportHistory(id, q.before, limit, viewerUserId, q.around),
+      isInitialPage ? getChatRepo().listReportPins(id, viewerUserId) : Promise.resolve(undefined),
+    ])
     // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
     // present — possibly null (window reaches the live head) — on around-mode pages.
     const payload: ChatHistoryResponse = {
       items: page.items,
       nextCursor: page.nextCursor,
       ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
+      ...(pins !== undefined ? { pins } : {}),
     }
     reply.status(200).send(payload)
   })
+
+  const resolveChatPowers = wireChatPowers(app, container)
 
   route(app, "deleteReportMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id, messageId } = parse(ReportChatMessageParamsSchema, request.params)
     parse(DeleteReportMessageRequestSchema, { id, messageId })
     await requireVisibleReport(id, userId)
-    // Report chat is view-only until you Join: a non-member cannot delete (mirrors deleteCleanupMessage's
-    // membership gate). The sender-ownership check inside softDeleteReport is the second gate.
-    if (!(await getReportChatRepo().isMember(id, userId))) {
-      throw AppError.forbidden("You can't delete this message.")
+    // Report chat is view-only until you Join: a MEMBER may self-delete (sender-gated in the repo).
+    // A non-member is NOT pre-gated out entirely (P3 Task 3.5): platform OPERATORS hold delete-others
+    // power in the public report rooms WITHOUT a membership row, so when the sender path doesn't apply
+    // we consult the chat-powers resolver before rejecting. Report owners do NOT get delete-others.
+    let tombstone: ChatMessageDTO | null = null
+    if (await getReportChatRepo().isMember(id, userId)) {
+      tombstone = await getChatRepo().softDeleteReport(id, messageId, userId)
     }
-    const tombstone: ChatMessageDTO | null = await getChatRepo().softDeleteReport(id, messageId, userId)
+    if (tombstone === null) {
+      const powers = await resolveChatPowers({ roomKind: "report", roomId: id, userId })
+      if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
+      tombstone = await getChatRepo().softDeleteReport(id, messageId, userId, { bypassSenderGate: true })
+    }
     if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
     void Promise.resolve(
       container.chatService.broadcast(roomKeyFor("report", id), tombstone),

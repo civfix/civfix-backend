@@ -48,6 +48,11 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import {
+  makeDrizzleChatRepository,
+  type ChatRepository,
+} from "../services/chat-repository.drizzle.js"
+import { makeMediaPresigner } from "../services/media-presign.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
@@ -107,6 +112,20 @@ export async function registerCleanupRoutes(
     const overrides = app.cleanupOverrides
     if (overrides) return overrides.repo
     return makeDrizzleCleanupRepository(container.getDb().sql)
+  }
+
+  // Pins (P3): the cleanup history ITEMS come from container.chatService (FakeChatService offline), but
+  // the pin rail reads the chat REPOSITORY (pins live on message rows). An injected chatOverrides.chatRepo
+  // wins; else the lazily-built Drizzle repo — except under USE_FAKE_CHAT (offline dev, no DB), where
+  // there is no chat repo at all and the initial page simply omits the `pins` key.
+  let pinsChatRepo: ChatRepository | undefined
+  function pinsRepo(): ChatRepository | null {
+    if (app.chatOverrides?.chatRepo) return app.chatOverrides.chatRepo
+    if (container.env.USE_FAKE_CHAT) return null
+    return (pinsChatRepo ??= makeDrizzleChatRepository(
+      container.getDb().sql,
+      makeMediaPresigner(container.storage),
+    ))
   }
 
   function service(): CleanupService {
@@ -260,13 +279,21 @@ export async function registerCleanupRoutes(
 
     const limit = q.limit ?? HISTORY_DEFAULT_LIMIT
     // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
-    const page = await container.chatService.history(id, q.before, limit, userId, q.around)
+    // Pins (P3) ride ONLY the initial page (no before, no around) — see report-chat.routes.ts. Absent
+    // entirely when no chat repo is reachable (offline dev path).
+    const isInitialPage = q.before === undefined && q.around === undefined
+    const repoForPins = isInitialPage ? pinsRepo() : null
+    const [page, pins] = await Promise.all([
+      container.chatService.history(id, q.before, limit, userId, q.around),
+      repoForPins !== null ? repoForPins.listPins(id, userId) : Promise.resolve(undefined),
+    ])
     // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
     // present — possibly null (window reaches the live head) — on around-mode pages.
     const payload: ChatHistoryResponse = {
       items: page.items,
       nextCursor: page.nextCursor,
       ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
+      ...(pins !== undefined ? { pins } : {}),
     }
     reply.status(200).send(payload)
   })

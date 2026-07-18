@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto"
 import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
-import type { ChatMessageMeta, ChatRepository } from "../../src/services/chat-repository.drizzle.js"
+import {
+  PIN_LIST_CAP,
+  type ChatMessageMeta,
+  type ChatRepository,
+  type SoftDeleteOpts,
+} from "../../src/services/chat-repository.drizzle.js"
 import {
   REPLY_EXCERPT_MAX,
   replyDeletedTarget,
@@ -266,19 +271,79 @@ export class InMemoryChatRepository implements ChatRepository {
     cleanupId: string,
     messageId: string,
     senderId: string,
+    opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null> {
     const list = this.log.get(cleanupId)
     const found = list?.find((m) => m.dto.id === messageId)
-    // Test-registered senders always populate `from`; optional-chain to satisfy the nullable contract
-    // type without changing the WHERE-gate semantics for the normal (author-present) case.
-    if (!found || found.deleted || found.dto.from?.id !== senderId) return Promise.resolve(null)
+    if (!found || found.deleted) return Promise.resolve(null)
+    // Sender gate (mirrors the drizzle WHERE): sender-only by default; a moderator bypass (Task 3.5)
+    // still refuses sender-less SYSTEM rows. Test-registered senders always populate `from`;
+    // optional-chain to satisfy the nullable contract type.
+    if (opts?.bypassSenderGate) {
+      if (found.dto.from == null) return Promise.resolve(null)
+    } else if (found.dto.from?.id !== senderId) {
+      return Promise.resolve(null)
+    }
     found.deleted = true
     const tombstone: ChatMessageDTO = {
       ...found.dto,
       deletedAt: this.nextDate().toISOString(),
-      mine: true,
+      mine: found.dto.from?.id === senderId,
     }
     return Promise.resolve(this.withReply(cleanupId, tombstone))
+  }
+
+  /**
+   * Pin/unpin (P3), mirroring the drizzle gate: room-scoped, live, non-system, and only an ACTUAL state
+   * change flips pinnedAt (a repeat pin keeps the original stamp). Returns the CURRENT DTO either way;
+   * null when missing/deleted.
+   */
+  setPinned(
+    roomId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    const found = (this.log.get(roomId) ?? []).find((m) => m.dto.id === messageId)
+    if (!found || found.deleted) return Promise.resolve(null)
+    const currentlyPinned = found.dto.pinnedAt != null
+    if (found.dto.kind !== "system" && currentlyPinned !== pinned) {
+      found.dto = pinned
+        ? { ...found.dto, pinnedAt: this.nextDate().toISOString() }
+        : (({ pinnedAt: _dropped, ...rest }) => rest)(found.dto)
+    }
+    return Promise.resolve(
+      this.withReply(roomId, { ...found.dto, reactions: this.reactionsFor(messageId, userId) }),
+    )
+  }
+
+  setReportPinned(
+    reportId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    return this.setPinned(reportId, messageId, userId, pinned)
+  }
+
+  /** The room's pins, newest-pin first, capped at PIN_LIST_CAP (mirrors the drizzle partial-index query). */
+  listPins(roomId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    const pins = (this.log.get(roomId) ?? [])
+      .filter((m) => !m.deleted && m.dto.pinnedAt != null)
+      .sort((a, b) => {
+        const at = a.dto.pinnedAt!
+        const bt = b.dto.pinnedAt!
+        return at === bt ? (a.dto.id < b.dto.id ? 1 : -1) : at < bt ? 1 : -1
+      })
+      .slice(0, PIN_LIST_CAP)
+      .map((m) =>
+        this.withReply(roomId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+      )
+    return Promise.resolve(pins)
+  }
+
+  listReportPins(reportId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    return this.listPins(reportId, viewerUserId)
   }
 
   count(cleanupId: string): number {
@@ -307,8 +372,9 @@ export class InMemoryChatRepository implements ChatRepository {
     reportId: string,
     messageId: string,
     senderId: string,
+    opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null> {
-    return this.softDelete(reportId, messageId, senderId)
+    return this.softDelete(reportId, messageId, senderId, opts)
   }
 
   countReportMessages(reportId: string): Promise<number> {

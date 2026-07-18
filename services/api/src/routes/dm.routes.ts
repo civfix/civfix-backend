@@ -128,13 +128,19 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     const limit = q.limit ?? DM_HISTORY_DEFAULT_LIMIT
     // Pass the viewer so each message's reactions resolve the viewer's own `mine` flag on the first page.
     // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
-    const page = await dmRepo().history(id, q.before, limit, userId, q.around)
+    // Pins (P3) ride ONLY the initial page (no before, no around) — see report-chat.routes.ts.
+    const isInitialPage = q.before === undefined && q.around === undefined
+    const [page, pins] = await Promise.all([
+      dmRepo().history(id, q.before, limit, userId, q.around),
+      isInitialPage ? dmRepo().listPins(id, userId) : Promise.resolve(undefined),
+    ])
     // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
     // present — possibly null (window reaches the live head) — on around-mode pages.
     const payload: ChatHistoryResponse = {
       items: page.items,
       nextCursor: page.nextCursor,
       ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
+      ...(pins !== undefined ? { pins } : {}),
     }
     reply.status(200).send(payload)
   })

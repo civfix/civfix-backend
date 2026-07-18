@@ -16,7 +16,13 @@
  * mention bells) reuses the gateway's makeChatMentionResolver scope rules, gated off under fake-chat.
  */
 
-import { EditMessageRequestSchema } from "@civfix/shared"
+import {
+  AppError,
+  EditMessageRequestSchema,
+  ErrorCode,
+  SetMessagePinnedRequestSchema,
+  type ChatMessageDTO,
+} from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -37,6 +43,8 @@ import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import { broadcastMessageUpdate } from "../ws/gateway.js"
+import { wireChatPowers } from "./chat-powers-wiring.js"
 
 /**
  * Tighter per-key limit for edits (reaction-route style): a human edits a handful of messages; 30/min
@@ -124,6 +132,70 @@ export async function registerMessagesRoutes(
         body: body.body,
         mentionedUserIds: body.mentionedUserIds,
       })
+
+      reply.status(200).send(updated)
+    },
+  )
+
+  // P3 Task 3.4: PUT /messages/pin — pin/unpin a message in its room. The chat-powers resolver
+  // (chat-room-roles.ts) is the ONLY authorization: dm participants, cleanup organizers, report owners,
+  // and operators-in-report-rooms may pin. Deliberately NO membership pre-gate — operator powers in
+  // report rooms apply WITHOUT a membership row.
+  const resolveChatPowers = wireChatPowers(app, container)
+
+  route(
+    app,
+    "setMessagePinned",
+    { preHandler: csrfProtect, config: { rateLimit: EDIT_MESSAGE_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(SetMessagePinnedRequestSchema, request.body)
+      const { roomKind, roomId, messageId, pinned } = body
+
+      // 1. Resolve the message by id in the correct table and verify its room ref matches roomId ->
+      //    404 otherwise (also plain-missing). Soft-deleted rows resolve here so they can 422 below.
+      let kind: string
+      let deletedAt: Date | null
+      if (roomKind === "dm") {
+        const meta = await dmRepo().findMessageMeta(messageId)
+        if (meta === null || meta.threadId !== roomId) throw AppError.notFound("Message not found")
+        ;({ kind, deletedAt } = meta)
+      } else {
+        const meta = await getChatRepo().findMessageMeta(messageId)
+        const roomMatches =
+          meta !== null &&
+          (roomKind === "report" ? meta.reportId === roomId : meta.cleanupId === roomId)
+        if (meta === null || !roomMatches) throw AppError.notFound("Message not found")
+        ;({ kind, deletedAt } = meta)
+      }
+
+      // 2. Powers gate BEFORE the per-row state gates (mirrors the edit ladder's no-leak ordering: a
+      //    caller without pin power learns nothing about a message's deleted-ness or kind).
+      const powers = await resolveChatPowers({ roomKind, roomId, userId })
+      if (!powers.canPin) {
+        throw new AppError(ErrorCode.FORBIDDEN, "You can't pin messages in this chat.", {
+          fields: { code: "pin_forbidden" },
+        })
+      }
+
+      // 3. State gates: system rows and tombstones are never pinnable/unpinnable -> 422.
+      if (kind === "system") throw AppError.validation({ messageId: "System messages can't be pinned." })
+      if (deletedAt !== null) throw AppError.validation({ messageId: "This message was deleted." })
+
+      // 4. The gated repo flip. IDEMPOTENT by design: pinning an already-pinned message (or unpinning an
+      //    unpinned one) is a no-op that returns the CURRENT DTO — pinned_at is never refreshed by a
+      //    repeat pin. A null here is a lost race (deleted underneath us) -> same 422 as the gate above.
+      const updated: ChatMessageDTO | null =
+        roomKind === "dm"
+          ? await dmRepo().setPinned(roomId, messageId, userId, pinned)
+          : roomKind === "report"
+            ? await getChatRepo().setReportPinned(roomId, messageId, userId, pinned)
+            : await getChatRepo().setPinned(roomId, messageId, userId, pinned)
+      if (updated === null) throw AppError.validation({ messageId: "This message was deleted." })
+
+      // Realtime: the SAME {type:"message_update"} frame the edit/delete paths use — clients reconcile
+      // the bubble (and their pin rail) from message.pinnedAt. Best-effort fire-and-forget.
+      broadcastMessageUpdate(container.chatService, roomKind, roomId, updated)
 
       reply.status(200).send(updated)
     },

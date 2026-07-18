@@ -41,6 +41,9 @@ function makeFakeReportChat(over: {
     isMember,
     join,
     leave,
+    // P3 chat-powers resolver: a plain member (no owner role) — non-members resolve to null too, and
+    // either way the offline harness grants no pin/delete-others powers.
+    roleOf: () => Promise.resolve(over.isMember ? ("member" as const) : null),
     advanceReadWatermark: notImpl("advanceReadWatermark") as never,
     insertSystemMessage: notImpl("insertSystemMessage") as never,
     listMemberIds: notImpl("listMemberIds") as never,

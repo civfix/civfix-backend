@@ -204,6 +204,9 @@ export interface CleanupRepository {
   ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }>
   // Whether `userId` is a member of `cleanupId` (member or organizer).
   isMember(cleanupId: string, userId: string): Promise<boolean>
+  // The user's cleanup_members.role, or null when not a member (P3: feeds the chat-powers resolver —
+  // organizers hold pin/delete-others powers in the cleanup room).
+  roleOf(cleanupId: string, userId: string): Promise<"organizer" | "member" | null>
   // Batched membership probe over a page: of the given cleanup ids, which is `userId` a member of?
   // Empty input ⇒ empty set (no query).
   membersOf(cleanupIds: string[], userId: string): Promise<Set<string>>

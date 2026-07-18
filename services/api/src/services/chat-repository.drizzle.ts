@@ -81,7 +81,35 @@ export interface ChatRepository {
     cleanupId: string,
     messageId: string,
     senderId: string,
+    opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null>
+  /**
+   * Pin/unpin a cleanup message (P3). The gated UPDATE flips (pinned_at, pinned_by) only when the row is
+   * in THIS room, live (not soft-deleted), a non-system kind, AND the pin state actually changes — so
+   * pinning an already-pinned message is an idempotent no-op that does NOT refresh pinned_at. Either way
+   * the CURRENT fully-hydrated DTO is re-read and returned (null when the message is missing from the
+   * room or tombstoned). Authorization (who may pin) lives in the route via the chat-powers resolver.
+   */
+  setPinned(
+    cleanupId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null>
+  /** Report-room twin of setPinned (scoped on report_id). */
+  setReportPinned(
+    reportId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null>
+  /**
+   * The room's pinned messages as fully-hydrated DTOs, newest-pin first (pinned_at DESC), capped at
+   * PIN_LIST_CAP. Rides the partial pin index; tombstoned rows never surface.
+   */
+  listPins(cleanupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
+  /** Report-room twin of listPins (scoped on report_id). */
+  listReportPins(reportId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
   reportHistory(
     reportId: string,
     before: string | undefined,
@@ -106,9 +134,23 @@ export interface ChatRepository {
     reportId: string,
     messageId: string,
     senderId: string,
+    opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null>
   countReportMessages(reportId: string): Promise<number>
 }
+
+/**
+ * P3 Task 3.5 delete-others: `bypassSenderGate: true` drops the `sender_id = actor` predicate from the
+ * soft-delete UPDATE so a MODERATOR (per the chat-powers resolver) can tombstone someone else's message.
+ * The default (absent/false) keeps the sender-only gate byte-identical. Even when bypassing, sender-less
+ * SYSTEM rows stay untouchable (`sender_id IS NOT NULL`) — moderation never erases system history.
+ */
+export interface SoftDeleteOpts {
+  bypassSenderGate?: boolean
+}
+
+/** Cap for a room's pin list (both the listPins query and the initial-history `pins` array). */
+export const PIN_LIST_CAP = 25
 
 interface ChatRowSelect {
   id: string
@@ -125,6 +167,8 @@ interface ChatRowSelect {
   deleted_at: Date | null
   // Reply threading (P2): the quoted message's id (same table), or NULL for a plain message.
   reply_to_id: string | null
+  // Pin state (P3): when the message was pinned to its room; NULL = not pinned.
+  pinned_at: Date | null
   // System-message payload; NULL on every non-system row. Only ever populated for report system rows.
   system_status: string | null
   system_kind: string | null
@@ -204,6 +248,8 @@ function toMessageDTO(
     // Reply threading (P2): the target id rides through verbatim; the denormalized preview is whatever
     // hydration resolved for it (null = target unavailable, client renders a generic quote header).
     ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
+    // Pinning (P3): pinnedAt rides on every read so history rows and message_update broadcasts agree.
+    ...(r.pinned_at != null ? { pinnedAt: r.pinned_at.toISOString() } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     // @city forward surfacing (report rows only). forwardedToCity = the pill (an audit row for this message
     // has forwarded_at set). cityMention = the tinted chip when the body @mentions the report's jurisdiction
@@ -265,6 +311,7 @@ function chatColumns(sql: Queryable, includeForward: boolean) {
     cm.edited_at,
     cm.deleted_at,
     cm.reply_to_id,
+    cm.pinned_at,
     cm.system_status,
     cm.system_kind,
     cm.system_body,
@@ -292,6 +339,7 @@ function selectChatRowFrom(tag: Queryable, cte: string, includeForward: boolean)
       ${tag(cte)}.edited_at,
       ${tag(cte)}.deleted_at,
       ${tag(cte)}.reply_to_id,
+      ${tag(cte)}.pinned_at,
       ${tag(cte)}.system_status,
       ${tag(cte)}.system_kind,
       ${tag(cte)}.system_body,
@@ -537,12 +585,66 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     return findMessageScoped(scope, messageId, senderId)
   }
 
+  /**
+   * Pin/unpin flip (P3). The WHERE gates room scope + live row + non-system kind + an ACTUAL state
+   * change (`(pinned_at IS NULL) = pin` matches unpinned rows when pinning and pinned rows when
+   * unpinning), so a repeat pin is a no-op that keeps the original pinned_at. The current DTO is then
+   * re-read (hydrated like any history row) regardless of whether the UPDATE matched — idempotent
+   * calls return the same payload.
+   */
+  async function setPinnedScoped(
+    scope: RoomScope,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    await sql`
+      UPDATE chat_messages
+      SET pinned_at = CASE WHEN ${pinned} THEN now() END,
+          pinned_by = CASE WHEN ${pinned} THEN ${userId}::uuid END
+      WHERE id = ${messageId}
+        AND ${anchorScope(scope)}
+        AND deleted_at IS NULL
+        AND kind <> 'system'
+        AND (pinned_at IS NULL) = ${pinned}
+    `
+    return findMessageScoped(scope, messageId, userId)
+  }
+
+  /** The room's pins, newest-pin first over the partial index, hydrated like a history page. */
+  async function listPinsScoped(
+    scope: RoomScope,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO[]> {
+    const isReport = scope.column === "report_id"
+    const [rows, reportCity] = await Promise.all([
+      sql<ChatRowSelect[]>`
+        SELECT ${chatColumns(sql, isReport)}
+        FROM chat_messages cm
+        LEFT JOIN users u ON u.id = cm.sender_id
+        WHERE ${rowScope(scope)}
+          AND cm.pinned_at IS NOT NULL
+          AND cm.deleted_at IS NULL
+        ORDER BY cm.pinned_at DESC, cm.id DESC
+        LIMIT ${PIN_LIST_CAP}
+      `,
+      resolveReportCity(scope),
+    ])
+    return hydrateRows(rows, viewerUserId, reportCity)
+  }
+
   async function softDeleteScoped(
     scope: RoomScope,
     messageId: string,
     senderId: string,
+    opts?: SoftDeleteOpts,
   ): Promise<ChatMessageDTO | null> {
     const isReport = scope.column === "report_id"
+    // Sender gate: default sender-only; a moderator bypass (Task 3.5) still refuses sender-less SYSTEM
+    // rows so moderation can never tombstone system history.
+    const senderGate = opts?.bypassSenderGate
+      ? sql`AND sender_id IS NOT NULL`
+      : sql`AND sender_id = ${senderId}`
     const [rows, reportCity] = await Promise.all([
       sql<ChatRowSelect[]>`
         WITH updated AS (
@@ -550,9 +652,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           SET deleted_at = now()
           WHERE id = ${messageId}
             AND ${anchorScope(scope)}
-            AND sender_id = ${senderId}
+            ${senderGate}
             AND deleted_at IS NULL
-          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, system_status, system_kind, system_body
+          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
         )
         ${selectChatRowFrom(sql, "updated", isReport)}
       `,
@@ -609,7 +711,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
             ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null},
             ${input.replyToId ?? null}
           )
-          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, system_status, system_kind, system_body
+          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
         )
         ${selectChatRowFrom(q, "inserted", isReport)}
       `
@@ -707,8 +809,35 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       cleanupId: string,
       messageId: string,
       senderId: string,
+      opts?: SoftDeleteOpts,
     ): Promise<ChatMessageDTO | null> {
-      return softDeleteScoped({ column: "cleanup_id", id: cleanupId }, messageId, senderId)
+      return softDeleteScoped({ column: "cleanup_id", id: cleanupId }, messageId, senderId, opts)
+    },
+
+    setPinned(
+      cleanupId: string,
+      messageId: string,
+      userId: string,
+      pinned: boolean,
+    ): Promise<ChatMessageDTO | null> {
+      return setPinnedScoped({ column: "cleanup_id", id: cleanupId }, messageId, userId, pinned)
+    },
+
+    setReportPinned(
+      reportId: string,
+      messageId: string,
+      userId: string,
+      pinned: boolean,
+    ): Promise<ChatMessageDTO | null> {
+      return setPinnedScoped({ column: "report_id", id: reportId }, messageId, userId, pinned)
+    },
+
+    listPins(cleanupId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+      return listPinsScoped({ column: "cleanup_id", id: cleanupId }, viewerUserId)
+    },
+
+    listReportPins(reportId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+      return listPinsScoped({ column: "report_id", id: reportId }, viewerUserId)
     },
 
     reportHistory(
@@ -733,8 +862,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       reportId: string,
       messageId: string,
       senderId: string,
+      opts?: SoftDeleteOpts,
     ): Promise<ChatMessageDTO | null> {
-      return softDeleteScoped({ column: "report_id", id: reportId }, messageId, senderId)
+      return softDeleteScoped({ column: "report_id", id: reportId }, messageId, senderId, opts)
     },
 
     async countReportMessages(reportId: string): Promise<number> {

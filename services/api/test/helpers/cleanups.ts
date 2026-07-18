@@ -509,6 +509,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
+  roleOf(cleanupId: string, userId: string): Promise<"organizer" | "member" | null> {
+    const row = this.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)
+    return Promise.resolve(row?.role ?? null)
+  }
+
   membersOf(cleanupIds: string[], userId: string): Promise<Set<string>> {
     const ids = new Set(cleanupIds)
     const joined = new Set(

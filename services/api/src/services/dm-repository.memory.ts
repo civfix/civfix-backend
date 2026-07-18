@@ -20,6 +20,7 @@ import {
   replyDeletedTarget,
   replyWrongRoom,
 } from "./chat-reply-hydration.js"
+import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
 import { aroundLimits } from "./chat-history-window.js"
 import type {
   DmMessageMeta,
@@ -259,6 +260,46 @@ export class InMemoryDmRepository implements DmRepository {
       mine: true,
     }
     return Promise.resolve(this.withReply(threadId, tombstone))
+  }
+
+  /**
+   * Pin/unpin (P3), mirroring the drizzle gate: thread-scoped, live, non-system, and only an ACTUAL
+   * state change flips pinnedAt (a repeat pin keeps the original stamp). Returns the CURRENT DTO either
+   * way; null when missing/deleted.
+   */
+  setPinned(
+    threadId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null> {
+    const found = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId)
+    if (!found || found.deleted) return Promise.resolve(null)
+    const currentlyPinned = found.dto.pinnedAt != null
+    if (found.dto.kind !== "system" && currentlyPinned !== pinned) {
+      found.dto = pinned
+        ? { ...found.dto, pinnedAt: this.nextDate().toISOString() }
+        : (({ pinnedAt: _dropped, ...rest }) => rest)(found.dto)
+    }
+    return Promise.resolve(
+      this.withReply(threadId, { ...found.dto, reactions: this.reactionsFor(messageId, userId) }),
+    )
+  }
+
+  /** The thread's pins, newest-pin first, capped at PIN_LIST_CAP (mirrors the drizzle partial-index query). */
+  listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    const pins = (this.log.get(threadId) ?? [])
+      .filter((m) => !m.deleted && m.dto.pinnedAt != null)
+      .sort((a, b) => {
+        const at = a.dto.pinnedAt!
+        const bt = b.dto.pinnedAt!
+        return at === bt ? (a.dto.id < b.dto.id ? 1 : -1) : at < bt ? 1 : -1
+      })
+      .slice(0, PIN_LIST_CAP)
+      .map((m) =>
+        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+      )
+    return Promise.resolve(pins)
   }
 
   history(

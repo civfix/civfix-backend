@@ -412,6 +412,15 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows.length > 0
     },
 
+    async roleOf(cleanupId: string, userId: string): Promise<"organizer" | "member" | null> {
+      const rows = await sql<{ role: "organizer" | "member" }[]>`
+        SELECT role FROM cleanup_members
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows[0]?.role ?? null
+    },
+
     async membersOf(cleanupIds: string[], userId: string): Promise<Set<string>> {
       if (cleanupIds.length === 0) return new Set()
       const rows = await sql<{ cleanup_id: string }[]>`

@@ -38,6 +38,7 @@ import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
 import { AppError } from "@civfix/shared"
 import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
+import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
 
 /** A dm thread row (the participant pair ordered lo < hi). */
 export interface DmThread {
@@ -137,6 +138,21 @@ export interface DmRepository {
     messageId: string,
     senderId: string,
   ): Promise<ChatMessageDTO | null>
+  /**
+   * Pin/unpin a dm message (P3), mirroring the chat repo's setPinned: the gated UPDATE flips
+   * (pinned_at, pinned_by) only when the row is in THIS thread, live, non-system, and the pin state
+   * actually changes (idempotent — a repeat pin keeps the original pinned_at). Returns the CURRENT
+   * hydrated DTO either way (null when missing from the thread or tombstoned). Authorization (both
+   * participants may pin) lives in the route via the chat-powers resolver.
+   */
+  setPinned(
+    threadId: string,
+    messageId: string,
+    userId: string,
+    pinned: boolean,
+  ): Promise<ChatMessageDTO | null>
+  /** The thread's pinned messages, newest-pin first (pinned_at DESC), capped at PIN_LIST_CAP. */
+  listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
   /** Page a thread's messages newest-first, before the given message id (cursor). roomKind:"dm".
    *  `viewerUserId` (optional) resolves each message's reaction `mine` flag for the loader.
    *  `around` (P2 2.4) centers the page on that message id instead (mutually exclusive with `before`). */
@@ -190,6 +206,8 @@ interface DmRowSelect {
   deleted_at: Date | null
   // Reply threading (P2): the quoted dm message's id (same table), or NULL for a plain message.
   reply_to_id: string | null
+  // Pin state (P3): when the message was pinned to its thread; NULL = not pinned.
+  pinned_at: Date | null
   sender_display_name: string
   sender_handle: string | null
   sender_bio: string | null
@@ -248,6 +266,8 @@ function toMessageDTO(
     ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
     // Reply threading (P2): target id passthrough + the hydrated preview (mirrors the chat repo).
     ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
+    // Pinning (P3): pinnedAt rides on every read so history rows and message_update broadcasts agree.
+    ...(r.pinned_at != null ? { pinnedAt: r.pinned_at.toISOString() } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(clientId !== undefined ? { clientId } : {}),
   }
@@ -271,6 +291,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     dm.edited_at,
     dm.deleted_at,
     dm.reply_to_id,
+    dm.pinned_at,
     u.display_name AS sender_display_name,
     u.handle AS sender_handle,
     u.bio AS sender_bio,
@@ -364,7 +385,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     }
   }
 
-  return {
+  const repo: DmRepository = {
     async openOrCreateThread(userA: string, userB: string): Promise<DmThread> {
       // Order the pair so the unique (user_lo, user_hi) key is stable regardless of who initiates.
       const lo = userA < userB ? userA : userB
@@ -446,7 +467,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null},
             ${input.replyToId ?? null}
           )
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
         SELECT
           inserted.id,
@@ -459,6 +480,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           inserted.edited_at,
           inserted.deleted_at,
           inserted.reply_to_id,
+          inserted.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -506,7 +528,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND thread_id = ${threadId}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
         SELECT
           updated.id,
@@ -519,6 +541,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           updated.edited_at,
           updated.deleted_at,
           updated.reply_to_id,
+          updated.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -595,7 +618,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND thread_id = ${threadId}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
         SELECT
           updated.id,
@@ -608,6 +631,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           updated.edited_at,
           updated.deleted_at,
           updated.reply_to_id,
+          updated.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -699,6 +723,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           dm.edited_at,
           dm.deleted_at,
           dm.reply_to_id,
+          dm.pinned_at,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -838,5 +863,42 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         unread: Number(r.unread),
       }))
     },
+
+    async setPinned(
+      threadId: string,
+      messageId: string,
+      userId: string,
+      pinned: boolean,
+    ): Promise<ChatMessageDTO | null> {
+      // Mirror of the chat repo's setPinnedScoped: gated on thread scope + live row + non-system kind +
+      // an ACTUAL state change ((pinned_at IS NULL) = pin), so a repeat pin is a no-op that keeps the
+      // original pinned_at. Re-read the CURRENT hydrated DTO either way (idempotent responses).
+      await sql`
+        UPDATE dm_messages
+        SET pinned_at = CASE WHEN ${pinned} THEN now() END,
+            pinned_by = CASE WHEN ${pinned} THEN ${userId}::uuid END
+        WHERE id = ${messageId}
+          AND thread_id = ${threadId}
+          AND deleted_at IS NULL
+          AND kind <> 'system'
+          AND (pinned_at IS NULL) = ${pinned}
+      `
+      return repo.findMessage(threadId, messageId, userId)
+    },
+
+    async listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+      const rows = await sql<DmRowSelect[]>`
+        SELECT ${dmColumns}
+        FROM dm_messages dm
+        JOIN users u ON u.id = dm.sender_id
+        WHERE dm.thread_id = ${threadId}
+          AND dm.pinned_at IS NOT NULL
+          AND dm.deleted_at IS NULL
+        ORDER BY dm.pinned_at DESC, dm.id DESC
+        LIMIT ${PIN_LIST_CAP}
+      `
+      return hydrateDmRows(rows, viewerUserId)
+    },
   }
+  return repo
 }
