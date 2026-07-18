@@ -27,8 +27,26 @@ export interface ReportCityContext {
   handle: string | null
 }
 
+/**
+ * Lightweight per-message metadata for the edit gate ladder (chat-edit-service). Unlike findMessage /
+ * findReportMessage this resolves by id ALONE (no room scope, INCLUDING soft-deleted rows) so the caller
+ * can distinguish wrong-room (404) / deleted (409) / non-text (422) / stale (window) before touching the
+ * row. senderId is null on sender-less SYSTEM rows.
+ */
+export interface ChatMessageMeta {
+  id: string
+  cleanupId: string | null
+  reportId: string | null
+  senderId: string | null
+  kind: ChatMessageKind
+  createdAt: Date
+  deletedAt: Date | null
+}
+
 export interface ChatRepository {
   insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO>
+  /** Resolve edit-gate metadata by message id alone (soft-deleted rows included). Null when unknown. */
+  findMessageMeta(messageId: string): Promise<ChatMessageMeta | null>
   history(
     cleanupId: string,
     before: string | undefined,
@@ -41,6 +59,18 @@ export interface ChatRepository {
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO | null>
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
+  /**
+   * Edit a cleanup message's body and stamp edited_at = now(), returning the refreshed, fully-hydrated
+   * ChatMessageDTO (reactions/mentions/attachments, like a history row). SENDER-ONLY + room-scoped +
+   * not-soft-deleted via the UPDATE's WHERE (mirrors dm-repository.editMessage); null when it matched
+   * nothing. Authorization gates beyond the WHERE (kind, edit window, membership) live in chat-edit-service.
+   */
+  editMessage(
+    cleanupId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null>
   softDelete(
     cleanupId: string,
     messageId: string,
@@ -56,6 +86,13 @@ export interface ChatRepository {
     reportId: string,
     messageId: string,
     viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null>
+  /** Report-room twin of editMessage (same WHERE gate, scoped on report_id). */
+  editReportMessage(
+    reportId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
   ): Promise<ChatMessageDTO | null>
   softDeleteReport(
     reportId: string,
@@ -368,6 +405,31 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     )
   }
 
+  async function editScoped(
+    scope: RoomScope,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    // SENDER-ONLY, room-scoped, not-soft-deleted (the softDeleteScoped WHERE gate, but SET body +
+    // edited_at). The gate ladder (kind/window/membership) ran in chat-edit-service off findMessageMeta;
+    // this WHERE just makes the write itself race-safe. Then re-read via findMessageScoped so the returned
+    // DTO is fully hydrated (reactions/mentions/attachments/@city) exactly like a history row — an edit
+    // must not blank the bubble's media or chips. Like the dm edit, the id-only seek probes every
+    // partition; editing is a rare, deliberate action, so that is acceptable.
+    const rows = await sql<{ id: string }[]>`
+      UPDATE chat_messages
+      SET body = ${body}, edited_at = now()
+      WHERE id = ${messageId}
+        AND ${anchorScope(scope)}
+        AND sender_id = ${senderId}
+        AND deleted_at IS NULL
+      RETURNING id
+    `
+    if (!rows[0]) return null
+    return findMessageScoped(scope, messageId, senderId)
+  }
+
   async function softDeleteScoped(
     scope: RoomScope,
     messageId: string,
@@ -438,6 +500,36 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId, attachments, reportCity)
     },
 
+    async findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {
+      const rows = await sql<
+        {
+          id: string
+          cleanup_id: string | null
+          report_id: string | null
+          sender_id: string | null
+          kind: ChatMessageKind
+          created_at: Date
+          deleted_at: Date | null
+        }[]
+      >`
+        SELECT id, cleanup_id, report_id, sender_id, kind, created_at, deleted_at
+        FROM chat_messages
+        WHERE id = ${messageId}
+        LIMIT 1
+      `
+      const r = rows[0]
+      if (!r) return null
+      return {
+        id: r.id,
+        cleanupId: r.cleanup_id,
+        reportId: r.report_id,
+        senderId: r.sender_id,
+        kind: r.kind,
+        createdAt: r.created_at,
+        deletedAt: r.deleted_at,
+      }
+    },
+
     history(
       cleanupId: string,
       before: string | undefined,
@@ -445,6 +537,24 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       viewerUserId: string | null = null,
     ): Promise<ChatHistoryPage> {
       return historyScoped({ column: "cleanup_id", id: cleanupId }, before, limit, viewerUserId)
+    },
+
+    editMessage(
+      cleanupId: string,
+      messageId: string,
+      senderId: string,
+      body: string,
+    ): Promise<ChatMessageDTO | null> {
+      return editScoped({ column: "cleanup_id", id: cleanupId }, messageId, senderId, body)
+    },
+
+    editReportMessage(
+      reportId: string,
+      messageId: string,
+      senderId: string,
+      body: string,
+    ): Promise<ChatMessageDTO | null> {
+      return editScoped({ column: "report_id", id: reportId }, messageId, senderId, body)
     },
 
     findMessage(

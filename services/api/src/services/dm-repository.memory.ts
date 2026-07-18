@@ -16,6 +16,7 @@ import { avatarGradient } from "@civfix/shared"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
 import type {
+  DmMessageMeta,
   DmPersistInput,
   DmRepository,
   DmThread,
@@ -36,6 +37,13 @@ export interface DmUser {
 interface StoredDmMessage {
   dto: ChatMessageDTO
   deleted: boolean
+  /**
+   * REAL wall-clock insertion time. The dto's createdAt rides the deterministic 2026-01-01 tick clock
+   * (stable ordering for assertions), which would make every fake message look months old to the
+   * chat-edit-service EDIT_WINDOW_HOURS gate; findMessageMeta reports this instead so a just-sent
+   * message is editable on the offline dev/test path.
+   */
+  insertedAtMs: number
 }
 
 /** Order a user pair so (lo, hi) is stable regardless of who initiates. */
@@ -150,7 +158,7 @@ export class InMemoryDmRepository implements DmRepository {
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
     }
     const list = this.log.get(input.threadId) ?? []
-    list.push({ dto, deleted: false })
+    list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.threadId, list)
     return Promise.resolve(dto)
   }
@@ -176,6 +184,26 @@ export class InMemoryDmRepository implements DmRepository {
     }
     stored.dto = edited
     return Promise.resolve(edited)
+  }
+
+  findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
+    // Id-only scan across threads (mirrors the drizzle id-only seek), INCLUDING soft-deleted entries.
+    for (const [threadId, list] of this.log) {
+      const stored = list.find((m) => m.dto.id === messageId)
+      if (stored) {
+        return Promise.resolve({
+          id: messageId,
+          threadId,
+          senderId: lastSenderId(stored.dto),
+          kind: stored.dto.kind,
+          // Real insertion time, NOT the deterministic dto clock (see StoredDmMessage.insertedAtMs).
+          createdAt: new Date(stored.insertedAtMs),
+          // The store keeps a boolean, not a tombstone timestamp; any non-null Date marks "deleted".
+          deletedAt: stored.deleted ? new Date(stored.insertedAtMs) : null,
+        })
+      }
+    }
+    return Promise.resolve(null)
   }
 
   softDelete(

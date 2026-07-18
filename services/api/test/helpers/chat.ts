@@ -3,12 +3,18 @@ import { randomUUID } from "node:crypto"
 import { avatarGradient } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
-import type { ChatRepository } from "../../src/services/chat-repository.drizzle.js"
+import type { ChatMessageMeta, ChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 
 interface StoredMessage {
   dto: ChatMessageDTO
   deleted: boolean
+  /**
+   * REAL wall-clock insertion time. The dto's createdAt rides the deterministic 2026-01-01 tick clock
+   * (stable ordering for assertions), which would make every fake message look months old to the
+   * chat-edit-service EDIT_WINDOW_HOURS gate; findMessageMeta reports this instead.
+   */
+  insertedAtMs: number
 }
 
 export interface ChatSender {
@@ -64,7 +70,7 @@ export class InMemoryChatRepository implements ChatRepository {
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
     }
     const list = this.log.get(input.cleanupId) ?? []
-    list.push({ dto, deleted: false })
+    list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.cleanupId, list)
     return Promise.resolve(dto)
   }
@@ -124,6 +130,57 @@ export class InMemoryChatRepository implements ChatRepository {
     }
     this.reactions.set(messageId, set)
     return Promise.resolve(present)
+  }
+
+  findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {
+    // Id-only scan across rooms (mirrors the drizzle id-only seek), INCLUDING soft-deleted entries. The
+    // store keys BOTH cleanup and report rooms by their room id in `log`; roomKind on the stored DTO tells
+    // them apart (insertMessage stamps roomKind:"report" for report rows).
+    for (const [roomId, list] of this.log) {
+      const stored = list.find((m) => m.dto.id === messageId)
+      if (stored) {
+        const isReport = stored.dto.roomKind === "report"
+        return Promise.resolve({
+          id: messageId,
+          cleanupId: isReport ? null : roomId,
+          reportId: isReport ? roomId : null,
+          senderId: stored.dto.from?.id ?? null,
+          kind: stored.dto.kind,
+          // Real insertion time, NOT the deterministic dto clock (see StoredMessage.insertedAtMs).
+          createdAt: new Date(stored.insertedAtMs),
+          // The store keeps a boolean, not a tombstone timestamp; any non-null Date marks "deleted".
+          deletedAt: stored.deleted ? new Date(stored.insertedAtMs) : null,
+        })
+      }
+    }
+    return Promise.resolve(null)
+  }
+
+  editMessage(
+    cleanupId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    // Same WHERE gate as softDelete (sender-only, room-scoped, not deleted) but SET body + editedAt.
+    const list = this.log.get(cleanupId)
+    const found = list?.find((m) => m.dto.id === messageId)
+    if (!found || found.deleted || found.dto.from?.id !== senderId) return Promise.resolve(null)
+    found.dto = { ...found.dto, body, editedAt: this.nextDate().toISOString() }
+    return Promise.resolve({
+      ...found.dto,
+      reactions: this.reactionsFor(messageId, senderId),
+      mine: true,
+    })
+  }
+
+  editReportMessage(
+    reportId: string,
+    messageId: string,
+    senderId: string,
+    body: string,
+  ): Promise<ChatMessageDTO | null> {
+    return this.editMessage(reportId, messageId, senderId, body)
   }
 
   softDelete(

@@ -77,6 +77,20 @@ export interface DmPersistInput {
 }
 
 /**
+ * Lightweight per-message metadata for the edit gate ladder (chat-edit-service). Resolved by message id
+ * ALONE (no thread scope, INCLUDING soft-deleted rows) so the caller can distinguish wrong-thread (404) /
+ * deleted (409) / non-text (422) / stale (window) before writing. DM rows always carry a sender.
+ */
+export interface DmMessageMeta {
+  id: string
+  threadId: string
+  senderId: string
+  kind: ChatMessageKind
+  createdAt: Date
+  deletedAt: Date | null
+}
+
+/**
  * Persistence + membership + read-state seam for direct messages. The production impl runs Drizzle/pg;
  * the offline dev/test path passes an in-memory implementation (see di.ts / test helpers).
  */
@@ -104,6 +118,8 @@ export interface DmRepository {
     senderId: string,
     body: string,
   ): Promise<ChatMessageDTO | null>
+  /** Resolve edit-gate metadata by message id alone (soft-deleted rows included). Null when unknown. */
+  findMessageMeta(messageId: string): Promise<DmMessageMeta | null>
   /**
    * Soft-delete (tombstone) a dm message by its author. SENDER-ONLY + thread-scoped + not-already-deleted
    * (same WHERE gate as editMessage). Returns the tombstoned ChatMessageDTO, or null when the message is
@@ -387,6 +403,36 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
       ])
       return toMessageDTO(row, reactions, mentions, senderId, undefined, attachmentsByMessage.get(row.id) ?? [])
+    },
+
+    async findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
+      // Id-only seek (probes every partition, like editMessage — acceptable for the rare edit path),
+      // INCLUDING soft-deleted rows so the caller can 409 a tombstone rather than 404 it.
+      const rows = await sql<
+        {
+          id: string
+          thread_id: string
+          sender_id: string
+          kind: ChatMessageKind
+          created_at: Date
+          deleted_at: Date | null
+        }[]
+      >`
+        SELECT id, thread_id, sender_id, kind, created_at, deleted_at
+        FROM dm_messages
+        WHERE id = ${messageId}
+        LIMIT 1
+      `
+      const r = rows[0]
+      if (!r) return null
+      return {
+        id: r.id,
+        threadId: r.thread_id,
+        senderId: r.sender_id,
+        kind: r.kind,
+        createdAt: r.created_at,
+        deletedAt: r.deleted_at,
+      }
     },
 
     async softDelete(
