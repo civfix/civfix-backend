@@ -1,4 +1,5 @@
 import {
+  AppError,
   WsClientMessageSchema,
   type RoomKind,
   type WsClientMessage,
@@ -192,25 +193,38 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   }
   const mediaUploadIds = frame.mediaUploadIds
   let message: ChatMessageDTO
-  if (kind === "dm") {
-    message = await deps.dm!.persist({
-      threadId: id,
-      senderId: userId,
-      body: frame.body,
-      ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
-      clientId: frame.clientId,
-      ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
-    })
-  } else {
-    message = await deps.chat.persist({
-      cleanupId: id,
-      roomKind: kind === "report" ? "report" : "cleanup",
-      userId,
-      body: frame.body,
-      ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
-      clientId: frame.clientId,
-      ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
-    })
+  try {
+    if (kind === "dm") {
+      message = await deps.dm!.persist({
+        threadId: id,
+        senderId: userId,
+        body: frame.body,
+        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+        clientId: frame.clientId,
+        ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
+        ...(frame.replyToId !== undefined ? { replyToId: frame.replyToId } : {}),
+      })
+    } else {
+      message = await deps.chat.persist({
+        cleanupId: id,
+        roomKind: kind === "report" ? "report" : "cleanup",
+        userId,
+        body: frame.body,
+        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+        clientId: frame.clientId,
+        ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
+        ...(frame.replyToId !== undefined ? { replyToId: frame.replyToId } : {}),
+      })
+    }
+  } catch (err) {
+    // Domain rejections from persist (e.g. P2 reply validation: reply_wrong_room /
+    // reply_deleted_target) surface as a room-stamped error frame carrying the machine subcode
+    // (fields.code when present, the coarse ErrorCode otherwise) instead of a generic INTERNAL.
+    if (err instanceof AppError) {
+      sendError(conn, err.fields?.code ?? err.code, err.message, { kind, id })
+      return
+    }
+    throw err
   }
   let mentions: UserMentionDTO[] = []
   if (deps.chatMentions) {

@@ -13,8 +13,13 @@
 
 import { randomUUID } from "node:crypto"
 import { avatarGradient } from "@civfix/shared"
-import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
+import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
+import {
+  REPLY_EXCERPT_MAX,
+  replyDeletedTarget,
+  replyWrongRoom,
+} from "./chat-reply-hydration.js"
 import type {
   DmMessageMeta,
   DmPersistInput,
@@ -93,6 +98,28 @@ export class InMemoryDmRepository implements DmRepository {
     return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
   }
 
+  /**
+   * Recompute the reply preview for a target id from the CURRENT store state (mirrors the drizzle
+   * hydration: tombstoned target -> deleted:true + excerpt ""; excerpt = first 120 chars of body).
+   */
+  private replyToFor(threadId: string, replyToId: string): ReplyToDTO | null {
+    const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === replyToId)
+    if (!stored) return null
+    return {
+      id: replyToId,
+      from: stored.dto.from ? { id: stored.dto.from.id, displayName: stored.dto.from.name } : null,
+      excerpt: stored.deleted ? "" : (stored.dto.body ?? "").slice(0, REPLY_EXCERPT_MAX),
+      kind: stored.dto.kind,
+      ...(stored.deleted ? { deleted: true } : {}),
+    }
+  }
+
+  /** Project a stored DTO with its live reply preview (no-op for non-replies). */
+  private withReply(threadId: string, dto: ChatMessageDTO): ChatMessageDTO {
+    if (dto.replyToId == null) return dto
+    return { ...dto, replyTo: this.replyToFor(threadId, dto.replyToId) }
+  }
+
   openOrCreateThread(userA: string, userB: string): Promise<DmThread> {
     const [lo, hi] = orderPair(userA, userB)
     const key = `${lo}:${hi}`
@@ -129,6 +156,13 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   persist(input: DmPersistInput): Promise<ChatMessageDTO> {
+    // Reply validation (P2), mirroring the drizzle repo: target must exist in THIS thread (else 422
+    // reply_wrong_room) and not be tombstoned (else 422 reply_deleted_target).
+    if (input.replyToId !== undefined) {
+      const target = (this.log.get(input.threadId) ?? []).find((m) => m.dto.id === input.replyToId)
+      if (!target) return Promise.reject(replyWrongRoom())
+      if (target.deleted) return Promise.reject(replyDeletedTarget())
+    }
     const sender = this.userOf(input.senderId)
     const dto: ChatMessageDTO = {
       id: randomUUID(),
@@ -155,12 +189,13 @@ export class InMemoryDmRepository implements DmRepository {
       mentions: [],
       createdAt: this.nextDate().toISOString(),
       editedAt: null,
+      ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
     }
     const list = this.log.get(input.threadId) ?? []
     list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.threadId, list)
-    return Promise.resolve(dto)
+    return Promise.resolve(this.withReply(input.threadId, dto))
   }
 
   editMessage(
@@ -183,7 +218,7 @@ export class InMemoryDmRepository implements DmRepository {
       editedAt: this.nextDate().toISOString(),
     }
     stored.dto = edited
-    return Promise.resolve(edited)
+    return Promise.resolve(this.withReply(threadId, edited))
   }
 
   findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
@@ -222,7 +257,7 @@ export class InMemoryDmRepository implements DmRepository {
       deletedAt: this.nextDate().toISOString(),
       mine: true,
     }
-    return Promise.resolve(tombstone)
+    return Promise.resolve(this.withReply(threadId, tombstone))
   }
 
   history(
@@ -236,7 +271,9 @@ export class InMemoryDmRepository implements DmRepository {
     // stored DTO's reactions were last computed for whoever toggled). Mirrors the drizzle history path.
     const ordered = [...list]
       .reverse()
-      .map((m) => ({ ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }))
+      .map((m) =>
+        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+      )
     let start = 0
     if (before !== undefined) {
       const idx = ordered.findIndex((m) => m.id === before)
@@ -274,7 +311,9 @@ export class InMemoryDmRepository implements DmRepository {
   ): Promise<ChatMessageDTO | null> {
     const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
-    return Promise.resolve({ ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) })
+    return Promise.resolve(
+      this.withReply(threadId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+    )
   }
 
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {

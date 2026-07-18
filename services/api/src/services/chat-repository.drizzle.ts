@@ -7,6 +7,7 @@ import type {
   MediaDTO,
   ReactionEmoji,
   ReactionSummaryDTO,
+  ReplyToDTO,
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
@@ -17,6 +18,7 @@ import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
+import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
 
 // The report's jurisdiction, resolved ONCE per report-scoped query (it is constant per report). Drives the
 // @city `cityMention` chip on report messages. null when the report has no resolved jurisdiction.
@@ -115,6 +117,8 @@ interface ChatRowSelect {
   created_at: Date
   edited_at: Date | null
   deleted_at: Date | null
+  // Reply threading (P2): the quoted message's id (same table), or NULL for a plain message.
+  reply_to_id: string | null
   // System-message payload; NULL on every non-system row. Only ever populated for report system rows.
   system_status: string | null
   system_kind: string | null
@@ -139,6 +143,9 @@ function toMessageDTO(
   // REPORT scope only: the report's resolved jurisdiction (constant per report), used to compute the @city
   // `cityMention` chip. Omitted/null for cleanup/dm and for reports with no jurisdiction.
   reportCity?: ReportCityContext | null,
+  // Hydrated reply preview for r.reply_to_id (chat-reply-hydration). Only meaningful when the row IS a
+  // reply; null renders the quote header as unavailable.
+  replyTo?: ReplyToDTO | null,
 ): ChatMessageDTO {
   // A report SYSTEM message has no author (sender_id NULL); delegate to the pure system mapper so its
   // from:null / kind:"system" / structured system payload render in history + broadcasts. Only report
@@ -188,6 +195,9 @@ function toMessageDTO(
     createdAt: r.created_at.toISOString(),
     ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
     ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
+    // Reply threading (P2): the target id rides through verbatim; the denormalized preview is whatever
+    // hydration resolved for it (null = target unavailable, client renders a generic quote header).
+    ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     // @city forward surfacing (report rows only). forwardedToCity = the pill (an audit row for this message
     // has forwarded_at set). cityMention = the tinted chip when the body @mentions the report's jurisdiction
@@ -248,6 +258,7 @@ function chatColumns(sql: Queryable, includeForward: boolean) {
     cm.created_at,
     cm.edited_at,
     cm.deleted_at,
+    cm.reply_to_id,
     cm.system_status,
     cm.system_kind,
     cm.system_body,
@@ -274,6 +285,7 @@ function selectChatRowFrom(tag: Queryable, cte: string, includeForward: boolean)
       ${tag(cte)}.created_at,
       ${tag(cte)}.edited_at,
       ${tag(cte)}.deleted_at,
+      ${tag(cte)}.reply_to_id,
       ${tag(cte)}.system_status,
       ${tag(cte)}.system_kind,
       ${tag(cte)}.system_body,
@@ -352,11 +364,14 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     const hasMore = rows.length > limit
     const page = hasMore ? rows.slice(0, limit) : rows
     const ids = page.map((r) => r.id)
-    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage] = await Promise.all([
-      presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-      loadChatReactionsFor(sql, ids, viewerUserId),
-      loadChatMentionsFor(sql, ids),
-    ])
+    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
+      await Promise.all([
+        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        loadChatReactionsFor(sql, ids, viewerUserId),
+        loadChatMentionsFor(sql, ids),
+        // Reply previews: ONE id=ANY(...) fetch over the SAME table for the page's distinct targets.
+        replyMapForRows(sql, "chat_messages", page),
+      ])
     const items = page.map((r) =>
       toMessageDTO(
         r,
@@ -366,6 +381,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         undefined,
         attachmentsByMessage.get(r.id) ?? [],
         reportCity,
+        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
       ),
     )
     const last = page[page.length - 1]
@@ -388,11 +404,12 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     `
     const row = rows[0]
     if (!row) return null
-    const [reactions, mentions, attachmentsByMessage, reportCity] = await Promise.all([
+    const [reactions, mentions, attachmentsByMessage, reportCity, replyByTarget] = await Promise.all([
       loadChatReactions(sql, row.id, viewerUserId),
       loadChatMentions(sql, row.id),
       presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
       resolveReportCity(scope),
+      replyMapForRows(sql, "chat_messages", [row]),
     ])
     return toMessageDTO(
       row,
@@ -402,6 +419,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       undefined,
       attachmentsByMessage.get(row.id) ?? [],
       reportCity,
+      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
     )
   }
 
@@ -445,7 +463,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
             AND ${anchorScope(scope)}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, system_status, system_kind, system_body
+          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, system_status, system_kind, system_body
         )
         ${selectChatRowFrom(sql, "updated", isReport)}
       `,
@@ -453,7 +471,19 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     ])
     const row = rows[0]
     if (!row) return null
-    return toMessageDTO(row, [], [], senderId, undefined, [], reportCity)
+    // The tombstone keeps its replyToId + hydrated preview so the message_update broadcast's DTO stays
+    // shape-consistent with history rows (clients reconcile in place).
+    const replyByTarget = await replyMapForRows(sql, "chat_messages", [row])
+    return toMessageDTO(
+      row,
+      [],
+      [],
+      senderId,
+      undefined,
+      [],
+      reportCity,
+      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+    )
   }
 
   return {
@@ -464,9 +494,22 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       const isReport = input.roomKind === "report"
       const cleanupId = isReport ? null : input.cleanupId
       const reportId = isReport ? input.cleanupId : null
+      // Reply validation (P2): the target must exist in THIS room and not be tombstoned — 422 with
+      // fields.code reply_wrong_room / reply_deleted_target otherwise. Returns the hydrated preview so
+      // the ack/broadcast DTO carries replyTo without a re-read. (Validate-then-insert races a
+      // concurrent delete of the target; the reply then simply hydrates deleted:true on later reads.)
+      const replyTo =
+        input.replyToId !== undefined
+          ? await assertReplyTarget(
+              sql,
+              "chat_messages",
+              { column: isReport ? "report_id" : "cleanup_id", id: input.cleanupId },
+              input.replyToId,
+            )
+          : null
       const run = async (q: Queryable) => q<ChatRowSelect[]>`
         WITH inserted AS (
-          INSERT INTO chat_messages (id, cleanup_id, report_id, sender_id, body, kind, attachments)
+          INSERT INTO chat_messages (id, cleanup_id, report_id, sender_id, body, kind, attachments, reply_to_id)
           VALUES (
             ${id},
             ${cleanupId},
@@ -474,9 +517,10 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
             ${input.userId},
             ${input.body},
             ${kind},
-            ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null}
+            ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null},
+            ${input.replyToId ?? null}
           )
-          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, system_status, system_kind, system_body
+          RETURNING id, cleanup_id, report_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, system_status, system_kind, system_body
         )
         ${selectChatRowFrom(q, "inserted", isReport)}
       `
@@ -497,7 +541,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           : Promise.resolve(null),
       ])
       const attachments = wantsMedia ? (await loadChatAttachments(sql, [id], presign!)).get(id) ?? [] : []
-      return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId, attachments, reportCity)
+      return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId, attachments, reportCity, replyTo)
     },
 
     async findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {

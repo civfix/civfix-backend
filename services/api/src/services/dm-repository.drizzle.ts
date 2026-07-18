@@ -25,6 +25,7 @@ import type {
   MediaDTO,
   ReactionEmoji,
   ReactionSummaryDTO,
+  ReplyToDTO,
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
@@ -32,6 +33,7 @@ import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./c
 import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import { monotonicReadWatermark } from "./chat-read-state.drizzle.js"
+import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
 import type { PresignMedia } from "./media-presign.js"
 
 /** A dm thread row (the participant pair ordered lo < hi). */
@@ -74,6 +76,8 @@ export interface DmPersistInput {
   attachments?: unknown[] | null
   /** Finalized media upload ids to bind to this message (mirrors PersistChatInput.mediaUploadIds). */
   mediaUploadIds?: string[]
+  /** Reply threading (P2): id of the dm message this one replies to (same thread; mirrors PersistChatInput). */
+  replyToId?: string
 }
 
 /**
@@ -179,6 +183,8 @@ interface DmRowSelect {
   created_at: Date
   edited_at: Date | null
   deleted_at: Date | null
+  // Reply threading (P2): the quoted dm message's id (same table), or NULL for a plain message.
+  reply_to_id: string | null
   sender_display_name: string
   sender_handle: string | null
   sender_bio: string | null
@@ -198,6 +204,8 @@ function toMessageDTO(
   viewerUserId?: string | null,
   clientId?: string,
   attachments: MediaDTO[] = [],
+  // Hydrated reply preview for r.reply_to_id (chat-reply-hydration); null = target unavailable.
+  replyTo?: ReplyToDTO | null,
 ): ChatMessageDTO {
   // PUBLIC author identity: a deleted (tombstoned) sender renders "Deleted User" (no handle/avatar, deleted:true).
   const author = publicAuthorIdentity({
@@ -233,6 +241,8 @@ function toMessageDTO(
     createdAt: r.created_at.toISOString(),
     ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
     ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
+    // Reply threading (P2): target id passthrough + the hydrated preview (mirrors the chat repo).
+    ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(clientId !== undefined ? { clientId } : {}),
   }
@@ -303,17 +313,30 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       // media, the INSERT + the media-attach run in ONE transaction (mirroring the cleanup chat repo +
       // discussion create) so a failed attach rolls the message back rather than orphaning it (a duplicate on
       // the client's retry). Presigning happens AFTER commit (a network round-trip must not hold the tx open).
+      // Reply validation (P2): the target must exist in THIS thread and not be tombstoned — 422 with
+      // fields.code reply_wrong_room / reply_deleted_target otherwise. Returns the hydrated preview so
+      // the ack/broadcast DTO carries replyTo without a re-read.
+      const replyTo =
+        input.replyToId !== undefined
+          ? await assertReplyTarget(
+              sql,
+              "dm_messages",
+              { column: "thread_id", id: input.threadId },
+              input.replyToId,
+            )
+          : null
       const run = async (q: Queryable) => q<DmRowSelect[]>`
         WITH inserted AS (
-          INSERT INTO dm_messages (thread_id, sender_id, body, kind, attachments)
+          INSERT INTO dm_messages (thread_id, sender_id, body, kind, attachments, reply_to_id)
           VALUES (
             ${input.threadId},
             ${input.senderId},
             ${input.body},
             ${kind},
-            ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null}
+            ${input.attachments != null ? sql.json(input.attachments as Parameters<typeof sql.json>[0]) : null},
+            ${input.replyToId ?? null}
           )
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id
         )
         SELECT
           inserted.id,
@@ -325,6 +348,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           inserted.created_at,
           inserted.edited_at,
           inserted.deleted_at,
+          inserted.reply_to_id,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -346,7 +370,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const attachments = wantsMedia
         ? (await loadChatAttachments(sql, [messageId], presign!)).get(messageId) ?? []
         : []
-      return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId, attachments)
+      return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId, attachments, replyTo)
     },
 
     async editMessage(
@@ -372,7 +396,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND thread_id = ${threadId}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id
         )
         SELECT
           updated.id,
@@ -384,6 +408,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           updated.created_at,
           updated.edited_at,
           updated.deleted_at,
+          updated.reply_to_id,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -397,12 +422,21 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       // An edit changes neither reactions/mentions nor attachments, but read them all back so the returned
       // DTO is complete (the client reconciles the edited message in place, so dropping its media here would
       // blank the bubble's attachments).
-      const [reactions, mentions, attachmentsByMessage] = await Promise.all([
+      const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
         loadChatReactions(sql, row.id, senderId),
         loadChatMentions(sql, row.id),
         presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        replyMapForRows(sql, "dm_messages", [row]),
       ])
-      return toMessageDTO(row, reactions, mentions, senderId, undefined, attachmentsByMessage.get(row.id) ?? [])
+      return toMessageDTO(
+        row,
+        reactions,
+        mentions,
+        senderId,
+        undefined,
+        attachmentsByMessage.get(row.id) ?? [],
+        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      )
     },
 
     async findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
@@ -451,7 +485,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND thread_id = ${threadId}
             AND sender_id = ${senderId}
             AND deleted_at IS NULL
-          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at
+          RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id
         )
         SELECT
           updated.id,
@@ -463,6 +497,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           updated.created_at,
           updated.edited_at,
           updated.deleted_at,
+          updated.reply_to_id,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -474,8 +509,18 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const row = rows[0]
       if (!row) return null
       // A tombstone carries no live reactions/mentions to recompute; the body is the deleted marker the
-      // client renders via deletedAt.
-      return toMessageDTO(row, [], [], senderId)
+      // client renders via deletedAt. Its replyTo preview is kept so the message_update DTO stays
+      // shape-consistent with history rows.
+      const replyByTarget = await replyMapForRows(sql, "dm_messages", [row])
+      return toMessageDTO(
+        row,
+        [],
+        [],
+        senderId,
+        undefined,
+        [],
+        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      )
     },
 
     async history(
@@ -514,6 +559,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           dm.created_at,
           dm.edited_at,
           dm.deleted_at,
+          dm.reply_to_id,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -529,14 +575,16 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       `
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
-      // Batch the three per-message relations into ONE grouped query each (WHERE message_id IN (...)) so a
-      // page is 3 round-trips total, not 3×N. The reaction `mine` flag resolves against the viewer.
+      // Batch the per-message relations into ONE grouped query each (WHERE message_id IN (...)) so a
+      // page is 4 round-trips total, not 4×N. The reaction `mine` flag resolves against the viewer.
       const ids = page.map((r) => r.id)
-      const [attachmentsByMessage, reactionsByMessage, mentionsByMessage] = await Promise.all([
-        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        loadChatReactionsFor(sql, ids, viewerUserId),
-        loadChatMentionsFor(sql, ids),
-      ])
+      const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
+        await Promise.all([
+          presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+          loadChatReactionsFor(sql, ids, viewerUserId),
+          loadChatMentionsFor(sql, ids),
+          replyMapForRows(sql, "dm_messages", page),
+        ])
       const items = page.map((r) =>
         toMessageDTO(
           r,
@@ -545,6 +593,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           viewerUserId,
           undefined,
           attachmentsByMessage.get(r.id) ?? [],
+          r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
         ),
       )
       const last = page[page.length - 1]
@@ -568,6 +617,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           dm.created_at,
           dm.edited_at,
           dm.deleted_at,
+          dm.reply_to_id,
           u.display_name AS sender_display_name,
           u.handle AS sender_handle,
           u.bio AS sender_bio,
@@ -580,12 +630,21 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       `
       const row = rows[0]
       if (!row) return null
-      const [reactions, mentions, attachmentsByMessage] = await Promise.all([
+      const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
         loadChatReactions(sql, row.id, viewerUserId),
         loadChatMentions(sql, row.id),
         presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        replyMapForRows(sql, "dm_messages", [row]),
       ])
-      return toMessageDTO(row, reactions, mentions, viewerUserId, undefined, attachmentsByMessage.get(row.id) ?? [])
+      return toMessageDTO(
+        row,
+        reactions,
+        mentions,
+        viewerUserId,
+        undefined,
+        attachmentsByMessage.get(row.id) ?? [],
+        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      )
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {

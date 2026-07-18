@@ -2,8 +2,13 @@
 import { randomUUID } from "node:crypto"
 import { avatarGradient } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
+import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatMessageMeta, ChatRepository } from "../../src/services/chat-repository.drizzle.js"
+import {
+  REPLY_EXCERPT_MAX,
+  replyDeletedTarget,
+  replyWrongRoom,
+} from "../../src/services/chat-reply-hydration.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 
 interface StoredMessage {
@@ -39,7 +44,36 @@ export class InMemoryChatRepository implements ChatRepository {
     return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
   }
 
+  /**
+   * Recompute the reply preview for a target id from the CURRENT store state (mirrors the drizzle
+   * hydration: tombstoned target -> deleted:true + excerpt ""; excerpt = first 120 chars of body).
+   */
+  private replyToFor(roomId: string, replyToId: string): ReplyToDTO | null {
+    const stored = (this.log.get(roomId) ?? []).find((m) => m.dto.id === replyToId)
+    if (!stored) return null
+    return {
+      id: replyToId,
+      from: stored.dto.from ? { id: stored.dto.from.id, displayName: stored.dto.from.name } : null,
+      excerpt: stored.deleted ? "" : (stored.dto.body ?? "").slice(0, REPLY_EXCERPT_MAX),
+      kind: stored.dto.kind,
+      ...(stored.deleted ? { deleted: true } : {}),
+    }
+  }
+
+  /** Project a stored DTO with its live reply preview (no-op for non-replies). */
+  private withReply(roomId: string, dto: ChatMessageDTO): ChatMessageDTO {
+    if (dto.replyToId == null) return dto
+    return { ...dto, replyTo: this.replyToFor(roomId, dto.replyToId) }
+  }
+
   insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO> {
+    // Reply validation (P2), mirroring the drizzle repo: target must exist in THIS room (else 422
+    // reply_wrong_room) and not be tombstoned (else 422 reply_deleted_target).
+    if (input.replyToId !== undefined) {
+      const target = (this.log.get(input.cleanupId) ?? []).find((m) => m.dto.id === input.replyToId)
+      if (!target) return Promise.reject(replyWrongRoom())
+      if (target.deleted) return Promise.reject(replyDeletedTarget())
+    }
     const sender = this.senders.get(input.userId) ?? {
       id: input.userId,
       displayName: `User ${input.userId.slice(0, 4)}`,
@@ -67,17 +101,18 @@ export class InMemoryChatRepository implements ChatRepository {
       mentions: [],
       createdAt: this.nextDate().toISOString(),
       editedAt: null,
+      ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
     }
     const list = this.log.get(input.cleanupId) ?? []
     list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.cleanupId, list)
-    return Promise.resolve(dto)
+    return Promise.resolve(this.withReply(input.cleanupId, dto))
   }
 
   history(cleanupId: string, before: string | undefined, limit: number): Promise<ChatHistoryPage> {
     const list = (this.log.get(cleanupId) ?? []).filter((m) => !m.deleted)
-    const ordered = [...list].reverse().map((m) => m.dto)
+    const ordered = [...list].reverse().map((m) => this.withReply(cleanupId, m.dto))
     let start = 0
     if (before !== undefined) {
       const idx = ordered.findIndex((m) => m.id === before)
@@ -114,7 +149,9 @@ export class InMemoryChatRepository implements ChatRepository {
   ): Promise<ChatMessageDTO | null> {
     const stored = (this.log.get(cleanupId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
-    return Promise.resolve({ ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) })
+    return Promise.resolve(
+      this.withReply(cleanupId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+    )
   }
 
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
@@ -167,11 +204,13 @@ export class InMemoryChatRepository implements ChatRepository {
     const found = list?.find((m) => m.dto.id === messageId)
     if (!found || found.deleted || found.dto.from?.id !== senderId) return Promise.resolve(null)
     found.dto = { ...found.dto, body, editedAt: this.nextDate().toISOString() }
-    return Promise.resolve({
-      ...found.dto,
-      reactions: this.reactionsFor(messageId, senderId),
-      mine: true,
-    })
+    return Promise.resolve(
+      this.withReply(cleanupId, {
+        ...found.dto,
+        reactions: this.reactionsFor(messageId, senderId),
+        mine: true,
+      }),
+    )
   }
 
   editReportMessage(
@@ -199,7 +238,7 @@ export class InMemoryChatRepository implements ChatRepository {
       deletedAt: this.nextDate().toISOString(),
       mine: true,
     }
-    return Promise.resolve(tombstone)
+    return Promise.resolve(this.withReply(cleanupId, tombstone))
   }
 
   count(cleanupId: string): number {
