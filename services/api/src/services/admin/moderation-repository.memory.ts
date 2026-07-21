@@ -54,14 +54,32 @@ export class InMemoryModerationRepository implements ModerationRepository {
     return new Date(this.now.getTime() + this.tick)
   }
 
+  private directDestination(
+    subjectType: ModerationItemRecord["subjectType"],
+    subjectId: string,
+  ): Pick<ModerationItemRecord, "destinationKind" | "destinationId"> {
+    if (subjectType === "report") return { destinationKind: "report", destinationId: subjectId }
+    if (subjectType === "event") return { destinationKind: "event", destinationId: subjectId }
+    if (subjectType === "user" || subjectType === "profile") {
+      return { destinationKind: "user", destinationId: subjectId }
+    }
+    return { destinationKind: null, destinationId: null }
+  }
+
   /** Seed an item. Defaults fill the shaping fields so a test only sets what it asserts on. */
   seedItem(input: Partial<ModerationItemRecord> & { id?: string }): ModerationItemRecord {
     const id = input.id ?? randomUUID()
+    const subjectType = input.subjectType ?? "report"
+    const subjectId = input.subjectId ?? randomUUID()
+    const destination = this.directDestination(subjectType, subjectId)
     const record: ModerationItemRecord = {
       id,
       kind: input.kind ?? "image",
-      subjectType: input.subjectType ?? "report",
-      subjectId: input.subjectId ?? randomUUID(),
+      subjectType,
+      subjectId,
+      destinationKind:
+        input.destinationKind === undefined ? destination.destinationKind : input.destinationKind,
+      destinationId: input.destinationId === undefined ? destination.destinationId : input.destinationId,
       flag: input.flag ?? null,
       reason: input.reason ?? null,
       category: input.category ?? null,
@@ -69,6 +87,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
       priority: input.priority ?? "med",
       autoAction: input.autoAction ?? null,
       reporter: input.reporter ?? null,
+      reporterId: input.reporterId ?? null,
       desc: input.desc ?? null,
       status: input.status ?? "open",
       signals: input.signals ?? [],
@@ -233,6 +252,9 @@ export class InMemoryModerationRepository implements ModerationRepository {
       priority: input.priority ?? "med",
       autoAction: input.autoAction ?? null,
       reporter: input.reporter ?? null,
+      // Thread the FLAGGING reporter's id (CreateModerationItemInput.reporterUserId) into the row's
+      // reporterId, mirroring the Drizzle impl's meta persistence — distinct from the subject-author `user`.
+      reporterId: input.reporterUserId ?? null,
       desc: input.desc ?? null,
       status: "open",
       signals: input.signals ?? [],

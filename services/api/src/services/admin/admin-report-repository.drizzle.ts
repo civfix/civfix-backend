@@ -294,12 +294,16 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           cat_email: string | null
           default_email: string | null
           legacy_email: string | null
+          forward_subject_template: string | null
+          forward_body_template: string | null
         }[]
       >`
         SELECT
           j.geoid,
           j.name AS place,
           r.category,
+          j.forward_subject_template,
+          j.forward_body_template,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category = r.category
                AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS cat_email,
@@ -321,6 +325,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         place: row.place ?? "",
         contact,
         routed: contact !== null,
+        forwardSubjectTemplate: row.forward_subject_template,
+        forwardBodyTemplate: row.forward_body_template,
       }
     },
 

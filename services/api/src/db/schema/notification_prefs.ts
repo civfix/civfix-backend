@@ -16,6 +16,9 @@ export const notificationPrefs = pgTable("notification_prefs", {
   reportUpdates: boolean("report_updates").notNull().default(true),
   follows: boolean("follows").notNull().default(true),
   mentions: boolean("mentions").notNull().default(true),
+  // Social-feed post interactions (like/repost/reply/quote). Default true so existing users keep
+  // receiving them (0051 adds the column with DEFAULT true). post_mention rides `mentions`.
+  postInteractions: boolean("post_interactions").notNull().default(true),
   quietStart: time("quiet_start"),
   quietEnd: time("quiet_end"),
 })

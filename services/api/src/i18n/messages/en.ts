@@ -33,6 +33,19 @@ export const en = {
   "notification.report_mention.title": "You were mentioned",
   "notification.report_mention.body": "Someone mentioned you in a report discussion.",
 
+  // Social-feed post interactions (notification-service onPostLike/Repost/Reply/Quote/Mention).
+  // {{name}} = the actor's display name / @handle.
+  "notification.post.like.title": "New like",
+  "notification.post.like.body": "{{name}} liked your post.",
+  "notification.post.repost.title": "New repost",
+  "notification.post.repost.body": "{{name}} reposted your post.",
+  "notification.post.reply.title": "New reply",
+  "notification.post.reply.body": "{{name}} replied to your post.",
+  "notification.post.quote.title": "New quote",
+  "notification.post.quote.body": "{{name}} quoted your post.",
+  "notification.post.mention.title": "{{name}} mentioned you",
+  "notification.post.mention.body": "{{name}} mentioned you in a post.",
+
   // @-mention in a cleanup/report group chat (chat-bells makeChatMentionNotifier). {{name}} = author handle/name.
   "notification.chat_mention.title": "{{name}} mentioned you",
   // Reply to YOUR message in any chat room (chat-bells makeChatReplyNotifier / makeDmBellNotifier,

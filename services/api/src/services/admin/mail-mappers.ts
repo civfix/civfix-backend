@@ -140,6 +140,9 @@ export function toThreadListItem(
     unread: thread.unread,
     status: thread.status,
     jurisdictionGeoid: thread.jurisdictionGeoid,
+    // Cross-entity clickability: the originating report for an outreach thread (null for inbound/cold
+    // threads that were not spawned from a report). Flows into MailThreadDTO via the toThreadDTO spread.
+    reportId: thread.reportId,
   }
 }
 

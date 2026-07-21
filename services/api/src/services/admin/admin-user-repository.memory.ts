@@ -112,18 +112,24 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
 
   /**
    * Seed a row in a user's Messages tab. `deletedAt` defaults to null (a live message) and `source`
-   * defaults to "chat" (the Messages tab unions chat/dm/report-discussion — #58 — so tests may seed any
-   * source; the union shape is the same single keyed list here).
+   * defaults to "chat" (the Messages tab unions cleanup chat, standalone group chat, DM, and report
+   * discussion, so tests may seed any source; the union shape is the same single keyed list here).
    */
   seedMessage(
     userId: string,
-    row: Omit<UserMessageRecord, "deletedAt" | "source"> & {
+    row: Omit<UserMessageRecord, "deletedAt" | "source" | "sourceId"> & {
       deletedAt?: Date | null
       source?: UserMessageRecord["source"]
+      sourceId?: string | null
     },
   ): void {
     const list = this.messages.get(userId) ?? []
-    list.push({ ...row, deletedAt: row.deletedAt ?? null, source: row.source ?? "chat" })
+    list.push({
+      ...row,
+      deletedAt: row.deletedAt ?? null,
+      source: row.source ?? "chat",
+      sourceId: row.sourceId ?? null,
+    })
     this.messages.set(userId, list)
   }
 

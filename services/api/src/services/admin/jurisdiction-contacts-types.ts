@@ -33,6 +33,8 @@ export interface JurisdictionDirectoryRecord {
   /** Total open reports in the geoid still waiting on a routing contact (un-routed, un-closed). */
   reportsWaiting: number
   perCategoryCounts: Partial<Record<ReportCategory, number>>
+  /** The oldest still-waiting report's created_at (agrees with reportsWaiting's predicate), or null. */
+  oldestReportAt: Date | null
   lastRoutedAt: Date | null
   /** Whether the contact has a recorded bounce (takes precedence over verified/pending). */
   bounced: boolean
@@ -40,13 +42,22 @@ export interface JurisdictionDirectoryRecord {
   flaggedAt: Date | null
   /** The discussion @handle (the "@sf" mentionable in a report discussion), or null when unset. */
   handle: string | null
+  /** Custom forwarding email templates (null = use the built-in default packet). Prefill the editor. */
+  forwardSubjectTemplate: string | null
+  forwardBodyTemplate: string | null
 }
 
-/** Directory routing-posture facet. "routed" = any contact on file (email OR form); "none" = neither. */
-export type DirectoryFilter = "all" | "email" | "form" | "none" | "routed"
+/**
+ * Directory routing-posture facet. "routed" = any contact on file (email OR form); "none" = neither.
+ * "needs_mapping" = has WAITING reports AND no routing contact (the actionable backlog to map).
+ */
+export type DirectoryFilter = "all" | "email" | "form" | "none" | "routed" | "needs_mapping"
 
-/** Directory sort key. "population" (default) and "reports" are DESC; "name" is A->Z. */
-export type DirectorySort = "population" | "reports" | "name"
+/**
+ * Directory sort key. "population" (default) and "reports" are DESC; "name" is A->Z; "oldest" surfaces the
+ * jurisdiction whose oldest still-waiting report is oldest first (the longest-unrouted backlog).
+ */
+export type DirectorySort = "population" | "reports" | "name" | "oldest"
 
 /** Normalized directory list arguments (search + method facet + type filter + sort + page window). */
 export interface ListDirectoryArgs {
@@ -59,11 +70,11 @@ export interface ListDirectoryArgs {
   limit: number
 }
 
-/** The directory page plus the first-page-only totals (count + chip facets) for the search. */
+/** The directory page plus the first-page-only totals (active-filter count + search/type chip facets). */
 export interface ListDirectoryResult {
   records: JurisdictionDirectoryRecord[]
   nextCursor: string | null
-  /** Count of jurisdictions matching the search; only computed on the first page (cursor absent). */
+  /** Count of jurisdictions matching the search, type, and active filter; only on the first page. */
   total: number | null
   /** Routed/unrouted split of the search result; only computed on the first page. */
   facets: { routed: number; unrouted: number } | null
@@ -93,6 +104,8 @@ export interface SaveContactsInput {
   contacts: Partial<Record<ReportCategory, string | null>>
   defaultEmails: string[]
   formUrl: string | null
+  forwardSubjectTemplate?: string | null
+  forwardBodyTemplate?: string | null
 }
 
 /** The optional-field contacts/notes/form/flag patch input (shared by the repo + service + route). */
@@ -105,6 +118,10 @@ export interface PatchContactsInput {
   flagReason?: string | null
   /** Set / clear the discussion @handle (normalized + shape-checked by the shared schema; null/"" clears). */
   handle?: string | null
+  /** Set / clear the custom forwarding subject template (bounded by the shared schema; null/"" clears). */
+  forwardSubjectTemplate?: string | null
+  /** Set / clear the custom forwarding body template (bounded by the shared schema; null/"" clears). */
+  forwardBodyTemplate?: string | null
 }
 
 export interface JurisdictionContactsRepository {

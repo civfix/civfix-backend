@@ -133,10 +133,9 @@ export const CHAT_MESSAGE_KIND_VALUES = [
 ] as const
 
 /**
- * notifications.type. Mirrors shared NotificationTypeSchema. NOTE: 'group_chat' (P4 group-chat
- * bells) ships here AHEAD of the shared enum — Task 4.2 adds it to NotificationTypeSchema in a
- * parallel shared release; test/unit/enums.test.ts tolerates exactly this one pending value until
- * the bumped shared lands, then collapses back to exact equality.
+ * notifications.type. Mirrors shared NotificationTypeSchema byte-for-byte (drift-guarded by
+ * test/unit/enums.test.ts). The trailing five (post_like … post_mention) are the social-feed post
+ * interactions; they are present in the shared enum too, so this stays at exact equality.
  */
 export const NOTIFICATION_TYPE_VALUES = [
   "report_update",
@@ -150,7 +149,18 @@ export const NOTIFICATION_TYPE_VALUES = [
   "report_chat",
   "group_chat",
   "cleanup_role",
+  "post_like",
+  "post_repost",
+  "post_reply",
+  "post_quote",
+  "post_mention",
 ] as const
+
+/**
+ * posts.kind. Mirrors shared PostKindSchema (drift-guarded by test/unit/enums.test.ts). Repost /
+ * quote / reply are all `posts` rows disambiguated by this value (+ repost_of_id / reply_to_id).
+ */
+export const POST_KIND_VALUES = ["post", "repost", "quote", "reply"] as const
 
 /** push_tokens.platform. Mirrors the shared PushPlatformSchema. */
 export const PUSH_PLATFORM_VALUES = ["ios", "android", "web"] as const
@@ -216,8 +226,14 @@ export const VERIFICATION_STATUS_VALUES = [
   "rejected",
 ] as const
 
-/** media_assets.purpose. Mirrors shared MediaPurposeSchema. */
-export const MEDIA_PURPOSE_VALUES = ["report", "verification"] as const
+/**
+ * media_assets.purpose. Mirrors shared MediaPurposeSchema. NOTE: 'post' (social-feed post media)
+ * ships here AHEAD of the shared enum — the shared MediaPurposeSchema gains it in a parallel release;
+ * test/unit/enums.test.ts tolerates exactly this one backend-ahead value (appended last) until the
+ * bumped shared lands, then collapses back to exact equality (same precedent as ChatMessageKind
+ * 'poll' / NotificationType 'group_chat').
+ */
+export const MEDIA_PURPOSE_VALUES = ["report", "verification", "post"] as const
 
 /** user_moderation.account_status. Mirrors shared UserStatusSchema. */
 export const USER_ACCOUNT_STATUS_VALUES = ["active", "suspended", "review", "banned"] as const

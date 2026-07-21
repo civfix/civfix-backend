@@ -83,6 +83,12 @@ export async function registerAdminJurisdictionsRoutes(
           contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
           defaultEmails: body.defaultEmails ?? [],
           formUrl: body.formUrl ?? null,
+          ...(body.forwardSubjectTemplate !== undefined
+            ? { forwardSubjectTemplate: body.forwardSubjectTemplate }
+            : {}),
+          ...(body.forwardBodyTemplate !== undefined
+            ? { forwardBodyTemplate: body.forwardBodyTemplate }
+            : {}),
         },
         request.auth.userId,
       )
@@ -118,6 +124,12 @@ export async function registerAdminJurisdictionsRoutes(
         ...(body.flagged !== undefined ? { flagged: body.flagged } : {}),
         ...(body.flagReason !== undefined ? { flagReason: body.flagReason } : {}),
         ...(body.handle !== undefined ? { handle: body.handle } : {}),
+        ...(body.forwardSubjectTemplate !== undefined
+          ? { forwardSubjectTemplate: body.forwardSubjectTemplate }
+          : {}),
+        ...(body.forwardBodyTemplate !== undefined
+          ? { forwardBodyTemplate: body.forwardBodyTemplate }
+          : {}),
       },
       request.auth.userId,
     )
@@ -125,4 +137,3 @@ export async function registerAdminJurisdictionsRoutes(
     reply.status(200).send(payload)
   })
 }
-

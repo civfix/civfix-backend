@@ -29,6 +29,7 @@ import {
   ModerationSubjectTypeSchema,
   NotificationTypeSchema,
   OAuthProviderSchema,
+  PostKindSchema,
   PrioritySchema,
   VerificationStatusSchema,
   RegisterPushTokenRequestSchema,
@@ -65,6 +66,7 @@ import {
   MODERATION_PRIORITY_VALUES,
   NOTIFICATION_TYPE_VALUES,
   OAUTH_PROVIDER_VALUES,
+  POST_KIND_VALUES,
   PUSH_PLATFORM_VALUES,
   REPORT_CATEGORY_VALUES,
   REPORT_STATUS_VALUES,
@@ -85,7 +87,6 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["ReportVisibility", REPORT_VISIBILITY_VALUES, ReportVisibilitySchema.options],
     ["MediaKind", MEDIA_KIND_VALUES, MediaKindSchema.options],
     ["MediaStatus", MEDIA_STATUS_VALUES, MediaStatusSchema.options],
-    ["MediaPurpose", MEDIA_PURPOSE_VALUES, MediaPurposeSchema.options],
     ["JurisdictionLayer", JURISDICTION_LAYER_VALUES, JurisdictionLayerSchema.options],
     ["CleanupType", CLEANUP_TYPE_VALUES, CleanupTypeSchema.options],
     ["CleanupStatus", CLEANUP_STATUS_VALUES, CleanupStatusSchema.options],
@@ -133,6 +134,30 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     const shared: string[] = [...NotificationTypeSchema.options]
     const expected = shared.includes("group_chat") ? shared : [...shared, "group_chat"]
     expect([...NOTIFICATION_TYPE_VALUES]).toEqual(expected)
+  })
+
+  it("PostKind matches the shared enum exactly", () => {
+    expect([...POST_KIND_VALUES]).toEqual([...PostKindSchema.options])
+    expect([...POST_KIND_VALUES]).toEqual(["post", "repost", "quote", "reply"])
+  })
+
+  it("NotificationType carries the five social-feed post interaction values (LAST, in order)", () => {
+    expect(NOTIFICATION_TYPE_VALUES.slice(-5)).toEqual([
+      "post_like",
+      "post_repost",
+      "post_reply",
+      "post_quote",
+      "post_mention",
+    ])
+    // Every one is also present in the shared enum (they are not backend-ahead).
+    for (const t of ["post_like", "post_repost", "post_reply", "post_quote", "post_mention"]) {
+      expect(NotificationTypeSchema.options).toContain(t)
+    }
+  })
+
+  it("MediaPurpose matches the shared enum exactly", () => {
+    expect([...MEDIA_PURPOSE_VALUES]).toEqual([...MediaPurposeSchema.options])
+    expect([...MEDIA_PURPOSE_VALUES]).toEqual(["report", "verification", "post"])
   })
 
   it("PushPlatform matches the shared register-push-token platform enum", () => {

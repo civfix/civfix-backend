@@ -25,6 +25,63 @@ function itemColumns(sql: Queryable): SqlFragment {
   `
 }
 
+/**
+ * Resolve only destinations backed by an admin detail page. A chat message may belong to a report,
+ * cleanup event, or standalone group; media may point directly at a report or inherit its chat parent.
+ */
+function destinationColumns(sql: Queryable): SqlFragment {
+  return sql`
+    CASE
+      WHEN subject_type = 'report' THEN 'report'
+      WHEN subject_type = 'event' THEN 'event'
+      WHEN subject_type IN ('user', 'profile') THEN 'user'
+      WHEN subject_type = 'chat' THEN (
+        SELECT CASE
+          WHEN cm.report_id IS NOT NULL THEN 'report'
+          WHEN cm.cleanup_id IS NOT NULL THEN 'event'
+          ELSE NULL
+        END
+        FROM chat_messages cm
+        WHERE cm.id = moderation_items.subject_id
+        ORDER BY cm.created_at DESC
+        LIMIT 1
+      )
+      WHEN subject_type = 'photo' THEN (
+        SELECT CASE
+          WHEN ma.report_id IS NOT NULL OR cm.report_id IS NOT NULL THEN 'report'
+          WHEN cm.cleanup_id IS NOT NULL THEN 'event'
+          ELSE NULL
+        END
+        FROM media_assets ma
+        LEFT JOIN chat_messages cm ON cm.id = ma.chat_message_id
+        WHERE ma.id = moderation_items.subject_id
+        ORDER BY cm.created_at DESC NULLS LAST
+        LIMIT 1
+      )
+      ELSE NULL
+    END AS destination_kind,
+    CASE
+      WHEN subject_type IN ('report', 'event', 'user', 'profile') THEN subject_id::text
+      WHEN subject_type = 'chat' THEN (
+        SELECT COALESCE(cm.report_id, cm.cleanup_id)::text
+        FROM chat_messages cm
+        WHERE cm.id = moderation_items.subject_id
+        ORDER BY cm.created_at DESC
+        LIMIT 1
+      )
+      WHEN subject_type = 'photo' THEN (
+        SELECT COALESCE(ma.report_id, cm.report_id, cm.cleanup_id)::text
+        FROM media_assets ma
+        LEFT JOIN chat_messages cm ON cm.id = ma.chat_message_id
+        WHERE ma.id = moderation_items.subject_id
+        ORDER BY cm.created_at DESC NULLS LAST
+        LIMIT 1
+      )
+      ELSE NULL
+    END AS destination_id
+  `
+}
+
 interface ModerationItemRow {
   id: string
   kind: ModerationItemRecord["kind"]
@@ -41,6 +98,8 @@ interface ModerationItemRow {
   similar: unknown
   meta: unknown
   created_at: Date
+  destination_kind?: ModerationItemRecord["destinationKind"]
+  destination_id?: string | null
 }
 
 interface MediaRow {
@@ -85,17 +144,21 @@ function parseSimilar(raw: unknown): ModerationItemRecord["similar"] {
 
 function parseMeta(raw: unknown): {
   reporter: string | null
+  reporterUserId: string | null
   desc: string | null
   user: ModerationUserSnapshot | null
 } {
-  if (!raw || typeof raw !== "object") return { reporter: null, desc: null, user: null }
+  if (!raw || typeof raw !== "object")
+    return { reporter: null, reporterUserId: null, desc: null, user: null }
   const m = raw as Record<string, unknown>
   const reporter = typeof m.reporter === "string" ? m.reporter : null
+  const reporterUserId = typeof m.reporterUserId === "string" ? m.reporterUserId : null
   const desc = typeof m.desc === "string" ? m.desc : null
   let user: ModerationUserSnapshot | null = null
   if (m.user && typeof m.user === "object") {
     const u = m.user as Record<string, unknown>
     user = {
+      id: typeof u.id === "string" ? u.id : null,
       handle: typeof u.handle === "string" ? u.handle : "",
       name: typeof u.name === "string" ? u.name : "Unknown",
       joined: typeof u.joined === "string" ? u.joined : "",
@@ -105,7 +168,7 @@ function parseMeta(raw: unknown): {
       device: typeof u.device === "string" ? u.device : "",
     }
   }
-  return { reporter, desc, user }
+  return { reporter, reporterUserId, desc, user }
 }
 
 const CATEGORY_VALUES: readonly string[] = [
@@ -124,11 +187,22 @@ function toRecord(row: ModerationItemRow, media: ModerationMediaRecord[]): Moder
     row.category !== null && CATEGORY_VALUES.includes(row.category)
       ? (row.category as ReportCategory)
       : null
+  const directDestination =
+    row.subject_type === "report"
+      ? { kind: "report" as const, id: row.subject_id }
+      : row.subject_type === "event"
+        ? { kind: "event" as const, id: row.subject_id }
+        : row.subject_type === "user" || row.subject_type === "profile"
+          ? { kind: "user" as const, id: row.subject_id }
+          : { kind: null, id: null }
   return {
     id: row.id,
     kind: row.kind,
     subjectType: row.subject_type,
     subjectId: row.subject_id,
+    destinationKind:
+      row.destination_kind === undefined ? directDestination.kind : row.destination_kind,
+    destinationId: row.destination_id === undefined ? directDestination.id : row.destination_id,
     flag: row.flag,
     reason: row.reason,
     category,
@@ -136,6 +210,7 @@ function toRecord(row: ModerationItemRow, media: ModerationMediaRecord[]): Moder
     priority: row.priority,
     autoAction: row.auto_action,
     reporter: meta.reporter,
+    reporterId: meta.reporterUserId,
     desc: meta.desc,
     status: row.status,
     signals: parseSignals(row.signals),
@@ -196,7 +271,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         : sql``
 
       const rows = (await sql`
-        SELECT ${itemColumns(sql)}
+        SELECT ${itemColumns(sql)}, ${destinationColumns(sql)}
         FROM moderation_items
         WHERE status = 'open'
         ${facet}
@@ -216,7 +291,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
 
     async getItem(id: string): Promise<ModerationItemRecord | null> {
       const rows = (await sql`
-        SELECT ${itemColumns(sql)}
+        SELECT ${itemColumns(sql)}, ${destinationColumns(sql)}
         FROM moderation_items
         WHERE id = ${id}
         LIMIT 1
@@ -392,8 +467,13 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             j.name, 'med', 'Hidden pending review', '[]'::jsonb, '[]'::jsonb, 'open',
             jsonb_build_object(
               'reporter', COALESCE(u.display_name, 'Anonymous'),
+              -- For a held report the reporter display string IS the report's own reporter (the person
+              -- who filed it), so reporterUserId deep-links to that same account (null when anonymous).
+              -- This is NOT the subject-author conflation: here reporter == author genuinely.
+              'reporterUserId', u.id::text,
               'desc', COALESCE(r.description, ''),
               'user', CASE WHEN u.id IS NOT NULL THEN jsonb_build_object(
+                'id', u.id::text,
                 'handle', COALESCE(u.handle::text, ''),
                 'name', COALESCE(u.display_name, 'Unknown'),
                 'joined', COALESCE(to_char(u.created_at, 'YYYY-MM-DD'), ''),
@@ -495,6 +575,7 @@ async function buildUserSnapshot(
 ): Promise<ModerationUserSnapshot | null> {
   const rows = await tx<
     {
+      id: string
       handle: string | null
       name: string | null
       joined: string | null
@@ -505,6 +586,7 @@ async function buildUserSnapshot(
     }[]
   >`
     SELECT
+      u.id AS id,
       u.handle AS handle,
       u.display_name AS name,
       to_char(u.created_at, 'YYYY-MM-DD') AS joined,
@@ -519,6 +601,7 @@ async function buildUserSnapshot(
   const row = rows[0]
   if (!row) return null
   return {
+    id: row.id,
     handle: row.handle ?? "",
     name: row.name ?? "Unknown",
     joined: row.joined ?? "",
@@ -609,6 +692,7 @@ export async function insertModerationItem(
 ): Promise<string | null> {
   const meta: Record<string, unknown> = {}
   if (input.reporter != null) meta.reporter = input.reporter
+  if (input.reporterUserId != null) meta.reporterUserId = input.reporterUserId
   if (input.desc != null) meta.desc = input.desc
   let userSnapshot = input.user ?? null
   if (userSnapshot == null) {

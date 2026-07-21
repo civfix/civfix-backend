@@ -224,14 +224,14 @@ describe("GET /people/:id (profile)", () => {
   it("returns a public profile (anon-ok) with stats + pastEvents", async () => {
     const { app } = await makeHarness((repo) => {
       repo.seedUser({ id: OTHER, displayName: "Pro", handle: "pro", bio: "organizer" })
-      repo.seedReports(OTHER, 2)
+      repo.seedReports(OTHER, 2, 1)
       repo.seedCleanup(makeCleanupRecord({ organizerUserId: OTHER, title: "Past sweep" }))
     })
     const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}` })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.profile.id).toBe(OTHER)
-    expect(body.profile.stats).toEqual({ reports: 2, cleanups: 1 })
+    expect(body.profile.stats).toEqual({ reports: 2, fixed: 1, cleanups: 1 })
     expect(body.profile.pastEvents.map((e: { title: string }) => e.title)).toEqual(["Past sweep"])
     expect(body.profile.isFollowing).toBe(false)
   })

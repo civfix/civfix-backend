@@ -54,6 +54,8 @@ export interface SeededJurisdiction {
   flaggedAt: Date | null
   flagReason: string | null
   handle: string | null
+  forwardSubjectTemplate: string | null
+  forwardBodyTemplate: string | null
 }
 
 /** A seeded report (the subset the routing path mutates). */
@@ -122,6 +124,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     flaggedAt?: Date | null
     flagReason?: string | null
     handle?: string | null
+    forwardSubjectTemplate?: string | null
+    forwardBodyTemplate?: string | null
   }): SeededJurisdiction {
     const categoryContacts = new Map<ReportCategory, string | null>()
     for (const [category, email] of Object.entries(input.categoryContacts ?? {}) as [
@@ -146,6 +150,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       flaggedAt: input.flaggedAt ?? null,
       flagReason: input.flagReason ?? null,
       handle: input.handle ?? null,
+      forwardSubjectTemplate: input.forwardSubjectTemplate ?? null,
+      forwardBodyTemplate: input.forwardBodyTemplate ?? null,
     }
     this.jurisdictions.set(j.geoid, j)
     return j
@@ -202,6 +208,14 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     if (!j) return { routedReports: 0, taskResolved: false }
 
     applyContacts(j, input)
+    if (input.forwardSubjectTemplate !== undefined) {
+      const template = input.forwardSubjectTemplate
+      j.forwardSubjectTemplate = template === null || template === "" ? null : template
+    }
+    if (input.forwardBodyTemplate !== undefined) {
+      const template = input.forwardBodyTemplate
+      j.forwardBodyTemplate = template === null || template === "" ? null : template
+    }
     j.contactUpdatedAt = this.now
     j.lastRoutedAt = this.now
 
@@ -282,6 +296,15 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         j.handle = handle
       }
     }
+    // Set / clear the custom forward templates (mirrors the Drizzle impl): empty/null clears to null.
+    if (input.forwardSubjectTemplate !== undefined) {
+      const t = input.forwardSubjectTemplate
+      j.forwardSubjectTemplate = t === null || t === "" ? null : t
+    }
+    if (input.forwardBodyTemplate !== undefined) {
+      const t = input.forwardBodyTemplate
+      j.forwardBodyTemplate = t === null || t === "" ? null : t
+    }
     if (touchedContact) j.contactUpdatedAt = this.now
     // Mirror the Drizzle in-tx audit (H4).
     this.audits.push({
@@ -330,19 +353,31 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         : all
     const searched = args.layer !== null ? matched.filter((r) => r.layer === args.layer) : matched
 
-    // Routing-posture facet ("routed" = any contact, i.e. method !== "none").
+    // Routing-posture facet ("routed" = any contact, i.e. method !== "none"). "needs_mapping" = no contact
+    // AND a waiting backlog (mirrors the Drizzle predicate).
     const records =
       args.filter === "all"
         ? searched.slice()
         : args.filter === "routed"
           ? searched.filter((r) => directoryMethod(r) !== "none")
-          : searched.filter((r) => directoryMethod(r) === args.filter)
+          : args.filter === "needs_mapping"
+            ? searched.filter((r) => directoryMethod(r) === "none" && r.reportsWaiting > 0)
+            : searched.filter((r) => directoryMethod(r) === args.filter)
 
-    // Whole-table sort (mirrors the Drizzle ORDER BY): population/reports DESC, name A->Z, geoid tiebreak.
+    // Whole-table sort (mirrors the Drizzle ORDER BY): population/reports DESC, name A->Z, oldest waiting
+    // report ASC (NULLS LAST), geoid tiebreak.
     const byGeoid = (a: JurisdictionDirectoryRecord, b: JurisdictionDirectoryRecord) =>
       a.geoid < b.geoid ? -1 : a.geoid > b.geoid ? 1 : 0
     records.sort((a, b) => {
       if (args.sort === "name") return a.name < b.name ? -1 : a.name > b.name ? 1 : byGeoid(a, b)
+      if (args.sort === "oldest") {
+        const at = a.oldestReportAt?.getTime() ?? null
+        const bt = b.oldestReportAt?.getTime() ?? null
+        if (at === null && bt === null) return byGeoid(a, b)
+        if (at === null) return 1 // NULLS LAST
+        if (bt === null) return -1
+        return at - bt || byGeoid(a, b)
+      }
       const av = args.sort === "reports" ? a.reportsWaiting : (a.population ?? 0)
       const bv = args.sort === "reports" ? b.reportsWaiting : (b.population ?? 0)
       return bv - av || byGeoid(a, b)
@@ -355,11 +390,12 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     const page = hasMore ? slice.slice(0, limit) : slice
     const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
 
-    // total + facets only on the first page, scoped to the search (NOT the filter).
+    // total + facets only on the first page. The total follows the active filter; facets remain scoped to
+    // the search/type result so they continue to provide the routed/unrouted chip split.
     let total: number | null = null
     let facets: { routed: number; unrouted: number } | null = null
     if (offset === 0) {
-      total = searched.length
+      total = records.length
       const routed = searched.filter((r) => directoryMethod(r) !== "none").length
       facets = { routed, unrouted: searched.length - routed }
     }
@@ -430,10 +466,12 @@ function toRecord(j: SeededJurisdiction, reports: SeededReport[]): JurisdictionD
   // Waiting = open, un-routed reports for this geoid (same NON_WAITING exclusion the Drizzle query uses).
   const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
   let reportsWaiting = 0
+  let oldestReportAt: Date | null = null
   for (const r of reports) {
     if (r.geoid === j.geoid && r.deletedAt === null && !NON_WAITING.has(r.status)) {
       reportsWaiting += 1
       perCategoryCounts[r.category] = (perCategoryCounts[r.category] ?? 0) + 1
+      if (oldestReportAt === null || r.createdAt < oldestReportAt) oldestReportAt = r.createdAt
     }
   }
   return {
@@ -450,11 +488,13 @@ function toRecord(j: SeededJurisdiction, reports: SeededReport[]): JurisdictionD
     reportFormUrl: j.reportFormUrl,
     reportsWaiting,
     perCategoryCounts,
+    oldestReportAt,
     lastRoutedAt: j.lastRoutedAt,
     bounced: j.bounced,
     contactUpdatedAt: j.contactUpdatedAt,
     flaggedAt: j.flaggedAt,
     handle: j.handle,
+    forwardSubjectTemplate: j.forwardSubjectTemplate,
+    forwardBodyTemplate: j.forwardBodyTemplate,
   }
 }
-

@@ -30,6 +30,7 @@ export interface PersonView {
 
 export interface ProfileStats {
   reports: number
+  fixed: number
   cleanups: number
 }
 

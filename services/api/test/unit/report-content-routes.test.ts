@@ -70,7 +70,7 @@ async function signIn(
 describe("POST /content-reports", () => {
   it("enqueues a user_report moderation item for the reported subject", async () => {
     const { app, mailer, repo } = await harness()
-    const { token } = await signIn(app, mailer, "reporter@example.com")
+    const { token, userId } = await signIn(app, mailer, "reporter@example.com")
 
     const res = await app.inject({
       method: "POST",
@@ -96,6 +96,8 @@ describe("POST /content-reports", () => {
     expect(item.reason).toBe("harassment")
     expect(item.status).toBe("open")
     expect(item.desc).toBe("This comment is abusive.")
+    // reporterId is threaded end-to-end from the authed FLAGGING user (not the flagged subject's author).
+    expect(item.reporterId).toBe(userId)
   })
 
   it("dedupes a second open report against the same subject (one queue item)", async () => {

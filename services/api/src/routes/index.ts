@@ -17,6 +17,7 @@ import { registerMessagesRoutes } from "./messages.routes.js"
 import { registerUsersRoutes } from "./users.routes.js"
 import { registerReportContentRoutes } from "./report-content.routes.js"
 import { registerSocialRoutes } from "./social.routes.js"
+import { registerPostRoutes } from "./posts.routes.js"
 import { registerVolunteerHoursRoutes } from "./volunteer-hours.routes.js"
 import { registerVerificationRoutes } from "./verification.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
@@ -53,6 +54,7 @@ export async function registerRoutes(
   await registerUsersRoutes(app, container)
   await registerReportContentRoutes(app, container)
   await registerSocialRoutes(app, container)
+  await registerPostRoutes(app, container)
   await registerVolunteerHoursRoutes(app, container)
   await registerVerificationRoutes(app, container)
   await registerNotificationRoutes(app, container)

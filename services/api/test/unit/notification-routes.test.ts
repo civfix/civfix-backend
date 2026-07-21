@@ -164,6 +164,7 @@ describe("GET + PUT /notifications/prefs", () => {
       reportUpdates: true,
       follows: true,
       mentions: true,
+      postInteractions: true,
     })
   })
 

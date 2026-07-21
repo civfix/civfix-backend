@@ -313,25 +313,38 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           thread: string | null
           created_at: Date
           deleted_at: Date | null
-          source: "chat" | "dm" | "report"
+          source: "chat" | "group" | "dm" | "report"
+          source_id: string | null
         }[]
       >`
-        SELECT m.id, m.body, m.thread, m.created_at, m.deleted_at, m.source
+        SELECT m.id, m.body, m.thread, m.created_at, m.deleted_at, m.source, m.source_id
         FROM (
-          SELECT cm.id, cm.body, c.title AS thread, cm.created_at, cm.deleted_at, 'chat' AS source
+          -- Event chat: the navigable origin is the cleanup/event the message belongs to.
+          SELECT cm.id, cm.body, c.title AS thread, cm.created_at, cm.deleted_at, 'chat' AS source,
+                 cm.cleanup_id AS source_id
           FROM chat_messages cm
-          LEFT JOIN cleanups c ON c.id = cm.cleanup_id
-          WHERE cm.sender_id = ${id} AND cm.report_id IS NULL
+          JOIN cleanups c ON c.id = cm.cleanup_id
+          WHERE cm.sender_id = ${id} AND cm.cleanup_id IS NOT NULL
           UNION ALL
+          -- Standalone group chats are distinct from cleanup chat and have no admin detail destination.
+          SELECT gcm.id, gcm.body, cg.name AS thread, gcm.created_at, gcm.deleted_at, 'group' AS source,
+                 gcm.group_id AS source_id
+          FROM chat_messages gcm
+          JOIN chat_groups cg ON cg.id = gcm.group_id
+          WHERE gcm.sender_id = ${id} AND gcm.group_id IS NOT NULL
+          UNION ALL
+          -- DM: no admin surface to navigate to -> source_id NULL.
           SELECT dm.id, dm.body, COALESCE(NULLIF('@' || other.handle::text, '@'), other.display_name) AS thread,
-                 dm.created_at, dm.deleted_at, 'dm' AS source
+                 dm.created_at, dm.deleted_at, 'dm' AS source, NULL::uuid AS source_id
           FROM dm_messages dm
           JOIN dm_threads t ON t.id = dm.thread_id
           LEFT JOIN users other
             ON other.id = CASE WHEN t.user_lo = ${id} THEN t.user_hi ELSE t.user_lo END
           WHERE dm.sender_id = ${id}
           UNION ALL
-          SELECT rcm.id, rcm.body, rc.title AS thread, rcm.created_at, rcm.deleted_at, 'report' AS source
+          -- Report discussion: the navigable origin is the parent report.
+          SELECT rcm.id, rcm.body, rc.title AS thread, rcm.created_at, rcm.deleted_at, 'report' AS source,
+                 rcm.report_id AS source_id
           FROM chat_messages rcm
           JOIN reports rc ON rc.id = rcm.report_id
           WHERE rcm.sender_id = ${id} AND rcm.report_id IS NOT NULL
@@ -349,6 +362,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           createdAt: r.created_at,
           deletedAt: r.deleted_at,
           source: r.source,
+          sourceId: r.source_id,
         })),
         lim,
         (r) => ({ createdAt: r.createdAt, id: r.id }),
@@ -538,8 +552,10 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
 
 const decodeKeyset = (cursor: string | null | undefined) => decodeCursor(cursor, true)
 
-function threadFallback(source: "chat" | "dm" | "report"): string {
+function threadFallback(source: "chat" | "group" | "dm" | "report"): string {
   switch (source) {
+    case "group":
+      return "Group chat"
     case "dm":
       return "Direct message"
     case "report":

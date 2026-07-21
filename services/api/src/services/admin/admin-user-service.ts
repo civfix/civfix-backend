@@ -71,7 +71,12 @@ export interface UserMessageRecord {
   thread: string
   createdAt: Date
   deletedAt: Date | null
-  source: "chat" | "dm" | "report"
+  source: "chat" | "group" | "dm" | "report"
+  /**
+   * The origin entity id: event/cleanup for `chat`, standalone group for `group`, report for `report`,
+   * and null for DMs. A group id is not an event id, and the admin has no group detail surface yet.
+   */
+  sourceId: string | null
 }
 
 export interface ListUsersArgs {
@@ -290,6 +295,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         when: toRelAbs(r.createdAt, ref).rel,
         deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
         source: r.source,
+        sourceId: r.sourceId,
       }))
       return { items, nextCursor }
     },

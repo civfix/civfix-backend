@@ -8,10 +8,17 @@ import type {
   FinalizeMediaResponse,
   MediaDTO,
   MediaKind,
-  MediaPurpose,
   MediaStatus,
 } from "@civfix/shared"
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
+import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types.js"
+
+/**
+ * The media purpose, sourced from the DB schema enum (MEDIA_PURPOSE_VALUES) rather than the shared
+ * MediaPurpose: the DB ships 'post' (social-feed media) AHEAD of the shared contract, so the internal
+ * view must accept it. `purpose` is only used internally (never serialized to a shared DTO).
+ */
+type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
 import { makeMediaPresigner } from "./media-presign.js"
 

@@ -54,6 +54,13 @@ export interface AdminReportRoutingRecord {
   /** The resolved per-category -> default -> legacy contact email, or null when none on file. */
   contact: string | null
   routed: boolean
+  /**
+   * The jurisdiction's custom forwarding email templates (0050), or null/absent when it uses the built-in
+   * default packet. buildReportPacket interpolates these against the report when present. OPTIONAL so the
+   * offline/in-memory repos and fixtures need not supply them (they default to the refined packet).
+   */
+  forwardSubjectTemplate?: string | null
+  forwardBodyTemplate?: string | null
 }
 
 /**

@@ -26,6 +26,7 @@
 import { AppError, relativeAgo } from "@civfix/shared"
 import type {
   ModerationItemDTO,
+  ModerationDestinationKind,
   ModerationKind,
   ModerationSubjectType,
   ModerationListQuery,
@@ -58,6 +59,8 @@ export interface ListModerationArgs {
 
 /** The user-context snapshot carried on an item's `meta` jsonb (set by the producer). */
 export interface ModerationUserSnapshot {
+  /** The moderated user's id (the subject's owner/author), or null when it could not be resolved. */
+  id: string | null
   handle: string
   name: string
   joined: string
@@ -86,6 +89,9 @@ export interface ModerationItemRecord {
   kind: ModerationKind
   subjectType: ModerationSubjectType
   subjectId: string
+  /** Repository-backed admin page destination, distinct from the moderated subject itself. */
+  destinationKind: ModerationDestinationKind | null
+  destinationId: string | null
   flag: string | null
   reason: string | null
   category: ReportCategory | null
@@ -93,6 +99,13 @@ export interface ModerationItemRecord {
   priority: Priority
   autoAction: string | null
   reporter: string | null
+  /**
+   * The user id of the FLAGGING reporter (the person behind the `reporter` display string), or null when
+   * there is no explicit flagger (system-originated / anonymous). This is DISTINCT from `user.id`, which is
+   * the moderated subject's owner/author — for a citizen `user_report` the flagger and the flagged
+   * content's author are two different people, so the two ids must not be conflated.
+   */
+  reporterId: string | null
   desc: string | null
   status: "open" | "approved" | "removed" | "held"
   signals: ModerationSignal[]
@@ -122,6 +135,12 @@ export interface CreateModerationItemInput {
   priority?: Priority
   autoAction?: string | null
   reporter?: string | null
+  /**
+   * The FLAGGING reporter's user id (the account behind the `reporter` display string), persisted so the
+   * queue's `reporterId` deep-links to the actual flagger — NOT the flagged content's author. Null when no
+   * explicit flagger exists (system/anonymous producers).
+   */
+  reporterUserId?: string | null
   desc?: string | null
   signals?: ModerationSignal[]
   similar?: ModerationSimilar[]
@@ -194,6 +213,7 @@ export interface ModerationRepository {
 
 /** A neutral user snapshot used when an item has no recorded meta (keeps the strict DTO valid). */
 export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
+  id: null,
   handle: "",
   name: "Unknown",
   joined: "",
@@ -207,6 +227,7 @@ export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
 function toUserDTO(snapshot: ModerationUserSnapshot | null): ModerationUser {
   const s = snapshot ?? NEUTRAL_USER_SNAPSHOT
   return {
+    id: s.id,
     handle: s.handle,
     name: s.name,
     joined: s.joined,
@@ -268,6 +289,12 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       // Surface the subject kind so the operator UI can label a citizen `user_report` (report|comment|
       // message|event|profile|photo|user|chat). Additive + optional in the contract.
       subjectType: record.subjectType,
+      subjectId: record.subjectId,
+      destinationKind: record.destinationKind,
+      destinationId: record.destinationId,
+      // The FLAGGING reporter's user id (the account behind `reporter`), so the operator UI can deep-link
+      // to the flagger — distinct from `user.id` (the moderated subject's author). Null when unknown.
+      reporterId: record.reporterId,
     }
   }
 

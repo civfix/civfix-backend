@@ -58,7 +58,11 @@ interface DirectoryRow {
   bounced: boolean
   flagged_at: Date | null
   handle: string | null
+  forward_subject_template: string | null
+  forward_body_template: string | null
+  filtered_total: string
   reports_waiting: string
+  oldest_waiting_at: Date | null
   cat_trash: string
   cat_recycling: string
   cat_graffiti: string
@@ -99,11 +103,14 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
     reportFormUrl: r.report_form_url,
     reportsWaiting: Number(r.reports_waiting ?? "0"),
     perCategoryCounts,
+    oldestReportAt: r.oldest_waiting_at,
     lastRoutedAt: r.last_routed_at,
     bounced: r.bounced,
     contactUpdatedAt: r.contact_updated_at,
     flaggedAt: r.flagged_at,
     handle: r.handle,
+    forwardSubjectTemplate: r.forward_subject_template,
+    forwardBodyTemplate: r.forward_body_template,
   }
 }
 
@@ -174,7 +181,21 @@ export function makeDrizzleJurisdictionContactsRepository(
     ): Promise<{ routedReports: number; taskResolved: boolean }> {
       const result = await sql.begin(async (tx) => {
         await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
-        await tx`UPDATE jurisdictions SET contact_updated_at = now() WHERE geoid = ${geoid}`
+        await tx`
+          UPDATE jurisdictions
+          SET contact_updated_at = now(),
+              forward_subject_template = CASE
+                WHEN ${input.forwardSubjectTemplate !== undefined}
+                  THEN ${input.forwardSubjectTemplate === "" ? null : (input.forwardSubjectTemplate ?? null)}
+                ELSE forward_subject_template
+              END,
+              forward_body_template = CASE
+                WHEN ${input.forwardBodyTemplate !== undefined}
+                  THEN ${input.forwardBodyTemplate === "" ? null : (input.forwardBodyTemplate ?? null)}
+                ELSE forward_body_template
+              END
+          WHERE geoid = ${geoid}
+        `
 
         const tasks = await tx<{ id: string }[]>`
           UPDATE jurisdiction_discovery_tasks
@@ -277,6 +298,15 @@ export function makeDrizzleJurisdictionContactsRepository(
             await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
           }
         }
+        if (input.forwardSubjectTemplate !== undefined) {
+          // Empty string clears back to the built-in default (the handle-clear convention).
+          const t = input.forwardSubjectTemplate
+          await tx`UPDATE jurisdictions SET forward_subject_template = ${t === null || t === "" ? null : t} WHERE geoid = ${geoid}`
+        }
+        if (input.forwardBodyTemplate !== undefined) {
+          const t = input.forwardBodyTemplate
+          await tx`UPDATE jurisdictions SET forward_body_template = ${t === null || t === "" ? null : t} WHERE geoid = ${geoid}`
+        }
         await writeAudit(tx, {
           actorId: audit.actorId,
           action: "jurisdiction.patched",
@@ -335,7 +365,10 @@ export function makeDrizzleJurisdictionContactsRepository(
               ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
               : args.filter === "routed"
                 ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
-                : sql``
+                : // "needs_mapping": actionable backlog = has WAITING reports AND no routing contact on file.
+                  args.filter === "needs_mapping"
+                  ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr}) AND COALESCE(w.total, 0) > 0`
+                  : sql``
 
       const layerFilter = args.layer !== null ? sql`AND j.layer = ${args.layer}` : sql``
 
@@ -344,7 +377,11 @@ export function makeDrizzleJurisdictionContactsRepository(
           ? sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
           : args.sort === "name"
             ? sql`ORDER BY j.name ASC, j.geoid ASC`
-            : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
+            : // "oldest": longest-unrouted first — the jurisdiction whose oldest waiting report is oldest.
+              // NULLS LAST so jurisdictions with no waiting report sink below those that have a backlog.
+              args.sort === "oldest"
+              ? sql`ORDER BY w.oldest_waiting_at ASC NULLS LAST, j.geoid ASC`
+              : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
 
       const rows = await sql<DirectoryRow[]>`
         SELECT
@@ -391,7 +428,11 @@ export function makeDrizzleJurisdictionContactsRepository(
           j.population,
           j.flagged_at,
           j.handle,
+          j.forward_subject_template,
+          j.forward_body_template,
+          COUNT(*) OVER()::text AS filtered_total,
           COALESCE(w.total, 0)::text AS reports_waiting,
+          w.oldest_waiting_at,
           COALESCE(w.cat_trash, 0)::text AS cat_trash,
           COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
           COALESCE(w.cat_graffiti, 0)::text AS cat_graffiti,
@@ -406,6 +447,8 @@ export function makeDrizzleJurisdictionContactsRepository(
           -- is the backlog needing a contact, and it drops to 0 once the jurisdiction is routed.
           SELECT
             COUNT(*) AS total,
+            -- Oldest still-waiting report; shares the exact waiting predicate below so it agrees with total.
+            MIN(r.created_at) AS oldest_waiting_at,
             COUNT(*) FILTER (WHERE r.category = 'trash') AS cat_trash,
             COUNT(*) FILTER (WHERE r.category = 'recycling') AS cat_recycling,
             COUNT(*) FILTER (WHERE r.category = 'graffiti') AS cat_graffiti,
@@ -435,7 +478,7 @@ export function makeDrizzleJurisdictionContactsRepository(
       let facets: { routed: number; unrouted: number } | null = null
       if (offset === 0) {
         const isDefaultView = args.q === null && args.layer === null
-        const cached = isDefaultView ? readDefaultFacetCache() : null
+        const cached = args.filter === "all" && isDefaultView ? readDefaultFacetCache() : null
         if (cached !== null) {
           total = cached.total
           facets = cached.facets
@@ -449,9 +492,11 @@ export function makeDrizzleJurisdictionContactsRepository(
             WHERE true ${search} ${layerFilter}
           `
           const a = agg[0]
-          total = Number(a?.total ?? "0")
+          total = Number(rows[0]?.filtered_total ?? "0")
           facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
-          if (isDefaultView) writeDefaultFacetCache({ total, facets })
+          if (args.filter === "all" && isDefaultView) {
+            writeDefaultFacetCache({ total: Number(a?.total ?? "0"), facets })
+          }
         }
       }
 

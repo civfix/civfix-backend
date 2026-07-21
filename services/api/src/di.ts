@@ -53,6 +53,14 @@ import {
 import { makeDrizzleVolunteerHoursRepository } from "./services/volunteer-hours-repository.drizzle.js"
 import type { VolunteerHoursRepository } from "./services/volunteer-hours-service.js"
 import {
+  makeDrizzlePostRepository,
+  type PostRepository,
+} from "./services/post-repository.drizzle.js"
+import { makePostService, type PostService } from "./services/post-service.js"
+import { makeNotificationService } from "./services/notification-service.js"
+import { makeDrizzleNotificationRepository } from "./services/notification-repository.drizzle.js"
+import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
+import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
 } from "./services/dm-repository.memory.js"
@@ -87,6 +95,8 @@ export interface Container {
   getDmRepo(): DmRepository
   getBlocksRepo(): BlocksRepository
   getVolunteerHoursRepo(): VolunteerHoursRepository
+  getPostRepo(): PostRepository
+  getPostService(): PostService
 
   close(): Promise<void>
 }
@@ -131,6 +141,35 @@ export function buildContainer(env: Env): Container {
       }
     }
     return dmRepo
+  }
+
+  let postRepo: PostRepository | undefined
+  function getPostRepo(): PostRepository {
+    if (!postRepo) {
+      postRepo = makeDrizzlePostRepository(getDb().sql, {
+        presignMedia,
+        presignAvatar: (k: string) => storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
+      })
+    }
+    return postRepo
+  }
+
+  let postService: PostService | undefined
+  function getPostService(): PostService {
+    if (!postService) {
+      const notifier = makeNotificationService({
+        repo: makeDrizzleNotificationRepository(getDb().sql),
+        pushSender,
+        userChannel,
+      })
+      postService = makePostService({
+        repo: getPostRepo(),
+        sql: getDb().sql,
+        notifier,
+        isBlockedEitherWay: (a: string, b: string) => getBlocksRepo().isBlockedEitherWay(a, b),
+      })
+    }
+    return postService
   }
 
   const storage: Storage = env.USE_FAKE_STORAGE
@@ -287,6 +326,8 @@ export function buildContainer(env: Env): Container {
     getDmRepo,
     getBlocksRepo,
     getVolunteerHoursRepo,
+    getPostRepo,
+    getPostService,
     close,
   }
 }

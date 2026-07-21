@@ -2,10 +2,17 @@ import type { Queryable, Sql } from "../db/client.js"
 import type { UserMentionDTO } from "@civfix/shared"
 
 // The USER @-mention tables across the messaging stacks share an identical layout
-// (message_id, mentioned_user_id) with PK(message_id, mentioned_user_id); chat + DM share one physical
-// table. Only the table name differs, so one parameterized repo serves all three. `table` is a
-// module-constant union literal (never user input), interpolated as a postgres.js identifier (`sql(table)`).
-export type MentionTable = "chat_message_mentions" | "report_message_user_mentions"
+// (<idColumn>, mentioned_user_id) with PK(<idColumn>, mentioned_user_id); chat + DM share one physical
+// table. Only the table name (and, for posts, the id-column name) differs, so one parameterized repo
+// serves all of them. `table`/`idColumn` are module-constant union literals (never user input),
+// interpolated as postgres.js identifiers (`sql(table)` / `sql(idColumn)`).
+export type MentionTable =
+  | "chat_message_mentions"
+  | "report_message_user_mentions"
+  | "post_mentions"
+
+// The owning-row FK column: 'message_id' for the chat/report tables, 'post_id' for post_mentions (0051).
+export type MentionIdColumn = "message_id" | "post_id"
 
 export interface MessageMentionRepo {
   // Replace the message's mention set (delete-then-insert). `mentionedUserIds` must already be deduped +
@@ -15,23 +22,27 @@ export interface MessageMentionRepo {
   loadFor(messageIds: string[]): Promise<Map<string, UserMentionDTO[]>>
 }
 
-export function makeMentionRepo(sql: Sql, table: MentionTable): MessageMentionRepo {
+export function makeMentionRepo(
+  sql: Sql,
+  table: MentionTable,
+  idColumn: MentionIdColumn = "message_id",
+): MessageMentionRepo {
   return {
     async recordFor(tx, messageId, mentionedUserIds) {
-      await tx`DELETE FROM ${tx(table)} WHERE message_id = ${messageId}`
+      await tx`DELETE FROM ${tx(table)} WHERE ${tx(idColumn)} = ${messageId}`
       if (mentionedUserIds.length === 0) return
-      const values: { message_id: string; mentioned_user_id: string }[] = mentionedUserIds.map((uid) => ({
-        message_id: messageId,
+      const values: Record<string, string>[] = mentionedUserIds.map((uid) => ({
+        [idColumn]: messageId,
         mentioned_user_id: uid,
       }))
       await tx`
-        INSERT INTO ${tx(table)} ${tx(values, "message_id", "mentioned_user_id")}
-        ON CONFLICT (message_id, mentioned_user_id) DO NOTHING
+        INSERT INTO ${tx(table)} ${tx(values, idColumn, "mentioned_user_id")}
+        ON CONFLICT (${tx(idColumn)}, mentioned_user_id) DO NOTHING
       `
     },
 
     loadFor(messageIds) {
-      return loadMentionsFor(sql, table, messageIds)
+      return loadMentionsFor(sql, table, messageIds, idColumn)
     },
   }
 }
@@ -43,21 +54,22 @@ export async function loadMentionsFor(
   tag: Queryable,
   table: MentionTable,
   messageIds: string[],
+  idColumn: MentionIdColumn = "message_id",
 ): Promise<Map<string, UserMentionDTO[]>> {
   const byMessage = new Map<string, UserMentionDTO[]>()
   if (messageIds.length === 0) return byMessage
-  const rows = await tag<{ message_id: string; id: string; handle: string | null; display_name: string }[]>`
-    SELECT m.message_id, u.id, u.handle, u.display_name
+  const rows = await tag<{ mkey: string; id: string; handle: string | null; display_name: string }[]>`
+    SELECT m.${tag(idColumn)} AS mkey, u.id, u.handle, u.display_name
     FROM ${tag(table)} m
     JOIN users u ON u.id = m.mentioned_user_id
-    WHERE m.message_id IN ${tag(messageIds)}
-    ORDER BY m.message_id ASC, u.handle ASC, u.id ASC
+    WHERE m.${tag(idColumn)} IN ${tag(messageIds)}
+    ORDER BY m.${tag(idColumn)} ASC, u.handle ASC, u.id ASC
   `
   for (const r of rows) {
     const dto: UserMentionDTO = { id: r.id, handle: r.handle ?? "", displayName: r.display_name }
-    const list = byMessage.get(r.message_id)
+    const list = byMessage.get(r.mkey)
     if (list) list.push(dto)
-    else byMessage.set(r.message_id, [dto])
+    else byMessage.set(r.mkey, [dto])
   }
   return byMessage
 }

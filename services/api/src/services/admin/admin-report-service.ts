@@ -83,7 +83,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       title: record.title,
       place: record.place,
       reporter: {
-        id: reporter?.id ?? "",
+        id: reporter?.id ?? null,
         name: reporter?.name ?? "Anonymous",
         handle: reporter?.handle ?? "anonymous",
         joined: reporter?.joinedAt ? toRelAbs(reporter.joinedAt, ref).abs : "-",
@@ -328,7 +328,16 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         })
       }
 
-      const packet = buildReportPacket(record, routing, mediaLinks, input.note)
+      // Per-jurisdiction custom forward templates (0050) override the refined default packet when present;
+      // they apply on BOTH this manual route AND the auto-forward job (which calls this same method).
+      const packet = buildReportPacket(
+        record,
+        routing,
+        mediaLinks,
+        input.note,
+        routing?.forwardSubjectTemplate ?? null,
+        routing?.forwardBodyTemplate ?? null,
+      )
 
       const { thread } = await deps.outboundMail.sendReportToJurisdiction({
         reportId: id,

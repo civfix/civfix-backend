@@ -115,6 +115,48 @@ describe("moderation queue list", () => {
     const firstIds = new Set(first.items.map((i) => i.id))
     expect(second.items.every((i) => !firstIds.has(i.id))).toBe(true)
   })
+
+  it("keeps chat/photo subject ids and exposes only repository-backed admin destinations", async () => {
+    const { repo, svc } = harness()
+    repo.seedItem({
+      id: "CHAT",
+      subjectType: "chat",
+      subjectId: "CHAT-MESSAGE-1",
+      destinationKind: "event",
+      destinationId: "EVENT-1",
+    })
+    repo.seedItem({
+      id: "PHOTO",
+      subjectType: "photo",
+      subjectId: "MEDIA-1",
+      destinationKind: "report",
+      destinationId: "REPORT-1",
+    })
+    repo.seedItem({
+      id: "ORPHAN",
+      subjectType: "chat",
+      subjectId: "GROUP-MESSAGE-1",
+      destinationKind: null,
+      destinationId: null,
+    })
+
+    const rows = (await svc.list({ limit: 10 })).items
+    expect(rows.find((row) => row.id === "CHAT")).toMatchObject({
+      subjectId: "CHAT-MESSAGE-1",
+      destinationKind: "event",
+      destinationId: "EVENT-1",
+    })
+    expect(rows.find((row) => row.id === "PHOTO")).toMatchObject({
+      subjectId: "MEDIA-1",
+      destinationKind: "report",
+      destinationId: "REPORT-1",
+    })
+    expect(rows.find((row) => row.id === "ORPHAN")).toMatchObject({
+      subjectId: "GROUP-MESSAGE-1",
+      destinationKind: null,
+      destinationId: null,
+    })
+  })
 })
 
 describe("moderation detail", () => {
@@ -135,7 +177,10 @@ describe("moderation detail", () => {
         { label: "Violence model", val: "0.02", tone: "ok" },
       ],
       similar: [{ id: "REP-9", note: "Same block, resolved as valid", when: "2d" }],
+      // The FLAGGING reporter is a DIFFERENT account than the flagged subject's author below.
+      reporterId: "REPORTER-9",
       user: {
+        id: "USER-1",
         handle: "@anon",
         name: "Anonymous",
         joined: "3d ago",
@@ -154,6 +199,10 @@ describe("moderation detail", () => {
     expect(detail.signals).toHaveLength(2)
     expect(detail.signals[0]).toEqual({ label: "NSFW model", val: "0.84", tone: "bad" })
     expect(detail.user.handle).toBe("@anon")
+    // user.id is the moderated SUBJECT's owner/author (drives the user-context link) — unchanged.
+    expect(detail.user.id).toBe("USER-1")
+    // reporterId is the FLAGGING reporter (the account behind `reporter`), NOT the subject author.
+    expect(detail.reporterId).toBe("REPORTER-9")
     expect(detail.user.priorReports).toBe(1)
     expect(detail.similar[0]).toEqual({
       id: "REP-9",
@@ -311,6 +360,42 @@ describe("moderation producer", () => {
     const page = await svc.list({})
     expect(page.items).toHaveLength(1)
     expect(page.items[0]?.flag).toBe("Held report")
+  })
+
+  it("createItem threads the flagging reporter's id (reporterUserId) into reporterId, distinct from the subject author", async () => {
+    const { svc } = harness()
+    // A citizen user_report: the FLAGGER (@flagger / FLAGGER-1) is a different account than the flagged
+    // report's AUTHOR (AUTHOR-1, carried on the subject `user` snapshot).
+    const id = await svc.createItem({
+      kind: "user_report",
+      subjectType: "report",
+      subjectId: "REP-1",
+      flag: "User report",
+      reporter: "@flagger",
+      reporterUserId: "FLAGGER-1",
+      user: {
+        id: "AUTHOR-1",
+        handle: "@author",
+        name: "Author",
+        joined: "",
+        priorReports: 0,
+        priorRemovals: 0,
+        strikes: 0,
+        device: "",
+      },
+    })
+    expect(id).not.toBeNull()
+
+    // The list row's reporterId is the FLAGGER, not the author.
+    const row = (await svc.list({})).items[0]!
+    expect(row.reporter).toBe("@flagger")
+    expect(row.reporterId).toBe("FLAGGER-1")
+
+    // The detail keeps the subject author on user.id while reporterId stays the flagger — the two ids must
+    // not be conflated (regression guard for the reporterId-points-at-author bug).
+    const detail = await svc.getItem(id!)
+    expect(detail.user.id).toBe("AUTHOR-1")
+    expect(detail.reporterId).toBe("FLAGGER-1")
   })
 
   it("createItem with dedupeOpen does not double-enqueue for the same open subject", async () => {

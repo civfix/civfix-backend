@@ -32,6 +32,7 @@ export class InMemorySocialRepository implements SocialRepository {
   readonly follows: StoredFollow[] = []
   readonly cleanups: StoredCleanup[] = []
   readonly reportCounts = new Map<string, number>()
+  readonly fixedReportCounts = new Map<string, number>()
 
   seedUser(over: Partial<StoredUser> = {}): StoredUser {
     const user: StoredUser = {
@@ -59,8 +60,9 @@ export class InMemorySocialRepository implements SocialRepository {
     this.cleanups.push({ record, attendees: set })
   }
 
-  seedReports(userId: string, count: number): void {
+  seedReports(userId: string, count: number, fixed = 0): void {
     this.reportCounts.set(userId, count)
+    this.fixedReportCounts.set(userId, fixed)
   }
 
   private toView(u: StoredUser): PersonView {
@@ -327,7 +329,11 @@ export class InMemorySocialRepository implements SocialRepository {
 
   statsFor(userId: string): Promise<ProfileStats> {
     const cleanups = this.cleanups.filter((c) => c.record.organizerUserId === userId).length
-    return Promise.resolve({ reports: this.reportCounts.get(userId) ?? 0, cleanups })
+    return Promise.resolve({
+      reports: this.reportCounts.get(userId) ?? 0,
+      fixed: this.fixedReportCounts.get(userId) ?? 0,
+      cleanups,
+    })
   }
 }
 

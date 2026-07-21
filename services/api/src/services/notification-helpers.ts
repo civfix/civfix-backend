@@ -12,6 +12,7 @@ export const DEFAULT_PREFS: NotificationPrefsRecord = {
   reportUpdates: true,
   follows: true,
   mentions: true,
+  postInteractions: true,
   quietStart: null,
   quietEnd: null,
 }
@@ -73,6 +74,15 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
       return prefs.cleanupChat
     case "new_follower":
       return prefs.follows
+    // post_mention rides the same `mentions` toggle as chat/DM @mentions.
+    case "post_mention":
+      return prefs.mentions
+    // Post interactions on YOUR post (someone liked / reposted / replied / quoted it).
+    case "post_like":
+    case "post_repost":
+    case "post_reply":
+    case "post_quote":
+      return prefs.postInteractions
     case "system":
       return true
     default:
@@ -88,6 +98,7 @@ export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
     reportUpdates: row.reportUpdates,
     follows: row.follows,
     mentions: row.mentions,
+    postInteractions: row.postInteractions,
     ...(hasQuiet ? { quietHours: { start: row.quietStart!, end: row.quietEnd! } } : {}),
   }
 }

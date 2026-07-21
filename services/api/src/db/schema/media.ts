@@ -25,6 +25,8 @@ export const mediaAssets = pgTable(
       .default(sql`gen_random_uuid()`),
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
     chatMessageId: uuid("chat_message_id"),
+    // Social-feed post media (0051): a claimed upload is stamped with post_id + purpose='post'.
+    postId: uuid("post_id"),
     uploadId: uuid("upload_id").notNull(),
     kind: text("kind").$type<MediaKind>().notNull(),
     codec: text("codec"),
@@ -44,6 +46,9 @@ export const mediaAssets = pgTable(
     index("media_assets_chat_message_idx")
       .on(t.chatMessageId)
       .where(sql`${t.chatMessageId} is not null`),
+    index("media_assets_post_idx")
+      .on(t.postId)
+      .where(sql`${t.postId} is not null`),
     index("media_assets_status_idx").on(t.status),
     index("media_assets_phash_idx").on(t.phash),
     index("media_assets_r2_key_idx").on(t.r2Key),

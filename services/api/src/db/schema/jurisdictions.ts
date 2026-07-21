@@ -34,6 +34,12 @@ export const jurisdictions = pgTable(
     contactEmails: text("contact_emails").array(),
     reportFormUrl: text("report_form_url"),
     notes: text("notes"),
+    // Per-jurisdiction custom forwarding email template (report -> jurisdiction), 0050. Both NULLABLE:
+    // NULL = use the built-in refined default packet (mail-format.ts buildReportPacket). Interpolated with
+    // the report's {referenceCode}/{category}/… tokens (shared FORWARD_TEMPLATE_VARIABLES); the length
+    // bounds (subject 300 / body 8000) are enforced app-side by the shared PatchJurisdictionRequest schema.
+    forwardSubjectTemplate: text("forward_subject_template"),
+    forwardBodyTemplate: text("forward_body_template"),
     contactUpdatedAt: timestamp("contact_updated_at", { withTimezone: true }),
     // Operator "flag for review" state (0012). Nullable; purely advisory (does not affect resolution).
     flaggedAt: timestamp("flagged_at", { withTimezone: true }),

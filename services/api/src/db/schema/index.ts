@@ -31,6 +31,11 @@ export * from "./user_blocks.js"
 
 export * from "./follows.js"
 
+export * from "./posts.js"
+export * from "./post_likes.js"
+export * from "./post_saves.js"
+export * from "./post_mentions.js"
+
 export * from "./volunteer-hours.js"
 
 export * from "./notifications.js"

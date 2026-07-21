@@ -325,7 +325,7 @@ describe("getProfile", () => {
     repo.seedFollow(B, A)
     repo.seedFollow(C, A)
     repo.seedFollow(A, B)
-    repo.seedReports(A, 4)
+    repo.seedReports(A, 4, 3)
 
     const older = makeCleanupRecord({
       organizerUserId: A,
@@ -346,7 +346,7 @@ describe("getProfile", () => {
     expect(profile.followers).toBe(2)
     expect(profile.following).toBe(1)
     expect(profile.isFollowing).toBe(true)
-    expect(profile.stats).toEqual({ reports: 4, cleanups: 2 })
+    expect(profile.stats).toEqual({ reports: 4, fixed: 3, cleanups: 2 })
     expect(profile.pastEvents.map((e) => e.title)).toEqual(["Newer", "Older"])
     expect(profile.avatar).toEqual(avatarGradient(A))
     expect(profile.pastEvents[0]!.joined).toBe(true)

@@ -58,11 +58,14 @@ function record(over: Partial<JurisdictionDirectoryRecord> = {}): JurisdictionDi
     reportFormUrl: null,
     reportsWaiting: 0,
     perCategoryCounts: {},
+    oldestReportAt: null,
     lastRoutedAt: null,
     bounced: false,
     contactUpdatedAt: null,
     flaggedAt: null,
     handle: null,
+    forwardSubjectTemplate: null,
+    forwardBodyTemplate: null,
     ...over,
   }
 }
@@ -124,6 +127,8 @@ describe("saveAndRoute", () => {
         contacts: { trash: "trash@lacity.gov" },
         defaultEmails: ["311@lacity.gov"],
         formUrl: null,
+        forwardSubjectTemplate: "Report {title}",
+        forwardBodyTemplate: "Please review {description}",
       },
       "op-1",
     )
@@ -132,6 +137,8 @@ describe("saveAndRoute", () => {
     const j = repo.jurisdictions.get("0644000")!
     expect(j.categoryContacts.get("trash")).toBe("trash@lacity.gov")
     expect(j.defaultEmails).toEqual(["311@lacity.gov"])
+    expect(j.forwardSubjectTemplate).toBe("Report {title}")
+    expect(j.forwardBodyTemplate).toBe("Please review {description}")
     // (b) contact_updated_at set.
     expect(j.contactUpdatedAt).toEqual(NOW)
     // (c) discovery task resolved.
@@ -537,6 +544,20 @@ describe("listDirectory", () => {
     // Other single-type selections resolve to their one match.
     expect((await svc.listDirectory({ layer: "state" })).items.map((i) => i.geoid)).toEqual(["06"])
     expect((await svc.listDirectory({ layer: "county" })).items.map((i) => i.geoid)).toEqual(["06037"])
+  })
+
+  it("scopes the total to the needs_mapping filter", async () => {
+    const { repo, svc } = harness()
+    repo.seedJurisdiction({ geoid: "waiting", name: "Waiting" })
+    repo.seedJurisdiction({ geoid: "empty", name: "Empty" })
+    repo.seedJurisdiction({ geoid: "routed", name: "Routed", defaultEmails: ["311@city.gov"] })
+    repo.seedReport({ geoid: "waiting", category: "trash", status: "submitted" })
+    repo.seedReport({ geoid: "routed", category: "trash", status: "submitted" })
+
+    const result = await svc.listDirectory({ filter: "needs_mapping" })
+
+    expect(result.items.map((i) => i.geoid)).toEqual(["waiting"])
+    expect(result.total).toBe(1)
   })
 
   it("suppresses the synthetic 'Unmapped' row under a type filter (it has no jurisdiction type)", async () => {

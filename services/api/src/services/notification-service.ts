@@ -62,6 +62,7 @@ export interface NotificationPrefsRecord {
   reportUpdates: boolean
   follows: boolean
   mentions: boolean
+  postInteractions: boolean
   quietStart: string | null
   quietEnd: string | null
 }
@@ -72,6 +73,7 @@ export interface NotificationPrefsPatch {
   reportUpdates?: boolean
   follows?: boolean
   mentions?: boolean
+  postInteractions?: boolean
   quietHours?: QuietHours | null
 }
 
@@ -137,7 +139,21 @@ export interface NotificationServiceDeps {
   now?: () => Date
 }
 
-export interface NotificationService extends SocialNotifier {
+/**
+ * Social-feed post interaction bells. Each notifies the recipient (a post's author, or an @-mentioned
+ * user) that `actorName` interacted with their post. The CALLER (post-service) is responsible for the
+ * self-notify + blocked-either-way guards before invoking these; push delivery is additionally gated by
+ * notification_prefs (postInteractions for like/repost/reply/quote, mentions for post_mention).
+ */
+export interface PostNotifier {
+  onPostLike(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
+  onPostRepost(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
+  onPostReply(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
+  onPostQuote(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
+  onPostMention(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
+}
+
+export interface NotificationService extends SocialNotifier, PostNotifier {
   listNotifications(userId: string, pagination: PaginationQuery): Promise<ListNotificationsResponse>
   markRead(userId: string, ids: string[]): Promise<{ ok: true }>
   getPrefs(userId: string): Promise<NotificationPrefsDTO>
@@ -256,6 +272,9 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         ...(patch.reportUpdates !== undefined ? { reportUpdates: patch.reportUpdates } : {}),
         ...(patch.follows !== undefined ? { follows: patch.follows } : {}),
         ...(patch.mentions !== undefined ? { mentions: patch.mentions } : {}),
+        ...(patch.postInteractions !== undefined
+          ? { postInteractions: patch.postInteractions }
+          : {}),
         ...("quietHours" in patch ? { quietHours: patch.quietHours ?? null } : {}),
       }
       return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))
@@ -322,6 +341,60 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         bodyKey: "notification.follower.body",
         vars: { name },
         link: `/people/${args.follower.id}`,
+      })
+    },
+
+    async onPostLike(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
+      await doCreateNotification(a.recipientId, {
+        type: "post_like",
+        titleKey: "notification.post.like.title",
+        bodyKey: "notification.post.like.body",
+        vars: { name: a.actorName },
+        link: `/post/${a.postId}`,
+      })
+    },
+
+    async onPostRepost(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
+      await doCreateNotification(a.recipientId, {
+        type: "post_repost",
+        titleKey: "notification.post.repost.title",
+        bodyKey: "notification.post.repost.body",
+        vars: { name: a.actorName },
+        link: `/post/${a.postId}`,
+      })
+    },
+
+    async onPostReply(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
+      await doCreateNotification(a.recipientId, {
+        type: "post_reply",
+        titleKey: "notification.post.reply.title",
+        bodyKey: "notification.post.reply.body",
+        vars: { name: a.actorName },
+        link: `/post/${a.postId}`,
+      })
+    },
+
+    async onPostQuote(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
+      await doCreateNotification(a.recipientId, {
+        type: "post_quote",
+        titleKey: "notification.post.quote.title",
+        bodyKey: "notification.post.quote.body",
+        vars: { name: a.actorName },
+        link: `/post/${a.postId}`,
+      })
+    },
+
+    async onPostMention(a: {
+      recipientId: string
+      actorName: string
+      postId: string
+    }): Promise<void> {
+      await doCreateNotification(a.recipientId, {
+        type: "post_mention",
+        titleKey: "notification.post.mention.title",
+        bodyKey: "notification.post.mention.body",
+        vars: { name: a.actorName },
+        link: `/post/${a.postId}`,
       })
     },
   }

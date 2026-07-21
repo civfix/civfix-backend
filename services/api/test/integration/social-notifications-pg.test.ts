@@ -154,6 +154,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       reportUpdates: true,
       follows: true,
       mentions: true,
+      postInteractions: true,
       quietStart: null,
       quietEnd: null,
     })

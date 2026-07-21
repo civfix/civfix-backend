@@ -75,16 +75,21 @@ describe("email layout", () => {
 })
 
 describe("buildReportPacket", () => {
-  it("builds a sanitized subject and a branded body with escaped, multi-line content", () => {
+  it("builds the refined default subject + a branded body with escaped, multi-line content", () => {
     const packet = buildReportPacket(reportRecord(), null, ["https://r2/a?t=1", "https://r2/b?t=2"], "Please prioritize.")
-    expect(packet.subject).toBe("civfix report: Tag on the underpass [11111111]")
+    // The concise default subject identifies the report by its title, place, and human reference.
+    expect(packet.subject).toBe("[civfix] Tag on the underpass - Springfield - ABC123")
     expect(packet.html).toContain("<!DOCTYPE html>")
     expect(packet.html).toContain("First line of description.<br>Second line with detail.")
     expect(packet.html).toContain(">Photo 1<")
     expect(packet.html).toContain(">Photo 2<")
     expect(packet.html).toContain("Please prioritize.")
-    expect(packet.text).toContain("Reference: 11111111-2222-3333-4444-555555555555")
+    // The default footer paragraph uses the human reference code, not the raw UUID.
+    expect(packet.text).toContain("civfix reference ABC123")
+    expect(packet.text).not.toContain("11111111-2222-3333-4444-555555555555")
     expect(packet.text).toContain("Photo 1: https://r2/a?t=1")
+    // The scannable kvTable carries the confirmations + submitted date.
+    expect(packet.text).toContain("3 neighbors")
   })
 
   it("strips CRLF from the subject to block header injection", () => {
@@ -97,6 +102,68 @@ describe("buildReportPacket", () => {
     const packet = buildReportPacket(reportRecord({ desc: "<script>alert(1)</script>" }), null, [], null)
     expect(packet.html).not.toContain("<script>alert(1)</script>")
     expect(packet.html).toContain("&lt;script&gt;")
+  })
+
+  it("applies a custom body + subject template, interpolating report tokens", () => {
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      "Please prioritize.",
+      "Case {referenceCode}: {category} at {address}",
+      "A {category} report was filed at {address}.\n\nConfirmed by {confirmations} neighbors. See {mapLink}.",
+    )
+    expect(packet.subject).toBe("Case ABC123: Graffiti at 100 Main St")
+    // Body is split on the blank line into two paragraph blocks, tokens replaced.
+    expect(packet.html).toContain("A Graffiti report was filed at 100 Main St.")
+    expect(packet.html).toContain("Confirmed by 3 neighbors.")
+    expect(packet.html).toContain("<!DOCTYPE html>")
+    // The refined-default kvTable / photo blocks are NOT emitted for a custom body.
+    expect(packet.html).not.toContain(">Photo 1<")
+  })
+
+  it("normalizes CRLF in a custom body so Windows blank lines split into paragraphs without stray \\r", () => {
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      [],
+      null,
+      null,
+      "First paragraph.\r\n\r\nSecond paragraph.",
+    )
+    // CRLF blank line splits into two distinct paragraphs (would stay one block if \r were left in).
+    expect(packet.html).toContain("First paragraph.")
+    expect(packet.html).toContain("Second paragraph.")
+    // No carriage return leaks into either rendered part.
+    expect(packet.text).not.toContain("\r")
+    expect(packet.html).not.toContain("\r")
+  })
+
+  it("interpolates a custom template's HTML-significant tokens safely (escaped)", () => {
+    const packet = buildReportPacket(
+      reportRecord({ desc: "<b>bold</b>" }),
+      null,
+      [],
+      null,
+      null,
+      "Details: {description}",
+    )
+    expect(packet.html).not.toContain("<b>bold</b>")
+    expect(packet.html).toContain("&lt;b&gt;bold&lt;/b&gt;")
+  })
+
+  it("uses the custom subject but the refined default body when only the subject is set", () => {
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      [],
+      null,
+      "Ref {referenceCode}",
+      null,
+    )
+    expect(packet.subject).toBe("Ref ABC123")
+    // Default body still renders (the kvTable heading is present).
+    expect(packet.html).toContain("What was reported")
   })
 })
 

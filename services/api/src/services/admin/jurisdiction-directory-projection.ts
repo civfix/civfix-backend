@@ -94,11 +94,15 @@ export function buildUnmappedRecord(
     reportFormUrl: null,
     reportsWaiting: total,
     perCategoryCounts,
+    // The unmapped aggregate does not carry a per-row oldest timestamp; it is read-only triage, so null.
+    oldestReportAt: null,
     lastRoutedAt: null,
     bounced: false,
     contactUpdatedAt: null,
     flaggedAt: null,
     handle: null,
+    forwardSubjectTemplate: null,
+    forwardBodyTemplate: null,
   }
 }
 
@@ -136,6 +140,7 @@ export function toDirectoryDTO(record: JurisdictionDirectoryRecord): Jurisdictio
     layer: record.layer,
     population: record.population ?? 0,
     reportsWaiting: record.reportsWaiting,
+    oldestReportAt: record.oldestReportAt?.toISOString() ?? null,
     perCategoryCounts: record.perCategoryCounts,
     // Drop empty-string emails to null so they satisfy the DTO's email-or-null contract.
     contacts: record.categoryContacts.map((c) => ({
@@ -144,5 +149,7 @@ export function toDirectoryDTO(record: JurisdictionDirectoryRecord): Jurisdictio
     })),
     flaggedAt: record.flaggedAt !== null ? record.flaggedAt.toISOString() : null,
     handle: record.handle,
+    forwardSubjectTemplate: record.forwardSubjectTemplate,
+    forwardBodyTemplate: record.forwardBodyTemplate,
   }
 }

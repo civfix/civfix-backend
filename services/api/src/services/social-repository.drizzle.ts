@@ -423,13 +423,15 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     },
 
     async statsFor(userId: string): Promise<ProfileStats> {
-      const rows = await sql<{ reports: number; cleanups: number }[]>`
+      const rows = await sql<{ reports: number; fixed: number; cleanups: number }[]>`
         SELECT
           (SELECT count(*)::int FROM reports r WHERE r.reporter_user_id = ${userId} AND r.deleted_at IS NULL) AS reports,
+          (SELECT count(*)::int FROM reports r WHERE r.reporter_user_id = ${userId} AND r.deleted_at IS NULL AND r.status = 'resolved') AS fixed,
           (SELECT count(*)::int FROM cleanups c WHERE c.organizer_user_id = ${userId}) AS cleanups
       `
       return {
         reports: rows[0]?.reports ?? 0,
+        fixed: rows[0]?.fixed ?? 0,
         cleanups: rows[0]?.cleanups ?? 0,
       }
     },

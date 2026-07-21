@@ -66,7 +66,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
   })
 
   beforeEach(async () => {
-    await h.sql`TRUNCATE user_moderation, report_timeline, abuse_flags, audit_log, cleanup_members, cleanup_timeline, chat_messages, sessions RESTART IDENTITY CASCADE`
+    await h.sql`TRUNCATE user_moderation, report_timeline, abuse_flags, audit_log, cleanup_members, cleanup_timeline, chat_messages, chat_group_members, chat_groups, sessions RESTART IDENTITY CASCADE`
     await h.sql`DELETE FROM cleanups`
     await h.sql`DELETE FROM reports`
     await h.sql`DELETE FROM users`
@@ -127,7 +127,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     expect((await repo.getUser(u))?.role).toBe("gov_admin")
   })
 
-  it("the sub-lists page the user's reports / cleanups / messages", async () => {
+  it("the sub-lists preserve cleanup, standalone group, and report message origins", async () => {
     const u = await insertUser(h, { handle: "sam" })
     await insertReport(h, u)
     const org = await insertUser(h)
@@ -139,12 +139,30 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     const cleanupId = cleanup[0]!.id
     await h.sql`INSERT INTO cleanup_members (cleanup_id, user_id, role) VALUES (${cleanupId}, ${u}, 'member')`
     await h.sql`INSERT INTO chat_messages (cleanup_id, sender_id, body, kind) VALUES (${cleanupId}, ${u}, 'hello', 'text')`
+    const group = await h.sql<{ id: string }[]>`
+      INSERT INTO chat_groups (owner_id, name) VALUES (${org}, 'Neighbors') RETURNING id
+    `
+    const groupId = group[0]!.id
+    await h.sql`INSERT INTO chat_messages (group_id, sender_id, body, kind) VALUES (${groupId}, ${u}, 'group hello', 'text')`
+    const reportId = await insertReport(h, u)
+    await h.sql`INSERT INTO chat_messages (report_id, sender_id, body, kind) VALUES (${reportId}, ${u}, 'report hello', 'text')`
 
     expect((await repo.listUserReports(u, null, 20)).records).toHaveLength(1)
     const events = await repo.listUserEvents(u, null, 20)
     expect(events.records[0]?.role).toBe("member")
     const messages = await repo.listUserMessages(u, null, 20)
-    expect(messages.records[0]?.text).toBe("hello")
+    expect(messages.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "hello", source: "chat", sourceId: cleanupId, thread: "Park" }),
+        expect.objectContaining({
+          text: "group hello",
+          source: "group",
+          sourceId: groupId,
+          thread: "Neighbors",
+        }),
+        expect.objectContaining({ text: "report hello", source: "report", sourceId: reportId }),
+      ]),
+    )
   })
 
   it("toggleFlag upserts user_moderation + opens/resolves an abuse_flag (subject_type 'user')", async () => {

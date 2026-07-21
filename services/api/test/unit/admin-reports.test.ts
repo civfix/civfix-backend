@@ -158,6 +158,7 @@ describe("admin reports list", () => {
     expect(a.reporter.name).toBe("Al")
     expect(b.reporter.name).toBe("Anonymous")
     expect(b.reporter.handle).toBe("anonymous")
+    expect(b.reporter.id).toBeNull()
   })
 
   it("filters by status bucket and by flagged (published/held are Submitted, not Completed)", async () => {

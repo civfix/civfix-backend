@@ -59,6 +59,9 @@ export async function registerReportContentRoutes(
         flag: isOwnerTakedown ? "Owner takedown request" : "User report",
         reason: body.reason,
         reporter,
+        // The authed FLAGGING user's id (distinct from the flagged content's author), so the moderation
+        // queue's reporterId deep-links to the actual reporter rather than the subject's owner.
+        reporterUserId: userId,
         desc: body.details ?? null,
         priority: isOwnerTakedown ? "high" : "med",
         dedupeOpen: true,
