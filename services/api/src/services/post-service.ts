@@ -44,6 +44,7 @@ export interface PostService {
   repostPost(id: string, viewerId: string): Promise<PostDTO>
   unrepostPost(id: string, viewerId: string): Promise<PostDTO>
   homeFeed(viewerId: string, query: HomeFeedQuery): Promise<FeedPage>
+  publicFeed(query: HomeFeedQuery): Promise<FeedPage>
   listUserPosts(authorId: string, viewerId: string, pagination: PaginationQuery): Promise<FeedPage>
   listSaves(viewerId: string, pagination: PaginationQuery): Promise<FeedPage>
 }
@@ -244,6 +245,15 @@ export function makePostService(deps: PostServiceDeps): PostService {
     async homeFeed(viewerId: string, query: HomeFeedQuery): Promise<FeedPage> {
       return deps.repo.homeFeed({
         viewerId,
+        filter: query.filter,
+        cursor: query.cursor ?? null,
+        limit: query.limit ?? POSTS_DEFAULT_LIMIT,
+      })
+    },
+
+    // The public/global feed served to signed-out readers (no viewer scope; all viewer flags false).
+    async publicFeed(query: HomeFeedQuery): Promise<FeedPage> {
+      return deps.repo.publicFeed({
         filter: query.filter,
         cursor: query.cursor ?? null,
         limit: query.limit ?? POSTS_DEFAULT_LIMIT,

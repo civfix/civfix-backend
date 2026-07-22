@@ -34,6 +34,14 @@ type PostKind = (typeof POST_KIND_VALUES)[number]
 /** Default page size when a list request omits `limit` (shared caps `limit` at 50). */
 export const POSTS_DEFAULT_LIMIT = 20
 
+/**
+ * The nil UUID used as the "viewer" when hydrating the PUBLIC feed for a signed-out reader. No user row
+ * carries the nil id, so every viewer-scoped subquery (likes / saves / reposts / is_following) matches
+ * nothing and returns false — the correct not-signed-in viewer state — without threading a nullable
+ * viewer through hydrate/pageOf.
+ */
+export const NIL_VIEWER_ID = "00000000-0000-0000-0000-000000000000"
+
 export interface CreatePostArgs {
   authorId: string
   kind: PostKind // 'post' | 'quote' | 'reply' (a pure repost uses repost(), not this)
@@ -71,6 +79,13 @@ export interface HomeFeedArgs extends PostListArgs {
   filter: "all" | "events" | "fixes"
 }
 
+/** The public/global feed (signed-out viewers): no personal viewer, so no follow scope + no viewer flags. */
+export interface PublicFeedArgs {
+  filter: "all" | "events" | "fixes"
+  cursor: string | null
+  limit: number
+}
+
 export interface PostRepository {
   getPostBrief(id: string): Promise<PostBrief | null>
   actorNameOf(userId: string): Promise<string>
@@ -90,6 +105,7 @@ export interface PostRepository {
 
   getPostDTO(id: string, viewerId: string): Promise<PostDTO | null>
   homeFeed(args: HomeFeedArgs): Promise<FeedPage>
+  publicFeed(args: PublicFeedArgs): Promise<FeedPage>
   listReplies(postId: string, args: PostListArgs): Promise<FeedPage>
   listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage>
   listSaves(args: PostListArgs): Promise<FeedPage>
@@ -791,6 +807,37 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         LIMIT ${args.limit + 1}
       `
       return pageOf(rows, args.limit, args.viewerId)
+    },
+
+    // The PUBLIC/global feed for signed-out viewers: every non-deleted top-level post, newest first, with
+    // NO follow scope (there is no viewer to follow anyone) and NO block filter. It hydrates with the nil
+    // UUID as the "viewer", which matches no like/save/repost/follow row, so every viewer flag comes back
+    // false — exactly right for a not-signed-in reader. Top-level only (reply_to_id IS NULL) so the public
+    // feed reads like the home timeline, not a flat reply dump.
+    async publicFeed(args: PublicFeedArgs): Promise<FeedPage> {
+      const cursor = parseTimeCursor(args.cursor)
+      const cursorFilter =
+        cursor !== null ? sql`AND (p.created_at, p.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
+      const filterClause =
+        args.filter === "events"
+          ? sql`AND p.event_id IS NOT NULL`
+          : args.filter === "fixes"
+            ? sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
+            : sql``
+      const rows = await sql<PostRowSelect[]>`
+        SELECT
+          p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
+          p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
+          p.created_at, p.updated_at
+        FROM posts p
+        WHERE p.deleted_at IS NULL
+          AND p.reply_to_id IS NULL
+          ${filterClause}
+          ${cursorFilter}
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT ${args.limit + 1}
+      `
+      return pageOf(rows, args.limit, NIL_VIEWER_ID)
     },
 
     async listReplies(postId: string, args: PostListArgs): Promise<FeedPage> {
