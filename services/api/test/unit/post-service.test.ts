@@ -87,6 +87,7 @@ function fakeRepo(cfg: FakeConfig = {}): PostRepository & { created: CreatePostA
     unrepost: (id) => Promise.resolve({ targetId: id, removed: true }),
     getPostDTO: (id) => Promise.resolve(dto(id)),
     homeFeed: () => Promise.resolve({ items: [], nextCursor: null }),
+    publicFeed: () => Promise.resolve({ items: [], nextCursor: null }),
     listReplies: () => Promise.resolve({ items: [], nextCursor: null }),
     listUserPosts: () => Promise.resolve({ items: [], nextCursor: null }),
     listSaves: () => Promise.resolve({ items: [], nextCursor: null }),
@@ -135,6 +136,20 @@ describe("PostService validation + authorization", () => {
         "u1",
       ),
     ).rejects.toBeInstanceOf(AppError)
+  })
+
+  it("publicFeed serves the global feed with no viewer (you don't need an account to read)", async () => {
+    const calls: Array<{ filter: string; cursor: string | null; limit: number }> = []
+    const repo = {
+      ...fakeRepo(),
+      publicFeed: (args: { filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }) => {
+        calls.push(args)
+        return Promise.resolve({ items: [], nextCursor: null })
+      },
+    }
+    const svc = makePostService({ repo, sql: throwingSql })
+    await svc.publicFeed({ filter: "all" })
+    expect(calls).toEqual([{ filter: "all", cursor: null, limit: 20 }])
   })
 
   it("rejects an attached event the author does not host/attend (403)", async () => {

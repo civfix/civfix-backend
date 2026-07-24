@@ -84,10 +84,14 @@ export async function registerPostRoutes(app: FastifyInstance, container: Contai
     reply.status(200).send(await service().unsavePost(id, userId))
   })
 
+  // OPTIONAL auth: a signed-in reader gets their followed+self timeline; a signed-out reader gets the
+  // public/global feed (you shouldn't have to sign in to read a feed). Writes still require auth below.
   route(app, "homeFeed", async (request, reply) => {
-    const userId = requireAuth(request)
+    const userId = request.auth.userId
     const query = parse(HomeFeedQuerySchema, request.query)
-    reply.status(200).send(await service().homeFeed(userId, query))
+    reply
+      .status(200)
+      .send(userId ? await service().homeFeed(userId, query) : await service().publicFeed(query))
   })
 
   route(app, "listUserPosts", async (request, reply) => {
