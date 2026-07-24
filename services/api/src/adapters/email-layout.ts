@@ -4,7 +4,6 @@ import type { EmailBlock } from "./email-blocks.js"
 
 const INK3 = tokens.color.neutral.ink3
 const BORDER = tokens.color.neutral.ink5
-const PAPER = tokens.color.neutral.paper
 const CARD = tokens.color.neutral.card
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
@@ -28,7 +27,7 @@ const WORDMARK_HTML = WORDMARK.map(
 ).join("")
 
 const DEFAULT_FOOTER =
-  "civfix — civic reporting that connects residents with their local government. " +
+  "civfix is a civic reporting platform that connects residents with their local government. " +
   "Reply to this email to respond. civfix.org"
 
 export const CITY_FOOTER =
@@ -55,11 +54,13 @@ export function renderEmailBody(opts: RenderEmailOptions): { text: string; html:
     `<meta name="color-scheme" content="light dark">` +
     `<meta name="supported-color-schemes" content="light dark">` +
     `<style>@media (max-width:600px){.cv-container{width:100%!important;}.cv-pad{padding-left:20px!important;padding-right:20px!important;}}` +
-    `@media (prefers-color-scheme:dark){.cv-body{background:#1A1714!important;}.cv-card{background:#23201C!important;}}</style>` +
+    `@media (prefers-color-scheme:dark){.cv-body{background:#23201C!important;}.cv-card{background:#23201C!important;}}</style>` +
     `</head>` +
-    `<body class="cv-body" style="margin:0;padding:0;background:${PAPER};">` +
+    // Body background matches the card exactly (a seamless single surface); the thin card border is
+    // the only framing, so no contrasting gutter shows around the content in any client.
+    `<body class="cv-body" style="margin:0;padding:0;background:${CARD};">` +
     preheader +
-    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${PAPER};">` +
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${CARD};">` +
     `<tr><td align="center" style="padding:24px 12px;">` +
     `<table role="presentation" class="cv-container cv-card" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background:${CARD};border:1px solid ${BORDER};border-radius:14px;overflow:hidden;">` +
     `<tr><td class="cv-pad" style="padding:22px 28px 16px;border-bottom:1px solid ${BORDER};"><span style="font-family:${FONT};font-size:24px;font-weight:800;letter-spacing:0.01em;">${WORDMARK_HTML}</span></td></tr>` +
@@ -67,6 +68,6 @@ export function renderEmailBody(opts: RenderEmailOptions): { text: string; html:
     `<tr><td class="cv-pad" style="padding:18px 28px 24px;border-top:1px solid ${BORDER};"><p style="margin:0;font-family:${FONT};font-size:12px;line-height:1.5;color:${INK3};">${escapeHtml(footerText)}</p></td></tr>` +
     `</table></td></tr></table></body></html>`
 
-  const text = [...opts.blocks.map((b) => b.text), "—", footerText].join("\n\n")
+  const text = [...opts.blocks.map((b) => b.text), "--", footerText].join("\n\n")
   return { text, html }
 }

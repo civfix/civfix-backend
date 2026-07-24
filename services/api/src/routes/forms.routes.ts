@@ -210,7 +210,7 @@ function formRows(form: HomeTurfForm): Array<[string, string]> {
  * zod's .email() so it cannot smuggle CRLF into the header.
  */
 function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): FormOutboundEmail {
-  const subject = sanitizeHeaderValue(`Home Turf: new team sign-up — ${form.school}`)
+  const subject = sanitizeHeaderValue(`Home Turf sign-up: ${form.school}`)
   const { text, html } = renderEmailBody({
     preheader: subject,
     blocks: [heading("New Home Turf team sign-up"), kvTable(formRows(form))],
@@ -224,18 +224,18 @@ function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): F
  * kvTable/paragraph, and the surrounding copy is fixed, so reflected content renders inert.
  */
 function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: string): FormOutboundEmail {
-  const subject = "Home Turf Initiative — we got your sign-up"
+  const subject = "We got your Home Turf sign-up"
   const { text, html } = renderEmailBody({
     preheader: subject,
     blocks: [
-      paragraph(`Thanks, coach ${form.coachName} of ${form.school} — we got your Home Turf sign-up.`),
+      paragraph(`Thanks, coach ${form.coachName}. We received your Home Turf sign-up for ${form.school}.`),
       paragraph(
         "The civfix event coordination team will call you soon to find a date that works for your season.",
       ),
       heading("Your sign-up"),
       kvTable(formRows(form)),
       paragraph(`If anything changes, email ${notifyTo}.`, { muted: true }),
-      paragraph("— the civfix team"),
+      paragraph("The civfix team"),
     ],
   })
   return { from, to: form.email, subject, text, html }

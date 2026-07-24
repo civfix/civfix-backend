@@ -83,7 +83,7 @@ describe("POST /forms/home-turf", () => {
     expect(notify.from).toBe("donotreply@civfix.org")
     expect(notify.to).toBe("roman@reachoutla.org")
     expect(notify.replyTo).toBe("coach@example.org")
-    expect(notify.subject).toBe("Home Turf: new team sign-up — Lincoln High School")
+    expect(notify.subject).toBe("Home Turf sign-up: Lincoln High School")
     for (const value of [
       "Alex Rivera",
       "Head Coach",
@@ -105,11 +105,11 @@ describe("POST /forms/home-turf", () => {
     const confirm = sent[1]!
     expect(confirm.from).toBe("donotreply@civfix.org")
     expect(confirm.to).toBe("coach@example.org")
-    expect(confirm.subject).toBe("Home Turf Initiative — we got your sign-up")
+    expect(confirm.subject).toBe("We got your Home Turf sign-up")
     expect(confirm.text).toContain("Alex Rivera")
     expect(confirm.text).toContain("Lincoln High School")
     expect(confirm.text).toContain("roman@reachoutla.org")
-    expect(confirm.text).toContain("— the civfix team")
+    expect(confirm.text).toContain("The civfix team")
     for (const value of ["Head Coach", "Los Angeles", "18", "+1 213 555 0100"]) {
       expect(confirm.text).toContain(value)
     }
