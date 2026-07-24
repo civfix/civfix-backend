@@ -100,7 +100,8 @@ describe("POST /forms/home-turf", () => {
     expect(notify.html).toContain("&lt;after 4pm&gt;")
     expect(notify.html).not.toContain("<after 4pm>")
 
-    // (2) The confirmation: fixed copy to the submitter; the free-text notes are NEVER echoed back.
+    // (2) The confirmation: a receipt to the submitter — fixed copy around the same field table the
+    // coordinator gets, with every user value HTML-escaped.
     const confirm = sent[1]!
     expect(confirm.from).toBe("donotreply@civfix.org")
     expect(confirm.to).toBe("coach@example.org")
@@ -109,8 +110,12 @@ describe("POST /forms/home-turf", () => {
     expect(confirm.text).toContain("Lincoln High School")
     expect(confirm.text).toContain("roman@reachoutla.org")
     expect(confirm.text).toContain("— the civfix team")
-    expect(confirm.text).not.toContain("We practice Tuesdays")
-    expect(confirm.html).not.toContain("We practice Tuesdays")
+    for (const value of ["Head Coach", "Los Angeles", "18", "+1 213 555 0100"]) {
+      expect(confirm.text).toContain(value)
+    }
+    expect(confirm.text).toContain("We practice Tuesdays & Thursdays <after 4pm>.")
+    expect(confirm.html).toContain("&lt;after 4pm&gt;")
+    expect(confirm.html).not.toContain("<after 4pm>")
   })
 
   it("rejects a failed Turnstile with 403 TURNSTILE_FAILED and sends nothing", async () => {

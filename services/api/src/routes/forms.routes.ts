@@ -9,8 +9,8 @@
  *                                        1. a notification with the form contents to
  *                                           HOME_TURF_NOTIFY_TO (replyTo = the submitter, so the
  *                                           coordinator can reply directly), and
- *                                        2. a FIXED-COPY confirmation to the submitter (the free-text
- *                                           notes are deliberately NOT echoed back — anti spam-relay).
+ *                                        2. a receipt-style confirmation to the submitter (fixed copy
+ *                                           around the same escaped field table the coordinator gets).
  *
  * ABUSE ORDERING (mirrors services/anon-service.ts submitAnonReport): Turnstile FIRST (the human gate
  * is cheap and spends no other budget) → honeypot (a filled hidden field is a bot; respond with the
@@ -186,14 +186,8 @@ interface FormOutboundEmail {
   html?: string
 }
 
-/**
- * The coordinator notification: every form field in a key/value table. kvTable/paragraph HTML-escape
- * every user value; the subject is header-sanitized here (defense in depth — the OCI adapter sanitizes
- * again at send). replyTo is the submitter so the coordinator can reply directly; the address passed
- * zod's .email() so it cannot smuggle CRLF into the header.
- */
-function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): FormOutboundEmail {
-  const subject = sanitizeHeaderValue(`Home Turf: new team sign-up — ${form.school}`)
+/** The submitted form as key/value rows — the receipt body shared by BOTH emails. */
+function formRows(form: HomeTurfForm): Array<[string, string]> {
   const rows: Array<[string, string]> = [
     ["Coach name", form.coachName],
     ["Role", form.role],
@@ -206,17 +200,28 @@ function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): F
   if (form.notes !== undefined && form.notes !== "") {
     rows.push(["Notes", form.notes])
   }
+  return rows
+}
+
+/**
+ * The coordinator notification: every form field in a key/value table. kvTable/paragraph HTML-escape
+ * every user value; the subject is header-sanitized here (defense in depth — the OCI adapter sanitizes
+ * again at send). replyTo is the submitter so the coordinator can reply directly; the address passed
+ * zod's .email() so it cannot smuggle CRLF into the header.
+ */
+function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): FormOutboundEmail {
+  const subject = sanitizeHeaderValue(`Home Turf: new team sign-up — ${form.school}`)
   const { text, html } = renderEmailBody({
     preheader: subject,
-    blocks: [heading("New Home Turf team sign-up"), kvTable(rows)],
+    blocks: [heading("New Home Turf team sign-up"), kvTable(formRows(form))],
   })
   return { from, to, replyTo: form.email, subject, text, html }
 }
 
 /**
- * The submitter confirmation: FIXED COPY ONLY. The free-text notes are deliberately never echoed back
- * (a public form that reflects attacker text to an attacker-chosen address is a spam relay). The coach
- * name/school interpolations are HTML-escaped by paragraph().
+ * The submitter confirmation: a receipt — the same field table the coordinator gets, wrapped in
+ * fixed copy. Everything user-supplied (including the free-text notes) is HTML-escaped by
+ * kvTable/paragraph, and the surrounding copy is fixed, so reflected content renders inert.
  */
 function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: string): FormOutboundEmail {
   const subject = "Home Turf Initiative — we got your sign-up"
@@ -227,6 +232,8 @@ function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: stri
       paragraph(
         "The civfix event coordination team will call you soon to find a date that works for your season.",
       ),
+      heading("Your sign-up"),
+      kvTable(formRows(form)),
       paragraph(`If anything changes, email ${notifyTo}.`, { muted: true }),
       paragraph("— the civfix team"),
     ],
