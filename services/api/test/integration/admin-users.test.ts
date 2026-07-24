@@ -147,7 +147,8 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     const reportId = await insertReport(h, u)
     await h.sql`INSERT INTO chat_messages (report_id, sender_id, body, kind) VALUES (${reportId}, ${u}, 'report hello', 'text')`
 
-    expect((await repo.listUserReports(u, null, 20)).records).toHaveLength(1)
+    // Two reports seeded for this user: the standalone one above and the chat-origin one.
+    expect((await repo.listUserReports(u, null, 20)).records).toHaveLength(2)
     const events = await repo.listUserEvents(u, null, 20)
     expect(events.records[0]?.role).toBe("member")
     const messages = await repo.listUserMessages(u, null, 20)
