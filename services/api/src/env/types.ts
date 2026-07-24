@@ -57,6 +57,10 @@ export interface Env {
   OCI_EMAIL_SMTP_PASS: string
   MAIL_FROM_NOREPLY: string
   MAIL_FROM_OUTREACH: string
+  /** From address for Home Turf form mail (notification + confirmation). Defaults to "donotreply@civfix.org". */
+  HOME_TURF_MAIL_FROM: string
+  /** Recipient of the Home Turf sign-up notification email. Defaults to "roman@reachoutla.org". */
+  HOME_TURF_NOTIFY_TO: string
 
   /**
    * Allowlist of emails authorized to sign in to the admin dashboard (lowercased + de-duped). NOT [BOOT]:

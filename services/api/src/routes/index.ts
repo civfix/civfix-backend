@@ -24,6 +24,7 @@ import { registerNotificationRoutes } from "./notifications.routes.js"
 import { registerConversationRoutes } from "./conversations.routes.js"
 import { registerAdminRoutes } from "./admin/index.js"
 import { registerInboundMailWebhook } from "./webhooks/inbound-mail.routes.js"
+import { registerHomeTurfRoutes } from "./forms.routes.js"
 
 export interface RegisterRoutesOptions {
   authMounted?: boolean
@@ -58,7 +59,12 @@ export async function registerRoutes(
   await registerVolunteerHoursRoutes(app, container)
   await registerVerificationRoutes(app, container)
   await registerNotificationRoutes(app, container)
+
   await registerConversationRoutes(app, container)
+
+  // Public static-page form intake (raw route, outside the contract). Mounts UNCONDITIONALLY: it needs
+  // only the mailer + abuseChecks (always in the container), never the DB/Redis auth bundle.
+  await registerHomeTurfRoutes(app, container)
 
   if (opts.authMounted) {
     await registerAdminRoutes(app, container)
