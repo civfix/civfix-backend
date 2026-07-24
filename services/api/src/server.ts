@@ -18,6 +18,7 @@ import {
 import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
 import type { AnonServiceOverride } from "./routes/anon.routes.js"
+import type { HomeTurfOverrides } from "./routes/forms.routes.js"
 import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
@@ -48,6 +49,7 @@ export interface BuildServerOptions {
   mediaRepo?: MediaRepository
   reportOverrides?: ReportServiceOverrides
   anonOverride?: AnonServiceOverride
+  homeTurfOverrides?: HomeTurfOverrides
   claimOverride?: ClaimServiceOverride
   cleanupOverrides?: CleanupServiceOverrides
   chatOverrides?: ChatGatewayOverrides
@@ -65,6 +67,7 @@ const OVERRIDE_KEYS = [
   "mediaRepo",
   "reportOverrides",
   "anonOverride",
+  "homeTurfOverrides",
   "claimOverride",
   "cleanupOverrides",
   "chatOverrides",

@@ -209,6 +209,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OCI_EMAIL_SMTP_PASS,
     MAIL_FROM_NOREPLY: (source.MAIL_FROM_NOREPLY ?? "").trim() || "no-reply@civfix.org",
     MAIL_FROM_OUTREACH: (source.MAIL_FROM_OUTREACH ?? "").trim() || "outreach@civfix.org",
+    HOME_TURF_MAIL_FROM: (source.HOME_TURF_MAIL_FROM ?? "").trim() || "donotreply@civfix.org",
+    HOME_TURF_NOTIFY_TO: (source.HOME_TURF_NOTIFY_TO ?? "").trim() || "roman@reachoutla.org",
 
     ADMIN_EMAILS: parseCsvLower(source.ADMIN_EMAILS),
     MAIL_REPLY_DOMAIN: (source.MAIL_REPLY_DOMAIN ?? "").trim() || "civfix.org",
