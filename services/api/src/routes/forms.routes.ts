@@ -59,6 +59,20 @@ export const HOME_TURF_IP_WINDOW_SECONDS = 60 * 60
 const HOME_TURF_IP_COUNTER_PREFIX = "abuse:home-turf:ip:"
 
 /**
+ * Per-RECIPIENT cap (M8). The per-IP cap does not protect the victim of the amplification: the attacker
+ * chooses the recipient, so rotating source IPs (or a botnet) delivers unlimited civfix-DKIM-signed mail
+ * to one address. This bucket is keyed on the submitted EMAIL, independent of source IP, so a given
+ * address can receive at most one confirmation per window no matter who submits or from where.
+ */
+const HOME_TURF_EMAIL_COUNTER_PREFIX = "abuse:home-turf:email:"
+
+/** One confirmation per recipient address per day. */
+export const HOME_TURF_EMAIL_LIMIT_PER_DAY = 1
+
+/** Window length for the per-recipient counter: one day, in seconds. */
+export const HOME_TURF_EMAIL_WINDOW_SECONDS = 24 * 60 * 60
+
+/**
  * Optional injected seams (tests): an in-memory CounterStore so the per-IP hourly cap runs offline.
  * Left unset in production, where the route builds a RedisCounterStore lazily from the container.
  */
@@ -113,6 +127,23 @@ export async function enforceHomeTurfIpCap(
   }
 }
 
+/**
+ * Enforce the per-RECIPIENT daily cap (M8). Keyed on the normalized submitted address, NOT the source
+ * IP, so it is the control that actually bounds how much mail one victim can be made to receive. The
+ * error is deliberately the same generic 429 the IP cap throws — a distinct message would tell an
+ * attacker which addresses have already been targeted. Exported for direct unit testing.
+ */
+export async function enforceHomeTurfRecipientCap(
+  email: string,
+  counters: CounterStore,
+): Promise<void> {
+  const key = HOME_TURF_EMAIL_COUNTER_PREFIX + email.trim().toLowerCase()
+  const count = await counters.incr(key, HOME_TURF_EMAIL_WINDOW_SECONDS)
+  if (count > HOME_TURF_EMAIL_LIMIT_PER_DAY) {
+    throw AppError.rateLimited("Too many submissions from this network. Try again later.")
+  }
+}
+
 export async function registerHomeTurfRoutes(
   app: FastifyInstance,
   container: Container,
@@ -127,6 +158,21 @@ export async function registerHomeTurfRoutes(
     if (!container.env.REDIS_URL) return null
     if (!redisCounters) redisCounters = new RedisCounterStore(container.getRedis())
     return redisCounters
+  }
+
+  /**
+   * M8: the abuse caps now FAIL CLOSED. The old behaviour silently SKIPPED both caps whenever no counter
+   * store was available (empty REDIS_URL and no injected override), leaving a public endpoint that sends
+   * DKIM-signed mail to an attacker-chosen recipient protected by nothing but a per-IP request limiter.
+   * A cap that vanishes on misconfiguration is not a cap. If we cannot count, we do not send.
+   */
+  function requireCounters(): CounterStore {
+    const store = counters()
+    if (store === null) {
+      app.log.error("home-turf form: no counter store (REDIS_URL unset) — refusing to send")
+      throw AppError.internal("This form is temporarily unavailable. Please try again later.")
+    }
+    return store
   }
 
   app.post(
@@ -149,11 +195,12 @@ export async function registerHomeTurfRoutes(
         return reply.status(200).send({ ok: true })
       }
 
-      // (3) Per-IP hourly cap (only reached for a genuine submission; see counters() for availability).
-      const store = counters()
-      if (store) {
-        await enforceHomeTurfIpCap(request.ip, store)
-      }
+      // (3) Abuse caps — both FAIL CLOSED (see requireCounters). Per-IP hourly bounds one source's
+      // submission rate; per-recipient daily bounds how much mail any single victim can be made to
+      // receive, which is the control that actually addresses the amplification (M8).
+      const store = requireCounters()
+      await enforceHomeTurfIpCap(request.ip, store)
+      await enforceHomeTurfRecipientCap(form.email, store)
 
       // (4) Notification to the coordinator — awaited: a failure here is the repo's standard mailer
       // 5xx and the submit fails loudly (nothing worse than a silently-dropped sign-up).
@@ -219,22 +266,31 @@ function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): F
 }
 
 /**
- * The submitter confirmation: a receipt — the same field table the coordinator gets, wrapped in
- * fixed copy. Everything user-supplied (including the free-text notes) is HTML-escaped by
- * kvTable/paragraph, and the surrounding copy is fixed, so reflected content renders inert.
+ * The submitter confirmation: FIXED COPY ONLY (M8).
+ *
+ * It used to echo the whole submitted form back — coachName, school, and up to 2000 characters of free
+ * text — to an address taken from the same request body. HTML-escaping made the echo inert as *markup*,
+ * but the text itself was still attacker-authored, delivered from civfix's own DKIM-signed domain, so it
+ * cleared SPF/DMARC and landed in the victim's inbox looking like legitimate civfix mail. That is a
+ * phishing amplifier regardless of escaping: the payload was never the HTML, it was the prose.
+ *
+ * Nothing from the request body is interpolated here. The recipient address is still request-derived
+ * (that is inherent to a confirmation), which is why the per-recipient cap above exists. The coordinator
+ * notification still carries the full field table — that goes to a FIXED internal address.
  */
 function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: string): FormOutboundEmail {
   const subject = "We got your Home Turf sign-up"
   const { text, html } = renderEmailBody({
     preheader: subject,
     blocks: [
-      paragraph(`Thanks, coach ${form.coachName}. We received your Home Turf sign-up for ${form.school}.`),
+      paragraph("Thanks — we received your Home Turf sign-up."),
       paragraph(
         "The civfix event coordination team will call you soon to find a date that works for your season.",
       ),
-      heading("Your sign-up"),
-      kvTable(formRows(form)),
-      paragraph(`If anything changes, email ${notifyTo}.`, { muted: true }),
+      paragraph(
+        `If you did not fill out this form, you can ignore this message; nothing was created. Questions or corrections: email ${notifyTo}.`,
+        { muted: true },
+      ),
       paragraph("The civfix team"),
     ],
   })

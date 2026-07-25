@@ -25,12 +25,23 @@ function harness(): {
   repo: InMemoryGovClaimsRepository
   users: InMemoryUserProvisioner
   svc: GovClaimsService
+  /** M4: userIds whose sessions the approve path revoked. */
+  revoked: string[]
 } {
   const repo = new InMemoryGovClaimsRepository()
   repo.now = NOW
   const users = new InMemoryUserProvisioner()
-  const svc = makeGovClaimsService({ repo, users, now: () => NOW })
-  return { repo, users, svc }
+  const revoked: string[] = []
+  const svc = makeGovClaimsService({
+    repo,
+    users,
+    revokeSessions: (userId) => {
+      revoked.push(userId)
+      return Promise.resolve(1)
+    },
+    now: () => NOW,
+  })
+  return { repo, users, svc, revoked }
 }
 
 /** A timestamp `hours` before NOW. */
@@ -216,6 +227,37 @@ describe("gov claim approve", () => {
     expect(repo.claims.get("GOV-1")?.userId).toBe(existing.id)
   })
 
+  /**
+   * M4: a role change is only half a privilege change — the OLD role stays baked into every live session's
+   * Redis projection until it expires (and sliding expiry defers that indefinitely). This path can DEMOTE a
+   * current OPERATOR to gov_admin, so failing to revoke left operator authority live in every one of their
+   * sessions. The grant now goes through applyRoleChange, which always revokes.
+   */
+  it("M4: revokes ALL the elevated user's sessions after the role change", async () => {
+    const { repo, users, svc, revoked } = harness()
+    const existing = users.seedUser({ email: "dana@waynesboro-va.gov", role: "operator" })
+    repo.seedClaim({ id: "GOV-1", contactEmail: "dana@waynesboro-va.gov", status: "pending" })
+
+    await svc.approve("GOV-1", { actorId: "op-1", note: null })
+
+    expect(users.users.get(existing.id)?.role).toBe("gov_admin")
+    // Without this the demoted operator keeps roles:["operator"] in every warm session.
+    expect(revoked).toEqual([existing.id])
+  })
+
+  it("M4: a revoke failure SURFACES (a half-applied privilege change must not 200)", async () => {
+    const { repo, users } = harness()
+    users.seedUser({ email: "dana@waynesboro-va.gov", role: "operator" })
+    repo.seedClaim({ id: "GOV-1", contactEmail: "dana@waynesboro-va.gov", status: "pending" })
+    const svc = makeGovClaimsService({
+      repo,
+      users,
+      revokeSessions: () => Promise.reject(new Error("redis down")),
+      now: () => NOW,
+    })
+    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toThrow("redis down")
+  })
+
   it("rejects approving a claim with no contact email", async () => {
     const { repo, svc } = harness()
     repo.seedClaim({ id: "GOV-1", contactEmail: null, status: "pending" })
@@ -242,7 +284,12 @@ describe("gov claim approve", () => {
       listPending: repo.listPending.bind(repo),
       setCheck: repo.setCheck.bind(repo),
     }
-    const svc = makeGovClaimsService({ repo: racingRepo, users, now: () => NOW })
+    const svc = makeGovClaimsService({
+      repo: racingRepo,
+      users,
+      revokeSessions: () => Promise.resolve(0),
+      now: () => NOW,
+    })
 
     await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
       httpStatus: 409,

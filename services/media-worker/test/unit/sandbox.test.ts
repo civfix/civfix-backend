@@ -14,7 +14,12 @@ import { loadLimits } from "../../src/config.js"
 import { runTool, SandboxToolError } from "../../src/sandbox/exec.js"
 import { probeBytes } from "../../src/sandbox/ffprobe.js"
 import { remuxStripMetadata } from "../../src/sandbox/ffmpeg-remux.js"
-import { processImage, readExifGps, hasNoGps } from "../../src/sandbox/image.js"
+import {
+  processImage,
+  readExifGps,
+  hasNoGps,
+  sniffAllowedImageContainer,
+} from "../../src/sandbox/image.js"
 import { perceptualHash, hammingDistanceHex } from "../../src/sandbox/phash.js"
 import exifr from "exifr"
 import * as fx from "../fixtures/make.js"
@@ -158,5 +163,49 @@ describe("sandbox/ffmpeg-remux", () => {
     const probe = await probeBytes(remuxed, limits)
     expect(probe.isVideo).toBe(true)
     expect(probe.codec).toBe("h264")
+  })
+})
+
+/**
+ * L15 — the ALLOWED_DECODED_FORMATS check ran on `meta.format`, i.e. AFTER `metadata()` dispatched the
+ * untrusted bytes to a libvips loader. So an SVG/PDF/TIFF header reached librsvg/poppler/libtiff before
+ * we ever rejected it. The container is now sniffed in pure JS BEFORE any sharp instance is built.
+ */
+describe("sandbox/image magic-byte container gate (L15)", () => {
+  it("recognizes exactly JPEG / PNG / WebP signatures", () => {
+    expect(sniffAllowedImageContainer(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0]))).toBe("jpeg")
+    expect(
+      sniffAllowedImageContainer(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+    ).toBe("png")
+    // "RIFF" + 4 size bytes + "WEBP"
+    const webp = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50,
+    ])
+    expect(sniffAllowedImageContainer(webp)).toBe("webp")
+  })
+
+  it("rejects SVG, PDF, GIF and TIFF containers", () => {
+    const cases: Record<string, Uint8Array> = {
+      svg: new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'),
+      pdf: new TextEncoder().encode("%PDF-1.7\n%\xE2\xE3\xCF\xD3\n"),
+      gif: new TextEncoder().encode("GIF89a"),
+      tiffLE: new Uint8Array([0x49, 0x49, 0x2a, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]),
+      tiffBE: new Uint8Array([0x4d, 0x4d, 0x00, 0x2a, 0, 0, 0, 0, 0, 0, 0, 0]),
+      riffNotWebp: new Uint8Array([0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x41, 0x56, 0x49, 0x20]),
+      empty: new Uint8Array([]),
+    }
+    for (const [label, bytes] of Object.entries(cases)) {
+      expect(sniffAllowedImageContainer(bytes), label).toBeNull()
+    }
+  })
+
+  it("processImage refuses a non-allowlisted container so libvips never sees it", async () => {
+    const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>')
+    await expect(processImage(svg, limits)).rejects.toThrow(/unsupported image container/i)
+  })
+
+  it("still accepts a real JPEG through the gate", async () => {
+    const jpeg = await fx.makeValidJpegWithGps()
+    await expect(processImage(jpeg, limits)).resolves.toBeDefined()
   })
 })

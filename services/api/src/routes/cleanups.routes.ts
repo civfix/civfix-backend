@@ -58,7 +58,8 @@ import {
   makeDrizzleChatRepository,
   type ChatRepository,
 } from "../services/chat-repository.drizzle.js"
-import { makeMediaPresigner } from "../services/media-presign.js"
+import { makePrivateMediaPresigner } from "../services/media-presign.js"
+import { RedisCounterStore, type CounterStore } from "../abuse/counter-store.js"
 import { makeJurisdictionService } from "../services/jurisdiction-service.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
@@ -84,6 +85,9 @@ export interface CleanupServiceOverrides {
   // WS4: the cleanup_role bell seam (promote/demote/remove). Tests inject a recording fake; unset in a
   // test harness means "no bells" (the service treats the notifier as optional).
   notifier?: CleanupServiceDeps["notifier"]
+  // M18/M20: an in-memory CounterStore so the resource-request budget + role-change cooldown run
+  // offline. Unset in production, where the routes build a RedisCounterStore lazily.
+  counters?: CleanupServiceDeps["counters"]
 }
 
 declare module "fastify" {
@@ -118,6 +122,18 @@ const ListCleanupsQuerySchema = z.object({
 
 const HISTORY_DEFAULT_LIMIT = 30
 
+/**
+ * M18: per-IP caps on the two member-management mutations, which had none at all and therefore sat at
+ * the global 300/min/IP. Promote/demote rings the target's lock screen on every flip, and remove now
+ * writes a ban row, so both are cheap for the attacker and loud for the victim. Tightness matches
+ * map.routes' GEOCODER_RATE_LIMIT family; no legitimate host manages members faster than this.
+ *
+ * This limiter is per-IP and therefore evadable by rotating exits — it is the OUTER of two layers. The
+ * inner, non-evadable one is the per-(cleanup, target) role-change cooldown in cleanup-service.ts,
+ * which counts at the receiver in the shared store.
+ */
+const MEMBER_MANAGEMENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
 export async function registerCleanupRoutes(
   app: FastifyInstance,
   container: Container,
@@ -132,14 +148,26 @@ export async function registerCleanupRoutes(
   // the pin rail reads the chat REPOSITORY (pins live on message rows). An injected chatOverrides.chatRepo
   // wins; else the lazily-built Drizzle repo — except under USE_FAKE_CHAT (offline dev, no DB), where
   // there is no chat repo at all and the initial page simply omits the `pins` key.
+  //
+  // H9: PRIVATE presigner, like every other chat/DM/group/report chat-repo construction site. Pins
+  // hydrate real message attachments, and GET /cleanups/:id/messages returns them alongside the signed
+  // `items` — so a public presigner here would hand back a member-only pinned photo as a permanent,
+  // unauthenticated CDN URL (R2_PUBLIC_BASE), which leaving, removal or deletion could never revoke.
   let pinsChatRepo: ChatRepository | undefined
   function pinsRepo(): ChatRepository | null {
     if (app.chatOverrides?.chatRepo) return app.chatOverrides.chatRepo
     if (container.env.USE_FAKE_CHAT) return null
     return (pinsChatRepo ??= makeDrizzleChatRepository(
       container.getDb().sql,
-      makeMediaPresigner(container.storage),
+      makePrivateMediaPresigner(container.storage),
     ))
+  }
+
+  // The shared (Redis) abuse counter behind the cleanup service's resource-request budget and
+  // role-change cooldown. Built once, lazily, on first use — same pattern as forms.routes.ts.
+  let redisCounters: CounterStore | undefined
+  function counters(): CounterStore {
+    return (redisCounters ??= new RedisCounterStore(container.getRedis()))
   }
 
   function service(): CleanupService {
@@ -194,11 +222,17 @@ export async function registerCleanupRoutes(
               userChannel: container.userChannel,
               logger: app.log,
             }),
+            // M18/M20: the SHARED abuse budget behind the resource-request caps and the role-change
+            // cooldown. Both were in-process Maps, so every pod carried its own allowance and a deploy
+            // reset it — which is exactly what made the municipal-email relay (M20) work. Built lazily
+            // off the container's Redis so merely mounting the plugin still opens no connection.
+            counters: counters(),
           }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
       ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
       ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      ...(overrides?.counters !== undefined ? { counters: overrides.counters } : {}),
       logger: app.log,
     })
   }
@@ -248,7 +282,7 @@ export async function registerCleanupRoutes(
   // WS4 (D3): organizer-only promote/demote — PATCH /cleanups/:id/members/:userId. Path params are
   // merged into the body BEFORE parsing (the CancelCleanupRequest pattern: the typed client extracts
   // both into the path, the route reconciles them back). The service enforces the whole matrix.
-  route(app, "setCleanupMemberRole", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setCleanupMemberRole", { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } }, async (request, reply) => {
     const actorId = requireAuth(request)
     const { id, userId } = parse(MemberParamsSchema, request.params)
     const body = parse(SetMemberRoleRequestSchema, { ...(request.body as object), id, userId })
@@ -264,7 +298,7 @@ export async function registerCleanupRoutes(
   // WS4 (D3): remove an attendee — DELETE /cleanups/:id/members/:userId (organizer: cohosts+members;
   // cohost: plain members only; the organizer is irremovable). Same path-param merge; a DELETE body is
   // typically absent, and `{ ...(null|undefined) }` spreads to {} so the merge stays safe.
-  route(app, "removeCleanupMember", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "removeCleanupMember", { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } }, async (request, reply) => {
     const actorId = requireAuth(request)
     const { id, userId } = parse(MemberParamsSchema, request.params)
     const body = parse(RemoveMemberRequestSchema, { ...(request.body as object), id, userId })

@@ -100,9 +100,15 @@ export class R2Storage implements Storage {
   /**
    * Return a URL to GET `key`. With `publicBase` configured, this is the public CDN URL (no signing,
    * no expiry). Otherwise it is a presigned, time-limited GET valid for `ttlSec` seconds.
+   *
+   * SECURITY (H9): pass `{ forceSigned: true }` for any asset that is not world-readable — chat/DM
+   * attachments, an owner's own held/unlisted report media, not-yet-committed uploads. A CDN URL has
+   * no expiry and no revocation path, so serving private media through one makes it permanently
+   * readable by anyone who ever saw the link, regardless of later unlist/delete/block decisions.
+   * `publicBase` is then ignored and a short-lived signed GET is issued instead.
    */
-  async presignGet(key: string, ttlSec: number): Promise<string> {
-    if (this.config.publicBase) {
+  async presignGet(key: string, ttlSec: number, opts?: { forceSigned?: boolean }): Promise<string> {
+    if (this.config.publicBase && opts?.forceSigned !== true) {
       return joinUrl(this.config.publicBase, key)
     }
 

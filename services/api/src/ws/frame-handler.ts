@@ -10,7 +10,13 @@ import {
 import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import { parseUserMentions } from "../services/discussion-mentions.js"
 import { containsSlur } from "../abuse/slur-filter.js"
-import { type GatewayDeps, type GatewaySession, TYPING_MIN_INTERVAL_MS } from "./types.js"
+import {
+  type GatewayDeps,
+  type GatewaySession,
+  TYPING_MIN_INTERVAL_MS,
+  WS_FRAME_LIMIT,
+} from "./types.js"
+import { makeTokenBucketLimiter } from "./report-rate-limit.js"
 
 type ClientFrame = WsClientMessage
 type ExtractFrame<T extends ClientFrame["type"]> = Extract<ClientFrame, { type: T }>
@@ -203,15 +209,64 @@ async function handleJoin(session: GatewaySession, frame: ExtractFrame<"join">):
   }
 }
 
+/**
+ * SECURITY (H6): `leave` is the ONE frame that must not consult authorizeRoom — it is the inverse of a
+ * join, and a socket can only ever un-do a join THIS connection performed. Gating on the session's own
+ * `joined` set is both stricter and cheaper than a membership query:
+ *
+ *   - It costs zero DB/Redis round trips for the (attacker) case of a room the socket never joined.
+ *   - It closes the presence-injection hole: before this gate, a `{"type":"leave","roomKind":"dm",
+ *     "cleanupId":"<someone else's thread>"}` frame reached presence.leave for a room the caller had no
+ *     relationship with, and because `userGone` was derived from ABSENCE from the member list it was
+ *     unconditionally true — forging a `presence/leave` delta for the attacker into any private DM,
+ *     group or cleanup room and broadcasting it to every member. (The presence layer is hardened too,
+ *     in RedisChatPresence.leave / InMemoryChatPresence.leave, so `userGone` now requires the ZREM to
+ *     have actually removed a row. Both halves are needed: this one also stops the Redis publish.)
+ *
+ * An un-joined room is a SILENT no-op, not an error frame: leaving what you are not in is already the
+ * caller's desired end state, and answering would leak whether the room exists.
+ */
 async function handleLeave(session: GatewaySession, frame: ExtractFrame<"leave">): Promise<void> {
   const kind: RoomKind = frame.roomKind ?? "cleanup"
-  await leaveRoomAndAnnounce(session, roomKeyFor(kind, frame.cleanupId))
+  const roomKey = roomKeyFor(kind, frame.cleanupId)
+  if (!session.joined.has(roomKey)) return
+  await leaveRoomAndAnnounce(session, roomKey)
 }
+
+/**
+ * SECURITY (H7): the message kinds a CLIENT may author over the wire.
+ *
+ * The shared `send` frame reuses the full ChatMessageKind enum, which also contains the two
+ * SERVER-AUTHORED kinds:
+ *   - "system" — platform/city timeline events (status changed, city replied, member joined). These are
+ *     written by privileged paths as SENDER-LESS rows and render with platform/city chrome, so a member
+ *     of any public report room could otherwise post
+ *     `{"kind":"system","body":"Status updated to Resolved by the City of Los Angeles."}` and have it
+ *     persist + broadcast as an official civic event — permanently uneditable and unpinnable, i.e. not
+ *     even removable by the room's own moderation.
+ *   - "poll" — poll rows are created by the P6 poll routes (which also write the chat_polls row); a
+ *     hand-rolled poll message would be a body-less bubble with no poll behind it.
+ *
+ * Enforced HERE (the single gateway ingress for client-authored messages) rather than in the shared
+ * schema because @civfix/shared is a separate repo on its own release train; narrowing
+ * WsClientMessageSchema there is tracked as a follow-up and would be defense in depth, not the gate.
+ */
+const CLIENT_AUTHORABLE_KINDS: ReadonlySet<string> = new Set([
+  "text",
+  "share_pin",
+  "task_complete",
+  "rsvp_change",
+])
 
 async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">): Promise<void> {
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
+  // Reject a forged server-authored kind BEFORE any query or rate-limit spend (see the allowlist's note).
+  if (frame.kind !== undefined && !CLIENT_AUTHORABLE_KINDS.has(frame.kind)) {
+    sendError(conn, "BAD_FRAME", "That message kind can't be sent by a client.", { kind, id })
+    return
+  }
   if (containsSlur(frame.body)) {
     sendError(conn, "BLOCKED", "This contains language that isn't allowed.", { kind, id })
     return
@@ -402,6 +457,15 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
+  const roomKey = roomKeyFor(kind, id)
+  // SECURITY (M13): the per-room typing throttle runs BEFORE authorizeRoom, so a client spamming typing
+  // frames at a room costs ZERO membership queries and zero Redis round trips once the first one lands
+  // within the window. (Ordering is safe: the throttle only ever suppresses a broadcast, and the
+  // authorization gate below still runs for every frame that survives it.)
+  const now = Date.now()
+  const last = session.typingThrottle.get(roomKey) ?? 0
+  if (now - last < TYPING_MIN_INTERVAL_MS) return
+  session.typingThrottle.set(roomKey, now)
   // Typing carries the SAME restriction as send: report members-only, and group send-permission
   // (a read-only channel member must not emit typing) — so gate at send level for both.
   const auth = await authorizeRoom(
@@ -415,11 +479,6 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
     sendError(conn, auth.code, auth.message, { kind, id })
     return
   }
-  const roomKey = roomKeyFor(kind, id)
-  const now = Date.now()
-  const last = session.typingThrottle.get(roomKey) ?? 0
-  if (now - last < TYPING_MIN_INTERVAL_MS) return
-  session.typingThrottle.set(roomKey, now)
   await deps.chat.broadcastEvent?.(
     roomKey,
     { type: "typing", cleanupId: id, ...stampRoomKind(kind), userId },
@@ -477,6 +536,16 @@ const dispatch: {
 }
 
 export async function handleClientFrame(session: GatewaySession, raw: string): Promise<void> {
+  // SECURITY (M13): ONE bucket for EVERY inbound frame, spent BEFORE parsing and before dispatch — so a
+  // throttled join/typing/ack costs zero DB and zero Redis round trips (and a malformed-frame flood
+  // costs no schema validation either). `send` keeps its own tighter per-user+room bucket downstream;
+  // this is the per-connection ceiling that used to be missing entirely. The bucket is created on first
+  // use so no session can exist without one (see GatewaySession.frameLimiter).
+  const limiter = (session.frameLimiter ??= makeTokenBucketLimiter(WS_FRAME_LIMIT))
+  if (!limiter.tryConsume(session.conn.id)) {
+    sendError(session.conn, "RATE_LIMITED", "You're sending frames too fast. Please slow down.")
+    return
+  }
   let parsedJson: unknown
   try {
     parsedJson = JSON.parse(raw)

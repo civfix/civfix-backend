@@ -16,12 +16,14 @@
  * (MAX_VIDEO_BYTES is 50 MB), so reading/writing it as a number is safe and matches the schema.
  */
 
-import { and, eq, isNull, lt, ne, sql } from "drizzle-orm"
+import { and, eq, isNull, lt, ne, notExists, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import { abuseFlags } from "../db/schema/moderation.js"
 import { moderationItems } from "../db/schema/moderation_items.js"
 import { reports } from "../db/schema/reports.js"
 import { jurisdictions } from "../db/schema/jurisdictions.js"
+import { users } from "../db/schema/users.js"
+import { chatGroups } from "../db/schema/chat-groups.js"
 import type { Db } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
@@ -79,17 +81,54 @@ export interface MediaWorkerRepo {
   /** Insert an abuse_flag (subject_type = "media"). Idempotency is not required by callers. */
   insertAbuseFlag(flag: NewAbuseFlag): Promise<void>
   /**
-   * Find orphan media: report_id IS NULL and created_at < `olderThan`. Bounded by `limit` so a sweep
-   * processes a capped batch per run.
+   * Find orphan media: rows bound to NOTHING AT ALL and older than `olderThan`. Bounded by `limit` so a
+   * sweep processes a capped batch per run.
+   *
+   * THE INVARIANT (read this before touching the predicate — the sweep DELETES the R2 objects, so a
+   * wrong predicate is unrecoverable data loss, not a bug you can roll back):
+   *
+   *   An orphan is a media_assets row that NO subject anywhere in the product references, in EITHER
+   *   direction, and that is old enough that none ever will. Every one of the following must hold.
+   *
+   * FORWARD bindings — a committing subject stamps its id ONTO the media row:
+   *   report_id        reports (report-repository.drizzle.ts / anon-repository.drizzle.ts commit path)
+   *   chat_message_id  chat + DM attachments (message-attachments.drizzle.ts; shared by both stacks)
+   *   post_id          social-feed post media (post-repository.drizzle.ts, purpose='post')
+   *
+   *   `report_id IS NULL` ALONE IS NOT AN ORPHAN TEST. Every non-report lane leaves report_id NULL — the
+   *   chat attach guard at message-attachments.drizzle.ts even REQUIRES it — so a report_id-only
+   *   predicate matches every chat photo, every DM photo and every post photo in the database.
+   *
+   * REVERSE bindings — the SUBJECT points AT the media row, so the row's own columns look unbound:
+   *   users.avatar_media_id        (drizzle/0019_user_avatar.sql, ON DELETE SET NULL)
+   *   chat_groups.avatar_media_id  (drizzle/0047_chat_groups.sql, ON DELETE SET NULL)
+   *
+   *   ON DELETE SET NULL means a delete here does NOT fail loudly: the avatar column is silently NULLed
+   *   and the user simply loses their picture. Nothing surfaces the loss. Hence the NOT EXISTS probes.
+   *
+   * OUT-OF-BAND bindings — referenced from jsonb, invisible to any column predicate:
+   *   user_verification.documents[].mediaId (schema/user_verification.ts). Those uploads are the only
+   *   rows stamped purpose='verification', so excluding that purpose is the (exact) proxy test.
+   *
+   * NOT a lane: media_assets.discussion_message_id was DROPPED in drizzle/0044_drop_report_discussion.sql
+   * along with the discussion system, so it must NOT appear here (the column no longer exists).
+   *
+   * This mirrors, from the reaping side, the same lane enumeration services/media-authorization.ts makes
+   * from the serving side. If a new binding lane is ever added, it must be added in BOTH places.
    */
   findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]>
   /** Delete a media_assets row by id. Idempotent (deleting a missing id is a no-op). */
   deleteById(id: string): Promise<void>
   /**
-   * True if ANY OTHER media_assets row references this exact r2_key. r2_key is content-addressed
-   * (uploads/yyyy/mm/<sha256>), so identical bytes dedupe to one physical object shared by many rows.
-   * The orphan sweep MUST consult this before deleting R2 objects: deleting the object for one orphan
-   * would otherwise destroy media still referenced by a committed report (or another pending row).
+   * True if ANY OTHER media_assets row references this exact r2_key. The orphan sweep consults this
+   * before deleting R2 objects so it never destroys media still referenced by a committed report (or
+   * another pending row).
+   *
+   * (L14 correction: this doc previously claimed r2_key is content-addressed as
+   * `uploads/yyyy/mm/<sha256>` and that identical bytes therefore dedupe to one shared object. They do
+   * not — buildR2Key in media-intake-service.ts derives the key from the server-generated random
+   * uploadId. Key sharing is rare rather than routine, but the check is cheap and correct, so it stays
+   * as defense in depth.)
    */
   r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean>
   /**
@@ -174,6 +213,13 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
       })
     },
 
+    /**
+     * "Bound to nothing at all, in either direction, and old enough that it never will be." See the
+     * MediaWorkerRepo.findOrphans doc above for why each clause is load-bearing; do not drop one without
+     * reading it. The two NOT EXISTS probes are index-backed (users_avatar_media_idx from
+     * drizzle/0037_perf_indexes_audit.sql; chat_groups.avatar_media_id's FK index), so they are cheap
+     * even at the drain-loop page sizes the sweep now uses.
+     */
     async findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {
       const rows = await db
         .select({
@@ -182,7 +228,30 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
           thumbKey: mediaAssets.thumbKey,
         })
         .from(mediaAssets)
-        .where(and(isNull(mediaAssets.reportId), lt(mediaAssets.createdAt, olderThan)))
+        .where(
+          and(
+            // FORWARD bindings: report / chat+DM message / social post.
+            isNull(mediaAssets.reportId),
+            isNull(mediaAssets.chatMessageId),
+            isNull(mediaAssets.postId),
+            // REVERSE bindings: an avatar's owner points AT this row, and the FK is ON DELETE SET NULL,
+            // so deleting it would silently strip the avatar rather than fail.
+            notExists(
+              db.select({ id: users.id }).from(users).where(eq(users.avatarMediaId, mediaAssets.id)),
+            ),
+            notExists(
+              db
+                .select({ id: chatGroups.id })
+                .from(chatGroups)
+                .where(eq(chatGroups.avatarMediaId, mediaAssets.id)),
+            ),
+            // OUT-OF-BAND binding: verification documents are referenced from a jsonb array
+            // (user_verification.documents[].mediaId) that no column predicate can see; purpose is the
+            // exact proxy for them.
+            ne(mediaAssets.purpose, "verification"),
+            lt(mediaAssets.createdAt, olderThan),
+          ),
+        )
         .limit(limit)
       return rows
     },

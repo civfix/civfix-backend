@@ -228,6 +228,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       reportChatRepo: { listMemberIds: (id) => reportChatRepo.listMemberIds(id) },
       isMuted: (userId, roomId) => mutes.isMuted(userId, "report", roomId),
       roomKeyFor: (kind, id) => roomKeyFor(kind, id),
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
     await fanOut(reportId, reply)
     await makeChatReplyNotifier(deps)({

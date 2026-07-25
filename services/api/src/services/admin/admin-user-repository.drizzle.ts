@@ -437,15 +437,33 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       })
     },
 
-    async recordRoleAudit(
-      id: string,
-      input: { role: Role; actorId: string | null },
-    ): Promise<void> {
-      await writeAudit(sql, {
-        actorId: input.actorId,
-        action: "user.role_changed",
-        target: `user:${id}`,
-        meta: { role: input.role },
+    /**
+     * L5: the role UPDATE and its audit row in ONE transaction.
+     *
+     * Previously the role write went through the auth UserStore on one connection and the audit through
+     * writeAudit(sql, ...) on another, so a crash (or a connection reset) between them committed a
+     * privilege change with NO audit trail — the one mutation in this codebase where that mattered most.
+     * Every other admin mutation here already does effect+audit inside sql.begin; this now matches.
+     *
+     * The prior role is read inside the same transaction and recorded on the audit meta, so the log says
+     * what the change actually was rather than only where it landed. Returns false when the user does not
+     * exist (or is soft-deleted), leaving the transaction with no effect.
+     */
+    async applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const existing = await tx<{ role: Role }[]>`
+          SELECT role FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+        `
+        const priorRole = existing[0]?.role
+        if (priorRole === undefined) return false
+        await tx`UPDATE users SET role = ${input.role} WHERE id = ${id}`
+        await writeAudit(tx, {
+          actorId: input.actorId,
+          action: "user.role_changed",
+          target: `user:${id}`,
+          meta: { role: input.role, priorRole },
+        })
+        return true
       })
     },
 

@@ -2,9 +2,14 @@ import { describe, it, expect, beforeEach } from "vitest"
 import {
   makeCleanupService,
   ATTENDEES_DEFAULT_LIMIT,
+  MAX_BRING_ITEMS,
+  RESOURCE_REQUEST_PER_HOST_PER_DAY,
+  RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR,
+  ROLE_CHANGES_PER_TARGET_PER_WINDOW,
   type CleanupService,
 } from "../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
+import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { CreateCleanupRequest } from "@civfix/shared"
 
 
@@ -455,8 +460,13 @@ describe("requestResources (D19 event resource request)", () => {
         name: "City of LA",
       })
     }
+    // M20: each harness gets its OWN counter store so the budget is per-test. Production wires a
+    // RedisCounterStore (see cleanups.routes.ts) — the whole point of the fix is that the budget is
+    // SHARED across pods and survives a deploy, which the old in-process Map was not.
+    const counters = new InMemoryCounterStore()
     const svc = makeCleanupService({
       repo: r,
+      counters,
       isVerified: () => Promise.resolve(opts.verified),
       outboundMail: {
         sendEventToJurisdiction: (input) => {
@@ -524,18 +534,76 @@ describe("requestResources (D19 event resource request)", () => {
     expect(row?.note).toContain("Need 20 trash bags.")
   })
 
-  it("throttles a repeat resource request for the same event + host (cooldown)", async () => {
+  // --- M20: the resource-request budget ------------------------------------------------------------
+  // This WAS an in-process Map keyed on `${cleanupId}:${actorId}`, so a verified host looped
+  // create-event -> request-resources and relayed ~150 branded, DKIM-signed emails/minute into
+  // municipal inboxes: every throwaway event minted a fresh cooldown key. The budget is now keyed on
+  // the ACTOR (per day) and the JURISDICTION (per hour), and never on the event.
+
+  it("M20: a FRESH event does not reset the host's budget (the old cleanupId-keyed bypass)", async () => {
+    const { repo: r, svc, sends } = harness({
+      verified: true,
+      contact: { geoid: "0644000", email: "events@lacity.gov" },
+    })
+    // Spend the whole daily host allowance across DISTINCT events — the exact bypass shape.
+    for (let i = 0; i < RESOURCE_REQUEST_PER_HOST_PER_DAY; i += 1) {
+      const id = await seedEvent(r, svc, "0644000")
+      await svc.requestResources({ cleanupId: id, message: `Need bags ${i}.`, actorId: ORG })
+    }
+    expect(sends).toHaveLength(RESOURCE_REQUEST_PER_HOST_PER_DAY)
+
+    // A brand-new event buys no new allowance.
+    const fresh = await seedEvent(r, svc, "0644000")
+    await expect(
+      svc.requestResources({ cleanupId: fresh, message: "One more.", actorId: ORG }),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    expect(sends).toHaveLength(RESOURCE_REQUEST_PER_HOST_PER_DAY)
+  })
+
+  it("M20: caps a single jurisdiction per hour across DIFFERENT hosts (colluding accounts)", async () => {
+    const { repo: r, svc, sends } = harness({
+      verified: true,
+      contact: { geoid: "0644000", email: "events@lacity.gov" },
+    })
+    // Each host stays under their own daily cap; the city-side cap is what has to stop them.
+    let host = 0
+    for (let i = 0; i < RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR; i += 1) {
+      if (i % RESOURCE_REQUEST_PER_HOST_PER_DAY === 0) host += 1
+      const organizer = `${host}${ORG.slice(1)}`
+      r.seedUser({ id: organizer, displayName: `Host ${host}`, handle: `h${host}` })
+      const dto = await svc.createCleanup(baseInput({ title: "Park Cleanup" }), organizer)
+      const stored = r.cleanups.get(dto.id)
+      if (stored) stored.jurisdictionGeoid = "0644000"
+      await svc.requestResources({ cleanupId: dto.id, message: "Need bags.", actorId: organizer })
+    }
+    expect(sends).toHaveLength(RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR)
+
+    const nextHost = "9" + ORG.slice(1)
+    r.seedUser({ id: nextHost, displayName: "Host 9", handle: "h9" })
+    const dto = await svc.createCleanup(baseInput({ title: "Park Cleanup" }), nextHost)
+    const stored = r.cleanups.get(dto.id)
+    if (stored) stored.jurisdictionGeoid = "0644000"
+    await expect(
+      svc.requestResources({ cleanupId: dto.id, message: "Need bags.", actorId: nextHost }),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    expect(sends).toHaveLength(RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR)
+  })
+
+  it("M20: a rejected request (403) costs the host nothing", async () => {
     const { repo: r, svc, sends } = harness({
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, svc, "0644000")
-    const first = await svc.requestResources({ cleanupId: id, message: "Need bags.", actorId: ORG })
-    expect(first).toEqual({ ok: true })
+    // A non-host is refused before the budget is charged...
     await expect(
-      svc.requestResources({ cleanupId: id, message: "Need bags again.", actorId: ORG }),
-    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
-    expect(sends).toHaveLength(1)
+      svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    // ...so the real host still has their full allowance.
+    for (let i = 0; i < RESOURCE_REQUEST_PER_HOST_PER_DAY; i += 1) {
+      await svc.requestResources({ cleanupId: id, message: `Need bags ${i}.`, actorId: ORG })
+    }
+    expect(sends).toHaveLength(RESOURCE_REQUEST_PER_HOST_PER_DAY)
   })
 
   it("403s a non-host (and sends nothing)", async () => {
@@ -588,6 +656,8 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
     bells = []
     svc = makeCleanupService({
       repo,
+      // Fresh per test so the M18 role-change cooldown can't leak across cases.
+      counters: new InMemoryCounterStore(),
       notifier: {
         createNotification: (userId, input) => {
           bells.push({
@@ -786,5 +856,256 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
     expect(rolesByName).toEqual({ "Olive Organizer": "organizer", Alice: "cohost", Bob: "member" })
     // Cohorts sort after the organizer, before plain members.
     expect(roster.attendees.map((p) => p.name)).toEqual(["Olive Organizer", "Alice", "Bob"])
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------
+// Security fixes from the 2026-07-24 backend audit.
+// ---------------------------------------------------------------------------------------------------
+
+describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
+  let svc: CleanupService
+
+  beforeEach(() => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    svc = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+  })
+
+  it("a removed attendee CANNOT re-join themselves (the removal used to be purely cosmetic)", async () => {
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, BOB)
+    expect(await repo.isMember(created.id, BOB)).toBe(true)
+
+    await svc.removeMember(created.id, ORG, BOB)
+    expect(await repo.isMember(created.id, BOB)).toBe(false)
+
+    // The whole exploit: `join` was an unconditional self-service INSERT, so this used to succeed
+    // instantly, in a loop, putting the removed user straight back into the event group chat.
+    await expect(svc.joinCleanup(created.id, BOB)).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect(await repo.isMember(created.id, BOB)).toBe(false)
+  })
+
+  it("the ban is recorded against the removing host and is scoped to that one event", async () => {
+    const a = await svc.createCleanup(baseInput({ title: "Event A" }), ORG)
+    const b = await svc.createCleanup(baseInput({ title: "Event B" }), ORG)
+    await svc.joinCleanup(a.id, BOB)
+
+    await svc.removeMember(a.id, ORG, BOB)
+    expect(repo.bans).toContainEqual({ cleanupId: a.id, userId: BOB, bannedByUserId: ORG })
+
+    // A ban on one event never bleeds into another.
+    const joined = await svc.joinCleanup(b.id, BOB)
+    expect(joined.joined).toBe(true)
+  })
+
+  it("leaving voluntarily does NOT ban you — you can RSVP again", async () => {
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, BOB)
+    await svc.leaveCleanup(created.id, BOB)
+    expect(repo.bans).toHaveLength(0)
+
+    const rejoined = await svc.joinCleanup(created.id, BOB)
+    expect(rejoined.joined).toBe(true)
+  })
+
+  it("the organizer lifts a ban by re-asserting the 'member' role on the removed person", async () => {
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, BOB)
+    await svc.removeMember(created.id, ORG, BOB)
+
+    const res = await svc.setMemberRole(created.id, ORG, BOB, "member")
+    expect(res).toEqual({ ok: true })
+    expect(repo.bans).toHaveLength(0)
+    // Unbanning does NOT re-join them — they RSVP again themselves (the normal consent flow).
+    expect(await repo.isMember(created.id, BOB)).toBe(false)
+    const rejoined = await svc.joinCleanup(created.id, BOB)
+    expect(rejoined.joined).toBe(true)
+  })
+
+  it("the unban path is organizer-only and does not promote a banned person to cohost", async () => {
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+    await svc.setMemberRole(created.id, ORG, ALICE, "cohost")
+    await svc.removeMember(created.id, ORG, BOB)
+
+    // A cohost cannot lift a ban (setMemberRole is organizer-only end to end).
+    await expect(svc.setMemberRole(created.id, ALICE, BOB, "member")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    // And 'cohost' is not an unban gesture — a non-attending target is still a 404.
+    await expect(svc.setMemberRole(created.id, ORG, BOB, "cohost")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    expect(repo.bans).toHaveLength(1)
+  })
+})
+
+describe("M18: promote/demote notification bombing", () => {
+  it("caps role flips per (event, target) once the two-value idempotency check is defeated", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const svc = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+
+    // The attack: there are exactly two legal roles, so alternating them makes every call a REAL flip
+    // that slips past `if (targetRole === role) return` and fires a lock-screen push.
+    let flips = 0
+    let err: unknown = null
+    for (let i = 0; i < ROLE_CHANGES_PER_TARGET_PER_WINDOW + 5; i += 1) {
+      try {
+        await svc.setMemberRole(created.id, ORG, ALICE, i % 2 === 0 ? "cohost" : "member")
+        flips += 1
+      } catch (e) {
+        err = e
+        break
+      }
+    }
+    expect(flips).toBe(ROLE_CHANGES_PER_TARGET_PER_WINDOW)
+    expect(err).toMatchObject({ code: "RATE_LIMITED" })
+  })
+
+  it("the cap is per TARGET — throttling one attendee does not lock out the roster", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    const svc = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+
+    for (let i = 0; i < ROLE_CHANGES_PER_TARGET_PER_WINDOW; i += 1) {
+      await svc.setMemberRole(created.id, ORG, ALICE, i % 2 === 0 ? "cohost" : "member")
+    }
+    await expect(svc.setMemberRole(created.id, ORG, ALICE, "cohost")).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+    // Bob's budget is untouched.
+    await expect(svc.setMemberRole(created.id, ORG, BOB, "cohost")).resolves.toEqual({ ok: true })
+  })
+})
+
+describe("M19: the slur filter reaches event fields", () => {
+  // The filter guarded reports, profiles and chat but NOT one event field — even though events render
+  // on the anonymously readable map behind a 60s public cache and the cancel reason is pushed verbatim
+  // to every attendee. SLUR is the canonical term the shared filter matches; see abuse/slur-filter.ts.
+  const SLUR = "nigger"
+
+  it("rejects a slur in the event title, description, address and bring list on create", async () => {
+    for (const over of [
+      { title: `Cleanup ${SLUR}` },
+      { description: `bring gloves ${SLUR}` },
+      { address: `north gate ${SLUR}` },
+      { bring: ["gloves", `bags ${SLUR}`] },
+    ]) {
+      await expect(service.createCleanup(baseInput(over), ORG)).rejects.toMatchObject({
+        code: "VALIDATION",
+      })
+    }
+    expect(repo.cleanups.size).toBe(0)
+  })
+
+  it("rejects a slur on update", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    await expect(
+      service.updateCleanup(created.id, { title: `Cleanup ${SLUR}` }, ORG),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(repo.cleanups.get(created.id)?.title).toBe("Beach cleanup")
+  })
+
+  it("rejects a slur in the cancellation reason (which fans out to every attendee)", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    await expect(
+      service.cancelCleanup(created.id, `called off, ${SLUR}`, ORG),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    // The cancel is refused outright, not applied-then-sanitized.
+    expect(repo.cleanups.get(created.id)?.status).toBe("upcoming")
+  })
+
+  it("still accepts ordinary event text", async () => {
+    const dto = await service.createCleanup(
+      baseInput({ title: "Ballona Creek sweep", description: "Meet by the bridge", address: "North gate", bring: ["gloves"] }),
+      ORG,
+    )
+    expect(dto.title).toBe("Ballona Creek sweep")
+  })
+})
+
+describe("L23: the unbounded `bring` array is clamped", () => {
+  it("422s more than MAX_BRING_ITEMS entries on create and on update", async () => {
+    const tooMany = Array.from({ length: MAX_BRING_ITEMS + 1 }, (_, i) => `item ${i}`)
+    await expect(service.createCleanup(baseInput({ bring: tooMany }), ORG)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
+
+    const created = await service.createCleanup(baseInput({ bring: ["gloves"] }), ORG)
+    await expect(service.updateCleanup(created.id, { bring: tooMany }, ORG)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
+    expect(repo.cleanups.get(created.id)?.bring).toEqual(["gloves"])
+  })
+
+  it("accepts exactly MAX_BRING_ITEMS", async () => {
+    const atCap = Array.from({ length: MAX_BRING_ITEMS }, (_, i) => `item ${i}`)
+    const dto = await service.createCleanup(baseInput({ bring: atCap }), ORG)
+    expect(dto.bring).toHaveLength(MAX_BRING_ITEMS)
+  })
+})
+
+describe("L24: the cancellation fan-out rides the notification pipeline", () => {
+  it("emits one cleanup_cancelled notification per OTHER member, through the service (not raw SQL)", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    const bells: { userId: string; type: string; body?: string; link?: string }[] = []
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: {
+        createNotification: (userId, input) => {
+          bells.push({
+            userId,
+            type: input.type,
+            ...(input.body !== undefined ? { body: input.body } : {}),
+            ...(input.link !== undefined ? { link: input.link } : {}),
+          })
+          return Promise.resolve({
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          })
+        },
+      },
+    })
+
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+
+    // Going through createNotification is what buys prefs, quiet hours and the user-channel signal —
+    // the raw INSERT it replaced honored none of them.
+    expect(bells.map((b) => b.userId).sort()).toEqual([ALICE, BOB].sort())
+    expect(bells.every((b) => b.type === "cleanup_cancelled")).toBe(true)
+    expect(bells[0]!.body).toContain("Storm warning")
+    expect(bells[0]!.link).toBe(`/cleanups/${created.id}`)
+    // The canceller never rings themselves.
+    expect(bells.some((b) => b.userId === ORG)).toBe(false)
+  })
+
+  it("a notifier failure never fails the cancellation itself (best-effort, like every other bell)", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: { createNotification: () => Promise.reject(new Error("push down")) },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+
+    const dto = await svc.cancelCleanup(created.id, null, ORG)
+    expect(dto.status).toBe("cancelled")
   })
 })

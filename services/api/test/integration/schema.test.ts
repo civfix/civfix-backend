@@ -48,6 +48,10 @@ const EXPECTED_TABLES = [
   "mail_events",
   "outreach_state",
   "cleanup_timeline",
+  // Security fixes from the 2026-07-24 audit: the attendee-ban record that makes event removal
+  // enforceable (M17, 0052) and the append-only volunteer-hours journal (M21, 0053).
+  "cleanup_bans",
+  "volunteer_hours_audit",
 ] as const
 
 describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {

@@ -35,7 +35,10 @@ import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { makeChatEditService, type IsRoomMemberFn } from "../services/chat-edit-service.js"
-import { makeDrizzleChatRepository, type ChatRepository } from "../services/chat-repository.drizzle.js"
+import {
+  makeDrizzleChatRepository,
+  type ChatRepository,
+} from "../services/chat-repository.drizzle.js"
 import {
   makeReportChatRepository,
   type ReportChatRepository,
@@ -47,7 +50,7 @@ import {
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import { CHAT_REACTION_FORBIDDEN } from "../services/chat-reaction-service.js"
-import { makeMediaPresigner } from "../services/media-presign.js"
+import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
 import { recordChatMentions } from "../services/chat-mentions.drizzle.js"
 import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
@@ -88,12 +91,18 @@ export async function registerMessagesRoutes(
   let chatRepo: ChatRepository | undefined
   const getChatRepo = (): ChatRepository =>
     overrides?.chatRepo ??
-    (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+    (chatRepo ??= makeDrizzleChatRepository(
+      container.getDb().sql,
+      makePrivateMediaPresigner(container.storage),
+    ))
 
   let reportChatRepo: ReportChatRepository | undefined
   const getReportChatRepo = (): ReportChatRepository =>
     overrides?.reportChat ??
-    (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+    (reportChatRepo ??= makeReportChatRepository(
+      container.getDb().sql,
+      makePrivateMediaPresigner(container.storage),
+    ))
 
   let cleanupRepo: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   const getCleanupRepo = (): ReturnType<typeof makeDrizzleCleanupRepository> =>
@@ -109,7 +118,10 @@ export async function registerMessagesRoutes(
   const getGroupsRepo = (): ChatGroupRepository | undefined =>
     overrides
       ? overrides.groups
-      : (groupsRepo ??= makeChatGroupRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+      : (groupsRepo ??= makeChatGroupRepository(
+          container.getDb().sql,
+          makePrivateMediaPresigner(container.storage),
+        ))
   const isGroupMember: IsRoomMemberFn = async (groupId, userId) => {
     const repo = getGroupsRepo()
     if (!repo) return false
@@ -141,7 +153,9 @@ export async function registerMessagesRoutes(
   // The scope rules (report mention-free, dm peer-only, cleanup members-only) are single-sourced in
   // makeChatMentionResolver, shared with the WS gateway wiring. Absent under fake-chat (no DB), where
   // the service skips re-recording.
-  const chatMentions: Pick<GatewayChatMentions, "resolveChatMentions" | "recordChatMentions"> | undefined =
+  const chatMentions:
+    | Pick<GatewayChatMentions, "resolveChatMentions" | "recordChatMentions">
+    | undefined =
     overrides?.chatMentions ??
     (useFakeChat
       ? undefined
@@ -149,9 +163,11 @@ export async function registerMessagesRoutes(
           resolveChatMentions: makeChatMentionResolver({
             resolveTargets: (input) => resolveMentionTargets(container.getDb().sql, input),
             dmPeerOf,
-            listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
+            listCleanupMemberIds: (cleanupId, cap) =>
+              getCleanupRepo().listMemberIds(cleanupId, cap),
             listReportChatMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
-            listGroupMemberIds: (groupId) => getGroupsRepo()?.listMemberIds(groupId) ?? Promise.resolve([]),
+            listGroupMemberIds: (groupId) =>
+              getGroupsRepo()?.listMemberIds(groupId) ?? Promise.resolve([]),
           }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
@@ -236,7 +252,8 @@ export async function registerMessagesRoutes(
       }
 
       // 3. State gates: system rows and tombstones are never pinnable/unpinnable -> 422.
-      if (kind === "system") throw AppError.validation({ messageId: "System messages can't be pinned." })
+      if (kind === "system")
+        throw AppError.validation({ messageId: "System messages can't be pinned." })
       if (deletedAt !== null) throw AppError.validation({ messageId: "This message was deleted." })
 
       // 4. The gated repo flip. IDEMPOTENT by design: pinning an already-pinned message (or unpinning an

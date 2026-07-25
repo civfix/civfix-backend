@@ -19,7 +19,12 @@ import {
   type HandleAvailableResponse,
   type UserDTO,
 } from "@civfix/shared"
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
+import type {
+  FastifyBaseLogger,
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+} from "fastify"
 import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
@@ -30,7 +35,9 @@ import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserv
 import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
-import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
+import { csrfProtect, csrfTokenForSession, setCsrfCookie, clearCsrfCookie } from "../auth/csrf.js"
+import { generateToken, sha256Hex } from "../auth/crypto.js"
+import type { CacheClient } from "../auth/cache.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import {
   clientKind,
@@ -38,7 +45,7 @@ import {
   presentedSessionToken,
   setSessionCookie,
   clearSessionCookie,
-  CSRF_COOKIE,
+  sessionCookieValue,
   type ClientKind,
 } from "../auth/transport.js"
 import type { UserRecord } from "../auth/stores.js"
@@ -49,6 +56,91 @@ const OAUTH_STATE_TTL_SECONDS = 10 * 60
 const OTP_REQUEST_RATE_LIMIT = { max: 5, timeWindow: "1 minute" } as const
 const OTP_VERIFY_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 const OAUTH_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
+/**
+ * Server-issued sign-in nonces for the NATIVE Apple/Google flows (H1).
+ *
+ * Native sign-in hands us an ID token minted by Apple/Google for a client the app controls. The token
+ * alone proves only that SOMEONE authenticated at some point — it is a bearer artifact that lives in
+ * process memory, crash dumps and logs for its whole `exp` window, and it is replayable by anyone who
+ * gets a copy. The nonce is what makes it a proof of a LIVE, THIS-REQUEST authentication: the client
+ * asks us for a nonce, passes it into the platform sign-in sheet (which binds it into the token's
+ * `nonce` claim), and returns it with the token.
+ *
+ * Previously the "expected" nonce was read from the same request body that carried the token, which is
+ * a tautology — an attacker replaying a stolen token simply echoes the nonce it contains. So the nonce
+ * must be (a) MINTED HERE, from the CSPRNG, and (b) SINGLE-USE. Redemption takes an atomic claim via
+ * INCR (the only cross-process-atomic primitive on the cache seam): only the caller whose increment
+ * CREATED the claim key redeems it, so two concurrent presentations of the same nonce cannot both win,
+ * and a replay after the fact finds the claim already taken.
+ *
+ * Only the SHA-256 of the nonce is stored — like session tokens, the plaintext is a credential.
+ */
+const OAUTH_NONCE_TTL_SECONDS = 10 * 60
+const OAUTH_NONCE_PREFIX = "oauthnonce:"
+const OAUTH_NONCE_CLAIM_PREFIX = "oauthnonce:claim:"
+
+async function mintOAuthNonce(cache: CacheClient): Promise<{ nonce: string; expiresInSeconds: number }> {
+  const nonce = generateToken()
+  await cache.set(OAUTH_NONCE_PREFIX + (await sha256Hex(nonce)), "1", OAUTH_NONCE_TTL_SECONDS)
+  return { nonce, expiresInSeconds: OAUTH_NONCE_TTL_SECONDS }
+}
+
+/**
+ * Atomically consume a presented nonce, returning the value the caller may use as the EXPECTED nonce, or
+ * null when it was never issued, has expired, or has already been spent.
+ */
+async function redeemOAuthNonce(cache: CacheClient, presented: string): Promise<string | null> {
+  if (typeof presented !== "string" || presented.length === 0) return null
+  const hash = await sha256Hex(presented)
+  const claim = await cache.incr(OAUTH_NONCE_CLAIM_PREFIX + hash, OAUTH_NONCE_TTL_SECONDS)
+  if (claim !== 1) return null
+  const issued = await cache.get(OAUTH_NONCE_PREFIX + hash)
+  if (issued === null) return null
+  await cache.del(OAUTH_NONCE_PREFIX + hash)
+  return presented
+}
+
+/**
+ * Redeem the nonce carried by a native sign-in request, returning the value to compare against the ID
+ * token's `nonce` claim — or undefined when there is nothing to compare and the transition gate allows it.
+ *
+ * TRANSITION (OAUTH_REQUIRE_NONCE, default OFF). The end state is a mandatory nonce; shipping that
+ * immediately is a total outage. The shared contract still types `nonce` as optional, no shipped native
+ * build sends one, and recovery would need an EAS build plus App Store review — days during which nobody
+ * can sign in with Apple or Google. So this follows the same accept-both shape as WS_ALLOW_QUERY_TOKEN:
+ *
+ *   - a nonce that IS presented is ALWAYS redeemed against the server-issued store, single-use. An
+ *     updated client therefore gets the full H1 protection the moment it ships, with no flag flip.
+ *   - a nonce that is ABSENT is refused once the flag is on, and until then is allowed with a warning.
+ *
+ * What this never does is fall back to the original bug — comparing the token's nonce claim against a
+ * value from the same request body, which proves nothing. Absent means "no nonce check", not "check the
+ * attacker's own value".
+ *
+ * Flip OAUTH_REQUIRE_NONCE=true once the nonce-sending mobile build is the floor in the store.
+ */
+async function requireIssuedNonce(
+  cache: CacheClient,
+  presented: string | undefined,
+  opts: { required: boolean; log: FastifyBaseLogger },
+): Promise<string | undefined> {
+  if (presented === undefined || presented.length === 0) {
+    if (opts.required) {
+      throw AppError.validation({ nonce: "required: request one from /v1/auth/oauth/nonce first" })
+    }
+    opts.log.warn(
+      { control: "oauth-nonce" },
+      "native sign-in accepted with no nonce (OAUTH_REQUIRE_NONCE is off) — ID-token replay is not bounded for this client",
+    )
+    return undefined
+  }
+  const redeemed = await redeemOAuthNonce(cache, presented)
+  if (redeemed === null) {
+    throw AppError.unauthorized("Sign-in nonce is unknown, expired, or already used.")
+  }
+  return redeemed
+}
 
 export async function registerAuthRoutes(
   app: FastifyInstance,
@@ -76,19 +168,41 @@ export async function registerAuthRoutes(
     await issueSession(services, request, reply, userId)
   })
 
-  route(app, "appleSignIn", async (request, reply) => {
+  // Mint a server-issued, single-use sign-in nonce (H1). Registered as a raw route rather than through
+  // the shared endpoint registry because the contract package is versioned separately; the path mirrors
+  // the versioned /v1/auth/* surface so the typed client can adopt it without moving.
+  app.post(
+    "/v1/auth/oauth/nonce",
+    { config: { rateLimit: OAUTH_RATE_LIMIT } },
+    async (_request, reply) => {
+      const payload = await mintOAuthNonce(services.cache)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(app, "appleSignIn", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const body = parse(AppleSignInRequestSchema, request.body)
+    // Redeem BEFORE verifying the token: the nonce is what makes this a live sign-in rather than a
+    // replay, and it must be spent exactly once whatever the token turns out to be.
+    const expectedNonce = await requireIssuedNonce(services.cache, body.nonce, {
+      required: container.env.OAUTH_REQUIRE_NONCE,
+      log: request.log,
+    })
     const user = await services.oauth.signInWithAppleIdToken(
       body.identityToken,
       body.fullName,
-      body.nonce,
+      expectedNonce,
     )
     await issueSessionForUser(services, request, reply, user)
   })
 
-  route(app, "googleSignIn", async (request, reply) => {
+  route(app, "googleSignIn", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const body = parse(GoogleSignInRequestSchema, request.body)
-    const user = await services.oauth.signInWithGoogleIdToken(body.idToken, body.nonce)
+    const expectedNonce = await requireIssuedNonce(services.cache, body.nonce, {
+      required: container.env.OAUTH_REQUIRE_NONCE,
+      log: request.log,
+    })
+    const user = await services.oauth.signInWithGoogleIdToken(body.idToken, expectedNonce)
     await issueSessionForUser(services, request, reply, user)
   })
 
@@ -306,7 +420,9 @@ async function issueSessionForUser(
   }
 
   setSessionCookie(reply, token, ttl)
-  const csrfToken = generateCsrfToken()
+  // The CSRF token is DERIVED from the session just minted (see auth/csrf.ts), so it is only valid for
+  // this session and cannot be planted by anything that merely writes cookies for the site.
+  const csrfToken = await csrfTokenForSession(token)
   setCsrfCookie(reply, csrfToken, ttl)
   if (opts.webRedirectTo !== undefined) {
     reply.redirect(opts.webRedirectTo)
@@ -337,7 +453,7 @@ async function buildSessionCheck(
     return { authenticated: false, roles: [], ...enabledProviders }
   }
 
-  const csrf = webCsrfToken(request, reply, services)
+  const csrf = await webCsrfToken(request, reply, services)
 
   return {
     authenticated: true,
@@ -348,17 +464,25 @@ async function buildSessionCheck(
   }
 }
 
-function webCsrfToken(
+/**
+ * The CSRF token a cookie-transport client should use, refreshed on every session check.
+ *
+ * It is always RE-DERIVED from the presented session rather than echoed back from the cookie: an
+ * existing cookie may be a pre-binding random value (or one planted by an attacker), and returning it
+ * would keep that value alive forever. Re-deriving means the first session check after a client picks
+ * up this build hands it the correct, session-bound token and overwrites the cookie with it.
+ */
+async function webCsrfToken(
   request: FastifyRequest,
   reply: FastifyReply,
   services: AuthServices,
-): string | null {
+): Promise<string | null> {
   if (bearerToken(request) !== null) return null
 
-  const existing = request.cookies[CSRF_COOKIE]
-  if (existing && existing.length > 0) return existing
+  const sessionToken = sessionCookieValue(request)
+  if (sessionToken === null) return null
 
-  const token = generateCsrfToken()
+  const token = await csrfTokenForSession(sessionToken)
   setCsrfCookie(reply, token, services.sessions.ttl)
   return token
 }

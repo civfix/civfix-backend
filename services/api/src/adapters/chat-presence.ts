@@ -42,7 +42,16 @@ export interface PresenceJoinResult {
 /** Result of a leave: the resulting online set + whether THIS user's LAST connection just left. */
 export interface PresenceLeaveResult {
   online: string[]
-  /** True only when the user has no remaining connections in the room (so a leave delta should be sent). */
+  /**
+   * True only when this call actually REMOVED a live entry for the connection AND the user has no
+   * remaining connections in the room (so a leave delta should be sent).
+   *
+   * SECURITY (H6): the "actually removed" half matters. Deriving `userGone` from absence alone made it
+   * unconditionally TRUE for a room the caller was never present in, so a forged `leave` frame for a
+   * stranger's DM/group/cleanup room injected a presence event for the attacker and broadcast it to
+   * every member. It also means a connection already pruned by the TTL sweep announces nothing — its
+   * absence was already reflected in every subsequent snapshot.
+   */
   userGone: boolean
 }
 
@@ -97,6 +106,18 @@ function presenceMembers(replies: MultiReplies): string[] {
 }
 
 /**
+ * Number of elements a queued ZREM removed, read from its own slot in the MULTI reply (H6). Callers
+ * must have validated the reply set with presenceMembers first, so a non-numeric slot here can only be
+ * a client that returns the count as a string — hence the Number() coercion, defaulting to 0 (i.e.
+ * "removed nothing", the safe answer for the userGone decision).
+ */
+function removedCount(replies: MultiReplies, index: number): number {
+  const raw = replies?.[index]?.[1]
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : 0
+}
+
+/**
  * Redis-backed presence. Uses standard sorted-set commands on the SHARED client (no dedicated connection
  * needed - unlike pub/sub, these are not subscriber-mode commands), so close() owns nothing. Every op
  * prunes entries older than PRESENCE_TTL_MS first, making the registry self-heal from ungraceful drops.
@@ -141,7 +162,12 @@ export class RedisChatPresence implements ChatPresence {
       .zrange(key, 0, -1)
       .exec()
     const members = presenceMembers(replies)
-    const userGone = !members.some((m) => userOf(m) === userId)
+    // H6: the ZREM's OWN reply slot (index 0) decides whether this connection was really present.
+    // Without it, `leave` on a room the caller never joined reported userGone:true and the gateway
+    // broadcast a forged presence delta. Both conditions must hold: we removed a live entry, AND the
+    // user has no other connection left in the room.
+    const removed = removedCount(replies, 0) > 0
+    const userGone = removed && !members.some((m) => userOf(m) === userId)
     return { online: distinctUsers(members), userGone }
   }
 
@@ -214,10 +240,12 @@ export class InMemoryChatPresence implements ChatPresence {
   leave(cleanupId: string, connId: string, userId: string): Promise<PresenceLeaveResult> {
     const now = this.now()
     const room = this.roomFor(cleanupId)
-    room.delete(member(userId, connId))
+    // H6 (mirrors the Redis impl): Map.delete's boolean IS the zrem count — only a connection that was
+    // really present may announce a leave.
+    const removed = room.delete(member(userId, connId))
     this.prune(room, now)
     const members = [...room.keys()]
-    const userGone = !members.some((m) => userOf(m) === userId)
+    const userGone = removed && !members.some((m) => userOf(m) === userId)
     if (members.length === 0) this.rooms.delete(cleanupId)
     return Promise.resolve({ online: distinctUsers(members), userGone })
   }

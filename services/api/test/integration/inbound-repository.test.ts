@@ -85,9 +85,28 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
   it("setStatus transitions the triage state and filters reflect it", async () => {
     const r = await repo.insertIdempotent(insert({ messageId: "<s@x>" }))
     expect((await repo.get(r.id))?.status).toBe("unread")
-    expect(await repo.setStatus(r.id, "archived")).toBe(true)
+    expect(await repo.setStatus(r.id, "archived", null)).toBe(true)
     expect((await repo.get(r.id))?.status).toBe("archived")
     expect((await repo.list({ status: "unread" })).items).toHaveLength(0)
     expect((await repo.list({ status: "archived" })).items).toHaveLength(1)
+  })
+
+  // L6: setInboxStatus used to mutate state with NO actor and NO audit row - the only admin state change
+  // in the console that left no trace of who made it. The audit is now written in the SAME transaction.
+  it("setStatus writes an inbox.status_changed audit row (with the actor + the transition) in-tx", async () => {
+    const r = await repo.insertIdempotent(insert({ messageId: "<audit@x>" }))
+    const actor = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name, handle, role) VALUES ('Op', ${`op-${r.id.slice(0, 8)}`}, 'operator')
+      RETURNING id
+    `
+    const actorId = actor[0]!.id
+    expect(await repo.setStatus(r.id, "archived", actorId)).toBe(true)
+    const audit = await h.sql<{ actor_id: string; target: string; meta: Record<string, unknown> }[]>`
+      SELECT actor_id, target, meta FROM audit_log WHERE action = 'inbox.status_changed'
+    `
+    expect(audit).toHaveLength(1)
+    expect(audit[0]?.actor_id).toBe(actorId)
+    expect(audit[0]?.target).toBe(`inbound_email:${r.id}`)
+    expect(audit[0]?.meta).toMatchObject({ status: "archived", priorStatus: "unread" })
   })
 })

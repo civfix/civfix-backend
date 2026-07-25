@@ -43,9 +43,15 @@ import { resolveLocale } from "../../i18n/locales.js"
 import { isAdminEmail } from "../../auth/admin-allowlist.js"
 import { createAccessVerifier, type AccessIdentity, type VerifyAccessJwt } from "../../auth/cf-access.js"
 import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
-import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../../auth/csrf.js"
 import {
-  CSRF_COOKIE,
+  csrfProtect,
+  csrfTokenForSession,
+  generateCsrfToken,
+  setCsrfCookie,
+  clearCsrfCookie,
+} from "../../auth/csrf.js"
+import {
+  csrfCookieValue,
   presentedSessionToken,
   setSessionCookie,
   clearSessionCookie,
@@ -200,7 +206,10 @@ async function establishOperatorSession(
   })
   const ttl = services.sessions.ttl
   setSessionCookie(reply, token, ttl)
-  const csrfToken = generateCsrfToken()
+  // Session-BOUND, like the citizen surface: the CSRF token is an HMAC over the session, so it proves the
+  // holder owns this session rather than merely being able to read a cookie on the domain. It is also
+  // deterministic, which is what makes the reuse branch in buildAdminSession work.
+  const csrfToken = await csrfTokenForSession(token)
   setCsrfCookie(reply, csrfToken, ttl)
   return { user: toUserPayload(user), csrfToken }
 }
@@ -233,11 +242,19 @@ async function buildAdminSession(
   }
 
   // Web cookie flow: surface/refresh the CSRF token so the SPA can echo it on state-changing calls.
-  const existing = request.cookies[CSRF_COOKIE]
+  //
+  // This MUST read through csrfCookieValue: the __Host- migration made setCsrfCookie write
+  // `__Host-civfix_csrf` in production, so a direct `request.cookies[CSRF_COOKIE]` lookup was always
+  // undefined there. The reuse branch below therefore never fired, and every session bootstrap (route
+  // change, second tab, refresh poll) minted a NEW token and overwrote the cookie — rotating it out from
+  // under the tab that was still holding the old one, whose next mutation then 403'd. It reproduced only
+  // when isProd() was true, which is exactly why the suite stayed green.
+  const existing = csrfCookieValue(request)
   if (existing && existing.length > 0) {
     return { authenticated: true, operator, csrfToken: existing }
   }
-  const token = generateCsrfToken()
+  const sessionToken = presentedSessionToken(request)
+  const token = sessionToken ? await csrfTokenForSession(sessionToken) : generateCsrfToken()
   setCsrfCookie(reply, token, services.sessions.ttl)
   return { authenticated: true, operator, csrfToken: token }
 }

@@ -1,14 +1,21 @@
 /**
  * orphan.sweep cron: reap never-attached media.
  *
- * A media_assets row is created at upload time with report_id NULL and only gains a report_id when a
- * report commits. A row that is STILL report_id NULL after the TTL (default 24h) is an orphan: the
- * client started an upload that never became a report. This sweep deletes the orphan's R2 objects
- * (source + processed + thumbnail, all derivable from r2_key) and then the row.
+ * A media_assets row is created at upload time with no binding of any kind and gains one only when some
+ * subject COMMITS it — a report, a chat/DM message, a social post, or an avatar/verification document
+ * that points AT the row. A row that is STILL bound to nothing after the TTL is an orphan: the client
+ * started an upload that never became anything. This sweep deletes the orphan's R2 objects (source +
+ * legacy processed + thumbnail, all derivable from r2_key) and then the row.
+ *
+ * THE ORPHAN PREDICATE IS THE SAFETY BOUNDARY, AND IT LIVES IN THE REPO, NOT HERE — see
+ * MediaWorkerRepo.findOrphans (services/api/src/services/media-worker-repo.ts) for the full lane
+ * enumeration. This job trusts whatever findOrphans returns and destroys it, irreversibly: an
+ * over-broad predicate here is not a recoverable bug. Anything added to the pipeline that can bind a
+ * media row MUST be added to that predicate first.
  *
  * Safety/idempotency: storage deletes are idempotent on R2 (deleting a missing key is a no-op), and the
  * row delete is by id. A partial run (objects deleted, row delete fails) simply retries next sweep. We
- * process a bounded batch per run (orphanSweepBatch) so a backlog drains over several runs without one
+ * page in bounded batches (orphanSweepBatch x orphanSweepMaxPages) so a backlog drains without one
  * giant transaction. NEVER throws: a per-row error is logged and the sweep continues.
  *
  * This is the plan's section-11 orphan sweep.
@@ -78,24 +85,64 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
   const now = (deps.now ?? (() => new Date()))()
   const cutoff = new Date(now.getTime() - deps.limits.orphanTtlMs)
 
-  let orphans: OrphanRow[]
-  try {
-    orphans = await deps.repo.findOrphans(cutoff, deps.limits.orphanSweepBatch)
-  } catch (err) {
-    report(err, { job: "orphan.sweep", phase: "find" })
-    log("orphan.sweep: find failed", { err: String(err) })
-    return { scanned: 0, deleted: 0, errors: 1 }
-  }
-
   let deleted = 0
   let errors = 0
+  let scanned = 0
+
+  // M10: DRAIN, don't nibble. The sweep used to reap ONE bounded batch per hourly run (200 rows)
+  // against a presign rate limit that allows ~43,200 rows/day, so the orphan backlog could only grow
+  // without bound — every never-committed upload accumulating in R2 forever. It now keeps paging while
+  // a page comes back FULL (i.e. there is more work), bounded by orphanSweepMaxPages so one run cannot
+  // monopolize the worker.
+  for (let page = 0; page < deps.limits.orphanSweepMaxPages; page++) {
+    let orphans: OrphanRow[]
+    try {
+      orphans = await deps.repo.findOrphans(cutoff, deps.limits.orphanSweepBatch)
+    } catch (err) {
+      report(err, { job: "orphan.sweep", phase: "find" })
+      log("orphan.sweep: find failed", { err: String(err) })
+      return { scanned, deleted, errors: errors + 1 }
+    }
+    if (orphans.length === 0) break
+    scanned += orphans.length
+    await sweepPage(orphans, deps, {
+      onDeleted: () => deleted++,
+      onError: (err, id) => {
+        errors++
+        report(err, { job: "orphan.sweep", phase: "delete", mediaId: id })
+        log("orphan.sweep: row failed", { mediaId: id, err: String(err) })
+      },
+    })
+    // A short page means the backlog is drained for this cutoff; stop rather than re-querying.
+    if (orphans.length < deps.limits.orphanSweepBatch) break
+  }
+
+  log("orphan.sweep: done", {
+    scanned,
+    deleted,
+    errors,
+    cutoff: cutoff.toISOString(),
+  })
+  return { scanned, deleted, errors }
+}
+
+/** Reap one page of orphans. Never throws: per-row failures are reported through `hooks.onError`. */
+async function sweepPage(
+  orphans: OrphanRow[],
+  deps: OrphanSweepDeps,
+  hooks: { onDeleted: () => void; onError: (err: unknown, id: string) => void },
+): Promise<void> {
   await mapWithLimit(orphans, ORPHAN_CONCURRENCY, async (o) => {
     try {
-      // SECURITY: r2_key is content-addressed (uploads/yyyy/mm/<sha256>), so identical bytes dedupe to a
-      // SINGLE physical object shared by every media row with that key. All derivedKeys() are derived from
+      // SECURITY: two media rows can point at the SAME r2_key, and all derivedKeys() are derived from
       // r2_key, so they are equally shared. Deleting them while ANOTHER row (e.g. a committed report's
-      // media) references the key would destroy live media — an attacker could upload identical bytes,
-      // never commit, and let this sweep nuke the victim's object.
+      // media) still references the key would destroy live media.
+      //
+      // (L14 correction: this comment previously claimed r2_key is content-addressed as
+      // `uploads/yyyy/mm/<sha256>`. It is not — buildR2Key in media-intake-service.ts uses the
+      // server-generated random uploadId, so identical bytes do NOT dedupe to one object and the
+      // "attacker uploads identical bytes to make the sweep nuke the victim's object" threat described
+      // here never applied. The reference check below is still correct and still cheap, so it stays.)
       //
       // TOCTOU: delete the orphan ROW FIRST, then re-check r2KeyReferencedByOthers, then (only if still
       // unreferenced) delete the physical objects. With the old order (check -> delete R2 -> delete row) a
@@ -109,19 +156,9 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
         // The derived keys for one orphan are independent, so fire their R2 DELETEs in parallel.
         await Promise.all(derivedKeys(o).map((key) => deps.storage.delete(key)))
       }
-      deleted++
+      hooks.onDeleted()
     } catch (err) {
-      errors++
-      report(err, { job: "orphan.sweep", phase: "delete", mediaId: o.id })
-      log("orphan.sweep: row failed", { mediaId: o.id, err: String(err) })
+      hooks.onError(err, o.id)
     }
   })
-
-  log("orphan.sweep: done", {
-    scanned: orphans.length,
-    deleted,
-    errors,
-    cutoff: cutoff.toISOString(),
-  })
-  return { scanned: orphans.length, deleted, errors }
 }

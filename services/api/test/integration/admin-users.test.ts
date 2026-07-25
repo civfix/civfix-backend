@@ -12,7 +12,7 @@
  *   - toggleFlag upserts user_moderation.flagged + opens/resolves an abuse_flag (subject_type 'user')
  *     + audit;
  *   - setStatus upserts user_moderation.account_status (banned -> user.banned audit);
- *   - recordRoleAudit writes a user.role_changed audit row.
+ *   - applyRole writes users.role + its user.role_changed audit row in ONE transaction (L5).
  *
  * The ban -> revoke-all-sessions behavior lives in SessionService (covered by the auth-session unit
  * test); this repo only persists the status. When Docker is unavailable the block SKIPS; CI runs it.
@@ -199,12 +199,29 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     expect(audit).toHaveLength(1)
   })
 
-  it("recordRoleAudit writes a user.role_changed audit row", async () => {
+  // L5: the role UPDATE and its audit row are ONE transaction, so a committed privilege change can never
+  // be missing its audit. Assert both landed AND that the prior role was captured on the audit meta.
+  it("applyRole writes users.role AND a user.role_changed audit row in one transaction", async () => {
     const u = await insertUser(h)
-    await repo.recordRoleAudit(u, { role: "operator", actorId: null })
-    const audit = await h.sql<{ action: string; target: string }[]>`
-      SELECT action, target FROM audit_log WHERE action = 'user.role_changed'
+    expect(await repo.applyRole(u, { role: "gov_admin", actorId: null })).toBe(true)
+    const rows = await h.sql<{ role: string }[]>`SELECT role FROM users WHERE id = ${u}`
+    expect(rows[0]?.role).toBe("gov_admin")
+    const audit = await h.sql<{ action: string; target: string; meta: Record<string, unknown> }[]>`
+      SELECT action, target, meta FROM audit_log WHERE action = 'user.role_changed'
     `
     expect(audit[0]?.target).toBe(`user:${u}`)
+    expect(audit[0]?.meta).toMatchObject({ role: "gov_admin", priorRole: "citizen" })
+  })
+
+  it("applyRole returns false (and writes nothing) for an unknown user", async () => {
+    const before = await h.sql<{ n: string }[]>`SELECT count(*) AS n FROM audit_log`
+    expect(
+      await repo.applyRole("00000000-0000-0000-0000-000000000000", {
+        role: "gov_admin",
+        actorId: null,
+      }),
+    ).toBe(false)
+    const after = await h.sql<{ n: string }[]>`SELECT count(*) AS n FROM audit_log`
+    expect(after[0]?.n).toBe(before[0]?.n)
   })
 })

@@ -77,3 +77,50 @@ describe("DI container", () => {
     await expect(c.close()).resolves.toBeUndefined()
   })
 })
+
+/**
+ * H10: raw inbound email (.eml + attachments) must never be reachable on the public CDN. Two guarantees
+ * live in di.ts — the inbound Storage is built WITHOUT a publicBase, and the old silent
+ * `R2_INBOUND_BUCKET ?? R2_BUCKET` fallback cannot route inbound mail into the published media bucket.
+ */
+describe("DI container: inbound-mail storage is never public", () => {
+  const realStorageEnv = {
+    NODE_ENV: "test" as const,
+    USE_FAKE_STORAGE: "0",
+    R2_ACCOUNT_ID: "a",
+    R2_ACCESS_KEY_ID: "b",
+    R2_SECRET_ACCESS_KEY: "c",
+    R2_BUCKET: "civfix-media",
+  }
+
+  /** R2Storage keeps its config privately; read what we assert on without widening the public type. */
+  type WithConfig = { config: { bucket: string; publicBase?: string } }
+
+  it("builds the inbound storage on its own bucket and with no publicBase", () => {
+    const env = loadEnv({
+      ...realStorageEnv,
+      R2_PUBLIC_BASE: "https://cdn.civfix.org",
+      R2_INBOUND_BUCKET: "civfix-inbound",
+    })
+    const c = buildContainer(env)
+    const media = (c.storage as unknown as WithConfig).config
+    const inbound = (c.inboundStorage as unknown as WithConfig).config
+    expect(inbound.bucket).toBe("civfix-inbound")
+    expect(inbound.bucket).not.toBe(media.bucket)
+    // The media bucket keeps its CDN base; the inbound one must NOT have one at all.
+    expect(media.publicBase).toBe("https://cdn.civfix.org")
+    expect(inbound.publicBase).toBeUndefined()
+  })
+
+  it("throws rather than falling back to the media bucket when a public base is set", () => {
+    // loadEnv is the first line of defence; construct the env object directly to prove di.ts also
+    // refuses, so no future env change can reintroduce the leak silently.
+    const env = { ...loadEnv(realStorageEnv), R2_PUBLIC_BASE: "https://cdn.civfix.org" }
+    expect(() => buildContainer(env)).toThrow(/R2_INBOUND_BUCKET is required/)
+  })
+
+  it("still shares the media bucket when nothing is publicly addressable", () => {
+    const c = buildContainer(loadEnv(realStorageEnv))
+    expect((c.inboundStorage as unknown as WithConfig).config.bucket).toBe("civfix-media")
+  })
+})

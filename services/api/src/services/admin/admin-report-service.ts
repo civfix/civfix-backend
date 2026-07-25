@@ -307,6 +307,10 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         input.contactEmailOverride && input.contactEmailOverride.trim() !== ""
           ? input.contactEmailOverride.trim()
           : null
+      // M5: the override used to be an ARBITRARY well-formed email address, which made this endpoint a
+      // one-request exfiltration channel for the full report packet. It is now constrained to the
+      // jurisdiction's own mail domain (see assertOverrideDomainAllowed).
+      if (override !== null) assertOverrideDomainAllowed(override, routing?.contact ?? null)
       const toAddr = override ?? routing?.contact ?? null
       if (toAddr === null || toAddr === "") {
         throw AppError.notRoutable("No routing contact for this report's jurisdiction")
@@ -348,6 +352,16 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         text: packet.text,
         html: packet.html,
         ...(attachments.length > 0 ? { attachments } : {}),
+        // M5: the report.routed audit rides INSIDE the outbound message insert's transaction, so this send
+        // cannot commit unaudited. (The route used to write it afterwards, best-effort, catching and
+        // downgrading the failure to a warn.) The auto-forward job calls this same method with actorId
+        // null, which correctly records a system-originated route.
+        audit: {
+          actorId: input.actorId,
+          action: "report.routed",
+          target: `report:${id}`,
+          meta: { override: override !== null },
+        },
       })
 
       const routeNote = `Sent to jurisdiction (${toAddr})`
@@ -391,6 +405,55 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       if (!ok) throw AppError.notFound("Report not found")
     },
   }
+}
+
+/**
+ * M5: constrain `contactEmailOverride` on POST /admin/reports/:id/route.
+ *
+ * What that endpoint sends is a FULL report packet: the reporter's display name, the exact lat/lng, the
+ * street address, presigned photo URLs and the raw JPEGs as attachments. Before this check the destination
+ * was any address that merely parsed as an email, so a single operator request (or a single phished
+ * operator session, since a `X-Client: mobile` bearer call also skips CSRF) exfiltrated a citizen's identity
+ * and home location to an attacker-chosen mailbox — with the platform's own DKIM signature on it.
+ *
+ * The rule: an override may only redirect WITHIN the jurisdiction's own mail domain — the domain of the
+ * contact already on file for this report's jurisdiction. That preserves the real workflow the override
+ * exists for (the department gave a different mailbox: `streets@` instead of `info@`, `311@` instead of
+ * `publicworks@`) while removing the arbitrary-destination capability entirely.
+ *
+ * Consequence to be aware of when deploying: a jurisdiction with NO contact on file has no known domain, so
+ * there is nothing to constrain the override against and it is refused. The operator must first save the
+ * routing contact for that jurisdiction ("Save & route" -> discovery.contacts_saved, itself audited
+ * in-transaction), then route. That is a deliberate extra step: it moves "where does this citizen's data
+ * go" out of a per-send free-text field and into an audited, reviewable jurisdiction record.
+ */
+export function assertOverrideDomainAllowed(override: string, knownContact: string | null): void {
+  const knownDomain = emailDomain(knownContact)
+  if (knownDomain === null) {
+    throw AppError.validation(
+      { contactEmailOverride: "no_jurisdiction_contact" },
+      "This jurisdiction has no routing contact on file, so a one-off destination cannot be verified. " +
+        "Save the jurisdiction's routing contact first, then route the report.",
+    )
+  }
+  if (emailDomain(override) !== knownDomain) {
+    throw AppError.validation(
+      { contactEmailOverride: "domain_not_allowed" },
+      `A one-off destination must be on the jurisdiction's own mail domain (@${knownDomain}).`,
+    )
+  }
+}
+
+/** The lowercased domain of an email address, or null when there is not exactly one usable "@" split. */
+function emailDomain(email: string | null): string | null {
+  if (email === null) return null
+  const trimmed = email.trim().toLowerCase()
+  const at = trimmed.lastIndexOf("@")
+  if (at <= 0 || at === trimmed.length - 1) return null
+  const domain = trimmed.slice(at + 1)
+  // Reject anything that is not a plain dotted host: an address-literal ("[10.0.0.1]") or a bare label has
+  // no meaningful domain to compare, and must not accidentally match.
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) ? domain : null
 }
 
 async function recordFollowup(

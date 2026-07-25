@@ -114,7 +114,13 @@ export interface AdminUserRepository {
     id: string,
     input: { status: UserStatus; reason: string | null; actorId: string | null },
   ): Promise<boolean>
-  recordRoleAudit(id: string, input: { role: Role; actorId: string | null }): Promise<void>
+  /**
+   * L5: write `users.role` AND its `user.role_changed` audit row in ONE transaction, so a committed
+   * privilege change can never end up unaudited. Returns false when the user does not exist.
+   * (This REPLACES the old pair of a `setUserRole` seam write + a separate `recordRoleAudit` call, which
+   * went through two independent connections.)
+   */
+  applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean>
   setVerified(
     id: string,
     input: { verified: boolean; actorId: string | null },
@@ -136,7 +142,17 @@ export interface SessionControl {
   revokeAll(userId: string): Promise<number>
 }
 
-export type SetUserRole = (userId: string, role: Role) => Promise<void>
+/**
+ * H3: roles this endpoint may GRANT. `operator` is deliberately absent.
+ *
+ * Operator authority derives from exactly two things: membership in `env.ADMIN_EMAILS` and the Cloudflare
+ * Access exchange that provisions the row (routes/admin/auth.routes.ts). Before this guard, ONE operator
+ * (or one phished operator session, or the world-readable reviewer-OTP credential chained into an operator
+ * session) could POST /admin/users/:id/role {role:"operator"} and mint a PERMANENT backdoor account that
+ * no allowlist change could revoke. Granting operator through the console is therefore refused outright:
+ * to add an operator, add the address to ADMIN_EMAILS and have them sign in through Cloudflare Access.
+ */
+const GRANTABLE_ROLES: ReadonlySet<Role> = new Set<Role>(["citizen", "gov_user", "gov_admin"])
 
 export function resolveUserFilter(filter: string | undefined): {
   status: UserStatus | null
@@ -157,7 +173,6 @@ export function resolveUserFilter(filter: string | undefined): {
 export interface AdminUserServiceDeps {
   repo: AdminUserRepository
   sessions: SessionControl
-  setUserRole: SetUserRole
   now?: () => Date
 }
 
@@ -313,6 +328,10 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       id: string,
       input: { status: UserStatus; reason: string | null; actorId: string | null },
     ): Promise<{ revokedSessions: number }> {
+      // H3: an operator must not be bannable from this endpoint. Without this, one operator (or one phished
+      // operator session) could ban every OTHER operator and be left alone in the console. Operator
+      // off-boarding is an ADMIN_EMAILS edit, not a console ban.
+      await assertTargetIsNotOperator(deps.repo, id, "ban or change the status of")
       const ok = await deps.repo.setStatus(id, input)
       if (!ok) throw AppError.notFound("User not found")
       if (input.status === "banned") {
@@ -324,9 +343,39 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     },
 
     async setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void> {
-      await assertUserExists(deps.repo, id)
-      await deps.setUserRole(id, input.role)
-      await deps.repo.recordRoleAudit(id, { role: input.role, actorId: input.actorId })
+      // --- H3 authorization guards, ALL evaluated before any write. ---
+
+      // (1) `operator` may never be granted here. It derives from ADMIN_EMAILS + the Cloudflare Access
+      //     exchange only; a console-granted operator would be a permanent backdoor no allowlist edit
+      //     could revoke. See GRANTABLE_ROLES.
+      if (!GRANTABLE_ROLES.has(input.role)) {
+        throw AppError.forbidden(
+          "Operator access is granted only through ADMIN_EMAILS and Cloudflare Access, not this endpoint.",
+        )
+      }
+      // (2) No self-targeting. A role change revokes every session of the target, so an operator changing
+      //     their OWN role locks themselves out mid-flight; more importantly it is the shape a confused-
+      //     deputy/CSRF chain takes (make the phished operator demote themselves, or escalate a session
+      //     they already hold). Role changes are always about somebody else.
+      if (input.actorId !== null && input.actorId === id) {
+        throw AppError.forbidden("You cannot change your own role.")
+      }
+      const target = await deps.repo.getUser(id)
+      if (!target) throw AppError.notFound("User not found")
+      // (3) An existing operator is not demotable here either — otherwise one operator could strip every
+      //     other operator and hold the console alone. Demote by removing the address from ADMIN_EMAILS
+      //     (auth/admin-guard.ts re-checks it on every admin request, so access ends within the cache TTL).
+      if (target.role === "operator") {
+        throw AppError.forbidden(
+          "Operator accounts are managed through ADMIN_EMAILS; they cannot be changed from the console.",
+        )
+      }
+
+      // L5: the role UPDATE and its user.role_changed audit are ONE transaction in the repo, so a committed
+      // privilege change can never be missing its audit row.
+      const ok = await deps.repo.applyRole(id, { role: input.role, actorId: input.actorId })
+      if (!ok) throw AppError.notFound("User not found")
+      // H2: revoke every live session so the role baked into a warm session cannot outlive the change.
       await deps.sessions.revokeAll(id)
     },
 
@@ -360,4 +409,21 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
 async function assertUserExists(repo: AdminUserRepository, id: string): Promise<void> {
   const user = await repo.getUser(id)
   if (!user) throw AppError.notFound("User not found")
+}
+
+/**
+ * H3: refuse a privileged mutation whose TARGET is currently an operator. Operator accounts are governed
+ * by ADMIN_EMAILS + the Cloudflare Access exchange; letting one operator ban or demote another turns a
+ * single compromised operator session into a full takeover of the console.
+ */
+async function assertTargetIsNotOperator(
+  repo: AdminUserRepository,
+  id: string,
+  verb: string,
+): Promise<void> {
+  const target = await repo.getUser(id)
+  if (!target) throw AppError.notFound("User not found")
+  if (target.role === "operator") {
+    throw AppError.forbidden(`You cannot ${verb} an operator account from the console.`)
+  }
 }

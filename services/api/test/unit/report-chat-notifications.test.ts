@@ -109,6 +109,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       isMuted: (userId) => Promise.resolve(muted.has(userId)),
       presence: { online: () => Promise.resolve([...present]) },
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     await notify(REPORT, userMessage(ACTOR, "Dana", "hello everyone"))
@@ -137,6 +138,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       isMuted: (userId) => Promise.resolve(muted.has(userId)),
       presence: { online: () => Promise.resolve([...present]) },
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     await notify(REPORT, systemMessage())
@@ -157,6 +159,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     await notify(REPORT, userMessage(ACTOR, "Dana", "hi"))
@@ -172,6 +175,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     // ACTOR replies to A's message: A is excluded from the member fan-out; B still gets it.
@@ -187,6 +191,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     const mention: UserMentionDTO = { id: B, handle: "bee", displayName: "Bee" }

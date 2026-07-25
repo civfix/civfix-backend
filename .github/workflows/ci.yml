@@ -37,6 +37,13 @@ jobs:
       - name: Assert backend stays React/RN-free
         run: node scripts/assert-no-frontend.mjs
 
+      # H13 gate: fail the PR on a HIGH/CRITICAL advisory in the PRODUCTION dependency tree. `--prod`
+      # deliberately ignores dev-only tooling (a DoS in a test runner is not a production exposure).
+      # When a finding has no upstream fix yet, add a `pnpm.overrides` entry in the root package.json
+      # (with a comment explaining why the forced version is safe) rather than removing this step.
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+
       - name: Lint
         run: pnpm lint
 

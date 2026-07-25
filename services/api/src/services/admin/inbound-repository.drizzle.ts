@@ -15,6 +15,7 @@
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { likeContains } from "./like.js"
+import { writeAudit } from "./audit.js"
 import type {
   InboundEmailDTO,
   InboundEmailListItemDTO,
@@ -46,8 +47,14 @@ export interface InboundRepository {
   list(query: InboxListQuery): Promise<InboxListResponse>
   /** A single inbound email mapped to InboundEmailDTO (with raw R2 attachment keys), or null. */
   get(id: string): Promise<InboundEmailDTO | null>
-  /** Set an inbound email's triage status. Returns true when the row existed. */
-  setStatus(id: string, status: InboundEmailStatus): Promise<boolean>
+  /**
+   * Set an inbound email's triage status. Returns true when the row existed.
+   *
+   * L6: `actorId` is REQUIRED and the `inbox.status_changed` audit row is written in the SAME transaction
+   * as the UPDATE. This mutation used to record neither an actor nor an audit row — the only admin state
+   * change in the console that left no trace of who made it.
+   */
+  setStatus(id: string, status: InboundEmailStatus, actorId: string | null): Promise<boolean>
 }
 
 const PREVIEW_LEN = 140
@@ -198,11 +205,31 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
       return rows[0] ? toDTO(rows[0]) : null
     },
 
-    async setStatus(id: string, status: InboundEmailStatus): Promise<boolean> {
-      const rows = await sql<{ id: string }[]>`
-        UPDATE inbound_emails SET status = ${status} WHERE id = ${id} RETURNING id
-      `
-      return rows.length > 0
+    async setStatus(
+      id: string,
+      status: InboundEmailStatus,
+      actorId: string | null,
+    ): Promise<boolean> {
+      // L6: effect + audit atomically, matching every other admin mutation in this codebase. The prior
+      // status is read in-tx and recorded so the log shows the transition, not just the destination.
+      return sql.begin(async (tx) => {
+        // Read the prior status FIRST (a plain SELECT; a subquery inside the UPDATE's RETURNING would be
+        // reading the same row the statement is writing, which is exactly the kind of subtlety not worth
+        // having in an audit path). FOR UPDATE serializes concurrent triage clicks on the same row.
+        const existing = await tx<{ status: InboundEmailStatus }[]>`
+          SELECT status FROM inbound_emails WHERE id = ${id} LIMIT 1 FOR UPDATE
+        `
+        const prior = existing[0]?.status
+        if (prior === undefined) return false
+        await tx`UPDATE inbound_emails SET status = ${status} WHERE id = ${id}`
+        await writeAudit(tx, {
+          actorId,
+          action: "inbox.status_changed",
+          target: `inbound_email:${id}`,
+          meta: { status, priorStatus: prior },
+        })
+        return true
+      })
     },
   }
 }

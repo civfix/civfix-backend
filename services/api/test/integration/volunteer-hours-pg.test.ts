@@ -151,4 +151,81 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(ledger[0]!.hours).toBe(2.5)
     expect(await rollupFor(org)).toBe(0)
   })
+
+  // --- M21: the upsert overwrote hours in place with no history ------------------------------------
+  // `DO UPDATE SET hours = EXCLUDED.hours, logged_by_user_id = EXCLUDED.logged_by_user_id` destroyed
+  // both the previous value AND the only trace of who set it, so a host could inflate a credit and
+  // later quietly restore it with the row left indistinguishable from one never touched — against a
+  // number that feeds the PUBLIC jurisdiction leaderboard.
+  it("M21: every upsert appends an immutable audit row carrying the previous + new value", async () => {
+    const org = await newUser("Audit Org")
+    const alice = await newUser("Audit Alice")
+    const cohost = await newUser("Audit Cohost")
+    const cleanupId = await newCleanup(org)
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+    async function auditRows(): Promise<
+      { user_id: string; actor_user_id: string; previous_hours: number | null; new_hours: number }[]
+    > {
+      return h.sql`
+        SELECT user_id, actor_user_id, previous_hours::float8 AS previous_hours, new_hours::float8 AS new_hours
+        FROM volunteer_hours_audit
+        WHERE cleanup_id = ${cleanupId}
+        ORDER BY created_at ASC, new_hours ASC
+      `
+    }
+
+    await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+    let rows = await auditRows()
+    expect(rows).toHaveLength(1)
+    // NULL previous_hours = there was no prior credit, deliberately distinct from a stored 0.
+    expect(rows[0]).toMatchObject({ user_id: alice, actor_user_id: org, previous_hours: null, new_hours: 2 })
+
+    // The inflation...
+    await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 40 }] })
+    // ...and the quiet restore, by a different host.
+    await repo.logEventHours({ actorId: cohost, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+
+    rows = await auditRows()
+    expect(rows).toHaveLength(3)
+    expect(rows.map((r) => [r.previous_hours, r.new_hours])).toEqual([
+      [null, 2],
+      [2, 40],
+      [40, 2],
+    ])
+    expect(rows.map((r) => r.actor_user_id)).toEqual([org, org, cohost])
+
+    // The live ledger is back where it started — the journal is the ONLY evidence it ever moved.
+    const ledger = await h.sql<{ hours: number }[]>`
+      SELECT hours::float8 AS hours FROM volunteer_hours
+      WHERE cleanup_id = ${cleanupId} AND source = 'event' AND user_id = ${alice}
+    `
+    expect(ledger[0]!.hours).toBe(2)
+  })
+
+  it("M21: the audit is written for the geoid-less branch too", async () => {
+    const org = await newUser("Audit NoGeo Org")
+    const alice = await newUser("Audit NoGeo Alice")
+    const cleanupId = randomUUID()
+    await h.sql`
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
+      VALUES (
+        ${cleanupId}, ${org}, 'site', 'No-geo audit sweep',
+        ST_SetSRID(ST_MakePoint(-118.3, 34.1), 4326),
+        now() - interval '1 day', 'done'
+      )
+    `
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+    await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: alice, hours: 1 }] })
+    await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: alice, hours: 5 }] })
+
+    const rows = await h.sql<{ previous_hours: number | null; new_hours: number }[]>`
+      SELECT previous_hours::float8 AS previous_hours, new_hours::float8 AS new_hours
+      FROM volunteer_hours_audit WHERE cleanup_id = ${cleanupId} ORDER BY created_at ASC, new_hours ASC
+    `
+    expect(rows.map((r) => [r.previous_hours, r.new_hours])).toEqual([
+      [null, 1],
+      [1, 5],
+    ])
+  })
 })

@@ -59,6 +59,15 @@ export interface ChatPowers {
 export interface ChatRoomRoleDeps {
   /** dm lane: is `userId` one of the thread's two participants? */
   isDmParticipant(threadId: string, userId: string): Promise<boolean>
+  /**
+   * dm lane (L10): is `userId` blocked either way with the thread's OTHER participant?
+   *
+   * Every other DM surface — history, send, edit, react — re-checks blocks, but the powers resolver did
+   * not, so a blocked user kept `canPin` in a thread they are cut off from and could pin/unpin at will,
+   * firing a room broadcast at their ex-peer each time. Optional so offline harnesses without a blocks
+   * seam keep working (absent => never blocked); production wires it in chat-powers-wiring.
+   */
+  isDmBlocked?(threadId: string, userId: string): Promise<boolean>
   /** cleanup lane: the user's cleanup_members.role, or null when not a member. */
   cleanupRoleOf(cleanupId: string, userId: string): Promise<CleanupRole | null>
   /** report lane: the user's report_chat_members.role, or null when not a member. */
@@ -89,8 +98,13 @@ export function makeChatPowersResolver(deps: ChatRoomRoleDeps): ResolveChatPower
     switch (roomKind) {
       case "dm": {
         const participant = await deps.isDmParticipant(roomId, userId)
+        if (!participant) return NO_POWERS
+        // L10: a blocked pair holds NO powers over the shared thread — the block already removed every
+        // other capability in it (send, edit, react, read), and a pin is a write plus a broadcast at
+        // the peer. Checked only after participation so a stranger's probe costs one lookup, not two.
+        if (deps.isDmBlocked && (await deps.isDmBlocked(roomId, userId))) return NO_POWERS
         // Peer power, not moderation: pinning is symmetric, delete-others never exists in a dm.
-        return { canPin: participant, canDeleteOthers: false, isModerator: false }
+        return { canPin: true, canDeleteOthers: false, isModerator: false }
       }
       case "cleanup": {
         // ONLY the cleanup role decides — no global-role lookup on purpose (see banner).

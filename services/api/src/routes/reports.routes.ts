@@ -45,6 +45,26 @@ import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-e
 
 const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
+// M14: per-IP caps on the two anon-ok, DB+presign-backed public reads. Neither had ANY route-level
+// limit, so they sat at the global 300/min/IP while each request can cost up to MAP_REPORTS_CANDIDATE_CAP
+// rows (and, pre-fix, that many presigns). Sized in the spirit of map.routes' GEOCODER_RATE_LIMIT (30/min)
+// but the map read is allowed more headroom because a genuine pan/zoom session fires several requests per
+// second while the 60s Cache-Control warms; search is a deliberate user action, so it keeps the tight 30.
+const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+
+/**
+ * M14: hard ceiling on the requested viewport AREA in square degrees.
+ *
+ * Defense-in-depth behind the zoom clamp (services/report-clustering.ts effectiveMapZoom): even fully
+ * clustered, a world-spanning bbox still makes the DB scan up to the candidate cap, and the response is
+ * uncacheable in practice because the attacker jitters the bounds. The whole globe is 360x180 = 64,800
+ * deg^2; this cap admits a hemispheric/continental view (which is a real, if rare, client state) and
+ * rejects only the pathological world-scan. Mirrors the ordering refine in ./query-encoding.ts — a 422
+ * with a clear message rather than a silent degradation.
+ */
+export const MAX_MAP_BBOX_AREA_DEG2 = 40_000
+
 export interface ReportServiceOverrides {
   repo: ReportRepository
   resolveJurisdictionGeoid?: ReportServiceDeps["resolveJurisdictionGeoid"]
@@ -75,7 +95,10 @@ const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
 
 const MapReportsQuerySchema = z
   .object({
-    bbox: BBoxQueryParam,
+    bbox: BBoxQueryParam.refine(
+      (b) => (b.east - b.west) * (b.north - b.south) <= MAX_MAP_BBOX_AREA_DEG2,
+      { message: "bbox is too large; zoom in and request a smaller viewport" },
+    ),
     categories: CategoriesQueryParam.optional(),
     types: TypesQueryParam.optional(),
     zoom: ZoomQueryParam,
@@ -316,7 +339,7 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } } }, async (request, reply) => {
+  route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } }, config: { rateLimit: MAP_REPORTS_RATE_LIMIT } }, async (request, reply) => {
     const validated = parse(MapReportsQuerySchema, request.query)
     const payload: ReportClusterResponse = await service().listReportsInBBox(
       validated.bbox,
@@ -328,7 +351,7 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "searchReports", async (request, reply) => {
+  route(app, "searchReports", { config: { rateLimit: SEARCH_REPORTS_RATE_LIMIT } }, async (request, reply) => {
     const validated = parse(SearchReportsQuerySchema, request.query)
     const payload: ListReportsSearchResponse = await service().searchReports(validated)
     reply.status(200).send(payload)

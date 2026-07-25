@@ -222,7 +222,23 @@ export interface CleanupRepository {
   // Remove a NON-organizer member row (the same row that gates chat access, so removal drops the chat
   // roster too) and return the fresh member count in the SAME transaction. `removed` is false when no
   // such member row existed (or the target is the organizer — guarded in SQL as defense-in-depth).
-  removeMember(cleanupId: string, userId: string): Promise<{ removed: boolean; going: number }>
+  //
+  // SECURITY (M17): the same transaction ALSO writes the cleanup_bans row that makes the removal
+  // stick. Before this, removal was a bare membership delete against an unconditional self-service
+  // join, so the removed user re-joined instantly and in a loop. `actorId` is the removing host,
+  // recorded on the ban row. Same-transaction is load-bearing: a ban written afterwards would leave a
+  // window in which the target could re-join.
+  removeMember(
+    cleanupId: string,
+    userId: string,
+    actorId: string,
+  ): Promise<{ removed: boolean; going: number }>
+  // Whether `userId` is banned from `cleanupId` (M17). Read by the join path; also lets the service
+  // distinguish "not attending" from "removed" when an organizer targets a non-member.
+  isBanned(cleanupId: string, userId: string): Promise<boolean>
+  // Lift a ban (organizer-only at the service layer). Returns true when a ban row existed; deleting a
+  // non-existent ban is an idempotent no-op that returns false.
+  unbanMember(cleanupId: string, userId: string): Promise<boolean>
   // The user ids of a cleanup's members, capped at `limit` (a soft fan-out bound). Used by the WS gateway
   // to fan a thread-unread signal to the room's members.
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
@@ -231,16 +247,24 @@ export interface CleanupRepository {
   // The organizer's user id, or null when the cleanup does not exist.
   organizerOf(cleanupId: string): Promise<string | null>
   // Upsert a cleanup_members(role 'member') row in a transaction (idempotent: re-joining is a no-op).
-  // Returns true when the cleanup exists (so the route can 404 a missing cleanup).
-  joinCleanupTx(cleanupId: string, userId: string): Promise<boolean>
+  //
+  // SECURITY (M17): the ban probe and the membership insert happen in ONE transaction, so a ban landing
+  // concurrently cannot be raced past. Outcomes: "not_found" (no such cleanup — the route 404s),
+  // "banned" (a cleanup_bans row exists — the service 403s and NO membership row is written), "joined"
+  // (membership present, whether newly inserted or already there).
+  joinCleanupTx(cleanupId: string, userId: string): Promise<"joined" | "not_found" | "banned">
   // Delete a cleanup_members row. Returns true when the cleanup exists. Deleting a non-existent membership
   // on an existing cleanup is an idempotent no-op that still returns true.
   leaveCleanup(cleanupId: string, userId: string): Promise<boolean>
-  // Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a 'cancel' cleanup_timeline row + fan
-  // out a notification row to EVERY other member (set-based INSERT ... SELECT). Returns false when the
-  // cleanup does not exist. The service composes ALL user-facing copy — the timeline `note` and the
-  // notification `body` — and passes them in; the repo only persists (layer separation). `reason` is the
-  // raw operator-supplied reason (kept for the fake's observable contract).
+  // Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a 'cancel' cleanup_timeline row.
+  // Returns false when the cleanup does not exist. The service composes ALL user-facing copy — the
+  // timeline `note` and the notification `body` — and passes them in; the repo only persists (layer
+  // separation). `reason` is the raw operator-supplied reason (kept for the fake's observable contract).
+  //
+  // L24: this used to ALSO fan a notifications row out to every member with a raw set-based INSERT,
+  // bypassing NotificationService (no prefs, no quiet hours, no locale, no user-channel signal). That
+  // fan-out now lives in cleanup-service.cancelCleanup and rides the real pipeline; the transaction is
+  // reserved for the two writes that genuinely have to be atomic.
   cancelCleanupTx(
     id: string,
     input: { note: string; body: string; reason: string | null; actorId: string },

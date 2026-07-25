@@ -33,8 +33,30 @@ import {
   makeChatGroupRepository,
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
+import type { DmRepository } from "../services/dm-repository.drizzle.js"
+import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 
 type GlobalRole = (typeof ROLE_VALUES)[number]
+
+/**
+ * L10: the dm lane's block gate — "is the caller blocked either way with this thread's other
+ * participant?". Resolves the peer off the thread row, then asks the blocks repo; a thread the caller
+ * is not in resolves to no peer, which the resolver already handles via isDmParticipant (answering
+ * false here keeps this helper's contract to blocks alone).
+ */
+export function makeIsDmBlocked(
+  dm: DmRepository,
+  blocks: BlocksRepository,
+): (threadId: string, userId: string) => Promise<boolean> {
+  return async (threadId, userId) => {
+    const thread = await dm.getThread(threadId)
+    if (thread === null) return false
+    const peer =
+      thread.userLo === userId ? thread.userHi : thread.userHi === userId ? thread.userLo : null
+    if (peer === null) return false
+    return blocks.isBlockedEitherWay(userId, peer)
+  }
+}
 
 /** The user's global users.role, or null when the row is missing. */
 export async function globalRoleOf(
@@ -54,9 +76,16 @@ export function wireChatPowers(app: FastifyInstance, container: Container): Reso
   if (overrides) {
     // Offline override harness without an injected resolver: honor the seams that exist, fail closed
     // for the rest. Never touches the container's DB handle.
+    const offlineDm = overrides.dmRepo
+    const offlineBlocks = overrides.blocksRepo
     return makeChatPowersResolver({
       isDmParticipant: (threadId, userId) =>
-        overrides.dmRepo ? overrides.dmRepo.isParticipant(threadId, userId) : Promise.resolve(false),
+        offlineDm ? offlineDm.isParticipant(threadId, userId) : Promise.resolve(false),
+      // L10: only wired when the harness carries BOTH seams; otherwise the lane keeps its pre-L10
+      // behavior (no block data offline => never blocked), like the other fail-closed-to-null lookups.
+      ...(offlineDm && offlineBlocks
+        ? { isDmBlocked: makeIsDmBlocked(offlineDm, offlineBlocks) }
+        : {}),
       cleanupRoleOf: () => Promise.resolve(null),
       reportChatRoleOf: (reportId, userId) =>
         overrides.reportChat ? overrides.reportChat.roleOf(reportId, userId) : Promise.resolve(null),
@@ -71,6 +100,9 @@ export function wireChatPowers(app: FastifyInstance, container: Container): Reso
   let groups: ChatGroupRepository | undefined
   return makeChatPowersResolver({
     isDmParticipant: (threadId, userId) => container.getDmRepo().isParticipant(threadId, userId),
+    // L10: DM pin power respects blocks, like every other DM surface.
+    isDmBlocked: (threadId, userId) =>
+      makeIsDmBlocked(container.getDmRepo(), container.getBlocksRepo())(threadId, userId),
     cleanupRoleOf: (cleanupId, userId) =>
       (cleanups ??= makeDrizzleCleanupRepository(container.getDb().sql)).roleOf(cleanupId, userId),
     reportChatRoleOf: (reportId, userId) =>

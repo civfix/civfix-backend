@@ -448,7 +448,7 @@ export class InMemoryReportRepository implements ReportRepository {
     // findReportById, which returns a copy, then projects the new status).
     const r = this.reports.get(reportId)
     if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
-    if (r.reporterUserId !== userId) return Promise.resolve("forbidden")
+    if (r.reporterUserId !== userId) return Promise.resolve(notOwnerOutcome(r))
     r.status = input.status
     this.timeline.push({
       reportId,
@@ -470,7 +470,7 @@ export class InMemoryReportRepository implements ReportRepository {
     // findReportById, which returns a copy, then projects the new visibility).
     const r = this.reports.get(reportId)
     if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
-    if (r.reporterUserId !== userId) return Promise.resolve("forbidden")
+    if (r.reporterUserId !== userId) return Promise.resolve(notOwnerOutcome(r))
     r.visibility = input.visibility
     this.timeline.push({
       reportId,
@@ -480,6 +480,19 @@ export class InMemoryReportRepository implements ReportRepository {
     })
     return Promise.resolve("updated")
   }
+}
+
+/**
+ * L12: mirrors the Drizzle repo's notOwnerOutcome. A report that is already publicly readable leaks
+ * nothing by admitting it exists, so a non-owner gets the honest 403; anything NOT publicly readable
+ * (held, unlisted, resolved) gets the same 404 the read path returns, so the 403/404 split stops being
+ * an existence oracle for pre-moderation and owner-hidden content.
+ */
+function notOwnerOutcome(r: {
+  status: ReportRecord["status"]
+  visibility: ReportRecord["visibility"]
+}): "not_found" | "forbidden" {
+  return r.status === "published" && r.visibility === "public" ? "forbidden" : "not_found"
 }
 
 /** Parse a "<iso>|<id>" listMyReports cursor into { at(ms), id }; null when absent/malformed. */

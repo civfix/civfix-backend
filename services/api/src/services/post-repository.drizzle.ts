@@ -28,6 +28,7 @@ import type { POST_KIND_VALUES } from "../db/schema/types.js"
 import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
+import { publicReportFilter } from "./report-sql.js"
 
 type PostKind = (typeof POST_KIND_VALUES)[number]
 
@@ -269,6 +270,12 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
   }
 
   // -- attachment cards ------------------------------------------------------
+  // H8 (events, VERIFIED no leak): unlike `reports`, the `cleanups` table has NO `visibility` column and
+  // NO `deleted_at` — an event has exactly one lifecycle axis, `status`, and `cancelled` is a PUBLIC
+  // state that the LinkedEventRef contract carries through to the client so the card can render
+  // "Cancelled". There is therefore no hidden/soft-deleted event this read could leak, and no status
+  // gate belongs here. If a future migration adds a hidden/removed event state, this read MUST gain the
+  // same treatment loadReports got above.
   async function loadEvents(ids: string[]): Promise<Map<string, Omit<LinkedEventRef, "linkedAt">>> {
     const out = new Map<string, Omit<LinkedEventRef, "linkedAt">>()
     if (ids.length === 0) return out
@@ -320,6 +327,11 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
+  // H8 (read half): the attachment card is re-read from `reports` on EVERY render, so the visibility
+  // gate has to be re-applied here too — a check done only at attach time is a TOCTOU hole. Without
+  // this the owner's later `unlist` (or a moderator's un-publish) was silently ineffective for as long
+  // as the post existed. Filtered-out ids simply never enter the map and `hydrate` emits `report: null`,
+  // so the post degrades gracefully to a body-only post rather than 404ing the whole feed page.
   async function loadReports(ids: string[]): Promise<Map<string, Omit<LinkedReportRef, "linkedAt">>> {
     const out = new Map<string, Omit<LinkedReportRef, "linkedAt">>()
     if (ids.length === 0) return out
@@ -341,7 +353,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         WHERE m.report_id = r.id AND m.status = 'ready'
         ORDER BY m.created_at ASC LIMIT 1
       ) ma ON TRUE
-      WHERE r.id = ANY(${ids}::uuid[]) AND r.deleted_at IS NULL
+      WHERE r.id = ANY(${ids}::uuid[]) AND ${publicReportFilter(sql)}
     `
     const resolved = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {
       let thumbUrl: string | null = null
@@ -606,10 +618,15 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return rows.length > 0
     },
 
+    // H8 (attach half): a report may be attached to a post ONLY if it is already publicly readable.
+    // This previously checked `visibility` but NOT `status`, so an anonymous submitter could attach
+    // their own HELD (pre-moderation) report and publish its title, exact lat/lng, address and photo
+    // into the signed-out public feed before any moderator saw it. The predicate now comes from the
+    // shared publicReportFilter() fragment so it can never drift from the read paths again.
     async isReportAttachable(reportId: string): Promise<boolean> {
       const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM reports
-        WHERE id = ${reportId} AND deleted_at IS NULL AND visibility = 'public'
+        SELECT 1 AS one FROM reports r
+        WHERE r.id = ${reportId} AND ${publicReportFilter(sql)}
         LIMIT 1
       `
       return rows.length > 0

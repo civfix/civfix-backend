@@ -133,6 +133,21 @@ async function connectionsPage(
     viewerId !== null
       ? sql`EXISTS (SELECT 1 FROM follows_people ff WHERE ff.follower_id = ${viewerId} AND ff.followee_id = u.id)`
       : sql`FALSE`
+  // L13: the follower/following connection pages were the ONE people-listing surface with no block
+  // filter — suggestFollows, people search, the home/replies/saves feeds and every DM surface all carry
+  // this exact NOT EXISTS. Blocks in this product are a mutual-invisibility control, not a messaging-only
+  // one (the block hides the pair from each other's *content* everywhere else), so a blocked account
+  // surfacing in a public roster the viewer can page through is a real leak of the control. Symmetric
+  // (either direction blocks) to match every other call site. Anonymous viewers have no block
+  // relationships at all, so the clause is simply omitted rather than joined against a null id.
+  const blockFilter =
+    viewerId !== null
+      ? sql`AND NOT EXISTS (
+          SELECT 1 FROM user_blocks b
+          WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
+             OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
+        )`
+      : sql``
 
   const rows = await sql<PersonRowSelectWithFollow[]>`
     SELECT
@@ -150,6 +165,7 @@ async function connectionsPage(
     JOIN follows_people f ON ${joinPredicate}
     LEFT JOIN media_assets am ON am.id = u.avatar_media_id
     WHERE u.deleted_at IS NULL
+      ${blockFilter}
       ${cursorFilter}
     ORDER BY u.display_name ASC, u.id ASC
     LIMIT ${args.limit + 1}

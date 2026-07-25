@@ -11,6 +11,30 @@ export const WS_CLOSE_POLICY_VIOLATION = 1008
 
 export const TYPING_MIN_INTERVAL_MS = 1000
 
+/**
+ * SECURITY (M13): the PER-CONNECTION frame budget covering EVERY client frame type, applied in
+ * handleClientFrame before dispatch.
+ *
+ * Before this, only `send` was metered (the per-user+room send buckets in socket-lifecycle). `join` and
+ * `typing` each cost a Postgres membership query plus Redis round trips, and `ack` a watermark write —
+ * all unmetered, while a single host may hold MAX_CONNECTIONS_PER_IP (30) sockets, each able to loop
+ * frames as fast as the socket drains.
+ *
+ * 60 burst / 10 per second is far above any human client (a real session opens a handful of rooms and
+ * types at ~1 typing frame/sec/room, itself throttled by TYPING_MIN_INTERVAL_MS) while bounding one
+ * connection to 10 backend round trips per second sustained. Exhausting the bucket answers with a
+ * RATE_LIMITED error frame and drops the frame — the socket is NOT closed, so a bursty-but-legitimate
+ * client (e.g. re-joining many rooms after a reconnect) simply retries.
+ */
+export const WS_FRAME_LIMIT = { capacity: 60, refillPerSec: 10 } as const
+
+/**
+ * M1: how often a live socket's credential is fully re-resolved (session still exists / not revoked)
+ * when the connection retained a session token. The cheap banned-account check runs on EVERY heartbeat
+ * tick; the full resolve is throttled to this interval because it also slides the session's expiry.
+ */
+export const WS_REAUTH_INTERVAL_MS = 60_000
+
 export const WS_BUFFER_DROP_THRESHOLD = 1024 * 1024
 
 export const WS_BUFFER_TERMINATE_TICKS = 2
@@ -162,10 +186,26 @@ export interface GatewaySession {
   readonly joined: Set<string>
   readonly deps: GatewayDeps
   readonly typingThrottle: Map<string, number>
+  /**
+   * M13: this connection's all-frame-types token bucket. Deliberately OPTIONAL-and-lazily-created (see
+   * handleClientFrame): every session — including ones built by tests and any future call site — gets a
+   * bucket whether or not the constructing code remembered to wire one, so the throttle can never be
+   * silently absent on a live socket.
+   */
+  frameLimiter?: RateLimiter
 }
 
 export type WsHandshakeResult =
-  | { ok: true; userId: string }
+  | {
+      ok: true
+      userId: string
+      /**
+       * M1: the long-lived session token this handshake authenticated with, when there was one (cookie
+       * or bearer). ABSENT on the ?ticket= path — a single-use connect ticket is not a session
+       * credential, so those sockets are re-checked with the cheap banned-account read only.
+       */
+      token?: string
+    }
   | { ok: false; code: "FORBIDDEN" | "UNAUTHORIZED"; message: string; reason: string }
 
 export interface RegisterGatewayOptions {

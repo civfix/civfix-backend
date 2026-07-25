@@ -100,6 +100,14 @@ export interface SendReportInput {
   html?: string
   /** Binary photo attachments (already loaded + capped by the caller). */
   attachments?: OutboundAttachment[]
+  /**
+   * M5: the operator audit (report.routed) written in the SAME tx as the message insert. This send emails a
+   * full report packet — reporter display name, exact lat/lng, street address, presigned photo URLs and raw
+   * JPEG attachments — so it is exactly the send that must never be able to happen without an audit row.
+   * The caller supplies actorId/action/target (`report:<id>`); the service merges the resolved threadId into
+   * `meta`, which it knows and the caller does not.
+   */
+  audit?: MailAuditInput
 }
 
 /**
@@ -284,6 +292,10 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         subject: input.subject,
         status: "sent",
       })
+      // M5: the report.routed audit is inserted INSIDE insertMessage's transaction. Previously the route
+      // wrote it afterwards on a separate connection, inside a try/catch that downgraded a failure to a
+      // log line — so the packet could go out to an operator-chosen address with no audit row at all. Now
+      // an audit failure rolls back the message insert and fails the request BEFORE anything is delivered.
       const message = await repo.insertMessage({
         threadId: thread.id,
         direction: "out",
@@ -291,6 +303,14 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
+        ...(input.audit
+          ? {
+              audit: {
+                ...input.audit,
+                meta: { ...(input.audit.meta ?? {}), threadId: thread.id, to: input.toAddr },
+              },
+            }
+          : {}),
       })
       const messageId = await deliverAndRecord({
         threadId: thread.id,

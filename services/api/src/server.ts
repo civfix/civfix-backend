@@ -1,7 +1,6 @@
-
 import Fastify, { type FastifyInstance } from "fastify"
 import { loadEnv, type Env } from "./env.js"
-import { buildContainer, type Container } from "./di.js"
+import { assertRedisReachable, buildContainer, type Container } from "./di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "./errors/http-mapper.js"
 import { initErrorReporting, flushErrorReporting } from "./errors/glitchtip.js"
 import { genReqId, registerRequestId } from "./plugins/request-id.js"
@@ -11,10 +10,7 @@ import { registerCookie } from "./plugins/cookie.js"
 import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
-import {
-  buildAuthServicesFromContainer,
-  type AuthServices,
-} from "./auth/auth-services.js"
+import { buildAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
 import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
 import type { AnonServiceOverride } from "./routes/anon.routes.js"
@@ -134,6 +130,11 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   await registerCookie(app, env.SESSION_SIGNING_KEY)
   await registerCors(app, env.WEB_ORIGINS)
   await registerRateLimit(app, env.REDIS_URL ? { redis: container.getRedis() } : {})
+
+  // H4: the rate limiter's sensitive-route buckets fail CLOSED, but a Redis that is merely MISCONFIGURED
+  // (wrong host in the env) would otherwise let the API boot and serve every request as a 429 — or, on the
+  // lax global bucket, with no limiting at all. Prove reachability once at boot instead.
+  await assertRedisReachable(container)
 
   await registerVersionGate(app)
 

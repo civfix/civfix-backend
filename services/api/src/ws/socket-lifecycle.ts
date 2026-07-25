@@ -13,7 +13,9 @@ import {
   WS_BUFFER_TERMINATE_TICKS,
   WS_CLOSE_POLICY_VIOLATION,
   WS_HEARTBEAT_MS,
+  WS_REAUTH_INTERVAL_MS,
 } from "./types.js"
+import type { SessionService } from "../auth/session-service.js"
 
 const READY_STATE_OPEN = 1
 
@@ -84,6 +86,45 @@ export async function subscribeUserChannel(
   } catch (err) {
     logger?.warn({ err, userId }, "ws: user-channel subscribe failed (continuing)")
     return undefined
+  }
+}
+
+/**
+ * SECURITY (M1): re-authorize a LIVE socket.
+ *
+ * A WebSocket authenticated once, at connect, and then never again — so a user who logged out, whose
+ * session was revoked, or who was BANNED kept full read/write access to every room they had joined for
+ * as long as they left the tab open (the heartbeat only pinged). This runs on every heartbeat tick:
+ *
+ *   - Every tick: `isUserActive` — a single Redis read of the banned marker, the same veto
+ *     `resolveSession` applies on the HTTP lane. This is the check that must never be skipped, because
+ *     banning is the time-critical one.
+ *   - At most every WS_REAUTH_INTERVAL_MS, and only when the handshake retained a session token
+ *     (cookie/bearer, never ?ticket=): a full `resolveSession`, which additionally catches logout and
+ *     per-session revocation, and verifies the session still belongs to the SAME user. Throttled
+ *     because resolveSession slides the session's expiry, and an idle socket should not extend a
+ *     session's life once per 30s.
+ *
+ * Returns false when the socket must be closed. FAILS OPEN on an infrastructure error (a Redis blip
+ * must not mass-disconnect every live chat socket) — the next tick retries, and the HTTP lane's own
+ * fail-closed auth hook still guards every mutation.
+ */
+export async function isSocketStillAuthorized(
+  sessions: SessionService | undefined,
+  userId: string,
+  token: string | undefined,
+  fullCheck: boolean,
+): Promise<boolean> {
+  if (!sessions) return true
+  try {
+    if (!(await sessions.isUserActive(userId))) return false
+    if (fullCheck && token !== undefined) {
+      const resolved = await sessions.resolveSession(token)
+      if (resolved === null || resolved.userId !== userId) return false
+    }
+    return true
+  } catch {
+    return true
   }
 }
 
@@ -178,6 +219,11 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
 
       let alive = true
       let overBufferTicks = 0
+      // M1: the credential this handshake authenticated with (absent on the ?ticket= path) + when the
+      // last FULL re-resolve ran. Seeded to "now" because the handshake itself just resolved it.
+      const sessionToken = handshake.token
+      let lastFullReauthAt = Date.now()
+      let closingForAuth = false
       socket.on("pong", () => {
         alive = true
       })
@@ -186,6 +232,25 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           socket.terminate()
           return
         }
+        // M1: re-authorize the live socket. Async, so it runs alongside (not instead of) the ping — a
+        // revoked/banned user is cut off within one heartbeat + one Redis round trip.
+        void (async () => {
+          const now = Date.now()
+          const fullCheck = now - lastFullReauthAt >= WS_REAUTH_INTERVAL_MS
+          if (fullCheck) lastFullReauthAt = now
+          if (await isSocketStillAuthorized(opts.sessions, userId, sessionToken, fullCheck)) return
+          if (closingForAuth) return
+          closingForAuth = true
+          request.log.info({ userId }, "ws: closing socket, session no longer valid")
+          try {
+            session.conn.send(
+              serverFrame({ type: "error", code: "UNAUTHORIZED", message: "Your session ended." }),
+            )
+          } catch (err) {
+            request.log.debug({ err }, "ws: reauth-reject send failed (socket already closing)")
+          }
+          socket.close(WS_CLOSE_POLICY_VIOLATION, "session no longer valid")
+        })().catch(() => {})
         if (socket.bufferedAmount > WS_BUFFER_DROP_THRESHOLD) {
           if (++overBufferTicks >= WS_BUFFER_TERMINATE_TICKS) {
             socket.terminate()

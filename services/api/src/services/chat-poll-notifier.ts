@@ -11,6 +11,10 @@
  * (chat-bells), and a poll carries neither — so a cleanup poll bells no one, exactly matching a normal
  * cleanup send. So this notifier fires for report + group and is a no-op for cleanup.
  *
+ * BLOCKS: NOT omitted — see the M11 note at the isBlockedEitherWay wiring below. Every bell this module
+ * can raise carries the poll author's name to another member of a room that may be PUBLIC, so the block
+ * gate is as load-bearing here as it is on the gateway's message fan-out.
+ *
  * PRESENCE: omitted (same as report-chat-emitter) — the room presence adapter is built in the gateway
  * wiring and isn't reachable here, so a member currently VIEWING the room also gets a push for a new poll
  * (minor over-notification; the live broadcast already delivers the poll instantly regardless).
@@ -71,17 +75,27 @@ export function makeContainerPollNotifier(
     }
   }
 
+  // SECURITY (M11): the SAME block gate the gateway's message fan-out applies (chat-gateway-wiring), and
+  // the reason this module's notifiers must never be built without one. A poll create/close raises the
+  // identical member-wide bell a normal send does — sender name + preview on the target's lock screen —
+  // so leaving it off here reproduced the whole M11 scenario on the REST poll path: a blocked user posts
+  // a poll into a shared PUBLIC report or group room and reaches the person who blocked them.
+  const isBlockedEitherWay = (a: string, b: string): Promise<boolean> =>
+    container.getBlocksRepo().isBlockedEitherWay(a, b)
+
   const notifyReport = makeReportChatNotifier({
     notificationService,
     reportChatRepo: { listMemberIds: (reportId) => reportChatRepo.listMemberIds(reportId) },
     isMuted: (userId, roomId) => isMuted(userId, "report", roomId),
     roomKeyFor,
+    isBlockedEitherWay,
   })
   const notifyGroup = makeGroupChatNotifier({
     notificationService,
     groupRepo: { listMemberIds: (groupId) => groupRepo.listMemberIds(groupId) },
     isMuted: (userId, roomId) => isMuted(userId, "group", roomId),
     roomKeyFor,
+    isBlockedEitherWay,
   })
 
   return (roomKind, roomId, message) => {

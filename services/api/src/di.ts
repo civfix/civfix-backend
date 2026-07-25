@@ -1,4 +1,3 @@
-
 import type {
   AbuseChecks,
   ChatService,
@@ -45,7 +44,7 @@ import { RedisChatPubSub } from "./adapters/chat-pubsub.js"
 import { RedisUserChannel } from "./adapters/user-channel.redis.js"
 import { makeDrizzleChatRepository } from "./services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository, type DmRepository } from "./services/dm-repository.drizzle.js"
-import { makeMediaPresigner } from "./services/media-presign.js"
+import { makeMediaPresigner, makePrivateMediaPresigner } from "./services/media-presign.js"
 import {
   makeDrizzleBlocksRepository,
   type BlocksRepository,
@@ -60,10 +59,7 @@ import { makePostService, type PostService } from "./services/post-service.js"
 import { makeNotificationService } from "./services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "./services/notification-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
-import {
-  InMemoryBlocksRepository,
-  InMemoryDmRepository,
-} from "./services/dm-repository.memory.js"
+import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
 import { MultiPushSender } from "./adapters/push-sender.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
@@ -137,7 +133,7 @@ export function buildContainer(env: Env): Container {
         const blocks = getBlocksRepo()
         dmRepo = new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b))
       } else {
-        dmRepo = makeDrizzleDmRepository(getDb().sql, presignMedia)
+        dmRepo = makeDrizzleDmRepository(getDb().sql, presignPrivateMedia)
       }
     }
     return dmRepo
@@ -184,13 +180,34 @@ export function buildContainer(env: Env): Container {
 
   const presignMedia = makeMediaPresigner(storage)
 
+  // H9 (batch-read half): chat, DM and group message attachments are PRIVATE. The public presigner
+  // degrades to an unsigned, permanent CDN URL whenever R2_PUBLIC_BASE is set, which would leave a DM
+  // photo world-readable forever to anyone who ever saw the link — no unsend, block or delete could
+  // revoke it. Every message-attachment repo signs through this one instead.
+  const presignPrivateMedia = makePrivateMediaPresigner(storage)
+
+  // H10: the inbound-mail buffer (raw .eml + every emailed attachment) is private correspondence.
+  //   - NEVER pass `publicBase` here, whatever R2_PUBLIC_BASE says: R2Storage returns an unsigned,
+  //     permanent CDN URL for every key once a public base is set. Inbound objects are only ever reachable
+  //     through a short-lived presign.
+  //   - NO silent `?? env.R2_BUCKET` fallback when a public base exists. loadEnv already requires
+  //     R2_INBOUND_BUCKET in that case; this is the belt-and-braces assertion so a future env change can
+  //     never re-route inbound mail into the CDN-published media bucket without someone noticing.
+  const inboundBucket =
+    env.R2_INBOUND_BUCKET ?? (env.R2_PUBLIC_BASE === undefined ? env.R2_BUCKET : "")
+  if (!env.USE_FAKE_STORAGE && inboundBucket.length === 0) {
+    throw new Error(
+      "R2_INBOUND_BUCKET is required when R2_PUBLIC_BASE is set: refusing to write raw inbound email " +
+        "into the public media bucket. Set a dedicated, non-public inbound bucket.",
+    )
+  }
   const inboundStorage: Storage = env.USE_FAKE_STORAGE
     ? storage
     : new R2Storage({
         accountId: env.R2_ACCOUNT_ID,
         accessKeyId: env.R2_ACCESS_KEY_ID,
         secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-        bucket: env.R2_INBOUND_BUCKET ?? env.R2_BUCKET,
+        bucket: inboundBucket,
       })
 
   const mailer: Mailer = env.USE_FAKE_MAILER
@@ -253,7 +270,7 @@ export function buildContainer(env: Env): Container {
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
     : new WsChatService({
-        repo: makeDrizzleChatRepository(getDb().sql, presignMedia),
+        repo: makeDrizzleChatRepository(getDb().sql, presignPrivateMedia),
         pubsub: getSharedPubSub(),
       })
 
@@ -329,6 +346,35 @@ export function buildContainer(env: Env): Container {
     getPostRepo,
     getPostService,
     close,
+  }
+}
+
+/**
+ * Production boot assertion: Redis must actually answer before we start serving (H4).
+ *
+ * Every rate limit — the global bucket and the fail-closed auth/anon/media buckets — lives in the Redis
+ * store. A misconfigured or unreachable REDIS_URL used to be invisible: the process booted, the limiter
+ * store errored on each request, and the API served with either zero rate limiting (skipOnError) or a
+ * blanket 503. Sessions and OTP throttles have the same dependency. So we PING once at startup and refuse
+ * to come up if it fails, turning a silent security degradation into a loud, obvious deploy failure.
+ *
+ * No-op outside production and when REDIS_URL is empty (offline/all-fakes dev boots have no Redis).
+ */
+export async function assertRedisReachable(container: Container): Promise<void> {
+  if (container.env.NODE_ENV !== "production" || container.env.REDIS_URL.length === 0) return
+  let pong: string
+  try {
+    pong = await container.getRedis().ping()
+  } catch (err) {
+    throw new Error(
+      `Redis is unreachable at boot (REDIS_URL): rate limiting, OTP throttles and sessions all depend on ` +
+        `it, so refusing to serve. Cause: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (pong !== "PONG") {
+    throw new Error(
+      `Redis PING returned ${JSON.stringify(pong)} instead of PONG; refusing to serve.`,
+    )
   }
 }
 

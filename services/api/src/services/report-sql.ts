@@ -117,6 +117,24 @@ export function toTimelineView(t: TimelineRowSelect): ReportTimelineView {
   return { status: t.status, note: t.note, kind: t.kind, body: t.body, createdAt: t.created_at }
 }
 
+/**
+ * THE canonical "this report is publicly readable" SQL predicate (H8).
+ *
+ * This is the SQL half of the decision `report-visibility.ts:isReportVisibleTo` makes in TypeScript —
+ * the two MUST agree, minus the owner carve-out (`mine`), which no anonymous/public read path has.
+ * It existed only inlined inside `selectPublicPins`, so `post-repository.drizzle.ts` drifted twice:
+ * `isReportAttachable` checked `visibility` but not `status` (a HELD, pre-moderation anon report could
+ * be attached to a public post), and `loadReports` re-read the row on every render checking NEITHER (so
+ * an owner's later `unlist` was silently ineffective for the life of the post). Every new call site
+ * MUST use this fragment rather than re-typing the three conditions.
+ *
+ * Callers must alias the `reports` table as `r` (every current one already does); a fixed alias keeps
+ * the fragment free of dynamic identifier interpolation.
+ */
+export function publicReportFilter(sql: Queryable): SqlFragment {
+  return sql`r.status = 'published' AND r.visibility = 'public' AND r.deleted_at IS NULL`
+}
+
 // A public map/search pin row before projection. created_at backs the search keyset cursor; the map path
 // ignores it.
 export interface PublicPinRow {
@@ -188,9 +206,7 @@ export async function selectPublicPins(
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     ) m ON true
-    WHERE r.status = 'published'
-      AND r.visibility = 'public'
-      AND r.deleted_at IS NULL
+    WHERE ${publicReportFilter(sql)}
       ${extraFilters}
     ${order}
     LIMIT ${limit}

@@ -10,6 +10,7 @@ import {
   type NotificationPrefsDTO,
   type RegisterPushTokenResponse,
 } from "@civfix/shared"
+import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
@@ -124,7 +125,38 @@ export async function registerNotificationRoutes(
   route(app, "registerPush", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(RegisterPushTokenRequestSchema, request.body)
-    const payload: RegisterPushTokenResponse = await service().registerPushToken(userId, body)
+    // H12: the shared contract types deviceId as a bare optional string. Normalize it against a tight
+    // shape BEFORE it reaches the service, because the service uses it to key a destructive
+    // cross-account write. A value that does not match is DROPPED (not rejected) — see normalizeDeviceId.
+    const deviceId = normalizeDeviceId(body.deviceId)
+    if (body.deviceId !== undefined && deviceId === undefined) {
+      request.log.warn({ userId }, "registerPush: malformed deviceId dropped (device-claim skipped)")
+    }
+    const payload: RegisterPushTokenResponse = await service().registerPushToken(userId, {
+      ...body,
+      ...(deviceId !== undefined ? { deviceId } : {}),
+    })
     reply.status(200).send(payload)
   })
 }
+
+/**
+ * H12 shape gate for `deviceId`.
+ *
+ * The field arrives from a JSON body as an unconstrained string in the shared contract, and the server
+ * uses it as the key for a DESTRUCTIVE cross-account write (revoke other users' active tokens on "this
+ * device"). Constraining it does not make it authoritative — the ownership check in
+ * notification-service.ts is what does that — but it removes the trivially-abusable shapes: wildcards,
+ * enormous values, and anything that is not the client-generated UUID the mobile app actually stores.
+ *
+ * DROP, don't reject: a malformed value returns `undefined` so the registration still succeeds without
+ * the device-claim step. Rejecting would 422 older clients and silently cost them push entirely — the
+ * exact failure mode H11 is about.
+ */
+export function normalizeDeviceId(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined
+  const parsed = DeviceIdSchema.safeParse(raw.trim().toLowerCase())
+  return parsed.success ? parsed.data : undefined
+}
+
+const DeviceIdSchema = z.string().uuid()

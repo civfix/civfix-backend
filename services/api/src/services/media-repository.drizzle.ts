@@ -22,6 +22,12 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     height: row.height,
     byteSize: row.byteSize,
     purpose: row.purpose,
+    // H9: the bindings the view authorizer resolves visibility through. Projected here (not lazily
+    // re-queried) so getMedia makes exactly one lookup before authorizing.
+    reportId: row.reportId,
+    chatMessageId: row.chatMessageId,
+    postId: row.postId,
+    createdAt: row.createdAt,
   }
 }
 

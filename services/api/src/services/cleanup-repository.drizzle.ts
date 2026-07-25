@@ -449,21 +449,53 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     async removeMember(
       cleanupId: string,
       userId: string,
+      actorId: string,
     ): Promise<{ removed: boolean; going: number }> {
-      // Delete + fresh count in ONE transaction so the returned `going` is consistent with the delete.
-      // Deleting the cleanup_members row is the whole removal: the same row gates chat access
-      // (isMember), so the target drops out of the event group chat automatically.
+      // Ban + delete + fresh count in ONE transaction so the returned `going` is consistent with the
+      // delete AND there is no window between the two writes. Deleting the cleanup_members row drops
+      // the target from the event group chat (the same row gates isMember); the cleanup_bans row is
+      // what stops them walking straight back in via the self-service join (M17 — before this, removal
+      // was purely cosmetic and could be undone by the removed user in a loop).
+      //
+      // The ban is written FIRST and unconditionally on an existing membership: ordering it before the
+      // delete means a concurrent joinCleanupTx either sees no ban and loses the row to our delete, or
+      // sees the ban and refuses.
       return sql.begin(async (tx) => {
         const deleted = await tx<{ user_id: string }[]>`
           DELETE FROM cleanup_members
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
           RETURNING user_id
         `
+        if (deleted.length > 0) {
+          await tx`
+            INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
+            VALUES (${cleanupId}, ${userId}, ${actorId})
+            ON CONFLICT (cleanup_id, user_id) DO NOTHING
+          `
+        }
         const counted = await tx<{ count: number }[]>`
           SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
         `
         return { removed: deleted.length > 0, going: counted[0]?.count ?? 0 }
       })
+    },
+
+    async isBanned(cleanupId: string, userId: string): Promise<boolean> {
+      const rows = await sql<{ one: number }[]>`
+        SELECT 1 AS one FROM cleanup_bans
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows.length > 0
+    },
+
+    async unbanMember(cleanupId: string, userId: string): Promise<boolean> {
+      const rows = await sql<{ user_id: string }[]>`
+        DELETE FROM cleanup_bans
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        RETURNING user_id
+      `
+      return rows.length > 0
     },
 
     async listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
@@ -490,18 +522,30 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows[0]?.organizer_user_id ?? null
     },
 
-    async joinCleanupTx(cleanupId: string, userId: string): Promise<boolean> {
+    async joinCleanupTx(
+      cleanupId: string,
+      userId: string,
+    ): Promise<"joined" | "not_found" | "banned"> {
       return sql.begin(async (tx) => {
         const exists = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanups WHERE id = ${cleanupId} LIMIT 1
         `
-        if (exists.length === 0) return false
+        if (exists.length === 0) return "not_found"
+        // M17: joining was an unconditional self-service INSERT, which made attendee removal a
+        // no-op the target could undo instantly. The ban probe runs INSIDE the join transaction so
+        // it cannot be raced against a concurrent removeMember (which takes the same row locks).
+        const banned = await tx<{ one: number }[]>`
+          SELECT 1 AS one FROM cleanup_bans
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+          LIMIT 1
+        `
+        if (banned.length > 0) return "banned"
         await tx`
           INSERT INTO cleanup_members (cleanup_id, user_id, role)
           VALUES (${cleanupId}, ${userId}, 'member')
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
-        return true
+        return "joined"
       })
     },
 
@@ -536,12 +580,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
         `
-        await tx`
-          INSERT INTO notifications (user_id, type, title, body, link)
-          SELECT cm.user_id, 'cleanup_cancelled', 'Event cancelled', ${input.body}, ${`/cleanups/${id}`}
-          FROM cleanup_members cm
-          WHERE cm.cleanup_id = ${id} AND cm.user_id <> ${input.actorId}
-        `
+        // L24: the cancellation fan-out USED to INSERT notification rows directly here, bypassing
+        // NotificationService entirely — so it ignored the recipient's push prefs, their quiet hours
+        // and their locale, and never emitted the user-channel signal, unlike every other bell in the
+        // product. The fan-out now lives in cleanup-service.cancelCleanup and rides the real pipeline.
+        // The repo's job ends at the status flip + the timeline row, which is what has to be atomic;
+        // a bell is best-effort by design and must never hold a transaction open.
         return true
       })
     },

@@ -1,4 +1,3 @@
-
 import { ErrorCode } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
@@ -21,7 +20,10 @@ import { resolveMentionTargets } from "../services/social-repository.drizzle.js"
 import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import { makeReportChatRepository, type ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import {
+  makeReportChatRepository,
+  type ReportChatRepository,
+} from "../services/report-chat-repository.drizzle.js"
 import {
   canPostToGroup,
   makeChatGroupRepository,
@@ -31,16 +33,25 @@ import type { GatewayGroupChat } from "../ws/types.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { forwardReportCityMention } from "../services/report-city-forward.js"
-import { makeReportForwardAudit, type ReportForwardAudit } from "../services/report-forward-audit.drizzle.js"
+import {
+  makeReportForwardAudit,
+  type ReportForwardAudit,
+} from "../services/report-forward-audit.drizzle.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../ws/report-rate-limit.js"
 import type { ReportVisibleFn } from "../ws/gateway.js"
 import { THREAD_SIGNAL_MEMBER_CAP } from "../services/cleanup-service.js"
-import { makeDrizzleChatRepository, type ChatRepository } from "../services/chat-repository.drizzle.js"
-import { makeMediaPresigner } from "../services/media-presign.js"
+import {
+  makeDrizzleChatRepository,
+  type ChatRepository,
+} from "../services/chat-repository.drizzle.js"
+import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { recordChatMentions } from "../services/chat-mentions.drizzle.js"
 import { makeDrizzleChatReadState } from "../services/chat-read-state.drizzle.js"
-import { makeNotificationService, type NotificationService } from "../services/notification-service.js"
+import {
+  makeNotificationService,
+  type NotificationService,
+} from "../services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import {
   makeConversationMutesRepository,
@@ -54,10 +65,17 @@ import {
   makeDmBellNotifier,
   type ChatBellDeps,
 } from "../services/chat-bells.js"
-import { clearConversationBellFor, type ConversationBellKind } from "../services/conversation-bell.js"
+import {
+  clearConversationBellFor,
+  type ConversationBellKind,
+} from "../services/conversation-bell.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
-import { InMemoryChatPresence, RedisChatPresence, type ChatPresence } from "../adapters/chat-presence.js"
+import {
+  InMemoryChatPresence,
+  RedisChatPresence,
+  type ChatPresence,
+} from "../adapters/chat-presence.js"
 import { InMemoryChatReadState, type ChatReadState } from "../services/threads-service.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 
@@ -77,7 +95,10 @@ export interface ChatWiring {
   dmPeerOf: (threadId: string, userId: string) => Promise<string | null>
   getChatRepo(): ChatRepository
   getReportChatRepo(): ReportChatRepository
-  listDmThreadsFor: (userId: string, limit?: number) => Promise<Awaited<ReturnType<DmRepository["listThreadsForUser"]>>>
+  listDmThreadsFor: (
+    userId: string,
+    limit?: number,
+  ) => Promise<Awaited<ReturnType<DmRepository["listThreadsForUser"]>>>
 }
 
 export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
@@ -91,7 +112,9 @@ export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
     const result = await limiter(request)
     if (!result.isAllowed && result.isExceeded) {
       reply.header("retry-after", result.ttlInSeconds)
-      reply.status(429).send({ code: ErrorCode.RATE_LIMITED, message: "Too many connection attempts." })
+      reply
+        .status(429)
+        .send({ code: ErrorCode.RATE_LIMITED, message: "Too many connection attempts." })
     }
   })
 }
@@ -119,15 +142,17 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
   const isBlockedEitherWay: IsBlockedEitherWayFn = (a, b) => blocksRepo.isBlockedEitherWay(a, b)
 
-  const presignMedia = makeMediaPresigner(container.storage)
+  const presignMedia = makePrivateMediaPresigner(container.storage)
 
   let chatRepo: ChatRepository | undefined
   const getChatRepo = (): ChatRepository =>
-    overrides?.chatRepo ?? (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, presignMedia))
+    overrides?.chatRepo ??
+    (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, presignMedia))
 
   let reportChatRepo: ReportChatRepository | undefined
   const getReportChatRepo = (): ReportChatRepository =>
-    overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
+    overrides?.reportChat ??
+    (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
 
   // P4 4.4: the group management repo backing the WS group lane (join/send member gate, ack watermark,
   // mention scoping, mark-read-on-join). One instance shared with nothing route-side (the group routes
@@ -144,7 +169,8 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const groupWired = overrides ? overrides.groups !== undefined : !useFakeChat
   const groupChat: GatewayGroupChat | undefined = groupWired
     ? {
-        isMember: async (groupId, userId) => (await getGroupsRepo()!.roleOf(groupId, userId)) !== null,
+        isMember: async (groupId, userId) =>
+          (await getGroupsRepo()!.roleOf(groupId, userId)) !== null,
         access: async (groupId, userId) => {
           const a = await getGroupsRepo()!.accessOf(groupId, userId)
           if (a === null) return null
@@ -202,7 +228,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       // lane. report joins dm/cleanup/group here so opening a report room clears its report_chat bells.
       await clearConversationBellFor(notificationService, kind, id, userId)
     } catch (err) {
-      app.log.warn({ err, kind, id, userId }, "read: clear conversation notifications failed (suppressed)")
+      app.log.warn(
+        { err, kind, id, userId },
+        "read: clear conversation notifications failed (suppressed)",
+      )
     }
   }
 
@@ -261,7 +290,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           // Fail closed when the group repo is unwired (offline harness): a group mention/reply then
           // never bells, mirroring authorizeRoom's fail-closed stance for group frames.
           isChatGroupMember: async (groupId, userId) =>
-            (await getGroupsRepo()?.roleOf(groupId, userId) ?? null) !== null,
+            ((await getGroupsRepo()?.roleOf(groupId, userId)) ?? null) !== null,
           isBlockedEitherWay,
           presence,
           roomKeyFor,
@@ -277,11 +306,13 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           resolveChatMentions: makeChatMentionResolver({
             resolveTargets: (input) => resolveMentionTargets(container.getDb().sql, input),
             dmPeerOf,
-            listCleanupMemberIds: (cleanupId, cap) => getCleanupRepo().listMemberIds(cleanupId, cap),
+            listCleanupMemberIds: (cleanupId, cap) =>
+              getCleanupRepo().listMemberIds(cleanupId, cap),
             listReportChatMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
             // Empty when the group repo is unwired (offline harness): a group mention then resolves
             // to nothing rather than touching getDb().
-            listGroupMemberIds: (groupId) => getGroupsRepo()?.listMemberIds(groupId) ?? Promise.resolve([]),
+            listGroupMemberIds: (groupId) =>
+              getGroupsRepo()?.listMemberIds(groupId) ?? Promise.resolve([]),
           }),
           recordChatMentions: (messageId, mentionedUserIds) =>
             recordChatMentions(container.getDb().sql, messageId, mentionedUserIds),
@@ -290,7 +321,9 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   // P2 2.5 reply bell: pierces conversation mutes (chat-bells makeChatReplyNotifier owns the gates);
   // frame-handler fires it for group rooms and dedupes the mention bell for the same target.
-  const onChatReply: OnChatReply | undefined = bellDeps ? makeChatReplyNotifier(bellDeps) : undefined
+  const onChatReply: OnChatReply | undefined = bellDeps
+    ? makeChatReplyNotifier(bellDeps)
+    : undefined
 
   let reportRepo: ReturnType<typeof makeDrizzleDiscussionRepository> | undefined
   const getReportRepo = (): ReturnType<typeof makeDrizzleDiscussionRepository> =>
@@ -322,10 +355,15 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     notificationService && conversationMutes
       ? makeReportChatNotifier({
           notificationService,
-          reportChatRepo: { listMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId) },
+          reportChatRepo: {
+            listMemberIds: (reportId) => getReportChatRepo().listMemberIds(reportId),
+          },
           isMuted: (userId, roomId) => isMutedFor(userId, "report", roomId),
           presence,
           roomKeyFor,
+          // M11: the block gate the mention/reply bells already apply (chat-bells) — a blocked user
+          // must not reach their target's lock screen through a shared PUBLIC report room.
+          isBlockedEitherWay,
         })
       : undefined
 
@@ -340,6 +378,8 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           isMuted: (userId, roomId) => isMutedFor(userId, "group", roomId),
           presence,
           roomKeyFor,
+          // M11: same block gate as the report fan-out above.
+          isBlockedEitherWay,
         })
       : undefined
   const onGroupMessage: OnGroupMessage | undefined = notifyGroupChatMembers

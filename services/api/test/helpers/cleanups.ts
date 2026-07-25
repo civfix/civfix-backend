@@ -61,6 +61,13 @@ interface StoredMember {
   role: CleanupMemberRole
 }
 
+/** A stored ban row (cleanup_bans, M17): written by removeMember, checked by joinCleanupTx. */
+interface StoredBan {
+  cleanupId: string
+  userId: string
+  bannedByUserId: string
+}
+
 /** A stored user (the subset the organizer person join needs). */
 interface StoredUser {
   id: string
@@ -111,6 +118,8 @@ export function haversineMeters(a: NearPoint, b: NearPoint): number {
 export class InMemoryCleanupRepository implements CleanupRepository {
   readonly cleanups = new Map<string, StoredCleanup>()
   readonly members: StoredMember[] = []
+  /** cleanup_bans rows (M17), inspectable by tests. */
+  readonly bans: StoredBan[] = []
   readonly users = new Map<string, StoredUser>()
   /** Follow edges as "<followerId>:<followeeId>" so listAttendees can resolve isFollowing. */
   readonly follows = new Set<string>()
@@ -539,12 +548,33 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(true)
   }
 
-  removeMember(cleanupId: string, userId: string): Promise<{ removed: boolean; going: number }> {
+  // M17: removal writes a ban row in the SAME operation as the membership delete (the Drizzle impl
+  // does both in one transaction), which is what makes it stick against the self-service join.
+  removeMember(
+    cleanupId: string,
+    userId: string,
+    actorId: string,
+  ): Promise<{ removed: boolean; going: number }> {
     const idx = this.members.findIndex(
       (m) => m.cleanupId === cleanupId && m.userId === userId && m.role !== "organizer",
     )
-    if (idx >= 0) this.members.splice(idx, 1)
+    if (idx >= 0) {
+      this.members.splice(idx, 1)
+      if (!this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
+        this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
+      }
+    }
     return Promise.resolve({ removed: idx >= 0, going: this.memberCountOf(cleanupId) })
+  }
+
+  isBanned(cleanupId: string, userId: string): Promise<boolean> {
+    return Promise.resolve(this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId))
+  }
+
+  unbanMember(cleanupId: string, userId: string): Promise<boolean> {
+    const idx = this.bans.findIndex((b) => b.cleanupId === cleanupId && b.userId === userId)
+    if (idx >= 0) this.bans.splice(idx, 1)
+    return Promise.resolve(idx >= 0)
   }
 
   listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
@@ -565,12 +595,16 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? c.organizerUserId : null)
   }
 
-  joinCleanupTx(cleanupId: string, userId: string): Promise<boolean> {
-    if (!this.cleanups.has(cleanupId)) return Promise.resolve(false)
+  joinCleanupTx(cleanupId: string, userId: string): Promise<"joined" | "not_found" | "banned"> {
+    if (!this.cleanups.has(cleanupId)) return Promise.resolve("not_found")
+    // M17: a removed attendee cannot re-join themselves.
+    if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
+      return Promise.resolve("banned")
+    }
     if (!this.members.some((m) => m.cleanupId === cleanupId && m.userId === userId)) {
       this.members.push({ cleanupId, userId, role: "member" })
     }
-    return Promise.resolve(true)
+    return Promise.resolve("joined")
   }
 
   leaveCleanup(cleanupId: string, userId: string): Promise<boolean> {

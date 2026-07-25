@@ -29,6 +29,36 @@ export interface GroupChatNotifierDeps {
   /** Optional presence source; when absent no one is treated as present. */
   presence?: { online(roomKey: string): Promise<string[]> }
   roomKeyFor: (kind: "group", id: string) => string
+  /**
+   * SECURITY (M11): blocked-either-way check, the same gate chat-bells applies to the mention and reply
+   * bells. Without it this fan-out was a BLOCK BYPASS: a blocked user joins a public group their target
+   * is in and pushes a notification per message — their display name plus an 80-char preview of their
+   * text — to the target's lock screen at message-rate.
+   *
+   * REQUIRED, deliberately — see the twin note in report-chat-notifier.ts. The optional-with-fail-open
+   * default it started as was itself the source of a second bypass (the poll fan-out never passed it),
+   * so a caller with no blocks store must now spell that out (`() => Promise.resolve(false)`) rather
+   * than degrading silently by omission.
+   */
+  isBlockedEitherWay: (a: string, b: string) => Promise<boolean>
+}
+
+/**
+ * M11 gate: is this recipient blocked either way with the message's author? FAILS CLOSED — a lookup
+ * error suppresses the bell rather than delivering a push that may be from a blocked user (the twin of
+ * the report fan-out's helper).
+ */
+async function isBlocked(
+  deps: Pick<GroupChatNotifierDeps, "isBlockedEitherWay">,
+  actorId: string | null,
+  recipientId: string,
+): Promise<boolean> {
+  if (actorId === null) return false
+  try {
+    return await deps.isBlockedEitherWay(actorId, recipientId)
+  } catch {
+    return true
+  }
 }
 
 /**
@@ -72,6 +102,9 @@ export function makeGroupChatNotifier(
     const preview = textPreview(message)
 
     for (const recipientId of candidates) {
+      // M11: blocks first — a blocked pair must never bell each other, whatever their mute state.
+      if (await isBlocked(deps, actorId, recipientId)) continue
+
       // Per-recipient mute check (the report-fan-out stance: the mute store is keyed
       // (userId, roomKind, roomId); the batch `mutedRoomIdsFor` is one-user-many-rooms — wrong shape).
       let muted = false

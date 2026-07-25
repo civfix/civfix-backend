@@ -269,12 +269,18 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     return true
   }
 
-  async recordRoleAudit(id: string, input: { role: Role; actorId: string | null }): Promise<void> {
+  /** L5 mirror: the role write and its audit are one indivisible step (see the Drizzle impl's tx). */
+  async applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean> {
+    const r = this.users.get(id)
+    if (!r) return false
+    const priorRole = r.role
+    r.role = input.role
     this.audits.push({
       action: "user.role_changed",
       target: `user:${id}`,
-      meta: { role: input.role },
+      meta: { role: input.role, priorRole },
     })
+    return true
   }
 
   async setVerified(

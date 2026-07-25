@@ -21,7 +21,7 @@ import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
-import { idParam, parse } from "./_route-utils.js"
+import { httpUrlField, idParam, parse } from "./_route-utils.js"
 import {
   makeDiscoveryService,
   type DiscoveryRepository,
@@ -100,7 +100,8 @@ export async function registerAdminDiscoveryRoutes(
     await service().saveDraft(id, {
       contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
       defaultEmails: body.defaultEmails ?? [],
-      formUrl: body.formUrl ?? null,
+      // L7: reject javascript:/data: URIs the shared `.url()` schema lets through (see httpUrlField).
+      formUrl: httpUrlField(body.formUrl, "formUrl"),
       actorId: request.auth.userId,
     })
     const payload: AdminOkResponse = { ok: true }

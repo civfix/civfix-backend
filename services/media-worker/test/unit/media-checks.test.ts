@@ -614,7 +614,7 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     return { deps, storage, repo }
   }
 
-  it("a clean JPEG -> READY (benign NSFW default), real phash set, thumbnail written", async () => {
+  it("M9: a clean JPEG -> READY but FLAGGED (no NSFW model configured = no verdict, not an all-clear)", async () => {
     const { deps, storage, repo } = realDeps()
     const input = await fx.makeValidJpegWithGps()
     const id = `media-real-1`
@@ -630,10 +630,15 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     expect(row.status).toBe("ready")
     expect((row.phash as string)).toMatch(/^[0-9a-f]{16}$/)
     expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)
-    expect(repo.flags).toHaveLength(0)
+    // M9: the NSFW gate was INERT in production — no model is vendored, USE_REAL_NSFW defaults false,
+    // so nsfwScore always returned 0 and every unauthenticated upload auto-published with the entire
+    // held/review branch dead. A missing scorer now raises the flag so the moderation queue actually
+    // receives the asset; MEDIA_UNSCORED_POLICY=hold makes it fail fully closed.
+    expect(repo.flags).toHaveLength(1)
+    expect(repo.flags[0]).toMatchObject({ subjectId: id, reason: "nsfw" })
   })
 
-  it("a clean PNG -> READY with no abuse flags", async () => {
+  it("M9: a clean PNG -> READY, flagged for review while no NSFW model is configured", async () => {
     const { deps, storage, repo } = realDeps()
     const input = await fx.makeValidPng()
     const id = `media-real-2`
@@ -645,7 +650,27 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
     expect(status).toBe("ready")
     expect(repo.get(id)!.status).toBe("ready")
-    expect(repo.flags).toHaveLength(0)
+    expect(repo.flags).toHaveLength(1)
+    expect(repo.flags[0]).toMatchObject({ subjectId: id, reason: "nsfw" })
+  })
+
+  it("M9: MEDIA_UNSCORED_POLICY=hold fails CLOSED — an unscored asset is HELD, not published", async () => {
+    const { deps, storage, repo } = realDeps()
+    const holdDeps: MediaChecksDeps = {
+      ...deps,
+      limits: { ...limits, nsfwUnscoredPolicy: "hold" },
+    }
+    const input = await fx.makeValidPng()
+    const id = `media-real-hold`
+    const uploadId = `up-real-hold`
+    const r2Key = `uploads/2026/06/${id}`
+    repo.seed({ id, uploadId, kind: "image", r2Key })
+    await storage.put(r2Key, Buffer.from(input), { contentType: "image/png" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, holdDeps)
+    expect(status).toBe("held")
+    expect(repo.get(id)!.status).toBe("held")
+    expect(repo.flags[0]).toMatchObject({ subjectId: id, reason: "nsfw" })
   })
 
   it("a real NSFW POSITIVE (model returns high) -> HELD + abuse_flag nsfw", async () => {

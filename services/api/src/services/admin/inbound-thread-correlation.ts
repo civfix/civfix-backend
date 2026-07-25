@@ -8,6 +8,7 @@ import type { AdminReportRepository } from "./admin-report-service.js"
 import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
+import { domainOf, domainsAligned } from "../../adapters/inbound-mail.cf.js"
 
 export async function findThreadByReferences(
   mailRepo: MailRepository,
@@ -43,6 +44,41 @@ export function parseMessageIdList(value: string | undefined): string[] {
   return out
 }
 
+/**
+ * SENDER GATE (M7). True when `mail.from` is domain-aligned with an address WE actually mailed on this
+ * thread — i.e. the jurisdiction contact. The thread carries no contact column, so the authority is the
+ * thread's own OUTBOUND messages: their `to` addresses are, by construction, the contacts civfix chose.
+ *
+ * A reply from any other domain is NOT a jurisdiction reply, no matter how it was threaded. Without this
+ * check a forged message routed into a thread flipped the report to in_progress, published the sender's
+ * text into the PUBLIC report chat as an official city reply, and pushed "Your report got a response"
+ * to the reporter.
+ *
+ * FAIL CLOSED: a thread whose outbound recipients cannot be read (no outbound message yet, or a lookup
+ * failure) yields `false` — the message is still filed, it just fires no side effects.
+ */
+export async function isJurisdictionSender(
+  mailRepo: MailRepository,
+  threadId: string,
+  mail: ParsedMail,
+): Promise<boolean> {
+  const fromDomain = domainOf(mail.from?.address ?? null)
+  if (fromDomain === null) return false
+  let dto: Awaited<ReturnType<MailRepository["getThread"]>>
+  try {
+    dto = await mailRepo.getThread(threadId)
+  } catch {
+    return false
+  }
+  if (!dto) return false
+  for (const message of dto.messages) {
+    if (message.dir !== "out") continue
+    const contactDomain = domainOf(message.to)
+    if (contactDomain !== null && domainsAligned(fromDomain, contactDomain)) return true
+  }
+  return false
+}
+
 export async function onJurisdictionReply(
   container: Container,
   injectedReportRepo: AdminReportRepository | undefined,
@@ -52,6 +88,15 @@ export async function onJurisdictionReply(
 ): Promise<void> {
   const reportId = thread.reportId
   if (reportId === null) return
+
+  // M7: everything below this line is an OFFICIAL-CITY-REPLY effect — a public status transition, a
+  // public chat post attributed to the city, and a push to the reporter. Gate all of it on the sender
+  // actually being the jurisdiction contact. A mismatch is Inbox-only: the message is already persisted
+  // on the thread by the caller (routeThreaded), it simply drives no side effects.
+  if (!(await isJurisdictionSender(mailRepo, thread.id, mail))) {
+    return
+  }
+
   const reportRepo = injectedReportRepo ?? makeDrizzleAdminReportRepository(container.getDb().sql)
   const record = await reportRepo.getReport(reportId)
   if (!record) return

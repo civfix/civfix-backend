@@ -36,9 +36,12 @@ import {
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
 import type { CleanupRepository } from "../cleanup-service.js"
+import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
+import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 
 // Re-export the split modules' public surface so external importers (tests) resolve via this barrel.
 export { detectBounce, resolveMessageId, parseMessageIdList, type BounceDetection }
+export { readMailAuthVerdict, sanitizeInboundHtml, type MailAuthVerdict }
 
 /** Prefix the Cloudflare Email Worker writes raw .eml objects under (the sweep's work queue). */
 export const INBOUND_PENDING_PREFIX = "inbound/pending/"
@@ -131,6 +134,21 @@ export async function processInboundObject(
     return result
   }
 
+  // MESSAGE AUTHENTICATION GATE (M7). Anything that is not DMARC-aligned never reaches the THREADED
+  // path — it is filed in the Inbox, flagged UNVERIFIED, and fires no side effects. Threading is what
+  // grants a message authority (report status transitions, a public "official city reply" in the report
+  // chat, a push to the reporter), so an unauthenticated message must never be able to reach it, even
+  // when it presents a valid thread token or a matching In-Reply-To.
+  //
+  // FAIL CLOSED on `unknown`: an absent Authentication-Results header means our MTA did not stamp a
+  // verdict, which we cannot distinguish from an attacker-supplied message that bypassed it.
+  const authVerdict = readMailAuthVerdict(mail)
+  if (authVerdict !== "pass") {
+    const result = await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
+    if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
+    return result
+  }
+
   let token: string | null = null
   try {
     token = inboundMail.extractThreadToken(mail)
@@ -218,13 +236,20 @@ async function routeThreaded(
   return { outcome: "threaded", id: message.id }
 }
 
-/** Catch-all path: insert into inbound_emails (admin Inbox). Idempotent on the UNIQUE message_id. */
+/**
+ * Catch-all path: insert into inbound_emails (admin Inbox). Idempotent on the UNIQUE message_id.
+ *
+ * `authVerdict` is stamped into the stored headers as `x-civfix-auth-verdict` (M7) so the operator
+ * console can render an explicit UNVERIFIED badge. This is the ONLY landing place for a message that
+ * failed the authentication gate — it is never threaded and never drives a side effect.
+ */
 async function routeInbox(
   storage: Storage,
   inboundRepo: InboundRepository,
   key: string,
   mail: ParsedMail,
   messageId: string,
+  authVerdict: MailAuthVerdict = "pass",
 ): Promise<ProcessResult> {
   // Attachment folder = the worker's key slug (already object-key-safe), so it is stable across replays.
   const folder = key.startsWith(INBOUND_PENDING_PREFIX)
@@ -244,11 +269,19 @@ async function routeInbox(
     recipient,
     subject: mail.subject ?? null,
     bodyText: mail.text ?? null,
-    // SECURITY: bodyHtml is UNTRUSTED raw HTML from an external (often spoofed) sender. It is stored
-    // verbatim and MUST NOT be rendered with dangerouslySetInnerHTML in the admin reader without
-    // sanitization (DOMPurify) — prefer rendering bodyText. Treat this column as attacker-controlled.
-    bodyHtml: mail.html ?? null,
-    headers: mail.headers,
+    // M6: bodyHtml is UNTRUSTED raw HTML from an external (often spoofed) sender. It used to be stored
+    // verbatim with only a comment asking the client not to render it — delegating the entire XSS
+    // control to an unenforced convention, on a console whose CSRF cookie is JS-readable (so console
+    // XSS is a complete authz bypass). It is now sanitized SERVER-SIDE, before persistence, with a
+    // strict allowlist (see sanitizeInboundHtml). Nothing downstream has to remember anything.
+    bodyHtml: sanitizeInboundHtml(mail.html),
+    headers: {
+      ...mail.headers,
+      // Operator-visible authentication verdict (M7). Stamped under an x-civfix- name so it cannot be
+      // confused with, or spoofed by, a sender-supplied header: the spread order puts it LAST, so an
+      // attacker who sets `X-Civfix-Auth-Verdict: pass` on their own message is overwritten here.
+      "x-civfix-auth-verdict": authVerdict,
+    },
     attachments,
   })
   return { outcome: inserted ? "inbox" : "replay", id }

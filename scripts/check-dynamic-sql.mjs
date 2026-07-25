@@ -6,6 +6,10 @@ const ROOTS = ["services/api/src", "services/media-worker/src"]
 const ALLOW_UNSAFE = new Set([
   "services/api/src/db/migrate.ts",
   "services/api/src/db/backfill-jurisdictions-core.ts",
+  // Same reviewed shape as the jurisdictions backfill above: `ORDER BY ${sql.unsafe(...)}` over the
+  // JURISDICTION_LAYER_RANK_CASE module constant in db/sql/jurisdiction.ts. No request data reaches it,
+  // and it is an offline CLI, not a served route.
+  "services/api/src/db/backfill-reference-codes-core.ts",
   "services/api/src/db/sql/jurisdiction.ts",
   "services/api/src/services/media-worker-repo.ts",
 ])

@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { makeDb } from "../../src/db/client.js"
+import { makeDb, sslOptionForUrl } from "../../src/db/client.js"
 
 /** Minimal view of the postgres.js internal we assert on (its public type does not expose `options`). */
 type WithSerializers = { options: { serializers: Record<number, (v: unknown) => unknown> } }
@@ -43,5 +43,50 @@ describe("makeDb: the raw sql client keeps postgres.js Date serializers (drizzle
 
   it("close() resolves without ever opening a connection (makeDb is lazy)", async () => {
     await expect(handle.close()).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * M15: postgres.js defaults `ssl` to false, so an unconfigured production link would ship credentials and
+ * every row in cleartext. makeDb resolves the connection string's sslmode into an EXPLICIT ssl option and
+ * applies it to both clients. loadEnv separately refuses to boot production without a TLS sslmode; this
+ * locks the mapping that turns that promise into an actual TLS handshake.
+ */
+describe("makeDb: TLS is derived from sslmode and set explicitly on both clients", () => {
+  it.each([
+    ["postgres://u:p@h:5432/db?sslmode=require", "require"],
+    ["postgres://u:p@h:5432/db?sslmode=verify-full", "verify-full"],
+    ["postgres://u:p@h:5432/db?sslmode=VERIFY-FULL", "verify-full"],
+  ])("maps %s to %s", (url, expected) => {
+    expect(sslOptionForUrl(url)).toBe(expected)
+  })
+
+  it("maps verify-ca to an equivalent, CA-verifying tls option", () => {
+    expect(sslOptionForUrl("postgres://u:p@h:5432/db?sslmode=verify-ca")).toEqual({
+      rejectUnauthorized: true,
+    })
+  })
+
+  it.each([
+    "postgres://u:p@h:5432/db",
+    "postgres://u:p@h:5432/db?sslmode=disable",
+    "postgres://u:p@h:5432/db?sslmode=prefer",
+    "not a url at all",
+  ])("leaves %s plaintext (local dev / testcontainers)", (url) => {
+    expect(sslOptionForUrl(url)).toBe(false)
+  })
+
+  it("applies the resolved ssl option to the raw AND the drizzle client", async () => {
+    const handle = makeDb("postgres://u:p@localhost:5432/civfix?sslmode=require")
+    type WithSsl = { options: { ssl: unknown } }
+    expect((handle.sql as unknown as WithSsl).options.ssl).toBe("require")
+    await handle.close()
+  })
+
+  it("honors an explicit ssl override", async () => {
+    const handle = makeDb("postgres://u:p@localhost:5432/civfix", { ssl: "verify-full" })
+    type WithSsl = { options: { ssl: unknown } }
+    expect((handle.sql as unknown as WithSsl).options.ssl).toBe("verify-full")
+    await handle.close()
   })
 })

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
+import { sha256Hex } from "../../src/auth/crypto.js"
 import { makeWsTicketStore, WS_TICKET_TTL_SECONDS } from "../../src/auth/ws-ticket.js"
 
 describe("makeWsTicketStore", () => {
@@ -29,11 +30,26 @@ describe("makeWsTicketStore", () => {
     expect(await store.redeem(ticket)).toBeNull()
   })
 
-  it("does not leak the user id under the raw ticket key", async () => {
+  it("stores the ticket HASHED, never the raw ticket (M2)", async () => {
     const cache = new InMemoryCacheClient()
     const store = makeWsTicketStore(cache)
     const { ticket } = await store.mint("user-3")
+    // Neither the bare ticket nor the prefixed RAW ticket is a key: a cache dump yields no usable
+    // credential, exactly as for session tokens.
     expect(await cache.get(ticket)).toBeNull()
-    expect(await cache.get(`wsticket:${ticket}`)).toBe("user-3")
+    expect(await cache.get(`wsticket:${ticket}`)).toBeNull()
+    expect(await cache.get(`wsticket:${await sha256Hex(ticket)}`)).toBe("user-3")
+  })
+
+  it("M2: N CONCURRENT redemptions of one ticket authenticate exactly ONE connection", async () => {
+    const cache = new InMemoryCacheClient()
+    const store = makeWsTicketStore(cache)
+    const { ticket } = await store.mint("user-4")
+
+    // The old get-then-del was a TOCTOU: every racer read the user id before any delete landed, so one
+    // ticket opened N sockets. With an atomic claim exactly one caller may win.
+    const results = await Promise.all(Array.from({ length: 12 }, () => store.redeem(ticket)))
+    expect(results.filter((r) => r === "user-4")).toHaveLength(1)
+    expect(results.filter((r) => r === null)).toHaveLength(11)
   })
 })

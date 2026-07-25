@@ -463,3 +463,113 @@ describe("admin reports mutations", () => {
     ).rejects.toMatchObject({ httpStatus: 422 })
   })
 })
+
+/**
+ * M5: POST /admin/reports/:id/route emails a FULL report packet — the reporter's display name, the exact
+ * lat/lng, the street address, presigned photo URLs and the raw JPEGs — off-platform. Three controls:
+ *   (a) the report.routed audit is written INSIDE the outbound message insert's transaction, so a packet
+ *       can never be sent without an audit row (it used to be written afterwards, best-effort, with the
+ *       failure caught and downgraded to a log warning);
+ *   (b) contactEmailOverride is constrained to the jurisdiction's OWN mail domain (it used to accept any
+ *       address that merely parsed as an email — a one-request exfiltration channel);
+ *   (c) a per-operator rate limit at the route (asserted at the HTTP layer, not here).
+ */
+describe("M5: routeToJurisdiction destination + audit", () => {
+  function seedRoutable(h: Harness): void {
+    h.repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      category: "hazard",
+      place: "Los Angeles",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+  }
+
+  it("writes the report.routed audit IN-TX with the outbound message insert", async () => {
+    const h = harness()
+    seedRoutable(h)
+    const { threadId, routedTo } = await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    expect(routedTo).toBe("311@lacity.gov")
+    // The audit rode through MailRepository.insertMessage's `audit` param (the same seam the other mail
+    // paths use), so it is recorded by the mail repo, not by a separate best-effort write.
+    expect(h.mailRepo.audits.at(-1)).toMatchObject({
+      actorId: "op-1",
+      action: "report.routed",
+      target: "report:rep-1",
+      meta: { threadId, to: "311@lacity.gov", override: false },
+    })
+  })
+
+  it("ACCEPTS an override on the jurisdiction's own domain (the real workflow: a different mailbox)", async () => {
+    const h = harness()
+    seedRoutable(h)
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: "Streets@LACity.gov",
+      note: null,
+      actorId: "op-1",
+    })
+    expect(routedTo).toBe("Streets@LACity.gov")
+    expect(h.mailer.sent.some((m) => m.to === "Streets@LACity.gov")).toBe(true)
+    expect(h.mailRepo.audits.at(-1)).toMatchObject({ meta: { override: true } })
+  })
+
+  it("REFUSES an override on a foreign domain, and sends NOTHING", async () => {
+    const h = harness()
+    seedRoutable(h)
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", {
+        contactEmailOverride: "attacker@evil.example",
+        note: null,
+        actorId: "op-1",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422 })
+    expect(h.mailer.sent).toHaveLength(0)
+    expect(h.mailRepo.audits).toHaveLength(0)
+  })
+
+  it("REFUSES a lookalike domain that merely ENDS WITH the jurisdiction's (evil-lacity.gov)", async () => {
+    const h = harness()
+    seedRoutable(h)
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", {
+        contactEmailOverride: "x@evil-lacity.gov",
+        note: null,
+        actorId: "op-1",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422 })
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("REFUSES any override when the jurisdiction has NO contact on file (nothing to verify against)", async () => {
+    const h = harness()
+    h.repo.seedReport({
+      id: "rep-2",
+      status: "submitted",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: null,
+        routed: false,
+      },
+    })
+    await expect(
+      h.svc.routeToJurisdiction("rep-2", {
+        contactEmailOverride: "somebody@lacity.gov",
+        note: null,
+        actorId: "op-1",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422 })
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+})

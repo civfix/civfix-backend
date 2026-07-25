@@ -6,12 +6,22 @@
  *   GET /readyz   readiness: pings DB and Redis when they are wired (real seams). In all-fakes mode
  *                 there is nothing to check, so each check reports "skipped" and the overall status
  *                 is 200. If a real handle exists but its ping fails, returns 503.
+ *
+ * L19 hardening. Both probes are unauthenticated, so both are attack surface:
+ *   - /readyz is no longer exempt from rate limiting (see plugins/rate-limit.ts) AND its result is memoized
+ *     for READY_CACHE_MS. It does real I/O — `select 1` against a 10-connection pool plus a Redis PING —
+ *     so an uncapped, uncached probe was a cheap amplifier: one HTTP request per DB round-trip. The cache
+ *     keeps the probe honest for an orchestrator polling every few seconds while flattening a flood into
+ *     at most one backend check per window.
+ *   - /healthz no longer discloses the build version. Liveness needs `{ok:true}`; publishing the exact
+ *     running version to anonymous callers only helps someone match us against a CVE list. The version is
+ *     still available to operators via the authenticated admin system-health surface.
  */
 
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { route } from "../versioning/route.js"
-import { SERVICE_NAME, SERVICE_VERSION } from "../version.js"
+import { SERVICE_NAME } from "../version.js"
 
 type CheckStatus = "ok" | "skipped" | "down"
 
@@ -23,15 +33,38 @@ interface ReadyBody {
   }
 }
 
+/** How long a readiness verdict is reused before the backends are probed again. */
+export const READY_CACHE_MS = 5_000
+
 export async function registerHealthRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
   route(app, "health", async () => {
-    return { ok: true, service: SERVICE_NAME, version: SERVICE_VERSION }
+    return { ok: true, service: SERVICE_NAME }
   })
 
-  app.get("/readyz", async (_request, reply) => {
+  // Memoized readiness verdict (L19). Concurrent hits share the SAME in-flight probe promise, so a burst
+  // of N requests costs one `select 1` + one PING, not N of each.
+  let cached: { at: number; body: ReadyBody } | undefined
+  let inFlight: Promise<ReadyBody> | undefined
+
+  async function readiness(): Promise<ReadyBody> {
+    const now = Date.now()
+    if (cached && now - cached.at < READY_CACHE_MS) return cached.body
+    if (inFlight) return inFlight
+    inFlight = probe()
+      .then((body) => {
+        cached = { at: Date.now(), body }
+        return body
+      })
+      .finally(() => {
+        inFlight = undefined
+      })
+    return inFlight
+  }
+
+  async function probe(): Promise<ReadyBody> {
     // Probe a backend only when a real consumer would have created its handle, OR one already exists
     // (handles are lazy, so an existing handle is the unambiguous "real" signal). The env-flag fallback
     // mirrors di.ts's real-vs-fake wiring; when di.ts grows a `container.usesRealDb`, prefer that to
@@ -71,6 +104,11 @@ export async function registerHealthRoutes(
       }
     }
 
+    return body
+  }
+
+  app.get("/readyz", async (_request, reply) => {
+    const body = await readiness()
     reply.status(body.ok ? 200 : 503).send(body)
   })
 }

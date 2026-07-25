@@ -187,6 +187,11 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
               SET report_id = ${args.reportId}
               WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
+                -- L18: see the same guard on the authenticated create path. An asset already bound to a post
+                -- or a chat/DM message is never re-bindable to a report, so an uploadId cannot be used to
+                -- cross-publish private media into a public report gallery.
+                AND post_id IS NULL AND chat_message_id IS NULL
+                AND status IN ('ready', 'validating')
             `
           }
 

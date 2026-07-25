@@ -84,7 +84,7 @@ describe.skipIf(!pg)(
       h = pg as PgHarness
       repo = makeDrizzleGovClaimsRepository(h.sql)
       const users = provisionerFromUserStore(new PgAuthStores(h.db).users)
-      svc = makeGovClaimsService({ repo, users })
+      svc = makeGovClaimsService({ repo, users, revokeSessions: () => Promise.resolve(0) })
     })
 
     beforeEach(async () => {

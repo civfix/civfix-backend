@@ -36,6 +36,30 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const hoursByRow = args.entries.map((e) => e.hours)
       return sql.begin(async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
+
+        // M21 (history): the upsert below overwrites `hours` in place and overwrites
+        // `logged_by_user_id` with it, so before this there was NO record that a value had ever been
+        // different — a host could inflate a credit and later restore it invisibly, against a number
+        // that feeds the PUBLIC jurisdiction leaderboard. Snapshot the pre-image INSIDE the
+        // advisory-locked transaction (so it is exactly what the upsert is about to replace) and append
+        // an immutable journal row per credited attendee. NULL previous_hours = no prior credit, which
+        // is deliberately distinct from a stored 0.
+        //
+        // This runs BEFORE the upsert and in the SAME transaction: an audit row written afterwards
+        // could be lost to a crash while the mutation committed, which is the one ordering that must
+        // never happen for a journal.
+        await tx`
+          INSERT INTO volunteer_hours_audit
+            (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
+          SELECT
+            ${args.cleanupId}, t.u, ${args.actorId}, prev.hours, t.h
+          FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
+          LEFT JOIN volunteer_hours prev
+            ON prev.cleanup_id = ${args.cleanupId}
+           AND prev.source = 'event'
+           AND prev.user_id = t.u
+        `
+
         if (args.geoid === null) {
           const upserted = await tx<{ user_id: string }[]>`
             INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)

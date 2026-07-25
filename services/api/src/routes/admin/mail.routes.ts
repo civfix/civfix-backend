@@ -24,6 +24,8 @@ import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
+import { auditRead } from "./_audit-read.js"
+import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeMailService,
   type MailService,
@@ -99,9 +101,15 @@ export async function registerAdminMailRoutes(
     reply.status(200).send(payload)
   })
 
+  // L4: a per-subject read — the full correspondence of one thread. Audited (best-effort) so reading a
+  // citizen<->city conversation is attributable, like every write on this router already is.
   route(app, "getMailThread", async (request, reply) => {
     const { id } = idParam(request)
     const payload: MailThreadDTO = await service().getThread(id)
+    await auditRead(request, container, requireOperator(request), {
+      action: "mail.thread_viewed",
+      target: `mail:${id}`,
+    })
     reply.status(200).send(payload)
   })
 

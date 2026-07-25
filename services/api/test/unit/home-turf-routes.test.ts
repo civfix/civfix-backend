@@ -8,6 +8,8 @@ import { loadEnv } from "../../src/env.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import {
   enforceHomeTurfIpCap,
+  enforceHomeTurfRecipientCap,
+  HOME_TURF_EMAIL_LIMIT_PER_DAY,
   HOME_TURF_IP_LIMIT_PER_HOUR,
   HOME_TURF_RATE_LIMIT,
 } from "../../src/routes/forms.routes.js"
@@ -100,22 +102,26 @@ describe("POST /forms/home-turf", () => {
     expect(notify.html).toContain("&lt;after 4pm&gt;")
     expect(notify.html).not.toContain("<after 4pm>")
 
-    // (2) The confirmation: a receipt to the submitter — fixed copy around the same field table the
-    // coordinator gets, with every user value HTML-escaped.
+    // (2) The confirmation: FIXED COPY ONLY (M8). The recipient comes from the request body, so any
+    // request-derived CONTENT would make this endpoint a phishing amplifier that sends attacker-written
+    // prose from civfix's own DKIM-signed domain. Nothing submitted is echoed back.
     const confirm = sent[1]!
     expect(confirm.from).toBe("donotreply@civfix.org")
     expect(confirm.to).toBe("coach@example.org")
     expect(confirm.subject).toBe("We got your Home Turf sign-up")
-    expect(confirm.text).toContain("Alex Rivera")
-    expect(confirm.text).toContain("Lincoln High School")
     expect(confirm.text).toContain("roman@reachoutla.org")
     expect(confirm.text).toContain("The civfix team")
-    for (const value of ["Head Coach", "Los Angeles", "18", "+1 213 555 0100"]) {
-      expect(confirm.text).toContain(value)
+    for (const value of [
+      "Alex Rivera",
+      "Head Coach",
+      "Lincoln High School",
+      "Los Angeles",
+      "+1 213 555 0100",
+      "We practice Tuesdays & Thursdays <after 4pm>.",
+    ]) {
+      expect(confirm.text).not.toContain(value)
+      expect(confirm.html).not.toContain(value)
     }
-    expect(confirm.text).toContain("We practice Tuesdays & Thursdays <after 4pm>.")
-    expect(confirm.html).toContain("&lt;after 4pm&gt;")
-    expect(confirm.html).not.toContain("<after 4pm>")
   })
 
   it("rejects a failed Turnstile with 403 TURNSTILE_FAILED and sends nothing", async () => {
@@ -245,5 +251,44 @@ describe("enforceHomeTurfIpCap", () => {
     })
     // A different IP still has its own budget.
     await expect(enforceHomeTurfIpCap("198.51.100.8", counters)).resolves.toBeUndefined()
+  })
+})
+
+describe("enforceHomeTurfRecipientCap (M8)", () => {
+  it(`allows ${HOME_TURF_EMAIL_LIMIT_PER_DAY} confirmation per address per day and 429s the next`, async () => {
+    const counters = new InMemoryCounterStore(() => 0)
+    for (let i = 0; i < HOME_TURF_EMAIL_LIMIT_PER_DAY; i++) {
+      await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).resolves.toBeUndefined()
+    }
+    // The per-IP cap does not protect the VICTIM (the attacker rotates IPs); this bucket does, because
+    // it is keyed on the recipient address alone.
+    await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+    await expect(enforceHomeTurfRecipientCap("someone-else@example.org", counters)).resolves.toBeUndefined()
+  })
+
+  it("normalizes case and surrounding whitespace so the bucket cannot be trivially varied", async () => {
+    const counters = new InMemoryCounterStore(() => 0)
+    await enforceHomeTurfRecipientCap("Victim@Example.org", counters)
+    await expect(enforceHomeTurfRecipientCap("  victim@example.ORG ", counters)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+  })
+})
+
+describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
+  it("refuses to send when no counter store is available (empty REDIS_URL, no override)", async () => {
+    const env = loadEnv({ NODE_ENV: "test" })
+    const container = buildContainer(env)
+    // No homeTurfOverrides.counters and no REDIS_URL: the caps used to be SILENTLY SKIPPED here,
+    // leaving a public DKIM-signed-mail endpoint with no per-IP or per-recipient bound at all.
+    const app = await buildServer({ env, container })
+    current = { app, mailer: container.mailer as FakeMailer }
+
+    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+
+    expect(res.statusCode).toBeGreaterThanOrEqual(500)
+    expect(outbounds(container.mailer as FakeMailer)).toHaveLength(0)
   })
 })

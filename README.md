@@ -277,17 +277,26 @@ the relevant flag off (e.g. `USE_FAKE_CHAT=0`).
 ## Reviewer-OTP bypass (App Review)
 
 So App Store / Play reviewers can sign in to a build that is already in review (no new mobile release),
-the OTP flow has a fixed-credential bypass:
+the OTP flow can accept one operator-supplied secret code for the address `reviewer@civfix.org`.
 
-- email `reviewer@civfix.org`, code `000000`
-- requesting a code for that email sends **no** email and stores nothing; verifying with `000000`
-  signs in and, on first use, creates a fully set-up citizen account (handle `@reviewer`, name
-  "Reviewer Reviewer", `email_verified`, `profile_complete`). The fixed code only works for this exact
-  email, and this email never accepts a mailed code.
+**There is no built-in code.** The code lives only in the deployment's environment, is never committed,
+and is per-review and rotated. Both of these must be true or the bypass is not wired at all:
 
-Paste those credentials into the App Review notes. The bypass is **ON by default**; set
-`REVIEWER_OTP_BYPASS=false` (then redeploy/restart) to disable it — the email then behaves like any
-other. `@reviewer` is on the reserved-handle blocklist so no real user can take it.
+| Variable | Meaning |
+| --- | --- |
+| `REVIEWER_OTP_BYPASS` | must be **exactly** `true` (default: off) |
+| `REVIEWER_OTP_CODE` | the secret code, **at least 20 characters**; shorter/missing ⇒ bypass disabled |
+
+Generate one per review, e.g. `openssl rand -base64 24`, set both variables in the deployment's sops
+env, restart, and paste the address + that code into the App Review notes. Remove `REVIEWER_OTP_CODE`
+(or set `REVIEWER_OTP_BYPASS=false`) once review is done.
+
+Behaviour when wired: requesting a code for that address sends **no** email and stores nothing;
+verifying with the configured code signs in and, on first use, creates a fully set-up citizen account
+(handle `@reviewer`, name "Reviewer Reviewer", `email_verified`, `profile_complete`). The code only
+works for this exact address, that address never accepts a mailed code, and a wrong guess spends the
+same per-IP verify throttle as any other failed sign-in. `@reviewer` is on the reserved-handle
+blocklist so no real user can take it.
 
 ## Phase-1 acceptance
 

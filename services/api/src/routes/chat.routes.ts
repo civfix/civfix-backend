@@ -89,6 +89,13 @@ const ThreadMessageParamsSchema = z.object({ cleanupId: IdSchema, messageId: IdS
 
 const CHAT_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
+/**
+ * L11: deleting messages is a state change with a broadcast attached and had NO route limit at all
+ * (only the global 300/min/IP). 30/min is well above any human moderation session while bounding a
+ * scripted delete sweep — the same order of magnitude as the reaction limit above.
+ */
+const CHAT_DELETE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+
 export async function registerChatRoutes(app: FastifyInstance, container: Container): Promise<void> {
   await app.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 } })
 
@@ -164,30 +171,37 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
 
   const resolveChatPowers = wireChatPowers(app, container)
 
-  route(app, "deleteCleanupMessage", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { cleanupId, messageId } = parse(ThreadMessageParamsSchema, request.params)
-    if (!(await wiring.isMember(cleanupId, userId))) {
-      throw AppError.forbidden("You can't delete this message.")
-    }
-    // Sender self-delete first (the common path — no role lookups). When the sender-gated UPDATE
-    // matches nothing, consult the chat-powers resolver (P3 Task 3.5): a cleanup ORGANIZER may delete
-    // other members' messages (bypassing the sender gate; system rows stay untouchable in the repo).
-    let tombstone: ChatMessageDTO | null = await wiring.getChatRepo().softDelete(cleanupId, messageId, userId)
-    if (tombstone === null) {
-      const powers = await resolveChatPowers({ roomKind: "cleanup", roomId: cleanupId, userId })
-      if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
-      tombstone = await wiring
+  route(
+    app,
+    "deleteCleanupMessage",
+    { preHandler: csrfProtect, config: { rateLimit: CHAT_DELETE_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { cleanupId, messageId } = parse(ThreadMessageParamsSchema, request.params)
+      if (!(await wiring.isMember(cleanupId, userId))) {
+        throw AppError.forbidden("You can't delete this message.")
+      }
+      // Sender self-delete first (the common path — no role lookups). When the sender-gated UPDATE
+      // matches nothing, consult the chat-powers resolver (P3 Task 3.5): a cleanup ORGANIZER may delete
+      // other members' messages (bypassing the sender gate; system rows stay untouchable in the repo).
+      let tombstone: ChatMessageDTO | null = await wiring
         .getChatRepo()
-        .softDelete(cleanupId, messageId, userId, { bypassSenderGate: true })
-    }
-    if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
-    void Promise.resolve(
-      container.chatService.broadcast(roomKeyFor("cleanup", cleanupId), tombstone),
-    ).catch(() => {})
-    // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
-    // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
-    broadcastMessageUpdate(container.chatService, "cleanup", cleanupId, tombstone)
-    reply.status(200).send(tombstone)
-  })
+        .softDelete(cleanupId, messageId, userId)
+      if (tombstone === null) {
+        const powers = await resolveChatPowers({ roomKind: "cleanup", roomId: cleanupId, userId })
+        if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
+        tombstone = await wiring
+          .getChatRepo()
+          .softDelete(cleanupId, messageId, userId, { bypassSenderGate: true })
+      }
+      if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
+      void Promise.resolve(
+        container.chatService.broadcast(roomKeyFor("cleanup", cleanupId), tombstone),
+      ).catch(() => {})
+      // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
+      // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
+      broadcastMessageUpdate(container.chatService, "cleanup", cleanupId, tombstone)
+      reply.status(200).send(tombstone)
+    },
+  )
 }

@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vitest"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemorySessionStore } from "../../src/auth/stores.js"
-import { SessionService, DEFAULT_SESSION_TTL_SECONDS } from "../../src/auth/session-service.js"
+import {
+  SessionService,
+  DEFAULT_SESSION_TTL_SECONDS,
+  ABSOLUTE_SESSION_MAX_SECONDS,
+} from "../../src/auth/session-service.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 
 const USER = "11111111-1111-1111-1111-111111111111"
@@ -288,5 +292,97 @@ describe("SessionService banned-account control (H2)", () => {
     const cacheExpiry = cache.expiryOf(`sess:${hash}`)
     expect(cacheExpiry).not.toBeNull()
     expect(cacheExpiry!).toBeLessThanOrEqual(originalExpiry)
+  })
+})
+
+describe("SessionService absolute lifetime (M3)", () => {
+  const DAY = 24 * 60 * 60 * 1000
+
+  /** Keep a session alive by resolving it every `stepDays`, and report how long it stayed valid. */
+  async function keepAlive(
+    svc: ReturnType<typeof makeService>,
+    stepDays: number,
+    maxDays: number,
+  ): Promise<{ token: string; aliveDays: number }> {
+    const token = await svc.service.createSession(USER, ["citizen"])
+    let day = 0
+    for (; day < maxDays; day += stepDays) {
+      svc.advance(stepDays * DAY)
+      if ((await svc.service.resolveSession(token)) === null) break
+    }
+    return { token, aliveDays: day }
+  }
+
+  it("a token used every 10 days STOPS working at the 90-day ceiling (it used to live forever)", async () => {
+    const svc = makeService()
+    // Sliding expiry alone is self-perpetuating: regular use renewed the session indefinitely, so a
+    // stolen token was a permanent credential. The ceiling ends it — near 90 days, not at 400.
+    const { aliveDays } = await keepAlive(svc, 10, 400)
+    expect(aliveDays).toBeGreaterThanOrEqual(80)
+    expect(aliveDays).toBeLessThanOrEqual(100)
+  })
+
+  it("refuses to extend past createdAt + ABSOLUTE_MAX, and the row is deleted once past it", async () => {
+    const svc = makeService()
+    const { service, store, cache, advance } = svc
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+    const createdAt = (await store.findById(hash))!.createdAt.getTime()
+
+    // Stay in continuous use right up to the ceiling: the last extension is CLAMPED to it rather than
+    // pushed a full TTL beyond.
+    for (let day = 0; day < 80; day += 10) {
+      advance(10 * DAY)
+      expect(await service.resolveSession(token)).not.toBeNull()
+    }
+    expect((await store.findById(hash))!.expiresAt.getTime()).toBe(
+      createdAt + ABSOLUTE_SESSION_MAX_SECONDS * 1000,
+    )
+
+    // Past the ceiling the session no longer resolves, and both layers are cleaned up so it cannot be
+    // re-warmed from the durable row.
+    advance(11 * DAY)
+    expect(await service.resolveSession(token)).toBeNull()
+    expect(await store.findById(hash)).toBeNull()
+    expect(await cache.get(`sess:${hash}`)).toBeNull()
+  })
+
+  it("enforces the ceiling on the CACHE-HIT path too (no store read needed to deny)", async () => {
+    const { service, store, cache, clockRef } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+    // A warm entry that is unexpired by its own expiresAt (it was slid) but whose session was created
+    // beyond the ceiling: the cache path must deny it on its own.
+    await cache.set(
+      `sess:${hash}`,
+      JSON.stringify({
+        userId: USER,
+        roles: ["citizen"],
+        expiresAtMs: clockRef.value + 10 * DAY,
+        createdAtMs: clockRef.value - (ABSOLUTE_SESSION_MAX_SECONDS * 1000 + 1000),
+      }),
+      DEFAULT_SESSION_TTL_SECONDS,
+    )
+    const findSpy = vi.spyOn(store, "findById")
+    expect(await service.resolveSession(token)).toBeNull()
+    expect(findSpy).toHaveBeenCalledTimes(0)
+  })
+
+  it("a cache entry written by an older build (no createdAtMs) is re-validated against the store", async () => {
+    const { service, store, cache } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+    const row = (await store.findById(hash))!
+    // Legacy projection shape: no creation time, so the ceiling is uncheckable from the cache alone.
+    await cache.set(
+      `sess:${hash}`,
+      JSON.stringify({ userId: USER, roles: ["citizen"], expiresAtMs: row.expiresAt.getTime() }),
+      DEFAULT_SESSION_TTL_SECONDS,
+    )
+    const resolved = await service.resolveSession(token)
+    expect(resolved?.source).toBe("store") // fell through rather than trusting an uncappable entry
+    // ...and it self-heals: the rewritten entry now carries the creation time.
+    const raw = await cache.get(`sess:${hash}`)
+    expect(JSON.parse(raw!).createdAtMs).toBe(row.createdAt.getTime())
   })
 })

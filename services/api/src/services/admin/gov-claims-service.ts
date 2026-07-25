@@ -26,6 +26,7 @@
  */
 
 import { AppError, relativeAgo } from "@civfix/shared"
+import { applyRoleChange, type RevokeAllSessions } from "./role-change.js"
 import type {
   GovCheck,
   GovCheckStatus,
@@ -176,6 +177,12 @@ export function pendingChecks(
 export interface GovClaimsServiceDeps {
   repo: GovClaimsRepository
   users: UserProvisioner
+  /**
+   * M4: revoke every live session of the user whose role just changed. REQUIRED — approving a gov claim
+   * can DEMOTE a prior operator to gov_admin, and without this the operator role stays live in every warm
+   * session (and sliding expiry means indefinitely). See services/admin/role-change.ts.
+   */
+  revokeSessions: RevokeAllSessions
   /** Injectable clock (defaults to Date.now) so the relative-age labels are deterministic. */
   now?: () => Date
 }
@@ -309,8 +316,22 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       // with the claim already approved + the link recorded, which is the recoverable direction (an
       // operator can re-approve or the role can be re-granted) - the unrecoverable orphan-elevation the
       // review flagged (granted role, no claim) can no longer happen.
+      // M4: the grant goes through applyRoleChange, which ALWAYS revokes the user's sessions after the
+      // write. This matters most in the demotion direction: a claim contact who is currently an OPERATOR
+      // becomes gov_admin here, and without the revoke their live sessions keep serving roles:["operator"]
+      // from the Redis session projection until expiry — which sliding expiry pushes out indefinitely.
       if (user.role !== GOV_ADMIN_ROLE) {
-        await deps.users.setRole(user.id, GOV_ADMIN_ROLE)
+        const target = user
+        await applyRoleChange(
+          {
+            write: async (userId, role) => {
+              await deps.users.setRole(userId, role)
+            },
+            revokeAll: deps.revokeSessions,
+          },
+          target.id,
+          GOV_ADMIN_ROLE,
+        )
       }
     },
 

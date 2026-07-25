@@ -30,8 +30,13 @@ export interface Env {
   R2_SECRET_ACCESS_KEY: string
   R2_BUCKET: string
   /**
-   * Optional DEDICATED R2 bucket for the inbound-mail buffer (the Cloudflare Email Worker writes raw
-   * .eml + extracted attachments here). When unset the inbound pipeline shares R2_BUCKET. [OPT]
+   * DEDICATED R2 bucket for the inbound-mail buffer (the Cloudflare Email Worker writes raw .eml +
+   * extracted attachments here).
+   *
+   * SECURITY (H10): raw inbound mail is citizen<->city correspondence and must NEVER share a bucket with
+   * the CDN-published media bucket. It is [OPT] only while R2_PUBLIC_BASE is unset (nothing is publicly
+   * addressable then); as soon as R2_PUBLIC_BASE is set with real storage this becomes [BOOT] and must
+   * differ from R2_BUCKET. loadEnv enforces both halves.
    */
   R2_INBOUND_BUCKET?: string
   R2_PUBLIC_BASE?: string
@@ -143,12 +148,35 @@ export interface Env {
   GLITCHTIP_DATABASE_URL?: string
 
   /**
-   * Reviewer-OTP bypass: when true (the default), `reviewer@civfix.org` signs in with the fixed code
-   * `000000` without any email being sent, creating a fully set-up citizen account on first use (for App
-   * Review of a mobile build already in review). Set REVIEWER_OTP_BYPASS=false to disable it (the reviewer
-   * email then behaves like any other email) with no code redeploy.
+   * Reviewer-OTP bypass: when true, `reviewer@civfix.org` signs in WITHOUT any email being sent, creating
+   * a fully set-up citizen account on first use (for App Review of a mobile build already in review).
+   *
+   * SECURITY (C1): this is an authentication bypass. It defaults to **false** in every environment, and
+   * turning it on in production additionally requires BOTH:
+   *   - REVIEWER_OTP_BYPASS_ACK=true — an explicit second opt-in so no single typo'd/copied value can
+   *     re-enable a login backdoor on a production box; and
+   *   - REVIEWER_OTP_CODE — a per-review, high-entropy secret (>= REVIEWER_OTP_CODE_MIN_LENGTH chars).
+   * A production boot with the bypass on and either of those missing FAILS CLOSED (loadEnv throws).
    */
+  /**
+   * Require a server-issued, single-use nonce on the NATIVE Apple/Google sign-in routes (H1). Defaults
+   * false: the shipped native clients do not send one yet, and requiring it before they do is a total
+   * sign-in outage recoverable only by an App Store release. A presented nonce is ALWAYS redeemed and
+   * enforced regardless of this flag — the flag only decides whether an ABSENT nonce is fatal. [OPT]
+   */
+  OAUTH_REQUIRE_NONCE: boolean
   REVIEWER_OTP_BYPASS: boolean
+  /**
+   * Second, deliberate opt-in required to run REVIEWER_OTP_BYPASS in production (see above). Meaningless
+   * on its own — it only unlocks the bypass, it never enables it. [OPT]
+   */
+  REVIEWER_OTP_BYPASS_ACK: boolean
+  /**
+   * The secret code the reviewer account signs in with. NO DEFAULT and never hardcoded: the auth layer
+   * refuses to wire the bypass when this is absent or shorter than REVIEWER_OTP_CODE_MIN_LENGTH, so the
+   * old world-readable `000000` constant cannot come back. Rotate it per review submission. [OPT]
+   */
+  REVIEWER_OTP_CODE?: string
 
   USE_FAKE_STORAGE: boolean
   USE_FAKE_MAILER: boolean

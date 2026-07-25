@@ -43,12 +43,12 @@ import { csrfProtect } from "../../auth/csrf.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
+import { auditRead } from "./_audit-read.js"
 import {
   makeAdminUserService,
   type AdminUserRepository,
   type AdminUserService,
   type SessionControl,
-  type SetUserRole,
 } from "../../services/admin/admin-user-service.js"
 import { makeDrizzleAdminUserRepository } from "../../services/admin/admin-user-repository.drizzle.js"
 
@@ -60,7 +60,6 @@ import { makeDrizzleAdminUserRepository } from "../../services/admin/admin-user-
 export interface AdminUserRouteOverrides {
   repo: AdminUserRepository
   sessions: SessionControl
-  setUserRole: SetUserRole
   now?: () => Date
 }
 
@@ -82,7 +81,6 @@ export async function registerAdminUsersRoutes(
       return makeAdminUserService({
         repo: overrides.repo,
         sessions: overrides.sessions,
-        setUserRole: overrides.setUserRole,
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
     }
@@ -96,10 +94,9 @@ export async function registerAdminUsersRoutes(
       clearBan: (userId) => sessionSvc.clearBan(userId),
       revokeAll: (userId) => sessionSvc.revokeAllForUser(userId),
     }
-    const setUserRole: SetUserRole = async (userId, role) => {
-      await app.authServices.users.setRole(userId, role)
-    }
-    return makeAdminUserService({ repo, sessions, setUserRole })
+    // L5: the role write itself now lives in the repo (users.role UPDATE + audit in ONE tx), so there is
+    // no longer a separate UserStore.setRole seam here that could commit a privilege change unaudited.
+    return makeAdminUserService({ repo, sessions })
   }
 
   route(app, "listAdminUsers", async (request, reply) => {
@@ -108,9 +105,14 @@ export async function registerAdminUsersRoutes(
     reply.status(200).send(payload)
   })
 
+  // L4: a per-subject read of one identified user's dossier is audited (see _audit-read.ts).
   route(app, "getAdminUser", async (request, reply) => {
     const { id } = idParam(request)
     const payload: AdminUserDTO = await service().get(id)
+    await auditRead(request, container, requireOperator(request), {
+      action: "user.detail_viewed",
+      target: `user:${id}`,
+    })
     reply.status(200).send(payload)
   })
 
@@ -128,10 +130,17 @@ export async function registerAdminUsersRoutes(
     reply.status(200).send(payload)
   })
 
+  // L4: THE sensitive read — the full text of this user's private DMs, group chats and report chats,
+  // including messages they soft-deleted. Every fetch is attributed to the operator who made it.
   route(app, "getUserMessages", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
     const payload: UserMessagesResponse = await service().getMessages(query)
+    await auditRead(request, container, requireOperator(request), {
+      action: "user.messages_viewed",
+      target: `user:${id}`,
+      meta: { returned: payload.items.length, cursor: query.cursor ?? null },
+    })
     reply.status(200).send(payload)
   })
 

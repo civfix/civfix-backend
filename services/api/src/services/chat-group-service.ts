@@ -48,6 +48,15 @@ import type {
 export const GROUP_MEMBERS_DEFAULT_LIMIT = 25
 export const GROUP_MEMBERS_MAX_LIMIT = 50
 
+/**
+ * SECURITY (M12): how many EXISTING members are considered when checking an invitee against the room's
+ * current roster for a block. The check itself is one bulk query per invitee (see
+ * filterInviteesForRoom), so this bounds the ROW count each of those queries scans, not the query
+ * count. Groups are small social rooms; the oldest N members are the ones an invitee is most likely to
+ * have a history with.
+ */
+const INVITE_BLOCK_SCAN_MEMBERS = 200
+
 export interface ChatGroupServiceDeps {
   groups: ChatGroupRepository
   /** conversation_mutes lookup for roomKind 'group'. Absent (offline harnesses) => never muted. */
@@ -137,16 +146,61 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     return groups.invitableIdsOf(actorId, unique)
   }
 
+  /**
+   * SECURITY (M12): the invitee filter for an EXISTING room — actor-relative blocks (filterInvitees)
+   * PLUS pairwise blocks against the room's current roster.
+   *
+   * Membership needs no consent in this product (an owner/admin adds you and you are in), so the block
+   * filter is the only thing standing between "I blocked you" and "a third party put us in the same
+   * room, repeatedly". Before this, `invitableIdsOf` only excluded pairs blocked with the ACTOR, so any
+   * owner/admin — including one the blocked pair have never interacted with — could force them
+   * together, and re-do it every time either one left.
+   *
+   * Shape: ONE bulk query per invitee (invitableIdsOf run "from the invitee's side" over the existing
+   * roster), not one per pair. An invitee blocked either-way with ANY current member is silently
+   * skipped — the same stance the actor-relative filter already takes, so no block relationship leaks
+   * back to the inviter.
+   *
+   * Known nuance: `invitableIdsOf` also drops soft-deleted users, so an existing member whose account
+   * was deleted is indistinguishable here from a block and makes us skip the invitee. That errs toward
+   * NOT adding someone, which is the safe direction for a consent-less join.
+   */
+  async function filterInviteesForRoom(
+    actorId: string,
+    groupId: string,
+    memberIds: string[],
+  ): Promise<string[]> {
+    const candidates = await filterInvitees(actorId, memberIds)
+    if (candidates.length === 0) return candidates
+    const existing = (await groups.listMemberIds(groupId))
+      .filter((id) => !candidates.includes(id))
+      .slice(0, INVITE_BLOCK_SCAN_MEMBERS)
+    if (existing.length === 0) return candidates
+    const verdicts = await Promise.all(
+      candidates.map(async (candidate) => {
+        const ok = await groups.invitableIdsOf(candidate, existing)
+        return ok.length === existing.length
+      }),
+    )
+    return candidates.filter((_, i) => verdicts[i] === true)
+  }
+
   async function requireGroup(groupId: string): Promise<ChatGroupView> {
     const view = await groups.findById(groupId)
     if (view === null) throw groupNotFound()
     return view
   }
 
+  /**
+   * SECURITY (L8): unknown group and private-group-non-member collapse into the SAME 403
+   * `not_a_member`, matching the WS lane (ws/frame-handler authorizeRoom), which deliberately returns a
+   * uniform "You are not a member of this group." for both. The previous 404-for-unknown /
+   * 403-for-private split was an existence oracle: a stranger could enumerate group ids and learn which
+   * private rooms exist. A 404 is only correct once the caller is known to be able to see the room.
+   */
   async function requireReadable(viewerId: string, groupId: string): Promise<GroupMemberRole | null> {
-    const view = await requireGroup(groupId)
-    const role = await groups.roleOf(groupId, viewerId)
-    if (role === null && view.visibility === "private") {
+    const [view, role] = await Promise.all([groups.findById(groupId), groups.roleOf(groupId, viewerId)])
+    if (view === null || (role === null && view.visibility === "private")) {
       throw forbidden("You aren't a member of this group.", "not_a_member")
     }
     return role
@@ -189,11 +243,15 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     },
 
     async updateGroup(userId, req) {
-      const view = await requireGroup(req.id)
+      // L8: the ACTOR'S power is gated BEFORE the room is confirmed to exist, so an unknown id and a
+      // room the caller has no power in answer identically (403 update_forbidden) — no existence
+      // oracle. The same ordering is applied to every mutation below. `roleOf` on an unknown group
+      // returns null, so this is also the unknown-group answer.
       const role = await groups.roleOf(req.id, userId)
       if (role !== "owner" && role !== "admin") {
         throw forbidden("Only the owner or an admin can update this group.", "update_forbidden")
       }
+      const view = await requireGroup(req.id)
       if (req.visibility !== undefined && req.visibility !== view.visibility && role !== "owner") {
         throw forbidden("Only the owner can change this group's visibility.", "visibility_owner_only")
       }
@@ -214,18 +272,19 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     },
 
     async addMembers(userId, req) {
-      await requireGroup(req.id)
+      // L8: actor power first (see updateGroup) — unknown group and no-power both answer 403.
       const role = await groups.roleOf(req.id, userId)
       if (role !== "owner" && role !== "admin") {
         throw forbidden("Only the owner or an admin can add members.", "add_members_forbidden")
       }
-      const invitees = await filterInvitees(userId, req.memberIds)
+      await requireGroup(req.id)
+      // M12: actor-relative AND roster-pairwise block filtering (see filterInviteesForRoom).
+      const invitees = await filterInviteesForRoom(userId, req.id, req.memberIds)
       await groups.addMembers(req.id, invitees)
       return firstMembersPage(req.id, userId)
     },
 
     async removeMember(actorId, groupId, targetId) {
-      await requireGroup(groupId)
       const [actorRole, targetRole] = await Promise.all([
         groups.roleOf(groupId, actorId),
         groups.roleOf(groupId, targetId),
@@ -246,7 +305,9 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
 
       // Review fix (membership oracle): gate the ACTOR'S power BEFORE looking at the target, so a
       // stranger probing a private group's roster gets a uniform 403 — never a 404-vs-403 signal
-      // revealing whether some user is a member.
+      // revealing whether some user is a member. L8 extends this to the ROOM itself: the dropped
+      // requireGroup means an unknown group id now also lands on this 403 (roleOf returns null)
+      // instead of a 404 that confirmed the room exists.
       if (actorRole !== "owner" && actorRole !== "admin") {
         throw forbidden("Only the owner or an admin can remove members.", "remove_forbidden")
       }
@@ -259,7 +320,8 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     },
 
     async setMemberRole(actorId, groupId, targetId, role) {
-      await requireGroup(groupId)
+      // L8: no requireGroup pre-check — an unknown group makes roleOf null, which lands on the same
+      // 403 role_owner_only a non-owner gets, so existence never leaks.
       const actorRole = await groups.roleOf(groupId, actorId)
       if (actorRole !== "owner") {
         throw forbidden("Only the owner can change member roles.", "role_owner_only")
@@ -291,8 +353,11 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     },
 
     async joinGroup(userId, groupId) {
-      const view = await requireGroup(groupId)
-      if (view.visibility !== "public") {
+      // L8: unknown group answers exactly like a private one (403 not_public) — a self-serve join is
+      // the most enumerable surface there is, so it must not distinguish "no such room" from
+      // "invite-only room".
+      const view = await groups.findById(groupId)
+      if (view === null || view.visibility !== "public") {
         throw forbidden("This group isn't open to join.", "not_public")
       }
       // Idempotent: addMembers is ON CONFLICT DO NOTHING as role 'member', so a re-join keeps an

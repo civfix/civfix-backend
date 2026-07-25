@@ -8,6 +8,8 @@ import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repo
 import {
   registerInboundMailWebhook,
   CF_WEBHOOK_SIGNATURE_HEADER,
+  CF_WEBHOOK_TIMESTAMP_HEADER,
+  WEBHOOK_MAX_CLOCK_SKEW_SEC,
 } from "../../src/routes/webhooks/inbound-mail.routes.js"
 import {
   INBOUND_ATTACHMENT_MAX_BYTES,
@@ -38,17 +40,28 @@ function sign(body: string, secret: string): string {
   return createHmac("sha256", secret).update(body).digest("hex")
 }
 
-/** Build a minimal RFC822 message the FakeInboundMail subset parses (headers, blank line, body). */
+/**
+ * Build a minimal RFC822 message the FakeInboundMail subset parses (headers, blank line, body).
+ *
+ * M7: a DMARC-pass Authentication-Results header is stamped by default. The processor only lets
+ * DMARC-aligned mail reach the threaded path, so a fixture without one is Inbox-only by design.
+ */
 function rfc822(opts: {
   from: string
   to: string
   subject?: string
   body?: string
   messageId?: string
+  /** Set false to omit Authentication-Results (the "unknown verdict" case). */
+  authenticated?: boolean
 }): Buffer {
   const lines = [`From: ${opts.from}`, `To: ${opts.to}`]
   if (opts.subject !== undefined) lines.push(`Subject: ${opts.subject}`)
   if (opts.messageId !== undefined) lines.push(`Message-ID: ${opts.messageId}`)
+  if (opts.authenticated !== false) {
+    const domain = opts.from.slice(opts.from.lastIndexOf("@") + 1)
+    lines.push(`Authentication-Results: mx.civfix.org; dmarc=pass header.from=${domain}`)
+  }
   lines.push("", opts.body ?? "")
   return Buffer.from(lines.join("\n"), "utf8")
 }
@@ -291,6 +304,75 @@ describe("inbound-mail webhook: malformed / safe handling", () => {
     // Moved out of pending into failed.
     expect(h.storage.get(key)).toBeNull()
     expect(h.storage.get(key.replace("inbound/pending/", "inbound/failed/"))).not.toBeNull()
+    await h.app.close()
+  })
+})
+
+/**
+ * L17 — the HMAC covered the body ALONE, with no timestamp and no nonce, so a captured
+ * (body, signature) pair stayed valid forever. The signed payload is now `<timestamp>.<body>` and the
+ * timestamp must be fresh.
+ */
+describe("inbound-mail webhook: signature replay window (L17)", () => {
+  function signTimestamped(ts: number, body: string): string {
+    return createHmac("sha256", SECRET).update(`${ts}.`).update(body).digest("hex")
+  }
+
+  async function postSigned(
+    h: Harness,
+    key: string,
+    ts: number,
+    signature?: string,
+  ): Promise<Awaited<ReturnType<FastifyInstance["inject"]>>> {
+    const body = JSON.stringify({ key })
+    return h.app.inject({
+      method: "POST",
+      url: "/webhooks/inbound-mail",
+      headers: {
+        "content-type": "application/json",
+        [CF_WEBHOOK_SIGNATURE_HEADER]: signature ?? signTimestamped(ts, body),
+        [CF_WEBHOOK_TIMESTAMP_HEADER]: String(ts),
+      },
+      payload: body,
+    })
+  }
+
+  it("accepts a fresh timestamped signature", async () => {
+    const h = await harness()
+    const key = `${INBOUND_PENDING_PREFIX}ts-ok.eml`
+    await h.storage.put(key, rfc822({ from: "a@b.gov", to: "support@civfix.org", body: "x" }))
+    const res = await postSigned(h, key, Math.floor(Date.now() / 1000))
+    expect(res.statusCode).toBe(202)
+    await h.app.close()
+  })
+
+  it("rejects a CAPTURED pair replayed outside the window (401), even though the MAC is valid", async () => {
+    const h = await harness()
+    const key = `${INBOUND_PENDING_PREFIX}ts-stale.eml`
+    await h.storage.put(key, rfc822({ from: "a@b.gov", to: "support@civfix.org", body: "x" }))
+    const stale = Math.floor(Date.now() / 1000) - (WEBHOOK_MAX_CLOCK_SKEW_SEC + 60)
+    const res = await postSigned(h, key, stale)
+    expect(res.statusCode).toBe(401)
+    expect(h.inboundRepo.rows).toHaveLength(0)
+    await h.app.close()
+  })
+
+  it("rejects a far-FUTURE timestamp (401)", async () => {
+    const h = await harness()
+    const key = `${INBOUND_PENDING_PREFIX}ts-future.eml`
+    await h.storage.put(key, rfc822({ from: "a@b.gov", to: "support@civfix.org", body: "x" }))
+    const future = Math.floor(Date.now() / 1000) + (WEBHOOK_MAX_CLOCK_SKEW_SEC + 60)
+    expect((await postSigned(h, key, future)).statusCode).toBe(401)
+    await h.app.close()
+  })
+
+  it("rejects a fresh timestamp paired with a body-only (legacy) signature — the ts is INSIDE the MAC", async () => {
+    const h = await harness()
+    const key = `${INBOUND_PENDING_PREFIX}ts-mixed.eml`
+    await h.storage.put(key, rfc822({ from: "a@b.gov", to: "support@civfix.org", body: "x" }))
+    const ts = Math.floor(Date.now() / 1000)
+    const bodyOnly = sign(JSON.stringify({ key }), SECRET)
+    expect((await postSigned(h, key, ts, bodyOnly)).statusCode).toBe(401)
     await h.app.close()
   })
 })

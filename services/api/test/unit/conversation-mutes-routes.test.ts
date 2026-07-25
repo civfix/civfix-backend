@@ -37,9 +37,12 @@ interface Harness {
   repo: ReturnType<typeof makeFakeRepo>
 }
 
+/** L9 participation gate seam (see ConversationMutesOverrides.participates). */
+type Participates = NonNullable<ConversationMutesOverrides["participates"]>
+
 let current: Harness | undefined
 
-async function makeHarness(): Promise<Harness> {
+async function makeHarness(participates?: Participates): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
@@ -54,7 +57,10 @@ async function makeHarness(): Promise<Harness> {
   })
 
   const repo = makeFakeRepo()
-  const conversationMutesOverrides: ConversationMutesOverrides = { repo }
+  const conversationMutesOverrides: ConversationMutesOverrides = {
+    repo,
+    ...(participates ? { participates } : {}),
+  }
 
   const app = await buildServer({ env, authServices, conversationMutesOverrides })
 
@@ -160,5 +166,53 @@ describe("PUT /conversations/mute", () => {
       payload: { roomKind: "report", roomId: ROOM_ID, muted: true },
     })
     expect(res.statusCode).toBe(401)
+  })
+})
+
+/**
+ * L9 (2026-07-24 review): the route wrote an arbitrary roomId with NO existence or membership check, so
+ * an authenticated client could insert unbounded junk rows into conversation_mutes.
+ */
+describe("PUT /conversations/mute — participation gate (L9)", () => {
+  it("403s a room the caller does not participate in, and writes NOTHING", async () => {
+    const { app, token, repo } = await makeHarness(() => Promise.resolve(false))
+    const res = await app.inject({
+      method: "PUT",
+      url: "/v1/conversations/mute",
+      headers: auth(token),
+      payload: { roomKind: "dm", roomId: ROOM_ID, muted: true },
+    })
+    expect(res.statusCode).toBe(403)
+    expect(repo.setMuted).not.toHaveBeenCalled()
+  })
+
+  it("200s and writes when the caller does participate, passing the room through to the gate", async () => {
+    const seen: Array<[string, string]> = []
+    const { app, token, userId, repo } = await makeHarness((roomKind, roomId) => {
+      seen.push([roomKind, roomId])
+      return Promise.resolve(true)
+    })
+    const res = await app.inject({
+      method: "PUT",
+      url: "/v1/conversations/mute",
+      headers: auth(token),
+      payload: { roomKind: "group", roomId: ROOM_ID, muted: true },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(seen).toEqual([["group", ROOM_ID]])
+    expect(repo.setMuted).toHaveBeenCalledWith(userId, "group", ROOM_ID, true)
+  })
+
+  it("rejects BEFORE the gate for an unmutable room kind (422, gate never consulted)", async () => {
+    const gate = vi.fn(() => Promise.resolve(true))
+    const { app, token } = await makeHarness(gate)
+    const res = await app.inject({
+      method: "PUT",
+      url: "/v1/conversations/mute",
+      headers: auth(token),
+      payload: { roomKind: "report_discussion", roomId: ROOM_ID, muted: true },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(gate).not.toHaveBeenCalled()
   })
 })

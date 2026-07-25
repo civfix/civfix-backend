@@ -34,6 +34,33 @@ import {
 export const CF_WEBHOOK_SIGNATURE_HEADER = "x-cf-signature"
 
 /**
+ * Header carrying the Unix-seconds timestamp the signature is bound to (L17).
+ *
+ * The original contract HMAC'd the body ALONE, with no timestamp and no nonce, so a captured
+ * (body, signature) pair stayed valid forever — anyone who observed one nudge could replay it
+ * indefinitely. Impact was bounded by message-id idempotency downstream, which is why this is a LOW,
+ * but a signature with no expiry is still a credential with no expiry.
+ *
+ * The signed payload is now `<timestamp>.<raw body bytes>` and the timestamp must be inside
+ * WEBHOOK_MAX_CLOCK_SKEW_SEC of now.
+ */
+export const CF_WEBHOOK_TIMESTAMP_HEADER = "x-cf-timestamp"
+
+/** Accepted clock skew, in seconds, between the Worker and this server (±5 minutes). */
+export const WEBHOOK_MAX_CLOCK_SKEW_SEC = 5 * 60
+
+/**
+ * Whether the legacy body-only signature (no timestamp header) is still accepted.
+ *
+ * ROLLOUT: the Cloudflare Email Worker lives in `infra/` and must be updated to send
+ * `x-cf-timestamp` and sign `<timestamp>.<body>`. Until that ships, rejecting timestamp-less nudges
+ * would break inbound mail entirely — so a timestamp-less request is accepted and LOGGED. Flip this to
+ * `false` (and delete the branch) once the Worker is deployed; the R2 sweep is the durable path, so the
+ * cutover is safe even if a nudge or two is dropped.
+ */
+export const ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE = true
+
+/**
  * Per-route limit: the route is unauthenticated-reachable (the HMAC is checked INSIDE the handler, after
  * the body is buffered + the HMAC computed), so a tight per-IP cap stops an attacker driving buffered-body
  * + HMAC work via the global 300/min. The Worker nudges at most a handful/sec.
@@ -127,13 +154,19 @@ async function handleInbound(
 }
 
 /**
- * Authenticate via HMAC over the raw body. Throws AppError.unauthorized when the secret is unset (route
- * closed), the body is missing, or the presented signature does not match (constant-time compare).
+ * Authenticate via HMAC. Throws AppError.unauthorized when the secret is unset (route closed), the body
+ * is missing, the timestamp is outside the replay window, or the presented signature does not match
+ * (constant-time compare).
+ *
+ * Signed payload (L17): `<x-cf-timestamp>.<raw body bytes>`. The timestamp is inside the MAC, so it
+ * cannot be edited without invalidating the signature, and the freshness window is what bounds replay.
+ * See ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE for the transitional body-only path.
  */
-function assertSignature(
+export function assertSignature(
   request: FastifyRequest,
   rawBuf: Buffer | null,
   expectedSecret: string | undefined,
+  nowSec: number = Math.floor(Date.now() / 1000),
 ): void {
   if (!expectedSecret) {
     throw AppError.unauthorized("Inbound mail webhook is not configured.")
@@ -143,8 +176,38 @@ function assertSignature(
   }
   const header = request.headers[CF_WEBHOOK_SIGNATURE_HEADER]
   const presented = Array.isArray(header) ? header[0] : header
-  const expected = createHmac("sha256", expectedSecret).update(rawBuf).digest("hex")
-  if (!presented || !constantTimeStringEqual(presented, expected)) {
+  if (!presented) {
+    throw AppError.unauthorized("Invalid inbound mail webhook signature.")
+  }
+
+  const tsHeader = request.headers[CF_WEBHOOK_TIMESTAMP_HEADER]
+  const rawTs = Array.isArray(tsHeader) ? tsHeader[0] : tsHeader
+
+  if (rawTs !== undefined && rawTs !== "") {
+    // Freshness FIRST: a stale/garbage timestamp is rejected before any MAC comparison, so a replayed
+    // pair never even reaches the compare.
+    const ts = Number.parseInt(rawTs, 10)
+    if (!Number.isFinite(ts) || Math.abs(nowSec - ts) > WEBHOOK_MAX_CLOCK_SKEW_SEC) {
+      throw AppError.unauthorized("Inbound mail webhook signature expired.")
+    }
+    const expected = createHmac("sha256", expectedSecret)
+      .update(`${rawTs}.`)
+      .update(rawBuf)
+      .digest("hex")
+    if (!constantTimeStringEqual(presented, expected)) {
+      throw AppError.unauthorized("Invalid inbound mail webhook signature.")
+    }
+    return
+  }
+
+  if (!ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE) {
+    throw AppError.unauthorized("Inbound mail webhook signature is missing its timestamp.")
+  }
+  // TRANSITIONAL: body-only signature, replayable until the Worker ships the timestamp. Logged at warn
+  // so the remaining legacy traffic is visible and the flag above can be flipped with confidence.
+  request.log.warn("inbound-mail webhook: legacy untimestamped signature accepted (replayable)")
+  const legacyExpected = createHmac("sha256", expectedSecret).update(rawBuf).digest("hex")
+  if (!constantTimeStringEqual(presented, legacyExpected)) {
     throw AppError.unauthorized("Invalid inbound mail webhook signature.")
   }
 }

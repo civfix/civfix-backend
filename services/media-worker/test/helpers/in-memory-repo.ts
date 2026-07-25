@@ -14,9 +14,22 @@ import type {
   OrphanRow,
 } from "@civfix/api/media-repo"
 
-/** A stored media row plus the createdAt the orphan sweep filters on. */
+/**
+ * A stored media row plus the columns the ORPHAN PREDICATE reads.
+ *
+ * MediaWorkerAsset is the worker's PROCESSING view (what it needs to fetch/transform bytes) and does not
+ * carry the other binding columns, but the fake's findOrphans has to mirror the production predicate in
+ * MediaWorkerRepo.findOrphans exactly — a fake with a looser predicate is a suite that reports green
+ * while the real sweep deletes user data. So they are modelled here.
+ */
 export interface StoredWorkerMedia extends MediaWorkerAsset {
   createdAt: Date
+  /** FORWARD binding: chat + DM attachments (media_assets.chat_message_id). */
+  chatMessageId: string | null
+  /** FORWARD binding: social-feed post media (media_assets.post_id). */
+  postId: string | null
+  /** media_assets.purpose. 'verification' rows are referenced from user_verification.documents jsonb. */
+  purpose: "report" | "verification" | "post"
 }
 
 /** A recorded abuse_flag insert (subject_type is always "media" here). */
@@ -43,6 +56,12 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
   failApplyResult: Error | null = null
   /** Set to a non-null Error to make enqueueHeldModerationItem reject (assert it is non-fatal). */
   failModerationEnqueue: Error | null = null
+  /**
+   * REVERSE bindings: media ids referenced by users.avatar_media_id / chat_groups.avatar_media_id. The
+   * binding points AT the media row, so the row's own columns look unbound — exactly the shape the old
+   * `report_id IS NULL` predicate mistook for an orphan. Stands in for the production NOT EXISTS probes.
+   */
+  readonly avatarMediaIds = new Set<string>()
 
   /** Seed a media row. Returns the stored row. */
   seed(
@@ -52,6 +71,9 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
       id: row.id,
       uploadId: row.uploadId,
       reportId: row.reportId ?? null,
+      chatMessageId: row.chatMessageId ?? null,
+      postId: row.postId ?? null,
+      purpose: row.purpose ?? "report",
       kind: row.kind,
       r2Key: row.r2Key,
       thumbKey: row.thumbKey ?? null,
@@ -61,6 +83,11 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     }
     this.byId.set(stored.id, stored)
     return stored
+  }
+
+  /** Point an avatar at an existing media row (users/chat_groups avatar_media_id). */
+  seedAvatarReference(mediaId: string): void {
+    this.avatarMediaIds.add(mediaId)
   }
 
   findById(id: string): Promise<MediaWorkerAsset | null> {
@@ -106,10 +133,21 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     return Promise.resolve()
   }
 
+  /**
+   * MIRRORS MediaWorkerRepo.findOrphans EXACTLY. This fake previously tested only `reportId === null`,
+   * which is why the suite stayed green while the production predicate would have reaped every avatar,
+   * chat/DM attachment and post photo older than the TTL. Keep the two in lockstep: if a binding lane is
+   * added to the real predicate, add it here in the same change.
+   */
   findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {
     const out: OrphanRow[] = []
     for (const row of this.byId.values()) {
-      if (row.reportId === null && row.createdAt < olderThan) {
+      if (row.reportId !== null) continue // forward: report
+      if (row.chatMessageId !== null) continue // forward: chat / DM message
+      if (row.postId !== null) continue // forward: social post
+      if (this.avatarMediaIds.has(row.id)) continue // reverse: user / group avatar
+      if (row.purpose === "verification") continue // out-of-band: user_verification.documents
+      if (row.createdAt < olderThan) {
         out.push({ id: row.id, r2Key: row.r2Key, thumbKey: row.thumbKey })
         if (out.length >= limit) break
       }

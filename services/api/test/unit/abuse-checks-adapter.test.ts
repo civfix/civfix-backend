@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest"
+import { afterEach, describe, it, expect, vi } from "vitest"
 import { RealAbuseChecks } from "../../src/adapters/abuse-checks.js"
 
 /**
@@ -102,5 +102,85 @@ describe("RealAbuseChecks.gpsPlausible (unchanged; decoupled from NSFW)", () => 
     await expect(
       abuse.gpsPlausible({ lat: 34.5, lng: -118.35 }, { lat: 34.1, lng: -118.35 }),
     ).resolves.toBe(true)
+  })
+})
+
+/**
+ * L16 — the siteverify response carries `hostname` and `action` precisely so the server can bind a
+ * token to the page that issued it. Ignoring them meant a token minted on ANY page using our sitekey
+ * could be replayed against the highest-value endpoint. M9 — `hasNsfwScorer()` makes "no model wired"
+ * an explicit, inspectable state instead of an invisible benign default.
+ */
+describe("RealAbuseChecks.verifyTurnstile hostname/action binding (L16)", () => {
+  const originalFetch = globalThis.fetch
+
+  function stubSiteverify(body: Record<string, unknown>): void {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    }) as unknown as typeof fetch
+  }
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it("rejects a successful token issued on an UNEXPECTED hostname", async () => {
+    stubSiteverify({ success: true, hostname: "attacker.example" })
+    const abuse = new RealAbuseChecks({
+      turnstileSecret: "s",
+      turnstileHostnames: ["civfix.org", "www.civfix.org"],
+      log: () => {},
+    })
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4")).resolves.toBe(false)
+  })
+
+  it("accepts a successful token from an expected hostname (case-insensitive)", async () => {
+    stubSiteverify({ success: true, hostname: "CIVFIX.ORG" })
+    const abuse = new RealAbuseChecks({
+      turnstileSecret: "s",
+      turnstileHostnames: ["civfix.org"],
+      log: () => {},
+    })
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4")).resolves.toBe(true)
+  })
+
+  it("rejects when the action does not match the per-form constant", async () => {
+    stubSiteverify({ success: true, hostname: "civfix.org", action: "login" })
+    const abuse = new RealAbuseChecks({
+      turnstileSecret: "s",
+      turnstileHostnames: ["civfix.org"],
+      log: () => {},
+    })
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "home-turf" })).resolves.toBe(false)
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "login" })).resolves.toBe(true)
+  })
+
+  it("skips the hostname assertion when unconfigured, but logs the gap ONCE", async () => {
+    stubSiteverify({ success: true, hostname: "anything.example" })
+    const lines: string[] = []
+    const abuse = new RealAbuseChecks({ turnstileSecret: "s", log: (l) => lines.push(l) })
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4")).resolves.toBe(true)
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4")).resolves.toBe(true)
+    expect(lines.filter((l) => l.includes("hostname binding not configured"))).toHaveLength(1)
+  })
+
+  it("a failed challenge is still false regardless of hostname/action", async () => {
+    stubSiteverify({ success: false, hostname: "civfix.org" })
+    const abuse = new RealAbuseChecks({ turnstileSecret: "s", turnstileHostnames: ["civfix.org"] })
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4")).resolves.toBe(false)
+  })
+})
+
+describe("RealAbuseChecks.hasNsfwScorer (M9)", () => {
+  it("is false with no model and false when the flag is on but nothing is wired", () => {
+    expect(new RealAbuseChecks({ log: () => {} }).hasNsfwScorer()).toBe(false)
+    expect(new RealAbuseChecks({ useRealNsfw: true, log: () => {} }).hasNsfwScorer()).toBe(false)
+  })
+
+  it("is true only when the flag is on AND a model is wired", () => {
+    const abuse = new RealAbuseChecks({ useRealNsfw: true, nsfwModel: () => Promise.resolve(0.1) })
+    expect(abuse.hasNsfwScorer()).toBe(true)
   })
 })

@@ -50,7 +50,7 @@ import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { broadcastMessageUpdate } from "../ws/gateway.js"
-import { makeMediaPresigner } from "../services/media-presign.js"
+import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import {
   makeChatGroupRepository,
   type ChatGroupRepository,
@@ -79,6 +79,13 @@ export const CREATE_GROUP_RATE_LIMIT = { max: 10, timeWindow: "1 hour" } as cons
 export const ADD_GROUP_MEMBERS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 /** Self-serve join (P5): 20/min bounds scripted join sweeps across public rooms; ample for a real user. */
 export const JOIN_GROUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+/**
+ * L11: the remaining state-changing group routes carried no route limit at all (only the global
+ * 300/min/IP). Each of these is a moderation action a human performs a handful of times per session,
+ * so 30/min is generous while bounding a hijacked session's ability to churn a room's name/roster/roles
+ * or sweep its history. Same order of magnitude as ADD_GROUP_MEMBERS_RATE_LIMIT.
+ */
+export const GROUP_MODERATION_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 export async function registerChatGroupRoutes(
   app: FastifyInstance,
@@ -89,12 +96,18 @@ export async function registerChatGroupRoutes(
   let groupsRepo: ChatGroupRepository | undefined
   const getGroups = (): ChatGroupRepository =>
     overrides?.groups ??
-    (groupsRepo ??= makeChatGroupRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+    (groupsRepo ??= makeChatGroupRepository(
+      container.getDb().sql,
+      makePrivateMediaPresigner(container.storage),
+    ))
 
   let chatRepo: ChatRepository | undefined
   const getChatRepo = (): ChatRepository =>
     overrides?.chatRepo ??
-    (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+    (chatRepo ??= makeDrizzleChatRepository(
+      container.getDb().sql,
+      makePrivateMediaPresigner(container.storage),
+    ))
 
   // Mute lookup for ChatGroupDTO.muted. When chatOverrides is present WITHOUT a mutes fake we must
   // not touch getDb() (offline harness) — fail open to muted:false, mirroring listThreads' stance.
@@ -108,7 +121,9 @@ export async function registerChatGroupRoutes(
     const mutes = getMutes()
     return makeChatGroupService({
       groups: getGroups(),
-      ...(mutes ? { isMutedFor: (userId, groupId) => mutes.isMuted(userId, "group", groupId) } : {}),
+      ...(mutes
+        ? { isMutedFor: (userId, groupId) => mutes.isMuted(userId, "group", groupId) }
+        : {}),
     })
   }
 
@@ -130,12 +145,17 @@ export async function registerChatGroupRoutes(
     reply.status(200).send(await svc().getGroup(userId, id))
   })
 
-  route(app, "updateChatGroup", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(GroupIdParamsSchema, request.params)
-    const body = parse(UpdateChatGroupRequestSchema, { ...(request.body as object), id })
-    reply.status(200).send(await svc().updateGroup(userId, body))
-  })
+  route(
+    app,
+    "updateChatGroup",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(GroupIdParamsSchema, request.params)
+      const body = parse(UpdateChatGroupRequestSchema, { ...(request.body as object), id })
+      reply.status(200).send(await svc().updateGroup(userId, body))
+    },
+  )
 
   route(
     app,
@@ -168,20 +188,33 @@ export async function registerChatGroupRoutes(
     },
   )
 
-  route(app, "removeGroupMember", { preHandler: csrfProtect }, async (request, reply) => {
-    const actorId = requireAuth(request)
-    const params = parse(GroupMemberParamsSchema, request.params)
-    parse(RemoveGroupMemberRequestSchema, params)
-    await svc().removeMember(actorId, params.id, params.userId)
-    reply.status(200).send({ ok: true })
-  })
+  route(
+    app,
+    "removeGroupMember",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireAuth(request)
+      const params = parse(GroupMemberParamsSchema, request.params)
+      parse(RemoveGroupMemberRequestSchema, params)
+      await svc().removeMember(actorId, params.id, params.userId)
+      reply.status(200).send({ ok: true })
+    },
+  )
 
-  route(app, "setGroupMemberRole", { preHandler: csrfProtect }, async (request, reply) => {
-    const actorId = requireAuth(request)
-    const params = parse(GroupMemberParamsSchema, request.params)
-    const body = parse(SetGroupMemberRoleRequestSchema, { ...(request.body as object), ...params })
-    reply.status(200).send(await svc().setMemberRole(actorId, body.id, body.userId, body.role))
-  })
+  route(
+    app,
+    "setGroupMemberRole",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireAuth(request)
+      const params = parse(GroupMemberParamsSchema, request.params)
+      const body = parse(SetGroupMemberRoleRequestSchema, {
+        ...(request.body as object),
+        ...params,
+      })
+      reply.status(200).send(await svc().setMemberRole(actorId, body.id, body.userId, body.role))
+    },
+  )
 
   route(app, "groupMessages", async (request, reply) => {
     const userId = requireAuth(request)
@@ -207,24 +240,31 @@ export async function registerChatGroupRoutes(
 
   const resolveChatPowers = wireChatPowers(app, container)
 
-  route(app, "deleteGroupMessage", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id, messageId } = parse(GroupMessageParamsSchema, request.params)
-    // Membership pre-gate doubles as the room-existence check (a member row implies the group row).
-    const role = await svc().requireReadable(userId, id)
-    // Sender path first (sender-gated in the repo's WHERE) — members may always self-delete.
-    let tombstone: ChatMessageDTO | null = null
-    if (role !== null) {
-      tombstone = await getChatRepo().softDeleteGroup(id, messageId, userId)
-    }
-    if (tombstone === null) {
-      // Not the sender (or not a member): the chat-powers group lane decides (owner/admin only).
-      const powers = await resolveChatPowers({ roomKind: "group", roomId: id, userId })
-      if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
-      tombstone = await getChatRepo().softDeleteGroup(id, messageId, userId, { bypassSenderGate: true })
-    }
-    if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
-    broadcastMessageUpdate(container.chatService, "group", id, tombstone)
-    reply.status(200).send(tombstone)
-  })
+  route(
+    app,
+    "deleteGroupMessage",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id, messageId } = parse(GroupMessageParamsSchema, request.params)
+      // Membership pre-gate doubles as the room-existence check (a member row implies the group row).
+      const role = await svc().requireReadable(userId, id)
+      // Sender path first (sender-gated in the repo's WHERE) — members may always self-delete.
+      let tombstone: ChatMessageDTO | null = null
+      if (role !== null) {
+        tombstone = await getChatRepo().softDeleteGroup(id, messageId, userId)
+      }
+      if (tombstone === null) {
+        // Not the sender (or not a member): the chat-powers group lane decides (owner/admin only).
+        const powers = await resolveChatPowers({ roomKind: "group", roomId: id, userId })
+        if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
+        tombstone = await getChatRepo().softDeleteGroup(id, messageId, userId, {
+          bypassSenderGate: true,
+        })
+      }
+      if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
+      broadcastMessageUpdate(container.chatService, "group", id, tombstone)
+      reply.status(200).send(tombstone)
+    },
+  )
 }

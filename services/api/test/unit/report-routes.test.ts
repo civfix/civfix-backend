@@ -555,7 +555,14 @@ describe("GET /map/reports", () => {
   // The shared client serializes bbox as a single JSON param and categories as repeated params. We build
   // the query with clientQuery() (a byte-for-byte replica of the client's buildQuery) so these tests
   // prove the previously-422 client calls now parse + succeed.
-  const BBOX = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
+  // M14: `zoom` is no longer independent of `bbox` — the service clamps it to what the requested extent
+  // can actually imply (services/report-clustering.ts effectiveMapZoom), so a per-pin (zoom >= 13) case
+  // needs a bbox that a real client could plausibly be displaying at that zoom. This ~5 km viewport
+  // implies zoom 14, which clears the cluster threshold; the old 33x22 km box did not and is now
+  // (correctly) forced to cluster no matter what zoom is claimed.
+  const BBOX = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
+  // A world-spanning bbox: the M14 attack shape (`zoom=22` over the whole planet).
+  const WORLD_BBOX = { west: -180, south: -85, east: 180, north: 85 }
 
   it("returns clusters at low zoom and pins at high zoom for points in the bbox (client-encoded bbox)", async () => {
     const { app } = await makeHarness({
@@ -665,6 +672,55 @@ describe("GET /map/reports", () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().pins).toHaveLength(2)
+  })
+
+  // --- M14: bbox/zoom decoupling -------------------------------------------------------------------
+  // The attack was `bbox=<whole world>&zoom=22`: clustering was skipped at zoom >= 13 and `zoom` was a
+  // free client parameter never correlated with the extent, so one anonymous request pulled up to
+  // MAP_REPORTS_CANDIDATE_CAP full report rows AND that many media presign round-trips, with the 60s
+  // Cache-Control defeated by jittering the bounds.
+
+  it("M14: a continental bbox is forced to CLUSTER even when the client claims max zoom", async () => {
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 40.71, lng: -74.0 })
+      },
+    })
+    // Just inside MAX_MAP_BBOX_AREA_DEG2 (100 x 60 = 6000 deg^2) so it is the ZOOM clamp under test
+    // here, not the area rejection.
+    const wide = { west: -125, south: 25, east: -25, north: 85 }
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/map/reports${clientQuery({ bbox: wide, zoom: 22 })}`,
+    })
+    expect(res.statusCode).toBe(200)
+    // The whole point: NO per-pin branch, therefore no per-pin presign fan-out.
+    expect(res.json().pins).toHaveLength(0)
+    expect(res.json().clusters.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it("M14: 422s a world-spanning bbox outright (area cap)", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/map/reports${clientQuery({ bbox: WORLD_BBOX, zoom: 22 })}`,
+    })
+    expect(res.statusCode).toBe(422)
+  })
+
+  it("M14: a genuine neighborhood viewport still returns individual pins", async () => {
+    const { app } = await makeHarness({
+      seed: (repo) => {
+        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+      },
+    })
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 18 })}`,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().pins).toHaveLength(1)
   })
 
   it("422s an unknown category", async () => {

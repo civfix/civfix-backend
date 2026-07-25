@@ -70,6 +70,117 @@ describe("orphan.sweep", () => {
     expect(repo.byId.has("fresh-1")).toBe(true)
   })
 
+  /**
+   * REGRESSION (blocker): the orphan predicate was `report_id IS NULL` alone, and EVERY non-report lane
+   * leaves report_id NULL. Combined with the 6h TTL and the drain loop, the first sweep after deploy
+   * would have deleted every user avatar, every social-post photo and every chat/DM attachment older
+   * than 6h — rows AND R2 objects, with avatar_media_id silently NULLed by its ON DELETE SET NULL FK.
+   *
+   * One row per binding lane, all old enough to be swept, none of them orphans.
+   */
+  it("never reaps a BOUND row: chat/DM, post, avatar and verification lanes all survive", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+
+    const bound = [
+      // FORWARD: chat + DM attachment (message-attachments.drizzle.ts stamps chat_message_id and its
+      // attach guard REQUIRES report_id IS NULL, so every one of these matched the old predicate).
+      { id: "chat-1", uploadId: "cu", r2Key: "uploads/chat1", chatMessageId: "msg-1" },
+      // FORWARD: social-feed post media (post_id + purpose='post').
+      { id: "post-1", uploadId: "pu", r2Key: "uploads/post1", postId: "post-abc", purpose: "post" },
+      // OUT-OF-BAND: verification document, referenced only from user_verification.documents jsonb.
+      { id: "verif-1", uploadId: "vu", r2Key: "uploads/verif1", purpose: "verification" },
+      // REVERSE: users.avatar_media_id / chat_groups.avatar_media_id point AT the row (seeded below).
+      { id: "avatar-1", uploadId: "au", r2Key: "uploads/avatar1" },
+    ] as const
+    for (const row of bound) {
+      repo.seed({ ...row, kind: "image", reportId: null, createdAt: old })
+      await storage.put(row.r2Key, Buffer.from([1]))
+    }
+    repo.seedAvatarReference("avatar-1")
+
+    // A genuine orphan alongside them, so a predicate that simply matched nothing would not pass.
+    const orphan = repo.seed({
+      id: "orphan-only",
+      uploadId: "ou",
+      kind: "image",
+      r2Key: "uploads/orphan-only",
+      reportId: null,
+      createdAt: old,
+    })
+    await storage.put(orphan.r2Key, Buffer.from([1]))
+
+    const res = await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
+
+    expect(res.deleted).toBe(1)
+    expect(res.errors).toBe(0)
+    expect(repo.byId.has("orphan-only")).toBe(false)
+    expect(storage.get("uploads/orphan-only")).toBeNull()
+
+    // Every bound row keeps BOTH its database row and its bytes.
+    for (const row of bound) {
+      expect(repo.byId.has(row.id), `${row.id} row must survive`).toBe(true)
+      expect(storage.get(row.r2Key), `${row.id} object must survive`).not.toBeNull()
+    }
+  })
+
+  it("M10: DRAINS the backlog across pages instead of reaping one bounded batch per run", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+
+    // 25 orphans against a page size of 10. The old sweep reaped ONE page per hourly run, against a
+    // presign rate limit that creates orders of magnitude more rows per day — so the backlog could
+    // only ever grow. The sweep now keeps paging while a page comes back full.
+    const total = 25
+    for (let i = 0; i < total; i++) {
+      const row = repo.seed({
+        id: `drain-${i}`,
+        uploadId: `du${i}`,
+        kind: "image",
+        r2Key: `uploads/d${i}`,
+        reportId: null,
+        createdAt: old,
+      })
+      await storage.put(row.r2Key, Buffer.from([1]))
+    }
+
+    const paged = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 50 }
+    const res = await runOrphanSweep({ repo, storage, limits: paged, now: () => now, log: () => {} })
+
+    expect(res.deleted).toBe(total)
+    expect(res.scanned).toBe(total)
+    expect(repo.byId.size).toBe(0)
+  })
+
+  it("M10: stops at orphanSweepMaxPages so one run cannot monopolize the worker", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+
+    for (let i = 0; i < 30; i++) {
+      const row = repo.seed({
+        id: `cap-${i}`,
+        uploadId: `cu${i}`,
+        kind: "image",
+        r2Key: `uploads/c${i}`,
+        reportId: null,
+        createdAt: old,
+      })
+      await storage.put(row.r2Key, Buffer.from([1]))
+    }
+
+    const capped = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 2 }
+    const res = await runOrphanSweep({ repo, storage, limits: capped, now: () => now, log: () => {} })
+
+    expect(res.deleted).toBe(20)
+    expect(repo.byId.size).toBe(10)
+  })
+
   it("never throws: a per-row delete failure is counted, not propagated", async () => {
     const storage = new FakeStorage()
     const repo = new InMemoryWorkerRepo()

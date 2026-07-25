@@ -20,7 +20,11 @@ import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types.js"
  */
 type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
-import { makeMediaPresigner } from "./media-presign.js"
+import { makeMediaPresigner, makePrivateMediaPresigner } from "./media-presign.js"
+import {
+  makeUnboundOnlyMediaViewAuthorizer,
+  type MediaViewAuthorizer,
+} from "./media-authorization.js"
 
 interface IntakeLogger {
   warn(obj: unknown, msg?: string): void
@@ -28,7 +32,19 @@ interface IntakeLogger {
 
 export const MEDIA_CHECKS_JOB = "media.checks"
 
-export const MEDIA_GET_URL_TTL_SEC = 60 * 60
+/**
+ * TTL for a presigned GET of PUBLIC media (published+public report media, public post media, avatars).
+ * Shortened from 1h to 15m as part of H9: a media URL that leaks (screenshot, shared link, proxy log)
+ * should stop working quickly, and every surface that renders media re-presigns on read anyway.
+ */
+export const MEDIA_GET_URL_TTL_SEC = 15 * 60
+
+/**
+ * TTL for a presigned GET of PRIVATE media — chat/DM attachments, an owner's own held/unlisted report
+ * media, and not-yet-committed uploads. Deliberately much shorter than the public TTL, and always
+ * paired with `forceSigned` so private media never goes out as an unsigned, never-expiring CDN URL.
+ */
+export const MEDIA_PRIVATE_GET_URL_TTL_SEC = 5 * 60
 
 export const ALLOWED_IMAGE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   "image/jpeg",
@@ -52,6 +68,8 @@ export interface MediaChecksJob {
 export interface MediaOwner {
   userId?: string | undefined
   anonSessionId?: string | undefined
+  /** Normalized client IP, used only as the last-resort quota bucket key (see quotaSubject). */
+  ipKey?: string | undefined
 }
 
 export interface MediaAssetView {
@@ -66,6 +84,15 @@ export interface MediaAssetView {
   height: number | null
   byteSize: number | null
   purpose?: MediaPurpose
+  // BINDINGS (H9): the subject this asset belongs to. Exactly one is set once the asset is claimed;
+  // all three are null for an avatar or a not-yet-committed upload. The media view authorizer
+  // (services/media-authorization.ts) resolves visibility THROUGH these — an asset has no visibility
+  // of its own — so they must be projected by every MediaRepository implementation.
+  reportId?: string | null
+  chatMessageId?: string | null
+  postId?: string | null
+  /** Row age, used to bound the pre-commit capability window for an unbound asset. */
+  createdAt?: Date | null
 }
 
 export interface NewMediaAsset {
@@ -95,6 +122,29 @@ export interface MediaIntakeDeps {
   newId?: () => string
   now?: () => Date
   logger?: IntakeLogger
+  /**
+   * View authorization for getMedia (H9). Omitted -> the fail-closed unbound-only authorizer, which
+   * serves not-yet-committed uploads inside the capability window and DENIES every bound asset.
+   */
+  authorizer?: MediaViewAuthorizer
+  /**
+   * Cumulative presigned-BYTE meter for createUpload (M10). Omitted -> no byte quota (offline
+   * harnesses); production wires the Redis-backed meter in routes/media.routes.ts.
+   */
+  byteQuota?: MediaByteQuota
+}
+
+/**
+ * Per-caller cumulative presigned-byte quota (M10). `charge` returns the running total for the
+ * caller's daily window AFTER adding `bytes`; the service rejects once that exceeds the cap.
+ *
+ * Metering BYTES rather than requests is the point: the route's 30/min request cap still allowed
+ * 30 x 50 MB x 60 = 90 GB/hour from one source, all of it landing in R2 before anything looks at it.
+ */
+export interface MediaByteQuota {
+  charge(subject: string, bytes: number): Promise<number>
+  /** Cap, in bytes, per subject per window. */
+  readonly limitBytes: number
 }
 
 export interface MediaIntakeService {
@@ -124,6 +174,11 @@ export function precheckUpload(input: CreateMediaUploadRequest): void {
     throw AppError.mediaRejected(`byteSize exceeds the ${input.kind} limit of ${max} bytes`)
   }
 
+  // NOTE (L14): this is a SHAPE check only. The declared digest is NOT persisted and the worker does
+  // NOT re-hash the downloaded bytes against it, so there is currently NO content-integrity control on
+  // this path — do not cite it as one. It is retained purely to reject obviously-malformed input at the
+  // boundary. Making it real needs a `media_assets.sha256` column (migration) plus a compare in the
+  // worker's download step; until then the honest statement is "declared, unverified".
   const sha = input.sha256.toLowerCase()
   if (!SHA256_HEX.test(sha)) {
     throw AppError.mediaRejected("sha256 must be a 64-character hex digest")
@@ -138,17 +193,49 @@ export function buildR2Key(uploadId: string, now: Date): string {
 
 const SIZE_MISMATCH_TOLERANCE = 1024
 
+/**
+ * Quota bucket for a caller. A signed-in user is metered by account (so rotating IPs does not reset the
+ * budget — M22's complaint about IP-only keying); everyone else falls back to the anon session, then to
+ * the normalized client IP the route stamps into `ipKey`. `anonSessionId` is a client-presented cookie
+ * value, so it is a convenience key, not an authorization signal — the IP fallback is what makes the
+ * bucket non-trivial to reset, which is why the route always supplies one.
+ */
+export function quotaSubject(owner: MediaOwner): string {
+  if (owner.userId) return `u:${owner.userId}`
+  if (owner.anonSessionId) return `a:${owner.anonSessionId}`
+  return `ip:${owner.ipKey ?? "unknown"}`
+}
+
 export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeService {
   const newId = deps.newId ?? (() => randomUUID())
   const now = deps.now ?? (() => new Date())
   const presign = makeMediaPresigner(deps.storage)
+  const presignPrivate = makePrivateMediaPresigner(deps.storage)
+  const authorizer = deps.authorizer ?? makeUnboundOnlyMediaViewAuthorizer(now)
 
   return {
     async createUpload(
       input: CreateMediaUploadRequest,
-      _owner: MediaOwner,
+      owner: MediaOwner,
     ): Promise<CreateMediaUploadResponse> {
       precheckUpload(input)
+
+      // M10: meter cumulative presigned BYTES per caller per day, BEFORE minting the presign. The
+      // route's request-per-minute cap bounds call frequency but says nothing about volume; without a
+      // byte budget one source can park tens of GB in R2 far faster than the orphan sweep reclaims it.
+      // Charged on the DECLARED byteSize, which is exactly what the signed PUT pins (Content-Length is
+      // part of the signature), so the client cannot upload more than it was charged for.
+      if (deps.byteQuota) {
+        const subject = quotaSubject(owner)
+        const total = await deps.byteQuota.charge(subject, input.byteSize)
+        if (total > deps.byteQuota.limitBytes) {
+          deps.logger?.warn(
+            { subject, totalBytes: total, limitBytes: deps.byteQuota.limitBytes },
+            "media upload byte quota exceeded",
+          )
+          throw AppError.rateLimited("Upload quota exceeded. Try again later.")
+        }
+      }
 
       const uploadId = newId()
       const r2Key = buildR2Key(uploadId, now())
@@ -223,16 +310,27 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
       return { mediaId, status: "validating" }
     },
 
-    async getMedia(id: string, _viewer: MediaOwner): Promise<MediaDTO> {
+    /**
+     * H9: authorize the VIEWER against the asset's binding before issuing any URL.
+     *
+     * Every deny is a 404 with the same message as "no such media" — never a 403 — so the endpoint is
+     * not an existence oracle for a private DM attachment or a held report's photo. The authorizer
+     * decides both *whether* the viewer may see it and whether it must be served as a short-lived
+     * signed GET rather than a public CDN URL.
+     */
+    async getMedia(id: string, viewer: MediaOwner): Promise<MediaDTO> {
       const asset = await deps.repo.findById(id)
       if (!asset || asset.status !== "ready") {
         throw AppError.notFound("Media not found")
       }
-      if (asset.purpose === "verification") {
+
+      const decision = await authorizer.authorize(asset, viewer)
+      if (!decision.allowed) {
         throw AppError.notFound("Media not found")
       }
 
-      const { url, thumbUrl } = await presign(asset.r2Key, asset.thumbKey)
+      const issue = decision.private ? presignPrivate : presign
+      const { url, thumbUrl } = await issue(asset.r2Key, asset.thumbKey)
 
       return {
         id: asset.id,

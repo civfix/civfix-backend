@@ -39,9 +39,7 @@ export class StubJwksVerifier implements JwksVerifier {
     if (params.expectedNonce !== undefined) {
       const bound = this.nonces.get(idToken)
       if (bound !== params.expectedNonce) {
-        return Promise.reject(
-          new (class extends Error {})("stub verifier: nonce mismatch"),
-        )
+        return Promise.reject(new (class extends Error {})("stub verifier: nonce mismatch"))
       }
     }
     return Promise.resolve(claims)
@@ -67,6 +65,8 @@ export interface MakeAuthHarnessOptions {
   startMs?: number
   /** WEB_ORIGINS allowlist to load into env (e.g. to test the OAuth redirect allowlist). */
   webOrigins?: string[]
+  /** Enforce the H1 mandatory-nonce gate on native sign-in (OAUTH_REQUIRE_NONCE). Defaults off, as in prod. */
+  requireOauthNonce?: boolean
 }
 
 const DEFAULT_OAUTH_CONFIG: OAuthConfig = {
@@ -103,10 +103,11 @@ export async function makeAuthHarness(opts: MakeAuthHarnessOptions = {}): Promis
     now,
   })
 
+  const envSource: Record<string, string> = { NODE_ENV: "test" }
+  if (opts.webOrigins !== undefined) envSource.WEB_ORIGINS = opts.webOrigins.join(",")
+  if (opts.requireOauthNonce === true) envSource.OAUTH_REQUIRE_NONCE = "true"
   const env = loadEnv(
-    opts.webOrigins !== undefined
-      ? { NODE_ENV: "test", WEB_ORIGINS: opts.webOrigins.join(",") }
-      : undefined,
+    opts.webOrigins !== undefined || opts.requireOauthNonce === true ? envSource : undefined,
   )
   const app = await buildServer({ env, authServices: services })
 

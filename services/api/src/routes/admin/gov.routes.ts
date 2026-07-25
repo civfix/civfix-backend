@@ -29,6 +29,7 @@ import {
   type UserProvisioner,
 } from "../../services/admin/gov-claims-service.js"
 import { makeDrizzleGovClaimsRepository } from "../../services/admin/gov-claims-repository.drizzle.js"
+import type { RevokeAllSessions } from "../../services/admin/role-change.js"
 import type { UserStore } from "../../auth/stores.js"
 
 /**
@@ -39,6 +40,8 @@ import type { UserStore } from "../../auth/stores.js"
 export interface GovClaimsRouteOverrides {
   repo: GovClaimsRepository
   users: UserProvisioner
+  /** M4: session-revoke seam (a spy in tests). Defaults to the real SessionService when omitted. */
+  revokeSessions?: RevokeAllSessions
   now?: () => Date
 }
 
@@ -84,12 +87,26 @@ export async function registerAdminGovRoutes(
   container: Container,
 ): Promise<void> {
   /** Build the gov-claims service from injected overrides (tests) or the container (production). */
+  /**
+   * M4: the session-revoke a role change requires. Wired to SessionService.revokeAllForUser, the same seam
+   * the admin users router uses — approving a gov claim can demote a live OPERATOR, and the operator role
+   * would otherwise stay warm in Redis until session expiry (which sliding expiry defers indefinitely).
+   */
+  function revokeSessions(): RevokeAllSessions {
+    const sessions = app.authServices?.sessions
+    if (!sessions) {
+      throw AppError.internal("Auth services are not available for gov provisioning")
+    }
+    return (userId) => sessions.revokeAllForUser(userId)
+  }
+
   function service(): GovClaimsService {
     const overrides = app.govClaimsOverrides
     if (overrides) {
       return makeGovClaimsService({
         repo: overrides.repo,
         users: overrides.users,
+        revokeSessions: overrides.revokeSessions ?? revokeSessions(),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       })
     }
@@ -101,7 +118,11 @@ export async function registerAdminGovRoutes(
       // error, not a client error.
       throw AppError.internal("Auth services are not available for gov provisioning")
     }
-    return makeGovClaimsService({ repo, users: provisionerFromUserStore(store) })
+    return makeGovClaimsService({
+      repo,
+      users: provisionerFromUserStore(store),
+      revokeSessions: revokeSessions(),
+    })
   }
 
   route(app, "listGovClaims", async (request, reply) => {

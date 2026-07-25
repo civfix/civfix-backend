@@ -14,6 +14,7 @@ export * from "./timeline.js"
 
 export * from "./cleanups.js"
 export * from "./cleanup_members.js"
+export * from "./cleanup_bans.js"
 export * from "./cleanup_reports.js"
 export * from "./chat.js"
 export * from "./chat-groups.js"

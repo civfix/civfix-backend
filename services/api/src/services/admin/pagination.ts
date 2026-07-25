@@ -54,13 +54,24 @@ export function encodeOffsetCursor(offset: number): string {
   return Buffer.from(JSON.stringify({ o: Math.max(0, Math.floor(offset)) }), "utf8").toString("base64url")
 }
 
-/** Decode an offset cursor to its row offset; absent/malformed -> 0 (start from the top). */
+/**
+ * Hard ceiling on a decoded offset (L22). The cursor is opaque but NOT authenticated, so a caller can
+ * mint one carrying any integer; an unbounded OFFSET makes Postgres walk and discard that many rows per
+ * request. Mirrors clampOffset in services/volunteer-hours-service.ts. The directory it serves is static
+ * reference data in the low thousands, so a legitimate deep page is never near this.
+ */
+export const ADMIN_MAX_OFFSET = 100_000
+
+/**
+ * Decode an offset cursor to its row offset; absent/malformed -> 0 (start from the top). Clamped at BOTH
+ * ends: [0, ADMIN_MAX_OFFSET].
+ */
 export function decodeOffsetCursor(cursor: string | null | undefined): number {
   if (!cursor) return 0
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { o?: unknown }
     const o = typeof parsed.o === "number" && Number.isFinite(parsed.o) ? Math.floor(parsed.o) : 0
-    return o < 0 ? 0 : o
+    return Math.min(Math.max(0, o), ADMIN_MAX_OFFSET)
   } catch {
     return 0
   }

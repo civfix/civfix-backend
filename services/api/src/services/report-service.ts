@@ -24,6 +24,7 @@ import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
   clusterByZoom,
   countByCategory,
+  effectiveMapZoom,
   mapPointToUnsignedPin,
   reportH3Cell,
   MAP_REPORTS_CANDIDATE_CAP,
@@ -330,8 +331,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       types: ReportType[] | null,
       zoom: number,
     ): Promise<ReportClusterResponse> {
+      // M14: the client's `zoom` is advisory only — it is clamped to what the requested bbox extent can
+      // actually imply, so a world-sized bbox can never reach the per-pin (per-presign) branch no matter
+      // what zoom is claimed. See effectiveMapZoom in report-clustering.ts.
       const points = await deps.repo.findMapCandidates(bbox, categories, types, MAP_REPORTS_CANDIDATE_CAP)
-      const { clusters, pins: unsignedPins } = clusterByZoom(points, zoom)
+      const { clusters, pins: unsignedPins } = clusterByZoom(points, effectiveMapZoom(bbox, zoom))
       const counts = countByCategory(points)
 
       const pins: ReportPinDTO[] = await mapWithLimit(unsignedPins, PRESIGN_CONCURRENCY, toMapPinDTO)

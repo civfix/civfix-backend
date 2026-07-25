@@ -26,6 +26,8 @@ import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
 import { idParam, parse } from "./_route-utils.js"
+import { auditRead } from "./_audit-read.js"
+import { requireOperator } from "../../auth/admin-guard.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../../services/media-presign.js"
 import {
@@ -71,10 +73,17 @@ export async function registerAdminInboxRoutes(
   })
 
   // GET /admin/inbox/:id  (presign attachment keys -> time-limited GET URLs)
+  // L4: a per-subject read — one citizen<->city email with its full body and its attachments presigned
+  // into fetchable URLs. Audited (best-effort) so the disclosure is attributable.
   route(app, "getInboxMessage", async (request, reply) => {
     const { id } = idParam(request)
     const dto = await repo().get(id)
     if (dto === null) throw AppError.notFound("Inbound email not found.")
+    await auditRead(request, container, requireOperator(request), {
+      action: "inbox.message_viewed",
+      target: `inbound_email:${id}`,
+      meta: { attachments: dto.attachments.length },
+    })
     const store = storage()
     const attachments = await mapWithLimit(
       dto.attachments.slice(0, MAX_INBOX_ATTACHMENTS),
@@ -86,10 +95,13 @@ export async function registerAdminInboxRoutes(
   })
 
   // POST /admin/inbox/:id/status  [csrf]
+  // L6: the acting operator is threaded into the repo, which writes the inbox.status_changed audit row in
+  // the SAME transaction as the UPDATE (mirroring mail.routes.ts and every other admin mutation).
   route(app, "setInboxStatus", { preHandler: csrfProtect }, async (request, reply) => {
+    const operatorId = requireOperator(request)
     const { id } = idParam(request)
     const body = parse(SetInboxStatusRequestSchema, { ...(request.body as object), id })
-    const ok = await repo().setStatus(id, body.status)
+    const ok = await repo().setStatus(id, body.status, operatorId)
     if (!ok) throw AppError.notFound("Inbound email not found.")
     const payload: AdminOkResponse = { ok: true }
     reply.status(200).send(payload)

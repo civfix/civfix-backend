@@ -13,7 +13,7 @@ import {
   type RouteReportResponse,
   type SetReportVerdictResponse,
 } from "@civfix/shared"
-import type { FastifyInstance } from "fastify"
+import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
@@ -32,7 +32,6 @@ import {
 import { makeDrizzleMailRepository } from "../../services/admin/mail-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.drizzle.js"
 import { makeMediaPresigner } from "../../services/media-presign.js"
-import { writeAudit } from "../../services/admin/audit.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
@@ -157,30 +156,51 @@ export async function registerAdminReportsRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "routeReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(RouteReportRequestSchema, { ...(request.body as object), id })
-    const { threadId, routedTo } = await service().routeToJurisdiction(id, {
-      contactEmailOverride: body.contactEmailOverride ?? null,
-      note: body.note ?? null,
-      actorId: operatorId,
-    })
-    if (!app.adminReportOverrides) {
-      try {
-        await writeAudit(container.getDb().sql, {
-          actorId: operatorId,
-          action: "report.routed",
-          target: `report:${id}`,
-          meta: { to: routedTo, threadId },
-        })
-      } catch (err) {
-        request.log.warn({ err }, "routeReport: audit write failed")
-      }
-    }
-    const payload: RouteReportResponse = { ok: true, threadId, routedTo }
-    reply.status(200).send(payload)
-  })
-
+  /**
+   * M5: route a report's full packet (reporter name, exact coords, address, photos) to its jurisdiction.
+   *
+   * Three controls, all added by the 2026-07-24 review:
+   *  (a) the `report.routed` audit is now written INSIDE the outbound message insert's transaction (the
+   *      service passes it down as MailRepository.insertMessage's `audit` param, exactly like the other
+   *      mail paths). It used to be written here afterwards on a separate connection, in a try/catch that
+   *      downgraded a failure to a warn — so a packet could be emailed with no audit row at all. An audit
+   *      failure now rolls the message insert back and fails the request BEFORE delivery.
+   *  (b) `contactEmailOverride` is constrained to the jurisdiction's own mail domain by the service
+   *      (assertOverrideDomainAllowed); it used to accept any well-formed address.
+   *  (c) the per-OPERATOR rate limit below. The global limiter keys on IP only, so a single stolen operator
+   *      session could walk the report table and mail every packet out. Keyed on the session userId (with
+   *      the IP as the fallback for a caller that somehow reached here unauthenticated) this caps bulk
+   *      exfiltration at ROUTE_REPORT_RATE_LIMIT while leaving normal triage (a handful of routes a minute)
+   *      untouched.
+   */
+  route(
+    app,
+    "routeReport",
+    { preHandler: csrfProtect, config: { rateLimit: ROUTE_REPORT_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id } = idParam(request)
+      const body = parse(RouteReportRequestSchema, { ...(request.body as object), id })
+      const { threadId, routedTo } = await service().routeToJurisdiction(id, {
+        contactEmailOverride: body.contactEmailOverride ?? null,
+        note: body.note ?? null,
+        actorId: operatorId,
+      })
+      const payload: RouteReportResponse = { ok: true, threadId, routedTo }
+      reply.status(200).send(payload)
+    },
+  )
 }
+
+/**
+ * M5(c): per-OPERATOR bucket for routeReport. Every request here emails a citizen's identity + exact home
+ * location off-platform, so it is rate-limited by ACTOR, not by IP (the global limiter's IP key is escaped
+ * by simply rotating egress). 10/minute is far above real triage throughput and far below "drain the table".
+ */
+const ROUTE_REPORT_RATE_LIMIT = {
+  max: 10,
+  timeWindow: "1 minute",
+  keyGenerator: (request: FastifyRequest): string =>
+    `route-report:${request.auth?.userId ?? request.ip}`,
+} as const
 

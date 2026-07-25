@@ -159,7 +159,12 @@ describe("RemoteJwksVerifier", () => {
       await expectUnauthorized(verifier.verify(token, { ...params(NOW), expectedNonce: "expected" }))
     })
 
-    it("ignores the nonce claim when NO nonce is expected (backward compatible)", async () => {
+    it("a caller that passes NO expectedNonce gets no nonce checking — which is why sign-in always passes one", async () => {
+      // The verifier only checks what it is asked to check. That is a footgun, not a feature: it is
+      // exactly the shape H1 exploited when the sign-in route supplied the attacker's own nonce (or
+      // none). The route-level guarantee — a nonce is MANDATORY and must be one the server issued and
+      // has not yet spent — is asserted in auth-routes.test.ts ("server-issued single-use sign-in
+      // nonce (H1)"). No production call site may omit expectedNonce.
       const token = signJwt(privateKey, {
         iss: ISS,
         aud: AUD,

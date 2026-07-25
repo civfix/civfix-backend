@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { buildServer } from "../../src/server.js"
+import { buildContainer } from "../../src/di.js"
+import type { RedisClient } from "../../src/adapters/redis.js"
 import { loadEnv } from "../../src/env.js"
 
 /**
@@ -24,7 +26,34 @@ describe("health routes", () => {
     const body = res.json()
     expect(body.ok).toBe(true)
     expect(body.service).toBe("civfix-api")
-    expect(typeof body.version).toBe("string")
+    // L19: the build version is NOT disclosed to unauthenticated callers.
+    expect(body.version).toBeUndefined()
+  })
+
+  it("L19: /readyz is rate limited (no longer on the limiter allowlist), /healthz is not", async () => {
+    app = await buildServer({ env: loadEnv() })
+    const ready = await app.inject({ method: "GET", url: "/readyz" })
+    // The limiter ran => it emitted its headers. /healthz stays exempt so liveness never 429s.
+    expect(ready.headers["x-ratelimit-limit"]).toBeDefined()
+    const live = await app.inject({ method: "GET", url: "/healthz" })
+    expect(live.headers["x-ratelimit-limit"]).toBeUndefined()
+  })
+
+  it("L19: /readyz memoizes its verdict so a flood costs one backend probe", async () => {
+    let pings = 0
+    const env = loadEnv()
+    const container = buildContainer(env)
+    // Force the "real Redis consumer" branch with a stub whose PING we can count.
+    const stub = { ping: async () => (pings++, "PONG") } as unknown as RedisClient
+    Object.defineProperty(container, "redis", { get: () => stub })
+    Object.defineProperty(container, "getRedis", { value: () => stub })
+    app = await buildServer({ env, container })
+
+    for (let i = 0; i < 5; i++) {
+      const res = await app.inject({ method: "GET", url: "/readyz" })
+      expect(res.statusCode).toBe(200)
+    }
+    expect(pings).toBe(1)
   })
 
   it("echoes x-request-id header", async () => {

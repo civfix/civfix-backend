@@ -68,6 +68,15 @@ export type AdminAuditAction =
   | "mail.resent"
   | "mail.status_changed"
   | "outreach.digest_sent"
+  // inbox (catch-all inbound mail)
+  | "inbox.status_changed"
+  // L4: sensitive per-SUBJECT READS. Aggregate/list/analytics reads stay unaudited by design (see
+  // audit.routes.ts); these four disclose one identified person's private material to one operator, so
+  // "who looked at whose messages" has to be answerable. Written best-effort by routes/admin/_audit-read.ts.
+  | "user.detail_viewed"
+  | "user.messages_viewed"
+  | "inbox.message_viewed"
+  | "mail.thread_viewed"
   // escape hatch: any other dotted action wave 2 introduces
   | (string & {})
 

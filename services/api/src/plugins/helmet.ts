@@ -27,8 +27,21 @@ export async function registerHelmet(app: FastifyInstance): Promise<void> {
         "form-action": ["'none'"],
       },
     },
-    // HSTS only in prod (TLS is always upstream there); leave helmet's default ON. In dev/test, disable
-    // it — helmet's default ~180-day HSTS over plain HTTP would pin localhost to HTTPS for months.
-    ...(isProd() ? {} : { strictTransportSecurity: false }),
+    // HSTS in prod only (TLS is always upstream there). L21: set it EXPLICITLY rather than taking
+    // helmet's ~180-day default — two years, all subdomains, preload-eligible. The API and the web app
+    // share the civfix.org tree, so `includeSubDomains` is what actually closes the sibling-subdomain
+    // downgrade path (an attacker who can MITM plain HTTP on any *.civfix.org host), and `preload` gets
+    // the policy baked into browsers so even a user's FIRST request is protected. maxAge 63072000 (2y)
+    // + includeSubDomains + preload are the values the hstspreload.org submission requires.
+    // In dev/test HSTS is off: pinning localhost to HTTPS for months would break local development.
+    ...(isProd()
+      ? {
+          strictTransportSecurity: {
+            maxAge: 63072000,
+            includeSubDomains: true,
+            preload: true,
+          },
+        }
+      : { strictTransportSecurity: false }),
   })
 }

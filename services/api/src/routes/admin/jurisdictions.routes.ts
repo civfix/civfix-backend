@@ -18,7 +18,7 @@ import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
-import { geoidParam, parse } from "./_route-utils.js"
+import { geoidParam, httpUrlField, parse } from "./_route-utils.js"
 import {
   makeJurisdictionContactsService,
   type JurisdictionContactsRepository,
@@ -82,7 +82,8 @@ export async function registerAdminJurisdictionsRoutes(
         {
           contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
           defaultEmails: body.defaultEmails ?? [],
-          formUrl: body.formUrl ?? null,
+          // L7: reject javascript:/data: URIs the shared `.url()` schema lets through (see httpUrlField).
+          formUrl: httpUrlField(body.formUrl, "formUrl"),
           ...(body.forwardSubjectTemplate !== undefined
             ? { forwardSubjectTemplate: body.forwardSubjectTemplate }
             : {}),
@@ -119,7 +120,8 @@ export async function registerAdminJurisdictionsRoutes(
           ? { contacts: body.contacts as Partial<Record<ReportCategory, string | null>> }
           : {}),
         ...(body.defaultEmails !== undefined ? { defaultEmails: body.defaultEmails } : {}),
-        ...(body.formUrl !== undefined ? { formUrl: body.formUrl ?? null } : {}),
+        // L7: same scheme allowlist on the PATCH path (an absent field still means "leave unchanged").
+        ...(body.formUrl !== undefined ? { formUrl: httpUrlField(body.formUrl, "formUrl") } : {}),
         ...(body.notes !== undefined ? { notes: body.notes } : {}),
         ...(body.flagged !== undefined ? { flagged: body.flagged } : {}),
         ...(body.flagReason !== undefined ? { flagReason: body.flagReason } : {}),

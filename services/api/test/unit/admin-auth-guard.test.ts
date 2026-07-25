@@ -76,9 +76,16 @@ async function makeHarness(opts: { verifyAccessJwt?: VerifyAccessJwt } = {}): Pr
   return { app, mailer, services, stores, audits }
 }
 
-/** Seed a user with a role and mint a bearer session token for it (presented as Authorization: Bearer). */
-async function sessionFor(h: Harness, role: Role): Promise<string> {
-  const user = await h.stores.users.create(`${role}.${Date.now()}@example.com`, {
+/**
+ * Seed a user with a role and mint a bearer session token for it (presented as Authorization: Bearer).
+ *
+ * H2: an operator seeded here uses an ADMIN_EMAILS-allowlisted address by default, because the guard now
+ * re-checks the allowlist on EVERY admin request — a `users.role = 'operator'` row alone is no longer
+ * sufficient. Pass `email` explicitly to seed the off-boarded / never-allowlisted case.
+ */
+async function sessionFor(h: Harness, role: Role, email?: string): Promise<string> {
+  const addr = email ?? (role === "operator" ? ALLOWED : `${role}.${Date.now()}@example.com`)
+  const user = await h.stores.users.create(addr, {
     displayName: role,
     role,
     emailVerified: true,
@@ -147,6 +154,70 @@ describe("H3: admin data routes are operator-gated", () => {
         res.statusCode,
       )
     }
+  })
+})
+
+describe("H2: operator authority is re-checked against ADMIN_EMAILS on EVERY admin request", () => {
+  /**
+   * The vulnerability this closes: `users.role = 'operator'` used to be sufficient forever. Any auth path
+   * minted a session carrying roles:["operator"] — including the PUBLIC citizen Email-OTP / Google / Apple
+   * login — and removing the address from ADMIN_EMAILS never demoted the row. So an off-boarded operator
+   * signed in through the consumer app and kept full console access (and with a bearer token, no CSRF).
+   *
+   * These sessions are minted DIRECTLY via SessionService.createSession, i.e. exactly what the citizen
+   * login flow does: no Cloudflare Access exchange anywhere in sight.
+   */
+
+  it("REJECTS an operator-role session whose email is NOT in ADMIN_EMAILS (the off-boarded operator)", async () => {
+    harness = await makeHarness()
+    // A real users.role='operator' row + a real live session, but the address was never allowlisted (or
+    // was removed from the allowlist after off-boarding).
+    const token = await sessionFor(harness, "operator", NOT_ALLOWED)
+    for (const r of DATA_ROUTES) {
+      const res = await harness.app.inject({
+        method: r.method,
+        url: r.url,
+        headers: { authorization: `Bearer ${token}` },
+      })
+      expect(res.statusCode, `${r.method} ${r.url} off-boarded operator`).toBe(403)
+    }
+  })
+
+  it("REJECTS an off-boarded operator on a MUTATION too (the bearer transport skips CSRF)", async () => {
+    harness = await makeHarness()
+    const token = await sessionFor(harness, "operator", NOT_ALLOWED)
+    const res = await harness.app.inject({
+      method: "POST",
+      url: "/v1/admin/users/00000000-0000-0000-0000-000000000001/role",
+      headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      payload: { role: "operator" },
+    })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it("ACCEPTS an operator whose email IS in ADMIN_EMAILS (case-insensitively)", async () => {
+    harness = await makeHarness()
+    // "OTHER@civfix.org" is in the configured allowlist; the env loader normalizes it to lower case.
+    const token = await sessionFor(harness, "operator", "other@civfix.org")
+    const res = await harness.app.inject({
+      method: "GET",
+      url: "/v1/admin/home/summary",
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect([401, 403]).not.toContain(res.statusCode)
+  })
+
+  it("still 401s an anonymous caller and 403s a citizen BEFORE any allowlist lookup", async () => {
+    harness = await makeHarness()
+    const anon = await harness.app.inject({ method: "GET", url: "/v1/admin/users" })
+    expect(anon.statusCode).toBe(401)
+    const citizen = await sessionFor(harness, "citizen")
+    const res = await harness.app.inject({
+      method: "GET",
+      url: "/v1/admin/users",
+      headers: { authorization: `Bearer ${citizen}` },
+    })
+    expect(res.statusCode).toBe(403)
   })
 })
 

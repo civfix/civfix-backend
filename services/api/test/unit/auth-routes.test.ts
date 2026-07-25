@@ -3,7 +3,6 @@ import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 import { resolvePostLoginRedirect } from "../../src/routes/auth.routes.js"
 import type { OAuthConfig } from "../../src/auth/oauth.js"
 
-
 let harness: AuthHarness | undefined
 
 afterEach(async () => {
@@ -22,6 +21,18 @@ function parseCookies(setCookie: string | string[] | undefined): Record<string, 
     if (eq > 0) out[pair!.slice(0, eq)] = decodeURIComponent(pair!.slice(eq + 1))
   }
   return out
+}
+
+/**
+ * Mint a server-issued sign-in nonce, exactly as a native client must now do before calling
+ * /v1/auth/apple or /v1/auth/google (H1). The nonce is single-use, so every sign-in needs its own.
+ */
+async function mintNonce(h: AuthHarness): Promise<string> {
+  const res = await h.app.inject({ method: "POST", url: "/v1/auth/oauth/nonce" })
+  expect(res.statusCode).toBe(200)
+  const nonce = res.json().nonce as string
+  expect(typeof nonce).toBe("string")
+  return nonce
 }
 
 describe("auth routes: email OTP, mobile bearer flow", () => {
@@ -123,7 +134,9 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(location).toContain("response_type=code")
     expect(location).toContain("response_mode=form_post")
     const setCookie = res.headers["set-cookie"]
-    const rawCookie = (Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie)).toLowerCase()
+    const rawCookie = (
+      Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie)
+    ).toLowerCase()
     expect(rawCookie).toContain("samesite=none")
   })
 
@@ -213,7 +226,9 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     const check = await harness.app.inject({
       method: "GET",
       url: "/v1/auth/session",
-      headers: { cookie: `civfix_session=${cookies.civfix_session}; civfix_csrf=${cookies.civfix_csrf}` },
+      headers: {
+        cookie: `civfix_session=${cookies.civfix_session}; civfix_csrf=${cookies.civfix_csrf}`,
+      },
     })
     expect(check.json().authenticated).toBe(true)
     expect(check.json().csrfToken).toBe(cookies.civfix_csrf)
@@ -349,11 +364,24 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
       picture: null,
     })
 
+    const nonce = await mintNonce(harness)
+    harness.verifier.register(
+      "google-id-token",
+      {
+        sub: "google-sub-xyz",
+        email: "oauth.google@example.com",
+        emailVerified: true,
+        name: "Google Person",
+        picture: null,
+      },
+      nonce,
+    )
+
     const res = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/google",
       headers: { "x-client": "mobile" },
-      payload: { idToken: "google-id-token" },
+      payload: { idToken: "google-id-token", nonce },
     })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -378,11 +406,23 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
       name: null,
       picture: null,
     })
+    const nonce = await mintNonce(harness)
+    harness.verifier.register(
+      "apple-id-token",
+      {
+        sub: "apple-sub-xyz",
+        email: "oauth.apple@example.com",
+        emailVerified: true,
+        name: null,
+        picture: null,
+      },
+      nonce,
+    )
     const res = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/apple",
       headers: { "x-client": "mobile" },
-      payload: { identityToken: "apple-id-token", fullName: "Apple Person" },
+      payload: { identityToken: "apple-id-token", fullName: "Apple Person", nonce },
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().user.displayName).toBe("Apple Person")
@@ -394,7 +434,7 @@ describe("auth routes: OAuth token (mobile) flows via stubbed verifier", () => {
     const res = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/google",
-      payload: { idToken: "never-registered" },
+      payload: { idToken: "never-registered", nonce: await mintNonce(harness) },
     })
     expect(res.statusCode).toBeGreaterThanOrEqual(400)
     expect(res.json().token).toBeUndefined()
@@ -450,7 +490,9 @@ describe("resolvePostLoginRedirect (web OAuth callback target)", () => {
   const origins = ["https://civfix.org", "https://www.civfix.org"]
 
   it("honors an allowlisted absolute redirect", () => {
-    expect(resolvePostLoginRedirect("https://civfix.org/home", origins)).toBe("https://civfix.org/home")
+    expect(resolvePostLoginRedirect("https://civfix.org/home", origins)).toBe(
+      "https://civfix.org/home",
+    )
   })
 
   it("honors a safe relative redirect", () => {
@@ -482,39 +524,50 @@ describe("resolvePostLoginRedirect (web OAuth callback target)", () => {
   })
 
   it("still honors a relative path carrying a query and fragment", () => {
-    expect(resolvePostLoginRedirect("/reports/42?tab=media#top", origins)).toBe("/reports/42?tab=media#top")
+    expect(resolvePostLoginRedirect("/reports/42?tab=media#top", origins)).toBe(
+      "/reports/42?tab=media#top",
+    )
   })
 })
 
-describe("auth routes: Apple nonce binding (P2-3)", () => {
-  it("binds the nonce through the route: matching nonce signs in, mismatched nonce is rejected", async () => {
+describe("auth routes: server-issued single-use sign-in nonce (H1)", () => {
+  it("binds the STORED nonce: a token minted for the issued nonce signs in, another does not", async () => {
     harness = await makeAuthHarness()
+    const nonce = await mintNonce(harness)
     harness.verifier.register(
       "apple-nonce-token",
-      { sub: "apple-nonce-sub", email: "nonce@example.com", emailVerified: true, name: null, picture: null },
-      "abc123",
+      {
+        sub: "apple-nonce-sub",
+        email: "nonce@example.com",
+        emailVerified: true,
+        name: null,
+        picture: null,
+      },
+      nonce,
     )
 
     const ok = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/apple",
       headers: { "x-client": "mobile" },
-      payload: { identityToken: "apple-nonce-token", nonce: "abc123", fullName: "Nonce User" },
+      payload: { identityToken: "apple-nonce-token", nonce, fullName: "Nonce User" },
     })
     expect(ok.statusCode).toBe(200)
     expect(ok.json().user.displayName).toBe("Nonce User")
 
+    // A DIFFERENT server-issued nonce does not match the one baked into the token's claims.
+    const other = await mintNonce(harness)
     const bad = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/apple",
       headers: { "x-client": "mobile" },
-      payload: { identityToken: "apple-nonce-token", nonce: "WRONG", fullName: "Nonce User" },
+      payload: { identityToken: "apple-nonce-token", nonce: other, fullName: "Nonce User" },
     })
     expect(bad.statusCode).toBeGreaterThanOrEqual(400)
     expect(bad.json().token).toBeUndefined()
   })
 
-  it("a no-nonce Apple sign-in still works (backward compatible)", async () => {
+  it("ACCEPTS a sign-in with no nonce while the transition gate is OFF (default), so shipped clients keep working", async () => {
     harness = await makeAuthHarness()
     harness.verifier.register("apple-plain", {
       sub: "apple-plain-sub",
@@ -530,6 +583,92 @@ describe("auth routes: Apple nonce binding (P2-3)", () => {
       payload: { identityToken: "apple-plain", fullName: "Plain User" },
     })
     expect(res.statusCode).toBe(200)
+    expect(res.json().token).toBeTruthy()
+  })
+
+  it("REJECTS a sign-in with no nonce once OAUTH_REQUIRE_NONCE is on (the end state)", async () => {
+    harness = await makeAuthHarness({ requireOauthNonce: true })
+    harness.verifier.register("apple-plain-strict", {
+      sub: "apple-plain-strict-sub",
+      email: "plain-strict@example.com",
+      emailVerified: true,
+      name: null,
+      picture: null,
+    })
+    const res = await harness.app.inject({
+      method: "POST",
+      url: "/v1/auth/apple",
+      headers: { "x-client": "mobile" },
+      payload: { identityToken: "apple-plain-strict", fullName: "Plain User" },
+    })
+    expect(res.statusCode).toBeGreaterThanOrEqual(400)
+    expect(res.json().token).toBeUndefined()
+  })
+
+  it("REJECTS a nonce the server never issued (the old tautology: nonce from the request body)", async () => {
+    harness = await makeAuthHarness()
+    harness.verifier.register(
+      "apple-self-nonce",
+      {
+        sub: "self-sub",
+        email: "self@example.com",
+        emailVerified: true,
+        name: null,
+        picture: null,
+      },
+      "attacker-chosen-nonce",
+    )
+    // Exactly the replay the audit describes: the token carries a nonce, and the attacker echoes that
+    // same value in the body. It used to be compared against itself.
+    const res = await harness.app.inject({
+      method: "POST",
+      url: "/v1/auth/apple",
+      headers: { "x-client": "mobile" },
+      payload: { identityToken: "apple-self-nonce", nonce: "attacker-chosen-nonce" },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json().token).toBeUndefined()
+  })
+
+  it("a nonce is SINGLE-USE: replaying the same token+nonce a second time is refused", async () => {
+    harness = await makeAuthHarness()
+    const nonce = await mintNonce(harness)
+    harness.verifier.register(
+      "google-replay",
+      {
+        sub: "replay-sub",
+        email: "replay@example.com",
+        emailVerified: true,
+        name: null,
+        picture: null,
+      },
+      nonce,
+    )
+    const first = await harness.app.inject({
+      method: "POST",
+      url: "/v1/auth/google",
+      headers: { "x-client": "mobile" },
+      payload: { idToken: "google-replay", nonce },
+    })
+    expect(first.statusCode).toBe(200)
+
+    // A captured ID token replayed with its own nonce: the nonce is spent, so no session is minted.
+    const replay = await harness.app.inject({
+      method: "POST",
+      url: "/v1/auth/google",
+      headers: { "x-client": "mobile" },
+      payload: { idToken: "google-replay", nonce },
+    })
+    expect(replay.statusCode).toBe(401)
+    expect(replay.json().token).toBeUndefined()
+  })
+
+  it("mints distinct high-entropy nonces", async () => {
+    harness = await makeAuthHarness()
+    const seen = new Set<string>()
+    for (let i = 0; i < 5; i++) seen.add(await mintNonce(harness))
+    expect(seen.size).toBe(5)
+    for (const n of seen) expect(n.length).toBeGreaterThan(20)
   })
 })
 
@@ -546,7 +685,10 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
       headers: { "x-client": "mobile" },
       payload: { email, code },
     })
-    return res.json() as { token: string; user: { profileComplete: boolean; handle: string | null } }
+    return res.json() as {
+      token: string
+      user: { profileComplete: boolean; handle: string | null }
+    }
   }
 
   it("a fresh account is profileComplete:false with a generated placeholder handle (the gate trigger)", async () => {
@@ -561,14 +703,25 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     const { token } = await signIn(harness, "checker@example.com")
     const headers = { authorization: `Bearer ${token}` }
 
-    const free = await harness.app.inject({ method: "GET", url: "/v1/me/handle-available?handle=ana_99", headers })
+    const free = await harness.app.inject({
+      method: "GET",
+      url: "/v1/me/handle-available?handle=ana_99",
+      headers,
+    })
     expect(free.statusCode).toBe(200)
     expect(free.json()).toEqual({ available: true, reason: null })
 
-    const invalid = await harness.app.inject({ method: "GET", url: "/v1/me/handle-available?handle=ab", headers })
+    const invalid = await harness.app.inject({
+      method: "GET",
+      url: "/v1/me/handle-available?handle=ab",
+      headers,
+    })
     expect(invalid.json()).toEqual({ available: false, reason: "invalid" })
 
-    const anon = await harness.app.inject({ method: "GET", url: "/v1/me/handle-available?handle=ana_99" })
+    const anon = await harness.app.inject({
+      method: "GET",
+      url: "/v1/me/handle-available?handle=ana_99",
+    })
     expect(anon.statusCode).toBe(401)
   })
 

@@ -188,6 +188,93 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     ).rejects.toMatchObject({ httpStatus: 403 })
   })
 
+  // --- H8: post report-attachment bypassed the report visibility gate ------------------------------
+  // Two independent holes, both now closed by the shared publicReportFilter() fragment:
+  //   (a) isReportAttachable checked `visibility` but NOT `status`, so an anonymous submitter could
+  //       attach their own HELD (pre-moderation) report and publish its title, exact lat/lng, address
+  //       and photo into the SIGNED-OUT public feed before any moderator saw it;
+  //   (b) loadReports re-read the row on every render checking NEITHER, so the owner's later `unlist`
+  //       was silently ineffective for as long as the post existed.
+
+  async function insertReport(
+    reporter: string | null,
+    status: string,
+    visibility: string,
+    title: string,
+  ): Promise<string> {
+    const [r] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (reporter_user_id, idempotency_key, geom, geom_source, category, status, visibility, h3_cell, title)
+      VALUES (
+        ${reporter}, gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), 'manual',
+        'trash', ${status}, ${visibility}, 'h0', ${title}
+      )
+      RETURNING id
+    `
+    return r!.id
+  }
+
+  it("H8: a HELD report cannot be attached to a post (status was never checked)", async () => {
+    const svc = makeService()
+    const author = await newUser("Held Attacher", "heldatt")
+    const held = await insertReport(author, "held", "public", "Held report")
+
+    await expect(
+      svc.createPost(
+        { kind: "post", body: "look at this", reportId: held, mediaUploadIds: [], mentionedUserIds: [] },
+        author,
+      ),
+    ).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("H8: an owner-UNLISTED and a soft-DELETED report are equally unattachable", async () => {
+    const svc = makeService()
+    const author = await newUser("Unlist Attacher", "unlatt")
+    const unlisted = await insertReport(author, "published", "hidden", "Unlisted report")
+    const deleted = await insertReport(author, "published", "public", "Deleted report")
+    await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${deleted}`
+
+    for (const id of [unlisted, deleted]) {
+      await expect(
+        svc.createPost(
+          { kind: "post", body: "look", reportId: id, mediaUploadIds: [], mentionedUserIds: [] },
+          author,
+        ),
+      ).rejects.toMatchObject({ httpStatus: 404 })
+    }
+  })
+
+  it("H8: a later unlist RETROACTIVELY strips the attachment card from the rendered post", async () => {
+    const svc = makeService()
+    const author = await newUser("Retro Author", "retroauth")
+    const reader = await newUser("Retro Reader", "retroread")
+    const report = await insertReport(author, "published", "public", "Public report")
+
+    const post = await svc.createPost(
+      { kind: "post", body: "my report", reportId: report, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect(post.report?.id).toBe(report)
+    expect(post.report?.title).toBe("Public report")
+
+    // The owner unlists it. This USED to change nothing about the rendered post: loadReports re-read the
+    // row every render and re-published the title, exact coordinates, address and photo regardless.
+    await h.sql`UPDATE reports SET visibility = 'hidden' WHERE id = ${report}`
+
+    const afterUnlist = await svc.getPost(post.id, reader)
+    expect(afterUnlist.report).toBeNull()
+    // The post itself survives — hydrate degrades it to a body-only post rather than dropping the row.
+    expect(afterUnlist.id).toBe(post.id)
+    expect(afterUnlist.body).toBe("my report")
+
+    // Same for a moderator pulling it back to `held`, and for a soft delete.
+    await h.sql`UPDATE reports SET visibility = 'public', status = 'held' WHERE id = ${report}`
+    expect((await svc.getPost(post.id, reader)).report).toBeNull()
+    await h.sql`UPDATE reports SET status = 'published' WHERE id = ${report}`
+    expect((await svc.getPost(post.id, reader)).report?.id).toBe(report)
+    await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${report}`
+    expect((await svc.getPost(post.id, reader)).report).toBeNull()
+  })
+
   it("like notifies the post author (not self); blocked → none; @mention notifies the mentioned user", async () => {
     const svc = makeService()
     const author = await newUser("Notif Author", "notauth")

@@ -235,15 +235,40 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows.length > 0 ? "stored" : "conflict"
     },
 
-    async revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void> {
-      // Soft-revoke (revoked_at = now) every ACTIVE push token on this device owned by a DIFFERENT user, so
-      // a device's token only ever delivers to the account currently signed in on it. device_id is the
-      // device's own secret, so this can never revoke a token on a device the caller does not hold.
-      await sql`
+    async revokeDeviceTokensForOtherUsers(args: {
+      userId: string
+      token: string
+      platform: PushPlatform
+      deviceId: string | null
+    }): Promise<number> {
+      // H12. The old query was `WHERE device_id = $1 AND user_id <> $2` — a caller-supplied string
+      // revoking every other account's token that carried it. One harvested device-id list was a
+      // fleet-wide push blackout, and the "device_id is the device's own secret" claim in the old
+      // comment was never verified by anything.
+      //
+      // The revoke is now anchored ONLY to something the caller provably holds: the push token itself,
+      // which they just presented and which is the address push is actually delivered to. The
+      // device_id-driven branch is GONE — no cross-account write is authorized by a self-declared
+      // string any more. In practice the upsert above already reassigns the (platform, token) row when
+      // the guard allows it, so this usually matches zero rows; it stays as the explicit, correct scope
+      // so a future change to the upsert cannot silently reintroduce a wider revoke.
+      //
+      // COST, stated plainly: a PREVIOUS account's token on a shared device is no longer force-revoked
+      // when the token value has rotated. Those tokens are pruned by delivery feedback instead (an
+      // Expo/APNs DeviceNotRegistered receipt) and by that account's own re-registration. Restoring an
+      // eager device-scoped revoke requires a real possession proof — a silent data push carrying a
+      // server nonce that the client echoes back over an authenticated call — which is the tracked
+      // follow-up. `deviceId` is retained on the row for support/debugging only; it authorizes nothing.
+      const rows = await sql<{ id: string }[]>`
         UPDATE push_tokens
         SET revoked_at = now()
-        WHERE device_id = ${deviceId} AND user_id <> ${userId} AND revoked_at IS NULL
+        WHERE user_id <> ${args.userId}
+          AND revoked_at IS NULL
+          AND platform = ${args.platform}
+          AND token = ${args.token}
+        RETURNING id
       `
+      return rows.length
     },
 
     async deletePushTokensForUser(userId: string): Promise<void> {

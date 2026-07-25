@@ -79,6 +79,12 @@ export function makeContainerReportChatEmitter(
     isMuted,
     // presence intentionally omitted — not reachable from the admin/citizen service context (see header).
     roomKeyFor,
+    // M11: this emitter only ever fans out SENDER-LESS `kind:"system"` messages (a timeline reflection
+    // has no author), so the block gate can never fire on this path — the notifier short-circuits on a
+    // null actor. Wired to the real repo anyway rather than a `() => false` stub: the dep is required
+    // precisely so nobody has to reason about whether a given caller "needs" it, and if a future
+    // timeline event ever gains an author this path is already correct.
+    isBlockedEitherWay: (a, b) => container.getBlocksRepo().isBlockedEitherWay(a, b),
   })
 
   return makeReportChatSystemEmitter({
