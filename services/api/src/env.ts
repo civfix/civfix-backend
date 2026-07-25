@@ -172,7 +172,25 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   // the connection string. Require an sslmode that actually negotiates TLS (db/client.ts then turns that
   // sslmode into an explicit postgres() `ssl` option). Not enforced outside production: local dev and the
   // testcontainers integration suite connect to a loopback container with no TLS at all.
-  if (isProd && DATABASE_URL.length > 0 && !TLS_SSLMODES.has(sslModeOf(DATABASE_URL) ?? "")) {
+  //
+  // EXEMPTION — a link that never leaves the host (see isNonRoutableDbHost). The deployed topology is a
+  // compose stack where the API reaches Postgres as `postgres:5432` on a private bridge network, and the
+  // image is the stock postgres:16-bookworm + PostGIS with NO server certificate: demanding
+  // sslmode=require there does not encrypt the link, it just makes libpq refuse to connect, so the
+  // assertion took the whole API down rather than protecting anything. Requiring TLS is still the right
+  // rule for any hop that crosses a machine, which is exactly what this exemption does NOT cover.
+  //
+  // The residual risk is deliberate and bounded: cleartext on the docker bridge is readable only by
+  // something that already has root on the box (or CAP_NET_ADMIN in the netns), at which point the
+  // Postgres password in the same env file is already exposed. To close it properly, give the postgres
+  // service a cert and set `ssl=on`, then put sslmode=require back in DATABASE_URL — this exemption is
+  // written so that doing so needs no code change.
+  if (
+    isProd &&
+    DATABASE_URL.length > 0 &&
+    !TLS_SSLMODES.has(sslModeOf(DATABASE_URL) ?? "") &&
+    !isNonRoutableDbHost(DATABASE_URL)
+  ) {
     errors.push(
       "DATABASE_URL: production requires TLS — append ?sslmode=require (or verify-ca / verify-full); " +
         "postgres.js otherwise connects in cleartext",
@@ -379,6 +397,41 @@ export function sslModeOf(databaseUrl: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * Does this DATABASE_URL name a host the packets can never leave the machine to reach?
+ *
+ * Exists only to scope the production TLS assertion above. Two shapes qualify, both of which are
+ * unroutable by construction rather than by convention:
+ *
+ *   - LOOPBACK — `localhost`, any `127.0.0.0/8` address, or `::1`. The kernel never puts these on a wire.
+ *   - A SINGLE-LABEL hostname — `postgres`, the compose service alias. A name with no dot cannot be a
+ *     public DNS name; it resolves only through the container's own resolver on the private bridge.
+ *
+ * Everything else keeps requiring TLS, INCLUDING the RFC1918 ranges (10/8, 172.16/12, 192.168/16) and
+ * anything with a dot. Those are the shapes that traverse a real network — a VPC peer, a managed
+ * Postgres, a second box — and "it is a private IP" has never meant "nobody can see the wire". Fail
+ * closed on anything unparseable, so a malformed URL is asserted against rather than exempted.
+ *
+ * A trailing-dot FQDN (`postgres.`) contains a dot and is therefore NOT exempt: the conservative answer
+ * for a name we did not anticipate is to demand TLS.
+ */
+export function isNonRoutableDbHost(databaseUrl: string): boolean {
+  let host: string
+  try {
+    host = new URL(databaseUrl).hostname.trim().toLowerCase()
+  } catch {
+    return false
+  }
+  if (host.length === 0) return false
+  // `new URL` KEEPS the brackets around an IPv6 literal (hostname is `[::1]`, not `::1`), so strip them
+  // before comparing. Doing it unconditionally is safe: no other host shape here contains brackets.
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1)
+  if (host === "localhost" || host === "::1") return true
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true
+  // Single-label container alias: letters/digits/hyphen/underscore only, and crucially no dot or colon.
+  return /^[a-z0-9_-]+$/.test(host)
 }
 
 /** Build a partial object of the present optional string keys, trimming values (blank/absent omitted). */

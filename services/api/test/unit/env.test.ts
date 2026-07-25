@@ -190,17 +190,52 @@ describe("loadEnv", () => {
     },
   )
 
+  // The host here is DOTTED on purpose: a single-label host is exempt from the TLS assertion (see the
+  // isNonRoutableDbHost block below), so using `db` would make these cases pass for the wrong reason.
   it.each([undefined, "disable", "prefer", "allow"])(
-    "refuses to boot production with sslmode=%s",
+    "refuses to boot production with sslmode=%s on a routable host",
     (mode) => {
       const source = validProdEnv()
       source.DATABASE_URL =
         mode === undefined
-          ? "postgres://user:pass@db:5432/civfix"
-          : `postgres://user:pass@db:5432/civfix?sslmode=${mode}`
+          ? "postgres://user:pass@pg.example.com:5432/civfix"
+          : `postgres://user:pass@pg.example.com:5432/civfix?sslmode=${mode}`
       expect(() => loadEnv(source)).toThrow(/DATABASE_URL: production requires TLS/)
     },
   )
+
+  // ---- The TLS assertion's non-routable-host exemption ----
+  //
+  // Demanding sslmode=require against a Postgres with no server certificate does not encrypt anything,
+  // it makes libpq refuse to connect — so a link that cannot leave the machine is exempt. The boundary
+  // is the whole point of the control: anything that crosses a wire must still be asserted against.
+
+  it.each([
+    ["compose service alias", "postgres://user:pass@postgres:5432/civfix"],
+    ["single-label with hyphen", "postgres://user:pass@civfix-postgres:5432/civfix"],
+    ["localhost", "postgres://user:pass@localhost:5432/civfix"],
+    ["127.0.0.1", "postgres://user:pass@127.0.0.1:5432/civfix"],
+    ["127.x loopback", "postgres://user:pass@127.16.0.9:5432/civfix"],
+    ["IPv6 loopback", "postgres://user:pass@[::1]:5432/civfix"],
+  ])("allows a cleartext production link to a non-routable host: %s", (_label, url) => {
+    const source = validProdEnv()
+    source.DATABASE_URL = url
+    expect(() => loadEnv(source)).not.toThrow()
+  })
+
+  it.each([
+    ["dotted FQDN", "postgres://user:pass@pg.example.com:5432/civfix"],
+    ["trailing-dot FQDN", "postgres://user:pass@postgres.:5432/civfix"],
+    ["RFC1918 10/8", "postgres://user:pass@10.0.0.5:5432/civfix"],
+    ["RFC1918 172.16/12", "postgres://user:pass@172.16.0.5:5432/civfix"],
+    ["RFC1918 192.168/16", "postgres://user:pass@192.168.1.5:5432/civfix"],
+    ["public IP", "postgres://user:pass@203.0.113.10:5432/civfix"],
+    ["non-loopback 128.x", "postgres://user:pass@128.0.0.1:5432/civfix"],
+  ])("still requires TLS in production for a routable host: %s", (_label, url) => {
+    const source = validProdEnv()
+    source.DATABASE_URL = url
+    expect(() => loadEnv(source)).toThrow(/DATABASE_URL: production requires TLS/)
+  })
 
   it("does not require TLS outside production (dev + testcontainers connect in the clear)", () => {
     expect(() =>
