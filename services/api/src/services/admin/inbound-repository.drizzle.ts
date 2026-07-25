@@ -10,12 +10,19 @@
  *
  * Mapping to @civfix/shared: list -> InboundEmailListItemDTO[]; get -> InboundEmailDTO. `localPart` is
  * derived from `recipient` (split on '@'); attachment keys are the raw R2 keys (the route presigns them).
+ * list() selects only what a list ROW needs (bounded body prefixes, no headers/attachments jsonb); the
+ * full-row select is get()'s alone.
  */
 
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { likeContains } from "./like.js"
 import { writeAudit } from "./audit.js"
+import {
+  HTML_PREVIEW_SOURCE_CHARS,
+  PREVIEW_SOURCE_CHARS,
+  toPreview,
+} from "./mail-preview.js"
 import type {
   InboundEmailDTO,
   InboundEmailListItemDTO,
@@ -57,14 +64,8 @@ export interface InboundRepository {
   setStatus(id: string, status: InboundEmailStatus, actorId: string | null): Promise<boolean>
 }
 
-const PREVIEW_LEN = 140
-
-/** Truncate a body to a short preview string for the list row. */
-export function toPreview(body: string | null): string {
-  if (!body) return ""
-  const flat = body.replace(/\s+/g, " ").trim()
-  return flat.length > PREVIEW_LEN ? flat.slice(0, PREVIEW_LEN) : flat
-}
+/** The preview policy now lives in mail-preview.ts (one policy for the inbox + the mail lists). */
+export { toPreview }
 
 /** The local-part of a catch-all recipient (e.g. "support" from "support@civfix.org"). */
 export function localPartOf(recipient: string | null): string {
@@ -73,31 +74,41 @@ export function localPartOf(recipient: string | null): string {
   return at > 0 ? recipient.slice(0, at) : recipient
 }
 
-/** A row as selected back from SQL (snake_case columns). */
-interface InboundRowSelect {
+/**
+ * The columns the LIST projection needs. `preview_*` are bounded prefixes of the bodies, not the bodies:
+ * a list page used to drag body_html (up to 512 KB a row), headers and the attachments jsonb across the
+ * wire only to throw them away — ~13 MB of discarded payload on a worst-case 25-row page.
+ */
+interface InboundListRowSelect {
   id: string
-  message_id: string
   from_addr: string | null
-  to_addr: string | null
   recipient: string | null
   subject: string | null
-  body_text: string | null
-  body_html: string | null
-  headers: Record<string, string> | null
-  attachments: MailAttachment[] | null
+  preview_text: string | null
+  preview_html: string | null
   has_attachments: boolean
   status: InboundEmailStatus
   received_at: Date
 }
 
-function toListItem(r: InboundRowSelect): InboundEmailListItemDTO {
+/** A full row as selected back from SQL for get() (snake_case columns). */
+interface InboundRowSelect extends Omit<InboundListRowSelect, "preview_text" | "preview_html"> {
+  message_id: string
+  to_addr: string | null
+  body_text: string | null
+  body_html: string | null
+  headers: Record<string, string> | null
+  attachments: MailAttachment[] | null
+}
+
+function toListItem(r: InboundListRowSelect): InboundEmailListItemDTO {
   return {
     id: r.id,
     from: r.from_addr ?? "",
     recipient: r.recipient ?? "",
     localPart: localPartOf(r.recipient),
     subject: r.subject ?? "",
-    preview: toPreview(r.body_text),
+    preview: toPreview(r.preview_text, r.preview_html),
     ts: r.received_at.toISOString(),
     status: r.status,
     unread: r.status === "unread",
@@ -107,7 +118,7 @@ function toListItem(r: InboundRowSelect): InboundEmailListItemDTO {
 
 function toDTO(r: InboundRowSelect): InboundEmailDTO {
   return {
-    ...toListItem(r),
+    ...toListItem({ ...r, preview_text: r.body_text, preview_html: r.body_html }),
     bodyText: r.body_text ?? "",
     bodyHtml: r.body_html,
     messageId: r.message_id,
@@ -173,9 +184,11 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
               return sql`AND (from_addr ILIKE ${like} ESCAPE '\\' OR subject ILIKE ${like} ESCAPE '\\' OR recipient ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
-      const rows = await sql<InboundRowSelect[]>`
-        SELECT id, message_id, from_addr, to_addr, recipient, subject, body_text, body_html,
-               headers, attachments, has_attachments, status, received_at
+      const rows = await sql<InboundListRowSelect[]>`
+        SELECT id, from_addr, recipient, subject,
+               left(body_text, ${PREVIEW_SOURCE_CHARS}) AS preview_text,
+               left(body_html, ${HTML_PREVIEW_SOURCE_CHARS}) AS preview_html,
+               has_attachments, status, received_at
         FROM inbound_emails
         WHERE true
           ${statusFilter}

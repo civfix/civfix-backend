@@ -281,6 +281,13 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
+      // CONTRACT LIMIT (not a bug to "fix" here): a re-finalize of an already-processed asset reports
+      // 'validating' even when the row is terminally ready/rejected/held, because
+      // FinalizeMediaResponseSchema.status is a z.ZodLiteral<"validating"> — the only value this response
+      // can carry. Combined with getMedia's status !== "ready" -> 404 (the H9 non-oracle control, which
+      // must NOT be relaxed), a REJECTED upload therefore has no terminal signal anywhere on the media
+      // surface: 'validating' from finalize, 404 from the poll, forever. Widening the literal to
+      // MediaStatus in @civfix/shared is the fix; it is a contract change, so it is not made here.
       if (asset.status !== "validating") {
         return { mediaId: asset.id, status: "validating" }
       }

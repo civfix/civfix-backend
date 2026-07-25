@@ -33,6 +33,14 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
 
 export function makeDrizzleMediaRepository(db: Db): MediaRepository {
   return {
+    /**
+     * `codec` is deliberately NOT part of the intake insert: at presign time the only codec-ish input is
+     * the client's declared contentType, which is untrusted and frequently wrong. The column is written
+     * later by the media-worker from what ffprobe reports about the actual bytes (media-worker-repo's
+     * applyResult, called from media-worker/src/jobs/media-checks.ts) — and it stays NULL for images by
+     * design (the image branch of the worker's pipeline reports no codec). So `media_assets.codec` is a
+     * VIDEO fact about processed bytes only, and nothing may derive an image's MIME type from it.
+     */
     async insert(row: NewMediaAsset): Promise<void> {
       await db.insert(mediaAssets).values({
         id: row.id,

@@ -78,6 +78,13 @@ export const mailThreads = pgTable(
     // NOTE: trigram GIN indexes `mail_threads_org_trgm` / `mail_threads_subject_trgm`
     // (USING gin (... gin_trgm_ops)) back the inbox ILIKE search and live in
     // drizzle/0014_search_trgm.sql; not mirrored here (raw-SQL-only search).
+    // NOTE: the three partial UNIQUE indexes that make "at most one thread per subject" a DB invariant —
+    // `mail_threads_report_uk (report_id) WHERE report_id IS NOT NULL`,
+    // `mail_threads_cleanup_uk (cleanup_id) WHERE cleanup_id IS NOT NULL` and
+    // `mail_threads_geoid_only_uk (jurisdiction_geoid) WHERE report_id IS NULL AND cleanup_id IS NULL AND
+    // jurisdiction_geoid IS NOT NULL` — live in drizzle/0039_mail_thread_unique.sql and are the arbiters
+    // the find-or-create ON CONFLICT paths name. Intentionally not mirrored here (partial predicates, same
+    // convention as the partial indexes noted above).
   ],
 )
 

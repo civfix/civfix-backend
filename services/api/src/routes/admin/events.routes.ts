@@ -17,22 +17,25 @@ import {
   PostMessageRequestSchema,
   SetEventOutcomeRequestSchema,
   SetEventStatusRequestSchema,
-  IdSchema,
   type AdminEventDTO,
   type AdminEventListResponse,
-  type AdminOkResponse,
 } from "@civfix/shared"
-import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { csrfProtect } from "../../auth/csrf.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
-import { idParam, parse } from "./_route-utils.js"
+import {
+  idParam,
+  overridableService,
+  parse,
+  parseBodyWithId,
+  sendOk,
+  spreadNow,
+  twoIdParams,
+} from "./_route-utils.js"
 import {
   makeAdminEventService,
   type AdminEventRepository,
-  type AdminEventService,
 } from "../../services/admin/admin-event-service.js"
 import { makeDrizzleAdminEventRepository } from "../../services/admin/admin-event-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
@@ -55,21 +58,25 @@ export async function registerAdminEventsRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  function service(): AdminEventService {
-    const overrides = app.adminEventOverrides
-    if (overrides) {
-      return makeAdminEventService({
+  const csrfProtect = container.csrf.protect
+
+  const service = overridableService(
+    app,
+    "adminEventOverrides",
+    (overrides) =>
+      makeAdminEventService({
         repo: overrides.repo,
         ...(overrides.presignThumb !== undefined ? { presignThumb: overrides.presignThumb } : {}),
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+        ...spreadNow(overrides),
+      }),
+    () => {
+      const repo: AdminEventRepository = makeDrizzleAdminEventRepository(container.getDb().sql)
+      return makeAdminEventService({
+        repo,
+        presignThumb: (thumbKey) => container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
       })
-    }
-    const repo: AdminEventRepository = makeDrizzleAdminEventRepository(container.getDb().sql)
-    return makeAdminEventService({
-      repo,
-      presignThumb: (thumbKey) => container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
-    })
-  }
+    },
+  )
 
   route(app, "listAdminEvents", async (request, reply) => {
     const query = parse(AdminEventListQuerySchema, request.query)
@@ -85,69 +92,53 @@ export async function registerAdminEventsRoutes(
 
   route(app, "setEventStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(SetEventStatusRequestSchema, { ...(request.body as object), id })
+    const { id, body } = parseBodyWithId(SetEventStatusRequestSchema, request)
     await service().setStatus(id, { status: body.status, actorId: operatorId })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   // Log bags collected — the only write path for cleanups.bags.
   route(app, "setEventOutcome", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(SetEventOutcomeRequestSchema, { ...(request.body as object), id })
+    const { id, body } = parseBodyWithId(SetEventOutcomeRequestSchema, request)
     await service().setOutcome(id, { bags: body.bags, actorId: operatorId })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   route(app, "flagEvent", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(FlagEventRequestSchema, { ...(request.body as object), id })
+    const { id, body } = parseBodyWithId(FlagEventRequestSchema, request)
     await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   route(app, "cancelEvent", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(CancelRequestSchema, { ...(request.body as object), id })
+    const { id, body } = parseBodyWithId(CancelRequestSchema, request)
     await service().cancel(id, { reason: body.reason ?? null, actorId: operatorId })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   route(app, "postEventMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(PostMessageRequestSchema, { ...(request.body as object), id })
+    const { id, body } = parseBodyWithId(PostMessageRequestSchema, request)
     await service().postMessage(id, { body: body.body, actorId: operatorId })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   // The audit (event.reports_linked) is written inside the service's repo transaction (atomic with the
   // junction + timeline rows), using the operator userId resolved here.
   route(app, "linkEventReports", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
-    const { id } = idParam(request)
-    const body = parse(LinkEventReportsRequestSchema, { ...(request.body as object), id })
+    const { id, body } = parseBodyWithId(LinkEventReportsRequestSchema, request)
     await service().linkReports(id, body.reportIds, operatorId)
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   route(app, "unlinkEventReport", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
-    const { id, reportId } = parse(
-      z.object({ id: IdSchema, reportId: IdSchema }).strict(),
-      request.params,
-    )
+    const { id, reportId } = twoIdParams(request, "reportId")
     await service().unlinkReport(id, reportId, operatorId)
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 }

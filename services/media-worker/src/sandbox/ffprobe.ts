@@ -25,8 +25,6 @@ export interface ProbeResult {
   height: number | null
   /** True when at least one video stream is present. */
   isVideo: boolean
-  /** Container/format short name as ffprobe reports it (e.g. "mov,mp4,m4a,3gp,3g2,mj2"). */
-  container: string | null
 }
 
 /** Resolve the vendored ffprobe binary path. ffprobe-static exports { path }. */
@@ -46,7 +44,6 @@ interface FfprobeStream {
 
 interface FfprobeFormat {
   duration?: string
-  format_name?: string
 }
 
 interface FfprobeJson {
@@ -117,7 +114,6 @@ export async function probeBytes(bytes: Uint8Array, limits: WorkerLimits): Promi
       width: typeof video?.width === "number" ? video.width : null,
       height: typeof video?.height === "number" ? video.height : null,
       isVideo,
-      container: parsed.format?.format_name ?? null,
     }
   } finally {
     await scratch.cleanup()

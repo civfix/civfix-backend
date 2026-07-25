@@ -1,9 +1,9 @@
 
-import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
 import { clampLimit, decodeCursor } from "./pagination.js"
 import { paginate } from "../../db/cursor-helpers.js"
+import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import type {
   AdminUserRecord,
   AdminUserRepository,
@@ -23,20 +23,35 @@ import type {
 } from "@civfix/shared"
 import { likeContains } from "./like.js"
 
-type SqlFragment = postgres.Fragment
+/**
+ * A NULL `users.created_at` is impossible (the column is NOT NULL DEFAULT now() since 0001_core), but the
+ * row type is nullable and the keyset anchor must be a Date: falling back here rather than omitting the
+ * anchor means a surprise NULL could never make `paginate` return a null cursor while a probe row exists,
+ * which silently ENDS pagination.
+ */
+const EPOCH = new Date(0)
 
+/**
+ * SEARCHED facet counts saturate here so a chip refresh never runs the per-row search probe over the whole
+ * table. Matches the reports repo's FACET_COUNT_CAP. The UNFILTERED counts stay exact: they are the
+ * dashboard's account totals and AdminUserCounts has no way to say "999+", so a cap there would report a
+ * floor as a total.
+ */
+const FACET_COUNT_CAP = 999
+
+/**
+ * The user-search predicate (display name / handle, plus an EXISTS probe on the jurisdiction of the user's
+ * reports — the "city" column is derived, not stored, so it can only be searched through that join). Shared
+ * by listUsers + countByFacet so the chips and the list agree.
+ */
 function searchUsersFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
-  const like = likeContains(q)
-  return sql`AND (
-    u.display_name ILIKE ${like} ESCAPE '\\'
-    OR (u.handle::text) ILIKE ${like} ESCAPE '\\'
-    OR EXISTS (
-      SELECT 1 FROM reports r2
-      JOIN jurisdictions j2 ON j2.geoid = r2.jurisdiction_geoid
-      WHERE r2.reporter_user_id = u.id AND j2.name ILIKE ${like} ESCAPE '\\'
-    )
+  const cityProbe = sql`EXISTS (
+    SELECT 1 FROM reports r2
+    JOIN jurisdictions j2 ON j2.geoid = r2.jurisdiction_geoid
+    WHERE r2.reporter_user_id = u.id AND j2.name ILIKE ${likeContains(q)} ESCAPE '\\'
   )`
+  return sql`AND ${ilikeAnyOf(sql, [sql`u.display_name`, sql`u.handle::text`], q, [cityProbe])}`
 }
 
 interface UserRowSelect {
@@ -156,31 +171,68 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       if (anchor !== null) {
         conds.push(sql`AND (u.created_at, u.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
-      const extraWhere = conds.reduce<SqlFragment>((acc, c) => sql`${acc} ${c}`, sql``)
+      const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY u.created_at DESC, u.id DESC LIMIT ${limit + 1}`
 
       const rows = (await userSelect(sql, extraWhere, orderLimit, false)) as unknown as UserRowSelect[]
       const { items, nextCursor } = paginate(rows, limit, (r) => ({
-        ...(r.created_at !== null ? { createdAt: r.created_at } : {}),
+        createdAt: r.created_at ?? EPOCH,
         id: r.id,
       }))
       return { records: items.map(toRecord), nextCursor }
     },
 
     async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
+      // UNFILTERED (no q): an EXACT count. AdminUserCounts is a plain 4-number contract with no truncation
+      // flag, so a capped total renders as if 999 WERE the account total on the dashboard's headline chips —
+      // wrong in a way the console cannot signal. This arm is a straight aggregate over users + its
+      // user_moderation PK join with no per-row subquery, which is the cheap half of the cost the cap was
+      // added for; the expensive half is the search probe below, which stays capped.
+      if (args.q === null) {
+        const rows = await sql<{ all: string; active: string; suspended: string; flagged: string }[]>`
+          SELECT
+            COUNT(*)::text AS all,
+            COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
+            COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'suspended')::text AS suspended,
+            COUNT(*) FILTER (WHERE COALESCE(um.flagged, false))::text AS flagged
+          FROM users u
+          LEFT JOIN user_moderation um ON um.user_id = u.id
+        `
+        const exact = rows[0]
+        return {
+          all: Number(exact?.all ?? "0"),
+          active: Number(exact?.active ?? "0"),
+          suspended: Number(exact?.suspended ?? "0"),
+          flagged: Number(exact?.flagged ?? "0"),
+        }
+      }
+
+      // SEARCHED: counted over a CAPPED candidate set, like the reports/events facets. The chip only needs
+      // "this many or more", and searchUsersFragment's EXISTS-over-reports probe is evaluated per row, so an
+      // exact count here is an O(rows) scan with a correlated subquery on every chip refresh. Candidates are
+      // capped at (buckets x cap)+1 so each status bucket can still reach the cap (the reports repo's
+      // countByBucket uses the same shape for its three buckets). Above the cap the numbers are a floor.
       const search = searchUsersFragment(sql, args.q)
+      const cap = FACET_COUNT_CAP
       const rows = await sql<
         { all: string; active: string; suspended: string; flagged: string }[]
       >`
+        WITH candidates AS (
+          SELECT
+            COALESCE(um.account_status, 'active') AS account_status,
+            COALESCE(um.flagged, false) AS flagged
+          FROM users u
+          LEFT JOIN user_moderation um ON um.user_id = u.id
+          WHERE TRUE
+          ${search}
+          LIMIT ${cap * 2 + 1}
+        )
         SELECT
-          COUNT(*)::text AS all,
-          COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
-          COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'suspended')::text AS suspended,
-          COUNT(*) FILTER (WHERE COALESCE(um.flagged, false) = true)::text AS flagged
-        FROM users u
-        LEFT JOIN user_moderation um ON um.user_id = u.id
-        WHERE TRUE
-        ${search}
+          LEAST(COUNT(*), ${cap})::text AS all,
+          LEAST(COUNT(*) FILTER (WHERE account_status = 'active'), ${cap})::text AS active,
+          LEAST(COUNT(*) FILTER (WHERE account_status = 'suspended'), ${cap})::text AS suspended,
+          LEAST(COUNT(*) FILTER (WHERE flagged), ${cap})::text AS flagged
+        FROM candidates
       `
       const r = rows[0]
       return {
@@ -189,6 +241,13 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         suspended: Number(r?.suspended ?? "0"),
         flagged: Number(r?.flagged ?? "0"),
       }
+    },
+
+    async userExists(id: string): Promise<boolean> {
+      // Deliberately NOT filtered on deleted_at: getUser is not either, so a soft-deleted account the
+      // console can still open keeps resolving its sub-activity tabs.
+      const rows = await sql<{ ok: number }[]>`SELECT 1 AS ok FROM users WHERE id = ${id} LIMIT 1`
+      return rows.length > 0
     },
 
     async getUser(id: string): Promise<AdminUserRecord | null> {
@@ -302,10 +361,15 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     ): Promise<{ records: UserMessageRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
       const anchor = decodeKeyset(cursor)
-      const cursorFilter =
+      // PER-BRANCH keyset + window (the pattern activity-repository already uses): pushed inside each arm of
+      // the union rather than applied to its result. Outside, every message the user had EVER sent across
+      // four tables was materialized and sorted on every page. Each arm can contribute at most lim+1 rows
+      // and the final cut is also lim+1, so the narrowing is lossless.
+      const branchCursor = (createdAt: SqlFragment, id2: SqlFragment): SqlFragment =>
         anchor !== null
-          ? sql`AND (m.created_at, m.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          ? sql`AND (${createdAt}, ${id2}) < (${anchor.createdAt}, ${anchor.id}::uuid)`
           : sql``
+      const probe = lim + 1
       const rows = await sql<
         {
           id: string
@@ -320,39 +384,49 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         SELECT m.id, m.body, m.thread, m.created_at, m.deleted_at, m.source, m.source_id
         FROM (
           -- Event chat: the navigable origin is the cleanup/event the message belongs to.
-          SELECT cm.id, cm.body, c.title AS thread, cm.created_at, cm.deleted_at, 'chat' AS source,
+          (SELECT cm.id, cm.body, c.title AS thread, cm.created_at, cm.deleted_at, 'chat' AS source,
                  cm.cleanup_id AS source_id
           FROM chat_messages cm
           JOIN cleanups c ON c.id = cm.cleanup_id
           WHERE cm.sender_id = ${id} AND cm.cleanup_id IS NOT NULL
+          ${branchCursor(sql`cm.created_at`, sql`cm.id`)}
+          ORDER BY cm.created_at DESC, cm.id DESC
+          LIMIT ${probe})
           UNION ALL
           -- Standalone group chats are distinct from cleanup chat and have no admin detail destination.
-          SELECT gcm.id, gcm.body, cg.name AS thread, gcm.created_at, gcm.deleted_at, 'group' AS source,
+          (SELECT gcm.id, gcm.body, cg.name AS thread, gcm.created_at, gcm.deleted_at, 'group' AS source,
                  gcm.group_id AS source_id
           FROM chat_messages gcm
           JOIN chat_groups cg ON cg.id = gcm.group_id
           WHERE gcm.sender_id = ${id} AND gcm.group_id IS NOT NULL
+          ${branchCursor(sql`gcm.created_at`, sql`gcm.id`)}
+          ORDER BY gcm.created_at DESC, gcm.id DESC
+          LIMIT ${probe})
           UNION ALL
           -- DM: no admin surface to navigate to -> source_id NULL.
-          SELECT dm.id, dm.body, COALESCE(NULLIF('@' || other.handle::text, '@'), other.display_name) AS thread,
+          (SELECT dm.id, dm.body, COALESCE(NULLIF('@' || other.handle::text, '@'), other.display_name) AS thread,
                  dm.created_at, dm.deleted_at, 'dm' AS source, NULL::uuid AS source_id
           FROM dm_messages dm
           JOIN dm_threads t ON t.id = dm.thread_id
           LEFT JOIN users other
             ON other.id = CASE WHEN t.user_lo = ${id} THEN t.user_hi ELSE t.user_lo END
           WHERE dm.sender_id = ${id}
+          ${branchCursor(sql`dm.created_at`, sql`dm.id`)}
+          ORDER BY dm.created_at DESC, dm.id DESC
+          LIMIT ${probe})
           UNION ALL
           -- Report discussion: the navigable origin is the parent report.
-          SELECT rcm.id, rcm.body, rc.title AS thread, rcm.created_at, rcm.deleted_at, 'report' AS source,
+          (SELECT rcm.id, rcm.body, rc.title AS thread, rcm.created_at, rcm.deleted_at, 'report' AS source,
                  rcm.report_id AS source_id
           FROM chat_messages rcm
           JOIN reports rc ON rc.id = rcm.report_id
           WHERE rcm.sender_id = ${id} AND rcm.report_id IS NOT NULL
+          ${branchCursor(sql`rcm.created_at`, sql`rcm.id`)}
+          ORDER BY rcm.created_at DESC, rcm.id DESC
+          LIMIT ${probe})
         ) m
-        WHERE TRUE
-        ${cursorFilter}
         ORDER BY m.created_at DESC, m.id DESC
-        LIMIT ${lim + 1}
+        LIMIT ${probe}
       `
       const { items, nextCursor } = paginate(
         rows.map((r) => ({

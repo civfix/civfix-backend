@@ -47,6 +47,9 @@ export const GOV_CHECKS: readonly GovVerificationCheck[] = ["linkedin", "directo
 /** The role granted to an approved gov claim's user. */
 export const GOV_ADMIN_ROLE: Role = "gov_admin"
 
+/** The console-untouchable role (H3): approving a claim must never re-role an operator account. */
+const OPERATOR_ROLE: Role = "operator"
+
 /** The stored per-check state (status + optional evidence + note). */
 export interface GovCheckRecord {
   status: GovCheckStatus
@@ -178,15 +181,21 @@ export interface GovClaimsServiceDeps {
   repo: GovClaimsRepository
   users: UserProvisioner
   /**
-   * M4: revoke every live session of the user whose role just changed. REQUIRED — approving a gov claim
-   * can DEMOTE a prior operator to gov_admin, and without this the operator role stays live in every warm
-   * session (and sliding expiry means indefinitely). See services/admin/role-change.ts.
+   * M4: revoke every live session of the user whose role just changed. REQUIRED — a warm session serves the
+   * role baked into its Redis projection, and sliding expiry means it can do so indefinitely. See
+   * services/admin/role-change.ts.
    */
   revokeSessions: RevokeAllSessions
   /** Injectable clock (defaults to Date.now) so the relative-age labels are deterministic. */
   now?: () => Date
 }
 
+/**
+ * `actorId` is NON-NULL on verify/approve/reject: every caller is an operator-guarded gov route, where
+ * `requireOperator(request)` returns a `string` or throws, and each of the three writes an audit row for a
+ * privilege decision that must be attributable. The REPOSITORY interface above keeps its nullable slot —
+ * it is the generic persistence seam and `writeAudit` accepts a system actor.
+ */
 export interface GovClaimsService {
   list(query: GovClaimListQuery): Promise<GovClaimListResponse>
   getClaim(id: string): Promise<GovClaimDTO>
@@ -197,11 +206,11 @@ export interface GovClaimsService {
       status: GovCheckStatus
       evidence: string | null
       note: string | null
-      actorId: string | null
+      actorId: string
     },
   ): Promise<void>
-  approve(id: string, input: { actorId: string | null; note: string | null }): Promise<void>
-  reject(id: string, input: { reason: string; actorId: string | null }): Promise<void>
+  approve(id: string, input: { actorId: string; note: string | null }): Promise<void>
+  reject(id: string, input: { reason: string; actorId: string }): Promise<void>
 }
 
 export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsService {
@@ -254,16 +263,23 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
         status: GovCheckStatus
         evidence: string | null
         note: string | null
-        actorId: string | null
+        actorId: string
       },
     ): Promise<void> {
       const updated = await deps.repo.setCheck(id, input)
-      if (!updated) throw AppError.notFound("Gov claim not found")
+      if (!updated) {
+        // setCheck's `WHERE status='pending'` returns null for BOTH a missing claim and a decided one, so
+        // re-read to tell them apart (mirrors reject()). An operator racing a colleague's decision was being
+        // told the claim does not exist.
+        const claim = await deps.repo.getClaim(id)
+        if (!claim) throw AppError.notFound("Gov claim not found")
+        throw AppError.conflict("Gov claim is not pending")
+      }
     },
 
     async approve(
       id: string,
-      input: { actorId: string | null; note: string | null },
+      input: { actorId: string; note: string | null },
     ): Promise<void> {
       const claim = await deps.repo.getClaim(id)
       if (!claim) throw AppError.notFound("Gov claim not found")
@@ -295,6 +311,16 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
             "Cannot elevate an existing account whose email is not verified",
           )
         }
+        // H3 (same rule the users console enforces in setRole): an OPERATOR account is not changeable from
+        // the console. Approving a claim whose contact_email happens to be an operator's address would
+        // demote them to gov_admin and revoke every one of their sessions — one operator stripping another,
+        // through the gov queue instead of the role endpoint. Operator authority is governed by ADMIN_EMAILS
+        // + Cloudflare Access; if the applicant really is that person, they need a separate address.
+        if (user.role === OPERATOR_ROLE) {
+          throw AppError.forbidden(
+            "Operator accounts are managed through ADMIN_EMAILS; they cannot be changed from the console.",
+          )
+        }
       } else {
         // No account yet: create a placeholder with an UNverified email. It has no sessions and only
         // becomes usable when the real owner signs in via Email-OTP, which proves control of the address.
@@ -317,9 +343,10 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       // operator can re-approve or the role can be re-granted) - the unrecoverable orphan-elevation the
       // review flagged (granted role, no claim) can no longer happen.
       // M4: the grant goes through applyRoleChange, which ALWAYS revokes the user's sessions after the
-      // write. This matters most in the demotion direction: a claim contact who is currently an OPERATOR
-      // becomes gov_admin here, and without the revoke their live sessions keep serving roles:["operator"]
-      // from the Redis session projection until expiry — which sliding expiry pushes out indefinitely.
+      // write. The escalation direction needs it as much as a demotion would: the account's live sessions
+      // carry the OLD role in the Redis session projection, and sliding expiry pushes their expiry out
+      // indefinitely, so without the revoke the new gov_admin keeps browsing as a plain citizen. (The
+      // operator-demotion case this guarded is now refused outright above.)
       if (user.role !== GOV_ADMIN_ROLE) {
         const target = user
         await applyRoleChange(
@@ -335,7 +362,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       }
     },
 
-    async reject(id: string, input: { reason: string; actorId: string | null }): Promise<void> {
+    async reject(id: string, input: { reason: string; actorId: string }): Promise<void> {
       const updated = await deps.repo.reject(id, input)
       if (!updated) {
         // Distinguish missing from already-decided so the operator gets an accurate error.

@@ -1,6 +1,6 @@
 
 import { createHash } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/shared"
 import { constantTimeStringEqual } from "./crypto.js"
 
 export interface VerifiedIdToken {
@@ -138,7 +138,13 @@ export class RemoteJwksVerifier implements JwksVerifier {
   private async fetchKeys(jwksUrl: string): Promise<Jwk[]> {
     const res = await this.fetchImpl(jwksUrl)
     if (!res.ok) {
-      throw AppError.unauthorized("Could not fetch identity provider keys.")
+      // NOT 401: we could not reach Apple/Google, which says nothing about the presented credential.
+      // Reporting it as "unauthorized" told the client to re-authenticate during a provider outage —
+      // and every retry burns another single-use sign-in nonce. 503 says "retry", not "sign in again".
+      // A genuinely unknown `kid` still yields 401 (resolveKey).
+      throw new AppError(ErrorCode.INTERNAL, "Could not reach the identity provider.", {
+        httpStatus: 503,
+      })
     }
     const body = (await res.json()) as { keys?: Jwk[] }
     const keys = Array.isArray(body.keys) ? body.keys : []
@@ -196,6 +202,17 @@ async function verifyRs256(jwk: Jwk, signingInput: string, signatureB64: string)
   return crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, data)
 }
 
+/**
+ * Skew tolerance for the NOT-YET-VALID check, matching the Cloudflare Access verifier's `clockTolerance`
+ * (cf-access.ts). Our clock and the provider's are not synchronized, so a token minted moments ago can
+ * carry an `nbf` a second or two in OUR future; refusing it fails a sign-in for no reason other than drift
+ * AND burns the caller's single-use nonce, forcing the whole platform sheet again.
+ *
+ * `exp` deliberately keeps ZERO tolerance: an expired credential is expired, and a token that lapses
+ * in-flight costs at most one retry, so there is nothing here worth trading acceptance-after-expiry for.
+ */
+const NOT_YET_VALID_TOLERANCE_SECONDS = 30
+
 function validateClaims(
   claims: JwtClaims,
   params: VerifyParams,
@@ -213,7 +230,7 @@ function validateClaims(
   if (typeof claims.exp !== "number" || claims.exp <= nowSec) {
     throw AppError.unauthorized("Identity token has expired.")
   }
-  if (typeof claims.nbf === "number" && claims.nbf > nowSec) {
+  if (typeof claims.nbf === "number" && claims.nbf > nowSec + NOT_YET_VALID_TOLERANCE_SECONDS) {
     throw AppError.unauthorized("Identity token is not yet valid.")
   }
   if (!claims.sub) {

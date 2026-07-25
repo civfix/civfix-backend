@@ -2,11 +2,12 @@
  * In-memory MediaWorkerRepo for offline unit tests (no database / no Docker).
  *
  * Mirrors the production Drizzle repo's surface (find / applyResult / insertAbuseFlag / findOrphans /
- * deleteById) so the job handlers and the orphan sweep can be exercised with NO Postgres. Records the
- * abuse_flags it is asked to insert so tests can assert the flag-and-hold flow.
+ * deleteById / the media_reap_tombstones methods) so the job handlers and the orphan sweep can be exercised
+ * with NO Postgres. Records the abuse_flags it is asked to insert so tests can assert the flag-and-hold flow.
  */
 
 import type {
+  LeakedObjectRow,
   MediaResultPatch,
   MediaWorkerAsset,
   MediaWorkerRepo,
@@ -56,6 +57,10 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
   failApplyResult: Error | null = null
   /** Set to a non-null Error to make enqueueHeldModerationItem reject (assert it is non-fatal). */
   failModerationEnqueue: Error | null = null
+  /** media_reap_tombstones (0057), keyed by r2_key. Inspectable by tests. */
+  readonly tombstones = new Map<string, LeakedObjectRow>()
+  /** Set to a non-null Error to make recordLeakedObjects reject (assert the leak is still reported). */
+  failRecordLeaked: Error | null = null
   /**
    * REVERSE bindings: media ids referenced by users.avatar_media_id / chat_groups.avatar_media_id. The
    * binding points AT the media row, so the row's own columns look unbound — exactly the shape the old
@@ -124,6 +129,12 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     return Promise.resolve({ ...row })
   }
 
+  /**
+   * Records the CALL, not the row. The production impl now absorbs a re-raise with ON CONFLICT DO NOTHING
+   * against 0056's partial unique index, so a retry there leaves one row; here two calls leave two entries
+   * on purpose — the assertions in these tests are about what the worker asked for. A test that needs the
+   * row-level semantics has to dedupe by (subjectId, reason) itself.
+   */
   insertAbuseFlag(flag: NewAbuseFlag): Promise<void> {
     this.flags.push({
       subjectId: flag.subjectId,
@@ -175,6 +186,49 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
   }): Promise<void> {
     if (this.failModerationEnqueue) return Promise.reject(this.failModerationEnqueue)
     this.moderationEnqueues.push({ ...input })
+    return Promise.resolve()
+  }
+
+  /**
+   * MIRRORS media_reap_tombstones (drizzle/0057) keyed by r2_key: a re-record BUMPS attempts rather than
+   * inserting a second row, which is what retires a key from the retry range. Same upsert semantics as the
+   * Drizzle impl's ON CONFLICT (r2_key) DO UPDATE — a fake that appended instead would retry forever.
+   *
+   * The `keys` DEDUPE is part of that contract, not an optimization: the real impl is ONE multi-row
+   * INSERT ... ON CONFLICT DO UPDATE, which Postgres aborts with 21000 ("cannot affect row a second
+   * time") if the same key appears twice in it — so media-worker-repo.ts collapses the list first, and one
+   * call carrying a duplicate key bumps attempts ONCE. A fake that looped the raw list would bump twice
+   * and quietly retire a key from listLeakedObjects a run early.
+   */
+  recordLeakedObjects(input: {
+    mediaId: string | null
+    keys: string[]
+    error?: string | null
+  }): Promise<void> {
+    if (this.failRecordLeaked) return Promise.reject(this.failRecordLeaked)
+    for (const r2Key of new Set(input.keys)) {
+      const existing = this.tombstones.get(r2Key)
+      if (existing) {
+        existing.attempts += 1
+      } else {
+        this.tombstones.set(r2Key, { r2Key, mediaId: input.mediaId, attempts: 1 })
+      }
+    }
+    return Promise.resolve()
+  }
+
+  listLeakedObjects(limit: number, maxAttempts: number): Promise<LeakedObjectRow[]> {
+    const out: LeakedObjectRow[] = []
+    for (const row of this.tombstones.values()) {
+      if (row.attempts >= maxAttempts) continue
+      out.push({ ...row })
+      if (out.length >= limit) break
+    }
+    return Promise.resolve(out)
+  }
+
+  clearLeakedObject(r2Key: string): Promise<void> {
+    this.tombstones.delete(r2Key)
     return Promise.resolve()
   }
 

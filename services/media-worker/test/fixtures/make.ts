@@ -14,6 +14,11 @@
  *   validMp4()         a 1s h264 testsrc MP4 (ffmpeg) -> the happy video path.
  *   audioOnlyMp4()     an audio-only MP4 (no video stream) -> rejected (not a video).
  *   nonVideoAsMp4      a text/garbage buffer labeled video -> ffprobe fails -> rejected.
+ *   mp4WithLocation()  an h264 MP4 carrying container location/comment tags (proves the remux STRIPS them).
+ *   mpeg4Mp4()         an MP4 whose video codec is mpeg4, i.e. OUTSIDE ALLOWED_VIDEO_CODECS -> rejected.
+ *   h264Mp4OfSeconds() an h264 MP4 of an arbitrary duration (drives the duration-cap branch).
+ *   hlsPlaylist        an HLS (m3u8) body whose segment URL the caller chooses (SSRF boundary).
+ *   ffconcatList       an ffconcat demuxer script referencing local files (arbitrary-file-read boundary).
  *
  * The EXIF GPS builder writes a minimal big-endian TIFF/EXIF APP1 segment with a GPS IFD; it is
  * verified to round-trip through exifr in the unit tests.
@@ -253,4 +258,116 @@ export async function makeAudioOnlyMp4(): Promise<Buffer> {
 /** A non-video buffer labeled as video (ffprobe must fail to read it as media). */
 export function makeNonVideoAsMp4(): Buffer {
   return Buffer.from("ftypnotreallyanmp4 this is garbage masquerading as video\n".repeat(8), "utf8")
+}
+
+/**
+ * A 1s h264 MP4 carrying the container metadata the remux is supposed to destroy: an ISO 6709
+ * `location` (+ its `location-eng` twin, which is what phones actually write) and a device-ish
+ * `comment`. ffprobe reports these under format.tags, so a test can assert they are present here and
+ * ABSENT after remuxStripMetadata - which is the only way to prove the "strips location" claim.
+ */
+export async function makeMp4WithLocationMetadata(): Promise<Buffer> {
+  return ffmpegProduce(
+    (out) => [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=size=160x120:rate=10:duration=1",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-metadata",
+      "location=+37.7-122.4/",
+      "-metadata",
+      "location-eng=+37.7-122.4/",
+      "-metadata",
+      "comment=civfix-fixture-device",
+      "-movflags",
+      "+faststart",
+      "-y",
+      out,
+    ],
+    "located.mp4",
+  )
+}
+
+/** An MP4 whose video stream is mpeg4 (ffprobe codec_name "mpeg4"): a real video, disallowed codec. */
+export async function makeMpeg4Mp4(): Promise<Buffer> {
+  return ffmpegProduce(
+    (out) => [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=size=160x120:rate=10:duration=1",
+      "-c:v",
+      "mpeg4",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-y",
+      out,
+    ],
+    "mpeg4.mp4",
+  )
+}
+
+/** An h264 MP4 of `durationSec` seconds (160x120, cheap): drives the duration-cap branch. */
+export async function makeH264Mp4OfSeconds(durationSec: number): Promise<Buffer> {
+  return ffmpegProduce(
+    (out) => [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      `testsrc=size=160x120:rate=10:duration=${durationSec}`,
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-y",
+      out,
+    ],
+    `dur-${durationSec}.mp4`,
+  )
+}
+
+/**
+ * An HLS playlist body whose single segment is `segmentUrl`. Uploaded as "video", this is the classic
+ * SSRF probe: if ffmpeg/ffprobe were allowed to auto-select the hls demuxer over an unrestricted
+ * protocol set it would FETCH that URL from inside the worker.
+ */
+export function makeHlsPlaylist(segmentUrl: string): Buffer {
+  return Buffer.from(
+    [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:10",
+      "#EXTINF:10.0,",
+      segmentUrl,
+      "#EXT-X-ENDLIST",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+}
+
+/** An ffconcat demuxer script referencing local paths (arbitrary local-file read if it were honored). */
+export function makeFfconcatList(paths: string[]): Buffer {
+  const lines = ["ffconcat version 1.0"]
+  for (const p of paths) {
+    lines.push(`file '${p}'`, "duration 1")
+  }
+  return Buffer.from(`${lines.join("\n")}\n`, "utf8")
 }

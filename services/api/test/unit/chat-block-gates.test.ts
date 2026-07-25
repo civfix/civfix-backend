@@ -118,6 +118,42 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
   })
 })
 
+describe("M11 batch seam: blockedIdsFor replaces the per-candidate gate, with the same stance", () => {
+  const buildBatch = (blockedIdsFor: (a: string, ids: string[]) => Promise<Set<string>>) => {
+    const spy = notificationSpy()
+    const single = vi.fn(() => Promise.resolve(false))
+    const notify = makeReportChatNotifier({
+      notificationService: { createNotification: spy.createNotification } as never,
+      reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
+      isMuted: () => Promise.resolve(false),
+      roomKeyFor: (_k, id) => `report:${id}`,
+      isBlockedEitherWay: single,
+      blockedIdsFor,
+    })
+    return { notify, spy, single }
+  }
+
+  it("resolves the whole candidate set in ONE call and skips the per-candidate lookup", async () => {
+    const seen: Array<[string, string[]]> = []
+    const { notify, spy, single } = buildBatch((actorId, ids) => {
+      seen.push([actorId, ids])
+      return Promise.resolve(new Set(ids.filter((id) => id === BLOCKED)))
+    })
+    await notify(ROOM, message())
+    expect(spy.recipients()).toEqual([NEUTRAL])
+    // One query for both candidates (a 200-member room used to cost 200 round trips here)...
+    expect(seen).toEqual([[ACTOR, [BLOCKED, NEUTRAL]]])
+    // ...and the seam is authoritative: the per-candidate gate is not also run.
+    expect(single).not.toHaveBeenCalled()
+  })
+
+  it("FAILS CLOSED on a batch error too: every candidate is treated as blocked", async () => {
+    const { notify, spy } = buildBatch(() => Promise.reject(new Error("db down")))
+    await notify(ROOM, message())
+    expect(spy.recipients()).toEqual([])
+  })
+})
+
 describe("M11: the group-room fan-out skips blocked pairs", () => {
   it("drops the blocked member and keeps the rest", async () => {
     const spy = notificationSpy()

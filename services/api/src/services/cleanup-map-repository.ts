@@ -21,9 +21,12 @@ export function makeCleanupMapRepository(sql: Sql): CleanupMapRepository {
       const whenFilter = buildWhenFilter(sql, when)
       const bboxFilter = buildBboxFilter(sql, bbox)
 
-      // The going count is a LATERAL aggregate (one grouped scan per matched cleanup) rather than a
-      // correlated COUNT subquery in the SELECT list, so a wide bbox up to MAP_CLEANUPS_LIMIT doesn't
-      // fire a per-pin subquery. COALESCE keeps zero-member cleanups at 0.
+      // The going count IS a per-pin count: a LEFT JOIN LATERAL runs its subquery once per outer row,
+      // exactly like a correlated COUNT in the SELECT list, and it runs for every bbox match before the
+      // ORDER BY/LIMIT trims to MAP_CLEANUPS_LIMIT. It is cheap today — cleanup_id leads the
+      // cleanup_members PK, so each count is an index-only scan — but if wide-bbox map reads ever get
+      // hot, the fix is one GROUP BY join over cleanup_members, not a tweak to this shape. COALESCE
+      // keeps zero-member cleanups at 0.
       const rows = await sql<
         {
           id: string

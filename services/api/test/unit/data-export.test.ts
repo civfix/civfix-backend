@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { FakeMailer, FakeStorage } from "@civfix/shared/fakes"
+import { FakeMailer } from "@civfix/shared/fakes"
 import type { Sql } from "../../src/db/client.js"
-import type { Storage } from "@civfix/shared/interfaces"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import { InMemoryUserStore, type UserRecord } from "../../src/auth/stores.js"
 import { makeDataExportService } from "../../src/services/data-export-service.js"
@@ -43,8 +42,7 @@ function harness(user: UserRecord): {
   users.seed(user.email, user)
   const mailer = new FakeMailer()
   const sql = makeFakeSql().sql as unknown as Sql
-  const storage: Storage = new FakeStorage()
-  const service = makeDataExportService({ sql, mailer, storage, users, fromNoReply: FROM })
+  const service = makeDataExportService({ sql, mailer, users, fromNoReply: FROM })
   return { mailer, service }
 }
 

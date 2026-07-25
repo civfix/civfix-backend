@@ -4,20 +4,38 @@
  * Requires Docker; SKIPPED (not failed) when Docker is unavailable so the local suite stays green.
  *
  * Verifies the things drizzle-kit could NOT express and that the hand SQL owns:
- *   - every Phase 1 table exists;
+ *   - EVERY table the migrations create exists, and NO table exists that this file does not declare
+ *     (the closed set is what keeps EXPECTED_TABLES from going stale, see below);
+ *   - the Drizzle mirror barrel (src/db/schema) and the hand SQL declare the SAME table set;
  *   - reports.idempotency_key has a UNIQUE constraint/index;
  *   - the GiST spatial indexes exist on jurisdictions/reports/cleanups;
- *   - chat_messages is a declaratively partitioned (range) table;
- *   - the migration bookkeeping recorded ALL current migration files (0000..0005), in order.
+ *   - chat_messages / dm_messages are declaratively partitioned (range) tables;
+ *   - the migration bookkeeping recorded the Phase 1/2 migration files, in order.
  */
 
 import { afterAll, describe, expect, it } from "vitest"
+import { getTableName, is } from "drizzle-orm"
+import { PgTable } from "drizzle-orm/pg-core"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import * as schema from "../../src/db/schema/index.js"
 
 const pg = await withPg()
 
-/** Every table the database layer must create (chat_messages is the partitioned parent). */
+/**
+ * EVERY table the database layer must create — the partitioned PARENTS (chat_messages / dm_messages)
+ * only; their monthly children are asserted separately below.
+ *
+ * This list used to stop at Phase 2 + two audit tables and was ~20 tables stale, which made the "creates
+ * every expected table" assertion below near-worthless: a new migration's table was simply unlisted, and a
+ * typo'd CREATE TABLE in one would still pass. It is now a CLOSED set — a companion test asserts the
+ * database contains nothing outside it — so adding a migration that creates a table FAILS this file until
+ * the table is listed here, which is the only thing that keeps the list honest.
+ *
+ * Excluded on purpose (not created by our migrations): `_civfix_migrations` (the runner's own bookkeeping)
+ * and `spatial_ref_sys` (shipped by the PostGIS extension).
+ */
 const EXPECTED_TABLES = [
+  // --- Phase 1 core --------------------------------------------------------------------------------
   "users",
   "oauth_identities",
   "email_otps",
@@ -28,6 +46,7 @@ const EXPECTED_TABLES = [
   "report_timeline",
   "cleanups",
   "cleanup_members",
+  "cleanup_reports",
   "chat_messages",
   "follows_people",
   "notifications",
@@ -38,7 +57,7 @@ const EXPECTED_TABLES = [
   "idempotency_keys",
   "jurisdiction_discovery_tasks",
   "audit_log",
-  // Phase 2 (admin / operator) tables, created by 0007_admin_phase2.sql.
+  // --- Phase 2 (admin / operator), 0007_admin_phase2.sql -------------------------------------------
   "jurisdiction_contacts",
   "gov_claims",
   "user_moderation",
@@ -48,11 +67,75 @@ const EXPECTED_TABLES = [
   "mail_events",
   "outreach_state",
   "cleanup_timeline",
-  // Security fixes from the 2026-07-24 audit: the attendee-ban record that makes event removal
-  // enforceable (M17, 0052) and the append-only volunteer-hours journal (M21, 0053).
+  // --- 0009 direct messages + privacy --------------------------------------------------------------
+  "dm_threads",
+  "dm_messages",
+  "dm_read_state",
+  "user_blocks",
+  // --- boundary / reference-code / verification plumbing -------------------------------------------
+  "boundary_vintage",
+  "reference_counters",
+  "user_verification",
+  "inbound_emails",
+  // --- chat: reactions, mentions, report-chat membership, mutes, forwards, groups, polls -----------
+  "chat_message_reactions",
+  "chat_message_mentions",
+  "report_chat_members",
+  "conversation_mutes",
+  "report_message_forwards",
+  "chat_groups",
+  "chat_group_members",
+  "chat_polls",
+  "chat_poll_options",
+  "chat_poll_votes",
+  // --- volunteer hours (0038) ----------------------------------------------------------------------
+  "volunteer_hours",
+  "user_jurisdiction_hours",
+  // --- social posts (0051) ------------------------------------------------------------------------
+  "posts",
+  "post_likes",
+  "post_saves",
+  "post_mentions",
+  // --- 2026-07-24 audit follow-ups ----------------------------------------------------------------
+  // The attendee-ban record that makes event removal enforceable (M17, 0052), the append-only
+  // volunteer-hours journal (M21, 0053), and the reap-tombstone retry queue that stops the orphan sweep
+  // leaking R2 objects when a physical delete fails after the row is gone (0057).
   "cleanup_bans",
   "volunteer_hours_audit",
+  "media_reap_tombstones",
 ] as const
+
+/** Tables present in the container but NOT created by our migrations. */
+const FOREIGN_TABLES = new Set([
+  "_civfix_migrations", // src/db/migrate.ts bookkeeping
+  "spatial_ref_sys", // PostGIS extension
+])
+
+/**
+ * Tables 0044_drop_report_discussion.sql REMOVED when report discussion became report chat. Asserted
+ * absent so a re-added mirror (or a resurrected migration) is caught rather than quietly recreating the
+ * dual write path.
+ */
+const DROPPED_TABLES = [
+  "report_discussion_messages",
+  "report_follows",
+  "report_message_mentions",
+  "report_message_reactions",
+  "report_message_user_mentions",
+] as const
+
+/** Base tables the migrations created: everything public, minus partitions and the foreign tables. */
+async function ownedTables(h: PgHarness): Promise<Set<string>> {
+  const rows = await h.sql<{ relname: string }[]>`
+    SELECT rel.relname
+    FROM pg_class rel
+    JOIN pg_namespace n ON n.oid = rel.relnamespace
+    WHERE n.nspname = 'public'
+      AND rel.relkind IN ('r', 'p')
+      AND NOT rel.relispartition
+  `
+  return new Set(rows.map((r) => r.relname).filter((t) => !FOREIGN_TABLES.has(t)))
+}
 
 describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
   const h = pg as PgHarness
@@ -65,6 +148,36 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
     const present = new Set(rows.map((r) => r.table_name))
     for (const t of EXPECTED_TABLES) {
       expect(present.has(t), `missing table: ${t}`).toBe(true)
+    }
+  })
+
+  it("creates NOTHING outside EXPECTED_TABLES (the list cannot go stale)", async () => {
+    const owned = await ownedTables(h)
+    const undeclared = [...owned].filter((t) => !(EXPECTED_TABLES as readonly string[]).includes(t))
+    // A new migration's table lands here until it is added to EXPECTED_TABLES above.
+    expect(undeclared.sort()).toEqual([])
+    // Symmetrically: nothing in the list has silently disappeared.
+    expect([...owned].sort()).toEqual([...EXPECTED_TABLES].sort())
+  })
+
+  it("the Drizzle mirror barrel declares exactly the same tables as the hand SQL", async () => {
+    // The hand SQL in drizzle/ is the source of DDL truth and src/db/schema is a hand-written MIRROR, so
+    // nothing but a test couples them. This is the table-level half of that coupling: a mirror added
+    // without a migration (or a migration whose mirror was forgotten) fails here.
+    // Cast through `unknown` because the barrel also exports the custom COLUMN helpers (geometry/citext)
+    // and the enum tuples, so the union is not narrowable to a table type directly.
+    const mirrored = Object.values(schema as Record<string, unknown>)
+      .filter((v): v is PgTable => is(v, PgTable))
+      .map((t) => getTableName(t))
+      .sort()
+    const owned = [...(await ownedTables(h))].sort()
+    expect(mirrored).toEqual(owned)
+  })
+
+  it("0044 really dropped the report-discussion tables", async () => {
+    const owned = await ownedTables(h)
+    for (const t of DROPPED_TABLES) {
+      expect(owned.has(t), `table should have been dropped by 0044: ${t}`).toBe(false)
     }
   })
 
@@ -410,8 +523,171 @@ describe.skipIf(!pg)("schema (Phase 2): admin migration 0007 produces the expect
   })
 })
 
-// Tear down the shared, memoized withPg() harness only after BOTH describe blocks above have run.
-// A per-block afterAll would stop the container before the second (Phase 2) block's tests execute.
+/**
+ * Mirror <-> DDL drift guard for enum VALUE SETS (audit 2026-07-24, db CROSS-CUTTING).
+ *
+ * The subsystem has three parallel sources of truth: the hand SQL in drizzle/ (canonical), the Drizzle
+ * mirrors in src/db/schema (which carry the enum tuples in types.ts), and the @civfix/shared Zod enums.
+ * test/unit/enums.test.ts guards mirror <-> shared. NOTHING guarded mirror <-> DDL — which is exactly how
+ * the media_assets.purpose bug shipped: 0051_social_posts.sql introduced purpose='post' in the mirror, in
+ * the shared enum and in the claim path, but never widened the inline CHECK 0016 created, so EVERY
+ * createPost with media raised 23514 and 500'd. 0054_media_purpose_post.sql widened it; this block is the
+ * guard that would have caught it on the day.
+ *
+ * It works in BOTH directions, which is what makes it a guard rather than a snapshot:
+ *   - every value-set CHECK the database actually has must be DECLARED below (so a new CHECK on an
+ *     unmapped column fails until its mirror is identified), and
+ *   - every declared CHECK must exist with EXACTLY its mirror's value set.
+ */
+
+interface MirroredCheck {
+  table: string
+  column: string
+  /** The tuple in src/db/schema/types.ts (or an inline literal set where no mirror exists — see note). */
+  mirror: readonly string[]
+  /** Mirror values deliberately NOT storable in the column. Each one is asserted to be REJECTED. */
+  omitted?: readonly string[]
+  note?: string
+}
+
+const MIRRORED_CHECKS: readonly MirroredCheck[] = [
+  { table: "media_assets", column: "purpose", mirror: schema.MEDIA_PURPOSE_VALUES },
+  { table: "cleanups", column: "event_kind", mirror: schema.EVENT_KIND_VALUES },
+  { table: "chat_group_members", column: "role", mirror: schema.GROUP_MEMBER_ROLE_VALUES },
+  { table: "gov_claims", column: "method", mirror: schema.GOV_METHOD_VALUES },
+  { table: "gov_claims", column: "status", mirror: schema.GOV_CLAIM_STATUS_VALUES },
+  { table: "inbound_emails", column: "status", mirror: schema.INBOUND_EMAIL_STATUS_VALUES },
+  { table: "mail_events", column: "type", mirror: schema.MAIL_EVENT_TYPE_VALUES },
+  { table: "mail_messages", column: "direction", mirror: schema.MAIL_DIRECTION_VALUES },
+  { table: "mail_threads", column: "status", mirror: schema.MAIL_THREAD_STATUS_VALUES },
+  { table: "moderation_items", column: "kind", mirror: schema.MODERATION_KIND_VALUES },
+  { table: "moderation_items", column: "priority", mirror: schema.MODERATION_PRIORITY_VALUES },
+  { table: "moderation_items", column: "status", mirror: schema.MODERATION_STATUS_VALUES },
+  { table: "moderation_items", column: "subject_type", mirror: schema.MODERATION_SUBJECT_TYPE_VALUES },
+  { table: "user_moderation", column: "account_status", mirror: schema.USER_ACCOUNT_STATUS_VALUES },
+  { table: "user_moderation", column: "risk", mirror: schema.USER_RISK_VALUES },
+  {
+    table: "user_verification",
+    column: "status",
+    mirror: schema.VERIFICATION_STATUS_VALUES,
+    // 'unverified' is the resting state represented by the ABSENCE of a user_verification row: it is in
+    // the shared enum (so the mirror tuple carries it) but must never be stored. Asserted rejected below,
+    // so this exemption cannot be used to paper over a genuinely missing value.
+    omitted: ["unverified"],
+  },
+  // --- columns with a DDL value set but NO tuple in types.ts (backend-internal, no shared Zod enum).
+  // Listed with inline literals so the closed-set direction of the guard still covers them: a widening in
+  // SQL alone fails here and forces a decision about where the value set lives.
+  { table: "chat_groups", column: "kind", mirror: ["group", "channel"] },
+  { table: "chat_groups", column: "visibility", mirror: ["private", "public"] },
+  { table: "volunteer_hours", column: "source", mirror: ["report", "event", "manual"] },
+  { table: "reports", column: "verification_verdict", mirror: ["approved", "rejected"] },
+]
+
+/** `CHECK ((col = ANY (ARRAY['a'::text, ...])))` — how Postgres renders an inline `col IN (...)`. */
+const VALUE_SET_CHECK = /^CHECK \(\((\w+) = ANY \(ARRAY\[(.+)\]\)\)\)$/
+/** The nullable variant: `CHECK (((col IS NULL) OR (col = ANY (ARRAY[...]))))`. */
+const NULLABLE_VALUE_SET_CHECK =
+  /^CHECK \(\(\((\w+) IS NULL\) OR \(\1 = ANY \(ARRAY\[(.+)\]\)\)\)\)$/
+
+function parseValueSet(def: string): { column: string; values: string[] } | null {
+  const m = VALUE_SET_CHECK.exec(def) ?? NULLABLE_VALUE_SET_CHECK.exec(def)
+  if (m === null) return null
+  const values = [...m[2]!.matchAll(/'((?:[^']|'')*)'::text/g)].map((x) => x[1]!.replace(/''/g, "'"))
+  return { column: m[1]!, values }
+}
+
+describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () => {
+  const h = pg as PgHarness
+
+  /** Every value-set CHECK on a non-partition public table we own, keyed "table.column". */
+  async function dbValueSets(): Promise<Map<string, string[]>> {
+    const rows = await h.sql<{ tbl: string; def: string }[]>`
+      SELECT rel.relname AS tbl, pg_get_constraintdef(c.oid) AS def
+      FROM pg_constraint c
+      JOIN pg_class rel ON rel.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = rel.relnamespace
+      WHERE c.contype = 'c'
+        AND n.nspname = 'public'
+        AND NOT rel.relispartition
+        AND rel.relname <> 'spatial_ref_sys'
+    `
+    const out = new Map<string, string[]>()
+    for (const r of rows) {
+      const parsed = parseValueSet(r.def)
+      if (parsed !== null) out.set(`${r.tbl}.${parsed.column}`, parsed.values)
+    }
+    return out
+  }
+
+  it("every value-set CHECK in the database is DECLARED in MIRRORED_CHECKS", async () => {
+    const declared = new Set(MIRRORED_CHECKS.map((c) => `${c.table}.${c.column}`))
+    const undeclared = [...(await dbValueSets()).keys()].filter((k) => !declared.has(k))
+    // A migration that adds an enum CHECK lands here until it is mapped to its mirror above.
+    expect(undeclared.sort()).toEqual([])
+  })
+
+  it("every DECLARED CHECK actually exists in the database", async () => {
+    const inDb = await dbValueSets()
+    const missing = MIRRORED_CHECKS.map((c) => `${c.table}.${c.column}`).filter((k) => !inDb.has(k))
+    // This is the direction the 0051 bug fell through: the mirror carried 'post', and NOTHING asserted a
+    // CHECK on media_assets.purpose existed with a matching set.
+    expect(missing.sort()).toEqual([])
+  })
+
+  it("each CHECK's value set equals its mirror tuple (order-insensitive)", async () => {
+    const inDb = await dbValueSets()
+    for (const c of MIRRORED_CHECKS) {
+      const key = `${c.table}.${c.column}`
+      const expected = c.mirror.filter((v) => !(c.omitted ?? []).includes(v)).sort()
+      expect(inDb.get(key)?.slice().sort(), `value-set drift on ${key}`).toEqual(expected)
+    }
+  })
+
+  it("media_assets.purpose accepts EVERY mirrored value — including 'post' (0054)", async () => {
+    // The behavioral half: the CHECK introspection above proves the DDL text, this proves an INSERT
+    // actually lands. Before 0054 the 'post' iteration raised 23514, which is what 500'd every
+    // createPost with media.
+    for (const purpose of schema.MEDIA_PURPOSE_VALUES) {
+      const rows = await h.sql<{ purpose: string }[]>`
+        INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose)
+        VALUES (gen_random_uuid(), 'image', ${`uploads/purpose-${purpose}`}, 'ready', ${purpose})
+        RETURNING purpose
+      `
+      expect(rows[0]!.purpose).toBe(purpose)
+    }
+    // ...and the CHECK is still doing its job: an unmirrored value is rejected.
+    await expect(
+      h.sql`
+        INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose)
+        VALUES (gen_random_uuid(), 'image', 'uploads/purpose-bogus', 'ready', 'avatar')
+      `,
+    ).rejects.toMatchObject({ code: "23514" })
+  })
+
+  it("the documented omission is genuinely REJECTED: user_verification.status = 'unverified'", async () => {
+    const [u] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name) VALUES ('Verification Omission') RETURNING id
+    `
+    // 'unverified' lives in the mirror only because the shared enum has it; the column must refuse it, so
+    // the `omitted` exemption above cannot hide a real DDL gap.
+    await expect(
+      h.sql`INSERT INTO user_verification (user_id, status) VALUES (${u!.id}, 'unverified')`,
+    ).rejects.toMatchObject({ code: "23514" })
+    // The three storable values do insert.
+    for (const status of ["pending", "verified", "rejected"]) {
+      const rows = await h.sql<{ status: string }[]>`
+        INSERT INTO user_verification (user_id, status) VALUES (${u!.id}, ${status})
+        ON CONFLICT (user_id) DO UPDATE SET status = EXCLUDED.status
+        RETURNING status
+      `
+      expect(rows[0]!.status).toBe(status)
+    }
+  })
+})
+
+// Tear down the shared, memoized withPg() harness only after EVERY describe block above has run.
+// A per-block afterAll would stop the container before the later blocks' tests execute.
 afterAll(async () => {
   if (pg) await pg.teardown()
 })

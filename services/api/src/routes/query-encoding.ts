@@ -79,6 +79,26 @@ export const BBoxQueryParam = jsonParam(BBoxSchema).refine(
   { message: "bbox must satisfy west < east and south < north" },
 )
 
+/**
+ * M14: hard ceiling on the requested viewport AREA in square degrees.
+ *
+ * Defense-in-depth behind each read's own row cap: even fully clustered, a world-spanning bbox still makes
+ * the DB scan up to that cap, and the response is uncacheable in practice because the attacker jitters the
+ * bounds. The whole globe is 360x180 = 64,800 deg^2; this cap admits a hemispheric/continental view (which
+ * is a real, if rare, client state) and rejects only the pathological world-scan.
+ */
+export const MAX_MAP_BBOX_AREA_DEG2 = 40_000
+
+/**
+ * bbox + the M14 area cap: the shape EVERY anon, bbox-driven map read must use (reports, cleanup pins,
+ * cleanup list). Lives here, next to the ordering refine, so the protection cannot be applied to one
+ * viewport read and forgotten on the next one — a 422 with a clear message, not a silent degradation.
+ */
+export const CappedBBoxQueryParam = BBoxQueryParam.refine(
+  (b) => (b.east - b.west) * (b.north - b.south) <= MAX_MAP_BBOX_AREA_DEG2,
+  { message: "bbox is too large; zoom in and request a smaller viewport" },
+)
+
 /** near as the client sends it: a single JSON-encoded LatLng object param. */
 export const LatLngQueryParam = jsonParam(LatLngSchema)
 

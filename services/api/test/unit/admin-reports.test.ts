@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest"
+import { AppError } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
+import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
 import {
   makeAdminReportService,
@@ -202,7 +204,7 @@ describe("admin reports list", () => {
     expect(counts).toEqual({ all: 7, submitted: 4, in_progress: 2, completed: 1, flagged: 1 })
   })
 
-  it("search matches title, place, id, and reporter name (case-insensitive)", async () => {
+  it("search matches title, place, reporter name and reporter handle (case-insensitive)", async () => {
     const { repo, svc } = harness()
     repo.seedReport({ id: "rep-1", title: "Pothole", place: "Austin", reporter: null })
     repo.seedReport({
@@ -212,7 +214,7 @@ describe("admin reports list", () => {
       reporter: {
         id: "u",
         name: "Maria",
-        handle: "m",
+        handle: "muralwatch",
         emailVerified: false,
         hasOauth: false,
         joinedAt: null,
@@ -220,8 +222,44 @@ describe("admin reports list", () => {
     })
     expect((await svc.list({ q: "pothole" })).items.map((i) => i.id)).toEqual(["rep-1"])
     expect((await svc.list({ q: "dallas" })).items.map((i) => i.id)).toEqual(["rep-2"])
-    expect((await svc.list({ q: "REP-1" })).items.map((i) => i.id)).toEqual(["rep-1"])
     expect((await svc.list({ q: "maria" })).items.map((i) => i.id)).toEqual(["rep-2"])
+    // u.handle::text is one of the four ILIKE columns; the fake used not to search it at all.
+    expect((await svc.list({ q: "MURALwatch" })).items.map((i) => i.id)).toEqual(["rep-2"])
+  })
+
+  /**
+   * The id branch of searchReportsFragment is `OR r.id = $q::uuid`, gated on `isUuid(q)`: an EXACT uuid
+   * equality, never a substring. This pins that contract on the fake so an offline search test can no
+   * longer pass on behavior production lacks (the old fake matched any id substring, so "REP-1" and a uuid
+   * PREFIX both "found" a report that Postgres would never return).
+   */
+  it("matches an id ONLY on a full uuid — never a substring, never a non-uuid needle", async () => {
+    const { repo, svc } = harness()
+    const id = "3f2b1c44-0a55-4d66-8e77-99aa00bb11cc"
+    repo.seedReport({ id, title: "Broken swing", place: "Austin", reporter: null })
+    repo.seedReport({ id: "rep-other", title: "Litter", place: "Dallas", reporter: null })
+
+    expect((await svc.list({ q: id })).items.map((i) => i.id)).toEqual([id])
+    // Uuid equality is case-insensitive in Postgres, so the fake normalizes too.
+    expect((await svc.list({ q: id.toUpperCase() })).items.map((i) => i.id)).toEqual([id])
+    // A uuid PREFIX is not a uuid -> no id branch at all, and no substring fallback.
+    expect((await svc.list({ q: "3f2b1c44" })).items).toHaveLength(0)
+    // A non-uuid id (only the fake can hold one) is never matched by an id search.
+    expect((await svc.list({ q: "rep-other" })).items).toHaveLength(0)
+  })
+
+  it("counts follow the SAME search predicate as the list (chips cannot disagree)", async () => {
+    const { repo, svc } = harness()
+    const id = "8c1d2e33-4455-4666-8777-99aa00bb2233"
+    repo.seedReport({ id, title: "Pothole", place: "Austin", status: "published" })
+    repo.seedReport({ id: "other", title: "Graffiti", place: "Dallas", status: "published" })
+
+    const byUuid = await svc.list({ q: id })
+    expect(byUuid.items.map((i) => i.id)).toEqual([id])
+    expect(byUuid.counts.all).toBe(1)
+    const byPrefix = await svc.list({ q: "8c1d2e33" })
+    expect(byPrefix.items).toHaveLength(0)
+    expect(byPrefix.counts.all).toBe(0)
   })
 
   it("paginates with a cursor (no overlap)", async () => {
@@ -571,5 +609,291 @@ describe("M5: routeToJurisdiction destination + audit", () => {
       }),
     ).rejects.toMatchObject({ httpStatus: 422 })
     expect(h.mailer.sent).toHaveLength(0)
+  })
+})
+
+/**
+ * The route endpoint's idempotency gate is a DUPLICATE-SEND guard, not a one-shot latch. It must refuse a
+ * repeat of a send that already reached the destination (a double-click, a retry after a 500 that happened
+ * downstream of the send) while still letting the operator recover a report the city never got — otherwise
+ * a hard bounce or a mailer outage strands the report permanently, since nothing else in the product
+ * re-mails the packet (sendFollowup is text-only to the ON-FILE contact, jurisdictions save-and-route mails
+ * nothing, and autoforward skips any report whose outreach is not `not_sent`).
+ */
+describe("routeToJurisdiction re-send gate", () => {
+  /** Seed a report already routed to 311@lacity.gov, with the thread in `threadStatus`. */
+  function seedRouted(
+    h: Harness,
+    outreach: { threadStatus: string; hasInbound?: boolean; sendFailed?: boolean; routedTo?: string },
+  ): void {
+    h.repo.seedReport({
+      id: "rep-1",
+      status: "acknowledged",
+      category: "hazard",
+      place: "Los Angeles",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: true,
+      },
+      outreach: {
+        threadId: "t-1",
+        threadStatus: outreach.threadStatus,
+        hasInbound: outreach.hasInbound ?? false,
+        routedTo: outreach.routedTo ?? "311@lacity.gov",
+        ...(outreach.sendFailed !== undefined ? { sendFailed: outreach.sendFailed } : {}),
+      },
+    })
+  }
+
+  it("ALLOWS a re-route after a hard bounce (the city never received the packet)", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "bounced" })
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    expect(routedTo).toBe("311@lacity.gov")
+    expect(h.mailer.sent).toHaveLength(1)
+    // The report is already `acknowledged`, so the re-route records a non-transition `route` timeline row
+    // at the CURRENT status rather than advancing it again.
+    expect(h.emitter.events.at(-1)).toMatchObject({ status: "acknowledged", kind: "route" })
+  })
+
+  it("REFUSES a repeat send of a delivered packet to the SAME address (409, nothing mailed)", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent" })
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(h.mailer.sent).toHaveLength(0)
+
+    // ...and the same for the later lifecycle states the city drove.
+    for (const threadStatus of ["delivered", "replied"]) {
+      const h2 = harness()
+      seedRouted(h2, { threadStatus })
+      await expect(
+        h2.svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
+      ).rejects.toMatchObject({ httpStatus: 409 })
+      expect(h2.mailer.sent).toHaveLength(0)
+    }
+  })
+
+  it("REFUSES a repeat send when the override differs only in CASE (not a corrected address)", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent" })
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", {
+        contactEmailOverride: "311@LACity.gov",
+        note: null,
+        actorId: "op-1",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("ALLOWS a re-route to a CORRECTED address on the jurisdiction's domain (wrong-but-deliverable mailbox)", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "delivered" })
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: "streets@lacity.gov",
+      note: null,
+      actorId: "op-1",
+    })
+    expect(routedTo).toBe("streets@lacity.gov")
+    expect(h.mailer.sent.some((m) => m.to === "streets@lacity.gov")).toBe(true)
+    // M5 still applies to the recovery path: a foreign domain is refused even though the gate would allow
+    // the re-send, so "correcting the address" can never become an exfiltration retry.
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", {
+        contactEmailOverride: "attacker@evil.example",
+        note: null,
+        actorId: "op-1",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422 })
+  })
+
+  it("ALLOWS a re-route when every send attempt THREW (thread stamped 'sent', nothing delivered)", async () => {
+    const h = harness()
+    // The real Drizzle repo derives this from mail_events ('failed' recorded, no 'sent'); the thread row is
+    // created with status 'sent' BEFORE the mailer runs, which is why the status alone cannot tell.
+    seedRouted(h, { threadStatus: "sent", sendFailed: true })
+    await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    expect(h.mailer.sent).toHaveLength(1)
+  })
+
+  it("a failed send leaves the report re-routable end-to-end (mailer throws, then recovers)", async () => {
+    const h = harness()
+    h.repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+    // First attempt: the mailer rejects. The message row + a 'failed' mail_event are recorded and the
+    // error surfaces; the report's status is NOT advanced.
+    h.mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
+    ).rejects.toThrow(/smtp down/)
+    expect(h.mailRepo.events.map((e) => e.type)).toEqual(["failed"])
+    expect((await h.svc.get("rep-1")).status).toBe("submitted")
+
+    // The mail repo now holds a per-report thread stamped 'sent' with a 'failed'/no-'sent' event trail —
+    // exactly the state the Drizzle getOutreach reports as sendFailed. Mirror it onto the report fake and
+    // prove the retry goes through instead of 409-ing forever.
+    const thread = [...h.mailRepo.threads.values()].find((t) => t.reportId === "rep-1")
+    expect(thread?.status).toBe("sent")
+    const seeded = h.repo.reports.get("rep-1")
+    if (seeded) {
+      seeded.outreach = {
+        threadId: thread?.id ?? "t-1",
+        threadStatus: "sent",
+        hasInbound: false,
+        routedTo: "311@lacity.gov",
+        routedAt: NOW,
+        sendFailed: true,
+      }
+    }
+    h.mailer.sendOutbound = FakeMailer.prototype.sendOutbound.bind(h.mailer)
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    expect(routedTo).toBe("311@lacity.gov")
+    expect(h.mailRepo.events.some((e) => e.type === "sent")).toBe(true)
+    expect((await h.svc.get("rep-1")).status).toBe("acknowledged")
+  })
+
+  it("clears a thread's 'bounced' status once a re-route actually delivers (no unbounded re-sends)", async () => {
+    const h = harness()
+    const thread = await h.mailRepo.findOrCreateReportThread("rep-1", { subject: "S", status: "sent" })
+    await h.mailRepo.setThreadStatus(thread.id, "bounced")
+    expect((await h.mailRepo.getThreadRecord(thread.id))?.status).toBe("bounced")
+    seedRouted(h, { threadStatus: "bounced" })
+    await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    // Same thread reused (found-or-create by report_id) — not a fresh one, which would make the assertion
+    // below vacuous — and its bounce verdict, which described the OLD address, no longer stands, so the
+    // outreach status stops reading as re-routable.
+    expect(h.mailRepo.threads.size).toBe(1)
+    expect((await h.mailRepo.getThreadRecord(thread.id))?.status).toBe("sent")
+  })
+})
+
+/**
+ * The auto-forward JOB no longer pre-checks the outreach status. That pre-check ("skip anything not
+ * not_sent") turned a transient mailer failure into a permanent one: the thread is stamped 'sent' before
+ * delivery, so pg-boss re-ran the job and the job itself refused to retry — the report was never forwarded
+ * and no operator was told. The duplicate-send decision now lives only in routeToJurisdiction, which can
+ * actually see whether the send landed; the job just distinguishes THAT conflict from a real failure.
+ */
+describe("runAutoForwardWith delegates the duplicate-send decision", () => {
+  function routable(h: Harness): void {
+    h.repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+  }
+
+  it("retries a report whose send THREW (the job's own pre-check used to make that permanent)", async () => {
+    const h = harness()
+    routable(h)
+    h.mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
+    // A non-AppError is treated as transient infra, so the job rethrows and pg-boss will re-run it.
+    await expect(runAutoForwardWith(h.svc, "rep-1")).rejects.toThrow(/smtp down/)
+
+    // The state the failed attempt left behind: a per-report thread stamped 'sent' whose only delivery
+    // event is 'failed' (what the Drizzle getOutreach reports as sendFailed).
+    const seeded = h.repo.reports.get("rep-1")
+    if (seeded) {
+      seeded.outreach = {
+        threadId: "t-1",
+        threadStatus: "sent",
+        hasInbound: false,
+        routedTo: "311@lacity.gov",
+        routedAt: NOW,
+        sendFailed: true,
+      }
+    }
+    h.mailer.sendOutbound = FakeMailer.prototype.sendOutbound.bind(h.mailer)
+    const infos: unknown[] = []
+    const warnings: unknown[] = []
+    await runAutoForwardWith(h.svc, "rep-1", {
+      info: (o) => infos.push(o),
+      warn: (o) => warnings.push(o),
+    })
+    expect(h.mailer.sent).toHaveLength(1)
+    expect(warnings).toHaveLength(0)
+  })
+
+  it("skips an already-delivered report at INFO (not as a failure) and mails nothing", async () => {
+    const h = harness()
+    h.repo.seedReport({
+      id: "rep-1",
+      status: "acknowledged",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: true,
+      },
+      outreach: {
+        threadId: "t-1",
+        threadStatus: "delivered",
+        hasInbound: false,
+        routedTo: "311@lacity.gov",
+      },
+    })
+    const infos: unknown[] = []
+    const warnings: unknown[] = []
+    await runAutoForwardWith(h.svc, "rep-1", {
+      info: (o) => infos.push(o),
+      warn: (o) => warnings.push(o),
+    })
+    expect(h.mailer.sent).toHaveLength(0)
+    expect(infos).toHaveLength(1)
+    expect(warnings).toHaveLength(0)
+  })
+
+  it("keeps a MAILER 409 (unapproved sender) a warned failure, not an idempotent skip", async () => {
+    const h = harness()
+    routable(h)
+    h.mailer.sendOutbound = () => Promise.reject(AppError.conflict("sender not approved"))
+    const infos: unknown[] = []
+    const warnings: unknown[] = []
+    // A CONFLICT that is NOT the route's duplicate-send refusal must not be mistaken for one: it is a
+    // terminal send failure, so the job completes but records a warning.
+    await expect(
+      runAutoForwardWith(h.svc, "rep-1", {
+        info: (o) => infos.push(o),
+        warn: (o) => warnings.push(o),
+      }),
+    ).resolves.toBeUndefined()
+    expect(warnings).toHaveLength(1)
   })
 })

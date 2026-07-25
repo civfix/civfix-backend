@@ -30,9 +30,20 @@ import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat-group
 import type { GROUP_MEMBER_ROLE_VALUES } from "../db/schema/types.js"
 import type { PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
 
 export type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
+
+/**
+ * Default ceiling on ONE listMemberIds scan (a real SQL LIMIT). Every consumer of that list is a
+ * bounded-by-nature fan-out — mention scoping, the threads unread signal, the member bell fan-out, the
+ * invite block scan — and none of them may pay an unbounded row set for a pathologically large group.
+ * Matches the other member fan-out ceilings in the tree (EVENT_HOURS_MEMBER_CAP /
+ * CANCEL_FANOUT_MEMBER_CAP), i.e. far above any real group, so it changes no observable behavior today
+ * while making the query bounded by construction rather than by each caller remembering to slice.
+ */
+export const GROUP_MEMBER_SCAN_CAP = 2000
 
 /**
  * The kind + visibility of a group plus the viewer's role in it (null = not a member), resolved in ONE
@@ -133,8 +144,14 @@ export interface ChatGroupRepository {
    * skipped, never errors (the create/addMembers "skip, don't leak" contract).
    */
   invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]>
-  /** Member user ids of a group (mention scoping + thread signals; mirrors report listMemberIds). */
-  listMemberIds(groupId: string): Promise<string[]>
+  /**
+   * Member user ids of a group (mention scoping + thread signals + the bell fan-out; mirrors the
+   * cleanup repo's capped listMemberIds). `limit` is a REAL SQL LIMIT, defaulting to
+   * GROUP_MEMBER_SCAN_CAP so no caller can ever materialize an unbounded membership set — a fan-out
+   * caller that wants a tighter ceiling (e.g. THREAD_SIGNAL_MEMBER_CAP, which chat-gateway-wiring
+   * currently applies by slicing in JS AFTER the full scan) passes its own.
+   */
+  listMemberIds(groupId: string, limit?: number): Promise<string[]>
   /**
    * WS ack (4.4): set chat_group_members.last_read_at to the target message's created_at, only ever
    * moving the watermark FORWARD (the report-chat advanceReadWatermark twin, scoped on group_id).
@@ -455,35 +472,39 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return candidateIds.filter((id) => allowed.has(id))
     },
 
-    async listMemberIds(groupId: string): Promise<string[]> {
+    async listMemberIds(groupId: string, limit = GROUP_MEMBER_SCAN_CAP): Promise<string[]> {
       const rows = await sql<{ user_id: string }[]>`
         SELECT user_id FROM chat_group_members
         WHERE group_id = ${groupId}
         ORDER BY joined_at ASC, user_id ASC
+        LIMIT ${limit}
       `
       return rows.map((r) => r.user_id)
     },
 
     async advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void> {
-      // Monotonic (GREATEST against the current value, floored at epoch 0 so a NULL prior watermark is
-      // treated as the floor) — the exact report_chat_members twin, scoped on chat_messages.group_id.
-      await sql`
-        UPDATE chat_group_members m
-        SET last_read_at = GREATEST(COALESCE(m.last_read_at, to_timestamp(0)), cm.created_at)
-        FROM chat_messages cm
-        WHERE m.group_id = ${groupId}
-          AND m.user_id = ${userId}
-          AND cm.id = ${upToMessageId}
-          AND cm.group_id = ${groupId}
-      `
+      // Monotonic + room-scoped via the shared watermark helper (chat-read-state.drizzle.ts): the
+      // report_chat_members twin, scoped on chat_messages.group_id.
+      await monotonicReadWatermarkUpdate(
+        sql,
+        "chat_group_members",
+        { group_id: groupId, user_id: userId },
+        {
+          messagesTable: "chat_messages",
+          messageId: upToMessageId,
+          scopeColumn: "group_id",
+          scopeId: groupId,
+        },
+      )
     },
 
     async markRead(groupId: string, userId: string, at: Date): Promise<void> {
-      await sql`
-        UPDATE chat_group_members
-        SET last_read_at = GREATEST(COALESCE(last_read_at, to_timestamp(0)), ${at})
-        WHERE group_id = ${groupId} AND user_id = ${userId}
-      `
+      await monotonicReadWatermarkUpdate(
+        sql,
+        "chat_group_members",
+        { group_id: groupId, user_id: userId },
+        at,
+      )
     },
   }
 }

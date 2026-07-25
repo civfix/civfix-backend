@@ -29,7 +29,11 @@
 
 import type { FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
-import { writeAudit, type AdminAuditAction } from "../../services/admin/audit.js"
+import {
+  writeAudit,
+  type AdminAuditAction,
+  type WriteAuditInput,
+} from "../../services/admin/audit.js"
 
 export interface ReadAuditInput {
   /** Stable dotted action, e.g. "user.messages_viewed". */
@@ -40,22 +44,49 @@ export interface ReadAuditInput {
 }
 
 /**
+ * Optional injected read-audit sink (tests), mirroring AdminAuthOverrides.auditSink.
+ *
+ * Without it these four audits are UNOBSERVABLE from an HTTP test: the offline harness has no DB, so
+ * `container.getDb()` throws and the failure is swallowed by design (see the file header) — deleting an
+ * `auditRead` call breaks nothing. With a sink installed the per-route action/target/actor is assertable.
+ *
+ * Read off `request.server`, so it covers every read-audited route at once and is inherited through the
+ * encapsulated admin scope's prototype chain (a test may install it after buildServer).
+ */
+export interface AdminReadAuditOverrides {
+  sink(input: WriteAuditInput): Promise<void>
+}
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /** Injected read-audit sink (tests). See AdminReadAuditOverrides. */
+    adminReadAuditOverrides?: AdminReadAuditOverrides
+  }
+}
+
+/**
  * Record that `request`'s operator READ the given subject. Never throws: a failure is logged and the read
  * proceeds. Pass the actor explicitly (the routes already resolved it via requireOperator).
  */
 export async function auditRead(
   request: FastifyRequest,
   container: Container,
-  actorId: string | null,
+  actorId: string,
   input: ReadAuditInput,
 ): Promise<void> {
+  const row: WriteAuditInput = {
+    actorId,
+    action: input.action,
+    target: input.target,
+    meta: input.meta ?? null,
+  }
   try {
-    await writeAudit(container.getDb().sql, {
-      actorId,
-      action: input.action,
-      target: input.target,
-      meta: input.meta ?? null,
-    })
+    // Both branches stay inside the try so the "never throws" contract holds either way; a sink is expected
+    // to collect the row for a later assertion rather than assert inline. `server` is optional-chained
+    // because a bare request stub (the helper's own unit test) has none.
+    const sink = request.server?.adminReadAuditOverrides?.sink
+    if (sink) await sink(row)
+    else await writeAudit(container.getDb().sql, row)
   } catch (err) {
     request.log.warn({ err, action: input.action, target: input.target }, "admin read audit failed")
   }

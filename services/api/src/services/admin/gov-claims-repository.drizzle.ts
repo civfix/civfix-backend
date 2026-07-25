@@ -22,7 +22,8 @@
 
 import type { Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
-import { decodeCursor, clampLimit } from "./pagination.js"
+import { decodeCursor, clampLimit, paginate } from "./pagination.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   type GovCheckRecord,
   type GovClaimRecord,
@@ -30,7 +31,6 @@ import {
   type ListGovClaimsArgs,
 } from "./gov-claims-service.js"
 import type { GovCheckStatus, GovMethod, GovVerificationCheck } from "@civfix/shared"
-import { likeContains } from "./like.js"
 
 /** A gov_claims row (snake_case columns) as read from Postgres. */
 interface GovClaimRow {
@@ -113,10 +113,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
           : sql``
       const search =
         args.q !== null
-          ? (() => {
-              const like = likeContains(args.q)
-              return sql`AND (name ILIKE ${like} ESCAPE '\\' OR COALESCE(org, '') ILIKE ${like} ESCAPE '\\')`
-            })()
+          ? sql`AND ${ilikeAnyOf(sql, [sql`name`, sql`COALESCE(org, '')`], args.q)}`
           : sql``
       const keyset = anchor
         ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
@@ -133,12 +130,13 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         LIMIT ${limit + 1}
       `
 
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const records = page.map(toRecord)
-      const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
-      return { records, nextCursor }
+      // paginate() owns the has-more split AND the cursor format; this site used to hand-concatenate
+      // "<iso>|<id>" itself, so a change to the shared encoding would have silently skipped it.
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({
+        createdAt: r.created_at,
+        id: r.id,
+      }))
+      return { records: items.map(toRecord), nextCursor }
     },
 
     async getClaim(id: string): Promise<GovClaimRecord | null> {

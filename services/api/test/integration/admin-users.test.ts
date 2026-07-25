@@ -127,6 +127,35 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     expect((await repo.getUser(u))?.role).toBe("gov_admin")
   })
 
+  /**
+   * countByFacet has two arms and only the SEARCHED one is capped. The unfiltered arm must stay an exact
+   * aggregate: AdminUserCounts is four bare numbers with no truncation flag, so a capped `all` renders on
+   * the console's chips as if the cap WERE the account total. Pinned against the real schema because the
+   * in-memory fake counts exactly either way and so cannot catch a regression here.
+   */
+  it("countByFacet: the unfiltered counts are exact per bucket; a search still narrows them", async () => {
+    const a = await insertUser(h, { name: "Ann", handle: "annfacet" })
+    const b = await insertUser(h, { name: "Bob", handle: "bobfacet" })
+    const c = await insertUser(h, { name: "Cyd", handle: "cydfacet" })
+    await insertUser(h, { name: "Dee", handle: "deefacet" })
+    // Bob suspended, Cyd flagged (orthogonal to status), Ann/Dee default-active with no moderation row.
+    await repo.setStatus(b, { status: "suspended", reason: null, actorId: null })
+    await repo.toggleFlag(c, { reason: "spam", actorId: null })
+
+    expect(await repo.countByFacet({ q: null })).toEqual({
+      all: 4,
+      active: 3,
+      suspended: 1,
+      flagged: 1,
+    })
+    // The LEFT JOIN's COALESCE default (no user_moderation row at all) must land in `active`, which is the
+    // arm most easily lost when the CTE is replaced by a direct aggregate.
+    expect(await repo.getUser(a)).toMatchObject({ accountStatus: "active" })
+
+    const searched = await repo.countByFacet({ q: "bobfacet" })
+    expect(searched).toEqual({ all: 1, active: 0, suspended: 1, flagged: 0 })
+  })
+
   it("the sub-lists preserve cleanup, standalone group, and report message origins", async () => {
     const u = await insertUser(h, { handle: "sam" })
     await insertReport(h, u)

@@ -1,4 +1,5 @@
 import type { PushLogger, PlatformDispatcher } from "./push-sender.js"
+import { fetchJsonWithTimeout, type FetchJsonResult } from "./http-fetch.js"
 
 
 export interface ExpoPushConfig {
@@ -6,26 +7,67 @@ export interface ExpoPushConfig {
   endpoint?: string
   timeoutMs?: number
   fetchImpl?: typeof fetch
+  /** Base backoff before the single 429/5xx retry (jitter is added on top). Injectable for tests. */
+  retryDelayMs?: number
 }
 
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send"
 const EXPO_CHUNK = 100
 const EXPO_TIMEOUT_MS = 4000
+/** Expo asks senders to back off and retry a 429 / 5xx rather than dropping the batch. */
+const EXPO_RETRY_DELAY_MS = 250
+
+/** True for the HTTP statuses Expo documents as retryable (rate limit / transient server error). */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export function isExpoPushToken(token: string): boolean {
   return token.startsWith("ExponentPushToken[") || token.startsWith("ExpoPushToken[")
 }
 
-interface ExpoTicket {
+export interface ExpoTicket {
   status?: string
   message?: string
   details?: { error?: string }
 }
 
+/**
+ * Walk one chunk's tickets, returning the tokens Expo says are dead (DeviceNotRegistered -> prune) and
+ * logging every other ticket error. Pure + exported so the prune-vs-warn matrix is unit-testable without
+ * an HTTP round trip. `tickets` is index-aligned with `chunk`.
+ */
+export function collectExpoInvalidTokens(
+  tickets: readonly ExpoTicket[],
+  chunk: readonly string[],
+  logger: PushLogger,
+): string[] {
+  const invalid: string[] = []
+  tickets.forEach((ticket, idx) => {
+    if (ticket?.status !== "error") return
+    const token = chunk[idx]
+    if (ticket.details?.error === "DeviceNotRegistered" && typeof token === "string") {
+      invalid.push(token)
+    } else {
+      logger.warn(
+        { error: ticket.details?.error, message: ticket.message },
+        "push(expo): ticket error",
+      )
+    }
+  })
+  return invalid
+}
+
 export function makeExpoDispatcher(config: ExpoPushConfig, logger: PushLogger): PlatformDispatcher {
   const endpoint = config.endpoint ?? EXPO_PUSH_ENDPOINT
   const timeoutMs = config.timeoutMs ?? EXPO_TIMEOUT_MS
-  const doFetch = config.fetchImpl ?? fetch
+  // Left undefined when not injected so the helper resolves globalThis.fetch at CALL time.
+  const doFetch = config.fetchImpl
+  const retryDelayMs = config.retryDelayMs ?? EXPO_RETRY_DELAY_MS
 
   const dispatch: PlatformDispatcher = async (tokens, payload) => {
     const invalidTokens: string[] = []
@@ -44,41 +86,39 @@ export function makeExpoDispatcher(config: ExpoPushConfig, logger: PushLogger): 
         sound: "default",
         ...(hasData ? { data } : {}),
       }))
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
-      try {
-        const res = await doFetch(endpoint, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            accept: "application/json",
-            ...(config.accessToken ? { authorization: `Bearer ${config.accessToken}` } : {}),
+      const send = (): Promise<FetchJsonResult<{ data?: ExpoTicket[] }>> =>
+        fetchJsonWithTimeout<{ data?: ExpoTicket[] }>(endpoint, {
+          timeoutMs,
+          ...(doFetch !== undefined ? { fetchImpl: doFetch } : {}),
+          init: {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              accept: "application/json",
+              ...(config.accessToken ? { authorization: `Bearer ${config.accessToken}` } : {}),
+            },
+            body: JSON.stringify(messages),
           },
-          body: JSON.stringify(messages),
-          signal: controller.signal,
         })
-        if (!res.ok) {
-          logger.error({ status: res.status, count: chunk.length }, "push(expo): HTTP error")
-          continue
+
+      let result = await send()
+      // ONE bounded retry with jitter for the statuses Expo documents as retryable: without it a single
+      // 429 or 502 silently dropped a whole 100-token chunk with nothing but a log line.
+      if (!result.ok && result.kind === "http" && isRetryableStatus(result.status)) {
+        await sleep(retryDelayMs + Math.floor(Math.random() * retryDelayMs))
+        result = await send()
+      }
+
+      if (!result.ok) {
+        if (result.kind === "http") {
+          logger.error({ status: result.status, count: chunk.length }, "push(expo): HTTP error")
+        } else {
+          logger.error({ err: result.error }, "push(expo): send threw")
         }
-        const json = (await res.json()) as { data?: ExpoTicket[] }
-        const tickets = json.data ?? []
-        tickets.forEach((ticket, idx) => {
-          if (ticket?.status !== "error") return
-          const token = chunk[idx]
-          if (ticket.details?.error === "DeviceNotRegistered" && typeof token === "string") {
-            invalidTokens.push(token)
-          } else {
-            logger.warn(
-              { error: ticket.details?.error, message: ticket.message },
-              "push(expo): ticket error",
-            )
-          }
-        })
-      } catch (err) {
-        logger.error({ err }, "push(expo): send threw")
-      } finally {
-        clearTimeout(timer)
+        continue
+      }
+      for (const token of collectExpoInvalidTokens(result.json.data ?? [], chunk, logger)) {
+        invalidTokens.push(token)
       }
     }
     return { invalidTokens }

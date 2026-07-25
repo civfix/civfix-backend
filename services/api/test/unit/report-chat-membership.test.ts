@@ -228,8 +228,8 @@ describe("DELETE /reports/:id/messages/:messageId — membership gate", () => {
 })
 
 describe("POST /reports/:id/messages/:messageId/reactions — membership gate", () => {
-  it("403s a NON-member (isMember -> false)", async () => {
-    const { app, token, chatRepo } = await makeHarness({ isMember: false })
+  it("403s a NON-member (isMember -> false), keeping the room's Join copy", async () => {
+    const { app, token, chatRepo, reportChat } = await makeHarness({ isMember: false })
     const messageId = await seedReportMessage(chatRepo, "someone-else")
     const res = await app.inject({
       method: "POST",
@@ -238,6 +238,30 @@ describe("POST /reports/:id/messages/:messageId/reactions — membership gate", 
       payload: { emoji: "like" },
     })
     expect(res.statusCode).toBe(403)
+    // The gate lives in chat-reaction-service now (the route stopped pre-running it), so the room's own
+    // actionable copy has to come from there — a generic "You can't react in this conversation." here
+    // would mean the message regressed with the de-duplication.
+    expect(res.json().message).toBe("Join the chat to react to messages.")
+    // ...and it is checked ONCE per toggle: the route's duplicate pre-check cost a second membership read
+    // (plus a second report read) on the hottest chat mutation.
+    expect(reportChat.isMember).toHaveBeenCalledTimes(1)
+  })
+
+  it("404s (never 403) when the report is no longer visible — visibility gates before membership", async () => {
+    const { app, token, chatRepo, discussionRepo, reportChat } = await makeHarness({ isMember: true })
+    const messageId = await seedReportMessage(chatRepo, "someone-else")
+    // The report is unlisted after the member joined: a report_chat_members row outlives visibility, and
+    // an invisible report must be indistinguishable from a missing one.
+    discussionRepo.seedReport({ id: REPORT, status: "held", visibility: "public", reporterUserId: null })
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/reports/${REPORT}/messages/${messageId}/reactions`,
+      headers: auth(token),
+      payload: { emoji: "like" },
+    })
+    expect(res.statusCode).toBe(404)
+    // Visibility short-circuits, so membership is never even read.
+    expect(reportChat.isMember).not.toHaveBeenCalled()
   })
 
   it("lets a MEMBER react (isMember -> true) -> 200 with the reaction applied", async () => {

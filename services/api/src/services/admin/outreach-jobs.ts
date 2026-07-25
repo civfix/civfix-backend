@@ -10,13 +10,18 @@
 
 import type { Container } from "../../di.js"
 import { writeAudit } from "./audit.js"
+import { OUTREACH_DIGEST_JOB } from "./jurisdiction-contacts-types.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
-import { makeOutboundMailService } from "./outbound-mail-service.js"
+import { makeContainerOutboundMailService } from "./outbound-mail-service.js"
 import { makeDrizzleOutreachRepository } from "./outreach-repository.drizzle.js"
 import { makeOutreachService, type OutreachRunResult, type OutreachService } from "./outreach-service.js"
 
-/** The cron job name for the daily outreach digest sweep + the targeted per-geoid runs. */
-export const OUTREACH_DIGEST_JOB = "outreach.digest"
+/**
+ * The cron job name for the daily outreach digest sweep + the targeted per-geoid runs. Re-exported from
+ * jurisdiction-contacts-types (where the save-and-route ENQUEUER reads it, avoiding an import cycle) so the
+ * enqueue side and this worker/schedule side can never name different queues.
+ */
+export { OUTREACH_DIGEST_JOB }
 
 /**
  * Register the outreach jobs (cron + worker). Called from server.ts start() after the API queues are up
@@ -39,14 +44,10 @@ export async function registerOutreachJobs(container: Container): Promise<void> 
 function makeOutreachServiceFromContainer(container: Container): OutreachService {
   const sql = container.getDb().sql
   const mailRepo = makeDrizzleMailRepository(sql)
-  const outboundMail = makeOutboundMailService({
-    repo: mailRepo,
-    mailer: container.mailer,
-    env: {
-      MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-      MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-    },
-  })
+  // Through the shared factory (with mailRepo passed so the service and the digest reuse ONE repo) rather
+  // than hand-building the MAIL_* slice here: the digest sends from the same identity as every other
+  // outbound path, and two copies of that env read is exactly the drift the factory exists to prevent.
+  const outboundMail = makeContainerOutboundMailService(container, { repo: mailRepo })
   return makeOutreachService({
     outreachRepo: makeDrizzleOutreachRepository(sql),
     mailRepo,

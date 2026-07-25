@@ -47,21 +47,28 @@ export interface MailServiceDeps {
   fromOutreach: string
 }
 
+/**
+ * `actorId` is NON-NULL on every mutating method: this service is reachable only from the operator-guarded
+ * router, where `requireOperator(request)` returns a `string` or throws. A nullable slot would let a future
+ * call site write an unattributable audit row for an action that always has a human behind it. System-owned
+ * mail writes (inbound correlation, autoforward/outreach jobs) go straight to the repo, whose audit slot
+ * stays nullable for exactly that reason.
+ */
 export interface MailService {
   /** The thread list (filter dir / needs-attention / geoid + search), keyset paginated. */
   list(query: MailListQuery): Promise<MailListResponse>
   /** A thread + its ordered messages, or AppError.notFound when the id is unknown. */
   getThread(id: string): Promise<MailThreadDTO>
   /** Compose a brand-new outbound thread (deliver + record + audit mail.sent in-tx), returning the DTO. */
-  compose(input: ComposeRequest, actorId: string | null): Promise<MailThreadDTO>
+  compose(input: ComposeRequest, actorId: string): Promise<MailThreadDTO>
   /** Reply to a thread: append OUT to the resolved recipient, deliver, mark replied, audit in-tx (H4). */
-  reply(id: string, input: { body: string }, actorId: string | null): Promise<MailThreadDTO>
+  reply(id: string, input: { body: string }, actorId: string): Promise<MailThreadDTO>
   /** Clear a thread's unread flag. AppError.notFound when the id is unknown. (benign; not audited) */
   markRead(id: string): Promise<void>
   /** Set a thread's status (audits mail.status_changed in-tx). AppError.notFound for an unknown id. */
-  setStatus(id: string, status: MailStatus, actorId: string | null): Promise<void>
+  setStatus(id: string, status: MailStatus, actorId: string): Promise<void>
   /** Resend the thread's latest outbound message to the resolved recipient (deliver + record + audit). */
-  resend(id: string, actorId: string | null): Promise<MailThreadDTO>
+  resend(id: string, actorId: string): Promise<MailThreadDTO>
   /** Deliverability + mailbox stats over a rolling 7-day window. */
   stats(): Promise<MailStatsResponse>
 }
@@ -125,7 +132,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
       return dto
     },
 
-    async compose(input: ComposeRequest, actorId: string | null): Promise<MailThreadDTO> {
+    async compose(input: ComposeRequest, actorId: string): Promise<MailThreadDTO> {
       const thread = await outboundMail.compose({
         to: input.to,
         subject: input.subject,
@@ -136,7 +143,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
       return requireThreadDTO(thread.id)
     },
 
-    async reply(id: string, input: { body: string }, actorId: string | null): Promise<MailThreadDTO> {
+    async reply(id: string, input: { body: string }, actorId: string): Promise<MailThreadDTO> {
       const { toAddr } = await loadThreadAndRecipient(
         id,
         "to",
@@ -161,7 +168,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
       if (!ok) throw AppError.notFound("Mail thread not found")
     },
 
-    async setStatus(id: string, status: MailStatus, actorId: string | null): Promise<void> {
+    async setStatus(id: string, status: MailStatus, actorId: string): Promise<void> {
       // H4: the mail.status_changed audit is written in the same tx as the status UPDATE.
       const ok = await repo.setThreadStatus(id, status, {
         actorId,
@@ -172,7 +179,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
       if (!ok) throw AppError.notFound("Mail thread not found")
     },
 
-    async resend(id: string, actorId: string | null): Promise<MailThreadDTO> {
+    async resend(id: string, actorId: string): Promise<MailThreadDTO> {
       const { dto, toAddr } = await loadThreadAndRecipient(
         id,
         "to",
@@ -184,9 +191,17 @@ export function makeMailService(deps: MailServiceDeps): MailService {
       }
       // Re-deliver the latest outbound body as a fresh OUT message (a true resend appends a new attempt so
       // the deliverability event correlates to a real message row). H4: mail.resent audited in-tx.
+      //
+      // The thread SUBJECT is passed explicitly: appendOutbound otherwise defaults to replySubject(), so a
+      // resend went out as "Re: <original>" — a reply to the recipient's eye, not the same message again.
+      // LIMITATION: this re-sends `last.body` only. MailMessageDTO has no html part at all, and its
+      // `attachments` are object-store references (key/filename/size) whose bytes this service has no
+      // storage seam to re-load — so an original that carried either (e.g. a report packet's photos) is
+      // resent as text alone. Lifting that needs a storage dep here, not a wider AppendOutboundInput.
       await outboundMail.appendOutbound(id, {
         body: last.body,
         toAddr,
+        ...(dto.subject.length > 0 ? { subject: dto.subject } : {}),
         audit: { actorId, action: "mail.resent", meta: { to: toAddr } },
       })
       return requireThreadDTO(id)

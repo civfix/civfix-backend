@@ -13,6 +13,7 @@ import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
 import { handleChangeableAtFrom, type AuthStores, type UserRecord, type UserStore } from "./stores.js"
 import { PgAuthStores } from "./pg-stores.js"
+import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../env.js"
 import { resolveLocale } from "../i18n/locales.js"
 
 export interface AuthServices {
@@ -75,7 +76,15 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
   }
 }
 
-export function buildAuthServicesFromContainer(container: Container): AuthServices {
+/**
+ * Build the production auth bundle from the container. `logger` should be the server's pino instance:
+ * the OTP service's only log line (P1-7's cooldown-release failure, which otherwise locks a user out for
+ * 60s with no code and no signal) is a no-op without it.
+ */
+export function buildAuthServicesFromContainer(
+  container: Container,
+  opts: { logger?: OtpLogger } = {},
+): AuthServices {
   const stores = new PgAuthStores(container.getDb().db)
   const cache = new RedisCacheClient(container.getRedis())
   const reviewerConfig = reviewerOtpConfigFromEnv(container.env)
@@ -84,17 +93,17 @@ export function buildAuthServicesFromContainer(container: Container): AuthServic
     cache,
     mailer: container.mailer,
     oauthConfig: oauthConfigFromEnv(container.env),
+    ...(opts.logger ? { logger: opts.logger } : {}),
     ...(reviewerConfig !== null ? { reviewer: reviewerConfig } : {}),
   })
 }
 
 /**
- * Minimum length of an environment-supplied reviewer code. The reviewer credential is a full sign-in to
- * a real account, so it must be a secret of session-token calibre, not a memorable string: anything short
- * enough to type from memory is short enough to grind through the (deliberately generous) OTP verify
- * rate limits. 20 characters of the base64url alphabet is >100 bits.
+ * Minimum length of an environment-supplied reviewer code, RE-EXPORTED from the env loader so the wiring
+ * gate and the boot-time validation can never enforce different floors (they used to be two independently
+ * maintained 20s, so raising one silently left the other at the old value).
  */
-export const REVIEWER_OTP_MIN_CODE_LENGTH = 20
+export const REVIEWER_OTP_MIN_CODE_LENGTH = REVIEWER_OTP_CODE_MIN_LENGTH
 
 /**
  * Decide whether to wire the reviewer-OTP bypass, from the environment ONLY (C1).

@@ -23,13 +23,12 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { ANON_COOKIE } from "../auth/transport.js"
 import { makeClaimService, type ClaimService } from "../services/claim-service.js"
 import { makeDrizzleClaimRepository } from "../services/anon-repository.drizzle.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../services/report-service.js"
-import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
+import { makeMediaPresigner } from "../services/media-presign.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
@@ -58,12 +57,14 @@ const ClaimNudgeQuerySchema = z.object({ anonToken: z.string().optional() }).str
  * meaningful now that request.ip is the real client). 20 requests / minute / IP is ample for a real
  * client (one nudge poll + one claim) while bounding automated probing.
  */
-export const CLAIM_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+const CLAIM_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
 export async function registerClaimRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   // The report service is only needed to project the claimed ReportDTO and depends only on the stable
   // container seams (sql + storage), so build it ONCE on first use instead of per request (the prior code
   // rebuilt the whole report repo + presign closure on every nudge/claim). Tests bypass it via claimOverride.
@@ -73,12 +74,7 @@ export async function registerClaimRoutes(
       reportServiceMemo = makeReportService({
         repo: makeDrizzleReportRepository(container.getDb().sql),
         resolveJurisdictionGeoid: () => Promise.resolve(null),
-        presignMedia: async (r2Key, thumbKey) => {
-          const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
-          if (thumbKey === null) return { url }
-          const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
-          return { url, thumbUrl }
-        },
+        presignMedia: makeMediaPresigner(container.storage),
       })
     }
     return reportServiceMemo

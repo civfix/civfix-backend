@@ -27,20 +27,24 @@ import {
   HoldModerationRequestSchema,
   ModerationListQuerySchema,
   RemoveModerationRequestSchema,
-  type AdminOkResponse,
   type GetModerationItemResponse,
   type ModerationListResponse,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { csrfProtect } from "../../auth/csrf.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
-import { idParam, parse } from "./_route-utils.js"
+import {
+  idParam,
+  overridableService,
+  parse,
+  parseBodyWithId,
+  sendOk,
+  spreadNow,
+} from "./_route-utils.js"
 import {
   makeModerationService,
   type ModerationRepository,
-  type ModerationService,
 } from "../../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../../services/admin/moderation-repository.drizzle.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
@@ -68,22 +72,30 @@ export async function registerAdminModerationRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   /** Build the moderation service from injected overrides (tests) or the container (production). */
-  function service(): ModerationService {
-    const overrides = app.moderationOverrides
-    if (overrides) {
-      return makeModerationService({
+  const service = overridableService(
+    app,
+    "moderationOverrides",
+    (overrides) =>
+      makeModerationService({
         repo: overrides.repo,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+        ...spreadNow(overrides),
         ...(overrides.reportChatEmitter !== undefined
           ? { reportChatEmitter: overrides.reportChatEmitter }
           : {}),
+      }),
+    () => {
+      const repo: ModerationRepository = makeDrizzleModerationRepository(container.getDb().sql)
+      // D-D1: publish/remove of a REPORT subject mirrors into the report chat (best-effort, no-op
+      // fake-chat).
+      return makeModerationService({
+        repo,
+        reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
       })
-    }
-    const repo: ModerationRepository = makeDrizzleModerationRepository(container.getDb().sql)
-    // D-D1: publish/remove of a REPORT subject mirrors into the report chat (best-effort, no-op fake-chat).
-    return makeModerationService({ repo, reportChatEmitter: makeContainerReportChatEmitter(container, app.log) })
-  }
+    },
+  )
 
   route(app, "listModeration", async (request, reply) => {
     const query = parse(ModerationListQuerySchema, request.query)
@@ -98,38 +110,30 @@ export async function registerAdminModerationRoutes(
   })
 
   route(app, "approveModeration", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(ApproveModerationRequestSchema, { ...(request.body as object), id })
-    await service().approve(id, { actorId: requireOperator(request), note: body.note ?? null })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(ApproveModerationRequestSchema, request)
+    await service().approve(id, { actorId, note: body.note ?? null })
+    sendOk(reply)
   })
 
   route(app, "removeModeration", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(RemoveModerationRequestSchema, { ...(request.body as object), id })
-    await service().remove(id, { actorId: requireOperator(request), reason: body.reason ?? null })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(RemoveModerationRequestSchema, request)
+    await service().remove(id, { actorId, reason: body.reason ?? null })
+    sendOk(reply)
   })
 
   route(app, "holdModeration", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(HoldModerationRequestSchema, { ...(request.body as object), id })
-    await service().hold(id, { actorId: requireOperator(request), note: body.note ?? null })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(HoldModerationRequestSchema, request)
+    await service().hold(id, { actorId, note: body.note ?? null })
+    sendOk(reply)
   })
 
   route(app, "appealModeration", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(AppealModerationRequestSchema, { ...(request.body as object), id })
-    await service().appeal(id, {
-      decision: body.decision,
-      actorId: requireOperator(request),
-      note: body.note ?? null,
-    })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(AppealModerationRequestSchema, request)
+    await service().appeal(id, { decision: body.decision, actorId, note: body.note ?? null })
+    sendOk(reply)
   })
 }

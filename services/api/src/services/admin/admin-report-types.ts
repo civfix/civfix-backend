@@ -12,16 +12,14 @@ import type {
 import type { OutboundMailService } from "./outbound-mail-service.js"
 import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
+import type { AdminPersonRecord } from "./admin-person.js"
 
-/** The reporter (author) of a report, as the repo resolves it (or null for an anonymous report). */
-export interface AdminReporterRecord {
-  id: string
-  name: string
-  handle: string | null
-  emailVerified: boolean
-  hasOauth: boolean
-  joinedAt: Date | null
-}
+/**
+ * The reporter (author) of a report, as the repo resolves it (or null for an anonymous report). The shape
+ * is the shared admin-person one (admin-person.ts, which also owns the SQL columns and both projections);
+ * the name is kept because it is what the reports domain calls this person.
+ */
+export type AdminReporterRecord = AdminPersonRecord
 
 /**
  * A media asset attached to a report, as the repo reads it back: the raw object-store keys. The service
@@ -37,10 +35,19 @@ export interface AdminReportMediaRecord {
   contentType?: string | null
 }
 
-/** A report_timeline row as the repo reads it back (status transition + optional note + actor label). */
+/**
+ * A report_timeline row as the repo reads it back (status transition + optional note + actor label).
+ * `kind` is the row's OWN recorded kind (report_timeline.kind, added by 0031). Only the paths that have a
+ * kind to record write it — setStatus and appendSystemTimeline (the route/reply rows); every other writer
+ * (toggleFlag, remove, appendFollowup, report-repository, moderation, jurisdiction-contacts, the anon
+ * repos) leaves the column NULL, as does any pre-0031 row. For all of those the service derives the kind
+ * from the status (timelineKindForStatus), so that fallback is the COMMON path, not a legacy one. Optional
+ * so a fixture or fake need only supply what it asserts on.
+ */
 export interface AdminReportTimelineRecord {
   status: AdminReportStatus
   note: string | null
+  kind?: ReportTimelineItem["kind"] | null
   who: string
   createdAt: Date
 }
@@ -61,6 +68,29 @@ export interface AdminReportRoutingRecord {
    */
   forwardSubjectTemplate?: string | null
   forwardBodyTemplate?: string | null
+}
+
+/**
+ * The report's outreach state as the repo resolves it: the wire-contract triple (status/threadId/
+ * routedTo/routedAt the detail DTO carries) plus `sendFailed`, which is repo-internal and NOT on the wire.
+ *
+ * WHY sendFailed exists: a thread is created with status 'sent' BEFORE the mailer is called
+ * (outbound-mail-service sendReportToJurisdiction), so a delivery throw leaves a thread that maps to the
+ * `sent` outreach status even though nothing reached the city. Without a way to tell that apart, the
+ * route endpoint's idempotency guard would refuse the operator's retry forever. `sendFailed` is the
+ * positive evidence of a lost send: the thread has a 'failed' mail_event and NO 'sent' one.
+ */
+export interface ReportOutreachState {
+  status: ReportOutreachStatus
+  threadId: string | null
+  routedTo: string | null
+  routedAt: string | null
+  /**
+   * True when this thread recorded a 'failed' delivery and never a 'sent' one — i.e. every send attempt
+   * on it threw, so the packet never left. Optional so a fake/fixture need only set it when it matters
+   * (absent === false).
+   */
+  sendFailed?: boolean
 }
 
 /**
@@ -145,12 +175,7 @@ export interface AdminReportRepository {
    *   thread.status 'delivered' / 'opened'         -> delivered
    *   otherwise (a thread with an OUT send)        -> sent
    */
-  getOutreach(id: string): Promise<{
-    status: ReportOutreachStatus
-    threadId: string | null
-    routedTo: string | null
-    routedAt: string | null
-  }>
+  getOutreach(id: string): Promise<ReportOutreachState>
   /**
    * Append a SYSTEM report_timeline row at the report's CURRENT status (actor NULL, no audit). Used by the
    * inbound reply side-effects (§2.7) to record a jurisdiction reply on the timeline without changing the

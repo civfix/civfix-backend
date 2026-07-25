@@ -76,6 +76,31 @@ describe("DI container", () => {
     const c = buildContainer(loadEnv({ NODE_ENV: "test" }))
     await expect(c.close()).resolves.toBeUndefined()
   })
+
+  it("threads CF_TURNSTILE_HOSTNAMES into RealAbuseChecks, and omits it when unset (L16)", () => {
+    // The hostname assertion existed in abuse-checks but nothing ever supplied the list, so a token minted
+    // on another origin using our sitekey could be replayed. Read back off the constructed instance: the
+    // wiring IS the fix, so asserting the env value reaches the adapter is the only meaningful pin.
+    const configOf = (checks: unknown): { turnstileHostnames?: readonly string[] } =>
+      (checks as { config: { turnstileHostnames?: readonly string[] } }).config
+
+    const wired = buildContainer(
+      loadEnv({
+        NODE_ENV: "test",
+        USE_FAKE_ABUSE_NSFW: "0",
+        CF_TURNSTILE_SECRET: "ts-secret",
+        CF_TURNSTILE_HOSTNAMES: "civfix.org,www.civfix.org",
+      }),
+    )
+    expect(configOf(wired.abuseChecks).turnstileHostnames).toEqual(["civfix.org", "www.civfix.org"])
+
+    // Unset -> the key is OMITTED rather than passed as [], so abuse-checks still logs its one-time
+    // "not configured" notice instead of reading as "configured with an empty allowlist".
+    const unwired = buildContainer(
+      loadEnv({ NODE_ENV: "test", USE_FAKE_ABUSE_NSFW: "0", CF_TURNSTILE_SECRET: "ts-secret" }),
+    )
+    expect(configOf(unwired.abuseChecks).turnstileHostnames).toBeUndefined()
+  })
 })
 
 /**

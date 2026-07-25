@@ -25,10 +25,10 @@ import type {
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
 import type { POST_KIND_VALUES } from "../db/schema/types.js"
-import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
-import { publicReportFilter } from "./report-sql.js"
+import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
 
 type PostKind = (typeof POST_KIND_VALUES)[number]
 
@@ -231,14 +231,20 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
   ): Promise<Map<string, PersonDTO>> {
     const out = new Map<string, PersonDTO>()
     if (ids.length === 0) return out
+    // M-follow-counts: the follower/following totals are the denormalized users.follower_count /
+    // users.following_count (0059_users_follow_counters.sql), maintained by addFollow/removeFollow. They
+    // started as correlated count(*) subqueries per author row (a popular account's whole edge list on
+    // every feed render), then became two grouped index scans per page; now they are two columns of a
+    // row this query already reads. Only `is_following` is still viewer-relative, and that is a single
+    // PK probe per author.
     const rows = await sql<AuthorRow[]>`
       SELECT
         u.id,
         u.display_name,
         u.handle,
         u.bio,
-        (SELECT count(*)::int FROM follows_people f WHERE f.followee_id = u.id) AS followers,
-        (SELECT count(*)::int FROM follows_people f WHERE f.follower_id = u.id) AS following,
+        u.follower_count AS followers,
+        u.following_count AS following,
         EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
         am.r2_key AS avatar_r2_key,
         u.avatar_url,
@@ -345,14 +351,10 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         ST_Y(r.geom) AS lat,
         ST_X(r.geom) AS lng,
         r.addr,
-        ma.thumb_key,
-        ma.r2_key AS thumb_r2_key
+        m.thumb_key,
+        m.r2_key AS thumb_r2_key
       FROM reports r
-      LEFT JOIN LATERAL (
-        SELECT thumb_key, r2_key FROM media_assets m
-        WHERE m.report_id = r.id AND m.status = 'ready'
-        ORDER BY m.created_at ASC LIMIT 1
-      ) ma ON TRUE
+      ${firstReadyStillLateral(sql)}
       WHERE r.id = ANY(${ids}::uuid[]) AND ${publicReportFilter(sql)}
     `
     const resolved = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {
@@ -552,12 +554,11 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
   }
 
   async function pageOf(rows: PostRowSelect[], limit: number, viewerId: string): Promise<FeedPage> {
-    const hasMore = rows.length > limit
-    const pageRows = hasMore ? rows.slice(0, limit) : rows
-    const items = await hydrate(pageRows, viewerId)
-    const last = pageRows[pageRows.length - 1]
-    const nextCursor = hasMore && last ? encodeTimeCursor({ at: last.created_at, id: last.id }) : null
-    return { items, nextCursor }
+    const { items: pageRows, nextCursor } = paginate(rows, limit, (r) => ({
+      at: r.created_at,
+      id: r.id,
+    }))
+    return { items: await hydrate(pageRows, viewerId), nextCursor }
   }
 
   async function resolveOriginalTarget(tx: Queryable, postId: string): Promise<string | null> {
@@ -922,12 +923,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         ORDER BY ps.created_at DESC, ps.post_id DESC
         LIMIT ${args.limit + 1}
       `
-      const hasMore = rows.length > args.limit
-      const pageRows = hasMore ? rows.slice(0, args.limit) : rows
-      const items = await hydrate(pageRows, args.viewerId)
-      const last = pageRows[pageRows.length - 1]
-      const nextCursor = hasMore && last ? encodeTimeCursor({ at: last.saved_at, id: last.id }) : null
-      return { items, nextCursor }
+      // Keyset anchor is the SAVE time + the saved post's id — (ps.created_at, ps.post_id), which the
+      // cursorFilter above consumes; ps.post_id is p.id by the join.
+      const { items: pageRows, nextCursor } = paginate(rows, args.limit, (r) => ({
+        at: r.saved_at,
+        id: r.id,
+      }))
+      return { items: await hydrate(pageRows, args.viewerId), nextCursor }
     },
   }
 }

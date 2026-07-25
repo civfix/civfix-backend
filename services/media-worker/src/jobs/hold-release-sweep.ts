@@ -27,15 +27,13 @@ import {
   releaseAnonHoldIfReady,
   type AnonHoldReleaseRepo,
 } from "@civfix/api/anon-hold-release"
+import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
-export interface HoldReleaseSweepDeps {
+export interface HoldReleaseSweepDeps extends JobObsDeps {
   repo: AnonHoldReleaseRepo
   abuseChecks: AbuseChecks
   /** Max held anon reports to re-check this run. */
   batchSize: number
-  now?: () => Date
-  log?: (line: string, extra?: Record<string, unknown>) => void
-  report?: (err: unknown, context?: Record<string, unknown>) => void
 }
 
 export interface HoldReleaseSweepResult {
@@ -51,8 +49,7 @@ export interface HoldReleaseSweepResult {
 export async function runHoldReleaseSweep(
   deps: HoldReleaseSweepDeps,
 ): Promise<HoldReleaseSweepResult> {
-  const log = deps.log ?? ((l: string, e?: Record<string, unknown>) => console.log(l, e ?? {}))
-  const report = deps.report ?? (() => {})
+  const { log, report } = resolveJobObs(deps)
 
   let ids: string[]
   try {

@@ -1,6 +1,6 @@
 
 import type { Sql } from "../../db/client.js"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { clampLimit, decodeCursor, paginate } from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import { likeContains } from "./like.js"
@@ -63,12 +63,11 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
         ORDER BY a.created_at DESC, a.id DESC
         LIMIT ${limit + 1}
       `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null
-      return { records: page.map(toRecord), nextCursor }
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({
+        createdAt: r.created_at,
+        id: r.id,
+      }))
+      return { records: items.map(toRecord), nextCursor }
     },
   }
 }

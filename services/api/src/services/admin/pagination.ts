@@ -9,7 +9,7 @@
 
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 
-export { CURSOR_UUID_RE, paginate } from "../../db/cursor-helpers.js"
+export { paginate } from "../../db/cursor-helpers.js"
 
 /** Default page size when the request omits `limit`. */
 export const ADMIN_DEFAULT_LIMIT = 25
@@ -28,11 +28,12 @@ export function encodeCursor(anchor: CursorAnchor): string {
 }
 
 /**
- * Decode a "<iso>|<id>" cursor into its anchor, or null when absent/malformed. Repos that cast
- * `${id}::uuid` pass requireUuidId=true so a non-UUID id degrades to "from the start" (null) rather than
- * raising a Postgres 22P02 -> 500. Non-uuid-keyed repos (geoid: discovery, jurisdiction-contacts) and the
- * in-memory test fakes leave it false. A legacy timestamp-only cursor anchors at the max uuid for that
- * instant (created_at-only paging) instead of erroring.
+ * Decode a "<iso>|<id>" cursor into its anchor, or null when absent/malformed. Repos whose keyset casts
+ * `${id}::uuid` pass requireUuidId=true so a forged non-UUID id degrades to "from the start" (null) rather
+ * than raising a Postgres 22P02 -> 500: reports, users, events, discovery, moderation, mail, inbound,
+ * gov-claims and audit all do. Repos keyed on something else (activity's synthetic composite ids) leave it
+ * false. A legacy timestamp-only cursor anchors at the max uuid for that instant (created_at-only paging)
+ * instead of erroring.
  */
 export function decodeCursor(
   cursor: string | null | undefined,
@@ -75,6 +76,45 @@ export function decodeOffsetCursor(cursor: string | null | undefined): number {
   } catch {
     return 0
   }
+}
+
+/**
+ * Page a PRE-SORTED in-memory list by the shared "<iso>|<id>" cursor: find the anchor row by id, then take
+ * a one-extra-row probe. `anchorOf` returns the {createdAt,id} the cursor encodes — encoding the row's REAL
+ * sort value (not a placeholder) so the opaque cursor string matches the Drizzle impl for the same page.
+ * The id alone drives the slice position; the cursor's createdAt is informational here.
+ *
+ * THE one implementation for every in-memory admin repo (six hand-rolled copies of
+ * decode -> findIndex -> slice(limit+1) -> encode drifted apart before this existed).
+ *
+ * `requireUuid` mirrors the Drizzle twin's decodeCursor flag: a fake whose production counterpart casts the
+ * anchor to uuid must DISCARD a non-uuid anchor the same way, or the offline twin silently accepts cursors
+ * prod throws away. Fakes whose tests seed synthetic row ids ("rep-1") leave it false — for those the
+ * strictness is a prod hardening against a forged cursor, not an observable behavior the fake must copy.
+ *
+ * ANCHOR MISS: when the anchor row is no longer in the list (it left the filtered set between pages — a
+ * discovery task whose contacts were just saved, a report that was removed), paging ENDS rather than
+ * restarting from the top, which would loop the client forever.
+ */
+export function pageInMemoryById<T>(
+  rows: readonly T[],
+  cursor: string | null | undefined,
+  limit: number | undefined,
+  anchorOf: (row: T) => CursorAnchor,
+  requireUuid = false,
+): { records: T[]; nextCursor: string | null } {
+  const lim = clampLimit(limit)
+  const anchor = decodeCursor(cursor, requireUuid)
+  let start = 0
+  if (anchor !== null) {
+    const idx = rows.findIndex((row) => anchorOf(row).id === anchor.id)
+    start = idx >= 0 ? idx + 1 : rows.length
+  }
+  const slice = rows.slice(start, start + lim + 1)
+  if (slice.length <= lim) return { records: slice, nextCursor: null }
+  const records = slice.slice(0, lim)
+  const last = records[records.length - 1]
+  return { records, nextCursor: last !== undefined ? encodeCursor(anchorOf(last)) : null }
 }
 
 /**

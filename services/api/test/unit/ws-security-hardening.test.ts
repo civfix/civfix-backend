@@ -69,7 +69,6 @@ describe("H6: the leave frame is gated on what THIS socket joined", () => {
     const victimConn = new MockConnection("victim")
     const victim = sessionFor(BOB, victimConn, {
       dm: {
-        isParticipant: () => Promise.resolve(true),
         peerOf: () => Promise.resolve(ALICE),
         persist: () => Promise.reject(new Error("unused")),
         markRead: () => Promise.resolve(),

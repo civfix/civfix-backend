@@ -27,6 +27,7 @@ import type {
 } from "@civfix/shared"
 import { toLinkedReportRef, type LinkedReportView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
+import { toPersonDTO, type AdminPersonRecord } from "./admin-person.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import {
   eventTimelineKind,
@@ -44,14 +45,12 @@ export {
   eventTimelineKind,
 } from "./admin-event-helpers.js"
 
-export interface AdminOrganizerRecord {
-  id: string
-  name: string
-  handle: string | null
-  emailVerified: boolean
-  hasOauth: boolean
-  joinedAt: Date | null
-}
+/**
+ * The organizer of a cleanup, as the repo resolves it. Field-identical to a report's reporter, so both read
+ * the shared admin-person shape (admin-person.ts, which also owns the SQL columns and both projections);
+ * the name is kept because it is what the events domain calls this person.
+ */
+export type AdminOrganizerRecord = AdminPersonRecord
 
 // A cleanup_timeline row as the repo reads it back. `kind` is the stored free-text kind.
 export interface AdminEventTimelineRecord {
@@ -173,7 +172,6 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
 
   function toListItem(record: AdminEventRecord, ref: Date): AdminEventListItemDTO {
-    const organizer = record.organizer
     return {
       id: record.id,
       status: record.status,
@@ -184,12 +182,10 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       attendees: record.attendees,
       capacity: record.capacity,
       bags: record.bags,
-      organizer: {
-        id: organizer?.id ?? "",
-        name: organizer?.name ?? "Unknown",
-        handle: organizer?.handle ?? "unknown",
-        joined: organizer?.joinedAt ? toRelAbs(organizer.joinedAt, ref).abs : "-",
-      },
+      // A cleanup always HAS an organizer, so these fallbacks stand in for corrupt data, not for a
+      // supported "no organizer" state (the reports surface's anonymous case). Hence `id: ""`, not null:
+      // the contract's organizer.id is a plain string.
+      organizer: toPersonDTO(record.organizer, ref, { id: "", name: "Unknown", handle: "unknown" }),
       date: toRelAbs(record.scheduledAt, ref),
       coords: [record.lat, record.lng],
     }
@@ -222,10 +218,19 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         limit: query.limit ?? 25,
       }
       // Counts span the searched set but ignore the facet, so the chips stay accurate as the operator
-      // switches them.
+      // switches them — and because they describe the whole set rather than the page, they are computed on
+      // PAGE 1 ONLY (the shared admin-list policy; the console reads them off the first page).
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listEvents(args),
-        deps.repo.countByBucket({ q: args.q }),
+        args.cursor === null
+          ? deps.repo.countByBucket({ q: args.q })
+          : Promise.resolve<AdminEventCounts>({
+              all: 0,
+              upcoming: 0,
+              in_progress: 0,
+              completed: 0,
+              flagged: 0,
+            }),
       ])
       return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },

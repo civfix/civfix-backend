@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest"
+import { randomUUID } from "node:crypto"
 import { InMemoryDiscoveryRepository } from "../../src/services/admin/discovery-repository.memory.js"
 import {
   makeDiscoveryService,
@@ -168,20 +169,35 @@ describe("discovery list", () => {
     expect(all.items).toHaveLength(2)
   })
 
-  it("search matches place or id (case-insensitive)", async () => {
+  /**
+   * The SQL predicate is `ilikeAnyOf(sql, [j.name, t.geoid], q)` — the jurisdiction NAME or the GEOID.
+   * The task id is not a search column, so a q matching one must find nothing (the fake used to search it,
+   * which is how a search test passed against behavior production lacks).
+   */
+  it("search matches place or geoid (case-insensitive) and NEVER the task id", async () => {
     const { repo, svc } = harness()
-    repo.seedTask({ id: "JUR-1", geoid: "1", place: "Los Angeles", perCategory: { trash: 1 } })
-    repo.seedTask({ id: "JUR-2", geoid: "2", place: "San Diego", perCategory: { trash: 1 } })
+    repo.seedTask({ id: "JUR-1", geoid: "0644000", place: "Los Angeles", perCategory: { trash: 1 } })
+    repo.seedTask({ id: "JUR-2", geoid: "0666000", place: "San Diego", perCategory: { trash: 1 } })
 
     expect((await svc.list({ q: "angeles" })).items.map((i) => i.id)).toEqual(["JUR-1"])
-    expect((await svc.list({ q: "jur-2" })).items.map((i) => i.id)).toEqual(["JUR-2"])
+    expect((await svc.list({ q: "ANGELES" })).items.map((i) => i.id)).toEqual(["JUR-1"])
+    expect((await svc.list({ q: "0666000" })).items.map((i) => i.id)).toEqual(["JUR-2"])
+    expect((await svc.list({ q: "0666" })).items.map((i) => i.id)).toEqual(["JUR-2"])
+    expect((await svc.list({ q: "jur-2" })).items).toHaveLength(0)
     expect((await svc.list({ q: "nomatch" })).items).toHaveLength(0)
   })
 
   it("paginates with a cursor", async () => {
     const { repo, svc } = harness()
     for (let i = 0; i < 5; i++) {
-      repo.seedTask({ id: `T${i}`, geoid: `${i}`, place: `Place ${i}`, population: 100 - i })
+      // Real uuids: discovery_tasks.id IS a uuid and the Drizzle keyset casts the cursor anchor to
+      // `::uuid`, so the fake discards a non-uuid anchor exactly as production does (see below).
+      repo.seedTask({
+        id: `0000000${i}-0000-4000-8000-000000000000`,
+        geoid: `${i}`,
+        place: `Place ${i}`,
+        population: 100 - i,
+      })
     }
     const first = await svc.list({ limit: 2 })
     expect(first.items).toHaveLength(2)
@@ -191,6 +207,18 @@ describe("discovery list", () => {
     // No overlap between pages.
     const firstIds = new Set(first.items.map((i) => i.id))
     expect(second.items.every((i) => !firstIds.has(i.id))).toBe(true)
+  })
+
+  it("DISCARDS a non-uuid cursor anchor, like the Drizzle keyset's ::uuid cast does", async () => {
+    const { repo, svc } = harness()
+    for (let i = 0; i < 3; i++) {
+      repo.seedTask({ id: randomUUID(), geoid: `${i}`, place: `Place ${i}`, population: 100 - i })
+    }
+    // A forged/legacy cursor carrying a non-uuid id would raise a Postgres 22P02 -> 500 against the real
+    // keyset, so decodeCursor drops it and the query pages from the top. The fake must agree, or an offline
+    // test proves a paging behavior production does not have.
+    const page = await svc.list({ limit: 2, cursor: "2026-06-06T00:00:00.000Z|not-a-uuid" })
+    expect(page.items.map((i) => i.place)).toEqual(["Place 0", "Place 1"])
   })
 })
 
@@ -268,7 +296,7 @@ describe("discovery mutations", () => {
   it("addNote throws notFound for an unknown task", async () => {
     const { svc } = harness()
     await expect(
-      svc.addNote("nope", { text: "x", actorId: null, who: "op" }),
+      svc.addNote("nope", { text: "x", actorId: "op-1", who: "op" }),
     ).rejects.toMatchObject({ httpStatus: 404 })
   })
 
@@ -281,7 +309,7 @@ describe("discovery mutations", () => {
 
   it("flag throws notFound for an unknown task", async () => {
     const { svc } = harness()
-    await expect(svc.flag("nope", { reason: null, actorId: null })).rejects.toMatchObject({
+    await expect(svc.flag("nope", { reason: null, actorId: "op-1" })).rejects.toMatchObject({
       httpStatus: 404,
     })
   })
@@ -309,7 +337,7 @@ describe("discovery mutations", () => {
   it("saveDraft throws notFound for an unknown task", async () => {
     const { svc } = harness()
     await expect(
-      svc.saveDraft("nope", { contacts: {}, defaultEmails: [], formUrl: null, actorId: null }),
+      svc.saveDraft("nope", { contacts: {}, defaultEmails: [], formUrl: null, actorId: "op-1" }),
     ).rejects.toMatchObject({ httpStatus: 404 })
   })
 })

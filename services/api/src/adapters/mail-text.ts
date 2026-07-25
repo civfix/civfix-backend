@@ -16,13 +16,24 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;")
 }
 
-// The domain of an email address, falling back when absent/empty. Accepts a bare address OR a
-// display-name form ("Name <local@domain>") — the latter is the per-thread From we now send, so a
-// trailing '>' is trimmed off the extracted domain.
-export function domainOf(addr: string, fallback = "civfix.org"): string {
+// The domain of an email address, LOWERCASED, or null when absent/malformed. Accepts a bare address OR a
+// display-name form ("Name <local@domain>") — the latter is the per-thread From we now send, so a trailing
+// '>' is trimmed off the extracted domain. This is the nullable CORE: a caller that must not silently
+// invent a domain (DKIM alignment) uses it directly; `domainOf` is the fallback wrapper for the outbound
+// paths that need a Message-ID host no matter what.
+export function domainOfOrNull(addr: string | null | undefined): string | null {
+  if (!addr) return null
   const at = addr.lastIndexOf("@")
-  const domain = at >= 0 ? addr.slice(at + 1).replace(/>.*$/, "").trim() : ""
-  return domain.length > 0 ? domain : fallback
+  if (at < 0) return null
+  const domain = addr.slice(at + 1).replace(/>.*$/, "").trim().toLowerCase()
+  return domain.length > 0 ? domain : null
+}
+
+// The domain of an email address, falling back when absent/empty. NEVER null — for Message-ID / operator
+// copy. Do NOT use it for any comparison decision: the fallback would silently align an unparseable
+// address with civfix.org.
+export function domainOf(addr: string, fallback = "civfix.org"): string {
+  return domainOfOrNull(addr) ?? fallback
 }
 
 // Strip CR/LF (and NUL) then clamp, before interpolating user-controlled text into an email header

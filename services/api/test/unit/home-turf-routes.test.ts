@@ -219,6 +219,77 @@ describe("POST /forms/home-turf", () => {
     expect(outbounds(mailer)[0]!.to).toBe("roman@reachoutla.org")
   })
 
+  /**
+   * M8 ordering (routes-core MEDIUM + LOW/test-gap). The per-RECIPIENT daily cap is charged AFTER the
+   * awaited coordinator send, not before it. Charging first meant a transient SMTP blip on step (4) still
+   * consumed the submitter's entire 1/day budget, so their retry 429'd for 24 hours — a mailer hiccup
+   * locked a legitimate coach out for a day. The old test stopped at the 5xx and never retried, so
+   * neither the bug nor its fix was observable.
+   */
+  it("does NOT consume the 1/day recipient budget when the coordinator send fails (the retry still 200s)", async () => {
+    const { app, mailer } = await makeHarness()
+    const original = mailer.sendOutbound.bind(mailer)
+    let calls = 0
+    mailer.sendOutbound = (email: OutboundEmail) => {
+      calls += 1
+      if (calls === 1) return Promise.reject(new Error("smtp down"))
+      return original(email)
+    }
+
+    const failed = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
+    expect(failed.statusCode).toBe(500)
+    expect(outbounds(mailer)).toHaveLength(0)
+
+    // The SAME address retries: the daily budget must still be intact.
+    const retry = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
+    expect(retry.statusCode).toBe(200)
+    expect(retry.json()).toEqual({ ok: true })
+
+    // Exactly the retry's two envelopes were captured (the first attempt's notification rejected).
+    const sent = outbounds(mailer)
+    expect(sent).toHaveLength(2)
+    expect(sent[0]!.to).toBe("roman@reachoutla.org")
+    expect(sent[1]!.to).toBe("coach@example.org")
+  })
+
+  it(`still charges the budget on SUCCESS: a same-address resubmit 429s (limit ${HOME_TURF_EMAIL_LIMIT_PER_DAY}/day)`, async () => {
+    // The positive control for the reordering above: moving the charge later must not remove the cap.
+    const { app, mailer } = await makeHarness()
+    const first = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    expect(first.statusCode).toBe(200)
+
+    const second = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    expect(second.statusCode).toBe(429)
+    expect(second.json().code).toBe("RATE_LIMITED")
+
+    // ACCEPTED behavior change (A15): the cap now sits AFTER the coordinator notification, so a duplicate
+    // submit sends that one internal email before 429ing. No CONFIRMATION reaches the submitter — the
+    // request-addressed mail, which is the only thing this cap exists to bound, is still blocked.
+    const sent = outbounds(mailer)
+    expect(sent).toHaveLength(3)
+    expect(sent.map((e) => e.to)).toEqual([
+      "roman@reachoutla.org",
+      "coach@example.org",
+      "roman@reachoutla.org",
+    ])
+
+    // A different address is unaffected.
+    const other = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload({ email: "other-coach@example.org" }),
+    })
+    expect(other.statusCode).toBe(200)
+  })
+
   it(`has a dedicated per-route limit (429 within ${HOME_TURF_RATE_LIMIT.max + 2} hits from one IP)`, async () => {
     const { app } = await makeHarness()
     let saw429 = false
@@ -290,5 +361,33 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
 
     expect(res.statusCode).toBeGreaterThanOrEqual(500)
     expect(outbounds(container.mailer as FakeMailer)).toHaveLength(0)
+  })
+
+  it("counts through container.getCounterStore() when Redis IS configured (one shared client)", async () => {
+    // The route used to build its own RedisCounterStore, so container.close()'s reset of the shared client
+    // protected nothing and each plugin held a separate one. Pin the wiring: with a Redis-configured
+    // container and NO test override, both caps must count through the container's store.
+    const env = loadEnv({ NODE_ENV: "test" })
+    const counted: string[] = []
+    // env WITHOUT Redis is what the server itself sees (so the limiter stays in-memory and no connection is
+    // opened), while the CONTAINER reports a REDIS_URL — that is the branch production takes in counters().
+    const container = {
+      ...buildContainer(env),
+      env: { ...env, REDIS_URL: "redis://cache:6379" },
+      getCounterStore: () => ({
+        incr: (key: string) => {
+          counted.push(key)
+          return Promise.resolve(1)
+        },
+      }),
+    } as unknown as ReturnType<typeof buildContainer>
+    const app = await buildServer({ env, container })
+    current = { app, mailer: container.mailer as FakeMailer }
+
+    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    expect(res.statusCode).toBe(200)
+    // Both buckets: the per-IP hourly cap and the per-recipient daily cap.
+    expect(counted.some((k) => k.startsWith("abuse:home-turf:ip:"))).toBe(true)
+    expect(counted.some((k) => k.includes("coach@example.org"))).toBe(true)
   })
 })

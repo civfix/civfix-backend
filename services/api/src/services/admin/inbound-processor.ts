@@ -124,9 +124,21 @@ export async function processInboundObject(
   // A DSN/bounce is filed in the Inbox for operator visibility (idempotent on message_id) AND, the FIRST
   // time it is seen (outcome 'inbox', not 'replay'), correlated to its outbound thread — so a re-delivered
   // DSN never double-records the 'bounced' event or re-stamps the contact.
+  //
+  // The bounce branch runs BEFORE the M7 auth gate (bounce handling is verdict-independent: it only ever
+  // reaches the Inbox and the thread's own outbound recipients), but the stored verdict must still be the
+  // REAL one — a forged mailer-daemon DSN is the easiest message class to spoof, and defaulting it to
+  // "pass" is exactly where the console must show the UNVERIFIED badge.
   const bounce = detectBounce(mail)
   if (bounce.isBounce) {
-    const result = await routeInbox(storage, inboundRepo, key, mail, messageId)
+    const result = await routeInbox(
+      storage,
+      inboundRepo,
+      key,
+      mail,
+      messageId,
+      readMailAuthVerdict(mail),
+    )
     if (result.outcome === "inbox") {
       await handleBounce(container, mailRepo, bounce).catch(() => {})
     }
@@ -169,7 +181,7 @@ export async function processInboundObject(
   } else if (fallbackThread !== null) {
     result = await routeThreaded(container, injectedReportRepo, injectedCleanupRepo, storage, mailRepo, mail, null, messageId, fallbackThread)
   } else {
-    result = await routeInbox(storage, inboundRepo, key, mail, messageId)
+    result = await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
   }
 
   if (result.outcome === "threaded" || result.outcome === "inbox" || result.outcome === "replay") {
@@ -241,7 +253,8 @@ async function routeThreaded(
  *
  * `authVerdict` is stamped into the stored headers as `x-civfix-auth-verdict` (M7) so the operator
  * console can render an explicit UNVERIFIED badge. This is the ONLY landing place for a message that
- * failed the authentication gate — it is never threaded and never drives a side effect.
+ * failed the authentication gate — it is never threaded and never drives a side effect. The parameter is
+ * REQUIRED: it used to default to "pass", which silently marked every bounce as authenticated.
  */
 async function routeInbox(
   storage: Storage,
@@ -249,7 +262,7 @@ async function routeInbox(
   key: string,
   mail: ParsedMail,
   messageId: string,
-  authVerdict: MailAuthVerdict = "pass",
+  authVerdict: MailAuthVerdict,
 ): Promise<ProcessResult> {
   // Attachment folder = the worker's key slug (already object-key-safe), so it is stable across replays.
   const folder = key.startsWith(INBOUND_PENDING_PREFIX)

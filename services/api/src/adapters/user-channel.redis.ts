@@ -3,14 +3,10 @@ import { UserSignalSchema, type UserSignal } from "@civfix/shared"
 import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import type { ChatPubSub } from "./chat-pubsub.js"
+import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"
 
 export function userChannel(userId: string): string {
   return `user:${userId}`
-}
-
-interface UserSubscription {
-  connections: Set<ChatConnection>
-  unsubscribe: () => Promise<void>
 }
 
 export interface RedisUserChannelDeps {
@@ -21,51 +17,32 @@ export interface RedisUserChannelDeps {
 export class RedisUserChannel implements UserChannel {
   private readonly pubsub: ChatPubSub
   private readonly logger: Pick<FastifyBaseLogger, "warn"> | undefined
-  private readonly users = new Map<string, UserSubscription>()
+  /**
+   * userId -> the user's local sockets, ref-counted: the first socket subscribes `user:<id>`, the last one
+   * unsubscribes. A rejected first SUBSCRIBE removes the entry so a retry really re-subscribes (see
+   * RefCountedSubscriptions).
+   */
+  private readonly subscriptions: RefCountedSubscriptions<ChatConnection>
 
   constructor(deps: RedisUserChannelDeps) {
     this.pubsub = deps.pubsub
     this.logger = deps.logger
+    this.subscriptions = new RefCountedSubscriptions<ChatConnection>((userId, connections) =>
+      this.pubsub.subscribe(userChannel(userId), (payload) => {
+        const signal = decodeSignal(payload)
+        if (signal === null) {
+          this.logger?.warn({ userId }, "user-channel: dropped malformed signal payload")
+          return
+        }
+        const frame = JSON.stringify({ type: "signal", ...signal })
+        // Live set: a socket that disposed its subscription mid-delivery is already gone from it.
+        for (const c of [...connections()]) c.send(frame)
+      }),
+    )
   }
 
-  async subscribeUser(userId: string, conn: ChatConnection): Promise<() => Promise<void>> {
-    let entry = this.users.get(userId)
-    if (!entry) {
-      const connections = new Set<ChatConnection>()
-      const newEntry: UserSubscription = { connections, unsubscribe: async () => {} }
-      this.users.set(userId, newEntry)
-      try {
-        newEntry.unsubscribe = await this.pubsub.subscribe(userChannel(userId), (payload) => {
-          const current = this.users.get(userId)
-          if (!current) return
-          const signal = decodeSignal(payload)
-          if (signal === null) {
-            this.logger?.warn({ userId }, "user-channel: dropped malformed signal payload")
-            return
-          }
-          const frame = JSON.stringify({ type: "signal", ...signal })
-          for (const c of current.connections) c.send(frame)
-        })
-      } catch (err) {
-        this.users.delete(userId)
-        throw err
-      }
-      entry = newEntry
-    }
-    entry.connections.add(conn)
-
-    let removed = false
-    return async () => {
-      if (removed) return
-      removed = true
-      const current = this.users.get(userId)
-      if (!current) return
-      current.connections.delete(conn)
-      if (current.connections.size === 0) {
-        this.users.delete(userId)
-        await current.unsubscribe()
-      }
-    }
+  subscribeUser(userId: string, conn: ChatConnection): Promise<() => Promise<void>> {
+    return this.subscriptions.add(userId, conn)
   }
 
   async publishToUser(userId: string, signal: UserSignal): Promise<void> {
@@ -78,13 +55,12 @@ export class RedisUserChannel implements UserChannel {
   }
 
   async close(): Promise<void> {
-    const unsubs = [...this.users.values()].map((u) => u.unsubscribe())
-    this.users.clear()
-    await Promise.allSettled(unsubs)
+    // allSettled inside closeAll: one rejected unsubscribe must not leave the other entries behind.
+    await this.subscriptions.closeAll()
   }
 
   subscriberCount(userId: string): number {
-    return this.users.get(userId)?.connections.size ?? 0
+    return this.subscriptions.size(userId)
   }
 }
 

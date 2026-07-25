@@ -181,6 +181,40 @@ describe("OtpService.issueOtp", () => {
     await expectAppError(service.issueOtp(EMAIL, IP), ErrorCode.RATE_LIMITED)
   })
 
+  it("G17: a successful verify RELEASES the per-email cooldown (deletion can request a code at once)", async () => {
+    const { service, cache, mailer } = makeOtp()
+    const key = `otp:rl:email:${EMAIL.toLowerCase()}`
+
+    await service.issueOtp(EMAIL, IP)
+    expect(await cache.get(key)).not.toBeNull()
+    // Signing in CONSUMES the code. That proves inbox access, which is the whole point of the window, so
+    // the window is dropped: the account-deletion gate re-requests a code through the same public endpoint
+    // immediately afterwards and used to get a 429 on a GDPR erasure path.
+    await service.verifyOtp(EMAIL, sentCode(mailer, EMAIL), IP)
+    expect(await cache.get(key)).toBeNull()
+
+    // No clock advance: the very next request succeeds and mails a genuinely new code.
+    await expect(service.issueOtp(EMAIL, IP)).resolves.toBeTruthy()
+    const codes = mailer.sent.filter((m) => m.to === EMAIL.toLowerCase() && m.code !== undefined)
+    expect(codes).toHaveLength(2)
+    // …and the fresh window it just anchored still holds: the release is per CONSUMED code, not a bypass.
+    await expectAppError(service.issueOtp(EMAIL, IP), ErrorCode.RATE_LIMITED)
+  })
+
+  it("G17: a FAILED verify does not release the cooldown (no inbox proof, no extra mail)", async () => {
+    const { service, cache, mailer } = makeOtp()
+    const key = `otp:rl:email:${EMAIL.toLowerCase()}`
+    await service.issueOtp(EMAIL, IP)
+    const real = sentCode(mailer, EMAIL)
+    const wrong = real === "123456" ? "654321" : "123456"
+
+    // A third party guessing at the code must NOT be able to unlock a second mail to this address — that
+    // is the anti-mail-bomb property the window exists for.
+    await expectAppError(service.verifyOtp(EMAIL, wrong, IP), ErrorCode.UNAUTHORIZED)
+    expect(await cache.get(key)).not.toBeNull()
+    await expectAppError(service.issueOtp(EMAIL, IP), ErrorCode.RATE_LIMITED)
+  })
+
   it("P1-7: a per-IP cap rejection does not burn the per-email window", async () => {
     const { service } = makeOtp()
     // Exhaust the per-IP cap with DISTINCT emails (so no per-email window is touched for `victim`).
@@ -258,23 +292,56 @@ describe("OtpService.verifyOtp", () => {
     )
   })
 
-  it("P1-4: two concurrent verifies for the same brand-new email resolve to the SAME user (no 500)", async () => {
-    const { service, mailer, users } = makeOtp()
+  it("P1-4: two concurrent verifies of one code -> exactly ONE winner, the loser gets a clean 401 (no 500, no duplicate user)", async () => {
+    const { service, mailer, users, store, cache } = makeOtp()
     await service.issueOtp(EMAIL, IP)
     const code = sentCode(mailer, EMAIL)
+    const row = store.all()[0]!
+    const createSpy = vi.spyOn(users, "create")
 
-    // Fire two verifies concurrently. Both read the (unconsumed) code before either consumes it, both
-    // verify the correct code, both find no existing user, and both attempt to create one. The
-    // find-or-create must be idempotent on email: NEITHER throws a unique-violation 500, and BOTH resolve
-    // to the same account (the duplicate INSERT is absorbed by ON CONFLICT (email) DO NOTHING + re-select).
-    const [a, b] = await Promise.all([
+    // Fire two verifies concurrently. Both read the (still unconsumed) code before either consumes it,
+    // both clear the attempt ceiling (incrementAttempts returns 1 and 2, both <= OTP_MAX_ATTEMPTS) and
+    // both pass argon2 — so single-use can only be decided by the CLAIM: markConsumed is CONDITIONAL on
+    // consumed_at IS NULL (WHERE ... RETURNING in the Pg store), and exactly one caller flips it.
+    //
+    // Pinned behavior: the winner mints the session; the loser is refused exactly like a replay of an
+    // already-spent code — a clean AppError(UNAUTHORIZED)/401 with the generic message, never a 500 (a
+    // leaked unique-violation) and never a second account for the address. One emailed code can never
+    // yield two sessions.
+    const results = await Promise.allSettled([
       service.verifyOtp(EMAIL, code, IP),
       service.verifyOtp(EMAIL, code, IP),
     ])
-    expect(a).toBe(b)
+    const won = results.filter((r) => r.status === "fulfilled")
+    const lost = results.filter((r) => r.status === "rejected")
+    expect(won.length).toBe(1)
+    expect(lost.length).toBe(1)
+
+    // Both callers really did race past the read (attempts 1 and 2 on the one row) — otherwise this would
+    // be a serialized replay and would prove nothing about the claim.
+    expect(row.attempts).toBe(2)
+
+    // The loser's failure is a clean, generic 401, not a 500 and not an enumeration signal.
+    const err = (lost[0] as PromiseRejectedResult).reason
+    expect(err).toBeInstanceOf(AppError)
+    expect((err as AppError).code).toBe(ErrorCode.UNAUTHORIZED)
+    expect((err as AppError).httpStatus).toBe(401)
+    expect((err as AppError).message).toBe("Invalid or expired code.")
+
+    // The winner's id IS the single account for the address: the loser never reached find-or-create, so
+    // exactly one create was attempted and no duplicate user exists.
+    const userId = (won[0] as PromiseFulfilledResult<string>).value
+    expect(createSpy).toHaveBeenCalledTimes(1)
     const user = await users.findByEmail(EMAIL)
     expect(user).not.toBeNull()
-    expect(user!.id).toBe(a)
+    expect(user!.id).toBe(userId)
+    expect(user!.emailVerified).toBe(true)
+
+    // The code is spent exactly once, and the loser (a lost race, not a wrong guess) spent no throttle
+    // budget - neither the per-code nor the per-IP counter was bumped.
+    expect(store.all().filter((r) => r.consumedAt === null).length).toBe(0)
+    expect(await cache.get(`otp:vf:code:${row.id}`)).toBeNull()
+    expect(await cache.get(`otp:vf:ip:${IP}`)).toBeNull()
   })
 
   it("P1-4: users.create is idempotent on email (concurrent create -> one row, same id)", async () => {

@@ -34,7 +34,7 @@ interface ReadyBody {
 }
 
 /** How long a readiness verdict is reused before the backends are probed again. */
-export const READY_CACHE_MS = 5_000
+const READY_CACHE_MS = 5_000
 
 export async function registerHealthRoutes(
   app: FastifyInstance,

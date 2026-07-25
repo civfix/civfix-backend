@@ -27,6 +27,7 @@
 import sharp, { type Sharp } from "sharp"
 import exifr from "exifr"
 import type { WorkerLimits } from "../config.js"
+import { settleWithin } from "../timeout.js"
 
 // Predictable memory under the worker concurrency cap: no internal cache, single libvips thread.
 sharp.cache(false)
@@ -69,24 +70,12 @@ export class ImageProcessingError extends Error {
 
 /** Reject a promise if it does not settle within `ms`. Used to bound native sharp work. */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => {
-      reject(new ImageProcessingError(`${label} timed out after ${ms}ms`))
-    }, ms)
-    p.then(
-      (v) => {
-        clearTimeout(t)
-        resolve(v)
-      },
-      (err: unknown) => {
-        clearTimeout(t)
-        reject(
-          err instanceof ImageProcessingError
-            ? err
-            : new ImageProcessingError(`${label} failed`, err),
-        )
-      },
-    )
+  return settleWithin(p, ms, {
+    timeoutError: () => new ImageProcessingError(`${label} timed out after ${ms}ms`),
+    // Every rejection out of this boundary must be an ImageProcessingError: the pipeline maps that (and
+    // only that) to "reject the asset" rather than "retry the job".
+    normalizeError: (err) =>
+      err instanceof ImageProcessingError ? err : new ImageProcessingError(`${label} failed`, err),
   })
 }
 
@@ -146,8 +135,14 @@ export function sniffAllowedImageContainer(bytes: Uint8Array): "jpeg" | "png" | 
   return null
 }
 
-/** Build a guarded sharp instance over untrusted bytes (no decoding happens until a consumer runs). */
-function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): Sharp {
+/**
+ * Build a guarded sharp instance over untrusted bytes (no decoding happens until a consumer runs).
+ *
+ * EVERY untrusted-decode entry point must go through this, not a bare `sharp()`: it is where the container
+ * sniff, pixel ceiling, failOn, single-page and sequential-read guards live as ONE set. phash.ts had its
+ * own copy of the options and had already drifted (no container sniff), which is why it now calls this.
+ */
+export function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): Sharp {
   // L15: refuse to even CONSTRUCT the pipeline for a container we would reject anyway, so libvips'
   // SVG/PDF/TIFF/GIF header loaders never see untrusted bytes.
   const container = sniffAllowedImageContainer(bytes)

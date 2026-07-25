@@ -1,0 +1,115 @@
+/**
+ * Budget-sharing tests for chainReverse (src/adapters/reverse-geocode.chain.ts).
+ *
+ * reverse-geocode-chain.test.ts covers the ordering contract; this file covers the DEADLINE, which is the
+ * half that regressed: a single 5s chain ceiling handed whole to the first provider left the fallback
+ * ~1s of a 4s-timeout provider, so the fallback the chain exists for came back empty on a Mapbox stall.
+ * The budget is now split `remaining / providers-left`, so:
+ *   - a hung first provider is abandoned at its share and the fallback still gets a real one,
+ *   - a fast first provider passes its UNUSED share on (the common case is not slower than before),
+ *   - the TOTAL is still bounded by the chain budget, however many providers are chained.
+ *
+ * Everything runs on fake timers (vitest fakes Date.now too, which is what the chain measures with), so
+ * these assert seconds of behavior in milliseconds of test.
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { chainReverse, type ReverseGeocode } from "../../src/adapters/reverse-geocode.chain.js"
+
+/** A provider that never answers — the stalled-vendor case. Records when it was called. */
+function hangs(calls: number[]): ReverseGeocode {
+  return () => {
+    calls.push(Date.now())
+    return new Promise<string | null>(() => {})
+  }
+}
+
+/** A provider that answers `value` after `afterMs`. Records when it was called. */
+function answersAfter(afterMs: number, value: string | null, calls: number[]): ReverseGeocode {
+  return () => {
+    calls.push(Date.now())
+    return new Promise<string | null>((resolve) => {
+      setTimeout(() => resolve(value), afterMs)
+    })
+  }
+}
+
+describe("chainReverse budget", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("abandons a hung first provider at half the budget and still asks the fallback", async () => {
+    const calls: number[] = []
+    const start = Date.now()
+    const promise = chainReverse(hangs(calls), answersAfter(500, "fallback", calls))(1, 2)
+
+    // Nothing but the stalled provider has been reached yet.
+    await vi.advanceTimersByTimeAsync(2_400)
+    expect(calls.map((t) => t - start)).toEqual([0])
+
+    // 2500 = 5000 / 2 providers: the stall is cut off here, not at 4000 (its own timeout).
+    await vi.advanceTimersByTimeAsync(200)
+    expect(calls.map((t) => t - start)).toEqual([0, 2_500])
+
+    await vi.advanceTimersByTimeAsync(500)
+    await expect(promise).resolves.toBe("fallback")
+  })
+
+  it("gives the fallback the first provider's UNUSED share when it answers fast", async () => {
+    const calls: number[] = []
+    const promise = chainReverse(
+      answersAfter(200, null, calls),
+      answersAfter(4_500, "slow-but-worth-waiting-for", calls),
+    )(1, 2)
+
+    // The old shape (one 5s ceiling, ~1s left for provider 2) could not have returned this at all.
+    await vi.advanceTimersByTimeAsync(4_800)
+    await expect(promise).resolves.toBe("slow-but-worth-waiting-for")
+  })
+
+  it("stays bounded by the total budget when every provider hangs", async () => {
+    const calls: number[] = []
+    const start = Date.now()
+    const promise = chainReverse(hangs(calls), hangs(calls), hangs(calls))(1, 2)
+
+    // 5000/3, then remaining/2, then the rest — three attempts, one total deadline.
+    await vi.advanceTimersByTimeAsync(5_000)
+    await expect(promise).resolves.toBeNull()
+    expect(calls.length).toBe(3)
+    expect(calls.map((t) => t - start)).toEqual([0, 1_667, 3_334])
+  })
+
+  it("gives a lone provider the whole budget", async () => {
+    const calls: number[] = []
+    const promise = chainReverse(answersAfter(4_900, "only", calls))(1, 2)
+    await vi.advanceTimersByTimeAsync(4_900)
+    await expect(promise).resolves.toBe("only")
+  })
+
+  it("a provider that rejects late (after losing the race) does not surface as an unhandled rejection", async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on("unhandledRejection", onUnhandled)
+    try {
+      const late: ReverseGeocode = () =>
+        new Promise<string | null>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("vendor blew up after we gave up")), 3_000)
+        })
+      const promise = chainReverse(late, late)(1, 2)
+      await vi.advanceTimersByTimeAsync(5_000)
+      await expect(promise).resolves.toBeNull()
+      await vi.advanceTimersByTimeAsync(5_000)
+      // Let any queued rejection callback run.
+      await Promise.resolve()
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off("unhandledRejection", onUnhandled)
+    }
+  })
+})

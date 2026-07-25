@@ -23,6 +23,12 @@
 
 import { relativeAgo, avatarGradient } from "@civfix/shared"
 import type { MessageThreadDTO, PersonDTO } from "@civfix/shared"
+import {
+  encodeTimeCursor,
+  pageWith,
+  parseTimeCursor,
+  type TimeCursor,
+} from "../db/cursor-helpers.js"
 
 /**
  * Per-(user, cleanup) last-read timestamp store. The WS gateway's `ack` handler WRITES through it to the
@@ -85,8 +91,15 @@ export interface ThreadAggregate {
  * strictly after the watermark. Both are behind this interface so the service is DB-free in tests.
  */
 export interface ThreadsRepository {
-  /** The viewer's cleanups as thread aggregates, ordered by most recent activity first. */
-  listThreadsFor(userId: string, limit: number): Promise<ThreadAggregate[]>
+  /**
+   * The viewer's cleanups as thread aggregates, ordered by most recent activity first. `cursor` (when
+   * supported) pushes the inbox keyset predicate into the query — see THREADS_CURSOR below.
+   */
+  listThreadsFor(
+    userId: string,
+    limit: number,
+    cursor?: TimeCursor | null,
+  ): Promise<ThreadAggregate[]>
   /** Count messages in `cleanupId` from senders other than `userId` with created_at > `after`. */
   countUnread(cleanupId: string, userId: string, after: Date): Promise<number>
 }
@@ -121,7 +134,11 @@ export interface DmThreadAggregateView {
  * heavy user's full DM set isn't materialized every inbox load (the merge below slices to `limit` anyway).
  */
 export interface DmThreadsSource {
-  listDmThreadsFor(userId: string, limit?: number): Promise<DmThreadAggregateView[]>
+  listDmThreadsFor(
+    userId: string,
+    limit?: number,
+    cursor?: TimeCursor | null,
+  ): Promise<DmThreadAggregateView[]>
 }
 
 /** A per-thread aggregate row for one of the viewer's REPORT chats (member of report_chat_members). */
@@ -150,7 +167,11 @@ export interface ReportThreadAggregateView {
  * batch mute lookup rather than a per-family bespoke query.
  */
 export interface ReportThreadsSource {
-  listReportThreadsFor(userId: string, limit?: number): Promise<ReportThreadAggregateView[]>
+  listReportThreadsFor(
+    userId: string,
+    limit?: number,
+    cursor?: TimeCursor | null,
+  ): Promise<ReportThreadAggregateView[]>
 }
 
 /**
@@ -183,7 +204,11 @@ export interface GroupThreadAggregateView {
  * dm/report sources; `muted` is stamped by the service from the shared conversation-mutes seam.
  */
 export interface GroupThreadsSource {
-  listGroupThreadsFor(userId: string, limit?: number): Promise<GroupThreadAggregateView[]>
+  listGroupThreadsFor(
+    userId: string,
+    limit?: number,
+    cursor?: TimeCursor | null,
+  ): Promise<GroupThreadAggregateView[]>
 }
 
 /**
@@ -241,196 +266,272 @@ function peerOf(p: DmThreadAggregateView["peer"]): PersonDTO {
   }
 }
 
+export interface ListThreadsOptions {
+  limit?: number
+  /** The previous page's `nextCursor`, verbatim off the wire (PaginationQuery.cursor). */
+  cursor?: string | null
+}
+
 export interface ThreadsService {
+  /** Keyset page of the merged inbox (see THREADS_CURSOR). */
+  list(
+    userId: string,
+    opts?: ListThreadsOptions,
+  ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }>
+  /**
+   * First-page form for callers that never paginate: same items as list(userId, { limit }), but always
+   * nextCursor: null (it cannot accept a cursor, so advertising one would strand the caller on page one).
+   */
   listThreads(
     userId: string,
     limit?: number,
   ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }>
 }
 
+/**
+ * THREADS_CURSOR — the inbox is a MERGE of four independently-paged families (cleanup / dm / report /
+ * group), so its keyset is the merge key itself: (activity, thread id) DESC, where activity is the last
+ * message's created_at, else the room's join/creation baseline. The cursor is the standard "<iso>|<id>"
+ * time cursor (encodeTimeCursor), i.e. the last EMITTED row's key, so every family can page from the same
+ * opaque string.
+ *
+ * The predicate is applied TWICE on purpose: pushed down into each source's query (so a page reads ~limit
+ * rows per family instead of scanning from the top), and re-applied here over the merged entries. The
+ * second pass is what makes the page exact — an ISO cursor carries only milliseconds while
+ * created_at is microsecond-resolution, so each source's SQL bound is deliberately loose (same
+ * millisecond or older) and this filter, working in the same millisecond resolution as the merge sort,
+ * makes the cut. It also keeps a source that ignores `cursor` from re-emitting rows the caller already
+ * saw (it can only under-fetch, never duplicate).
+ *
+ * Each family is fetched with `limit + 1` rows, so `merged.length > limit` is an exact has-more test: a
+ * family that hit its cap contributes the extra row that proves another page exists.
+ */
+function beforeCursor(cursor: TimeCursor | null, activity: number, id: string): boolean {
+  if (cursor === null) return true
+  const at = cursor.at.getTime()
+  return activity < at || (activity === at && id < cursor.id)
+}
+
 export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
   const now = deps.now ?? (() => new Date())
 
+  async function list(
+    userId: string,
+    opts?: ListThreadsOptions,
+  ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }> {
+    const limit = Math.max(1, opts?.limit ?? THREADS_DEFAULT_LIMIT)
+    // A malformed / unknown cursor degrades to page one (the cursor-helpers contract), never a 500.
+    const cursor = parseTimeCursor(opts?.cursor ?? null)
+    const fetchLimit = limit + 1
+
+    // All four families are fetched up front — CONCURRENTLY, since they are independent keyset reads of
+    // different tables and nothing here consumes one to build another. (Sequentially the inbox paid the
+    // sum of four round trips on every load; now it pays the slowest.) They must all land before any DTO
+    // is built, because each DTO stamps its real `muted` from the per-family batch lookup below.
+    const cleanupFetch: Promise<ThreadAggregate[]> = deps.repo.listThreadsFor(
+      userId,
+      fetchLimit,
+      cursor,
+    )
+    const dmFetch: Promise<DmThreadAggregateView[]> = deps.dm
+      ? deps.dm.listDmThreadsFor(userId, fetchLimit, cursor)
+      : Promise.resolve([])
+    const reportFetch: Promise<ReportThreadAggregateView[]> = deps.report
+      ? deps.report.listReportThreadsFor(userId, fetchLimit, cursor)
+      : Promise.resolve([])
+    const groupFetch: Promise<GroupThreadAggregateView[]> = deps.group
+      ? deps.group.listGroupThreadsFor(userId, fetchLimit, cursor)
+      : Promise.resolve([])
+    const [aggregates, dmAggregates, reportAggregates, groupAggregates] = await Promise.all([
+      cleanupFetch,
+      dmFetch,
+      reportFetch,
+      groupFetch,
+    ])
+
+    // Real per-conversation mute (conversation_mutes): one batch lookup per family, keyed by the
+    // family's room ids (cleanup id / dm thread id / report id). Fails open when no mute source is
+    // wired — every thread is treated as un-muted rather than erroring the whole inbox. Each lookup
+    // short-circuits on an empty id list so an empty family costs no round-trip.
+    const mutedIdsFor = async (
+      roomKind: "cleanup" | "dm" | "report" | "group",
+      roomIds: string[],
+    ): Promise<Set<string>> =>
+      deps.mutes && roomIds.length > 0
+        ? await deps.mutes.mutedRoomIdsFor(userId, roomKind, roomIds)
+        : new Set<string>()
+    const [mutedCleanup, mutedDm, mutedReport, mutedGroup] = await Promise.all([
+      mutedIdsFor(
+        "cleanup",
+        aggregates.map((a) => a.cleanupId),
+      ),
+      mutedIdsFor(
+        "dm",
+        dmAggregates.map((a) => a.threadId),
+      ),
+      mutedIdsFor(
+        "report",
+        reportAggregates.map((a) => a.reportId),
+      ),
+      mutedIdsFor(
+        "group",
+        groupAggregates.map((a) => a.groupId),
+      ),
+    ])
+
+    // Each merged entry carries its DTO plus the activity timestamp used to sort cleanup + dm threads
+    // into one inbox (last message time, else the room/thread creation/join baseline).
+    const cleanupEntries = await Promise.all(
+      aggregates.map(async (agg): Promise<{ dto: MessageThreadDTO; activity: number }> => {
+        // Unread = others' messages strictly after the viewer's watermark (max(joinedAt, lastRead)).
+        // When the repository already folded this into listThreadsFor (the Drizzle impl, reading the
+        // durable cleanup_members.last_read_at), use it directly — this is the single-round-trip path
+        // that eliminates the former per-thread countUnread fan-out. Otherwise (the in-memory test
+        // repo, which carries no read-state) fall back to the ChatReadState watermark + countUnread so
+        // the observable result is identical.
+        let unread = agg.unread
+        if (unread === undefined) {
+          const lastRead = await deps.readState.lastReadAt(agg.cleanupId, userId)
+          const watermark =
+            lastRead !== null && lastRead.getTime() > agg.joinedAt.getTime()
+              ? lastRead
+              : agg.joinedAt
+          unread = await deps.repo.countUnread(agg.cleanupId, userId, watermark)
+        }
+
+        const lastFromMe = agg.last !== null && agg.last.senderId === userId
+
+        return {
+          dto: {
+            id: agg.cleanupId,
+            kind: "cleanup",
+            // refId is the room/cleanup id this thread maps to. It equals id today, but populating it
+            // explicitly (additive, the contract field is nullable+optional) lets clients stop assuming
+            // thread.id === cleanupId.
+            refId: agg.cleanupId,
+            title: agg.title,
+            // last/ago are null when the room has no messages yet.
+            last: agg.last !== null ? (agg.last.body ?? "") : null,
+            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+            lastFromMe,
+            unread,
+            members: agg.members,
+            muted: mutedCleanup.has(agg.cleanupId),
+          },
+          activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
+        }
+      }),
+    )
+
+    // DM threads (when the source is wired). The dm aggregate already excludes any thread blocked either
+    // way and pre-computes peer + last + unread, so we just project into the MessageThreadDTO. dmAggregates
+    // was fetched above (capped to `fetchLimit`) alongside the report rows so the mute lookup could batch;
+    // the merge below keeps only the most-recent `limit` across all kinds anyway.
+    const dmEntries = dmAggregates.map(
+      (agg): { dto: MessageThreadDTO; activity: number } => {
+        const lastFromMe = agg.last !== null && agg.last.senderId === userId
+        const peer = peerOf(agg.peer)
+        // The DM thread title is the peer's DISPLAY NAME (the @handle is only a fallback when the display
+        // name is blank), so the inbox row + the conversation header name the person, not their @handle.
+        const title =
+          agg.peer.displayName.trim() !== ""
+            ? agg.peer.displayName
+            : agg.peer.handle !== null
+              ? `@${agg.peer.handle}`
+              : agg.peer.displayName
+        return {
+          dto: {
+            id: agg.threadId,
+            kind: "dm",
+            refId: agg.threadId,
+            title,
+            peer,
+            last: agg.last !== null ? (agg.last.body ?? "") : null,
+            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+            lastFromMe,
+            unread: agg.unread,
+            members: 2,
+            muted: mutedDm.has(agg.threadId),
+          },
+          activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
+        }
+      },
+    )
+
+    // Report threads (when the source is wired). listReportThreadsFor already scoped to the viewer's
+    // report_chat_members rows and pre-computed members/unread/last + the display title; we just project
+    // it and stamp `muted` from the report muted set. A system message has senderId=null, so `=== userId`
+    // is false and lastFromMe stays false for it.
+    const reportEntries = reportAggregates.map(
+      (agg): { dto: MessageThreadDTO; activity: number } => {
+        const lastFromMe = agg.last !== null && agg.last.senderId === userId
+        return {
+          dto: {
+            id: agg.reportId,
+            kind: "report",
+            refId: agg.reportId,
+            title: agg.title,
+            last: agg.last !== null ? (agg.last.body ?? "") : null,
+            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+            lastFromMe,
+            unread: agg.unread,
+            members: agg.members,
+            muted: mutedReport.has(agg.reportId),
+          },
+          activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
+        }
+      },
+    )
+
+    // Group threads (when the source is wired, P4 4.5). listGroupThreadsFor already scoped to the
+    // viewer's chat_group_members rows and pre-computed members/unread/last + the group name; we just
+    // project it and stamp `muted` from the group muted set. senderId is null-safe like the report
+    // family (group rooms have no system rows today, but the shape allows them).
+    const groupEntries = groupAggregates.map(
+      (agg): { dto: MessageThreadDTO; activity: number } => {
+        const lastFromMe = agg.last !== null && agg.last.senderId === userId
+        return {
+          dto: {
+            id: agg.groupId,
+            kind: "group",
+            refId: agg.groupId,
+            title: agg.title,
+            last: agg.last !== null ? (agg.last.body ?? "") : null,
+            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+            lastFromMe,
+            unread: agg.unread,
+            members: agg.members,
+            muted: mutedGroup.has(agg.groupId),
+            // Optional flag: present only for channels (matches the optional shared schema).
+            ...(agg.kind === "channel" ? { channel: true as const } : {}),
+          },
+          activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
+        }
+      },
+    )
+
+    // Merge all kinds on the keyset order (activity DESC, then id DESC so the sort is TOTAL — without
+    // the tie-break, same-millisecond threads could swap places between pages and be skipped/repeated),
+    // re-apply the cursor cut, then split off the has-more probe row.
+    const merged = [...cleanupEntries, ...dmEntries, ...reportEntries, ...groupEntries]
+      .filter((e) => beforeCursor(cursor, e.activity, e.dto.id))
+      .sort(
+        (a, b) =>
+          b.activity - a.activity || (a.dto.id < b.dto.id ? 1 : a.dto.id > b.dto.id ? -1 : 0),
+      )
+    const page = pageWith(merged, limit, (last) =>
+      encodeTimeCursor({ at: new Date(last.activity), id: last.dto.id }),
+    )
+    return { items: page.items.map((e) => e.dto), nextCursor: page.nextCursor }
+  }
+
   return {
-    async listThreads(
-      userId: string,
-      limit: number = THREADS_DEFAULT_LIMIT,
-    ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }> {
-      const aggregates = await deps.repo.listThreadsFor(userId, limit)
-
-      // Fetch the report + dm + group aggregate rows up front so the per-family mute lookups can run
-      // before any DTO is built (each DTO stamps its real `muted` from the family's muted set below).
-      const dmAggregates = deps.dm ? await deps.dm.listDmThreadsFor(userId, limit) : []
-      const reportAggregates = deps.report ? await deps.report.listReportThreadsFor(userId, limit) : []
-      const groupAggregates = deps.group ? await deps.group.listGroupThreadsFor(userId, limit) : []
-
-      // Real per-conversation mute (conversation_mutes): one batch lookup per family, keyed by the
-      // family's room ids (cleanup id / dm thread id / report id). Fails open when no mute source is
-      // wired — every thread is treated as un-muted rather than erroring the whole inbox. Each lookup
-      // short-circuits on an empty id list so an empty family costs no round-trip.
-      const mutedIdsFor = async (
-        roomKind: "cleanup" | "dm" | "report" | "group",
-        roomIds: string[],
-      ): Promise<Set<string>> =>
-        deps.mutes && roomIds.length > 0
-          ? await deps.mutes.mutedRoomIdsFor(userId, roomKind, roomIds)
-          : new Set<string>()
-      const [mutedCleanup, mutedDm, mutedReport, mutedGroup] = await Promise.all([
-        mutedIdsFor(
-          "cleanup",
-          aggregates.map((a) => a.cleanupId),
-        ),
-        mutedIdsFor(
-          "dm",
-          dmAggregates.map((a) => a.threadId),
-        ),
-        mutedIdsFor(
-          "report",
-          reportAggregates.map((a) => a.reportId),
-        ),
-        mutedIdsFor(
-          "group",
-          groupAggregates.map((a) => a.groupId),
-        ),
-      ])
-
-      // Each merged entry carries its DTO plus the activity timestamp used to sort cleanup + dm threads
-      // into one inbox (last message time, else the room/thread creation/join baseline).
-      const cleanupEntries = await Promise.all(
-        aggregates.map(async (agg): Promise<{ dto: MessageThreadDTO; activity: number }> => {
-          // Unread = others' messages strictly after the viewer's watermark (max(joinedAt, lastRead)).
-          // When the repository already folded this into listThreadsFor (the Drizzle impl, reading the
-          // durable cleanup_members.last_read_at), use it directly — this is the single-round-trip path
-          // that eliminates the former per-thread countUnread fan-out. Otherwise (the in-memory test
-          // repo, which carries no read-state) fall back to the ChatReadState watermark + countUnread so
-          // the observable result is identical.
-          let unread = agg.unread
-          if (unread === undefined) {
-            const lastRead = await deps.readState.lastReadAt(agg.cleanupId, userId)
-            const watermark =
-              lastRead !== null && lastRead.getTime() > agg.joinedAt.getTime()
-                ? lastRead
-                : agg.joinedAt
-            unread = await deps.repo.countUnread(agg.cleanupId, userId, watermark)
-          }
-
-          const lastFromMe = agg.last !== null && agg.last.senderId === userId
-
-          return {
-            dto: {
-              id: agg.cleanupId,
-              kind: "cleanup",
-              // refId is the room/cleanup id this thread maps to. It equals id today, but populating it
-              // explicitly (additive, the contract field is nullable+optional) lets clients stop assuming
-              // thread.id === cleanupId.
-              refId: agg.cleanupId,
-              title: agg.title,
-              // last/ago are null when the room has no messages yet.
-              last: agg.last !== null ? (agg.last.body ?? "") : null,
-              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-              lastFromMe,
-              unread,
-              members: agg.members,
-              muted: mutedCleanup.has(agg.cleanupId),
-            },
-            activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
-          }
-        }),
-      )
-
-      // DM threads (when the source is wired). The dm aggregate already excludes any thread blocked either
-      // way and pre-computes peer + last + unread, so we just project into the MessageThreadDTO. dmAggregates
-      // was fetched above (capped to `limit`) alongside the report rows so the mute lookup could batch; the
-      // merge below keeps only the most-recent `limit` across all kinds anyway.
-      const dmEntries = dmAggregates.map(
-        (agg): { dto: MessageThreadDTO; activity: number } => {
-          const lastFromMe = agg.last !== null && agg.last.senderId === userId
-          const peer = peerOf(agg.peer)
-          // The DM thread title is the peer's DISPLAY NAME (the @handle is only a fallback when the display
-          // name is blank), so the inbox row + the conversation header name the person, not their @handle.
-          const title =
-            agg.peer.displayName.trim() !== ""
-              ? agg.peer.displayName
-              : agg.peer.handle !== null
-                ? `@${agg.peer.handle}`
-                : agg.peer.displayName
-          return {
-            dto: {
-              id: agg.threadId,
-              kind: "dm",
-              refId: agg.threadId,
-              title,
-              peer,
-              last: agg.last !== null ? (agg.last.body ?? "") : null,
-              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-              lastFromMe,
-              unread: agg.unread,
-              members: 2,
-              muted: mutedDm.has(agg.threadId),
-            },
-            activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
-          }
-        },
-      )
-
-      // Report threads (when the source is wired). listReportThreadsFor already scoped to the viewer's
-      // report_chat_members rows and pre-computed members/unread/last + the display title; we just project
-      // it and stamp `muted` from the report muted set. A system message has senderId=null, so `=== userId`
-      // is false and lastFromMe stays false for it.
-      const reportEntries = reportAggregates.map(
-        (agg): { dto: MessageThreadDTO; activity: number } => {
-          const lastFromMe = agg.last !== null && agg.last.senderId === userId
-          return {
-            dto: {
-              id: agg.reportId,
-              kind: "report",
-              refId: agg.reportId,
-              title: agg.title,
-              last: agg.last !== null ? (agg.last.body ?? "") : null,
-              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-              lastFromMe,
-              unread: agg.unread,
-              members: agg.members,
-              muted: mutedReport.has(agg.reportId),
-            },
-            activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
-          }
-        },
-      )
-
-      // Group threads (when the source is wired, P4 4.5). listGroupThreadsFor already scoped to the
-      // viewer's chat_group_members rows and pre-computed members/unread/last + the group name; we just
-      // project it and stamp `muted` from the group muted set. senderId is null-safe like the report
-      // family (group rooms have no system rows today, but the shape allows them).
-      const groupEntries = groupAggregates.map(
-        (agg): { dto: MessageThreadDTO; activity: number } => {
-          const lastFromMe = agg.last !== null && agg.last.senderId === userId
-          return {
-            dto: {
-              id: agg.groupId,
-              kind: "group",
-              refId: agg.groupId,
-              title: agg.title,
-              last: agg.last !== null ? (agg.last.body ?? "") : null,
-              ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-              lastFromMe,
-              unread: agg.unread,
-              members: agg.members,
-              muted: mutedGroup.has(agg.groupId),
-              // Optional flag: present only for channels (matches the optional shared schema).
-              ...(agg.kind === "channel" ? { channel: true as const } : {}),
-            },
-            activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
-          }
-        },
-      )
-
-      // Merge all kinds, most-recent-activity first, capped at `limit` (single page for Phase 1).
-      const merged = [...cleanupEntries, ...dmEntries, ...reportEntries, ...groupEntries].sort(
-        (a, b) => b.activity - a.activity,
-      )
-      const items = merged.slice(0, limit).map((e) => e.dto)
-      return { items, nextCursor: null }
+    list,
+    async listThreads(userId, limit) {
+      const page = await list(userId, limit !== undefined ? { limit } : {})
+      // Deliberately nextCursor: null — this form takes no cursor, so it must not advertise one (a caller
+      // that followed it would re-read page one forever). Paging callers use list().
+      return { items: page.items, nextCursor: null }
     },
   }
 }

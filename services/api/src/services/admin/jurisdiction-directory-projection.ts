@@ -1,4 +1,6 @@
+import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { JurisdictionDirectoryDTO, ReportCategory } from "@civfix/shared"
+import { ADMIN_CATEGORIES } from "./category-counts.js"
 import {
   UNMAPPED_GEOID,
   UNMAPPED_NAME,
@@ -6,26 +8,6 @@ import {
   type ListDirectoryArgs,
   type SaveContactsInput,
 } from "./jurisdiction-contacts-types.js"
-
-const CATEGORY_LABELS: Record<ReportCategory, string> = {
-  trash: "Trash",
-  recycling: "Recycling",
-  graffiti: "Graffiti",
-  hazard: "Hazard",
-  encampment: "Encampment",
-  water: "Water",
-  other: "Other",
-}
-
-const ALL_CATEGORIES: readonly ReportCategory[] = [
-  "trash",
-  "recycling",
-  "graffiti",
-  "hazard",
-  "encampment",
-  "water",
-  "other",
-]
 
 /**
  * Derive the directory coverage label from the contact posture: "All categories" when a default contact
@@ -37,10 +19,12 @@ export function coverageLabel(record: JurisdictionDirectoryRecord): string {
     record.categoryContacts.filter((c) => c.email !== null && c.email.trim() !== "").map((c) => c.category),
   )
   const hasDefault = record.hasDefaultContact || record.defaultEmails.some((e) => e.trim() !== "")
-  if (hasDefault || covered.size === ALL_CATEGORIES.length) return "All categories"
+  if (hasDefault || covered.size === ADMIN_CATEGORIES.length) return "All categories"
   if (covered.size === 0) return "No routing"
-  return ALL_CATEGORIES.filter((c) => covered.has(c))
-    .map((c) => CATEGORY_LABELS[c])
+  // ADMIN_CATEGORIES drives the ORDER of the joined label list (category-counts.ts derives it from the
+  // contract enum), so a new category appears in the coverage label with no edit here.
+  return ADMIN_CATEGORIES.filter((c) => covered.has(c))
+    .map((c) => REPORT_CATEGORY_LABELS[c])
     .join(", ")
 }
 

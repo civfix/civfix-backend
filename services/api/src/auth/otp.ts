@@ -8,8 +8,9 @@
  *   - mints a 6-digit code with a cryptographically uniform, modulo-bias-free draw;
  *   - stores ONLY the argon2id hash of the code in email_otps (expires in 5 min, attempts 0);
  *   - invalidates any prior unconsumed codes for that email (resend supersedes);
- *   - sends the code through the Mailer seam (FakeMailer captures it in dev/test). If storing/mailing
- *     fails, the per-email cooldown this call set is rolled back so the user is not locked out (P1-7).
+ *   - sends the code through the Mailer seam (FakeMailer captures it in dev/test), in the account's saved
+ *     locale when the address already has one. If storing/mailing fails, the per-email cooldown this call
+ *     set is rolled back so the user is not locked out (P1-7).
  *
  * verifyOtp(email, code, ip):
  *   - THROTTLE (per-IP, then per-CODE): before touching the store it checks a per-IP failed-verify
@@ -25,7 +26,10 @@
  *     used its attempts is locked even with the right code;
  *   - verifies with argon2 (constant-time);
  *   - every failure mode bumps the per-code + per-IP throttle counters; a success does not;
- *   - on success marks the code consumed (single-use) and find-or-creates the user, returning userId.
+ *   - on success CLAIMS the code (a conditional consume, so concurrent verifies of one correct code
+ *     cannot both mint a session), RELEASES the per-email resend cooldown (a consumed code proves inbox
+ *     access, so the anti-mail-bomb window has done its job — see the G17 note in issueOtp) and
+ *     find-or-creates the user, returning userId.
  */
 
 import { hash as argonHash, verify as argonVerify } from "@node-rs/argon2"
@@ -152,6 +156,19 @@ export interface OtpLogger {
   warn(obj: unknown, msg?: string): void
 }
 
+/**
+ * The shared `Mailer.sendOtp(to, code)` type carries NO locale slot, but the production adapter already
+ * accepts an optional third argument (adapters/mailer.oci.ts) and without it the four `email.otp.*`
+ * catalogs are unreachable — every passcode email rendered in English even for a user whose
+ * `users.locale` is es/de/ko. Widen STRUCTURALLY at this one seam instead of changing the contract
+ * package: a 2-parameter sendOtp is assignable to a 3-parameter one, so every existing Mailer (OciMailer,
+ * FakeMailer, any test double) still satisfies this type, and an adapter that ignores the argument simply
+ * keeps rendering `en`.
+ */
+type LocaleAwareMailer = Mailer & {
+  sendOtp(to: string, code: string, locale?: string): Promise<void>
+}
+
 export interface OtpServiceOptions {
   store: OtpStore
   users: UserStore
@@ -172,7 +189,7 @@ export class OtpService {
   private readonly store: OtpStore
   private readonly users: UserStore
   private readonly cache: CacheClient
-  private readonly mailer: Mailer
+  private readonly mailer: LocaleAwareMailer
   private readonly now: () => number
   private readonly logger?: OtpLogger
   /** Normalized reviewer-bypass config (email lowercased/trimmed); null when the bypass is disabled. */
@@ -226,7 +243,19 @@ export class OtpService {
     // Per-email cooldown: the counter key carries the window TTL; a second hit inside 60s trips it. incr
     // is atomic so concurrent requests cannot both pass. emailHits === 1 means THIS call anchored the
     // window (so it is the one allowed to roll it back on a downstream failure).
-    const emailKey = `otp:rl:email:${normalized}`
+    //
+    // ONE NAMESPACE, RELEASED ON CONSUME (G17): account deletion re-proves the email through this SAME
+    // endpoint (POST /auth/otp/request; users.routes' delete gate then verifies the code), so a user who
+    // just signed in and immediately started deletion used to be told to wait — a 429 on a GDPR erasure
+    // path. Splitting the key by PURPOSE is not available to the server: EmailOtpRequestRequestSchema has
+    // no such field, and for bearer (mobile) clients no session is even presented on this public endpoint,
+    // so a route-derived purpose would be inert exactly where it is needed. Instead verifyOtp DELETES this
+    // key on a successful claim: the cooldown exists to bound how fast a third party can make us mail one
+    // address, and a consumed code proves the requester reads that inbox, so the window has already done
+    // its job. An attacker cannot reach that release for someone else's address, so the anti-mail-bomb
+    // bound is unchanged for everyone but the mailbox owner (who stays bounded by the per-IP hourly cap
+    // above and the route limiter).
+    const emailKey = emailCooldownKey(normalized)
     const emailHits = await this.cache.incr(emailKey, OTP_EMAIL_WINDOW_SECONDS)
     if (emailHits > 1) {
       throw AppError.rateLimited("Please wait before requesting another code.")
@@ -242,7 +271,13 @@ export class OtpService {
         codeHash,
         expiresAt: new Date(this.now() + OTP_TTL_SECONDS * 1000),
       })
-      await this.mailer.sendOtp(normalized, code)
+      // i18n: render the passcode email in the ACCOUNT's saved locale. `users.locale` is the source of
+      // truth for server-generated copy, and this is the one user-facing email sent to an address that
+      // may not have an account yet — an unknown address (first sign-up) passes undefined, which the
+      // adapter clamps to `en`, exactly like an unsupported stored value. Read here, after the caps, so a
+      // rate-limited request pays for no lookup; it reveals nothing (both branches mail and answer alike).
+      const account = await this.users.findByEmail(normalized)
+      await this.mailer.sendOtp(normalized, code, account?.locale)
     } catch (err) {
       // The code was never delivered: release the cooldown THIS call set so an immediate retry is not
       // locked out for 60s (P1-7). Only clear when we anchored it (emailHits === 1); a concurrent caller
@@ -324,9 +359,26 @@ export class OtpService {
       throw AppError.unauthorized("Invalid or expired code.")
     }
 
-    // Success: single-use consume, then find-or-create the account. A verified OTP proves the email,
-    // so a newly created account is marked email_verified. A success spends no throttle budget.
-    await this.store.markConsumed(record.id, now)
+    // Success: CLAIM the code (single-use), then find-or-create the account. A verified OTP proves the
+    // email, so a newly created account is marked email_verified. A success spends no throttle budget.
+    //
+    // The claim is what makes single-use hold under racing: two concurrent verifies of the same correct
+    // code both clear the attempt ceiling (incrementAttempts returns 1 and 2, both <= MAX) and both pass
+    // argon2, so without a conditional consume both would mint a session off one emailed code. Only the
+    // caller whose write actually flipped consumed_at proceeds; the loser is refused exactly like a
+    // replay of an already-spent code, and spends no throttle budget (it is not a wrong guess).
+    const claimed = await this.store.markConsumed(record.id, now)
+    if (!claimed) {
+      throw AppError.unauthorized("Invalid or expired code.")
+    }
+    // Release the per-email RESEND cooldown this address is holding (G17, see issueOtp): the claim proves
+    // inbox access, so the window's anti-mail-bomb purpose is spent and holding it only blocks the owner's
+    // legitimate next step — concretely the account-deletion gate, which re-requests a code through the
+    // same public endpoint immediately after sign-in. Best-effort AFTER the claim: a cache hiccup here
+    // only means the owner waits out the remaining window, so it is logged and never fails the verify.
+    await this.cache.del(emailCooldownKey(normalized)).catch((err: unknown) => {
+      this.logger?.warn({ err }, "otp: failed to release per-email cooldown after successful verify")
+    })
     const existing = await this.users.findByEmail(normalized)
     if (existing) return existing.id
     const created = await this.users.create(normalized, {
@@ -386,6 +438,14 @@ export class OtpService {
     const n = Number.parseInt(raw, 10)
     return Number.isFinite(n) ? n : 0
   }
+}
+
+/**
+ * Cache key for the per-email 60s RESEND cooldown. Written by issueOtp (which also rolls it back when
+ * delivery fails) and deleted by verifyOtp on a successful claim — one helper so both sides cannot drift.
+ */
+function emailCooldownKey(normalizedEmail: string): string {
+  return `otp:rl:email:${normalizedEmail}`
 }
 
 /** Cache key for the failed-verify counter of ONE issued code (never keyed on an email address). */

@@ -216,4 +216,61 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     >`SELECT action FROM audit_log WHERE action = 'report.followup_sent'`
     expect(audit).toHaveLength(1)
   })
+
+  /**
+   * getOutreach's `sendFailed` is the signal the route endpoint's re-send gate needs and the ONLY thing
+   * that separates "the packet went out" from "every attempt threw": the per-report thread row is created
+   * with status 'sent' BEFORE the mailer is called, so the thread status alone reports a lost send as a real
+   * one and the gate would 409 the operator's retry forever. It is derived here against the real schema
+   * (mail_events.type 'failed' exists since 0029) because the SQL is where it can silently drift.
+   */
+  it("getOutreach derives sendFailed from the mail_events trail ('failed' recorded, no 'sent')", async () => {
+    const id = await insertReport(h, {})
+    await h.sql`DELETE FROM mail_events`
+    await h.sql`DELETE FROM mail_threads WHERE report_id = ${id}`
+
+    // No thread at all -> not_sent, and never "failed".
+    expect(await repo.getOutreach(id)).toMatchObject({ status: "not_sent", sendFailed: false })
+
+    const threads = await h.sql<{ id: string }[]>`
+      INSERT INTO mail_threads (thread_token, jurisdiction_geoid, subject, status, report_id)
+      VALUES (${`report-${Math.random().toString(36).slice(2, 14)}`}, ${GEOID}, 'S', 'sent', ${id})
+      RETURNING id
+    `
+    const threadId = threads[0]!.id
+    const messages = await h.sql<{ id: string }[]>`
+      INSERT INTO mail_messages (thread_id, direction, from_addr, to_addr, subject, body)
+      VALUES (${threadId}, 'out', 'outreach@civfix.org', '311@lacity.gov', 'S', 'b')
+      RETURNING id
+    `
+    const messageId = messages[0]!.id
+
+    // A thread + OUT message with NO delivery event yet: the send is in flight, not known-failed.
+    expect(await repo.getOutreach(id)).toMatchObject({
+      status: "sent",
+      threadId,
+      routedTo: "311@lacity.gov",
+      sendFailed: false,
+    })
+
+    // The mailer threw: deliverAndRecord records 'failed' and never 'sent'.
+    await h.sql`
+      INSERT INTO mail_events (thread_id, message_id, type) VALUES (${threadId}, ${messageId}, 'failed')
+    `
+    expect(await repo.getOutreach(id)).toMatchObject({ status: "sent", sendFailed: true })
+
+    // A later attempt delivered: one 'sent' event anywhere on the thread means the packet reached the city,
+    // so the gate closes again even though the old 'failed' row is still there.
+    await h.sql`
+      INSERT INTO mail_events (thread_id, message_id, type) VALUES (${threadId}, ${messageId}, 'sent')
+    `
+    expect(await repo.getOutreach(id)).toMatchObject({ status: "sent", sendFailed: false })
+
+    // A hard bounce is reported as `bounced` (the gate's other recovery arm) and is NOT a send failure.
+    await h.sql`UPDATE mail_threads SET status = 'bounced' WHERE id = ${threadId}`
+    expect(await repo.getOutreach(id)).toMatchObject({ status: "bounced", sendFailed: false })
+
+    await h.sql`DELETE FROM mail_events`
+    await h.sql`DELETE FROM mail_threads WHERE id = ${threadId}`
+  })
 })

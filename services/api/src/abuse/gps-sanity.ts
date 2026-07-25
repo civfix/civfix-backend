@@ -33,7 +33,6 @@ import type { LatLng } from "@civfix/shared"
 // granularity for a ~50 km gate). Node/Fastify lowercase header names, so we read the lowercase forms.
 export const CF_LAT_HEADER = "cf-iplatitude"
 export const CF_LNG_HEADER = "cf-iplongitude"
-export const CF_COUNTRY_HEADER = "cf-ipcountry"
 
 /** A minimal case-insensitive header bag (the subset of FastifyRequest.headers we read). */
 export type HeaderBag = Record<string, string | string[] | undefined>
@@ -48,8 +47,8 @@ function header(headers: HeaderBag, name: string): string | null {
 /**
  * Parse the coarse IP geolocation from Cloudflare request headers. PURE. Returns a LatLng when BOTH a
  * finite, in-range latitude and longitude headers are present, else null (e.g. when not fronted by
- * Cloudflare, or when CF only set the country). CF-IPCountry alone does not yield a point; it is read
- * only so a caller can log/observe coverage.
+ * Cloudflare, or when CF only set the country — CF-IPCountry alone does not yield a point, and nothing
+ * reads it, so it is not exported here).
  */
 export function parseCfGeo(headers: HeaderBag): LatLng | null {
   const latRaw = header(headers, CF_LAT_HEADER)

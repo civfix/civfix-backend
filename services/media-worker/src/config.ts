@@ -9,12 +9,30 @@
  * ASCII only. No vendor SDKs imported here.
  */
 
-import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
+import { MAX_VIDEO_BYTES } from "@civfix/shared"
 
 /** Parse "1"/"true"/"yes"/"on" (case-insensitive) as true; otherwise the fallback. */
 export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined || raw === "") return fallback
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())
+}
+
+/**
+ * Fail boot when a USE_FAKE_* seam is left ON in production.
+ *
+ * A fake seam in production is not a degraded mode, it is a SILENT no-op: the process starts clean, logs
+ * nothing alarming, and the work it was deployed to do never happens (fake storage reads an always-empty
+ * store; fake jobs consume nothing from pg-boss). Every such flag must therefore fail boot LOUDLY rather
+ * than mis-process. `why` names the concrete failure mode so the crash is self-explaining.
+ */
+export function assertRealSeamInProd(
+  source: NodeJS.ProcessEnv,
+  flagKey: string,
+  fakeEnabled: boolean,
+  why: string,
+): void {
+  if (source.NODE_ENV !== "production" || !fakeEnabled) return
+  throw new Error(`media-worker: ${flagKey} must be 0 in production - ${why}`)
 }
 
 /** Parse a positive integer env value, falling back when blank/invalid. */
@@ -89,6 +107,14 @@ export interface WorkerLimits {
   orphanSweepMaxPages: number
   /** Max held anon reports re-evaluated per hold-release sweep run (P2-8 self-healing backstop). */
   holdReleaseSweepBatch: number
+  /**
+   * Rows deleted per retention-sweep PAGE, per table. Like the orphan sweep this is a batching knob, not
+   * a throughput ceiling: the sweep drains while a page comes back full (see retentionSweepMaxPages), so
+   * a day's expiry churn above one batch no longer accumulates forever.
+   */
+  retentionSweepBatch: number
+  /** Safety bound on how many full pages one retention-sweep run drains per table. */
+  retentionSweepMaxPages: number
 }
 
 /** Kill signal used when a sandboxed child exceeds its timeout. SIGKILL is non-catchable. */
@@ -134,6 +160,9 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     orphanSweepBatch: parsePosInt(source.MEDIA_ORPHAN_SWEEP_BATCH, 1000),
     orphanSweepMaxPages: parsePosInt(source.MEDIA_ORPHAN_SWEEP_MAX_PAGES, 50),
     holdReleaseSweepBatch: parsePosInt(source.MEDIA_HOLD_RELEASE_SWEEP_BATCH, 200),
+    // Mirrors RETENTION_BATCH (jobs/retention-sweep.ts), the runner's own dep-level default.
+    retentionSweepBatch: parsePosInt(source.RETENTION_SWEEP_BATCH, 5000),
+    retentionSweepMaxPages: parsePosInt(source.RETENTION_SWEEP_MAX_PAGES, 20),
   }
 }
 
@@ -144,9 +173,6 @@ function clampUnit(raw: string | undefined, fallback: number): number {
   if (!Number.isFinite(n)) return fallback
   return Math.min(1, Math.max(0, n))
 }
-
-/** Re-export the shared byte caps so worker code has one import site for limits. */
-export { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES }
 
 /** Cron expressions for the scheduled maintenance jobs (UTC; pg-boss uses node-cron syntax). */
 export const ORPHAN_SWEEP_CRON = "17 * * * *" // hourly at :17 (off the top of the hour)

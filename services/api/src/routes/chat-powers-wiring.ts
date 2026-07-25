@@ -15,6 +15,12 @@
  *
  * NOTE (report rooms): operator powers apply WITHOUT a membership row, so callers must consult this
  * resolver rather than pre-gating on membership.
+ *
+ * ONE resolver per Fastify instance: four route files (chat, chat-groups, report-chat, messages) each
+ * called this at mount and each got its own resolver over its own duplicate cleanup/report/group repo
+ * handles. They are all registered on the same instance (routes/index.ts), so the memo below hands them
+ * the same resolver — and, more to the point, makes "who may pin / delete others" exactly one live object
+ * instead of four that could be wired differently.
  */
 
 import type { FastifyInstance } from "fastify"
@@ -34,6 +40,7 @@ import {
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
+import { makeDmPeerOf } from "../services/dm-peer.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 
 type GlobalRole = (typeof ROLE_VALUES)[number]
@@ -48,11 +55,9 @@ export function makeIsDmBlocked(
   dm: DmRepository,
   blocks: BlocksRepository,
 ): (threadId: string, userId: string) => Promise<boolean> {
+  const peerOf = makeDmPeerOf(dm)
   return async (threadId, userId) => {
-    const thread = await dm.getThread(threadId)
-    if (thread === null) return false
-    const peer =
-      thread.userLo === userId ? thread.userHi : thread.userHi === userId ? thread.userLo : null
+    const peer = await peerOf(threadId, userId)
     if (peer === null) return false
     return blocks.isBlockedEitherWay(userId, peer)
   }
@@ -69,7 +74,18 @@ export async function globalRoleOf(
   return rows[0]?.role ?? null
 }
 
+/** Per-instance memo (see the module banner). Keyed on the app so two harnesses never share a resolver. */
+const resolvers = new WeakMap<FastifyInstance, ResolveChatPowers>()
+
 export function wireChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
+  const cached = resolvers.get(app)
+  if (cached) return cached
+  const resolver = buildChatPowers(app, container)
+  resolvers.set(app, resolver)
+  return resolver
+}
+
+function buildChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
   const overrides = app.chatOverrides
   if (overrides?.chatPowers) return overrides.chatPowers
 
@@ -98,11 +114,16 @@ export function wireChatPowers(app: FastifyInstance, container: Container): Reso
   let cleanups: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   let reportChat: ReportChatRepository | undefined
   let groups: ChatGroupRepository | undefined
+  let isDmBlocked: ReturnType<typeof makeIsDmBlocked> | undefined
   return makeChatPowersResolver({
     isDmParticipant: (threadId, userId) => container.getDmRepo().isParticipant(threadId, userId),
-    // L10: DM pin power respects blocks, like every other DM surface.
+    // L10: DM pin power respects blocks, like every other DM surface. Built on first use (the lazy
+    // convention of this file) so mounting never resolves the container's repos.
     isDmBlocked: (threadId, userId) =>
-      makeIsDmBlocked(container.getDmRepo(), container.getBlocksRepo())(threadId, userId),
+      (isDmBlocked ??= makeIsDmBlocked(container.getDmRepo(), container.getBlocksRepo()))(
+        threadId,
+        userId,
+      ),
     cleanupRoleOf: (cleanupId, userId) =>
       (cleanups ??= makeDrizzleCleanupRepository(container.getDb().sql)).roleOf(cleanupId, userId),
     reportChatRoleOf: (reportId, userId) =>

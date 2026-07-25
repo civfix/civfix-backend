@@ -35,15 +35,38 @@ import {
   versionStatus,
 } from "./policy.js"
 
-/** Extract the first path segment of a URL, ignoring any query string. e.g. "/v1/reports?x=1" → "v1". */
+/**
+ * Extract the first path segment of a URL, ignoring any query string. e.g. "/v1/reports?x=1" → "v1".
+ *
+ * The segment is percent-DECODED, because Fastify's router decodes before matching while `request.url`
+ * stays raw: `GET /%761/ping` is served by the static route `/v1/ping`, so a gate reading the raw segment
+ * saw "%761", decided it was not a version, and skipped enforcement entirely — sunset (410) / unsupported
+ * (400) rejection and the Deprecation/Sunset headers were all bypassable with one percent-escape. Decoding
+ * makes the gate see the same version the router does.
+ *
+ * A decoded "/" cannot introduce a new segment boundary for the router (`/%2Fv1/ping` matches nothing), but
+ * we still cut at the first "/" so the gate can only ever be MORE inclusive, never less. A malformed escape
+ * (`%zz`, which decodeURIComponent rejects) falls back to the raw segment.
+ */
 function firstPathSegment(url: string): string {
   const queryStart = url.indexOf("?")
   const path = queryStart === -1 ? url : url.slice(0, queryStart)
   // path always starts with "/"; return the first non-empty segment.
   for (const seg of path.split("/")) {
-    if (seg.length > 0) return seg
+    if (seg.length > 0) return decodeSegment(seg)
   }
   return ""
+}
+
+function decodeSegment(seg: string): string {
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(seg)
+  } catch {
+    return seg
+  }
+  const slash = decoded.indexOf("/")
+  return slash === -1 ? decoded : decoded.slice(0, slash)
 }
 
 /**

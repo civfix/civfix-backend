@@ -6,8 +6,9 @@
  *
  *   1. The GLOBAL bucket (300/min) covers ordinary traffic and is `skipOnError: true` — a Redis blip must
  *      not take the read-only product offline.
- *   2. The SENSITIVE bucket covers the abuse-relevant prefixes (auth, admin auth, anon reporting, media
- *      presign, claim redemption, public form intake) and is `skipOnError: false` — it FAILS CLOSED. H4:
+ *   2. The SENSITIVE bucket covers the abuse-relevant prefixes (auth, admin auth, WS tickets, anon
+ *      reporting, media presign, claim redemption, public form intake) and is `skipOnError: false` — it
+ *      FAILS CLOSED. H4:
  *      previously every bucket was skipOnError:true, so one Redis error silently removed the OTP,
  *      OAuth, anon-report and media-presign limits at the same time, and a *misconfigured* REDIS_URL
  *      produced an API that booted happily with no rate limiting at all. (di.assertRedisReachable adds
@@ -49,6 +50,9 @@ export const SENSITIVE_RATE_LIMIT_PREFIXES: readonly string[] = [
   // this limiter exists to close.
   "/auth",
   "/v1/admin/auth",
+  // Mints a bearer credential for the WS upgrade, so it belongs with the other credential-minting paths:
+  // its own per-route bucket inherits the fail-OPEN global store, which is what this bucket backstops.
+  "/v1/ws-ticket",
   "/v1/anon",
   "/v1/media",
   "/v1/claim",

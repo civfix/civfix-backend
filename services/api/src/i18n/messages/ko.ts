@@ -23,6 +23,17 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.title": "회원님이 언급되었어요",
   "notification.report_mention.body": "누군가 제보 토론에서 회원님을 언급했어요.",
 
+  "notification.post.like.title": "새 좋아요",
+  "notification.post.like.body": "{{name}}님이 회원님의 게시물을 좋아합니다.",
+  "notification.post.repost.title": "새 리포스트",
+  "notification.post.repost.body": "{{name}}님이 회원님의 게시물을 리포스트했어요.",
+  "notification.post.reply.title": "새 답글",
+  "notification.post.reply.body": "{{name}}님이 회원님의 게시물에 답글을 달았어요.",
+  "notification.post.quote.title": "새 인용",
+  "notification.post.quote.body": "{{name}}님이 회원님의 게시물을 인용했어요.",
+  "notification.post.mention.title": "{{name}}님이 회원님을 언급했어요",
+  "notification.post.mention.body": "{{name}}님이 게시물에서 회원님을 언급했어요.",
+
   "notification.chat_mention.title": "{{name}}님이 회원님을 언급했어요",
   "notification.chat_reply.title": "{{name}}님이 회원님에게 답장했어요",
 
@@ -39,6 +50,10 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_role.demoted.body": "더 이상 {{title}}의 공동 주최자가 아니에요.",
   "notification.cleanup_role.removed.title": "이벤트에서 제외됨",
   "notification.cleanup_role.removed.body": "{{title}}에서 제외되었어요.",
+
+  "notification.cleanup_cancelled.title": "이벤트 취소됨",
+  "notification.cleanup_cancelled.body": "주최자가 이 이벤트를 취소했어요.",
+  "notification.cleanup_cancelled.body_reason": "주최자가 이 이벤트를 취소했어요. 사유: {{reason}}",
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",

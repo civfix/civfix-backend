@@ -28,7 +28,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { WsServerMessageSchema } from "@civfix/shared"
+import { FakeMailer, FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer, type Container } from "../../src/di.js"
@@ -49,6 +50,9 @@ import { makeChatGroupRepository } from "../../src/services/chat-group-repositor
 import { makeChatPollRepository } from "../../src/services/chat-poll-repository.drizzle.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
 import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
+import { makeContainerPollNotifier } from "../../src/services/chat-poll-notifier.js"
+import { makeChatPollService } from "../../src/services/chat-poll-service.js"
 
 const pg = await withPg()
 
@@ -264,6 +268,49 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(res.json().poll.options).toHaveLength(2)
   })
 
+  // The poll question + every option ride the same content gate as a chat send/edit: the question is
+  // broadcast, becomes reply excerpts and rides push previews, so it cannot be the one user-authored chat
+  // text that skips assertNoSlur. Field-scoped so the client can point at what it must fix.
+  it("422s a poll whose QUESTION contains a hate slur, and one whose OPTION does", async () => {
+    const ownerId = await newUser("Slur Poll Owner")
+    const groupId = await newGroup(ownerId, {})
+    const tok = await token(ownerId)
+
+    const badQuestion = await inject(tok, "POST", "/v1/messages/poll", {
+      roomKind: "group",
+      roomId: groupId,
+      question: "you retard, which day?",
+      options: ["Sat", "Sun"],
+    })
+    expect(badQuestion.statusCode).toBe(422)
+    expect(badQuestion.json().fields).toHaveProperty("question")
+
+    const badOption = await inject(tok, "POST", "/v1/messages/poll", {
+      roomKind: "group",
+      roomId: groupId,
+      question: "Which day?",
+      options: ["Sat", "you retard"],
+    })
+    expect(badOption.statusCode).toBe(422)
+    expect(badOption.json().fields).toHaveProperty("options")
+
+    // Nothing persisted by either rejection.
+    const rows = await h.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count FROM chat_messages WHERE group_id = ${groupId} AND kind = 'poll'
+    `
+    expect(rows[0]!.count).toBe(0)
+
+    // General profanity is NOT the gate (the filter is hate slurs only).
+    const ok = await inject(tok, "POST", "/v1/messages/poll", {
+      roomKind: "group",
+      roomId: groupId,
+      question: "which damn day?",
+      options: ["Sat", "Sun"],
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json().poll.question).toBe("which damn day?")
+  })
+
   it("create in a report by a NON-joined user 403s", async () => {
     const strangerId = await newUser("Rep Poll Stranger")
     const reportId = await newReport()
@@ -340,6 +387,65 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(retract.json().poll.options.map((o: { count: number }) => o.count)).toEqual([0, 0])
     expect(retract.json().poll.totalVoters).toBe(0)
     expect(retract.json().poll.myVote).toEqual([])
+  })
+
+  it("vote/close broadcasts carry the NEUTRAL poll view: the actor's ballot never goes out room-wide", async () => {
+    const ownerId = await newUser("Neutral Owner")
+    const groupId = await newGroup(ownerId, {})
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId, { anonymous: true }),
+    )
+    const pollId = created.json().id
+
+    const watcher = new MockConnection("neutral-watcher")
+    await container.chatService.joinRoom(roomKeyFor("group", groupId), watcher, ownerId)
+
+    const voted = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
+    expect(voted.statusCode).toBe(200)
+    // The voter's OWN response stays viewer-aware — that half must not regress either.
+    expect(voted.json().poll.myVote).toEqual([0])
+    expect(voted.json().poll.options[0].mine).toBe(true)
+
+    await flush()
+    type Framed = { message: { poll: { myVote: number[]; options: Array<{ count: number; mine: boolean }> } } }
+    const voteFrame = watcher.framesOfType("message_update")[0]!
+    const afterVote = (voteFrame as Framed).message.poll
+    // Tallies still ride the frame (the room needs them); the BALLOT does not — for an anonymous poll the
+    // voter's exact choices would otherwise be broadcast to every member, and clients reconciling the frame
+    // in place would overwrite their own myVote with the voter's.
+    expect(afterVote.options.map((o) => o.count)).toEqual([1, 0])
+    expect(afterVote.myVote).toEqual([])
+    expect(afterVote.options.every((o) => o.mine === false)).toBe(true)
+    // WHY THE NEUTRAL VALUES ARE ASSERTED RATHER THAN OMITTED. A reviewer's instinct here is "don't send
+    // myVote/mine at all, then a merging client keeps its own" — and that is indeed the real fix, but it
+    // CANNOT be done from the server alone: PollDTOSchema requires both fields, and the clients parse every
+    // inbound frame with WsServerMessageSchema and discard the whole frame on a miss (ui
+    // chatSocketCore.handleRawFrame), so an omitted field would silently kill live vote counts and the
+    // closed flag for the entire room instead of preserving anyone's ballot. This assertion is the guard:
+    // it fails the moment the broadcast stops being a frame real clients accept. See the KNOWN LIMITATION
+    // block in chat-poll-service.votePoll for the two-sided (shared + client merge) fix.
+    expect(WsServerMessageSchema.safeParse(voteFrame).success).toBe(true)
+
+    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
+    expect(closed.statusCode).toBe(200)
+    expect(closed.json().poll.myVote).toEqual([0])
+
+    await flush()
+    const updates = watcher.framesOfType("message_update")
+    expect(updates).toHaveLength(2)
+    const afterClose = (updates[1] as Framed).message.poll
+    expect(afterClose.myVote).toEqual([])
+    expect(afterClose.options.every((o) => o.mine === false)).toBe(true)
+    expect(updates[1]).toMatchObject({ message: { poll: { closed: true } } })
+    expect(WsServerMessageSchema.safeParse(updates[1]).success).toBe(true)
   })
 
   it("a duplicate idx in a multi ballot dedupes: [0,0] -> 200 with ONE vote row", async () => {
@@ -520,5 +626,140 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(tombstone).toBeTruthy()
     expect(tombstone!.deletedAt).toBeTruthy()
     expect(tombstone!.poll).toBeUndefined()
+  })
+
+  // -- FAN-OUT (createPoll -> member bells) -----------------------------------
+  //
+  // The bells the poll route raises come from makeContainerPollNotifier, which builds its report/group
+  // lane notifiers out of container primitives and is a NO-OP under USE_FAKE_CHAT (true in the test env,
+  // hence a no-op for the app above). Here it is constructed for real over the HARNESS pool, so createPoll
+  // writes actual `notifications` rows through the actual Drizzle notification repo — and, crucially, the
+  // mute and block gates run as their REAL SQL (conversation_mutes.mutedUserIdsFor and user_blocks), which
+  // no unit test can reach.
+  describe("createPoll member fan-out (real notifier over pg)", () => {
+    /** Only the five fields makeContainerPollNotifier reads off the container. */
+    const notifierContainer = () =>
+      ({
+        env: { USE_FAKE_CHAT: false },
+        getDb: () => ({ sql: h.sql }),
+        pushSender: new FakePushSender(),
+        userChannel: undefined,
+        getBlocksRepo: () => makeDrizzleBlocksRepository(h.sql),
+      }) as unknown as Container
+
+    /** The poll service exactly as messages.routes wires it, with the REAL notifier as notifyRoom. */
+    const pollServiceWithBells = () =>
+      makeChatPollService({
+        chat: makeDrizzleChatRepository(h.sql),
+        chatPolls: makeChatPollRepository(h.sql),
+        canSend: () => Promise.resolve(true),
+        isMember: () => Promise.resolve(true),
+        isModerator: () => Promise.resolve(false),
+        newId: () => randomUUID(),
+        broadcastMessage: () => {},
+        broadcastUpdate: () => {},
+        notifyRoom: makeContainerPollNotifier(notifierContainer()),
+      })
+
+    const bellsFor = (userId: string) =>
+      h.sql<{ type: string; title: string; body: string | null; link: string | null }[]>`
+        SELECT type, title, body, link FROM notifications WHERE user_id = ${userId} ORDER BY created_at
+      `
+
+    /**
+     * The fan-out is fire-and-forget behind createPoll's return AND every gate in it is a real round trip,
+     * so there is no promise to await. Wait for the EXPECTED bell to land (proof the whole recipient batch
+     * ran — they are dispatched together, after the block/mute verdicts for the full set are resolved),
+     * then give the losers of the same batch a real-time grace window before asserting they got nothing.
+     */
+    const waitForBell = async (userId: string): Promise<void> => {
+      for (let i = 0; i < 100; i += 1) {
+        if ((await bellsFor(userId)).length > 0) break
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+
+    /** No bell is expected anywhere: just wait out the fan-out's round trips. */
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 300))
+
+    it("a report poll bells the other members, skipping the author, a MUTED member and a BLOCKED one", async () => {
+      const authorId = await newUser("Fanout Author")
+      const plainId = await newUser("Fanout Plain")
+      const mutedId = await newUser("Fanout Muted")
+      const blockedId = await newUser("Fanout Blocked")
+      const reportId = await newReport()
+      const reportChat = makeReportChatRepository(h.sql)
+      for (const id of [authorId, plainId, mutedId, blockedId]) await reportChat.join(reportId, id)
+
+      // Real rows in the real gate tables.
+      await makeConversationMutesRepository(h.sql).setMuted(mutedId, "report", reportId, true)
+      await makeDrizzleBlocksRepository(h.sql).block(blockedId, authorId)
+
+      const created = await pollServiceWithBells().createPoll({
+        roomKind: "report",
+        roomId: reportId,
+        question: "Best day?",
+        options: ["Sat", "Sun"],
+        allowMultiple: false,
+        anonymous: false,
+        userId: authorId,
+      })
+      expect(created.kind).toBe("poll")
+      await waitForBell(plainId)
+
+      const plain = await bellsFor(plainId)
+      expect(plain).toHaveLength(1)
+      expect(plain[0]).toMatchObject({
+        type: "report_chat",
+        title: "Fanout Author",
+        link: `/messages/report/${reportId}`,
+      })
+      // A poll is not a text message, so the push body is the generic copy, never the question.
+      expect(plain[0]!.body).toBe("Sent you a message")
+
+      expect(await bellsFor(authorId)).toHaveLength(0)
+      expect(await bellsFor(mutedId)).toHaveLength(0)
+      expect(await bellsFor(blockedId)).toHaveLength(0)
+    })
+
+    it("a group poll bells the other members with group_chat; a cleanup poll bells nobody", async () => {
+      const authorId = await newUser("Fanout Group Author")
+      const memberId = await newUser("Fanout Group Member")
+      const groupId = await newGroup(authorId, { members: [{ id: memberId }] })
+
+      await pollServiceWithBells().createPoll({
+        roomKind: "group",
+        roomId: groupId,
+        question: "Best day?",
+        options: ["Sat", "Sun"],
+        allowMultiple: false,
+        anonymous: false,
+        userId: authorId,
+      })
+      await waitForBell(memberId)
+
+      const bells = await bellsFor(memberId)
+      expect(bells).toHaveLength(1)
+      expect(bells[0]).toMatchObject({ type: "group_chat", link: `/messages/group/${groupId}` })
+      expect(await bellsFor(authorId)).toHaveLength(0)
+
+      // Cleanup rooms have no all-member fan-out (a plain cleanup send only bells mentions/replies).
+      const orgId = await newUser("Fanout Cleanup Org")
+      const clMemberId = await newUser("Fanout Cleanup Member")
+      const cleanupId = await newCleanup(orgId, [clMemberId])
+      await pollServiceWithBells().createPoll({
+        roomKind: "cleanup",
+        roomId: cleanupId,
+        question: "Best day?",
+        options: ["Sat", "Sun"],
+        allowMultiple: false,
+        anonymous: false,
+        userId: orgId,
+      })
+      await settle()
+
+      expect(await bellsFor(clMemberId)).toHaveLength(0)
+    })
   })
 })

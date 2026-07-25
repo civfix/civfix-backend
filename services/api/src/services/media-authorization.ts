@@ -12,7 +12,8 @@
  *   chat_message_id  -> the room the message lives in (dm thread / cleanup / report chat / group).
  *                       Mirrors ws/frame-handler.ts authorizeRoom at the READ level.
  *   post_id          -> posts visibility (public + not deleted, or the viewer is the author).
- *   report_id        -> services/report-visibility.ts isReportVisibleTo (published+public, or own).
+ *   report_id        -> services/report-visibility.ts isReportVisibleTo (a publicly-visible status +
+ *                       public visibility, or the viewer is the reporter).
  *   (nothing bound)  -> either an AVATAR (users.avatar_media_id / chat_groups.avatar_media_id — the
  *                       binding points the other way) or a not-yet-committed upload inside the
  *                       capability window; see UNBOUND_GRACE_MS.
@@ -29,6 +30,7 @@
 
 import type { Sql } from "../db/client.js"
 import type { MediaAssetView, MediaOwner } from "./media-intake-service.js"
+import { isPubliclyVisibleStatus } from "./report-visibility.js"
 
 export interface MediaAccessDecision {
   /** May the viewer receive a URL for this asset at all? */
@@ -208,7 +210,11 @@ async function authorizePostBound(
   return viewerId !== null && post.author_id === viewerId ? ALLOW_PRIVATE : DENY
 }
 
-/** Report lane: the canonical predicate (published + public + not deleted, or the viewer's own). */
+/**
+ * Report lane: the canonical predicate (a PUBLIC_REPORT_STATUSES status + public + not deleted, or the
+ * viewer's own). Deliberately the same status set as report-visibility.ts / publicReportFilter: a photo
+ * must not vanish from a report the moment the city acknowledges or resolves it.
+ */
 async function authorizeReportBound(
   sql: Sql,
   reportId: string,
@@ -227,7 +233,7 @@ async function authorizeReportBound(
   `
   const report = rows[0]
   if (!report || report.deleted_at !== null) return DENY
-  if (report.status === "published" && report.visibility === "public") return ALLOW_PUBLIC
+  if (isPubliclyVisibleStatus(report.status) && report.visibility === "public") return ALLOW_PUBLIC
   // Own report (held / unlisted / in review): visible to its reporter only, and signed rather than CDN
   // so a later moderation decision can actually take it away.
   if (viewerId !== null && report.reporter_user_id === viewerId) return ALLOW_PRIVATE

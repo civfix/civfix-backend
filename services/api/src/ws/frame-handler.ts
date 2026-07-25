@@ -14,6 +14,7 @@ import {
   type GatewayDeps,
   type GatewaySession,
   TYPING_MIN_INTERVAL_MS,
+  TYPING_THROTTLE_MAX_ROOMS,
   WS_FRAME_LIMIT,
 } from "./types.js"
 import { makeTokenBucketLimiter } from "./report-rate-limit.js"
@@ -108,13 +109,21 @@ export async function leaveRoomAndAnnounce(session: GatewaySession, roomKey: str
   }
 }
 
+/**
+ * The authorization verdict for one room frame. `peer` rides ONLY the dm lane: `peerOf` both answers
+ * participation and yields the peer the block gate needs, so handleSend hands that already-resolved id to
+ * the dm bell instead of reading dm_threads a second time for the same send. Absent for every other kind
+ * (and on the deny path) — a consumer that sees no peer must not infer one.
+ */
+type RoomAuthorization = { ok: true; peer?: string } | { ok: false; code: string; message: string }
+
 async function authorizeRoom(
   deps: GatewayDeps,
   kind: RoomKind,
   id: string,
   userId: string,
   requireMember = false,
-): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
+): Promise<RoomAuthorization> {
   if (kind === "cleanup") {
     const ok = await deps.isMember(id, userId)
     return ok ? { ok: true } : { ok: false, code: "FORBIDDEN", message: "You are not a member of this cleanup." }
@@ -125,8 +134,17 @@ async function authorizeRoom(
       return { ok: false, code: "NOT_FOUND", message: "Report not found." }
     }
     // Posting / typing / presence require actual membership (Join button in the client).
-    if (requireMember && deps.reportChat && !(await deps.reportChat.isMember(id, userId))) {
-      return { ok: false, code: "FORBIDDEN", message: "Join this report chat to send messages." }
+    if (requireMember) {
+      if (!deps.reportChat) {
+        // No report membership source wired: FAIL CLOSED, exactly like the group lane below. This used
+        // to fall through to `{ ok: true }`, so any wiring that forgot `reportChat` (an overrides-based
+        // harness, a future partial deployment) silently LOST the member gate and turned a public
+        // report room into a world-writable one — the gate has to be present to be relied on.
+        return { ok: false, code: "FORBIDDEN", message: "Report chat is not available." }
+      }
+      if (!(await deps.reportChat.isMember(id, userId))) {
+        return { ok: false, code: "FORBIDDEN", message: "Join this report chat to send messages." }
+      }
     }
     return { ok: true }
   }
@@ -169,27 +187,46 @@ async function authorizeRoom(
   if (deps.isBlockedEitherWay && (await deps.isBlockedEitherWay(userId, peer))) {
     return { ok: false, code: "FORBIDDEN", message: "You can't message in this conversation." }
   }
-  return { ok: true }
+  return { ok: true, peer }
 }
 
 function selfSignalThreads(channel: UserChannel | undefined, userId: string, id: string): void {
   void channel?.publishToUser(userId, { topic: "threads", id }).catch(() => {})
 }
 
+/**
+ * The join is authorized and then registered across three stores (room Set, presence, read state), each
+ * an await — so `session.closed` is re-checked after every one of them. The close handler runs ONCE and
+ * only leaves the rooms already in `session.joined`; anything this handler registers afterwards is
+ * invisible to it and must be undone here (silently: a join that never announced needs no leave delta).
+ */
 async function handleJoin(session: GatewaySession, frame: ExtractFrame<"join">): Promise<void> {
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
   const auth = await authorizeRoom(deps, kind, id, userId)
+  if (session.closed) return
   if (!auth.ok) {
     sendError(conn, auth.code, auth.message, { kind, id })
     return
   }
   const roomKey = roomKeyFor(kind, id)
   await deps.chat.joinRoom(roomKey, conn, userId)
+  if (session.closed) {
+    // Dead conn: drop it back out of the room so the room's Set can reach 0 and release its pub/sub
+    // subscription. Not added to `joined` at all, so nothing else has to unwind.
+    await deps.chat.leaveRoom(roomKey, conn)
+    return
+  }
   session.joined.add(roomKey)
   if (deps.presence) {
     const { online, userJoined } = await deps.presence.join(roomKey, conn.id, userId)
+    if (session.closed) {
+      session.joined.delete(roomKey)
+      await deps.presence.leave(roomKey, conn.id, userId)
+      await deps.chat.leaveRoom(roomKey, conn)
+      return
+    }
     conn.send(
       serverFrame({ type: "presence_snapshot", cleanupId: id, ...stampRoomKind(kind), userIds: online }),
     )
@@ -340,7 +377,8 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   const replyTargetUserId = replyBellTarget(message, userId)
   fireMentionBells(deps, kind, id, userId, mentions, message, replyTargetUserId)
   fireThreadSignal(deps, kind, id, userId)
-  fireDmBell(deps, kind, id, userId, roomKey, message)
+  // The dm peer was already resolved by the authorization above (see RoomAuthorization.peer).
+  fireDmBell(deps, kind, id, auth.peer ?? null, roomKey, message)
   fireReplyBell(deps, kind, id, userId, replyTargetUserId, message)
   fireReportCityForward(deps, kind, id, message)
   fireGroupFanOut(deps, kind, id, message)
@@ -432,19 +470,23 @@ function fireThreadSignal(deps: GatewayDeps, kind: RoomKind, id: string, senderI
   })().catch(() => {})
 }
 
+/**
+ * The dm "delivered" bell. `peer` is the id authorizeRoom already resolved for THIS send (it had to read
+ * dm_threads to authorize at all), so the bell costs no second read; a null peer means the caller had no
+ * authorized dm peer and the bell is simply skipped. The gates are unchanged: dm rooms only, and never
+ * for a peer currently present in the room.
+ */
 function fireDmBell(
   deps: GatewayDeps,
   kind: RoomKind,
   id: string,
-  senderId: string,
+  peer: string | null,
   roomKey: string,
   message: ChatMessageDTO,
 ): void {
-  if (kind !== "dm" || !deps.dm || !deps.onDmDelivered) return
-  const { dm, onDmDelivered, presence } = deps
+  if (kind !== "dm" || peer === null || !deps.onDmDelivered) return
+  const { onDmDelivered, presence } = deps
   void (async () => {
-    const peer = await dm.peerOf(id, senderId)
-    if (peer === null) return
     if (presence) {
       const online = await presence.online(roomKey)
       if (online.includes(peer)) return
@@ -465,6 +507,14 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
   const now = Date.now()
   const last = session.typingThrottle.get(roomKey) ?? 0
   if (now - last < TYPING_MIN_INTERVAL_MS) return
+  // Bounded LRU (entries are only deleted on leave, and rooms typed at but never joined never leave):
+  // re-inserting moves a key to the end, so the map's insertion order IS recency and the front entry is
+  // the least-recently-used one to evict. Evicting a live room's entry costs one extra broadcast.
+  session.typingThrottle.delete(roomKey)
+  if (session.typingThrottle.size >= TYPING_THROTTLE_MAX_ROOMS) {
+    const oldest: string | undefined = session.typingThrottle.keys().next().value
+    if (oldest !== undefined) session.typingThrottle.delete(oldest)
+  }
   session.typingThrottle.set(roomKey, now)
   // Typing carries the SAME restriction as send: report members-only, and group send-permission
   // (a read-only channel member must not emit typing) — so gate at send level for both.
@@ -489,18 +539,21 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
 async function handleAck(session: GatewaySession, frame: ExtractFrame<"ack">): Promise<void> {
   const { deps, userId } = session
   let kind: RoomKind
-  let id: string | undefined
+  let id: string
   if (frame.cleanupId !== undefined) {
     kind = frame.roomKind ?? "cleanup"
     id = frame.cleanupId
   } else {
+    // Roomless ack (pre-multi-room clients): only unambiguous while the socket holds exactly ONE room.
+    // With several joined, the room was whichever the `joined` Set happened to hold first — i.e. the
+    // watermark landed on an arbitrary room. Ignore it instead; every current client stamps cleanupId.
+    if (session.joined.size !== 1) return
     const firstKey: string | undefined = session.joined.values().next().value
     if (firstKey === undefined) return
     const decoded = decodeRoomKey(firstKey)
     kind = decoded.kind
     id = decoded.id
   }
-  if (id === undefined) return
   if (kind === "report") {
     if (deps.reportChat) await deps.reportChat.advanceReadWatermark(id, userId, frame.upToId)
     return
@@ -536,6 +589,9 @@ const dispatch: {
 }
 
 export async function handleClientFrame(session: GatewaySession, raw: string): Promise<void> {
+  // A frame that arrives after (or during) close does nothing: every handler below would write to
+  // stores the close pass has already unwound. Cheapest possible check, so it goes first.
+  if (session.closed) return
   // SECURITY (M13): ONE bucket for EVERY inbound frame, spent BEFORE parsing and before dispatch — so a
   // throttled join/typing/ack costs zero DB and zero Redis round trips (and a malformed-frame flood
   // costs no schema validation either). `send` keeps its own tighter per-user+room bucket downstream;

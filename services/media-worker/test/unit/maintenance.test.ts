@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { loadLimits } from "../../src/config.js"
-import { runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
+import { LEAK_RETRY_MAX_ATTEMPTS, runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
 import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
 
@@ -206,6 +206,96 @@ describe("orphan.sweep", () => {
     })
     expect(res.errors).toBe(1)
     expect(res.deleted).toBe(0)
+    expect(reports.length).toBe(1)
+  })
+
+  /**
+   * B35: the row is deleted BEFORE its objects, so a failed storage delete is the one leak nothing could
+   * rediscover. media_reap_tombstones (0057) is that memory — assert the whole round trip, because a
+   * tombstone that is written but never retried is indistinguishable from the bug it replaced.
+   */
+  it("tombstones objects whose delete failed, then reclaims them on the next run", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const realDelete = storage.delete.bind(storage)
+    let r2Down = true
+    storage.delete = (key: string) =>
+      r2Down ? Promise.reject(new Error("R2 unavailable")) : realDelete(key)
+
+    const orphan = repo.seed({
+      id: "leaky-1",
+      uploadId: "lu1",
+      kind: "image",
+      r2Key: "uploads/leak1",
+      reportId: null,
+      createdAt: new Date(now.getTime() - limits.orphanTtlMs - 60_000),
+    })
+    await storage.put(orphan.r2Key, Buffer.from([1, 2, 3]))
+
+    const first = await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
+    // The row IS reaped (that half succeeded); every derived key leaked and was tombstoned.
+    expect(first.deleted).toBe(1)
+    expect(repo.byId.has("leaky-1")).toBe(false)
+    expect(first.leaked).toBe(repo.tombstones.size)
+    expect(repo.tombstones.get("uploads/leak1")).toMatchObject({ mediaId: "leaky-1", attempts: 1 })
+    // The bytes really are still there — this is the leak the tombstone exists to close.
+    expect(storage.get("uploads/leak1")).not.toBeNull()
+
+    r2Down = false
+    const second = await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
+    expect(second.retried).toBe(first.leaked)
+    expect(second.reclaimed).toBe(first.leaked)
+    expect(repo.tombstones.size).toBe(0)
+    expect(storage.get("uploads/leak1")).toBeNull()
+  })
+
+  /**
+   * The real recordLeakedObjects is ONE multi-row upsert, so it collapses `keys` to a Set first: Postgres
+   * aborts a statement that tries to affect the same row twice (21000), and a throw there makes the leak
+   * permanent (the media row is already gone). The fake has to agree, or a duplicate key would bump
+   * attempts twice here and once in production — retiring the key from the retry range a run early.
+   */
+  it("counts a key repeated inside ONE call as a single attempt (mirrors the real upsert)", async () => {
+    const repo = new InMemoryWorkerRepo()
+
+    await repo.recordLeakedObjects({
+      mediaId: "dup-1",
+      keys: ["uploads/dup", "uploads/dup", "uploads/other"],
+    })
+    expect(repo.tombstones.size).toBe(2)
+    expect(repo.tombstones.get("uploads/dup")).toMatchObject({ mediaId: "dup-1", attempts: 1 })
+
+    // A SEPARATE call is a real retry, so it does bump.
+    await repo.recordLeakedObjects({ mediaId: "dup-1", keys: ["uploads/dup"] })
+    expect(repo.tombstones.get("uploads/dup")?.attempts).toBe(2)
+  })
+
+  it("stops retrying a tombstone at the attempt cap and reports it as permanent", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    storage.delete = () => Promise.reject(new Error("R2 unavailable"))
+    await repo.recordLeakedObjects({ mediaId: "gone-1", keys: ["uploads/stuck"], error: "first" })
+
+    const reports: unknown[] = []
+    let lastRetried = 0
+    // Attempts start at 1, so the runs that still retry are (cap - 1); one extra run proves it stopped.
+    for (let run = 0; run < LEAK_RETRY_MAX_ATTEMPTS; run++) {
+      const res = await runOrphanSweep({
+        repo,
+        storage,
+        limits,
+        now: () => now,
+        log: () => {},
+        report: (e) => reports.push(e),
+      })
+      lastRetried = res.retried
+    }
+    expect(lastRetried).toBe(0)
+    // Kept, not deleted: the row is the operator-visible record that a manual bucket cleanup is owed.
+    expect(repo.tombstones.get("uploads/stuck")?.attempts).toBe(LEAK_RETRY_MAX_ATTEMPTS)
+    // Exactly one "gave up" report, on the attempt that reached the cap.
     expect(reports.length).toBe(1)
   })
 })

@@ -16,7 +16,6 @@ import { ToggleMuteRequestSchema, AppError, type ToggleMuteResponse } from "@civ
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import type { ConversationMuteRoomKind } from "../db/schema/conversation_mutes.js"
@@ -86,6 +85,8 @@ function isMutableRoomKind(roomKind: string): roomKind is ConversationMuteRoomKi
 }
 
 export async function registerConversationRoutes(app: FastifyInstance, container: Container): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   const overrides = app.conversationMutesOverrides
   let repo: ConversationMutesRepository | undefined
   const getRepo = (): ConversationMutesRepository =>

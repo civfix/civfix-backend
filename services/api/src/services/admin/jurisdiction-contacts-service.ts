@@ -39,7 +39,7 @@ export function makeJurisdictionContactsService(
     async saveAndRoute(
       geoid: string,
       input: SaveContactsInput,
-      actorId: string | null,
+      actorId: string,
     ): Promise<SaveAndRouteResult> {
       const exists = await deps.repo.jurisdictionExists(geoid)
       if (!exists) throw AppError.notFound("Jurisdiction not found")
@@ -54,7 +54,7 @@ export function makeJurisdictionContactsService(
       return { geoid, routedReports, taskResolved, outreachEnqueued }
     },
 
-    async patch(geoid: string, input: PatchContactsInput, actorId: string | null): Promise<void> {
+    async patch(geoid: string, input: PatchContactsInput, actorId: string): Promise<void> {
       // Reject a reserved @handle BEFORE the write (the same blocklist that bars user handles from
       // impersonating system/jurisdiction names). A null/empty handle (clearing it) is always allowed; the
       // DB-dependent uniqueness check lives in the repo (it needs the live table, in-transaction).

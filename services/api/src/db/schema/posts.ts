@@ -68,6 +68,11 @@ export const posts = pgTable(
       .on(t.replyToId, t.createdAt)
       .where(sql`deleted_at IS NULL`),
     index("posts_repost_of_idx").on(t.repostOfId),
+    // Covers the thread_root_id self-FK's ON DELETE CASCADE lookup (0055); partial because only replies
+    // carry a thread root.
+    index("posts_thread_root_idx")
+      .on(t.threadRootId)
+      .where(sql`${t.threadRootId} IS NOT NULL`),
     index("posts_event_idx").on(t.eventId),
     index("posts_report_idx").on(t.reportId),
     index("posts_public_recent_idx")

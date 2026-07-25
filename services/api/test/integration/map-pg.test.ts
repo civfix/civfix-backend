@@ -14,11 +14,18 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
+import { FakeGeocoder, FakeJobs } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { clientQuery } from "../helpers/query.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
+import { makeJurisdictionService } from "../../src/services/jurisdiction-service.js"
+import {
+  CachedJurisdictionLookup,
+  type JurisdictionLookup,
+  type JurisdictionLookupResult,
+} from "../../src/adapters/jurisdiction-lookup.census.js"
 import {
   LA_CITY,
   LA_COUNTY,
@@ -188,5 +195,126 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(rows[0]?.meta.formUrl).toBe("https://lacity.example/report")
     expect(rows[0]?.meta.note).toBe("use the SR portal")
     expect(rows[0]?.meta.source).toBe("anon")
+  })
+
+  /**
+   * The write-time Census fallback against a REAL sequence (A15 follow-up).
+   *
+   * The lazily-inserted row has a NULL geom, so it can never satisfy the resolver's ST_Contains — every
+   * repeat resolve of the same point re-enters the fallback. With `nextval` in a VALUES list that burned one
+   * `jurisdiction_code_seq` value per request (VALUES is evaluated before the conflict is detected), on an
+   * anon-ok endpoint. Only a real DB can prove the NOT EXISTS guard actually leaves the sequence alone.
+   */
+  describe("write-time Census fallback (lazy jurisdiction insert)", () => {
+    const FALLBACK_GEOID = "0699999"
+
+    async function seqState(): Promise<{ last_value: string; is_called: boolean }> {
+      const rows = await h.sql<{ last_value: string; is_called: boolean }[]>`
+        SELECT last_value::text, is_called FROM jurisdiction_code_seq
+      `
+      return rows[0]!
+    }
+
+    function serviceWith(lookup: JurisdictionLookup) {
+      return makeJurisdictionService({
+        sql: h.sql,
+        geocoder: new FakeGeocoder(),
+        jobs: new FakeJobs(),
+        jurisdictionLookup: lookup,
+      })
+    }
+
+    /** Counting lookup with a mutable answer, so a "Census renamed the place" case is expressible. */
+    function countingLookup(hit: JurisdictionLookupResult): {
+      lookup: JurisdictionLookup
+      calls: () => number
+      setName: (name: string) => void
+    } {
+      let calls = 0
+      let current = hit
+      return {
+        lookup: {
+          lookup: () => {
+            calls += 1
+            return Promise.resolve(current)
+          },
+        },
+        calls: () => calls,
+        setName: (name: string) => {
+          current = { ...current, name }
+        },
+      }
+    }
+
+    it("inserts the row with a JURCODE once, and a repeat resolve draws NO further sequence value", async () => {
+      const probe = countingLookup({ geoid: FALLBACK_GEOID, name: "Fallback City", layer: "place" })
+      const service = serviceWith(probe.lookup)
+
+      const before = await seqState()
+      const first = await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+      expect(first?.geoid).toBe(FALLBACK_GEOID)
+      expect(first?.routable).toBe(false)
+
+      const created = await h.sql<{ code: number | null; name: string; geom: unknown }[]>`
+        SELECT code, name, geom FROM jurisdictions WHERE geoid = ${FALLBACK_GEOID}
+      `
+      expect(created).toHaveLength(1)
+      expect(created[0]?.code).not.toBeNull()
+      // NULL geom is what makes this row un-resolvable spatially (hence the repeat-call path below).
+      expect(created[0]?.geom).toBeNull()
+
+      const afterInsert = await seqState()
+      // The insert drew from the sequence (the stamped code above), so it has been called and cannot have
+      // gone backwards.
+      expect(afterInsert.is_called).toBe(true)
+      expect(Number(afterInsert.last_value)).toBeGreaterThanOrEqual(Number(before.last_value))
+
+      // Two more resolves of the same point: the lookup answers again (uncached service), the row already
+      // exists, and the sequence must not move.
+      await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+      await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+      expect(probe.calls()).toBe(3)
+
+      const afterRepeats = await seqState()
+      expect(afterRepeats.last_value).toBe(afterInsert.last_value)
+
+      const still = await h.sql<{ code: number | null }[]>`
+        SELECT code FROM jurisdictions WHERE geoid = ${FALLBACK_GEOID}
+      `
+      expect(still).toHaveLength(1)
+      expect(still[0]?.code).toBe(created[0]?.code)
+    })
+
+    it("leaves the existing row untouched (the boundary ingest owns name/layer refreshes)", async () => {
+      const probe = countingLookup({ geoid: FALLBACK_GEOID, name: "Fallback City", layer: "place" })
+      const service = serviceWith(probe.lookup)
+      await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+
+      // A later lookup answers with a different label for the same geoid: the stored row keeps its name,
+      // so this fallback can never overwrite a curated/ingested one.
+      probe.setName("Renamed By Census")
+      const dto = await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+      expect(dto?.geoid).toBe(FALLBACK_GEOID)
+
+      const rows = await h.sql<{ name: string }[]>`
+        SELECT name FROM jurisdictions WHERE geoid = ${FALLBACK_GEOID}
+      `
+      expect(rows[0]?.name).toBe("Fallback City")
+    })
+
+    it("the map wiring's memo (CachedJurisdictionLookup) makes one outbound lookup for N resolves", async () => {
+      const probe = countingLookup({ geoid: FALLBACK_GEOID, name: "Fallback City", layer: "place" })
+      const cached = new CachedJurisdictionLookup(probe.lookup)
+      const service = serviceWith(cached)
+
+      const before = await seqState()
+      await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+      await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+      await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
+
+      expect(probe.calls()).toBe(1)
+      // Row already existed from the tests above, so nothing was drawn at all here.
+      expect((await seqState()).last_value).toBe(before.last_value)
+    })
   })
 })

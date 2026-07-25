@@ -16,7 +16,6 @@ import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import {
   makeSocialService,
   type SocialNotifier,
@@ -25,8 +24,7 @@ import {
   type SocialViewer,
 } from "../services/social-service.js"
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
-import { makeNotificationService } from "../services/notification-service.js"
-import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
+import { makeRouteNotificationService } from "../services/route-notifier.js"
 import {
   makeUserActivityService,
   type UserActivityRepository,
@@ -61,12 +59,14 @@ const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(PERSON_REF_MA
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** Default page size for GET /users/follow-suggestions (the shared request caps `limit` at 20). */
-export const FOLLOW_SUGGESTIONS_DEFAULT_LIMIT = 10
+const FOLLOW_SUGGESTIONS_DEFAULT_LIMIT = 10
 
 export async function registerSocialRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   function repo(): SocialRepository {
     const overrides = app.socialOverrides
     if (overrides) return overrides.repo
@@ -76,12 +76,7 @@ export async function registerSocialRoutes(
   function notifier(): SocialNotifier | undefined {
     const overrides = app.socialOverrides
     if (overrides) return overrides.notifier
-    return makeNotificationService({
-      repo: makeDrizzleNotificationRepository(container.getDb().sql),
-      pushSender: container.pushSender,
-      userChannel: container.userChannel,
-      logger: app.log,
-    })
+    return makeRouteNotificationService(container, app.log)
   }
 
   function service(withNotifier = false): SocialService {
@@ -113,8 +108,20 @@ export async function registerSocialRoutes(
     })
   }
 
+  /**
+   * :id -> a user id that EXISTS and is not soft-deleted, else 404.
+   *
+   * The handle branch verifies existence inherently (the lookup filters deleted_at). The UUID branch used
+   * to pass the ref straight through, so followers/following/activity answered 200-with-items:[] for a
+   * random or tombstoned UUID while getProfile 404'd the same id — inconsistent, and it left a deleted
+   * account's surfaces enumerable by UUID. findPersonById applies the same deleted_at filter getProfile does.
+   */
   async function resolvePersonId(ref: string): Promise<string> {
-    if (UUID_RE.test(ref)) return ref
+    if (UUID_RE.test(ref)) {
+      const person = await repo().findPersonById(ref)
+      if (person === null) throw AppError.notFound("Person not found")
+      return ref
+    }
     if (ref.length > PERSON_REF_MAX) throw AppError.notFound("Person not found")
     return service().resolveHandleToId(ref)
   }

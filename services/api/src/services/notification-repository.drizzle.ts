@@ -130,14 +130,25 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
     },
 
     async createDefaultPrefs(userId: string): Promise<NotificationPrefsRecord> {
+      // EVERY pref column is written from DEFAULT_PREFS, exactly like upsertPrefs' insert branch. This
+      // used to name only push/cleanup_chat/report_updates/follows and leave mentions,
+      // post_interactions and quiet_* to their DB column defaults — so the two row-minting paths agreed
+      // only as long as those defaults happened to match DEFAULT_PREFS. DEFAULT_PREFS is the one source.
       const rows = await sql<PrefsRowSelect[]>`
-        INSERT INTO notification_prefs (user_id, push, cleanup_chat, report_updates, follows)
+        INSERT INTO notification_prefs (
+          user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions,
+          quiet_start, quiet_end
+        )
         VALUES (
           ${userId},
           ${DEFAULT_PREFS.push},
           ${DEFAULT_PREFS.cleanupChat},
           ${DEFAULT_PREFS.reportUpdates},
-          ${DEFAULT_PREFS.follows}
+          ${DEFAULT_PREFS.follows},
+          ${DEFAULT_PREFS.mentions},
+          ${DEFAULT_PREFS.postInteractions},
+          ${DEFAULT_PREFS.quietStart}::time,
+          ${DEFAULT_PREFS.quietEnd}::time
         )
         ON CONFLICT (user_id) DO NOTHING
         RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end

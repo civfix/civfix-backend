@@ -25,7 +25,13 @@
 
 import { AppError } from "@civfix/shared"
 import type { Mailer, OutboundAttachment } from "@civfix/shared/interfaces"
-import type { MailAuditInput, MailRepository, MailThreadRecord } from "./mail-repository.drizzle.js"
+import type { Container } from "../../di.js"
+import {
+  makeDrizzleMailRepository,
+  type MailAuditInput,
+  type MailRepository,
+  type MailThreadRecord,
+} from "./mail-repository.drizzle.js"
 import { domainOf } from "../../adapters/mail-text.js"
 
 /** The env slice the service needs (the outbound From + the reply domain for threading). */
@@ -72,7 +78,14 @@ export interface ComposeInput {
   audit?: OutboundAudit
 }
 
-/** appendOutbound input: append an OUT message to an existing thread (the Mail reply). */
+/**
+ * appendOutbound input: append an OUT message to an existing thread (the Mail reply / resend).
+ *
+ * TEXT-ONLY BY DESIGN, unlike the per-report/per-event senders: both callers compose from a MailMessageDTO,
+ * which carries no html part and exposes attachments only as object-store references whose bytes the mail
+ * service has no seam to load. An html/attachments pass-through was added here once and left unused — dead
+ * surface that read as if a caller supplied it — so it is gone; add it back WITH the caller that needs it.
+ */
 export interface AppendOutboundInput {
   body: string
   toAddr: string
@@ -323,6 +336,23 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
         eventMeta: { reportId: input.reportId, ...(input.geoid != null ? { geoid: input.geoid } : {}) },
       })
+      // A per-report thread is found-or-created (ON CONFLICT DO NOTHING), so a RE-route after a hard bounce
+      // reuses the bounced thread and its status would stay 'bounced' forever. Clear it once this attempt
+      // actually delivered: the bounce verdict described the OLD address, and leaving it set both lies to
+      // the operator ("Bounced" after a successful re-send) and keeps the report's outreach status in the
+      // re-routable state, so the next double-click would mail a duplicate packet. Only 'bounced' is
+      // cleared — 'replied'/'delivered' carry information a re-send must not erase. Best-effort: the packet
+      // is already out, so a status-write failure must not turn a delivered send into a 500.
+      if (thread.status === "bounced") {
+        try {
+          await repo.setThreadStatus(thread.id, "sent")
+        } catch (err) {
+          logger.warn(
+            { err, threadId: thread.id },
+            "report re-route delivered but clearing the thread's 'bounced' status failed",
+          )
+        }
+      }
       return { thread: await freshThread(thread), messageId }
     },
 
@@ -454,6 +484,35 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       return freshThread(thread)
     },
   }
+}
+
+/**
+ * THE production construction of the OutboundMailService from the container.
+ *
+ * Every admin sender (reports.routes.ts, mail.routes.ts, autoforward-jobs.ts, outreach-jobs.ts) built this
+ * by hand from the same container fields, so a new MAIL_* knob needed a coordinated edit in each and a miss
+ * left one path sending from a different identity than the rest. They all go through here now, so within
+ * the admin subsystem the env slice is read in this one place. (Two senders outside admin — cleanups.routes
+ * resource requests and chat-gateway-wiring — still build their own; folding them in is a separate change,
+ * since neither file is part of this subsystem.)
+ *
+ * `repo` is an override because mail.routes.ts already has a MailRepository built for its own MailService —
+ * passing it avoids a second identical repo per request. `logger` routes the best-effort post-send warnings
+ * to the Fastify log; without it they fall back to `console`.
+ */
+export function makeContainerOutboundMailService(
+  container: Container,
+  overrides?: { repo?: MailRepository; logger?: OutboundMailLogger },
+): OutboundMailService {
+  return makeOutboundMailService({
+    repo: overrides?.repo ?? makeDrizzleMailRepository(container.getDb().sql),
+    mailer: container.mailer,
+    env: {
+      MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
+      MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
+    },
+    ...(overrides?.logger !== undefined ? { logger: overrides.logger } : {}),
+  })
 }
 
 /** Derive a reply subject from the thread subject ("Re: ..." once, not "Re: Re: ..."). */

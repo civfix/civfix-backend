@@ -34,6 +34,15 @@ const pg = await withPg()
 
 const GEOID = LA_CITY.geoid
 
+/**
+ * The deciding operator's address. `actorId` is NON-NULL on the service's approve/reject (every caller is
+ * an operator-guarded gov route), and it lands in `audit_log.actor_id` / `gov_claims.decided_by` — both
+ * uuid columns REFERENCING users(id) — so the tests must pass a real user's id, not a placeholder string.
+ * Kept off the '@lacity.gov' domain the per-test cleanup wipes so it cannot collide with a provisioned
+ * gov user.
+ */
+const OPERATOR_EMAIL = "operator@civfix.test"
+
 /** Adapt the real Pg UserStore into the narrow UserProvisioner seam (same shape the route uses). */
 function provisionerFromUserStore(store: UserStore): UserProvisioner {
   return {
@@ -79,6 +88,8 @@ describe.skipIf(!pg)(
     let h: PgHarness
     let repo: GovClaimsRepository
     let svc: GovClaimsService
+    /** The operator row whose uuid the SERVICE approve/reject below decide as (re-inserted per test). */
+    let operatorId: string
 
     beforeAll(() => {
       h = pg as PgHarness
@@ -91,6 +102,15 @@ describe.skipIf(!pg)(
       await h.sql`TRUNCATE gov_claims, audit_log RESTART IDENTITY CASCADE`
       // Remove any users a prior approve created (keep the schema's seeded data intact otherwise).
       await h.sql`DELETE FROM users WHERE email LIKE '%@lacity.gov'`
+      // ... and the prior test's operator, so each test decides as a freshly inserted actor row.
+      await h.sql`DELETE FROM users WHERE email = ${OPERATOR_EMAIL}`
+      operatorId = (
+        await h.sql<{ id: string }[]>`
+          INSERT INTO users (display_name, email, role)
+          VALUES ('Operator', ${OPERATOR_EMAIL}, 'operator')
+          RETURNING id
+        `
+      )[0]!.id
     })
 
     afterAll(async () => {
@@ -154,7 +174,7 @@ describe.skipIf(!pg)(
         geoid: GEOID,
       })
 
-      await svc.approve(id, { actorId: null, note: "verified" })
+      await svc.approve(id, { actorId: operatorId, note: "verified" })
 
       const claim = await repo.getClaim(id)
       expect(claim?.status).toBe("approved")
@@ -167,24 +187,37 @@ describe.skipIf(!pg)(
       expect(user?.role).toBe("gov_admin")
       expect(claim?.userId).toBe(user?.id)
 
-      const [audit] = await h.sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count FROM audit_log WHERE action = 'gov_claim.approved'
+      // The deciding operator is recorded on the claim AND on the audit row (uuid FKs to users).
+      const [decided] = await h.sql<{ decided_by: string | null }[]>`
+      SELECT decided_by FROM gov_claims WHERE id = ${id}
     `
-      expect(Number(audit?.count)).toBe(1)
+      expect(decided?.decided_by).toBe(operatorId)
+
+      const audits = await h.sql<{ actor_id: string | null }[]>`
+      SELECT actor_id FROM audit_log WHERE action = 'gov_claim.approved'
+    `
+      expect(audits).toHaveLength(1)
+      expect(audits[0]?.actor_id).toBe(operatorId)
     })
 
     it("reject sets status rejected + reason and audits it", async () => {
       const id = await insertClaim(h, { contactEmail: "rej@lacity.gov" })
-      await svc.reject(id, { reason: "Could not verify authority", actorId: null })
+      await svc.reject(id, { reason: "Could not verify authority", actorId: operatorId })
 
       const claim = await repo.getClaim(id)
       expect(claim?.status).toBe("rejected")
       expect(claim?.rejectReason).toBe("Could not verify authority")
 
-      const [audit] = await h.sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count FROM audit_log WHERE action = 'gov_claim.rejected'
+      const [decided] = await h.sql<{ decided_by: string | null }[]>`
+      SELECT decided_by FROM gov_claims WHERE id = ${id}
     `
-      expect(Number(audit?.count)).toBe(1)
+      expect(decided?.decided_by).toBe(operatorId)
+
+      const audits = await h.sql<{ actor_id: string | null }[]>`
+      SELECT actor_id FROM audit_log WHERE action = 'gov_claim.rejected'
+    `
+      expect(audits).toHaveLength(1)
+      expect(audits[0]?.actor_id).toBe(operatorId)
     })
   },
 )

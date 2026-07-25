@@ -6,7 +6,12 @@
  *   - loadDigest aggregates a geoid's waiting reports (non-deleted, still open) per category and resolves
  *     its routing contact (default -> per-category -> legacy default emails), returning null when there
  *     is nothing to send (no waiting reports or no contact);
- *   - listCandidateGeoids returns every geoid that has BOTH waiting reports and a usable contact.
+ *   - listCandidateGeoids returns every geoid that has BOTH waiting reports and a usable contact;
+ *   - claimOutreachWindow implements the atomic send-window claim, when the fake is constructed with the
+ *     shared `outreach_state` store (see the member). It had NO offline binding at all, so
+ *     OutreachService.runForGeoid's claim branch — and with it the claim-RELEASE path that stops a failed
+ *     digest from silencing a jurisdiction for the whole throttle window — was reachable only through a
+ *     hand-written stub in each test.
  * Seed helpers (seedJurisdiction, seedReport) let tests arrange state directly.
  */
 
@@ -16,6 +21,7 @@ import {
   type OutreachDigest,
   type OutreachRepository,
 } from "./outreach-service.js"
+import type { OutreachStateRecord } from "./mail-repository.js"
 import type { ReportCategory } from "@civfix/shared"
 
 /** A seeded jurisdiction's outreach-relevant routing posture. */
@@ -46,6 +52,66 @@ const CLOSED = new Set(["rejected", "resolved"])
 export class InMemoryOutreachRepository implements OutreachRepository {
   readonly jurisdictions = new Map<string, SeededOutreachJurisdiction>()
   readonly reports: SeededOutreachReport[] = []
+
+  /**
+   * The `outreach_state` rows, or null when this fake was built without the shared store.
+   *
+   * Production has ONE table: MailRepository.getOutreachState/setOutreachState and the claim below all read
+   * and write it, so the claim can only be modeled when the SAME map is also handed to
+   * InMemoryMailRepository's constructor.
+   */
+  readonly outreach: Map<string, OutreachStateRecord> | null
+
+  /**
+   * Atomically claim this geoid's send window. Mirrors the Drizzle statement exactly:
+   *
+   *   INSERT INTO outreach_state (geoid, last_outreach_at, suppressed) VALUES ($geoid, $at, false)
+   *   ON CONFLICT (geoid) DO UPDATE SET last_outreach_at = $at
+   *   WHERE outreach_state.suppressed = false
+   *     AND (outreach_state.last_outreach_at IS NULL OR outreach_state.last_outreach_at < $windowStart)
+   *   RETURNING geoid
+   *
+   * So: no row -> insert and WIN (the DO UPDATE ... WHERE never runs on the insert path, which is also why a
+   * suppressed jurisdiction cannot be created here — a suppressed one already has a row). An existing row ->
+   * stamp and WIN only when it is not suppressed AND its last send is outside the window; otherwise the
+   * conflicting UPDATE is filtered out, nothing is written, and the claim is LOST (false).
+   *
+   * PRESENT ONLY when the shared store was supplied. The member is OPTIONAL on the seam and OutreachService
+   * branches on it, and claiming into a private map nothing else reads would be worse than declining: the
+   * service would take the claim path while the digest's stamp stayed invisible to
+   * MailRepository.getOutreachState — an unthrottled fake. Without the shared store the service takes its
+   * documented no-claim fallback (send, then setOutreachState).
+   *
+   * A BOUND closure, not a prototype method: OutreachService reads the member off the repo and calls it
+   * DETACHED (`const claim = deps.outreachRepo.claimOutreachWindow; await claim(...)`) precisely because it
+   * is optional. That is fine for the Drizzle repo (an object literal of closures, no `this`) and would throw
+   * for a class method.
+   */
+  readonly claimOutreachWindow?: (
+    geoid: string,
+    window: { at: Date; windowStart: Date },
+  ) => Promise<boolean>
+
+  /** @param sharedOutreach the throttle store shared with the mail repo (the production single table). */
+  constructor(sharedOutreach?: Map<string, OutreachStateRecord>) {
+    this.outreach = sharedOutreach ?? null
+    if (sharedOutreach) {
+      this.claimOutreachWindow = (geoid, window) => {
+        const existing = sharedOutreach.get(geoid)
+        if (existing === undefined) {
+          sharedOutreach.set(geoid, { geoid, lastOutreachAt: window.at, suppressed: false })
+          return Promise.resolve(true)
+        }
+        const eligible =
+          !existing.suppressed &&
+          (existing.lastOutreachAt === null ||
+            existing.lastOutreachAt.getTime() < window.windowStart.getTime())
+        if (!eligible) return Promise.resolve(false)
+        sharedOutreach.set(geoid, { ...existing, lastOutreachAt: window.at })
+        return Promise.resolve(true)
+      }
+    }
+  }
 
   seedJurisdiction(input: {
     geoid: string

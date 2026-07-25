@@ -25,6 +25,7 @@ import { AppError } from "@civfix/shared"
 import type { AbuseChecks, NearDuplicateResult } from "@civfix/shared/interfaces"
 import type { LatLng } from "@civfix/shared"
 import { haversineKm } from "@civfix/shared"
+import { fetchJsonWithTimeout } from "./http-fetch.js"
 
 /** An injected real perceptual hasher (the worker wires sandbox/phash.ts perceptualHash). */
 export type PerceptualHashFn = (buffer: Uint8Array) => Promise<string>
@@ -146,58 +147,48 @@ export class RealAbuseChecks implements AbuseChecks {
     // remoteip is optional but recommended; only send a real value.
     if (ip && ip.length > 0) body.set("remoteip", ip)
 
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), TURNSTILE_TIMEOUT_MS)
-    try {
-      let res: Response
-      try {
-        res = await fetch(TURNSTILE_VERIFY_URL, {
-          method: "POST",
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          body,
-          signal: controller.signal,
-        })
-      } catch (err) {
-        // Transport failure / timeout abort: we cannot confirm a human, so fail closed by surfacing an
-        // error. (Preserve the cause on the Error chain without depending on the AppError factory options.)
-        const wrapped = AppError.internal("Turnstile verification request failed")
-        ;(wrapped as { cause?: unknown }).cause = err
-        throw wrapped
-      }
-
-      if (!res.ok) {
-        throw AppError.internal(`Turnstile verification returned HTTP ${res.status}`)
-      }
-
-      // A 200 with a non-JSON body must fail closed, not throw a raw SyntaxError out of the method.
-      let json: TurnstileVerifyResponse
-      try {
-        json = (await res.json()) as TurnstileVerifyResponse
-      } catch (err) {
-        const wrapped = AppError.internal("Turnstile verification returned a non-JSON body")
-        ;(wrapped as { cause?: unknown }).cause = err
-        throw wrapped
-      }
-      if (json.success !== true) return false
-
-      // L16: bind the token to where and what it was issued for. Cloudflare returns these fields
-      // exactly so the server can do this; without the checks, `success` only proves the token is a
-      // valid token for our sitekey — not that it came from our page or our form.
-      if (!this.hostnameAccepted(json.hostname)) {
-        this.log("Turnstile token rejected: unexpected hostname", { hostname: json.hostname })
-        return false
-      }
-      if (expect?.action !== undefined && json.action !== expect.action) {
-        this.log("Turnstile token rejected: action mismatch", {
-          expected: expect.action,
-          actual: json.action,
-        })
-        return false
-      }
-      return true
-    } finally {
-      clearTimeout(timer)
+    // Every failure mode of the request FAILS CLOSED (throws) rather than returning false: `false` means
+    // "Cloudflare says this is not a human", which the caller maps to a user-facing challenge failure, and
+    // an outage must not be reported as a failed challenge.
+    const result = await fetchJsonWithTimeout<TurnstileVerifyResponse>(TURNSTILE_VERIFY_URL, {
+      timeoutMs: TURNSTILE_TIMEOUT_MS,
+      init: {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      },
+    })
+    if (!result.ok) {
+      // Preserve the cause on the Error chain without depending on the AppError factory options.
+      const wrapped = AppError.internal(
+        result.kind === "http"
+          ? `Turnstile verification returned HTTP ${result.status}`
+          : result.kind === "body"
+            ? "Turnstile verification returned a non-JSON body"
+            : "Turnstile verification request failed",
+      )
+      if (result.kind !== "http") (wrapped as { cause?: unknown }).cause = result.error
+      throw wrapped
     }
+
+    const json = result.json
+    if (json.success !== true) return false
+
+    // L16: bind the token to where and what it was issued for. Cloudflare returns these fields
+    // exactly so the server can do this; without the checks, `success` only proves the token is a
+    // valid token for our sitekey — not that it came from our page or our form.
+    if (!this.hostnameAccepted(json.hostname)) {
+      this.log("Turnstile token rejected: unexpected hostname", { hostname: json.hostname })
+      return false
+    }
+    if (expect?.action !== undefined && json.action !== expect.action) {
+      this.log("Turnstile token rejected: action mismatch", {
+        expected: expect.action,
+        actual: json.action,
+      })
+      return false
+    }
+    return true
   }
 
   /**

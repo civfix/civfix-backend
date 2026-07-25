@@ -104,6 +104,38 @@ describe("M12: invitees blocked with an EXISTING member are silently skipped", (
   })
 })
 
+describe("addMembers reports the ACCEPTED invitees, independently of the members page", () => {
+  it("returns `added` even when the first page shows none of them (pagination hides fresh members)", async () => {
+    // listMembers is paginated owner->admin->member then joined_at ASC, so a just-added member sorts LAST
+    // and is absent from page one in any group at/over GROUP_MEMBERS_DEFAULT_LIMIT. The fake returns an
+    // empty page to stand in for that: deriving the invitee set from `page.members` (what the route used
+    // to do for its inbox nudge) yields nobody, so the nudge silently died in exactly the big rooms.
+    const repo = fakeRepo()
+    const res = await svcOver(repo).addMembers(OWNER, { id: GROUP, memberIds: [INVITEE_OK] })
+    expect(res.page.members).toEqual([])
+    expect(res.added).toEqual([INVITEE_OK])
+  })
+
+  it("never reports an invitee the block filter dropped (M12) — they must learn nothing", async () => {
+    const repo = fakeRepo({ blocked: [[MEMBER, INVITEE_BLOCKED_BY_MEMBER]] })
+    const res = await svcOver(repo).addMembers(OWNER, {
+      id: GROUP,
+      memberIds: [INVITEE_OK, INVITEE_BLOCKED_BY_MEMBER],
+    })
+    expect(res.added).toEqual([INVITEE_OK])
+    expect(res.added).not.toContain(INVITEE_BLOCKED_BY_MEMBER)
+  })
+
+  it("dedupes and drops self before reporting (the filter's own contract)", async () => {
+    const repo = fakeRepo()
+    const res = await svcOver(repo).addMembers(OWNER, {
+      id: GROUP,
+      memberIds: [INVITEE_OK, INVITEE_OK, OWNER],
+    })
+    expect(res.added).toEqual([INVITEE_OK])
+  })
+})
+
 describe("L8: unknown group and no-access answer identically (no existence oracle)", () => {
   it("readable surface: unknown group and private non-member both 403 not_a_member", async () => {
     const unknown = await statusOf(() => svcOver(fakeRepo({ exists: false })).getGroup(STRANGER, GROUP))

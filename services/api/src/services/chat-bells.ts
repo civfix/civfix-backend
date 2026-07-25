@@ -32,19 +32,23 @@
  *                                             construction.
  */
 
-import type { RoomKind } from "@civfix/shared"
+import type { NotificationType, RoomKind } from "@civfix/shared"
 import type { NotificationService } from "./notification-service.js"
+import { CONVERSATION_BELL } from "./conversation-bell.js"
 import { dmAuthorName, mentionAuthorName, textPreview } from "../routes/chat-notify-copy.js"
 import type { GatewayChatMentions, OnChatReply, OnDmDelivered } from "../ws/types.js"
 
-/** Notification type + deep link for a group-room bell, per room kind. */
-function groupBellRoute(kind: "cleanup" | "report" | "group", roomId: string): {
-  type: "cleanup_chat" | "report_chat" | "group_chat"
-  link: string
-} {
-  if (kind === "report") return { type: "report_chat", link: `/messages/report/${roomId}` }
-  if (kind === "group") return { type: "group_chat", link: `/messages/group/${roomId}` }
-  return { type: "cleanup_chat", link: `/cleanups/${roomId}` }
+/**
+ * Notification type + deep link for a group-room bell, per room kind. Straight off CONVERSATION_BELL —
+ * clear-on-open (clearByTypeAndLink) matches on exactly these two strings, so a second hand-written copy
+ * of the map would silently strand bells the moment either side changed.
+ */
+function groupBellRoute(
+  kind: "cleanup" | "report" | "group",
+  roomId: string,
+): { type: NotificationType; link: string } {
+  const spec = CONVERSATION_BELL[kind]
+  return { type: spec.type, link: spec.link(roomId) }
 }
 
 export interface ChatBellDeps {

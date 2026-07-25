@@ -10,6 +10,7 @@
  */
 
 import { AppError } from "@civfix/shared"
+import { expandIpv6Hextets } from "../adapters/net-ipv6.js"
 import type { CounterStore } from "./counter-store.js"
 
 /** Hard per-IP submissions-per-hour cap. Applies to every IP. */
@@ -54,19 +55,10 @@ export function normalizeIp(ip: string | undefined | null): string {
 
 /** Expand a (possibly "::"-compressed) IPv6 address and return its /64 prefix as "h:h:h:h::/64". */
 function ipv6Prefix64(addr: string): string {
-  // Split on "::" to expand the zero-run, if present.
-  const [headRaw, tailRaw] = addr.split("::") as [string, string | undefined]
-  const head = headRaw === "" ? [] : headRaw.split(":")
-  const tail = tailRaw === undefined ? null : tailRaw === "" ? [] : tailRaw.split(":")
-
-  let hextets: string[]
-  if (tail === null) {
-    // No "::": the address is already full (or malformed); take what is there.
-    hextets = head
-  } else {
-    const missing = Math.max(0, 8 - head.length - tail.length)
-    hextets = [...head, ...Array(missing).fill("0"), ...tail]
-  }
+  // Shared expansion (also used by the push-endpoint SSRF guard); the LENIENCY is this caller's policy: a
+  // malformed address is not rejected here, it just yields whatever prefix its hextets imply, because the
+  // limiter must bucket every input rather than let a garbage IP through uncounted.
+  const { hextets } = expandIpv6Hextets(addr)
 
   // Take the first four hextets (the /64), normalizing each (drop leading zeros; empty -> "0").
   const prefix: string[] = []

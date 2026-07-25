@@ -3,8 +3,8 @@
  * requireOperator guard is applied by routes/admin/index.ts (this whole router runs inside the guarded
  * child context); mutations additionally carry csrfProtect. The service is built lazily from the container
  * (Drizzle mail repo + the OutboundMailService over container.mailer) or from a per-instance test override
- * (in-memory repo + a FakeMailer-backed outbound). See the in-handler comments for the route-order +
- * in-tx-audit (H4) invariants.
+ * (in-memory repo + a FakeMailer-backed outbound). See the in-handler comments for the in-tx-audit (H4)
+ * invariant.
  */
 
 import {
@@ -14,24 +14,19 @@ import {
   ReplyRequestSchema,
   ResendRequestSchema,
   SetMailStatusRequestSchema,
-  type AdminOkResponse,
   type MailListResponse,
   type MailStatsResponse,
   type MailThreadDTO,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { csrfProtect } from "../../auth/csrf.js"
 import { route } from "../../versioning/route.js"
-import { idParam, parse } from "./_route-utils.js"
+import { idParam, overridableService, parse, parseBodyWithId, sendOk } from "./_route-utils.js"
 import { auditRead } from "./_audit-read.js"
 import { requireOperator } from "../../auth/admin-guard.js"
+import { makeMailService } from "../../services/admin/mail-service.js"
 import {
-  makeMailService,
-  type MailService,
-} from "../../services/admin/mail-service.js"
-import {
-  makeOutboundMailService,
+  makeContainerOutboundMailService,
   type OutboundMailService,
 } from "../../services/admin/outbound-mail-service.js"
 import {
@@ -62,34 +57,32 @@ export async function registerAdminMailRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   /** Build the admin mail service from injected overrides (tests) or the container (production). */
-  function service(): MailService {
-    const overrides = app.adminMailOverrides
-    if (overrides) {
-      return makeMailService({
+  const service = overridableService(
+    app,
+    "adminMailOverrides",
+    (overrides) =>
+      makeMailService({
         repo: overrides.repo,
         outboundMail: overrides.outboundMail,
         fromOutreach: overrides.fromOutreach,
+      }),
+    () => {
+      const sql = container.getDb().sql
+      const repo: MailRepository = makeDrizzleMailRepository(sql)
+      const outboundMail = makeContainerOutboundMailService(container, { repo, logger: app.log })
+      return makeMailService({
+        repo,
+        outboundMail,
+        fromOutreach: container.env.MAIL_FROM_OUTREACH,
       })
-    }
-    const sql = container.getDb().sql
-    const repo: MailRepository = makeDrizzleMailRepository(sql)
-    const outboundMail = makeOutboundMailService({
-      repo,
-      mailer: container.mailer,
-      env: {
-        MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-        MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-      },
-    })
-    return makeMailService({
-      repo,
-      outboundMail,
-      fromOutreach: container.env.MAIL_FROM_OUTREACH,
-    })
-  }
+    },
+  )
 
-  // getMailStats is registered BEFORE getMailThread so the literal `stats` segment is not captured by :id.
+  // `stats` is a static segment, so find-my-way prefers it over getMailThread's `:id` regardless of
+  // registration order — the ordering here is stylistic, not load-bearing.
   route(app, "getMailStats", async (_request, reply) => {
     const payload: MailStatsResponse = await service().stats()
     reply.status(200).send(payload)
@@ -113,49 +106,41 @@ export async function registerAdminMailRoutes(
     reply.status(200).send(payload)
   })
 
-  // H4: the compose/reply/status/resend mutations each pass request.auth.userId into the service so the
-  // operator audit (mail.sent / mail.replied / mail.status_changed / mail.resent) is written in the SAME
-  // tx as its effect. Mark-read is a benign lifecycle toggle with no audit action.
+  // H4: the compose/reply/status/resend mutations each pass the resolved operator id into the service so
+  // the audit (mail.sent / mail.replied / mail.status_changed / mail.resent) is written in the SAME tx as
+  // its effect. Mark-read is a benign lifecycle toggle with no audit action.
   route(app, "composeMail", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireOperator(request)
     const body = parse(ComposeRequestSchema, request.body)
-    await service().compose(
-      { to: body.to, subject: body.subject, body: body.body },
-      request.auth.userId,
-    )
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    await service().compose({ to: body.to, subject: body.subject, body: body.body }, actorId)
+    sendOk(reply)
   })
 
   route(app, "replyMail", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(ReplyRequestSchema, { ...(request.body as object), id })
-    await service().reply(id, { body: body.body }, request.auth.userId)
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(ReplyRequestSchema, request)
+    await service().reply(id, { body: body.body }, actorId)
+    sendOk(reply)
   })
 
   route(app, "markMailRead", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    parse(MarkMailReadRequestSchema, { ...(request.body as object), id }) // validate-only
+    const { id } = parseBodyWithId(MarkMailReadRequestSchema, request) // body is validate-only
     await service().markRead(id)
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   route(app, "setMailStatus", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(SetMailStatusRequestSchema, { ...(request.body as object), id })
-    await service().setStatus(id, body.status, request.auth.userId)
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(SetMailStatusRequestSchema, request)
+    await service().setStatus(id, body.status, actorId)
+    sendOk(reply)
   })
 
   route(app, "resendMail", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    parse(ResendRequestSchema, { ...(request.body as object), id }) // validate-only
-    await service().resend(id, request.auth.userId)
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id } = parseBodyWithId(ResendRequestSchema, request) // body is validate-only
+    await service().resend(id, actorId)
+    sendOk(reply)
   })
 }
 

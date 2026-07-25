@@ -9,20 +9,25 @@ import {
   JurisdictionListQuerySchema,
   PatchJurisdictionRequestSchema,
   SaveContactsRequestSchema,
-  type AdminOkResponse,
   type JurisdictionDirectoryResponse,
   type JurisdictionGeometryResponse,
   type ReportCategory,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { csrfProtect } from "../../auth/csrf.js"
+import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
-import { geoidParam, httpUrlField, parse } from "./_route-utils.js"
+import {
+  geoidParam,
+  httpUrlField,
+  overridableService,
+  parse,
+  sendOk,
+  spreadNow,
+} from "./_route-utils.js"
 import {
   makeJurisdictionContactsService,
   type JurisdictionContactsRepository,
-  type JurisdictionContactsService,
   type OutreachEnqueuer,
 } from "../../services/admin/jurisdiction-contacts-service.js"
 import { makeDrizzleJurisdictionContactsRepository } from "../../services/admin/jurisdiction-contacts-repository.drizzle.js"
@@ -49,32 +54,37 @@ export async function registerAdminJurisdictionsRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   /** Build the contacts service from injected overrides (tests) or the container (production). */
-  function service(): JurisdictionContactsService {
-    const overrides = app.jurisdictionOverrides
-    if (overrides) {
-      return makeJurisdictionContactsService({
+  const service = overridableService(
+    app,
+    "jurisdictionOverrides",
+    (overrides) =>
+      makeJurisdictionContactsService({
         repo: overrides.repo,
         jobs: overrides.jobs ?? container.jobs,
         throttleDays: overrides.throttleDays ?? container.env.OUTREACH_THROTTLE_DAYS,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+        ...spreadNow(overrides),
+      }),
+    () => {
+      const repo: JurisdictionContactsRepository = makeDrizzleJurisdictionContactsRepository(
+        container.getDb().sql,
+      )
+      return makeJurisdictionContactsService({
+        repo,
+        jobs: container.jobs,
+        throttleDays: container.env.OUTREACH_THROTTLE_DAYS,
       })
-    }
-    const repo: JurisdictionContactsRepository = makeDrizzleJurisdictionContactsRepository(
-      container.getDb().sql,
-    )
-    return makeJurisdictionContactsService({
-      repo,
-      jobs: container.jobs,
-      throttleDays: container.env.OUTREACH_THROTTLE_DAYS,
-    })
-  }
+    },
+  )
 
   route(
     app,
     "saveJurisdictionContacts",
     { preHandler: csrfProtect },
     async (request, reply) => {
+      const actorId = requireOperator(request)
       const geoid = geoidParam(request)
       const body = parse(SaveContactsRequestSchema, { ...(request.body as object), geoid })
       await service().saveAndRoute(
@@ -91,10 +101,9 @@ export async function registerAdminJurisdictionsRoutes(
             ? { forwardBodyTemplate: body.forwardBodyTemplate }
             : {}),
         },
-        request.auth.userId,
+        actorId,
       )
-      const payload: AdminOkResponse = { ok: true }
-      reply.status(200).send(payload)
+      sendOk(reply)
     },
   )
 
@@ -111,6 +120,7 @@ export async function registerAdminJurisdictionsRoutes(
   })
 
   route(app, "patchJurisdiction", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireOperator(request)
     const geoid = geoidParam(request)
     const body = parse(PatchJurisdictionRequestSchema, { ...(request.body as object), geoid })
     await service().patch(
@@ -133,9 +143,8 @@ export async function registerAdminJurisdictionsRoutes(
           ? { forwardBodyTemplate: body.forwardBodyTemplate }
           : {}),
       },
-      request.auth.userId,
+      actorId,
     )
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 }

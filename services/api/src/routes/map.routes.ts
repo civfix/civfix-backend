@@ -30,13 +30,13 @@ import { suggestAddresses } from "@civfix/shared/geocode"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
-import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { makeRouteJurisdictionService } from "../services/route-geo-helpers.js"
 import {
   makeCleanupMapRepository,
   MAP_CLEANUPS_LIMIT,
 } from "../services/cleanup-map-repository.js"
 import { writeAudit } from "../services/admin/audit.js"
-import { BBoxQueryParam } from "./query-encoding.js"
+import { CappedBBoxQueryParam } from "./query-encoding.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 
@@ -52,8 +52,10 @@ export const CARTO_VOYAGER_RASTER_URL =
 
 // Decode EXACTLY what the shared client sends (bbox as one JSON-encoded param + optional scalar `when`),
 // then re-validate against the shared .strict() schema so the contract stays the single source of truth.
+// The bbox carries the M14 area cap: this read is anon-ok and scans up to MAP_CLEANUPS_LIMIT rows with a
+// correlated RSVP-count subquery per row, the same cost profile the reports map read caps.
 const CleanupsQuerySchema = z.object({
-  bbox: BBoxQueryParam,
+  bbox: CappedBBoxQueryParam,
   when: z.enum(["upcoming", "past"]).optional(),
 })
 
@@ -66,6 +68,11 @@ const SUGGEST_CONTACT_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 // Per-IP cap on the anon-ok geocoder-backed POSTs: each hits the external Census seam + a DB upsert, so a
 // tight per-route limit bounds an unauthenticated client driving hundreds of expensive outbound calls.
 const GEOCODER_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+
+// M14 parity with reports.routes' MAP_REPORTS_RATE_LIMIT: the cleanup-pin read is equally anon-ok and
+// equally expensive per request, and jittered bounds defeat the 60s Cache-Control. Same 60/min headroom,
+// because a genuine pan/zoom session fires several requests per second while the cache warms.
+const MAP_CLEANUPS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
 // fast-json-stringify response schema for the hot anon mapCleanups read (up to MAP_CLEANUPS_LIMIT pins);
 // gives the 2-3x serialization path over the slow JSON.stringify fallback. Drops any property not listed.
@@ -92,12 +99,16 @@ const MapCleanupsResponseJsonSchema = {
 } as const
 
 export async function registerMapRoutes(app: FastifyInstance, container: Container): Promise<void> {
+  // Same wiring as the reports/anon/cleanups resolvers — INCLUDING the write-time Census fallback. This
+  // route used to omit it, so /map/resolve-jurisdiction answered 200-null ("not covered") for points that
+  // self-map the moment the same user submits a report there. GEOCODER_RATE_LIMIT bounds the Census spend.
+  //
+  // cacheLookup: these endpoints are anon-ok and csrf-less, and the fallback's lazily-inserted row has a
+  // NULL geom, so it can never become a local hit — without a memo a client repeating ONE point drove one
+  // outbound Census request (and one write attempt) per request, at 30/min/IP, forever. The memo is
+  // per-container, TTL-bounded and answer-identical; the submit paths stay uncached (route-geo-helpers).
   function jurisdictionService() {
-    return makeJurisdictionService({
-      sql: container.getDb().sql,
-      geocoder: container.geocoder,
-      jobs: container.jobs,
-    })
+    return makeRouteJurisdictionService(container, { cacheLookup: true })
   }
 
   // PLAN OVERRIDE (supersedes the MapLibre + Protomaps-pmtiles-on-R2 plan): the map uses the
@@ -168,7 +179,10 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   route(
     app,
     "mapCleanups",
-    { schema: { response: { 200: MapCleanupsResponseJsonSchema } } },
+    {
+      schema: { response: { 200: MapCleanupsResponseJsonSchema } },
+      config: { rateLimit: MAP_CLEANUPS_RATE_LIMIT },
+    },
     async (request, reply) => {
       const q = parse(CleanupsQuerySchema, request.query)
       // Re-validate via the shared schema so the wire contract is enforced from the single source.

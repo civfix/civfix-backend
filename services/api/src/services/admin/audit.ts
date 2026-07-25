@@ -80,6 +80,20 @@ export type AdminAuditAction =
   // escape hatch: any other dotted action wave 2 introduces
   | (string & {})
 
+/**
+ * The L4 read-audit actions: the four sensitive per-subject READS, as written by
+ * routes/admin/_audit-read.ts. Separated out because they are the only actions the recent-activity feed
+ * must NOT show — routine operator navigation writes one per page view, which floods a feed whose per-source
+ * window is only `limit` rows and pushes every real action out of it. They stay fully queryable in the
+ * audit-log view, which is where "who looked at whose messages" is actually asked.
+ */
+export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
+  "user.detail_viewed",
+  "user.messages_viewed",
+  "inbox.message_viewed",
+  "mail.thread_viewed",
+]
+
 export interface WriteAuditInput {
   /** The acting operator's userId. Null/undefined for system-originated actions. */
   actorId?: string | null

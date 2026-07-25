@@ -13,15 +13,16 @@
  *   - queues must exist before send/work, so the handle exposes createQueue (idempotent).
  *   - work(name, options, handler) delivers an ARRAY of jobs; we adapt to the shared single-job
  *     JobHandler by iterating, and use batchSize to bound in-flight concurrency.
+ *   - the batch is completed/failed PER JOB here rather than by resolving/throwing out of the work
+ *     callback, which pg-boss treats as a verdict on the whole batch (see workWithSettings).
  */
 
 import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { FakeJobs } from "@civfix/shared/fakes"
-import { parseBool } from "./config.js"
-import { MediaInfraError } from "./jobs/media-checks.js"
+import { assertRealSeamInProd, loadLimits, parseBool } from "./config.js"
 
-/** Default ON outside production so the worker boots offline. */
+/** Default ON outside production so the worker boots offline; an explicit ON in prod fails boot. */
 function useFakeJobs(source: NodeJS.ProcessEnv = process.env): boolean {
   const isProd = source.NODE_ENV === "production"
   return parseBool(source.USE_FAKE_JOBS, !isProd)
@@ -82,6 +83,14 @@ export interface WorkerJobs extends Jobs {
   schedule(name: string, cron: string, data?: unknown, options?: ScheduleOptions): Promise<void>
 }
 
+/**
+ * Shape the failure written to the job's `output` column. pg-boss serializes an Error faithfully
+ * (serialize-error), so pass it straight through; anything else is wrapped so the reason is never lost.
+ */
+function toFailureOutput(err: unknown): object {
+  return err instanceof Error ? err : { message: String(err) }
+}
+
 /** Map the shared EnqueueOptions onto pg-boss SendOptions. */
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
   const out: PgBoss.SendOptions = {}
@@ -102,16 +111,43 @@ function toQueueOptions(
   return out
 }
 
-/** pg-boss graceful-stop timeout (ms). MUST be >= the longest per-job budget (media.checks 60s). */
-const STOP_GRACE_MS = 65_000
+/**
+ * Slack added to the per-job budget when sizing the graceful-stop timeout: the budget bounds processing,
+ * not the persist round-trips that follow it.
+ */
+const STOP_GRACE_MARGIN_MS = 5_000
+
+/**
+ * How many times a media.checks handler can pay the per-job budget in one run.
+ *
+ * MEDIA_JOB_TIMEOUT_MS is applied PER PHASE, not per job: jobs/media-checks.ts wraps the download in one
+ * withJobTimeout and processMedia in a SECOND one, so a job that stalls in both phases runs for ~2x the
+ * budget before it even reaches the persist writes. Sizing the graceful stop at 1x therefore abandoned an
+ * in-flight job that was still inside its own budget (the asset left `validating` until a sweep reconciles
+ * it). Deriving 2x + margin here keeps the two consistent without collapsing the phases into one shared
+ * budget, which would make a slow download eat the processing budget.
+ */
+const STOP_GRACE_PHASES = 2
+
+/**
+ * The graceful-stop timeout for a given per-job budget: every phase's budget plus the persist margin.
+ * Exported because it is the number the CONTAINER's SIGKILL grace must exceed (civfix-infra compose
+ * `stop_grace_period`) - see stop().
+ */
+export function stopGraceMsFor(jobTimeoutMs: number): number {
+  return STOP_GRACE_PHASES * jobTimeoutMs + STOP_GRACE_MARGIN_MS
+}
 
 /** Real pg-boss-backed implementation of the worker Jobs handle. */
 export class PgBossWorkerJobs implements WorkerJobs {
   private readonly connectionString: string
+  /** Graceful-stop timeout (ms), DERIVED from the per-job budget rather than a constant. See stop(). */
+  private readonly stopGraceMs: number
   private boss: PgBoss | undefined
 
-  constructor(connectionString: string) {
+  constructor(connectionString: string, jobTimeoutMs: number = loadLimits().jobTimeoutMs) {
     this.connectionString = connectionString
+    this.stopGraceMs = stopGraceMsFor(jobTimeoutMs)
   }
 
   async start(): Promise<void> {
@@ -127,11 +163,17 @@ export class PgBossWorkerJobs implements WorkerJobs {
   async stop(): Promise<void> {
     if (!this.boss) return
     // Graceful: let in-flight jobs finish, then close. wait:true resolves after fully stopped. The
-    // explicit timeout must be >= the longest per-job budget (media.checks has a 60s MEDIA_JOB_TIMEOUT_MS
-    // wall-clock): pg-boss's 30s graceful default would abandon an in-flight media job on SIGTERM (the
-    // asset stuck `validating` until a sweep reconciles), so we raise it to 65s (the container SIGKILL
-    // grace must allow for this).
-    await this.boss.stop({ graceful: true, wait: true, timeout: STOP_GRACE_MS })
+    // explicit timeout must EXCEED the longest per-job budget (media.checks' MEDIA_JOB_TIMEOUT_MS
+    // wall-clock, charged ONCE PER PHASE - see stopGraceMsFor): pg-boss's 30s graceful default would
+    // abandon an in-flight media job on SIGTERM (the asset stuck `validating` until a sweep reconciles).
+    // That budget is ENV-TUNABLE, so the timeout is derived from it at construction instead of being a
+    // constant an operator can silently outgrow by raising MEDIA_JOB_TIMEOUT_MS.
+    //
+    // OPERATOR REQUIREMENT (different repo): the media-worker container's `stop_grace_period` in the
+    // civfix-infra compose file must EXCEED this value, or the runtime SIGKILLs the process mid-job and the
+    // derivation buys nothing. At the default budget that is 125s, so the compose needs >= ~150s (Docker's
+    // default is 10s). Raising MEDIA_JOB_TIMEOUT_MS raises this requirement with it.
+    await this.boss.stop({ graceful: true, wait: true, timeout: this.stopGraceMs })
     this.boss = undefined
   }
 
@@ -187,35 +229,54 @@ export class PgBossWorkerJobs implements WorkerJobs {
     if (settings?.pollingIntervalSeconds !== undefined) {
       options.pollingIntervalSeconds = settings.pollingIntervalSeconds
     }
-    await this.requireBoss().work(name, options, async (jobs: PgBoss.Job[]) => {
-      // pg-boss v10 delivers a BATCH array and fails the WHOLE batch (re-delivering every sibling) if this
-      // callback throws. The media.checks handler DELIBERATELY re-throws MediaInfraError to signal a retry,
-      // so a Promise.all would let one infra-failing job re-process every clean sibling. Use allSettled and
-      // re-throw ONLY if a settled rejection is infra: a clean sibling is never re-delivered for another
-      // job's transient storage/DB blip, while a real infra failure still triggers the bounded retry. The
-      // never-throw-on-untrusted-input invariant means only MediaInfraError ever rejects here.
-      const results = await Promise.allSettled(jobs.map((j) => handler({ id: j.id, data: j.data })))
-      const infra = results.find(
-        (r): r is PromiseRejectedResult =>
-          r.status === "rejected" && r.reason instanceof MediaInfraError,
+    const boss = this.requireBoss()
+    await boss.work(name, options, async (jobs: PgBoss.Job[]) => {
+      // pg-boss v10 delivers a BATCH array and treats the callback's outcome as a verdict on the WHOLE
+      // batch: it completes every id when the callback resolves and FAILS every id when it throws
+      // (manager.js onFetch). Both are wrong for us. The media.checks handler deliberately throws
+      // MediaInfraError to request a retry, so throwing out of here would re-deliver every clean sibling
+      // (burning its retryLimit and re-downloading/re-decoding/re-encoding bytes that already succeeded,
+      // which for a JPEG also means a second lossy pass; the abuse_flags rows themselves are safe, since
+      // drizzle/0056_abuse_flags_worker_open_unique.sql plus insertAbuseFlag's ON CONFLICT DO NOTHING keep
+      // one OPEN worker flag per subject+reason); resolving instead would mark the failed
+      // job COMPLETE and lose it. So each job is completed/failed INDIVIDUALLY by id and the callback
+      // resolves, leaving pg-boss's batch-level complete a no-op (completeJobs only matches state
+      // 'active', and a failed job has already left it).
+      //
+      // Any throw - not just MediaInfraError - fails that one job and gets the queue's bounded retry: an
+      // unexpected error is a bug, and silently completing the job would hide it AND wedge the asset.
+      const settled = await Promise.allSettled(
+        jobs.map(async (j) => {
+          try {
+            await handler({ id: j.id, data: j.data })
+          } catch (err) {
+            await boss.fail(name, j.id, toFailureOutput(err))
+            return
+          }
+          await boss.complete(name, j.id)
+        }),
       )
-      if (infra) throw infra.reason
+      // A rejection here is the complete/fail WRITE failing (DB blip), not the handler: rethrow so
+      // pg-boss's batch-level fail retries the batch rather than losing the outcome silently. Jobs
+      // already marked complete are unaffected (failJobsById only matches state < 'completed').
+      const broken = settled.find((r): r is PromiseRejectedResult => r.status === "rejected")
+      if (broken) throw broken.reason instanceof Error ? broken.reason : new Error(String(broken.reason))
     })
   }
 
   async complete(jobId: string): Promise<void> {
-    // The shared Jobs.complete is name-agnostic; pg-boss v10 needs the queue name. The worker's handlers
-    // complete implicitly by resolving, so this is never called on the worker. Log if it ever is (a
-    // silent no-op would mask a misuse) rather than guessing a queue name.
-    console.warn("PgBossWorkerJobs.complete is unsupported on the worker (handlers complete by resolving)", {
+    // The shared Jobs.complete is name-agnostic; pg-boss v10 needs the queue name. workWithSettings
+    // completes each delivered job itself (where the queue name IS known), so nothing on the worker calls
+    // this. Log if it ever is (a silent no-op would mask a misuse) rather than guessing a queue name.
+    console.warn("PgBossWorkerJobs.complete is unsupported on the worker (the work loop completes jobs)", {
       jobId,
     })
     return Promise.resolve()
   }
 
   async fail(jobId: string, err?: unknown): Promise<void> {
-    // Likewise unsupported: a silent no-op would discard both the job AND its error. Log so the misuse is
-    // diagnosable; the worker never calls this (handlers signal failure by throwing).
+    // Likewise unsupported for want of a queue name: a silent no-op would discard both the job AND its
+    // error. Handlers signal failure by throwing; the work loop fails that job by id.
     console.warn("PgBossWorkerJobs.fail is unsupported on the worker (throw to fail a job instead)", {
       jobId,
       err: err === undefined ? undefined : String(err),
@@ -251,7 +312,19 @@ class FakeWorkerJobs extends FakeJobs implements WorkerJobs {
 
 /** Build the Jobs seam for the worker, selecting fake vs real per USE_FAKE_JOBS. */
 export function buildJobs(source: NodeJS.ProcessEnv = process.env): JobsHandle {
-  if (useFakeJobs(source)) {
+  const fakeJobs = useFakeJobs(source)
+  // PRODUCTION GUARD (mirrors buildSeams' USE_FAKE_STORAGE guard): FakeJobs consumes NOTHING from
+  // pg-boss, so a worker booted with it in production starts cleanly, reports healthy, and every uploaded
+  // media stays `validating` forever with no error anywhere - the silent no-op the storage guard exists
+  // to prevent, in the one seam that makes the whole process pointless.
+  assertRealSeamInProd(
+    source,
+    "USE_FAKE_JOBS",
+    fakeJobs,
+    "FakeJobs consumes nothing from pg-boss, so every uploaded media would stay 'validating' forever. " +
+      "Provide DATABASE_URL and leave USE_FAKE_JOBS unset.",
+  )
+  if (fakeJobs) {
     const jobs = new FakeWorkerJobs()
     return { jobs, start: () => jobs.start(), stop: () => jobs.stop() }
   }
@@ -259,6 +332,6 @@ export function buildJobs(source: NodeJS.ProcessEnv = process.env): JobsHandle {
   if (!connectionString) {
     throw new Error("media-worker: DATABASE_URL is required when USE_FAKE_JOBS is off")
   }
-  const real = new PgBossWorkerJobs(connectionString)
+  const real = new PgBossWorkerJobs(connectionString, loadLimits(source).jobTimeoutMs)
   return { jobs: real, start: () => real.start(), stop: () => real.stop() }
 }

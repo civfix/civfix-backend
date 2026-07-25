@@ -15,11 +15,39 @@ import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report
 export const MAX_PACKET_ATTACHMENTS = 10
 export const MAX_PACKET_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
-export function attachmentFilename(r2Key: string, index: number): string {
+/** File extension per MIME type media intake accepts; the packet's last resort is .jpg. */
+const ATTACHMENT_EXTENSIONS: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+}
+
+const EXTENSION_FALLBACK = ".jpg"
+
+/** Whether a filename already ends in something a mail client will read as an extension. */
+function hasExtension(name: string): boolean {
+  return /\.[A-Za-z0-9]{2,5}$/.test(name)
+}
+
+/**
+ * The filename to label a routed packet attachment with.
+ *
+ * The r2 key carries NO extension (media intake mints opaque keys), so the derived name used to reach the
+ * city's inbox extension-less — which is precisely when a mail client falls back to "unknown attachment"
+ * and refuses to preview the photo the packet exists to deliver. `contentType` is the already-resolved MIME
+ * (admin-report-service.ts:attachmentContentType sniffs it from the bytes, since no MIME is stored), so the
+ * extension and the Content-Type header can never disagree. A key tail that already carries an extension is
+ * left alone.
+ */
+export function attachmentFilename(r2Key: string, index: number, contentType?: string): string {
+  const ext =
+    ATTACHMENT_EXTENSIONS[(contentType ?? "").trim().toLowerCase()] ?? EXTENSION_FALLBACK
   const tail = r2Key.split("/").pop() ?? ""
   const cleaned = tail.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
-  if (cleaned.length > 0) return cleaned.slice(0, 120)
-  return `photo-${index + 1}.jpg`
+  if (cleaned.length === 0) return `photo-${index + 1}${ext}`
+  if (hasExtension(cleaned)) return cleaned.slice(0, 120)
+  // Truncate the BASE so the extension always survives the 120-char cap.
+  return `${cleaned.slice(0, 120 - ext.length)}${ext}`
 }
 
 export interface ReportPacket {

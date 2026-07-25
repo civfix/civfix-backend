@@ -1,8 +1,9 @@
 
-import type { Sql } from "../../db/client.js"
+import type { Queryable, Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { PREVIEW_SOURCE_CHARS } from "./mail-preview.js"
 import { writeAudit } from "./audit.js"
-import { likeContains } from "./like.js"
+import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import {
   anchorOf,
   mintThreadToken,
@@ -50,56 +51,109 @@ export { buildMailStats } from "./mail-stats.js"
 
 const MAIL_THREAD_MESSAGE_CAP = 500
 
+
+/** The mail_threads column list every thread read selects, optionally qualified by a table `alias`. */
+function threadColumns(sql: Queryable, alias?: string): SqlFragment {
+  const p = alias === undefined ? sql`` : sql`${sql(alias)}.`
+  return sql`
+    ${p}id, ${p}thread_token, ${p}jurisdiction_geoid, ${p}report_id, ${p}cleanup_id, ${p}org,
+    ${p}subject, ${p}status, ${p}unread, ${p}last_message_at, ${p}created_at
+  `
+}
+
+/** The full mail_threads insert tuple (every upsert writes all of it; only the conflict target differs). */
+interface ThreadInsertValues {
+  threadToken: string
+  jurisdictionGeoid: string | null
+  reportId: string | null
+  cleanupId: string | null
+  org: string | null
+  subject: string | null
+  status: MailStatus
+  unread: boolean
+}
+
+function threadValues(threadToken: string, init: ThreadInit): ThreadInsertValues {
+  return {
+    threadToken,
+    jurisdictionGeoid: init.jurisdictionGeoid ?? null,
+    reportId: init.reportId ?? null,
+    cleanupId: init.cleanupId ?? null,
+    org: init.org ?? null,
+    subject: init.subject ?? null,
+    status: init.status ?? "sent",
+    unread: init.unread ?? false,
+  }
+}
+
+/**
+ * The find-or-create shape all four thread upserts share: INSERT ... ON CONFLICT DO NOTHING RETURNING,
+ * then re-SELECT the row the conflict kept.
+ *
+ * INVARIANT: `selectWhere` must match exactly the row `onConflict`'s target matched. If the two disagree
+ * the fallback SELECT can miss (the "row vanished" throw) or, worse, return a different thread.
+ */
+async function insertOrSelectThread(
+  sql: Sql,
+  values: ThreadInsertValues,
+  onConflict: SqlFragment,
+  selectWhere: SqlFragment,
+  label: string,
+): Promise<MailThreadRecord> {
+  const inserted = await sql<ThreadRowSelect[]>`
+    INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
+    VALUES (
+      ${values.threadToken},
+      ${values.jurisdictionGeoid},
+      ${values.reportId},
+      ${values.cleanupId},
+      ${values.org},
+      ${values.subject},
+      ${values.status},
+      ${values.unread}
+    )
+    ${onConflict}
+    RETURNING ${threadColumns(sql)}
+  `
+  if (inserted[0]) return toThreadRecord(inserted[0])
+  const existing = await sql<ThreadRowSelect[]>`
+    SELECT ${threadColumns(sql)}
+    FROM mail_threads
+    WHERE ${selectWhere}
+    LIMIT 1
+  `
+  const row = existing[0]
+  if (!row) throw new Error(`${label}: row vanished after conflict`)
+  return toThreadRecord(row)
+}
+
 export function makeDrizzleMailRepository(sql: Sql): MailRepository {
   return {
     async upsertThreadByToken(token: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-      const status = init.status ?? "sent"
-      const unread = init.unread ?? false
-      const inserted = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
-        VALUES (
-          ${token},
-          ${init.jurisdictionGeoid ?? null},
-          ${init.reportId ?? null},
-          ${init.cleanupId ?? null},
-          ${init.org ?? null},
-          ${init.subject ?? null},
-          ${status},
-          ${unread}
-        )
-        ON CONFLICT (thread_token) DO NOTHING
-        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-                  last_message_at, created_at
-      `
-      if (inserted[0]) return toThreadRecord(inserted[0])
-      const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-               last_message_at, created_at
-        FROM mail_threads
-        WHERE thread_token = ${token}
-        LIMIT 1
-      `
-      const row = existing[0]
-      if (!row) throw new Error("upsertThreadByToken: row vanished after conflict")
-      return toThreadRecord(row)
+      return insertOrSelectThread(
+        sql,
+        threadValues(token, init),
+        sql`ON CONFLICT (thread_token) DO NOTHING`,
+        sql`thread_token = ${token}`,
+        "upsertThreadByToken",
+      )
     },
 
     async createThread(input: CreateThreadInput): Promise<MailThreadRecord> {
-      const token = input.threadToken ?? mintThreadToken()
+      const values = threadValues(input.threadToken ?? mintThreadToken(), input)
       const rows = await sql<ThreadRowSelect[]>`
         INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
         VALUES (
-          ${token},
-          ${input.jurisdictionGeoid ?? null},
-          ${input.reportId ?? null},
-          ${input.cleanupId ?? null},
-          ${input.org ?? null},
-          ${input.subject ?? null},
-          ${input.status ?? "sent"},
-          ${input.unread ?? false}
+          ${values.threadToken},
+          ${values.jurisdictionGeoid},
+          ${values.reportId},
+          ${values.cleanupId},
+          ${values.org},
+          ${values.subject},
+          ${values.status},
+          ${values.unread}
         )
-        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-                  last_message_at, created_at
+        RETURNING ${threadColumns(sql)}
       `
       const row = rows[0]
       if (!row) throw new Error("createThread: insert returned no row")
@@ -110,62 +164,26 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       reportId: string,
       init: ThreadInit = {},
     ): Promise<MailThreadRecord> {
-      const inserted = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
-        VALUES (
-          ${mintThreadToken()},
-          ${init.jurisdictionGeoid ?? null},
-          ${reportId},
-          ${init.cleanupId ?? null},
-          ${init.org ?? null},
-          ${init.subject ?? null},
-          ${init.status ?? "sent"},
-          ${init.unread ?? false}
-        )
-        ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING
-        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-                  last_message_at, created_at
-      `
-      if (inserted[0]) return toThreadRecord(inserted[0])
-      const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-               last_message_at, created_at
-        FROM mail_threads WHERE report_id = ${reportId} LIMIT 1
-      `
-      const row = existing[0]
-      if (!row) throw new Error("findOrCreateReportThread: row vanished after conflict")
-      return toThreadRecord(row)
+      return insertOrSelectThread(
+        sql,
+        { ...threadValues(mintThreadToken(), init), reportId },
+        sql`ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING`,
+        sql`report_id = ${reportId}`,
+        "findOrCreateReportThread",
+      )
     },
 
     async findOrCreateEventThread(
       cleanupId: string,
       init: ThreadInit = {},
     ): Promise<MailThreadRecord> {
-      const inserted = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
-        VALUES (
-          ${mintThreadToken()},
-          ${init.jurisdictionGeoid ?? null},
-          ${init.reportId ?? null},
-          ${cleanupId},
-          ${init.org ?? null},
-          ${init.subject ?? null},
-          ${init.status ?? "sent"},
-          ${init.unread ?? false}
-        )
-        ON CONFLICT (cleanup_id) WHERE cleanup_id IS NOT NULL DO NOTHING
-        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-                  last_message_at, created_at
-      `
-      if (inserted[0]) return toThreadRecord(inserted[0])
-      const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-               last_message_at, created_at
-        FROM mail_threads WHERE cleanup_id = ${cleanupId} LIMIT 1
-      `
-      const row = existing[0]
-      if (!row) throw new Error("findOrCreateEventThread: row vanished after conflict")
-      return toThreadRecord(row)
+      return insertOrSelectThread(
+        sql,
+        { ...threadValues(mintThreadToken(), init), cleanupId },
+        sql`ON CONFLICT (cleanup_id) WHERE cleanup_id IS NOT NULL DO NOTHING`,
+        sql`cleanup_id = ${cleanupId}`,
+        "findOrCreateEventThread",
+      )
     },
 
     async priorOutboundMessageIds(threadId: string): Promise<string[]> {
@@ -181,39 +199,25 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-      const inserted = await sql<ThreadRowSelect[]>`
-        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread)
-        VALUES (
-          ${mintThreadToken()},
-          ${geoid},
-          ${null},
-          ${null},
-          ${init.org ?? null},
-          ${init.subject ?? null},
-          ${init.status ?? "sent"},
-          ${init.unread ?? false}
-        )
-        ON CONFLICT (jurisdiction_geoid) WHERE report_id IS NULL AND cleanup_id IS NULL AND jurisdiction_geoid IS NOT NULL DO NOTHING
-        RETURNING id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-                  last_message_at, created_at
-      `
-      if (inserted[0]) return toThreadRecord(inserted[0])
-      const existing = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-               last_message_at, created_at
-        FROM mail_threads
-        WHERE jurisdiction_geoid = ${geoid} AND report_id IS NULL AND cleanup_id IS NULL
-        LIMIT 1
-      `
-      const row = existing[0]
-      if (!row) throw new Error("upsertThreadByGeoid: row vanished after conflict")
-      return toThreadRecord(row)
+      // A digest thread is the geoid's thread that belongs to NO report and NO event, so both ids are
+      // forced null here and the fallback SELECT repeats the partial index's predicate.
+      return insertOrSelectThread(
+        sql,
+        {
+          ...threadValues(mintThreadToken(), init),
+          jurisdictionGeoid: geoid,
+          reportId: null,
+          cleanupId: null,
+        },
+        sql`ON CONFLICT (jurisdiction_geoid) WHERE report_id IS NULL AND cleanup_id IS NULL AND jurisdiction_geoid IS NOT NULL DO NOTHING`,
+        sql`jurisdiction_geoid = ${geoid} AND report_id IS NULL AND cleanup_id IS NULL`,
+        "upsertThreadByGeoid",
+      )
     },
 
     async findThreadByToken(token: string): Promise<MailThreadRecord | null> {
       const rows = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-               last_message_at, created_at
+        SELECT ${threadColumns(sql)}
         FROM mail_threads
         WHERE thread_token = ${token}
         LIMIT 1
@@ -227,8 +231,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const ids = messageIds.filter((m) => typeof m === "string" && m.length > 0)
       if (ids.length === 0) return null
       const rows = await sql<ThreadRowSelect[]>`
-        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.cleanup_id, t.org, t.subject, t.status,
-               t.unread, t.last_message_at, t.created_at
+        SELECT ${threadColumns(sql, "t")}
         FROM mail_threads t
         JOIN mail_messages m ON m.thread_id = t.id
         WHERE m.direction = 'out' AND m.message_id = ANY(${ids}::text[])
@@ -301,10 +304,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const dirFilter = input.dir !== undefined ? sql`AND lm.direction = ${input.dir}` : sql``
       const qFilter =
         input.q !== undefined && input.q.trim().length > 0
-          ? (() => {
-              const like = likeContains(input.q.trim())
-              return sql`AND (t.org ILIKE ${like} ESCAPE '\\' OR t.subject ILIKE ${like} ESCAPE '\\' OR lm.from_addr ILIKE ${like} ESCAPE '\\')`
-            })()
+          ? sql`AND ${ilikeAnyOf(sql, [sql`t.org`, sql`t.subject`, sql`lm.from_addr`], input.q.trim())}`
           : sql``
       const rows = await sql<
         (ThreadRowSelect & {
@@ -314,13 +314,14 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           lm_body: string | null
         })[]
       >`
-        SELECT t.id, t.thread_token, t.jurisdiction_geoid, t.report_id, t.cleanup_id, t.org, t.subject, t.status,
-               t.unread, t.last_message_at, t.created_at,
+        SELECT ${threadColumns(sql, "t")},
                lm.direction AS lm_direction, lm.from_addr AS lm_from_addr, lm.to_addr AS lm_to_addr,
                lm.body AS lm_body
         FROM mail_threads t
         LEFT JOIN LATERAL (
-          SELECT direction, from_addr, to_addr, body
+          -- Only a preview's worth of the latest body: a municipal reply can be tens of KB and this is a
+          -- page of them (toThreadListItem truncates to the shared preview length anyway).
+          SELECT direction, from_addr, to_addr, left(body, ${PREVIEW_SOURCE_CHARS}) AS body
           FROM mail_messages m
           WHERE m.thread_id = t.id
           ORDER BY m.created_at DESC, m.id DESC
@@ -364,8 +365,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async getThread(id: string): Promise<MailThreadDTO | null> {
       const threads = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-               last_message_at, created_at
+        SELECT ${threadColumns(sql)}
         FROM mail_threads
         WHERE id = ${id}
         LIMIT 1
@@ -390,13 +390,24 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async getThreadRecord(id: string): Promise<MailThreadRecord | null> {
       const rows = await sql<ThreadRowSelect[]>`
-        SELECT id, thread_token, jurisdiction_geoid, report_id, cleanup_id, org, subject, status, unread,
-               last_message_at, created_at
+        SELECT ${threadColumns(sql)}
         FROM mail_threads
         WHERE id = ${id}
         LIMIT 1
       `
       return rows[0] ? toThreadRecord(rows[0]) : null
+    },
+
+    async outboundRecipients(threadId: string): Promise<string[]> {
+      const rows = await sql<{ to_addr: string }[]>`
+        SELECT DISTINCT to_addr
+        FROM mail_messages
+        WHERE thread_id = ${threadId}
+          AND direction = 'out'
+          AND to_addr IS NOT NULL
+          AND to_addr <> ''
+      `
+      return rows.map((r) => r.to_addr)
     },
 
     async getLastOutboundRecipient(threadId: string): Promise<string | null> {
@@ -495,14 +506,27 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async setOutreachState(geoid: string, patch: OutreachStatePatch): Promise<OutreachStateRecord> {
+      // OMITTED (undefined) keeps the stored value; an explicit null CLEARS it (a throttle reset, e.g. the
+      // outreach service rolling back a claim whose send failed). COALESCE cannot tell those apart — it
+      // treated a clear as "keep", so the reset silently no-op'd against Postgres while passing against the
+      // in-memory repo, which has always distinguished them. The provided-flags mirror the
+      // jurisdiction forward-template CASEs.
+      const setLastOutreachAt = patch.lastOutreachAt !== undefined
       const lastOutreachAt = patch.lastOutreachAt ?? null
-      const suppressed = patch.suppressed ?? null
+      const setSuppressed = patch.suppressed !== undefined
+      const suppressed = patch.suppressed ?? false
       const rows = await sql<OutreachRowSelect[]>`
         INSERT INTO outreach_state (geoid, last_outreach_at, suppressed)
-        VALUES (${geoid}, ${lastOutreachAt}, COALESCE(${suppressed}, false))
+        VALUES (${geoid}, ${lastOutreachAt}, ${suppressed})
         ON CONFLICT (geoid) DO UPDATE SET
-          last_outreach_at = COALESCE(${lastOutreachAt}, outreach_state.last_outreach_at),
-          suppressed = COALESCE(${suppressed}, outreach_state.suppressed)
+          last_outreach_at = CASE
+            WHEN ${setLastOutreachAt} THEN ${lastOutreachAt}
+            ELSE outreach_state.last_outreach_at
+          END,
+          suppressed = CASE
+            WHEN ${setSuppressed} THEN ${suppressed}
+            ELSE outreach_state.suppressed
+          END
         RETURNING geoid, last_outreach_at, suppressed
       `
       const row = rows[0]

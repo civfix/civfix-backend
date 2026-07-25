@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleUserActivityRepository } from "../../src/services/user-activity-repository.drizzle.js"
 
@@ -46,6 +46,11 @@ async function insertCleanup(h: PgHarness, organizerId: string, title: string): 
 }
 
 describe.skipIf(!pg)("user activity repository (verb-phrased titles + chat excluded)", () => {
+  // Release this file's pools + drop its database (the shared container itself is globalSetup's).
+  afterAll(async () => {
+    await pg?.teardown()
+  })
+
   it("renders 'Reported/Hosted/Joined/Followed X' titles and omits group-chat posts", async () => {
     const h = pg!
     const subject = await insertUser(h, "Subject")

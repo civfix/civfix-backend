@@ -27,11 +27,19 @@ export function loadChatMentionsFor(
   return loadMentionsFor(tag, CHAT_MENTIONS, messageIds)
 }
 
-/** Replace a chat/dm message's mention set (caller dedupes + self-excludes the ids). */
-export function recordChatMentions(
+/**
+ * Replace a chat/dm message's mention set (caller dedupes + self-excludes the ids). The replace is
+ * delete-then-insert, so it runs in ONE transaction as recordFor documents: handed the bare pool tag it
+ * was two independent statements, and a crash or a concurrent edit landing between them could leave the
+ * message with no mentions at all (or a merged set from both writers).
+ */
+export async function recordChatMentions(
   sql: Sql,
   messageId: string,
   mentionedUserIds: string[],
 ): Promise<void> {
-  return makeMentionRepo(sql, CHAT_MENTIONS).recordFor(sql, messageId, mentionedUserIds)
+  const repo = makeMentionRepo(sql, CHAT_MENTIONS)
+  await sql.begin(async (tx) => {
+    await repo.recordFor(tx, messageId, mentionedUserIds)
+  })
 }

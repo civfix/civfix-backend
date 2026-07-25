@@ -9,18 +9,20 @@
  *
  * The admin users endpoint got this right (`sessions.revokeAll` after the write); the gov-claims approve
  * path did not, so a PRIOR OPERATOR moved to `gov_admin` kept full operator authority in every live session
- * indefinitely. Two call sites, two behaviours, one of them wrong. The gov-claims path now calls this
- * helper, so the ordering below cannot be forgotten there again.
+ * indefinitely. Two call sites, two behaviours, one of them wrong.
  *
- * NOT AN INVARIANT — read this before trusting the paragraph above. This is NOT yet the only role-write
- * path in the admin domain. `services/admin/admin-user-service.ts` (setRole) still does the write and the
- * revoke INLINE: `repo.applyRole(...)` followed by `sessions.revokeAll(...)`. It behaves identically today,
- * but it is a second implementation of the same rule and nothing enforces that the two stay in step. The
- * reason it was not folded in is small and concrete: `applyRole` returns a "user existed" boolean that the
- * caller turns into a 404, and this helper's `write` seam returns `void`, so routing it through here means
- * wrapping the call in a `write` closure that throws `AppError.notFound` itself — a ~10-line change, not a
- * one-liner. Until that lands, a reviewer checking "does every role change revoke sessions?" must read
- * BOTH files, not just this one.
+ * BOTH CONSOLE call sites go through here — gov-claims-service.approve and admin-user-service.setRole — so
+ * "does an operator-driven role change revoke sessions?" is answered by this file alone. A `write` seam that
+ * returns void is what makes that possible: setRole's repo call reports "user existed" as a boolean, and its
+ * closure raises the 404 itself rather than teaching this helper about HTTP.
+ *
+ * ONE role write deliberately does NOT come through here: `provisionOperator` in routes/admin/auth.routes.ts
+ * promotes the signing-in operator to `operator` during the Cloudflare-Access exchange, via the raw
+ * `UserStore.setRole`. Revoking there would either kill the session being minted or log the operator out of
+ * their own sign-in. It is also the only role write that cannot leak authority: it strictly ADDS a role, so
+ * a stale warm session carrying the old (lesser) role under-privileges rather than over-privileges its
+ * holder — the exact inverse of the demotion hazard above. Any NEW role writer that can lower a role, or
+ * that runs outside a login exchange, belongs here.
  *
  * Ordering: write first, then revoke. The reverse would leave a window in which the old sessions are gone
  * but the old role is still live (a re-login inside that window re-mints the OLD role). Writing first means
@@ -42,9 +44,8 @@ export interface ApplyRoleChangeDeps {
 }
 
 /**
- * Change `userId`'s role and revoke all of their sessions. Every NEW role write in the admin domain must
- * go through here (admin-user-service.setRole is the one pre-existing exception — see the module header).
- * Returns the number of sessions revoked (0 when the user had none).
+ * Change `userId`'s role and revoke all of their sessions. EVERY role write in the admin domain goes through
+ * here. Returns the number of sessions revoked (0 when the user had none).
  */
 export async function applyRoleChange(
   deps: ApplyRoleChangeDeps,

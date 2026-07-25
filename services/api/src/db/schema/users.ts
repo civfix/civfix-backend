@@ -1,6 +1,6 @@
 
 import { sql } from "drizzle-orm"
-import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import { citext, type ROLE_VALUES } from "./types.js"
 import type { SocialLinks } from "@civfix/shared"
 
@@ -25,6 +25,12 @@ export const users = pgTable(
     profileComplete: boolean("profile_complete").notNull().default(false),
     allowDirectMessages: boolean("allow_direct_messages").notNull().default(true),
     socialLinks: jsonb("social_links").$type<SocialLinks | null>(),
+    // Denormalized follow-graph totals (0059_users_follow_counters.sql). Maintained in the same
+    // transaction as the follows_people row by addFollow/removeFollow (social-repository.drizzle.ts) —
+    // there is no trigger, so a direct edge write must bump these too. Edges to/from soft-deleted users
+    // are INCLUDED, matching the correlated count(*) aggregates these replaced.
+    followerCount: integer("follower_count").notNull().default(0),
+    followingCount: integer("following_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },

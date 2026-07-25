@@ -13,11 +13,12 @@
 import type { HomeMapResponse, HomeSummaryResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { makeHomeService, type HomeRepository, type HomeService } from "../../services/admin/home-service.js"
+import { makeHomeService, type HomeRepository } from "../../services/admin/home-service.js"
 import { makeDrizzleHomeRepository } from "../../services/admin/home-repository.drizzle.js"
 import { makeDrizzleAnalyticsRepository } from "../../services/admin/analytics-repository.drizzle.js"
 import type { AnalyticsRepository } from "../../services/admin/analytics-service.js"
 import { route } from "../../versioning/route.js"
+import { overridableService, spreadNow } from "./_route-utils.js"
 
 /**
  * Optional injected home-service dependencies (tests). When present the routes build the service from
@@ -44,21 +45,23 @@ export async function registerAdminHomeRoutes(
     app.log.warn({ err, section }, "admin home summary section failed")
 
   /** Build the home service from injected overrides (tests) or the container (production). */
-  function service(): HomeService {
-    const overrides = app.homeOverrides
-    if (overrides) {
-      return makeHomeService({
+  const service = overridableService(
+    app,
+    "homeOverrides",
+    (overrides) =>
+      makeHomeService({
         repo: overrides.repo,
         analytics: overrides.analytics,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+        ...spreadNow(overrides),
         onSectionError,
-      })
-    }
-    const sql = container.getDb().sql
-    const repo: HomeRepository = makeDrizzleHomeRepository(sql)
-    const analytics: AnalyticsRepository = makeDrizzleAnalyticsRepository(sql)
-    return makeHomeService({ repo, analytics, onSectionError })
-  }
+      }),
+    () => {
+      const sql = container.getDb().sql
+      const repo: HomeRepository = makeDrizzleHomeRepository(sql)
+      const analytics: AnalyticsRepository = makeDrizzleAnalyticsRepository(sql)
+      return makeHomeService({ repo, analytics, onSectionError })
+    },
+  )
 
   route(app, "adminHomeSummary", async (_request, reply) => {
     const payload: HomeSummaryResponse = await service().summary()

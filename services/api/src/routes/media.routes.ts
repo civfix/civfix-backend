@@ -71,11 +71,7 @@ import {
   makeDrizzleMediaViewAuthorizer,
   type MediaViewAuthorizer,
 } from "../services/media-authorization.js"
-import {
-  MEDIA_UPLOAD_BYTES_PER_DAY,
-  RedisByteMeter,
-  type ByteMeter,
-} from "../services/media-byte-quota.js"
+import { MEDIA_UPLOAD_BYTES_PER_DAY, type ByteMeter } from "../services/media-byte-quota.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
@@ -107,10 +103,6 @@ export async function registerMediaRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  // Lazily built once and reused: constructing these must not open a Redis/Postgres connection at mount
-  // time (the plugin is registered on every boot, including no-infra ones).
-  let redisMeter: ByteMeter | undefined
-
   function byteQuota(): MediaByteQuota | undefined {
     const meter = app.mediaByteMeter ?? redisFallbackMeter()
     if (!meter) return undefined
@@ -123,9 +115,12 @@ export async function registerMediaRoutes(
   function redisFallbackMeter(): ByteMeter | undefined {
     // No Redis configured (no-infra boot) -> no byte quota; the per-route + global rate limits still
     // apply. Production always has REDIS_URL, so the quota is always active there.
+    //
+    // container.getByteMeter() rather than a route-local RedisByteMeter: the container's wrapper resolves
+    // ONE RedisByteMeter per process on first add (and drops it in close(), so a post-close reuse cannot
+    // charge into a quit connection). Constructing it opens nothing, which is what mount time requires.
     if (!container.env.REDIS_URL) return undefined
-    if (!redisMeter) redisMeter = new RedisByteMeter(container.getRedis())
-    return redisMeter
+    return container.getByteMeter()
   }
 
   function service(): MediaIntakeService {

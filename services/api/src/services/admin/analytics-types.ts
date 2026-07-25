@@ -1,3 +1,4 @@
+import { ADMIN_CATEGORIES } from "./category-counts.js"
 import type {
   AnalyticsByCategoryResponse,
   AnalyticsCoverageResponse,
@@ -13,18 +14,12 @@ import type {
   ReportCategory,
 } from "@civfix/shared"
 
-// The 6 canonical report categories in canonical order. Kept backend-local rather than imported from
-// @civfix/shared: analytics owns its own axis ordering (the dashboard renders a fixed 7-bar series and a
-// category with no reports must still render a 0 bar). Mirrors REPORT_CATEGORY_VALUES.
-export const ANALYTICS_CATEGORIES: readonly ReportCategory[] = [
-  "trash",
-  "recycling",
-  "graffiti",
-  "hazard",
-  "encampment",
-  "water",
-  "other",
-] as const
+// The canonical report categories in canonical order — the dashboard's fixed bar series, so a category
+// with no reports still renders a 0 bar. ONE derivation for the whole admin domain lives in
+// category-counts.ts (ADMIN_CATEGORIES, from the contract enum); this alias keeps the analytics shaping
+// reading in domain terms. A hand-listed copy here drifted out of sight of REPORT_CATEGORY_VALUES, and a
+// category missing from this array is silently missing from every category chart.
+export const ANALYTICS_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
 export const PINS_BY_WEEK_WEEKS = 8
 export const EVENTS_BY_MONTH_MONTHS = 8

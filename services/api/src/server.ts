@@ -78,7 +78,11 @@ const OVERRIDE_KEYS = [
 ] as const satisfies readonly (keyof BuildServerOptions)[]
 
 export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
-  const env = opts.env ?? loadEnv()
+  // An injected container carries its OWN env, and that env keys the CSRF HMAC (container.csrf) — while
+  // this `env` keys cookie signing. Prefer the container's when no explicit env is passed, so the two can
+  // never be built from different sources (a freshly loadEnv()'d key here + the container's key there
+  // would sign cookies with one secret and CSRF tokens with another). An explicit opts.env still wins.
+  const env = opts.env ?? opts.container?.env ?? loadEnv()
   const container = opts.container ?? buildContainer(env)
 
   const app = Fastify({
@@ -138,7 +142,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
 
   await registerVersionGate(app)
 
-  const authServices = resolveAuthServices(opts, env, container)
+  const authServices = resolveAuthServices(opts, env, container, app.log)
   if (authServices) {
     app.decorate("authServices", authServices)
   } else if (env.NODE_ENV === "production") {
@@ -172,9 +176,15 @@ function resolveAuthServices(
   opts: BuildServerOptions,
   env: Env,
   container: Container,
+  logger: FastifyInstance["log"],
 ): AuthServices | undefined {
   if (opts.authServices) return opts.authServices
-  if (env.DATABASE_URL && env.REDIS_URL) return buildAuthServicesFromContainer(container)
+  // The logger is not optional in practice: OtpService's only log line (P1-7's cooldown-release
+  // failure, which otherwise locks a user out for 60s with no code and no signal) is a no-op without
+  // it, so the production bundle must be built WITH the server's pino instance.
+  if (env.DATABASE_URL && env.REDIS_URL) {
+    return buildAuthServicesFromContainer(container, { logger })
+  }
   return undefined
 }
 

@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { pageInMemoryById } from "./pagination.js"
 import type {
   AdminUserRecord,
   AdminUserRepository,
@@ -162,6 +162,12 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       createdAt: r.joinedAt ?? new Date(0),
       id: r.id,
     }))
+  }
+
+  async userExists(id: string): Promise<boolean> {
+    // Existence only, matching getUser's reach: a soft-deleted account still EXISTS for the console (the
+    // list/detail render it with deletedAt set), so its sub-activity tabs must keep resolving.
+    return this.users.has(id)
   }
 
   async getUser(id: string): Promise<AdminUserRecord | null> {
@@ -329,33 +335,4 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     })
     return true
   }
-}
-
-/**
- * Page a PRE-SORTED in-memory list by the shared "<iso>|<id>" cursor (find-anchor-by-id then a
- * one-extra-row probe). `anchorOf` returns the {createdAt,id} the cursor encodes — encoding the row's
- * REAL timestamp (not new Date(0)) so the opaque cursor string matches the Drizzle impl for the same
- * page. The id alone drives the slice position (the cursor's createdAt is informational here).
- */
-function pageInMemoryById<T>(
-  rows: T[],
-  cursor: string | null | undefined,
-  limit: number,
-  anchorOf: (row: T) => { createdAt: Date; id: string },
-): { records: T[]; nextCursor: string | null } {
-  const lim = clampLimit(limit)
-  const anchor = decodeCursor(cursor)
-  let start = 0
-  if (anchor) {
-    const idx = rows.findIndex((r) => anchorOf(r).id === anchor.id)
-    start = idx >= 0 ? idx + 1 : rows.length
-  }
-  const slice = rows.slice(start, start + lim + 1)
-  if (slice.length <= lim) {
-    return { records: slice, nextCursor: null }
-  }
-  const records = slice.slice(0, lim)
-  const last = records[records.length - 1]
-  const nextCursor = last ? encodeCursor(anchorOf(last)) : null
-  return { records, nextCursor }
 }

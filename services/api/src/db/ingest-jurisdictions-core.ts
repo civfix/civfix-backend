@@ -133,25 +133,55 @@ export function normalizeFeatures(
  * Upsert one normalized row. Refreshes name/layer/priority/geom/population by geoid; PRESERVES the
  * routing columns (contact_emails / report_form_url / notes / flagged_at) so re-ingesting authoritative
  * boundaries never wipes operator-mapped contacts. Accepts `Queryable` (Sql | TransactionSql).
+ *
+ * CODE (D2, #56): a fresh row is stamped from `jurisdiction_code_seq` — the SAME single sequence 0030's
+ * ordinal backfill and the lazy Census upsert (jurisdiction-service) draw from — so it gets a compact
+ * JURCODE for reference codes. Without it every jurisdiction a later boundary refresh ADDS (notably a
+ * PAD-US version bump, which reshuffles all OBJECTID geoids) would carry code NULL and all of its reports
+ * would mint codes in the shared '<TYPE>-0-NNNNNN' unknown bucket. On conflict the code is
+ * COALESCE-preserved: an established JURCODE is immutable identity, while a row that predates this stamping
+ * finally gets one. `nextval` is consumed on the conflict path too (VALUES is evaluated before the conflict
+ * is detected), so the sequence is gappy — expected and harmless.
+ *
+ * PLACEHOLDER CONTACTS: contacts are preserved EXCEPT when EVERY stored address is an example.*
+ * placeholder. The dev seed (seed-fixtures.ts) inserts the REAL FIPS geoids 06 / 06037 / 0644000 with
+ * example.gov contacts, and on a fresh box it runs as a compose init service BEFORE the first boundary
+ * refresh — so this upsert would give those rows real TIGER geometry while pinning California / Los Angeles
+ * to unroutable dev contacts forever (seed.ts's PADUS-guard only prevents the reverse order). Clearing them
+ * restores needsDiscovery=true so the outreach discovery pipeline maps real routing, and it heals boxes
+ * already in that state. A mixed array (at least one real address) is left untouched, and example.* is
+ * reserved for documentation (RFC 2606), so no operator-mapped contact can match.
  */
 export async function upsertJurisdiction(sql: Queryable, row: IngestRow): Promise<void> {
   const geojson = JSON.stringify(row.geometry)
   await sql`
-    INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population)
+    INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population, code)
     VALUES (
       ${row.geoid},
       ${row.name},
       ${row.layer},
       ${LAYER_RANK[row.layer]},
       ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(${geojson}), 4326)),
-      ${row.population}
+      ${row.population},
+      nextval('jurisdiction_code_seq')
     )
     ON CONFLICT (geoid) DO UPDATE SET
       name = EXCLUDED.name,
       layer = EXCLUDED.layer,
       priority = EXCLUDED.priority,
       geom = EXCLUDED.geom,
-      population = COALESCE(EXCLUDED.population, jurisdictions.population)
+      population = COALESCE(EXCLUDED.population, jurisdictions.population),
+      code = COALESCE(jurisdictions.code, EXCLUDED.code),
+      contact_emails = CASE
+        WHEN cardinality(jurisdictions.contact_emails) > 0
+          AND NOT EXISTS (
+            SELECT 1
+            FROM unnest(jurisdictions.contact_emails) AS addr
+            WHERE lower(addr) NOT LIKE '%@example.%'
+          )
+        THEN NULL
+        ELSE jurisdictions.contact_emails
+      END
   `
 }
 

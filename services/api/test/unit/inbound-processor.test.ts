@@ -55,8 +55,8 @@ function domainOf(address: string): string {
 
 /**
  * Seed the OUTBOUND message that makes `from` a recognized jurisdiction contact for this thread (M7):
- * onJurisdictionReply only fires its side effects when the reply's From domain matches an address we
- * actually mailed on the thread.
+ * onJurisdictionReply / onEventReply only fire their side effects when the reply's From domain matches
+ * an address we actually mailed on the thread.
  */
 function seedContact(c: Ctx, threadId: string, contact: string): void {
   c.mailRepo.seedMessage({ threadId, direction: "out", toAddr: contact })
@@ -291,11 +291,17 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
   })
 })
 
+/**
+ * M7: a 'city_reply' cleanup_timeline row is an OFFICIAL city answer the organizer + attendees read, so
+ * onEventReply is gated on the same sender check as onJurisdictionReply — the reply's From must be
+ * domain-aligned with an address we actually mailed on the thread. These pin both sides of that gate.
+ */
 describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () => {
-  it("writes a 'city_reply' cleanup_timeline row (actor null, full body) for an event thread", async () => {
+  it("writes a 'city_reply' cleanup_timeline row (actor null, full body) for a reply from the event's jurisdiction contact", async () => {
     const cleanupId = "cleanup-evt-1"
     const c = ctx()
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
+    seedContact(c, thread.id, "events@lacity.gov")
     const fullBody = "Yes, we can supply 20 bags and gloves; pick them up at the depot Friday morning."
     const key = `${INBOUND_PENDING_PREFIX}evt-reply.eml`
     await put(c, key, rfc822({ from: "events@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: fullBody }))
@@ -308,6 +314,73 @@ describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () =
     expect(row).toBeDefined()
     expect(row?.actorId).toBeNull()
     expect(row?.note).toBe(fullBody)
+  })
+
+  it("FILES a DMARC-passing reply with NO city_reply row when the thread has no known contact (fail closed)", async () => {
+    const cleanupId = "cleanup-evt-2"
+    const c = ctx()
+    // No outbound message on the thread ⇒ no address we can vouch for ⇒ the gate must fail closed, even
+    // for a plausible-looking .gov From.
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
+    const key = `${INBOUND_PENDING_PREFIX}evt-reply-unknown.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "events@lacity.gov",
+        to: `reply+${TOKEN}@civfix.org`,
+        body: "We can supply 20 bags and gloves.",
+      }),
+    )
+
+    // The message is still FILED on the thread (operators must see it) ...
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(1)
+    // ... but it publishes no official city answer to the event and does not flip the thread.
+    expect(c.cleanupRepo.timeline.filter((t) => t.kind === "city_reply")).toHaveLength(0)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).not.toBe("replied")
+  })
+
+  it("FILES a DMARC-passing reply with NO city_reply row when From is not the event's jurisdiction contact", async () => {
+    const cleanupId = "cleanup-evt-3"
+    const c = ctx()
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
+    seedContact(c, thread.id, "events@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}evt-reply-forged.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "attacker@evil.example",
+        to: `reply+${TOKEN}@civfix.org`,
+        body: "The city has cancelled your cleanup; meet us here instead.",
+      }),
+    )
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(1)
+    expect(c.cleanupRepo.timeline.filter((t) => t.kind === "city_reply")).toHaveLength(0)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).not.toBe("replied")
+  })
+
+  it("writes the city_reply row for a SUBDOMAIN of the event's jurisdiction contact (relaxed alignment)", async () => {
+    const cleanupId = "cleanup-evt-4"
+    const c = ctx()
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
+    seedContact(c, thread.id, "events@lacity.gov")
+    const fullBody = "Depot pickup confirmed for Friday."
+    const key = `${INBOUND_PENDING_PREFIX}evt-reply-subdomain.eml`
+    await put(
+      c,
+      key,
+      rfc822({ from: "crew@mail.lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: fullBody }),
+    )
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    const row = c.cleanupRepo.timeline.find((t) => t.cleanupId === cleanupId && t.kind === "city_reply")
+    expect(row?.note).toBe(fullBody)
+    expect(row?.actorId).toBeNull()
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
   })
 })
 

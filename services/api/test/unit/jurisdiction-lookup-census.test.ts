@@ -1,8 +1,12 @@
 import { describe, it, expect } from "vitest"
 import {
   parseCensusGeographies,
+  CachedJurisdictionLookup,
   CensusJurisdictionLookup,
   FakeJurisdictionLookup,
+  JURISDICTION_LOOKUP_CACHE_TTL_MS,
+  type JurisdictionLookup,
+  type JurisdictionLookupResult,
 } from "../../src/adapters/jurisdiction-lookup.census.js"
 
 
@@ -183,5 +187,152 @@ describe("FakeJurisdictionLookup", () => {
   it("returns the canned result when one is supplied", async () => {
     const canned = { geoid: "0644000", name: "Los Angeles", layer: "place" } as const
     await expect(new FakeJurisdictionLookup(canned).lookup(1, 2)).resolves.toEqual(canned)
+  })
+})
+
+/**
+ * The memo that keeps the anon-ok POST /map/resolve-jurisdiction from firing one outbound Census request
+ * per request. The wrapped lookup here COUNTS its calls, which is the whole assertion surface.
+ */
+describe("CachedJurisdictionLookup", () => {
+  const LA: JurisdictionLookupResult = { geoid: "0644000", name: "Los Angeles", layer: "place" }
+
+  /** A counting inner lookup: `calls` records every (lat, lng) that actually reached it. */
+  function countingLookup(
+    result: JurisdictionLookupResult | null = LA,
+  ): JurisdictionLookup & { calls: Array<[number, number]> } {
+    const calls: Array<[number, number]> = []
+    return {
+      calls,
+      lookup(lat: number, lng: number) {
+        calls.push([lat, lng])
+        return Promise.resolve(result)
+      },
+    }
+  }
+
+  it("serves a repeat lookup of the same point from the memo", async () => {
+    const inner = countingLookup()
+    const cached = new CachedJurisdictionLookup(inner)
+
+    await expect(cached.lookup(34.05, -118.25)).resolves.toEqual(LA)
+    await expect(cached.lookup(34.05, -118.25)).resolves.toEqual(LA)
+    await expect(cached.lookup(34.05, -118.25)).resolves.toEqual(LA)
+
+    expect(inner.calls).toHaveLength(1)
+  })
+
+  it("caches MISSES too (an uncached negative would leave the amplification open)", async () => {
+    const inner = countingLookup(null)
+    const cached = new CachedJurisdictionLookup(inner)
+
+    await expect(cached.lookup(40, -100)).resolves.toBeNull()
+    await expect(cached.lookup(40, -100)).resolves.toBeNull()
+
+    expect(inner.calls).toHaveLength(1)
+  })
+
+  it("passes the FULL-precision coordinate through; only the memo KEY is rounded", async () => {
+    const inner = countingLookup()
+    const cached = new CachedJurisdictionLookup(inner)
+
+    await cached.lookup(34.0512345, -118.2512345)
+    // Same 4-decimal bucket (~11 m) -> no second outbound call.
+    await cached.lookup(34.05123, -118.25124)
+
+    expect(inner.calls).toEqual([[34.0512345, -118.2512345]])
+  })
+
+  it("does not share entries across distinct points", async () => {
+    const inner = countingLookup()
+    const cached = new CachedJurisdictionLookup(inner)
+
+    await cached.lookup(34.05, -118.25)
+    await cached.lookup(34.06, -118.25)
+    await cached.lookup(34.05, -118.26)
+
+    expect(inner.calls).toHaveLength(3)
+  })
+
+  it("re-fetches once the TTL has elapsed", async () => {
+    const inner = countingLookup()
+    let clock = 1_000
+    const cached = new CachedJurisdictionLookup(inner, { ttlMs: 60_000, now: () => clock })
+
+    await cached.lookup(34.05, -118.25)
+    clock += 59_999
+    await cached.lookup(34.05, -118.25)
+    expect(inner.calls).toHaveLength(1)
+
+    clock += 2
+    await cached.lookup(34.05, -118.25)
+    expect(inner.calls).toHaveLength(2)
+  })
+
+  it("collapses concurrent calls for one point into a single in-flight lookup", async () => {
+    let calls = 0
+    let release: ((value: JurisdictionLookupResult | null) => void) | null = null
+    const inner: JurisdictionLookup = {
+      lookup: () => {
+        calls += 1
+        return new Promise((resolve) => {
+          release = resolve
+        })
+      },
+    }
+    const cached = new CachedJurisdictionLookup(inner)
+
+    const all = Promise.all([
+      cached.lookup(34.05, -118.25),
+      cached.lookup(34.05, -118.25),
+      cached.lookup(34.05, -118.25),
+    ])
+    expect(calls).toBe(1)
+    release!(LA)
+    await expect(all).resolves.toEqual([LA, LA, LA])
+    expect(calls).toBe(1)
+  })
+
+  it("never retains a FAILED lookup", async () => {
+    let calls = 0
+    const inner: JurisdictionLookup = {
+      lookup: () => {
+        calls += 1
+        return calls === 1 ? Promise.reject(new Error("boom")) : Promise.resolve(LA)
+      },
+    }
+    const cached = new CachedJurisdictionLookup(inner)
+
+    await expect(cached.lookup(34.05, -118.25)).rejects.toThrow("boom")
+    await expect(cached.lookup(34.05, -118.25)).resolves.toEqual(LA)
+    expect(calls).toBe(2)
+  })
+
+  it("stays bounded: past maxEntries the oldest points are evicted", async () => {
+    const inner = countingLookup()
+    const cached = new CachedJurisdictionLookup(inner, { maxEntries: 2 })
+
+    await cached.lookup(1, 1)
+    await cached.lookup(2, 2)
+    await cached.lookup(3, 3)
+    // (1,1) was evicted; (3,3) is still memoized.
+    await cached.lookup(3, 3)
+    expect(inner.calls).toHaveLength(3)
+    await cached.lookup(1, 1)
+    expect(inner.calls).toHaveLength(4)
+  })
+
+  it("passes non-finite coordinates straight through (never keyed)", async () => {
+    const inner = countingLookup()
+    const cached = new CachedJurisdictionLookup(inner)
+
+    await cached.lookup(Number.NaN, -118.25)
+    await cached.lookup(Number.NaN, -118.25)
+
+    expect(inner.calls).toHaveLength(2)
+  })
+
+  it("defaults to a minutes-long TTL (boundaries are effectively static)", () => {
+    expect(JURISDICTION_LOOKUP_CACHE_TTL_MS).toBeGreaterThanOrEqual(60_000)
   })
 })

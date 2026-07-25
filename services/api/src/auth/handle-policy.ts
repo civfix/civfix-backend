@@ -47,7 +47,12 @@ export interface HandleWriteResult {
  * already determined the write is a real change via {@link handleChanged} and resolved `isTaken`.
  */
 export function decideHandleWrite(input: DecideHandleWriteInput): HandleWriteResult {
-  if (!HANDLE_REGEX.test(input.submitted.trim())) {
+  // Trim ONCE and use that value for both the format check and the persisted handle: validating the
+  // trimmed form while returning the raw one made " bob " pass and store the spaces, and that only
+  // happened to be safe because the shared HandleSchema (.trim()) sanitizes upstream — a store-level
+  // source of truth must not depend on route-level zod behavior.
+  const submitted = input.submitted.trim()
+  if (!HANDLE_REGEX.test(submitted)) {
     throw AppError.validation({ handle: "That username isn't a valid format." })
   }
   if (input.isTaken) {
@@ -59,8 +64,8 @@ export function decideHandleWrite(input: DecideHandleWriteInput): HandleWriteRes
     if (next !== null) {
       throw AppError.rateLimited(`You can change your username again on ${next}.`)
     }
-    return { handle: input.submitted, handleChangedAt: input.now }
+    return { handle: submitted, handleChangedAt: input.now }
   }
   // Initial set during first-run completion: set the handle, leave the cooldown clock null.
-  return { handle: input.submitted, handleChangedAt: null }
+  return { handle: submitted, handleChangedAt: null }
 }

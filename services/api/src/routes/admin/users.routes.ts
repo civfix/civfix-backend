@@ -28,26 +28,29 @@ import {
   SetUserStatusRequestSchema,
   SetUserVerifiedRequestSchema,
   UserSubListQuerySchema,
-  IdSchema,
-  type AdminOkResponse,
   type AdminUserDTO,
   type AdminUserListResponse,
   type UserEventsResponse,
   type UserMessagesResponse,
   type UserReportsResponse,
 } from "@civfix/shared"
-import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { csrfProtect } from "../../auth/csrf.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
-import { idParam, parse } from "./_route-utils.js"
+import {
+  idParam,
+  overridableService,
+  parse,
+  parseBodyWithId,
+  sendOk,
+  spreadNow,
+  twoIdParams,
+} from "./_route-utils.js"
 import { auditRead } from "./_audit-read.js"
 import {
   makeAdminUserService,
   type AdminUserRepository,
-  type AdminUserService,
   type SessionControl,
 } from "../../services/admin/admin-user-service.js"
 import { makeDrizzleAdminUserRepository } from "../../services/admin/admin-user-repository.drizzle.js"
@@ -74,30 +77,34 @@ export async function registerAdminUsersRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   /** Build the admin-user service from injected overrides (tests) or the container (production). */
-  function service(): AdminUserService {
-    const overrides = app.adminUserOverrides
-    if (overrides) {
-      return makeAdminUserService({
+  const service = overridableService(
+    app,
+    "adminUserOverrides",
+    (overrides) =>
+      makeAdminUserService({
         repo: overrides.repo,
         sessions: overrides.sessions,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
-      })
-    }
-    const repo: AdminUserRepository = makeDrizzleAdminUserRepository(container.getDb().sql)
-    // H2: a ban revokes ALL the user's sessions + marks the account banned; a role change revokes all
-    // sessions so a cached role cannot outlive the change. Both are wired to the SessionService in the
-    // auth bundle (present whenever the admin routes are mounted).
-    const sessionSvc = app.authServices.sessions
-    const sessions: SessionControl = {
-      ban: (userId) => sessionSvc.banUser(userId),
-      clearBan: (userId) => sessionSvc.clearBan(userId),
-      revokeAll: (userId) => sessionSvc.revokeAllForUser(userId),
-    }
-    // L5: the role write itself now lives in the repo (users.role UPDATE + audit in ONE tx), so there is
-    // no longer a separate UserStore.setRole seam here that could commit a privilege change unaudited.
-    return makeAdminUserService({ repo, sessions })
-  }
+        ...spreadNow(overrides),
+      }),
+    () => {
+      const repo: AdminUserRepository = makeDrizzleAdminUserRepository(container.getDb().sql)
+      // H2: a ban revokes ALL the user's sessions + marks the account banned; a role change revokes all
+      // sessions so a cached role cannot outlive the change. Both are wired to the SessionService in the
+      // auth bundle (present whenever the admin routes are mounted).
+      const sessionSvc = app.authServices.sessions
+      const sessions: SessionControl = {
+        ban: (userId) => sessionSvc.banUser(userId),
+        clearBan: (userId) => sessionSvc.clearBan(userId),
+        revokeAll: (userId) => sessionSvc.revokeAllForUser(userId),
+      }
+      // L5: the role write itself now lives in the repo (users.role UPDATE + audit in ONE tx), so there is
+      // no longer a separate UserStore.setRole seam here that could commit a privilege change unaudited.
+      return makeAdminUserService({ repo, sessions })
+    },
+  )
 
   route(app, "listAdminUsers", async (request, reply) => {
     const query = parse(AdminUserListQuerySchema, request.query)
@@ -116,6 +123,10 @@ export async function registerAdminUsersRoutes(
     reply.status(200).send(payload)
   })
 
+  // DELIBERATELY NOT read-audited, unlike the two neighbours: a user's reports and cleanups are their
+  // PUBLIC civic record (the same rows any signed-out visitor sees on their profile), so an operator
+  // opening those tabs discloses nothing private. The L4 audit is scoped to reads that expose material the
+  // subject did not publish — the dossier (email, status, moderation history) and the chat text.
   route(app, "getUserReports", async (request, reply) => {
     const { id } = idParam(request)
     const query = parse(UserSubListQuerySchema, { ...(request.query as object), id })
@@ -145,63 +156,48 @@ export async function registerAdminUsersRoutes(
   })
 
   route(app, "flagUser", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(FlagUserRequestSchema, { ...(request.body as object), id })
-    await service().flag(id, { reason: body.reason ?? null, actorId: requireOperator(request) })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(FlagUserRequestSchema, request)
+    await service().flag(id, { reason: body.reason ?? null, actorId })
+    sendOk(reply)
   })
 
   // H2: a "banned" status revokes ALL the user's sessions; the service does NOT 200 on a failed revoke.
   route(app, "setUserStatus", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(SetUserStatusRequestSchema, { ...(request.body as object), id })
-    await service().setStatus(id, {
-      status: body.status,
-      reason: body.reason ?? null,
-      actorId: requireOperator(request),
-    })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(SetUserStatusRequestSchema, request)
+    await service().setStatus(id, { status: body.status, reason: body.reason ?? null, actorId })
+    sendOk(reply)
   })
 
   route(app, "setUserRole", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(SetRoleRequestSchema, { ...(request.body as object), id })
-    await service().setRole(id, { role: body.role, actorId: requireOperator(request) })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(SetRoleRequestSchema, request)
+    await service().setRole(id, { role: body.role, actorId })
+    sendOk(reply)
   })
 
   route(app, "setUserVerified", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(SetUserVerifiedRequestSchema, { ...(request.body as object), id })
-    await service().setVerified(id, { verified: body.verified, actorId: requireOperator(request) })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(SetUserVerifiedRequestSchema, request)
+    await service().setVerified(id, { verified: body.verified, actorId })
+    sendOk(reply)
   })
 
   // D18 manual override/revoke of the report-verified flag (distinct from the verified-neighbor mark).
   route(app, "setUserReportVerified", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(SetUserReportVerifiedRequestSchema, { ...(request.body as object), id })
-    await service().setReportVerified(id, { value: body.value, actorId: requireOperator(request) })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(SetUserReportVerifiedRequestSchema, request)
+    await service().setReportVerified(id, { value: body.value, actorId })
+    sendOk(reply)
   })
 
   route(app, "removeUserMessage", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id, messageId } = parse(MessageParamsSchema, request.params)
+    const actorId = requireOperator(request)
+    const { id, messageId } = twoIdParams(request, "messageId")
     // The body carries the path ids (the typed client fills them); the authoritative ids are the URL path.
     const body = parse(RemoveUserMessageRequestSchema, { ...(request.body as object), id, messageId })
-    await service().removeMessage(id, messageId, {
-      reason: body.reason ?? null,
-      actorId: requireOperator(request),
-    })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    await service().removeMessage(id, messageId, { reason: body.reason ?? null, actorId })
+    sendOk(reply)
   })
 }
-
-/** Path-param schema for the per-message remove route (the `:id`/`:messageId` segments). */
-const MessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()

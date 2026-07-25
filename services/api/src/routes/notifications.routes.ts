@@ -4,6 +4,7 @@ import {
   MarkReadRequestSchema,
   UpdateNotificationPrefsRequestSchema,
   RegisterPushTokenRequestSchema,
+  NotificationTypeSchema,
   type ListNotificationsResponse,
   type MarkReadResponse,
   type GetNotificationPrefsResponse,
@@ -14,13 +15,12 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import {
   makeNotificationService,
   type NotificationRepository,
   type NotificationService,
 } from "../services/notification-service.js"
-import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
+import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
@@ -33,19 +33,11 @@ const ListNotificationsResponseJsonSchema = {
         type: "object",
         properties: {
           id: { type: "string" },
+          // Derived from the contract, never hand-listed: the inline copy had already drifted seven types
+          // behind @civfix/shared (group_chat, cleanup_role, the five post_* kinds).
           type: {
             type: "string",
-            enum: [
-              "report_update",
-              "cleanup_chat",
-              "cleanup_reminder",
-              "cleanup_cancelled",
-              "new_follower",
-              "claim_available",
-              "dm",
-              "system",
-              "report_chat",
-            ],
+            enum: [...NotificationTypeSchema.options],
           },
           title: { type: "string" },
           body: { type: "string", nullable: true },
@@ -75,15 +67,15 @@ export async function registerNotificationRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  function repo(): NotificationRepository {
-    const overrides = app.notificationOverrides
-    if (overrides) return overrides.repo
-    return makeDrizzleNotificationRepository(container.getDb().sql)
-  }
+  const csrfProtect = container.csrf.protect
 
+  // An injected repo (tests) keeps the rest of the pipeline wired by hand; production shares the one
+  // notifier wiring with social.routes / cleanups.routes.
   function service(): NotificationService {
+    const overrides = app.notificationOverrides
+    if (!overrides) return makeRouteNotificationService(container, app.log)
     return makeNotificationService({
-      repo: repo(),
+      repo: overrides.repo,
       pushSender: container.pushSender,
       userChannel: container.userChannel,
       logger: app.log,
@@ -132,8 +124,12 @@ export async function registerNotificationRoutes(
     if (body.deviceId !== undefined && deviceId === undefined) {
       request.log.warn({ userId }, "registerPush: malformed deviceId dropped (device-claim skipped)")
     }
+    // Destructure the raw value OUT before the spread: `{...body}` would otherwise carry the rejected
+    // string straight through whenever the normalizer drops it, and the service persists
+    // `req.deviceId ?? null` — so the gate has to remove the field, not merely fail to re-add it.
+    const { deviceId: _raw, ...rest } = body
     const payload: RegisterPushTokenResponse = await service().registerPushToken(userId, {
-      ...body,
+      ...rest,
       ...(deviceId !== undefined ? { deviceId } : {}),
     })
     reply.status(200).send(payload)

@@ -33,6 +33,17 @@ export class InMemorySocialRepository implements SocialRepository {
   readonly cleanups: StoredCleanup[] = []
   readonly reportCounts = new Map<string, number>()
   readonly fixedReportCounts = new Map<string, number>()
+  /**
+   * Denormalized follow totals, mirroring users.follower_count / users.following_count
+   * (drizzle/0059_users_follow_counters.sql). The Drizzle repo maintains these next to the edge write and
+   * moves them ONLY when the INSERT/DELETE actually changed a row, so the fake keeps its own counters
+   * instead of re-deriving them from `follows`: a fake that recomputes can never disagree with itself, and
+   * "an idempotent re-follow does not double count" is precisely the invariant worth mirroring. Like the
+   * real columns these count edges to/from soft-deleted users (nothing clears follows_people on a
+   * tombstone), which is why a roster can be shorter than the count beside it.
+   */
+  readonly followerCounts = new Map<string, number>()
+  readonly followingCounts = new Map<string, number>()
 
   seedUser(over: Partial<StoredUser> = {}): StoredUser {
     const user: StoredUser = {
@@ -51,7 +62,15 @@ export class InMemorySocialRepository implements SocialRepository {
   seedFollow(followerId: string, followeeId: string): void {
     if (!this.follows.some((f) => f.followerId === followerId && f.followeeId === followeeId)) {
       this.follows.push({ followerId, followeeId })
+      this.bumpCounters(followerId, followeeId, 1)
     }
+  }
+
+  /** One edge's effect on the two denormalized totals: +1/-1 on the followee's followers and the
+   * follower's following. Clamped at 0 like the SQL's GREATEST(x - 1, 0). */
+  private bumpCounters(followerId: string, followeeId: string, delta: number): void {
+    this.followerCounts.set(followeeId, Math.max((this.followerCounts.get(followeeId) ?? 0) + delta, 0))
+    this.followingCounts.set(followerId, Math.max((this.followingCounts.get(followerId) ?? 0) + delta, 0))
   }
 
   seedCleanup(record: CleanupRecord, attendees: string[] = []): void {
@@ -71,8 +90,8 @@ export class InMemorySocialRepository implements SocialRepository {
       displayName: u.displayName,
       handle: u.handle,
       bio: u.bio,
-      followers: this.follows.filter((f) => f.followeeId === u.id).length,
-      following: this.follows.filter((f) => f.followerId === u.id).length,
+      followers: this.followerCounts.get(u.id) ?? 0,
+      following: this.followingCounts.get(u.id) ?? 0,
       verified: u.verified ?? false,
       avatarR2Key: null,
       avatarUrl: u.avatarUrl ?? null,
@@ -90,6 +109,10 @@ export class InMemorySocialRepository implements SocialRepository {
     let all = [...this.users.values()].filter((u) => {
       if (u.deletedAt !== null) return false
       if (args.viewerId !== null && u.id === args.viewerId) return false
+      // M-people-blocks: people SEARCH carries the same SYMMETRIC block filter as connections,
+      // suggestions and the feeds (social-repository.drizzle.ts listPeople) — a blocked OR blocking
+      // account must not surface here. Anonymous viewers have no block rows, so the gate is skipped.
+      if (args.viewerId !== null && this.isBlockedEitherWay(args.viewerId, u.id)) return false
       if (q !== null) {
         const inHandle = u.handle !== null && u.handle.toLowerCase().includes(q)
         const inName = u.displayName.toLowerCase().includes(q)
@@ -125,11 +148,18 @@ export class InMemorySocialRepository implements SocialRepository {
     return Promise.resolve({ items, nextCursor })
   }
 
-  /** Users the viewer has blocked / been blocked by (either way), excluded from suggestions. */
+  /** Users the viewer has blocked / been blocked by (either way), excluded from search + suggestions. */
   readonly blockedPairs: Array<{ a: string; b: string }> = []
 
   seedBlock(a: string, b: string): void {
     this.blockedPairs.push({ a, b })
+  }
+
+  /** The `user_blocks` symmetric NOT EXISTS the people surfaces share, as one predicate. */
+  private isBlockedEitherWay(viewerId: string, otherId: string): boolean {
+    return this.blockedPairs.some(
+      (p) => (p.a === viewerId && p.b === otherId) || (p.a === otherId && p.b === viewerId),
+    )
   }
 
   /** The user's most recent activity point (their latest cleanup, organized or attended). */
@@ -174,14 +204,7 @@ export class InMemorySocialRepository implements SocialRepository {
         if (this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id)) {
           return false
         }
-        if (
-          this.blockedPairs.some(
-            (p) =>
-              (p.a === args.viewerId && p.b === u.id) || (p.a === u.id && p.b === args.viewerId),
-          )
-        ) {
-          return false
-        }
+        if (this.isBlockedEitherWay(args.viewerId, u.id)) return false
         return true
       })
       .map((u) => {
@@ -201,8 +224,9 @@ export class InMemorySocialRepository implements SocialRepository {
         const da = a.meters ?? Number.POSITIVE_INFINITY
         const db = b.meters ?? Number.POSITIVE_INFINITY
         if (da !== db) return da - db
-        const fa = this.follows.filter((f) => f.followeeId === a.u.id).length
-        const fb = this.follows.filter((f) => f.followeeId === b.u.id).length
+        // The SQL sorts on the denormalized users.follower_count, so the fake sorts on its mirror.
+        const fa = this.followerCounts.get(a.u.id) ?? 0
+        const fb = this.followerCounts.get(b.u.id) ?? 0
         return fb - fa
       })
       .slice(0, args.limit)
@@ -295,8 +319,11 @@ export class InMemorySocialRepository implements SocialRepository {
     const already = this.follows.some(
       (f) => f.followerId === followerId && f.followeeId === followeeId,
     )
+    // Counters move ONLY on a real insert — the Drizzle repo's bump is gated on
+    // `ON CONFLICT DO NOTHING ... RETURNING` having produced a row for exactly this reason.
     if (already) return Promise.resolve({ exists: true, created: false })
     this.follows.push({ followerId, followeeId })
+    this.bumpCounters(followerId, followeeId, 1)
     return Promise.resolve({ exists: true, created: true })
   }
 
@@ -306,18 +333,28 @@ export class InMemorySocialRepository implements SocialRepository {
     const idx = this.follows.findIndex(
       (f) => f.followerId === followerId && f.followeeId === followeeId,
     )
-    if (idx >= 0) this.follows.splice(idx, 1)
+    // ... and only on a real delete: a repeated unfollow is a no-op, not a decrement.
+    if (idx >= 0) {
+      this.follows.splice(idx, 1)
+      this.bumpCounters(followerId, followeeId, -1)
+    }
     return Promise.resolve({ exists: true })
   }
 
   followerCount(userId: string): Promise<number> {
-    return Promise.resolve(this.follows.filter((f) => f.followeeId === userId).length)
+    return Promise.resolve(this.followerCounts.get(userId) ?? 0)
   }
 
   pastEventsFor(userId: string, limit: number): Promise<CleanupRecord[]> {
+    // Mirrors the Drizzle query (social-repository.drizzle.ts:pastEventsFor): the organized-UNION-attended
+    // id set, then the two L-past-events terms — `scheduled_at < now()` AND `status <> 'cancelled'` — so an
+    // upcoming RSVP or a cancelled event never renders as civic history. Filter BEFORE the sort/limit, the
+    // same order as the SQL's WHERE / ORDER BY / LIMIT.
+    const now = Date.now()
     const mine = this.cleanups
       .filter((c) => c.record.organizerUserId === userId || c.attendees.has(userId))
       .map((c) => c.record)
+      .filter((r) => r.scheduledAt.getTime() < now && r.status !== "cancelled")
       .sort((a, b) => {
         const cmp = b.scheduledAt.getTime() - a.scheduledAt.getTime()
         if (cmp !== 0) return cmp

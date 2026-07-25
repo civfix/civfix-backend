@@ -62,6 +62,10 @@ export function makeDownloader(storage: Storage): DownloadFn {
     }
     let url: string
     try {
+      // MUST resolve to a signed, direct-to-bucket GET. The shared Storage interface has no forceSigned
+      // option, so that is guaranteed upstream instead: seams.ts constructs the worker's R2Storage WITHOUT
+      // publicBase, because fetching the unprocessed original through a public CDN URL would cache the
+      // pre-strip bytes at the key clients read the stripped object from.
       url = await storage.presignGet(r2Key, DOWNLOAD_GET_TTL_SEC)
     } catch (err) {
       throw new StorageUnavailableError(r2Key, err)
@@ -78,6 +82,8 @@ export function makeDownloader(storage: Storage): DownloadFn {
       throw new StorageUnavailableError(r2Key, err)
     }
     if (!res.ok) {
+      // Drain the error body so undici releases the socket now instead of at GC.
+      await res.body?.cancel().catch(() => {})
       throw new StorageUnavailableError(r2Key, `HTTP ${res.status}`)
     }
 

@@ -26,11 +26,16 @@ import { isProd } from "../env.js"
  * API, shadowing or fixating the real session. A `__Host-` cookie cannot be shadowed that way.
  *
  * The rename is a breaking change for any client already holding the legacy cookie, so it is staged:
- *   - READ accepts BOTH names, prefixed first (transition window for live sessions);
+ *   - READ accepts BOTH names, prefixed first — for the SESSION cookie only (sessionCookieValue). That is
+ *     the transition window for live sessions. The CSRF cookie has no read path at all: the double-submit
+ *     fallback that used to compare it was removed, so the token is now verified purely from the header
+ *     against the session-bound signature (auth/csrf.ts) and the cookie is write-and-clear only — it
+ *     exists so the SPA can read its own token, and the server never trusts it;
  *   - WRITE uses the prefixed name only where the browser will actually accept it, i.e. where the cookie
  *     is Secure — production. Outside production the API is served over plain http://localhost, where a
  *     `__Host-` cookie would be silently dropped and sign-in would simply not work;
- *   - CLEAR clears both, so a logout cannot leave a stale legacy cookie behind that outlives the session.
+ *   - CLEAR clears both names for both cookies, so a logout cannot leave a stale legacy cookie behind that
+ *     outlives the session.
  * The legacy names can be deleted once every deployed client has been through one session lifetime.
  */
 
@@ -63,10 +68,10 @@ export function sessionCookieValue(request: FastifyRequest): string | null {
   return firstNonEmptyCookie(request, SESSION_COOKIE_HOST, SESSION_COOKIE)
 }
 
-/** Read the presented CSRF cookie under either name, preferring the `__Host-` one. */
-export function csrfCookieValue(request: FastifyRequest): string | null {
-  return firstNonEmptyCookie(request, CSRF_COOKIE_HOST, CSRF_COOKIE)
-}
+// NOTE: there is deliberately NO csrfCookieValue reader. Nothing on the server may read the CSRF cookie:
+// the double-submit fallback (compare header to cookie) was removed because a subdomain that can set
+// cookies could satisfy both halves, and the surviving check verifies the header token against the
+// session-bound signature instead. Reintroducing a cookie read would reintroduce that hole.
 
 function firstNonEmptyCookie(request: FastifyRequest, ...names: string[]): string | null {
   for (const name of names) {

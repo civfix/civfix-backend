@@ -189,13 +189,51 @@ Three claims were investigated and **refuted**, and are recorded here so this do
 
 Fixed before pushing: the blocker, all four highs, and six mediums (rate-limit prefix coverage, the identity-vs-IP keying regression, the poll fan-out block gate, the cleanup pin-rail presigner, and both sanitizer defects). One of those — the rate-limit key — was a regression this change set introduced: keying on identity *instead of* IP meant one host with N accounts got N × every budget, weaker than what it replaced. The global bucket is IP-keyed again, with identity counted as an additional dimension on the sensitive bucket.
 
-**Still outstanding from this pass** (all medium/low, none a data-loss or outage risk): the attendee-ban race in `removeMember` (a plain `SELECT` probe locks nothing, so an in-flight join can re-create membership past the ban — needs an advisory lock); the WS typing throttle's now-unbounded per-connection map; the Turnstile hostname/action binding, which is wired but never passed a config in `di.ts` and so asserts nothing; the README omitting `REVIEWER_OTP_BYPASS_ACK`, which would make a production boot fail; a false invariant comment in `role-change.ts`; and five stale comments or test descriptions that claim behavior the code no longer has.
+**Still outstanding from this pass** (all medium/low, none a data-loss or outage risk), re-verified
+file-by-file against the tree at the close of the final review pass. Each item names the file and the
+mechanism, so a later fix is verifiable from here rather than leaving this list ambiguous:
+
+- **Turnstile hostname/action binding asserts nothing.** `AbuseChecks` accepts `turnstileHostnames`
+  (`services/api/src/adapters/abuse-checks.ts:68`, consumed at `:200`), but `di.ts:333` passes only
+  `turnstileSecret` and **no `CF_TURNSTILE_HOSTNAMES` variable exists in `env.ts`**, so a token minted on
+  another origin is not rejected on that basis and the code emits a once-per-process notice instead.
+  Check: `grep -rn CF_TURNSTILE services/api/src`. Enabling it is an env var + `.env.example` + one
+  `di.ts` line; deleting the dep and its notice is the alternative.
+- **The account-deletion OTP shares the sign-in cooldown.** Deletion re-proves the email through the same
+  `POST /auth/otp/request`, so it shares the one `otp:rl:email:<email>` 60s key (`src/auth/otp.ts:245-255`),
+  and a user who just signed in is told to wait on a GDPR erasure path (`src/routes/users.routes.ts:210-213`).
+  A server-side namespace needs a `purpose` field on `EmailOtpRequestRequestSchema` — now listed under the
+  `@civfix/shared` follow-ups below rather than only in a code comment.
+- **`openDm` still returns a literal `unread: 0`** (`src/services/dm-service.ts:149`) two lines below the
+  real `conversationMutes` lookup this pass wired in, so opening an existing thread with unread peer
+  messages renders no badge. Half-done rather than broken; the fix is one more read in the same `Promise.all`.
+- **The anon `POST /map/resolve-jurisdiction` write-time fallback is uncached and burns a sequence value
+  per call.** The endpoint is `auth:"optional"`, `csrf:false`, IP-keyed at 30/min, and now runs the Census
+  lookup, which lazily UPSERTs a NULL-`geom` `jurisdictions` row. Because `JURISDICTION_RESOLVE_SQL` is
+  `ST_Contains(geom, …)`, a NULL-geom row never satisfies it, so every repeat call re-fetches from Census
+  and re-writes; and `nextval('jurisdiction_code_seq')` sits in the `VALUES` list
+  (`src/services/jurisdiction-service.ts:263-276`), so a code is consumed even on the `ON CONFLICT` path.
+  This was accepted as A15 on the understanding that the rate limit bounded it; the cost is
+  write/fetch amplification per call, not just per new jurisdiction. `jurisdictions.code` is
+  `integer UNIQUE` (0030), so exhaustion needs ~2.1B calls — the real issue is the uncached loop.
+
+Four items the earlier draft of this paragraph listed have since been **fixed**, and are recorded here so
+nobody re-does them: the attendee-ban race now takes real row locks (`FOR NO KEY UPDATE` on the `cleanups`
+row in `cleanup-repository.drizzle.ts:495` vs `FOR SHARE` in `joinCleanupTx:569` — conflicting modes, so an
+in-flight join serializes against the removal); the WS typing map is a bounded LRU
+(`TYPING_THROTTLE_MAX_ROOMS = 256`, `src/ws/types.ts:20`, eviction at `src/ws/frame-handler.ts:514`); the
+false invariant comment in `role-change.ts` is gone and both admin writers do call `applyRoleChange`, with
+`provisionOperator` documented as the sole exception; and the README's reviewer-bypass table now documents
+all three variables including `REVIEWER_OTP_BYPASS_ACK`. That draft also claimed "five stale comments or
+test descriptions" without naming one: the count was never substantiated and is **withdrawn** — the
+comment-vs-code drift the final review pass did find was enumerated with `file:line` and routed to the
+owning area, not tallied here.
 
 ## Operator actions required BEFORE the next deploy
 
 The app now fails closed on several of these — it will **refuse to boot** rather than run insecurely.
 
-0. **`REVIEWER_OTP_BYPASS_ACK`** — enabling the reviewer bypass in production now requires this third variable (`=true`) *in addition to* `REVIEWER_OTP_BYPASS` and a `REVIEWER_OTP_CODE` of >=20 chars. With the bypass on and this missing, `loadEnv` throws and the box does not start. (The README table still omits it — see the outstanding list above.)
+0. **`REVIEWER_OTP_BYPASS_ACK`** — enabling the reviewer bypass in production now requires this third variable (`=true`) *in addition to* `REVIEWER_OTP_BYPASS` and a `REVIEWER_OTP_CODE` of >=20 chars. With the bypass on and this missing, `loadEnv` throws and the box does not start. Documented in the README's reviewer-bypass table (all three variables, plus the safe order for turning the bypass back off: switch first, then remove the code).
 1. **`REVIEWER_OTP_BYPASS`** — default is now `false`. If the sops env sets it truthy, the box will not start unless **both** `REVIEWER_OTP_BYPASS_ACK=true` and `REVIEWER_OTP_CODE=<≥20 random chars>` are also set. Recommended: set it to `false` and audit the `@reviewer` account's activity — the old credential was public.
 2. **`DATABASE_URL` must carry `sslmode=require`** (or `verify-ca`/`verify-full`) in production. Confirm the Postgres endpoint actually accepts TLS first; if it is a same-host container link with no server cert, this breaks connections, not just the boot check.
 3. **`R2_INBOUND_BUCKET`** is now required whenever `R2_PUBLIC_BASE` is set, and must name a different, non-public bucket than `R2_BUCKET`. Separately: **audit `https://<R2_PUBLIC_BASE>/inbound/…` for already-published `.eml` objects** — the code fix does not retract what is already exposed.
@@ -204,7 +242,7 @@ The app now fails closed on several of these — it will **refuse to boot** rath
 6. **`OAUTH_REQUIRE_NONCE`** — leave unset (off) until a nonce-sending mobile build is the store floor, then flip it to `true`. Turning it on early 422s native sign-in for every older install.
 7. **`WS_ALLOW_QUERY_TOKEN` must stay unset.** It is the break-glass switch re-enabling the leaking `?token=` WS path for store-shipped mobile builds that predate the fix.
 8. **Reconcile operator accounts against `ADMIN_EMAILS` before deploying.** `ADMIN_EMAILS` is now the sole source of operator truth, re-checked on every admin request (60s cache). Any operator whose `users.email` is absent from it gets 403 on every admin route within a minute of deploy. Run `SELECT email FROM users WHERE role='operator'` and diff. Watch for NULL emails and case/alias mismatches (the check is trim+lowercase exact match, no plus-address normalization). Operators can no longer be created or removed from the console — onboarding is `ADMIN_EMAILS` + Access sign-in.
-9. **Two migrations to apply manually on the box** (deploy does not auto-migrate): `drizzle/0052_cleanup_bans.sql`, `drizzle/0053_volunteer_hours_audit.sql`. Both forward-only and `IF NOT EXISTS`.
+9. **Migrations to apply manually on the box** (deploy does not auto-migrate). Wave 1 added `drizzle/0052_cleanup_bans.sql` and `drizzle/0053_volunteer_hours_audit.sql`; wave 2 added four more (`0054`–`0057`), one of which the new code HARD-DEPENDS on; wave 3 added `0058_sessions_created_at.sql` (the M3 session backfill) and `0059_users_follow_counters.sql`, a SECOND hard dependency — without it every people-facing read fails on an undefined column. All forward-only, and idempotent on re-apply. The full list, ordering constraints and failure signatures are in the operator runbook at the end of this document.
 
 ## Coordinated client releases required
 
@@ -213,18 +251,44 @@ The app now fails closed on several of these — it will **refuse to boot** rath
 | Native Apple/Google sign-in now requires a server-issued nonce from `POST /v1/auth/oauth/nonce` | mobile (+ web if it uses native sign-in) | **Yes** — old clients get 401/422 on native sign-in |
 | `POST /notifications/push` returns **409** when a token belongs to another account; `deviceId` must be a UUID (non-UUID is silently dropped, registration still succeeds) | mobile | Yes — clients assuming 200 must handle it |
 | CSRF token is now session-bound and cookies gain the `__Host-` prefix in production (legacy names still readable for one session lifetime) | web + mobile | Transitional |
-| `POST /media/upload` and `/media/:id/finalize` now require `X-CSRF-Token` on cookie sessions | web (already sends it for `createReport`) | Verify only |
+| ~~`POST /media/upload` and `/media/:id/finalize` require `X-CSRF-Token` on cookie sessions~~ — **reverted before push**, so there is nothing to do in this release: both routes still carry no `csrfProtect` (`routes/media.routes.ts:22-42,145-159` documents why and the exact re-add recipe). The gate returns only in the release that ships `csrf: true` for both endpoints in `@civfix/shared` — see the shared follow-ups below | web (no change now) | No |
 | Drop the `?token=` WS fallback and treat a failed `wsTicket()` as a retryable connect error; handle `{type:"error",code:"UNAUTHORIZED"}` + close 1008 by re-authenticating | mobile | Yes, once `WS_ALLOW_QUERY_TOKEN` is unset |
 | Inbound webhook signs `<timestamp>.<body>` with `x-cf-timestamp` (legacy body-only signatures still accepted, with a warn) | Cloudflare Email Worker (`civfix-infra`) | Transitional |
 
 ## Follow-ups in `@civfix/shared`
 
-Server-side enforcement is in place for all of these; the contract fixes are defense in depth.
+This change set is backend-only, so none of the items below are closed by it — they are the work the
+backend cannot do alone. The list is complete on purpose: the review reserved every contract item for this
+section, and two of them are user-visible dead ends. Paths are relative to
+`civfix-shared/packages/shared/src/`; line numbers are as of 2026-07-25.
 
-- Narrow `WsClientMessageSchema`'s `send.kind` to the client-authorable subset (`text | share_pin | task_complete | rsvp_change`).
-- Replace `.url()` with a scheme-checked refinement on `formUrl` in `PatchJurisdictionRequestSchema` / `SaveContactsRequestSchema` / `SaveDraftRequestSchema`.
-- Add `.max()` to `LogEventHoursRequestSchema.entries` and `CreateCleanupRequestSchema.bring` (+ the update variant).
-- Drop `X-Thread-Token` from `FakeInboundMail.extractThreadToken` — the real adapter no longer honors it.
+**Group 1 — hardening the server already enforces (contract change is defense in depth).**
+
+- Narrow `WsClientMessageSchema`'s `send.kind` (`types/ws.ts:32`, today the full `ChatMessageKindSchema`) to the client-authorable subset (`text | share_pin | task_complete | rsvp_change`).
+- Replace `.url()` with a scheme-checked refinement on `formUrl` — `PatchJurisdictionRequestSchema` / `SaveContactsRequestSchema` (`schemas/admin/jurisdictions.ts:27,187`), `SaveDraftRequestSchema` (`schemas/admin/discovery.ts:169`) and the citizen `schemas/map.ts:106`. `z.string().url()` accepts `javascript:`.
+- Add `.max()` to `LogEventHoursRequestSchema.entries` (`schemas/volunteer.ts:74` — `.min(1)` with no ceiling) and `CreateCleanupRequestSchema.bring` + the update variant (`schemas/cleanups.ts:33,61`).
+
+**Group 2 — contract gaps the server cannot close.** All eleven items the wave-2 worklist reserved for
+reporting, plus the deletion-OTP purpose field and the media-CSRF declaration:
+
+| # | Contract item | What it needs | What it costs today |
+|---|---|---|---|
+| F1 | `endpoints.logout` is `auth:"required"` (`client/endpoints.ts:419`) | `auth:"optional"` + idempotent semantics | A caller holding a dead/absent credential gets 401 and its cookies are never cleared. The handler is already idempotent; the contract — and `test/unit/auth-routes.test.ts:406` ("logout while unauthenticated is 401") — is what pins the 401 |
+| F2 | `ListThreadsResponseSchema` advertises `nextCursor` (`schemas/chat.ts:83`) | **Nothing — closed server-side.** `ThreadsService.list` implements keyset paging and the route forwards the cursor verbatim | The legacy `listThreads(userId, limit)` form still returns `nextCursor: null`, but it is internal/test-only. Recorded so it is not re-raised |
+| F3 | `ActivityListQuerySchema.filter` / `AdminListQuerySchema.sort` are free-form `z.string()` (`schemas/admin/activity.ts:37`, `schemas/admin/common.ts:30-36`) | Narrow to enums (`ActivityKind \| "all"`, `"newest" \| "oldest"`) | `q`/`filter`/`sort`/`cursor` are now really implemented (`services/admin/activity-service.ts`), but an unrecognised value silently degrades to `all` / `newest` instead of 422 — the console cannot tell a typo from an empty page |
+| F4 | `QuietHoursSchema` is `{start,end}` with no timezone (`schemas/notifications.ts:59`) | A `tz` field (IANA name) + a `notification_prefs` migration + `Intl.DateTimeFormat` evaluation | Quiet hours are evaluated against the SERVER's offset (`services/notification-helpers.ts isWithinQuietHours`), so any user outside it gets bells inside their quiet window and silence outside it. There is **no safe server-side fix** — defining the wire format as UTC is the alternative, and it breaks twice a year |
+| F5 | `FinalizeMediaResponseSchema.status` is `z.ZodLiteral<"validating">` (`schemas/media.ts:53`) | Widen to `MediaStatus` | **User-visible dead end.** A rejected upload answers `validating` from finalize (`services/media-intake-service.ts:285-292` documents the forced lie) and 404 from `GET /media/:id` (the H9 non-oracle control) — forever. The client can never distinguish "still scanning" from "rejected" and shows a spinner that never resolves |
+| F6 | `InboundEmailDTOSchema` is `.strict()` with no truncation flag (`schemas/admin/inbox.ts:72`) | An additive `attachmentsTruncated` (or a count) | `routes/admin/inbox.routes.ts:91-99` slices to `MAX_INBOX_ATTACHMENTS = 50` and can only log a warn; the operator console shows 50 of N with no indication anything was elided |
+| F7 | `Mailer.sendOtp(to, code)` has no locale slot (`interfaces/mailer.ts:40`) | An optional third `locale` parameter | Passcode emails DO localize today — `auth/otp.ts` passes `account?.locale` through a locally widened `LocaleAwareMailer` and `OciMailer.sendOtp` accepts it — but the shared type is why that widening exists at all |
+| F8 | `Storage.presignGet(key, ttlSec)` has no `forceSigned` (`interfaces/storage.ts:40`) | A `forceSigned` option | `R2Storage.presignGet` returns the UNSIGNED CDN URL whenever `publicBase` is set. The media-worker fix was to stop passing `publicBase` — a wiring convention, not a structural guarantee, so the next construction site can re-introduce public URLs for private objects |
+| F9 | `FakeInboundMail.extractThreadToken` still honors `X-Thread-Token` (`fakes/inbound-mail.fake.ts:80-86`) | Drop the header arm | The real adapter no longer honors it, so the **fake is more permissive than production**: a spoofable-header attack path passes in tests and fails in prod (or the reverse, for a regression test) |
+| F10 | `ChatService.broadcast` takes no `excludeConnId` (`interfaces/chat-service.ts:33`; fake at `fakes/chat-service.fake.ts:49`), while `broadcastEvent` does | Add the same optional `opts` to `broadcast` | The WS path really does pass it — `ws/frame-handler.ts:374` calls `deps.chat.broadcast(roomKey, message, { excludeConnId: conn.id })` through a locally widened `GatewayChatService` (`ws/types.ts:179-183`). The shared fake silently drops the third argument, so the all-fakes dev path and every fake-backed test echo a message frame back to its own sender — behavior production does not have |
+| F11 | `ModerationKindSchema` has no `video` member (`schemas/admin/common.ts:170`) | A new enum member + widening `0007_admin_phase2.sql`'s CHECK + a console label | Held **videos** are enqueued as `kind:"image"` with the real kind carried in the reason string (`media-worker/src/jobs/media-checks.ts:253-262` documents the limit and why it is not a one-line worker fix). Answers the worklist's open question: `"video"` is **not** an accepted value today |
+| — | `EmailOtpRequestRequestSchema` has no `purpose` field | Add `purpose` (e.g. `signin \| account_deletion`) | The account-deletion OTP therefore shares the sign-in `otp:rl:email:` 60s cooldown and 429s a user who just signed in, on a GDPR erasure path (`auth/otp.ts:245-255`, `routes/users.routes.ts:210-213`). The server cannot namespace the key without knowing the caller's purpose |
+| — | `createMediaUpload` / `finalizeMedia` declare `csrf: false` (`client/endpoints.ts:1344-1359`) | Flip both to `csrf: true` in the same release that re-adds the server-side gate | This is why the CSRF preHandler added to `/media/upload` and `/media/:id/finalize` had to be reverted (see the pre-push audit above): the published client never sends the header, so every signed-in web photo upload would 403. Server and contract must move together |
+
+F9 and F10 are shipped *fakes*, not wire schemas, so they additionally bound what the backend's own suite
+can prove: a test written against either one is asserting behavior production does not have.
 
 ## Deliberately deferred
 
@@ -238,3 +302,132 @@ Server-side enforcement is in place for all of these; the contract fixes are def
 | M17 socket eviction on attendee removal | Ban table and join rejection shipped; a removed attendee can no longer re-join. Their *already-open* socket still receives broadcasts until it closes | A revocation publish on the room channel consumed by `ws/socket-lifecycle.ts` |
 | L24 localization of cancellation bells | Prefs and quiet hours now honored (routed through `NotificationService`); title/body are still English literals | Four `notification.cleanup_cancelled.*` keys in `i18n/messages/{en,es,de,ko}.ts` |
 | `onEventReply` sender gate | Same missing check as `onJurisdictionReply`, but now standing behind the new DMARC gate | Apply `isJurisdictionSender` there too |
+
+---
+
+# Operator runbook
+
+Everything an operator has to do by hand, in order, plus the two infra facts and the local-verification recipe that the change set assumes. Read this together with "Operator actions required BEFORE the next deploy" above — that section covers env vars, this one covers schema, infra and verification.
+
+## 1. Manual migrations, in this order, BEFORE the new images run
+
+`src/db/migrate.ts` sorts `drizzle/*.sql` **lexically** and records applied files in `_civfix_migrations`; there is no journal file, so a filename alone enrolls a migration. The production deploy (`infra/ops/deploy.sh` on the box) does **not** run it — apply them explicitly:
+
+```sh
+# on the box, as the civfix user, with DATABASE_URL exported
+node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
+```
+
+`drizzle/` holds **60 files**, `0000_extensions.sql` … `0059_users_follow_counters.sql`. The eight rows
+below are exactly what this change set adds — `0052`–`0059`, contiguous, no gaps — and everything from
+`0000` through `0051_social_posts.sql` predates it. Both backfills live **inside** their own migration file
+(`0058`'s `sessions.created_at`, `0059`'s follow counters; §2 and §6 below), so there is no separate
+backfill step to remember: the three `db:backfill*` scripts in `services/api/package.json` (report
+jurisdiction geoids, reference codes, ACS population) are boundary/ingest tooling and are not part of this
+deploy.
+
+| File | What it does | If skipped |
+|---|---|---|
+| `0052_cleanup_bans.sql` | attendee ban table (M17) | Re-join after removal stays possible; ban writes fail |
+| `0053_volunteer_hours_audit.sql` | append-only hours journal (M21) | Hours upserts fail (the service writes the audit row in the same tx) |
+| `0054_media_purpose_post.sql` | widens the `media_assets.purpose` CHECK to include `'post'` | **Every post-with-media insert fails** (23514); the missing enum value is what shipped the bug |
+| `0055_posts_thread_root_idx.sql` | index on `posts.thread_root_id` | Slow cascades on post deletes only (no correctness impact) |
+| `0056_abuse_flags_worker_open_unique.sql` | collapses duplicate OPEN worker abuse flags, then a partial unique index on `(subject_type, subject_id, reason) WHERE resolved_at IS NULL AND source='worker'` | **HARD DEPENDENCY of the new media-worker** — see below |
+| `0057_media_reap_tombstones.sql` | `media_reap_tombstones`: R2 keys the orphan sweep failed to delete, retried by later sweeps | Orphan-sweep leaks are logged/reported but not retried (the pre-wave-2 behavior). One extra error per sweep; no data loss |
+| `0058_sessions_created_at.sql` | backfills NULL `sessions.created_at` from `last_seen_at`, then `SET NOT NULL` (M3) | Every legacy NULL-`created_at` session keeps failing closed, i.e. one forced re-login each — see below |
+| `0059_users_follow_counters.sql` | adds `users.follower_count` / `users.following_count` (`int NOT NULL DEFAULT 0`) and backfills both from `follows_people` | **Every people surface fails** (42703, undefined column): profiles, people search, the follower/following rosters, follow suggestions and every post author card read these columns — see below |
+
+**0056 is order-critical in BOTH directions — apply it, then deploy the worker:**
+
+- **New worker, migration missing:** `MediaWorkerRepo.insertAbuseFlag` now ends in `ON CONFLICT (subject_type, subject_id, reason) WHERE … DO NOTHING`. Postgres resolves the arbiter at plan time, so with no matching index every insert raises `42P10` ("no unique or exclusion constraint matching the ON CONFLICT specification"). That is the `persist` phase of `media.checks` → `MediaInfraError` → 5 retries → the job dies and the asset is stuck `validating`, which also leaves anonymous reports stuck `held`. This is the one wave-2 change that hard-fails against the old schema.
+- **Old worker, migration applied:** a *retried* job re-inserting the same open flag now raises `23505` instead of quietly duplicating. Bounded (it only happens to a job whose persist already failed once) and it self-heals the moment the new image lands.
+
+The migration is safe to apply on a live DB: the collapse `DELETE` only touches OPEN rows with `source='worker'` (admin/API flags are untouched — the discovery "start task" path inserts `('report', …, 'manual', 'api')` with no guard and must keep working), and the index is built inside the migration's transaction, so `abuse_flags` is briefly write-locked. Executed against a throwaway `postgis/postgis:16-3.4` (both files applied and re-applied in one transaction each, then the real `makeDrizzleMediaWorkerRepo` driven against them): the collapse removes timestamped *and* `NULL`-`created_at` duplicates while leaving resolved rows, `source='api'` duplicates and other reasons alone; `insertAbuseFlag`'s arbiter is inferred (the retry is a no-op, an `'api'` flag still duplicates freely, and a moderator-cleared flag can be re-raised); and the `media_reap_tombstones` round trip (record → bump → list-under-cap → clear) behaves as documented. The one other ON CONFLICT the worker uses — `enqueueHeldModerationItem` against `0038_moderation_open_unique.sql` — was checked by inspection only: same target columns, same `WHERE status = 'open'` predicate.
+
+## 2. `sessions.created_at` backfill (`0058`, shipped in wave 3)
+
+`sessions.created_at` was nullable (`0001_core.sql` declares it `timestamptz DEFAULT now()` with no `NOT NULL`, so rows predating the column read back NULL) and the absolute 90-day session ceiling is measured FROM it. `PgSessionStore.findById` reads a NULL as the **epoch** — i.e. already past the ceiling, fail closed — because the old `last_seen_at` fallback made the ceiling unreachable (every sliding-expiry write bumped `last_seen_at`, so an active legacy session never expired: the unbounded-sliding hole M3 closes).
+
+Consequence until the backfill is applied: **every session row with a NULL `created_at` forces exactly one re-login.** Expected and harmless, but it is the reason for a login spike right after deploy.
+
+`drizzle/0058_sessions_created_at.sql` closes it:
+
+```sql
+UPDATE sessions
+   SET created_at = COALESCE(created_at, last_seen_at, now())
+ WHERE created_at IS NULL;
+
+ALTER TABLE sessions ALTER COLUMN created_at SET NOT NULL;
+```
+
+Operator notes:
+
+- **Order is load-bearing and already baked into the file:** `SET NOT NULL` before the `UPDATE` aborts with `23502` on the first legacy row and rolls the file back. `last_seen_at` is itself `NOT NULL DEFAULT now()`, so the `now()` arm is unreachable belt-and-braces, and `last_seen_at` is a LATE (never early) estimate of creation — the ceiling it yields is generous to the holder by at most one sliding window.
+- **It briefly write-locks `sessions`.** `SET NOT NULL` takes `ACCESS EXCLUSIVE` and, with no pre-validated `CHECK` to reuse, scans the table to prove no NULLs remain; logins and sliding-expiry writes block for that scan. Fine at this table's size (self-pruning via the ceiling + the expiry sweep); if that changes, add a `NOT VALID` CHECK and `VALIDATE` it out-of-band first.
+- Re-applying is a no-op: the `UPDATE` matches nothing and `SET NOT NULL` on an already-`NOT NULL` column succeeds silently.
+- Nothing hard-depends on it (unlike `0056`), so the deploy order is free — the only cost of skipping it is the recurring re-login above.
+- The `?? new Date(0)` fallback in `src/auth/pg-stores.ts` is **deliberately kept** even though the Drizzle mirror (`src/db/schema/sessions.ts`) now types `createdAt` as non-nullable: the deploy does not auto-migrate, so the code has to fail closed against the pre-`0058` schema. Its comment says so.
+
+## 3. media-worker `stop_grace_period` (civfix-infra, different repo)
+
+`MEDIA_JOB_TIMEOUT_MS` (default 60s) is charged **per phase**, not per job: `jobs/media-checks.ts` wraps the download in one budget and `processMedia` in a second, so one job can legitimately run ~2x it before the persist writes. The worker therefore derives its graceful-stop timeout as `2 x jobTimeoutMs + 5s` (`stopGraceMsFor` in `services/media-worker/src/jobs.ts`) = **125s at the default**, and passes it to `boss.stop({ graceful: true, wait: true, timeout })`.
+
+**The container's `stop_grace_period` in the civfix-infra compose file must exceed that** — set it to ~150s for the media-worker service. Docker's default is 10s, so without this the runtime SIGKILLs the process mid-job and the derivation buys nothing: the asset is left `validating` until a sweep reconciles it. Raising `MEDIA_JOB_TIMEOUT_MS` raises this requirement with it (`.env.example` says so at the knob).
+
+## 4. Boundary refresh prunes only federal/tribal fixtures
+
+`services/api/scripts/refresh-boundaries.ts` → `pruneNonAuthoritative()` deletes legacy dev-seed rows by geoid prefix, and **only for the federal and tribal layers** (`layer='federal' AND geoid NOT LIKE 'PADUS-%'`, `layer='tribal' AND geoid NOT LIKE 'AIANNH-%'`). There is deliberately **no equivalent for stale place / county / state rows**, because those layers use real TIGER geoids that the refresh re-upserts — nothing distinguishes a stale fixture from a live row, and nothing prunes them.
+
+Two consequences to keep in mind:
+
+- A place/county/state row that stops existing upstream (a dissolved municipality, a re-coded place) stays in `jurisdictions` forever with its contacts attached. Removing one is a manual, FK-aware operation modelled on `pruneNonAuthoritative`.
+- It is why the dev-seed fix clears **placeholder contact emails** instead of using fake geoids: the seed genuinely upserts real geoids (`06`, `06037`, `0644000`), so the geoids must stay, and clearing `example.*` addresses on conflict also heals rows already damaged in an environment that was seeded over.
+
+## 5. Running the Docker-gated integration suites locally (macOS / Apple silicon)
+
+~350 of the suite's tests are `withPg()`-gated and skip without a Docker daemon. On this machine the daemon is colima (`aarch64`, 4 CPU / 6 GiB, `vz` + virtiofs, socket `unix://$HOME/.colima/default/docker.sock`, active docker context `colima`).
+
+```sh
+colima start                                    # if not already running
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock   # path INSIDE the VM
+export TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1
+export TESTCONTAINERS_RYUK_DISABLED=true        # Ryuk cannot bind-mount colima's socket
+
+pnpm --filter @civfix/api exec vitest run test/integration --no-file-parallelism
+pnpm --filter @civfix/media-worker exec vitest run test/integration
+```
+
+Notes that cost time to rediscover:
+
+- `--no-file-parallelism` is not optional on a 4-CPU VM: with vitest `isolate:true` every file boots its own postgis container, and running them in parallel starves the VM into health-check timeouts.
+- Ryuk disabled means containers **leak between runs**. Reap them: `docker rm -f $(docker ps -aq --filter ancestor=postgis/postgis:16-3.4)`.
+- `postgis/postgis:16-3.4` has a native arm64 image, so **Rosetta is not needed** for it. Only reach for `colima start --vm-type=vz --vz-rosetta` if some other image is amd64-only; emulated Postgres is slow enough to cause spurious timeouts.
+- `colima stop` when done — the VM holds 6 GiB.
+
+## 6. Denormalized follow counters (`0059`) — apply BEFORE the API image
+
+`drizzle/0059_users_follow_counters.sql` adds `users.follower_count` / `users.following_count`, backfills both from `follows_people`, and the new code reads them everywhere a person's totals are rendered (`findPersonById`/`ByHandle`, `listPeople`, `listFollowers`/`listFollowing`, `suggestFollows`, `followerCount` in `social-repository.drizzle.ts`, and `loadAuthors` in `post-repository.drizzle.ts`). It replaces the correlated `count(*)` subqueries that walked a popular account's whole edge list on every render.
+
+**Order matters in both directions:**
+
+- **New API, migration missing:** every one of those reads raises `42703` (undefined column) — profiles, people search, both connection rosters, follow suggestions, the follow/unfollow response and every post author card. Alongside `0056` this is the second wave-2 file that hard-fails against the old schema; unlike `0056` the failure is instant and total rather than queued.
+- **Old API, migration applied:** harmless to serve, but the old image writes `follows_people` rows without bumping the counters, so the numbers drift low for as long as it runs. The file is safe to re-run (see below) — if the gap is more than a moment, **re-apply it after the new image is up** to re-sync.
+
+Maintenance is application-side, in the same transaction as the edge write (`addFollow` / `removeFollow`), gated on the `INSERT … ON CONFLICT DO NOTHING RETURNING` / `DELETE … RETURNING` actually having changed a row — an idempotent re-follow must not double count. It mirrors the `posts.like_count` pattern from `0051`. There is deliberately **no trigger**, which has one operational consequence: *anything that writes `follows_people` outside those two methods* (a psql session, a data fix, a future bulk import) must bump the counters too, or leave drift behind. Drift detector, safe to run on the live DB:
+
+```sql
+SELECT u.id, u.handle,
+       u.follower_count,  (SELECT count(*) FROM follows_people f WHERE f.followee_id = u.id) AS actual_followers,
+       u.following_count, (SELECT count(*) FROM follows_people f WHERE f.follower_id = u.id) AS actual_following
+FROM users u
+WHERE u.follower_count  <> (SELECT count(*) FROM follows_people f WHERE f.followee_id = u.id)
+   OR u.following_count <> (SELECT count(*) FROM follows_people f WHERE f.follower_id = u.id);
+```
+
+Re-running the migration file is the repair: its backfill `UPDATE` is guarded by exactly that inequality, so it rewrites only the drifted rows and is a true no-op on a healthy database.
+
+**Semantics to know before reading a number:** edges to and from **soft-deleted** users COUNT, because that is what the aggregates being replaced did (they never joined `users`) and because account deletion is a tombstone that leaves `follows_people` intact. So `follower_count` can legitimately exceed the length of the visible followers roster, which filters `deleted_at IS NULL`. Preserved deliberately rather than changed under a performance refactor — changing it would silently restate every profile's numbers.
+
+Verified against a throwaway `postgis/postgis:16-3.4` with all 60 migration files (`0000`–`0059`) applied (37 assertions, all green): the backfill reproduces the aggregate including both tombstone directions; a second and third apply of the file rewrite nothing; `addFollow` twice moves each counter exactly once and `removeFollow` twice moves it back; a follow of a tombstoned user is refused with the counters untouched; a reciprocal follow-back and a repo-level self-follow (the case a two-statement bump would get wrong) both stay consistent; and every read path above — plus the extracted literal text of `loadAuthors` — returns the maintained values with zero drift at the end. The Docker-gated `test/integration/social-notifications-pg.test.ts` "follow/unfollow: idempotent, created flag, follower counts" case is the standing regression guard.
+

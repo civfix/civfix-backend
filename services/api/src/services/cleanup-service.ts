@@ -117,6 +117,15 @@ export const MAX_BRING_ITEMS = 30
 const CANCEL_FANOUT_MEMBER_CAP = 2000
 
 /**
+ * Concurrency for that fan-out. The bell used to be awaited one recipient at a time on the request
+ * path, so cancelling a well-attended event took CANCEL_FANOUT_MEMBER_CAP sequential pipeline calls
+ * (each an insert + a prefs read + a push) before the host got their response. Bounded rather than
+ * unbounded for the same reason PRESIGN_CONCURRENCY is: a 2000-wide Promise.all would open 2000
+ * concurrent DB/push operations off one HTTP request.
+ */
+const CANCEL_FANOUT_CONCURRENCY = 8
+
+/**
  * Degraded fallback for a service constructed with no CounterStore (offline tests, USE_FAKE_* dev). It
  * carries the SAME weaknesses the old code had in production — per-process, cleared on restart — which
  * is precisely why production MUST wire the Redis-backed store (see cleanups.routes.ts). Keeping a
@@ -252,39 +261,62 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
    * cancelCleanupTx, the ONLY bell in the product that bypassed NotificationService: it ignored the
    * recipient's push preferences and quiet hours, never localized (hardcoded English), and never
    * emitted the user-channel signal that refreshes an open client's bell badge. It now rides the same
-   * pipeline as every other notification.
+   * pipeline as every other notification — including the LOCALIZATION half: the title/body travel as
+   * `notification.cleanup_cancelled.*` keys + a `{{reason}}` var, so the pipeline renders them in the
+   * recipient's own locale exactly like the cleanup_role bells above (a literal English title/body here
+   * would be English on every lock screen no matter what `users.locale` says).
    *
    * Best-effort, exactly like notifyRoleChange: the cancellation itself is already committed, so a
    * notification failure is logged and suppressed rather than failing the mutation the host just made.
+   * Best-effort PER RECIPIENT, which the L24 rewrite was not: one try/catch wrapped the whole sequential
+   * loop, so a single bad prefs row or push-adapter error abandoned every remaining attendee silently.
+   * Each recipient now fails on its own and the rest still get their bell.
    *
-   * FOLLOW-UP (not applied here to avoid colliding with the notifications workstream): the title/body
-   * are passed as literal strings because there is no `notification.cleanup_cancelled.*` entry in
-   * src/i18n/messages/en.ts. Adding those keys and switching to titleKey/bodyKey/vars completes the
-   * localization half; prefs, quiet hours and the signal are already fixed by this change.
+   * Called ONLY on a fresh upcoming->cancelled transition (see cancelCleanup): re-cancelling an
+   * already-cancelled event must not re-ring 2000 lock screens, which is the same bell-bombing class
+   * M18's role-flip cooldown exists for.
+   *
+   * `reason` is the host's already-trimmed, slur-gated cancellation reason or null when they gave none —
+   * the RAW reason, not the composed sentence: the wrapper copy is the catalog's job, and a null reason
+   * selects the reason-less body key rather than rendering a dangling "Reason:".
    */
   async function notifyCancellation(
     cleanup: { id: string; title: string },
-    body: string,
+    reason: string | null,
     actorId: string,
   ): Promise<void> {
-    if (deps.notifier === undefined) return
+    const notifier = deps.notifier
+    if (notifier === undefined) return
+    let memberIds: string[]
     try {
-      const memberIds = await deps.repo.listMemberIds(cleanup.id, CANCEL_FANOUT_MEMBER_CAP)
-      for (const userId of memberIds) {
-        if (userId === actorId) continue
-        await deps.notifier.createNotification(userId, {
-          type: "cleanup_cancelled",
-          title: "Event cancelled",
-          body,
-          link: `/cleanups/${cleanup.id}`,
-        })
-      }
+      memberIds = await deps.repo.listMemberIds(cleanup.id, CANCEL_FANOUT_MEMBER_CAP)
     } catch (err) {
       deps.logger?.warn(
         { err, cleanupId: cleanup.id },
-        "cleanup_cancelled notification fan-out failed (suppressed)",
+        "cleanup_cancelled roster read failed (suppressed)",
       )
+      return
     }
+    const recipients = memberIds.filter((userId) => userId !== actorId)
+    await mapWithLimit(recipients, CANCEL_FANOUT_CONCURRENCY, async (userId) => {
+      try {
+        await notifier.createNotification(userId, {
+          type: "cleanup_cancelled",
+          titleKey: "notification.cleanup_cancelled.title",
+          bodyKey:
+            reason !== null
+              ? "notification.cleanup_cancelled.body_reason"
+              : "notification.cleanup_cancelled.body",
+          ...(reason !== null ? { vars: { reason } } : {}),
+          link: `/cleanups/${cleanup.id}`,
+        })
+      } catch (err) {
+        deps.logger?.warn(
+          { err, cleanupId: cleanup.id, userId },
+          "cleanup_cancelled notification failed (suppressed)",
+        )
+      }
+    })
   }
 
   async function hydrateLinkedReports(
@@ -418,6 +450,25 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         await assertReportsLinkable(desiredLinks)
       }
 
+      // A moved event belongs to a DIFFERENT government. cleanups.jurisdiction_geoid routes
+      // requestResources' municipal email (resolveJurisdictionContact) and buckets the event's
+      // volunteer-hours rollup, so it is re-resolved with the geometry instead of being left pointing at
+      // the city the event was created in. The repo rebuilds geom only when BOTH coordinates are present
+      // (UpdateCleanupPatch's contract), so that same pair gates the re-resolve.
+      //
+      // reference_code is deliberately NOT re-issued: it is the event's immutable public identity, and
+      // its JURCODE segment stays that of the creating jurisdiction by design (D1).
+      const movedTo =
+        patch.lat !== undefined && patch.lng !== undefined
+          ? { lat: patch.lat, lng: patch.lng }
+          : null
+      // undefined = don't touch the stored geoid; null = the new position is outside coverage (which is
+      // a real answer, and makes requestResources correctly report the event as not routable).
+      const reresolvedGeoid =
+        movedTo !== null && deps.resolveJurisdictionGeoid !== undefined
+          ? await deps.resolveJurisdictionGeoid(movedTo.lat, movedTo.lng)
+          : undefined
+
       const scalarPatch: UpdateCleanupPatch = {
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
@@ -428,6 +479,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         ...(patch.lng !== undefined ? { lng: patch.lng } : {}),
         ...(patch.address !== undefined ? { address: patch.address } : {}),
         ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
+        ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
       }
       const updated = await deps.repo.updateCleanup(id, scalarPatch)
       if (!updated) notFoundCleanup()
@@ -458,20 +510,29 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       // screen and written into the public event timeline, so it gets the same gate as report text.
       assertNoSlur(cleanReason, "reason")
       const note = cleanReason ? `Event cancelled: ${cleanReason}` : "Event cancelled"
+      // The `body` the repo takes is a vestige of the pre-L24 in-transaction bell: nothing persists it
+      // any more (the Drizzle tx writes only the status flip + the `note` timeline row), and the bell
+      // itself is now rendered per-recipient from the notification catalog in notifyCancellation. Kept as
+      // the English composition it always was so the repo contract is unchanged — FOLLOW-UP: drop the
+      // field from CleanupRepository.cancelCleanupTx + both implementations + the test fake together.
       const body = cleanReason
         ? `This event has been cancelled by the host. Reason: ${cleanReason}`
         : `This event has been cancelled by the host.`
-      const ok = await deps.repo.cancelCleanupTx(id, {
+      const outcome = await deps.repo.cancelCleanupTx(id, {
         note,
         body,
         reason: cleanReason,
         actorId: requesterUserId,
       })
-      if (!ok) notFoundCleanup()
+      if (outcome === "not_found") notFoundCleanup()
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
-      await notifyCancellation(record, body, requesterUserId)
+      // Cancelling is idempotent at the HTTP layer (same 200 + DTO either way), but the fan-out is not
+      // idempotent at the receiver: the repo reports whether THIS call made the transition, and only a
+      // fresh one rings the roster. Without this an organizer (or a retrying client) could loop
+      // /cancel and push every attendee's lock screen on each pass.
+      if (outcome === "cancelled") await notifyCancellation(record, cleanReason, requesterUserId)
       const linkedReports = await hydrateLinkedReports(id, record.eventKind)
       // The canceller passed the organizer-only gate above, so their role is organizer by definition.
       return toCleanupDTO(record, true, linkedReports, "organizer")

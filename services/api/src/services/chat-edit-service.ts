@@ -7,7 +7,8 @@
  *   1. Resolve the message by id in the correct table (dm_messages for "dm", chat_messages otherwise)
  *      and verify its room ref matches roomId -> 404 otherwise (also plain-missing).
  *   2. Room-send permission still held (the SAME checks the WS send path runs): cleanup member, report
- *      chat member, group member (P4 4.4), dm thread peer + not blocked either way -> plain 403. This runs BEFORE the per-row
+ *      chat member (preceded by the report VISIBILITY check when deps.isReportVisible is wired -> 404),
+ *      group member (P4 4.4), dm thread peer + not blocked either way -> plain 403. This runs BEFORE the per-row
  *      state gates so a non-member probing leaked UUIDs learns nothing about a message's deleted-ness
  *      or kind — they only ever see the generic 403.
  *   3. Sender-only -> 403 (machine code "not_sender" in the error envelope's `fields.code`). A
@@ -43,6 +44,15 @@ export interface ChatEditServiceDeps {
   dm?: DmRepository
   isCleanupMember?: IsRoomMemberFn
   isReportMember?: IsRoomMemberFn
+  /**
+   * Report VISIBILITY (isReportVisibleTo: a publicly-visible status + public, or the reporter's own).
+   * Optional; when wired it runs BEFORE the membership gate so an unlisted / held / soft-deleted report
+   * answers 404 exactly like report-chat.routes' requireVisibleReport — the same shape and ordering
+   * chat-reaction-service's report lane uses. Absent = not enforced in-service, which is why the route
+   * keeps its own requireVisibleReport pre-gate; wiring this closes the gap for any OTHER caller (a
+   * membership row survives a report being held, so membership alone is not the visibility gate).
+   */
+  isReportVisible?: (reportId: string, userId: string) => Promise<boolean>
   /** P4 4.4 group lane: chat_group_members membership (the SAME gate the WS group send runs). */
   isGroupMember?: IsRoomMemberFn
   dmPeerOf?: (threadId: string, userId: string) => Promise<string | null>
@@ -177,6 +187,11 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     // per-row state gates so a non-member probing leaked UUIDs learns nothing about a message's
     // deleted-ness/kind — they only ever see the generic 403.
     if (isReport) {
+      // Visibility first (when wired), so a report that went held/unlisted answers 404 like the routes'
+      // requireVisibleReport rather than leaking a 403 keyed on a stale membership row.
+      if (deps.isReportVisible && !(await deps.isReportVisible(roomId, userId))) {
+        throw AppError.notFound("Report not found")
+      }
       const isReportMember = deps.isReportMember
       if (!isReportMember) throw new Error("chat-edit-service: report deps not wired")
       if (!(await isReportMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)

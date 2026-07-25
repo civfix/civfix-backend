@@ -12,7 +12,11 @@
  *   - listCandidateGeoids returns geoids with BOTH waiting reports and a usable contact;
  *   - runForGeoid sends ONE digest via the (Fake) Mailer, records the out mail_threads/mail_messages +
  *     a 'sent' mail_events row, and stamps outreach_state.last_outreach_at;
- *   - the throttle window (outreach_state.last_outreach_at + throttleDays) prevents a re-send.
+ *   - the throttle window (outreach_state.last_outreach_at + throttleDays) prevents a re-send;
+ *   - setOutreachState's OMITTED-vs-EXPLICIT-NULL semantics, and the claim RELEASE that depends on them.
+ *     Both need a real Postgres: the clear was folded into a `COALESCE`, which cannot tell "keep" from
+ *     "clear", so the reset silently no-op'd against the database while passing against the in-memory repo,
+ *     which has always distinguished them. A unit test could not have caught it and cannot guard it.
  *
  * When Docker is unavailable the whole describe block SKIPS (describe.skipIf), so the local suite stays
  * green; CI runs it for real. Reuses withPg() per the harness contract.
@@ -20,6 +24,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
+import type { OutboundEmail } from "@civfix/shared/interfaces"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleMailRepository } from "../../src/services/admin/mail-repository.drizzle.js"
 import { makeDrizzleOutreachRepository } from "../../src/services/admin/outreach-repository.drizzle.js"
@@ -162,5 +167,141 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
     expect(result.sent).toBe(false)
     expect(result.skipped).toBe("throttled")
     expect(mailer.sent).toHaveLength(0)
+  })
+
+  /** Read outreach_state straight out of Postgres (the fake cannot be wrong about this). */
+  async function storedState(): Promise<{ last_outreach_at: Date | null; suppressed: boolean } | undefined> {
+    const rows = await h.sql<{ last_outreach_at: Date | null; suppressed: boolean }[]>`
+      SELECT last_outreach_at, suppressed FROM outreach_state WHERE geoid = ${GEOID}
+    `
+    return rows[0]
+  }
+
+  describe("setOutreachState: OMITTED keeps, explicit NULL clears", () => {
+    it("an explicit {lastOutreachAt: null} CLEARS the stored timestamp", async () => {
+      const repo = makeDrizzleMailRepository(h.sql)
+      const stamped = new Date(NOW.getTime() - 24 * 60 * 60 * 1000)
+      await repo.setOutreachState(GEOID, { lastOutreachAt: stamped })
+      expect((await storedState())?.last_outreach_at?.getTime()).toBe(stamped.getTime())
+
+      // The bug: folded into COALESCE, this was indistinguishable from "omitted" and kept the old value.
+      const cleared = await repo.setOutreachState(GEOID, { lastOutreachAt: null })
+      expect(cleared.lastOutreachAt).toBeNull()
+      expect((await storedState())?.last_outreach_at).toBeNull()
+    })
+
+    it("an OMITTED lastOutreachAt keeps the stored timestamp (and vice versa for suppressed)", async () => {
+      const repo = makeDrizzleMailRepository(h.sql)
+      const stamped = new Date(NOW.getTime() - 24 * 60 * 60 * 1000)
+      await repo.setOutreachState(GEOID, { lastOutreachAt: stamped, suppressed: true })
+
+      // Patch ONLY suppressed: the timestamp must survive.
+      const kept = await repo.setOutreachState(GEOID, { suppressed: false })
+      expect(kept.lastOutreachAt?.getTime()).toBe(stamped.getTime())
+      expect(kept.suppressed).toBe(false)
+      const afterKeep = await storedState()
+      expect(afterKeep?.last_outreach_at?.getTime()).toBe(stamped.getTime())
+      expect(afterKeep?.suppressed).toBe(false)
+
+      // Patch ONLY the timestamp (to null): suppressed must survive.
+      await repo.setOutreachState(GEOID, { suppressed: true })
+      const clearedTs = await repo.setOutreachState(GEOID, { lastOutreachAt: null })
+      expect(clearedTs.lastOutreachAt).toBeNull()
+      expect(clearedTs.suppressed).toBe(true)
+      const afterClear = await storedState()
+      expect(afterClear?.last_outreach_at).toBeNull()
+      expect(afterClear?.suppressed).toBe(true)
+    })
+
+    it("inserts the row on first write when there is no outreach_state yet", async () => {
+      const repo = makeDrizzleMailRepository(h.sql)
+      expect(await storedState()).toBeUndefined()
+      await repo.setOutreachState(GEOID, { lastOutreachAt: null })
+      const row = await storedState()
+      expect(row).toBeDefined()
+      expect(row?.last_outreach_at).toBeNull()
+      expect(row?.suppressed).toBe(false)
+    })
+  })
+
+  describe("claimOutreachWindow + release against the real schema", () => {
+    /** A mailer that rejects its first `failures` sends, then behaves normally. */
+    class FlakyMailer extends FakeMailer {
+      failures = 0
+      override sendOutbound(email: OutboundEmail): Promise<{ messageId: string }> {
+        if (this.failures > 0) {
+          this.failures -= 1
+          return Promise.reject(new Error("OCI mail transient 500"))
+        }
+        return super.sendOutbound(email)
+      }
+    }
+
+    /**
+     * The claim, narrowed to non-optional. It is optional on the SEAM (so a fake may decline it), but the
+     * Drizzle repo always implements it — asserting that here is itself part of the contract.
+     */
+    function drizzleClaim(): (
+      geoid: string,
+      window: { at: Date; windowStart: Date },
+    ) => Promise<boolean> {
+      const claim = makeDrizzleOutreachRepository(h.sql).claimOutreachWindow
+      expect(claim, "the Drizzle outreach repo must implement claimOutreachWindow").toBeDefined()
+      return claim as (geoid: string, window: { at: Date; windowStart: Date }) => Promise<boolean>
+    }
+
+    it("is exclusive: a second claim inside the window loses without re-stamping", async () => {
+      const claim = drizzleClaim()
+      const windowStart = new Date(NOW.getTime() - THROTTLE_DAYS * 24 * 60 * 60 * 1000)
+      expect(await claim(GEOID, { at: NOW, windowStart })).toBe(true)
+      expect(await claim(GEOID, { at: new Date(NOW.getTime() + 1000), windowStart })).toBe(false)
+      expect((await storedState())?.last_outreach_at?.getTime()).toBe(NOW.getTime())
+    })
+
+    it("never claims a suppressed jurisdiction", async () => {
+      const claim = drizzleClaim()
+      await h.sql`
+        INSERT INTO outreach_state (geoid, last_outreach_at, suppressed)
+        VALUES (${GEOID}, NULL, true)
+      `
+      const won = await claim(GEOID, {
+        at: NOW,
+        windowStart: new Date(NOW.getTime() - THROTTLE_DAYS * 24 * 60 * 60 * 1000),
+      })
+      expect(won).toBe(false)
+      expect((await storedState())?.last_outreach_at).toBeNull()
+    })
+
+    it("RELEASES the claim when the send fails, so the next tick retries (end to end)", async () => {
+      await insertReport(h, { category: "trash" })
+      await setContact(h, "clerk@lacity.gov")
+      const mailer = new FlakyMailer()
+      mailer.failures = 1
+
+      await expect(service(mailer).runForGeoid(GEOID)).rejects.toThrow("OCI mail transient 500")
+      // The claim stamped last_outreach_at BEFORE the send; the release must have cleared it back to NULL.
+      // With the COALESCE bug the release was a silent no-op and this row still read NOW — the jurisdiction
+      // then got no digest for the whole 7-day window.
+      expect((await storedState())?.last_outreach_at).toBeNull()
+      const failedEvents = await h.sql<{ type: string }[]>`SELECT type FROM mail_events`
+      expect(failedEvents.map((e) => e.type)).toEqual(["failed"])
+
+      // The retry really goes out.
+      const retry = await service(new FakeMailer()).runForGeoid(GEOID)
+      expect(retry.sent).toBe(true)
+      expect((await storedState())?.last_outreach_at?.getTime()).toBe(NOW.getTime())
+    })
+
+    it("a released claim preserves a PRIOR timestamp rather than clearing it", async () => {
+      await insertReport(h, { category: "trash" })
+      await setContact(h, "clerk@lacity.gov")
+      const prior = new Date(NOW.getTime() - (THROTTLE_DAYS + 2) * 24 * 60 * 60 * 1000)
+      await h.sql`INSERT INTO outreach_state (geoid, last_outreach_at) VALUES (${GEOID}, ${prior})`
+      const mailer = new FlakyMailer()
+      mailer.failures = 1
+
+      await expect(service(mailer).runForGeoid(GEOID)).rejects.toThrow("OCI mail transient 500")
+      expect((await storedState())?.last_outreach_at?.getTime()).toBe(prior.getTime())
+    })
   })
 })

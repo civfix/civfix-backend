@@ -8,7 +8,8 @@ import type {
   ReportVisibility,
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
-import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+import { isPubliclyVisibleStatus } from "./report-visibility.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { escapeLike } from "./admin/like.js"
 import type {
@@ -65,7 +66,7 @@ function notOwnerOutcome(row: {
   status: ReportStatus
   visibility: ReportVisibility
 }): "not_found" | "forbidden" {
-  const publiclyVisible = row.status === "published" && row.visibility === "public"
+  const publiclyVisible = isPubliclyVisibleStatus(row.status) && row.visibility === "public"
   return publiclyVisible ? "forbidden" : "not_found"
 }
 
@@ -174,7 +175,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           `
 
           if (args.mediaUploadIds.length > 0) {
-            await tx`
+            const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}
               WHERE upload_id IN ${tx(args.mediaUploadIds)}
@@ -184,7 +185,17 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
                 -- a private DM into a public report gallery. Mirrors the post path's claim predicate.
                 AND post_id IS NULL AND chat_message_id IS NULL
                 AND status IN ('ready', 'validating')
+              RETURNING upload_id
             `
+            // M-media-claim: an unclaimable id (unknown, rejected, or already bound elsewhere) used to be
+            // silently ignored — the reporter got a 201 with their photo missing and no way to tell. Fail
+            // the whole create instead, exactly as post-repository.createPost does for the same condition.
+            // Compared against the DEDUPED input because one repeated id claims one row.
+            if (claimed.length !== new Set(args.mediaUploadIds).size) {
+              throw AppError.validation({
+                mediaUploadIds: "One or more media uploads are unavailable.",
+              })
+            }
           }
 
           await tx`
@@ -290,13 +301,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const records = page.map(toRecord)
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeTimeCursor({ at: last.created_at, id: last.id }) : null
-      return { records, nextCursor }
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      return { records: items.map(toRecord), nextCursor }
     },
 
     async findMapCandidates(
@@ -356,12 +362,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         sql`ORDER BY r.created_at DESC, r.id DESC`,
         args.limit + 1,
       )
-      const hasMore = rows.length > args.limit
-      const page = hasMore ? rows.slice(0, args.limit) : rows
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeTimeCursor({ at: last.created_at, id: last.id }) : null
-      return { points: page.map(toMapPoint), nextCursor }
+      const { items, nextCursor } = paginate(rows, args.limit, (r) => ({
+        at: r.created_at,
+        id: r.id,
+      }))
+      return { points: items.map(toMapPoint), nextCursor }
     },
 
     async resolveByOwner(

@@ -9,7 +9,8 @@
  * ioredis-mock) and an in-memory ChatRepository to prove the fan-out + persistence with no infra.
  *
  * ROOM + FAN-OUT MODEL:
- *   - rooms: Map<cleanupId, Set<ChatConnection>> holds the sockets connected to THIS worker.
+ *   - rooms: a ref-counted cleanupId -> Set<ChatConnection> registry of the sockets connected to THIS
+ *     worker (see RefCountedSubscriptions, shared with RedisUserChannel / RedisChatPubSub).
  *   - On the first local join for a cleanup, we SUBSCRIBE to the pub/sub channel chat:<cleanupId>. The
  *     subscription handler parses each delivered frame and writes it to every local connection in the
  *     room. On the last local leave, we unsubscribe and drop the room.
@@ -41,6 +42,7 @@ import type {
 import type { ChatMessageDTO, WsServerMessage } from "@civfix/shared"
 import { randomUUID } from "node:crypto"
 import { chatChannel, type ChatPubSub } from "./chat-pubsub.js"
+import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
 
 export interface WsChatServiceDeps {
@@ -52,22 +54,33 @@ export interface WsChatServiceDeps {
   newId?: () => string
 }
 
-/** Per-room local state: the connected sockets on this worker + the pub/sub unsubscribe handle. */
-interface Room {
-  connections: Set<ChatConnection>
-  unsubscribe: () => Promise<void>
-}
-
 export class WsChatService implements ChatService {
   private readonly repo: ChatRepository
   private readonly pubsub: ChatPubSub
   private readonly newId: () => string
-  private readonly rooms = new Map<string, Room>()
+  /**
+   * cleanupId -> the sockets connected to THIS worker, ref-counted: the first join subscribes
+   * chat:<cleanupId>, the last leave unsubscribes. The registry inserts the room BEFORE awaiting subscribe
+   * (so two concurrent first-joins share ONE subscribe and neither leaks a teardown handle) and DELETES it
+   * when the subscribe rejects (so the next join really re-subscribes instead of attaching to a room that
+   * receives no pub/sub frames). See RefCountedSubscriptions.
+   */
+  private readonly rooms: RefCountedSubscriptions<ChatConnection>
 
   constructor(deps: WsChatServiceDeps) {
     this.repo = deps.repo
     this.pubsub = deps.pubsub
     this.newId = deps.newId ?? (() => randomUUID())
+    this.rooms = new RefCountedSubscriptions<ChatConnection>((cleanupId, connections) =>
+      this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
+        const { frame, excludeConnId } = decodeEnvelope(payload)
+        // Live set: a socket that left mid-delivery is already gone from it.
+        for (const c of [...connections()]) {
+          if (excludeConnId !== undefined && c.id === excludeConnId) continue
+          c.send(frame)
+        }
+      }),
+    )
   }
 
   /**
@@ -76,34 +89,7 @@ export class WsChatService implements ChatService {
    * local sockets. Membership authorization is enforced by the gateway BEFORE this is called.
    */
   async joinRoom(cleanupId: string, conn: ChatConnection, _userId: string): Promise<void> {
-    let room = this.rooms.get(cleanupId)
-    if (!room) {
-      const connections = new Set<ChatConnection>()
-      // Populate the room in the Map BEFORE awaiting subscribe so two concurrent first-joins for the same
-      // cleanup can't both subscribe and leak the loser's unsubscribe handle (TOCTOU). The placeholder
-      // unsubscribe is a no-op until the real handle lands (leaveRoom can only fire after a connection is
-      // added below, which happens after this assignment).
-      const newRoom: Room = { connections, unsubscribe: async () => {} }
-      this.rooms.set(cleanupId, newRoom)
-      try {
-        newRoom.unsubscribe = await this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
-          const current = this.rooms.get(cleanupId)
-          if (!current) return
-          const { frame, excludeConnId } = decodeEnvelope(payload)
-          for (const c of current.connections) {
-            if (excludeConnId !== undefined && c.id === excludeConnId) continue
-            c.send(frame)
-          }
-        })
-      } catch (err) {
-        // subscribe rejected (e.g. a Redis blip): drop the phantom room so the next join retries the
-        // subscribe instead of attaching to a room that receives no pub/sub frames.
-        this.rooms.delete(cleanupId)
-        throw err
-      }
-      room = newRoom
-    }
-    room.connections.add(conn)
+    await this.rooms.add(cleanupId, conn)
   }
 
   /**
@@ -111,13 +97,7 @@ export class WsChatService implements ChatService {
    * pub/sub channel and drop the room so we stop receiving its frames.
    */
   async leaveRoom(cleanupId: string, conn: ChatConnection): Promise<void> {
-    const room = this.rooms.get(cleanupId)
-    if (!room) return
-    room.connections.delete(conn)
-    if (room.connections.size === 0) {
-      this.rooms.delete(cleanupId)
-      await room.unsubscribe()
-    }
+    await this.rooms.remove(cleanupId, conn)
   }
 
   /**
@@ -187,24 +167,20 @@ export class WsChatService implements ChatService {
   }
 
   /**
-   * Tear down all room subscriptions AND the pub/sub layer (used at shutdown). Unsubscribing each room
-   * leaves the underlying Redis subscriber connection open; the pub/sub owns that DEDICATED duplicated
-   * connection (see RedisChatPubSub), so we must close it here. The DI container's `redis.disconnect()`
-   * only closes the SHARED client, not the duplicate - so without this the subscriber connection would
-   * leak and keep the event loop alive, preventing a clean process exit on SIGTERM.
+   * Tear down all room subscriptions (used at shutdown); allSettled inside closeAll, so one rejected
+   * unsubscribe does not leave the other rooms behind.
+   *
+   * The pub/sub layer is NOT closed here: di.ts wires ONE RedisChatPubSub into BOTH this service and
+   * RedisUserChannel and closes it itself, after both. Closing it here would mean this service can kill
+   * the user channel's live subscriber connection mid-shutdown the moment that close order changes.
    */
   async close(): Promise<void> {
-    const unsubs = [...this.rooms.values()].map((r) => r.unsubscribe())
-    this.rooms.clear()
-    // allSettled, not all: one rejected unsubscribe must NOT skip pubsub.close() and leak the dedicated
-    // Redis subscriber connection (which keeps the event loop alive past SIGTERM).
-    await Promise.allSettled(unsubs)
-    await this.pubsub.close()
+    await this.rooms.closeAll()
   }
 
   /** Test/diagnostic helper: number of local connections in a room. */
   roomSize(cleanupId: string): number {
-    return this.rooms.get(cleanupId)?.connections.size ?? 0
+    return this.rooms.size(cleanupId)
   }
 }
 

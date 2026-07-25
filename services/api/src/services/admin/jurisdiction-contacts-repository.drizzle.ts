@@ -4,6 +4,14 @@ import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination
 import { writeAudit } from "./audit.js"
 import { upsertJurisdictionContacts } from "./discovery-repository.drizzle.js"
 import { buildUnmappedRecord, shouldIncludeUnmapped } from "./jurisdiction-directory-projection.js"
+import {
+  ADMIN_CATEGORIES,
+  categoryCountsFragment,
+  categoryCountsProjection,
+  parseCategoryCounts,
+  parseCount,
+  type CategoryCountRow,
+} from "./category-counts.js"
 import type {
   JurisdictionContactsRepository,
   JurisdictionDirectoryRecord,
@@ -15,8 +23,7 @@ import type {
 } from "./jurisdiction-contacts-types.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
-import { likeContains } from "./like.js"
-import { DISCOVERY_CATEGORIES } from "./discovery-service.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
 
 const DIRECTORY_FACET_TTL_MS = 30_000
 
@@ -44,7 +51,7 @@ function invalidateDefaultFacetCache(): void {
   defaultFacetCache = null
 }
 
-interface DirectoryRow {
+interface DirectoryRow extends CategoryCountRow {
   geoid: string
   name: string
   layer: string
@@ -63,35 +70,15 @@ interface DirectoryRow {
   filtered_total: string
   reports_waiting: string
   oldest_waiting_at: Date | null
-  cat_trash: string
-  cat_recycling: string
-  cat_graffiti: string
-  cat_hazard: string
-  cat_encampment: string
-  cat_water: string
-  cat_other: string
 }
 
 function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
   const categoryContacts = (r.category_emails ?? [])
     .filter((c): c is { category: ReportCategory; email: string | null } =>
-      (DISCOVERY_CATEGORIES as readonly string[]).includes(c.category),
+      (ADMIN_CATEGORIES as readonly string[]).includes(c.category),
     )
     .map((c) => ({ category: c.category, email: c.email }))
-  const waitingByCat: Record<ReportCategory, string> = {
-    trash: r.cat_trash,
-    recycling: r.cat_recycling,
-    graffiti: r.cat_graffiti,
-    hazard: r.cat_hazard,
-    encampment: r.cat_encampment,
-    water: r.cat_water,
-    other: r.cat_other,
-  }
-  const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
-  for (const c of DISCOVERY_CATEGORIES) {
-    const n = Number(waitingByCat[c] ?? "0")
-    if (n > 0) perCategoryCounts[c] = n
-  }
+  const perCategoryCounts = parseCategoryCounts(r)
   return {
     geoid: r.geoid,
     name: r.name,
@@ -101,7 +88,7 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
     categoryContacts,
     hasDefaultContact: r.has_default_contact,
     reportFormUrl: r.report_form_url,
-    reportsWaiting: Number(r.reports_waiting ?? "0"),
+    reportsWaiting: parseCount(r.reports_waiting),
     perCategoryCounts,
     oldestReportAt: r.oldest_waiting_at,
     lastRoutedAt: r.last_routed_at,
@@ -117,27 +104,10 @@ function toRecord(r: DirectoryRow): JurisdictionDirectoryRecord {
 async function loadUnmappedAggregate(
   sql: Sql,
 ): Promise<{ total: number; perCategoryCounts: Partial<Record<ReportCategory, number>> }> {
-  const rows = await sql<
-    {
-      total: string
-      cat_trash: string
-      cat_recycling: string
-      cat_graffiti: string
-      cat_hazard: string
-      cat_encampment: string
-      cat_water: string
-      cat_other: string
-    }[]
-  >`
+  const rows = await sql<(CategoryCountRow & { total: string })[]>`
     SELECT
       COUNT(*)::text AS total,
-      COUNT(*) FILTER (WHERE r.category = 'trash')::text AS cat_trash,
-      COUNT(*) FILTER (WHERE r.category = 'recycling')::text AS cat_recycling,
-      COUNT(*) FILTER (WHERE r.category = 'graffiti')::text AS cat_graffiti,
-      COUNT(*) FILTER (WHERE r.category = 'hazard')::text AS cat_hazard,
-      COUNT(*) FILTER (WHERE r.category = 'encampment')::text AS cat_encampment,
-      COUNT(*) FILTER (WHERE r.category = 'water')::text AS cat_water,
-      COUNT(*) FILTER (WHERE r.category = 'other')::text AS cat_other
+      ${categoryCountsFragment(sql, "r")}
     FROM reports r
     LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
     WHERE r.deleted_at IS NULL
@@ -145,22 +115,7 @@ async function loadUnmappedAggregate(
       AND (r.jurisdiction_geoid IS NULL OR j.geoid IS NULL)
   `
   const r = rows[0]
-  const total = Number(r?.total ?? "0")
-  const waitingByCat: Record<ReportCategory, string | undefined> = {
-    trash: r?.cat_trash,
-    recycling: r?.cat_recycling,
-    graffiti: r?.cat_graffiti,
-    hazard: r?.cat_hazard,
-    encampment: r?.cat_encampment,
-    water: r?.cat_water,
-    other: r?.cat_other,
-  }
-  const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
-  for (const c of DISCOVERY_CATEGORIES) {
-    const n = Number(waitingByCat[c] ?? "0")
-    if (n > 0) perCategoryCounts[c] = n
-  }
-  return { total, perCategoryCounts }
+  return { total: parseCount(r?.total), perCategoryCounts: parseCategoryCounts(r) }
 }
 
 export function makeDrizzleJurisdictionContactsRepository(
@@ -335,12 +290,7 @@ export function makeDrizzleJurisdictionContactsRepository(
 
     async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
       const search =
-        args.q !== null
-          ? (() => {
-              const like = likeContains(args.q)
-              return sql`AND (j.name ILIKE ${like} ESCAPE '\\' OR j.geoid ILIKE ${like} ESCAPE '\\')`
-            })()
-          : sql``
+        args.q !== null ? sql`AND ${ilikeAnyOf(sql, [sql`j.name`, sql`j.geoid`], args.q)}` : sql``
       const offset = decodeOffsetCursor(args.cursor)
       const limit = clampLimit(args.limit)
 
@@ -384,6 +334,34 @@ export function makeDrizzleJurisdictionContactsRepository(
               : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
 
       const rows = await sql<DirectoryRow[]>`
+        WITH waiting AS (
+          -- "Waiting" = open, un-routed reports (the same statuses save-and-route would flip): excludes
+          -- acknowledged/in_progress (already routed) and rejected/resolved (closed). So reportsWaiting is
+          -- the backlog needing a contact, and it drops to 0 once the jurisdiction is routed.
+          --
+          -- Aggregated ONCE for every geoid rather than per row. The page's COUNT(*) OVER() has to
+          -- materialize the whole filtered set before OFFSET/LIMIT, so as a per-row LATERAL this aggregate
+          -- ran for every jurisdiction matching the filter on every page view.
+          SELECT
+            r.jurisdiction_geoid AS geoid,
+            COUNT(*) AS total,
+            -- Oldest still-waiting report; shares the waiting predicate so it agrees with total.
+            MIN(r.created_at) AS oldest_waiting_at,
+            ${categoryCountsFragment(sql, "r")}
+          FROM reports r
+          WHERE r.jurisdiction_geoid IS NOT NULL
+            AND r.deleted_at IS NULL
+            AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
+          GROUP BY r.jurisdiction_geoid
+        ),
+        routed AS (
+          -- The routing signal: the most recent 'acknowledged' timeline row across the geoid's reports.
+          SELECT r.jurisdiction_geoid AS geoid, MAX(rt.created_at) AS last_routed_at
+          FROM report_timeline rt
+          JOIN reports r ON r.id = rt.report_id
+          WHERE rt.status = 'acknowledged' AND r.jurisdiction_geoid IS NOT NULL
+          GROUP BY r.jurisdiction_geoid
+        )
         SELECT
           j.geoid,
           j.name,
@@ -403,17 +381,17 @@ export function makeDrizzleJurisdictionContactsRepository(
             FROM jurisdiction_contacts cc
             WHERE cc.geoid = j.geoid AND cc.category IS NOT NULL
           ) AS category_emails,
-          (
-            SELECT MAX(rt.created_at)
-            FROM report_timeline rt
-            JOIN reports r ON r.id = rt.report_id
-            WHERE r.jurisdiction_geoid = j.geoid AND rt.status = 'acknowledged'
-          ) AS last_routed_at,
+          lr.last_routed_at,
           (
             -- A contact is 'bounced' when ANY of the geoid's contact rows has a bounce marker (the inbound
             -- bounce handler stamps jurisdiction_contacts.bounced_at; this takes precedence over
             -- verified/pending). The legacy mail_events signal is OR'd in for threads with no per-contact
             -- row (e.g. a digest-only bounce), so an existing bounce never silently disappears.
+            --
+            -- That fallback is scoped to events NEWER than the last contact save: mail_events rows are never
+            -- deleted, so an unscoped EXISTS pinned the directory to 'bounced' forever — re-entering a good
+            -- address cleared bounced_at (and cleared the flag in the in-memory repo, which is what the
+            -- offline tests asserted) yet the row still read bounced in production.
             EXISTS (
               SELECT 1 FROM jurisdiction_contacts bc
               WHERE bc.geoid = j.geoid AND bc.bounced_at IS NOT NULL
@@ -422,6 +400,7 @@ export function makeDrizzleJurisdictionContactsRepository(
               SELECT 1 FROM mail_events me
               JOIN mail_threads mt ON mt.id = me.thread_id
               WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced'
+                AND (j.contact_updated_at IS NULL OR me.created_at > j.contact_updated_at)
             )
           ) AS bounced,
           j.layer,
@@ -433,34 +412,10 @@ export function makeDrizzleJurisdictionContactsRepository(
           COUNT(*) OVER()::text AS filtered_total,
           COALESCE(w.total, 0)::text AS reports_waiting,
           w.oldest_waiting_at,
-          COALESCE(w.cat_trash, 0)::text AS cat_trash,
-          COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
-          COALESCE(w.cat_graffiti, 0)::text AS cat_graffiti,
-          COALESCE(w.cat_hazard, 0)::text AS cat_hazard,
-          COALESCE(w.cat_encampment, 0)::text AS cat_encampment,
-          COALESCE(w.cat_water, 0)::text AS cat_water,
-          COALESCE(w.cat_other, 0)::text AS cat_other
+          ${categoryCountsProjection(sql, "w")}
         FROM jurisdictions j
-        LEFT JOIN LATERAL (
-          -- "Waiting" = open, un-routed reports (the same statuses save-and-route would flip): excludes
-          -- acknowledged/in_progress (already routed) and rejected/resolved (closed). So reportsWaiting
-          -- is the backlog needing a contact, and it drops to 0 once the jurisdiction is routed.
-          SELECT
-            COUNT(*) AS total,
-            -- Oldest still-waiting report; shares the exact waiting predicate below so it agrees with total.
-            MIN(r.created_at) AS oldest_waiting_at,
-            COUNT(*) FILTER (WHERE r.category = 'trash') AS cat_trash,
-            COUNT(*) FILTER (WHERE r.category = 'recycling') AS cat_recycling,
-            COUNT(*) FILTER (WHERE r.category = 'graffiti') AS cat_graffiti,
-            COUNT(*) FILTER (WHERE r.category = 'hazard') AS cat_hazard,
-            COUNT(*) FILTER (WHERE r.category = 'encampment') AS cat_encampment,
-            COUNT(*) FILTER (WHERE r.category = 'water') AS cat_water,
-            COUNT(*) FILTER (WHERE r.category = 'other') AS cat_other
-          FROM reports r
-          WHERE r.jurisdiction_geoid = j.geoid
-            AND r.deleted_at IS NULL
-            AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
-        ) w ON true
+        LEFT JOIN waiting w ON w.geoid = j.geoid
+        LEFT JOIN routed lr ON lr.geoid = j.geoid
         WHERE true
         ${search}
         ${methodFilter}
@@ -554,14 +509,6 @@ export function makeDrizzleJurisdictionContactsRepository(
         centroid: [r.clng, r.clat],
         geometry: r.geometry,
       }
-    },
-
-    async markContactBounced(email: string): Promise<void> {
-      await sql`
-        UPDATE jurisdiction_contacts
-        SET bounced_at = now()
-        WHERE email = ${email}
-      `
     },
   }
 }

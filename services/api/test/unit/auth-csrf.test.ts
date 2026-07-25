@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import type { FastifyRequest } from "fastify"
 import { AppError, ErrorCode } from "@civfix/shared"
-import { csrfProtect, csrfTokenForSession, CSRF_HEADER } from "../../src/auth/csrf.js"
+import { makeCsrf, CSRF_HEADER } from "../../src/auth/csrf.js"
 import { CSRF_COOKIE, SESSION_COOKIE, SESSION_COOKIE_HOST } from "../../src/auth/transport.js"
 
 /** Minimal FastifyRequest stub carrying just the cookies + headers + url csrfProtect reads. */
@@ -29,6 +29,12 @@ async function expectForbidden(p: Promise<unknown>): Promise<void> {
 }
 
 const SESSION = "session-token-value"
+
+// The injected env IS the seam under test (C1): both halves are taken off ONE instance, exactly as
+// di.ts builds one per container.
+const { protect: csrfProtect, tokenForSession: csrfTokenForSession } = makeCsrf({
+  SESSION_SIGNING_KEY: "unit-test-session-signing-key",
+})
 
 describe("csrfProtect (session-bound token, L3)", () => {
   it("passes when the header carries the token derived from THIS session", async () => {
@@ -102,10 +108,12 @@ describe("csrfProtect (session-bound token, L3)", () => {
     await expect(csrfProtect(req({}))).resolves.toBeUndefined()
   })
 
-  it("TRANSITIONAL: the legacy double-submit is accepted ONLY under /v1/admin/", async () => {
-    // The operator console still mints unbound tokens (routes/admin/auth.routes.ts). Until it derives
-    // them, its requests fall back — and nothing else does.
-    await expect(
+  it("has NO legacy double-submit fallback, not even under /v1/admin/", async () => {
+    // The transitional fallback accepted a plain cookie==header pair for the whole operator API, so any
+    // cookie-writing sibling origin (or an XSS on any *.civfix.org host) could plant a pair and forge an
+    // operator mutation. It is deleted: admin sign-in mints session-BOUND tokens like the citizen surface
+    // (routes/admin/auth.routes.ts), so the admin path is held to the same check as everything else.
+    await expectForbidden(
       csrfProtect(
         req({
           url: "/v1/admin/users/abc/role",
@@ -113,17 +121,19 @@ describe("csrfProtect (session-bound token, L3)", () => {
           headers: { [CSRF_HEADER]: "legacy" },
         }),
       ),
-    ).resolves.toBeUndefined()
+    )
 
-    await expectForbidden(
+    // ...and the session-bound token still works there, so the operator console is not locked out.
+    const token = await csrfTokenForSession(SESSION)
+    await expect(
       csrfProtect(
         req({
-          url: "/v1/reports",
-          cookies: { [SESSION_COOKIE]: SESSION, [CSRF_COOKIE]: "legacy" },
-          headers: { [CSRF_HEADER]: "legacy" },
+          url: "/v1/admin/users/abc/role",
+          cookies: { [SESSION_COOKIE]: SESSION, [CSRF_COOKIE]: token },
+          headers: { [CSRF_HEADER]: token },
         }),
       ),
-    )
+    ).resolves.toBeUndefined()
   })
 })
 
@@ -137,5 +147,32 @@ describe("csrfTokenForSession", () => {
     expect(a.length).toBeGreaterThan(20)
     // The session token itself must not be recoverable from (or embedded in) the CSRF value.
     expect(a).not.toContain(SESSION)
+  })
+
+  it("both halves key off the INJECTED env, so a foreign instance's token never verifies (C1)", async () => {
+    // This is the failure the DI seam exists to prevent: minting under one env while verifying under
+    // another. If either half reached for a module-global instead of its injected env, the cross-instance
+    // token below would verify (same key) and the same-instance token would be the only thing rejected.
+    const other = makeCsrf({ SESSION_SIGNING_KEY: "a-different-signing-key" })
+    const foreign = await other.tokenForSession(SESSION)
+    const mine = await csrfTokenForSession(SESSION)
+    expect(foreign).not.toBe(mine)
+
+    await expectForbidden(
+      csrfProtect(
+        req({
+          cookies: { [SESSION_COOKIE]: SESSION },
+          headers: { [CSRF_HEADER]: foreign },
+        }),
+      ),
+    )
+    await expect(
+      other.protect(
+        req({
+          cookies: { [SESSION_COOKIE]: SESSION },
+          headers: { [CSRF_HEADER]: foreign },
+        }),
+      ),
+    ).resolves.toBeUndefined()
   })
 })

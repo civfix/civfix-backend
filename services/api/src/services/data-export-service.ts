@@ -1,12 +1,14 @@
 
 import type { Sql } from "../db/client.js"
-import type { Mailer, Storage } from "@civfix/shared/interfaces"
+import type { Mailer } from "@civfix/shared/interfaces"
 import type { UserStore } from "../auth/stores.js"
 
+// No Storage dep: the export is assembled in memory and EMAILED as a single JSON attachment, so nothing
+// is ever written to R2 (a leftover `storage` field from an earlier upload-the-export design was injected
+// by the wiring and read by nothing).
 export interface DataExportServiceDeps {
   sql: Sql
   mailer: Mailer
-  storage: Storage
   users: UserStore
   fromNoReply: string
 }
@@ -66,16 +68,22 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         { id: string; report_id: string; body: string; created_at: Date; deleted_at: Date | null }[]
       >([])
 
+      // chat_messages carries all three room families; EXACTLY ONE of cleanup_id / report_id / group_id is
+      // set per row (see the roomKind discriminator). Exporting only cleanup_id left every report-chat and
+      // group message in the file with `cleanup_id: null` and no way for the user to tell which
+      // conversation it came from, so all three ride along, each nullable.
       const chatMessages = sql<
         {
           id: string
-          cleanup_id: string
+          cleanup_id: string | null
+          report_id: string | null
+          group_id: string | null
           body: string | null
           created_at: Date
           deleted_at: Date | null
         }[]
       >`
-        SELECT id, cleanup_id, body, created_at, deleted_at
+        SELECT id, cleanup_id, report_id, group_id, body, created_at, deleted_at
         FROM chat_messages
         WHERE sender_id = ${userId}
         ORDER BY created_at DESC

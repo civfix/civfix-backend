@@ -1056,7 +1056,14 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
   it("emits one cleanup_cancelled notification per OTHER member, through the service (not raw SQL)", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })
-    const bells: { userId: string; type: string; body?: string; link?: string }[] = []
+    const bells: {
+      userId: string
+      type: string
+      titleKey?: string
+      bodyKey?: string
+      vars?: Record<string, string | number>
+      link?: string
+    }[] = []
     const svc = makeCleanupService({
       repo,
       counters: new InMemoryCounterStore(),
@@ -1065,7 +1072,9 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
           bells.push({
             userId,
             type: input.type,
-            ...(input.body !== undefined ? { body: input.body } : {}),
+            ...(input.titleKey !== undefined ? { titleKey: input.titleKey } : {}),
+            ...(input.bodyKey !== undefined ? { bodyKey: input.bodyKey } : {}),
+            ...(input.vars !== undefined ? { vars: input.vars } : {}),
             ...(input.link !== undefined ? { link: input.link } : {}),
           })
           return Promise.resolve({
@@ -1089,10 +1098,140 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     // the raw INSERT it replaced honored none of them.
     expect(bells.map((b) => b.userId).sort()).toEqual([ALICE, BOB].sort())
     expect(bells.every((b) => b.type === "cleanup_cancelled")).toBe(true)
-    expect(bells[0]!.body).toContain("Storm warning")
-    expect(bells[0]!.link).toBe(`/cleanups/${created.id}`)
+    // Asserted over EVERY bell rather than bells[0]: the fan-out is now concurrent (CANCEL_FANOUT_
+    // CONCURRENCY), so arrival order is not part of the contract — every recipient carrying the reason
+    // and the deep link is. The copy travels as catalog KEYS + a {{reason}} var, never as literal English
+    // (the pipeline renders them in each recipient's locale), which is why this asserts the keys.
+    expect(
+      bells.every(
+        (b) =>
+          b.titleKey === "notification.cleanup_cancelled.title" &&
+          b.bodyKey === "notification.cleanup_cancelled.body_reason",
+      ),
+    ).toBe(true)
+    expect(bells.every((b) => b.vars?.reason === "Storm warning")).toBe(true)
+    expect(bells.every((b) => b.link === `/cleanups/${created.id}`)).toBe(true)
     // The canceller never rings themselves.
     expect(bells.some((b) => b.userId === ORG)).toBe(false)
+  })
+
+  it("a cancellation with NO reason selects the reason-less body key and sends no vars", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const bells: { bodyKey?: string; vars?: Record<string, string | number> }[] = []
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: {
+        createNotification: (_userId, input) => {
+          bells.push({
+            ...(input.bodyKey !== undefined ? { bodyKey: input.bodyKey } : {}),
+            ...(input.vars !== undefined ? { vars: input.vars } : {}),
+          })
+          return Promise.resolve({
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          })
+        },
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+
+    // A blank/whitespace reason is normalized to null upstream, so there is no {{reason}} to interpolate:
+    // the reason-carrying body would otherwise render a dangling "Reason:" on the attendee's lock screen.
+    await svc.cancelCleanup(created.id, "   ", ORG)
+
+    expect(bells).toEqual([{ bodyKey: "notification.cleanup_cancelled.body" }])
+  })
+
+  it("only a FRESH transition rings the roster: re-cancelling pushes no second bell", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const bells: string[] = []
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      notifier: {
+        createNotification: (userId, input) => {
+          bells.push(userId)
+          return Promise.resolve({
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          })
+        },
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+    expect(bells).toEqual([ALICE])
+
+    // Cancelling twice is still a legal 200 + DTO (idempotent at the HTTP layer)...
+    const second = await svc.cancelCleanup(created.id, "Storm warning", ORG)
+    expect(second.status).toBe("cancelled")
+    // ...but the bell is NOT idempotent at the receiver, so a host (or a retrying client) looping
+    // /cancel must not push every attendee's lock screen on each pass. Same for the timeline row.
+    expect(bells).toEqual([ALICE])
+    expect(
+      repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel"),
+    ).toHaveLength(1)
+  })
+
+  it("one recipient's failure does not abandon the rest of the roster (per-recipient isolation)", async () => {
+    const CAROL = "44444444-4444-4444-4444-444444444444"
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    repo.seedUser({ id: CAROL, displayName: "Carol" })
+    const delivered: string[] = []
+    const warned: { userId?: string; cleanupId?: string }[] = []
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      logger: {
+        warn: (obj) => {
+          warned.push(obj as { userId?: string; cleanupId?: string })
+        },
+      },
+      notifier: {
+        createNotification: async (userId, input) => {
+          // Yield first so the rejection surfaces through a real await, the way a prefs read or a push
+          // adapter would fail — not synchronously at call time.
+          await Promise.resolve()
+          // A single poisoned recipient (a bad prefs row, a push-adapter error) used to abandon every
+          // remaining attendee: ONE try/catch wrapped the whole sequential loop.
+          if (userId === ALICE) throw new Error("prefs row corrupt")
+          delivered.push(userId)
+          return {
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          }
+        },
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+    await svc.joinCleanup(created.id, CAROL)
+
+    const dto = await svc.cancelCleanup(created.id, null, ORG)
+
+    expect(dto.status).toBe("cancelled")
+    expect(delivered.sort()).toEqual([BOB, CAROL].sort())
+    // The failure is attributed to the ONE recipient it belongs to. A single try/catch around the whole
+    // fan-out logs once for the batch with no userId and tells you nothing about who was skipped; this
+    // asserts the blast radius is one attendee wide.
+    expect(warned).toHaveLength(1)
+    expect(warned[0]!.userId).toBe(ALICE)
+    expect(warned[0]!.cleanupId).toBe(created.id)
   })
 
   it("a notifier failure never fails the cancellation itself (best-effort, like every other bell)", async () => {

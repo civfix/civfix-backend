@@ -39,12 +39,21 @@ function acsUrl(year: number, forClause: string, inClause: string | null, key: s
   return `https://api.census.gov/data/${year}/acs/acs5?${params.toString()}`
 }
 
+/**
+ * The Census geography columns a response may carry, in the order they CONCATENATE into a GEOID
+ * (state "06" + county "037" = "06037"; state "06" + place "44000" = "0644000"). Only these are used, and
+ * always in this order — never header order — so an extra column (a `NAME` get-variable, a Census column
+ * reshuffle) can never end up inside a geoid. Add a level here to support it; an unlisted level is ignored,
+ * which is why every caller must fetch only the levels above.
+ */
+const ACS_GEO_COLUMNS = ["state", "county", "place"] as const
+
 export function parseAcs(rows: unknown[][]): { geoid: string; population: number }[] {
   if (!Array.isArray(rows) || rows.length < 2) return []
   const header = (rows[0] ?? []).map(String)
   const varIdx = header.indexOf(ACS_POP_VAR)
   if (varIdx < 0) return []
-  const geoCols = header.map((_h, i) => i).filter((i) => i !== varIdx)
+  const geoCols = ACS_GEO_COLUMNS.map((c) => header.indexOf(c)).filter((i) => i >= 0 && i !== varIdx)
   const out: { geoid: string; population: number }[] = []
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r]

@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core"
+import { posts } from "./posts.js"
 import { reports } from "./reports.js"
 import type { MEDIA_KIND_VALUES, MEDIA_PURPOSE_VALUES, MEDIA_STATUS_VALUES } from "./types.js"
 
@@ -24,9 +25,12 @@ export const mediaAssets = pgTable(
       .primaryKey()
       .default(sql`gen_random_uuid()`),
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
+    // NOTE: bare uuid with NO .references() — matching the DDL (0025). chat_messages / dm_messages are
+    // RANGE-partitioned with a composite PK(id, created_at), so there is no single-column key to FK
+    // against, and this ONE column carries either room kind's message id.
     chatMessageId: uuid("chat_message_id"),
     // Social-feed post media (0051): a claimed upload is stamped with post_id + purpose='post'.
-    postId: uuid("post_id"),
+    postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
     uploadId: uuid("upload_id").notNull(),
     kind: text("kind").$type<MediaKind>().notNull(),
     codec: text("codec"),

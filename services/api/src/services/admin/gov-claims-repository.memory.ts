@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { pageInMemoryById } from "./pagination.js"
 import {
   type GovCheckRecord,
   type GovClaimRecord,
@@ -90,21 +90,10 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
-    const limit = clampLimit(args.limit)
-    const anchor = decodeCursor(args.cursor)
-    let start = 0
-    if (anchor) {
-      const idx = rows.findIndex((r) => r.id === anchor.id)
-      start = idx >= 0 ? idx + 1 : rows.length
-    }
-    const slice = rows.slice(start, start + limit + 1)
-    if (slice.length <= limit) {
-      return { records: slice, nextCursor: null }
-    }
-    const records = slice.slice(0, limit)
-    const last = records[records.length - 1]
-    const nextCursor = last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null
-    return { records, nextCursor }
+    return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
+      createdAt: r.createdAt,
+      id: r.id,
+    }))
   }
 
   async getClaim(id: string): Promise<GovClaimRecord | null> {

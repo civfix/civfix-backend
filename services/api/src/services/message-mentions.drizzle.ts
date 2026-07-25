@@ -6,10 +6,9 @@ import type { UserMentionDTO } from "@civfix/shared"
 // table. Only the table name (and, for posts, the id-column name) differs, so one parameterized repo
 // serves all of them. `table`/`idColumn` are module-constant union literals (never user input),
 // interpolated as postgres.js identifiers (`sql(table)` / `sql(idColumn)`).
-export type MentionTable =
-  | "chat_message_mentions"
-  | "report_message_user_mentions"
-  | "post_mentions"
+// ("report_message_user_mentions" is gone with the per-report discussion stack — report messages ride the
+// chat table; see src/db/schema/message_mentions.ts.)
+export type MentionTable = "chat_message_mentions" | "post_mentions"
 
 // The owning-row FK column: 'message_id' for the chat/report tables, 'post_id' for post_mentions (0051).
 export type MentionIdColumn = "message_id" | "post_id"

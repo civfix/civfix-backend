@@ -22,6 +22,17 @@ export const es: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.title": "Te mencionaron",
   "notification.report_mention.body": "Alguien te mencionó en una discusión de reporte.",
 
+  "notification.post.like.title": "Nuevo me gusta",
+  "notification.post.like.body": "A {{name}} le gustó tu publicación.",
+  "notification.post.repost.title": "Nueva republicación",
+  "notification.post.repost.body": "{{name}} republicó tu publicación.",
+  "notification.post.reply.title": "Nueva respuesta",
+  "notification.post.reply.body": "{{name}} respondió a tu publicación.",
+  "notification.post.quote.title": "Nueva cita",
+  "notification.post.quote.body": "{{name}} citó tu publicación.",
+  "notification.post.mention.title": "{{name}} te mencionó",
+  "notification.post.mention.body": "{{name}} te mencionó en una publicación.",
+
   "notification.chat_mention.title": "{{name}} te mencionó",
   "notification.chat_reply.title": "{{name}} te respondió",
 
@@ -38,6 +49,11 @@ export const es: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_role.demoted.body": "Ya no eres coanfitrión de {{title}}.",
   "notification.cleanup_role.removed.title": "Eliminado del evento",
   "notification.cleanup_role.removed.body": "Se te eliminó de {{title}}.",
+
+  "notification.cleanup_cancelled.title": "Evento cancelado",
+  "notification.cleanup_cancelled.body": "Este evento ha sido cancelado por el anfitrión.",
+  "notification.cleanup_cancelled.body_reason":
+    "Este evento ha sido cancelado por el anfitrión. Motivo: {{reason}}",
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Tu código de acceso a civfix",

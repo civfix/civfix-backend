@@ -34,12 +34,29 @@ function sign(body: string): string {
   return createHmac("sha256", SECRET).update(body).digest("hex")
 }
 
-function rfc822(opts: { from: string; to: string; subject?: string; body?: string }): Buffer {
+/**
+ * `auth` is the RFC 8601 `Authentication-Results` header our MTA stamps. M7 made the threading path
+ * FAIL CLOSED on anything but a DMARC-aligned pass — an ABSENT header is `unknown`, not `pass` — because
+ * threading is what grants a message authority (report status transitions, an "official city reply"
+ * mirrored into the PUBLIC report chat, a push to the reporter). So a fixture that wants to be threaded
+ * MUST carry a passing verdict; omit `auth` to exercise the unauthenticated lane.
+ */
+function rfc822(opts: {
+  from: string
+  to: string
+  subject?: string
+  body?: string
+  auth?: string
+}): Buffer {
   const lines = [`From: ${opts.from}`, `To: ${opts.to}`]
+  if (opts.auth !== undefined) lines.push(`Authentication-Results: ${opts.auth}`)
   if (opts.subject !== undefined) lines.push(`Subject: ${opts.subject}`)
   lines.push("", opts.body ?? "")
   return Buffer.from(lines.join("\n"), "utf8")
 }
+
+/** A DMARC-aligned pass, as Cloudflare Email Routing's MTA stamps it. */
+const DMARC_PASS = "civfix.org; spf=pass; dkim=pass header.d=lacity.gov; dmarc=pass"
 
 describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
   let h: PgHarness
@@ -90,7 +107,13 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
     const seeded = await makeDrizzleMailRepository(h.sql).createThread({ threadToken: "0a0a0a0a0a0a0a0a0a0a0a0a", subject: "Pothole" })
     const key = `${INBOUND_PENDING_PREFIX}reply-1.eml`
     const res = await ingest(
-      rfc822({ from: "clerk@lacity.gov", to: "reply+0a0a0a0a0a0a0a0a0a0a0a0a@civfix.org", subject: "Re: Pothole", body: "We are on it." }),
+      rfc822({
+        from: "clerk@lacity.gov",
+        to: "reply+0a0a0a0a0a0a0a0a0a0a0a0a@civfix.org",
+        subject: "Re: Pothole",
+        body: "We are on it.",
+        auth: DMARC_PASS,
+      }),
       key,
     )
     expect(res.statusCode).toBe(202)
@@ -105,6 +128,76 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
     expect(events[0]?.type).toBe("delivered")
     // Pending object consumed.
     expect(storage.get(key)).toBeNull()
+  })
+
+  // --- M7 message-authentication gate --------------------------------------------------------------
+  // A valid thread token used to be sufficient to reach the THREADED path, so anyone who learned a token
+  // could forge `From: publicworks@lacity.gov` and drive the whole side-effect chain: report status ->
+  // in_progress, their text mirrored into the PUBLIC report chat as an official city reply, and a push to
+  // the reporter. The gate now diverts anything that is not DMARC-aligned to the Inbox with no side
+  // effects, and FAILS CLOSED on a missing header (which is indistinguishable from a bypassed MTA).
+
+  it("M7: a spoofed reply with a VALID token but NO Authentication-Results is filed in the Inbox, not threaded", async () => {
+    const seeded = await makeDrizzleMailRepository(h.sql).createThread({
+      threadToken: "0b0b0b0b0b0b0b0b0b0b0b0b",
+      subject: "Pothole",
+    })
+    const key = `${INBOUND_PENDING_PREFIX}spoof-unknown.eml`
+    const res = await ingest(
+      rfc822({
+        from: "publicworks@lacity.gov",
+        to: "reply+0b0b0b0b0b0b0b0b0b0b0b0b@civfix.org",
+        subject: "Re: Pothole",
+        body: "Marking this resolved.",
+      }),
+      key,
+    )
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toMatchObject({ accepted: true, outcome: "inbox" })
+
+    // Nothing reached the thread: no inbound message, no delivered event, still not unread.
+    const repo = makeDrizzleMailRepository(h.sql)
+    expect((await repo.getThread(seeded.id))?.messages).toHaveLength(0)
+    const events = await h.sql<{ type: string }[]>`
+      SELECT type FROM mail_events WHERE thread_id = ${seeded.id}
+    `
+    expect(events).toHaveLength(0)
+    expect((await repo.getThreadRecord(seeded.id))?.unread).toBe(false)
+
+    // It IS visible to the operator, stamped UNVERIFIED so the console can badge it.
+    const rows = await h.sql<{ status: string; headers: Record<string, unknown> | null }[]>`
+      SELECT status, headers FROM inbound_emails
+    `
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.status).toBe("unread")
+    expect(rows[0]?.headers?.["x-civfix-auth-verdict"]).toBe("unknown")
+  })
+
+  it("M7: an explicit dmarc=fail with a valid token is likewise Inbox-only, stamped 'fail'", async () => {
+    await makeDrizzleMailRepository(h.sql).createThread({
+      threadToken: "0c0c0c0c0c0c0c0c0c0c0c0c",
+      subject: "Graffiti",
+    })
+    const key = `${INBOUND_PENDING_PREFIX}spoof-fail.eml`
+    const res = await ingest(
+      rfc822({
+        from: "publicworks@lacity.gov",
+        to: "reply+0c0c0c0c0c0c0c0c0c0c0c0c@civfix.org",
+        subject: "Re: Graffiti",
+        body: "nope",
+        auth: "civfix.org; spf=fail; dkim=fail; dmarc=fail",
+      }),
+      key,
+    )
+    expect(res.json()).toMatchObject({ accepted: true, outcome: "inbox" })
+    const rows = await h.sql<{ headers: Record<string, unknown> | null }[]>`
+      SELECT headers FROM inbound_emails
+    `
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.headers?.["x-civfix-auth-verdict"]).toBe("fail")
+    // No mail_messages row was written anywhere.
+    const msgs = await h.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM mail_messages`
+    expect(msgs[0]!.n).toBe(0)
   })
 
   it("lands a no-token message in inbound_emails (catch-all inbox)", async () => {

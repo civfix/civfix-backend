@@ -182,6 +182,44 @@ describe("listPeople", () => {
     expect(page2.nextCursor).toBeNull()
   })
 
+  // M-people-blocks: the block filter on people SEARCH is symmetric — a block hides both accounts from
+  // each other's search results, in whichever direction it was created.
+  it("excludes an account the viewer blocked", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedUser({ id: C, displayName: "Carol" })
+    repo.seedBlock(A, B)
+
+    const res = await service.listPeople({ limit: 20 }, { userId: A })
+    const ids = res.items.map((p) => p.id)
+    expect(ids).not.toContain(B)
+    expect(ids).toContain(C)
+  })
+
+  it("excludes an account that blocked the viewer (other direction)", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedBlock(B, A)
+
+    const asA = await service.listPeople({ limit: 20 }, { userId: A })
+    expect(asA.items.map((p) => p.id)).not.toContain(B)
+    // ...and the block hides the blocker from the blocked user too.
+    const asB = await service.listPeople({ limit: 20 }, { userId: B })
+    expect(asB.items.map((p) => p.id)).not.toContain(A)
+  })
+
+  it("keeps blocked accounts visible to an ANONYMOUS viewer (no viewer, no block rows)", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedBlock(A, B)
+
+    const res = await service.listPeople({ limit: 20 }, { userId: null })
+    expect(res.items.map((p) => p.id).sort()).toEqual([A, B].sort())
+  })
+
   it("attaches an avatar gradient to each person", async () => {
     const { repo, service } = makeHarness()
     repo.seedUser({ id: A, displayName: "Alice" })
@@ -349,8 +387,33 @@ describe("getProfile", () => {
     expect(profile.stats).toEqual({ reports: 4, fixed: 3, cleanups: 2 })
     expect(profile.pastEvents.map((e) => e.title)).toEqual(["Newer", "Older"])
     expect(profile.avatar).toEqual(avatarGradient(A))
-    expect(profile.pastEvents[0]!.joined).toBe(true)
+    // `joined` is the VIEWER's membership, not the profile owner's: C is looking at A's events, so the
+    // cards must not claim C is attending them (and myRole stays omitted). See the next test for the
+    // owner's own view, where every card IS genuinely joined.
+    expect(profile.pastEvents[0]!.joined).toBe(false)
+    expect(profile.pastEvents[0]!.myRole).toBeUndefined()
     expect(profile.pastEvents[0]!.organizer.id).toBe(A)
+  })
+
+  it("pastEvents are joined only on the OWNER's own view, never for another or anonymous viewer", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedCleanup(makeCleanupRecord({ organizerUserId: A, title: "Organized" }))
+    repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Attended" }), [A])
+
+    // A's own profile: every card is an event A organized or attended, so `joined` is true for all.
+    const own = await service.getProfile(A, { userId: A })
+    expect(own.profile.pastEvents).toHaveLength(2)
+    expect(own.profile.pastEvents.map((e) => e.joined)).toEqual([true, true])
+
+    // C (and an anonymous viewer) has no membership in A's events, so none of the cards are joined.
+    const other = await service.getProfile(A, { userId: C })
+    expect(other.profile.pastEvents.map((e) => e.joined)).toEqual([false, false])
+    expect(other.profile.pastEvents.map((e) => e.myRole)).toEqual([undefined, undefined])
+
+    const anon = await service.getProfile(A, { userId: null })
+    expect(anon.profile.pastEvents.map((e) => e.joined)).toEqual([false, false])
   })
 
   it("isFollowing is false for an anonymous viewer", async () => {

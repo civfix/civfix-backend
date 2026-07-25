@@ -6,7 +6,8 @@
  *     upserting on the 0035 partial-unique index (cleanup_id, user_id) WHERE source='event';
  *   - a re-log OVERWRITES per row and adjusts the user_jurisdiction_hours rollup by the per-row delta
  *     (no double-count), including a mixed re-log that raises one attendee and lowers another;
- *   - the geoid-less branch writes the ledger but never touches the rollup.
+ *   - the geoid-less branch writes the ledger and adds nothing to the rollup, but DOES reverse a prior
+ *     credit out of the jurisdiction the event has moved out of.
  *
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
@@ -150,6 +151,101 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     `
     expect(ledger[0]!.hours).toBe(2.5)
     expect(await rollupFor(org)).toBe(0)
+  })
+
+  /**
+   * The event MOVED OUT of all coverage (a host edited its location, so cleanup-service re-resolved
+   * jurisdiction_geoid to null) and the hours were re-logged. The geoid-less branch used to upsert the
+   * ledger row and return, leaving the prior credit on the OLD jurisdiction's PUBLIC leaderboard forever —
+   * with the ledger row that backed it now saying "no jurisdiction". The in-memory twin
+   * (volunteer-hours-repository.memory.ts) always reversed in this case, so fake and prod disagreed.
+   */
+  it("re-logging after the event moves OUT of coverage reverses the old jurisdiction's rollup", async () => {
+    const org = await newUser("Hours Moved Org")
+    const alice = await newUser("Hours Moved Alice")
+    const cleanupId = await newCleanup(org)
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+    await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: GEOID,
+      entries: [
+        { userId: org, hours: 2 },
+        { userId: alice, hours: 3 },
+      ],
+    })
+    expect(await rollupFor(org)).toBe(2)
+    expect(await rollupFor(alice)).toBe(3)
+
+    // Same event, now outside coverage, re-logged with new amounts.
+    const credited = await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: null,
+      entries: [
+        { userId: org, hours: 4 },
+        { userId: alice, hours: 1 },
+      ],
+    })
+    expect(credited).toBe(2)
+
+    // The ledger keeps ONE row per attendee, with the new hours and NO jurisdiction.
+    const ledger = await h.sql<{ user_id: string; hours: number; geoid: string | null }[]>`
+      SELECT user_id, hours::float8 AS hours, jurisdiction_geoid AS geoid
+      FROM volunteer_hours WHERE cleanup_id = ${cleanupId} AND source = 'event'
+    `
+    expect(ledger).toHaveLength(2)
+    expect(ledger.every((r) => r.geoid === null)).toBe(true)
+    expect(Object.fromEntries(ledger.map((r) => [r.user_id, r.hours]))).toEqual({
+      [org]: 4,
+      [alice]: 1,
+    })
+
+    // ...and the old jurisdiction's leaderboard no longer carries the withdrawn credit.
+    expect(await rollupFor(org)).toBe(0)
+    expect(await rollupFor(alice)).toBe(0)
+    const totals = await repo.totalsFor(alice)
+    expect(totals.byJurisdiction).toEqual([])
+    expect(totals.totalHours).toBe(0)
+  })
+
+  /**
+   * Re-logging an event that NEVER had a jurisdiction must still be a plain overwrite: the reversal arm
+   * only fires for a prior credit that was actually booked somewhere.
+   */
+  it("re-logging a never-mapped event just overwrites (no phantom reversal)", async () => {
+    const org = await newUser("Hours NoGeo Twice")
+    const cleanupId = randomUUID()
+    await h.sql`
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
+      VALUES (
+        ${cleanupId}, ${org}, 'site', 'No-geo re-log',
+        ST_SetSRID(ST_MakePoint(-118.31, 34.11), 4326),
+        now() - interval '1 day', 'done'
+      )
+    `
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+    await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: org, hours: 1 }] })
+    const credited = await repo.logEventHours({
+      actorId: org,
+      cleanupId,
+      geoid: null,
+      entries: [{ userId: org, hours: 6 }],
+    })
+    expect(credited).toBe(1)
+
+    const ledger = await h.sql<{ hours: number; geoid: string | null }[]>`
+      SELECT hours::float8 AS hours, jurisdiction_geoid AS geoid FROM volunteer_hours
+      WHERE cleanup_id = ${cleanupId} AND source = 'event' AND user_id = ${org}
+    `
+    expect(ledger).toHaveLength(1)
+    expect(ledger[0]!.hours).toBe(6)
+    expect(ledger[0]!.geoid).toBeNull()
+    const rows = await h.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM user_jurisdiction_hours WHERE user_id = ${org}
+    `
+    expect(rows[0]!.count).toBe(0)
   })
 
   // --- M21: the upsert overwrote hours in place with no history ------------------------------------

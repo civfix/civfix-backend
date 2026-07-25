@@ -91,6 +91,15 @@ export interface Env {
   CF_ACCESS_SERVICE_TOKENS: string[]
 
   CF_TURNSTILE_SECRET?: string
+  /**
+   * Hostnames a Turnstile token may legitimately have been minted on (L16), lowercased comma list —
+   * e.g. `civfix.org,www.civfix.org`. siteverify echoes the issuing page's `hostname`; asserting it is
+   * what stops a token minted on some OTHER page using our sitekey (an attacker's page embedding the
+   * widget, or a low-value form) from being replayed against the anon-report / home-turf endpoints.
+   * EMPTY (the default) skips the assertion and logs a one-time notice — a real, lesser gap, kept visible
+   * rather than silent. [OPT]
+   */
+  CF_TURNSTILE_HOSTNAMES: string[]
   CF_EMAIL_WEBHOOK_SECRET?: string
   CF_API_TOKEN?: string
 

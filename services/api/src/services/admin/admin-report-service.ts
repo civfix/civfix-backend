@@ -1,6 +1,7 @@
 
-import { AppError } from "@civfix/shared"
+import { AppError, ErrorCode } from "@civfix/shared"
 import type {
+  AdminReportCounts,
   AdminReportDTO,
   AdminReportListItemDTO,
   AdminReportListQuery,
@@ -15,6 +16,7 @@ import type {
 import type { OutboundAttachment } from "@civfix/shared/interfaces"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
+import { toPersonDTO } from "./admin-person.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import {
   JURISDICTION_REPLY_NOTE_PREFIX,
@@ -50,6 +52,19 @@ export {
 
 const ROUTABLE_FROM_STATUSES = new Set<AdminReportStatus>(["submitted", "held", "published"])
 
+/**
+ * The message routeToJurisdiction's duplicate-send gate throws with. Exported because the auto-forward job
+ * has to tell THIS conflict ("already delivered, nothing to do") apart from a conflict raised further down
+ * the same call — notably a mailer 409 for an unapproved sender, which is a real failure. Both surface as
+ * AppError.conflict, so the code alone cannot separate them; matching this exact string can.
+ */
+export const ALREADY_ROUTED_CONFLICT = "This report has already been sent to its jurisdiction"
+
+/** True when `err` is specifically routeToJurisdiction's duplicate-send refusal (see above). */
+export function isAlreadyRoutedConflict(err: unknown): boolean {
+  return err instanceof AppError && err.code === ErrorCode.CONFLICT && err.message === ALREADY_ROUTED_CONFLICT
+}
+
 export function makeAdminReportService(deps: AdminReportServiceDeps): AdminReportService {
   const now = deps.now ?? (() => new Date())
   const presignMedia =
@@ -74,7 +89,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
   }
 
   function toListItem(record: AdminReportRecord, ref: Date): AdminReportListItemDTO {
-    const reporter = record.reporter
     return {
       id: record.id,
       category: record.category,
@@ -82,12 +96,13 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       flagged: record.flagged,
       title: record.title,
       place: record.place,
-      reporter: {
-        id: reporter?.id ?? null,
-        name: reporter?.name ?? "Anonymous",
-        handle: reporter?.handle ?? "anonymous",
-        joined: reporter?.joinedAt ? toRelAbs(reporter.joinedAt, ref).abs : "-",
-      },
+      // A report may genuinely have NO reporter (the anon submit path), which is what the contract's
+      // nullable reporter.id encodes — `null` here is a supported state, not missing data.
+      reporter: toPersonDTO(record.reporter, ref, {
+        id: null,
+        name: "Anonymous",
+        handle: "anonymous",
+      }),
       confirmations: record.confirmations,
       submitted: toRelAbs(record.createdAt, ref),
       coords: [record.lat, record.lng],
@@ -97,10 +112,14 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
   }
 
   function toTimelineDTO(record: AdminReportTimelineRecord, ref: Date): ReportTimelineItem {
+    // Prefer the row's OWN recorded kind (0031) — only setStatus and appendSystemTimeline write it, so most
+    // rows arrive here without one and fall through to the reply note-prefix sniff, then the status.
     const kind: ReportTimelineItem["kind"] =
-      record.note?.startsWith(JURISDICTION_REPLY_NOTE_PREFIX) === true
-        ? "reply"
-        : timelineKindForStatus(record.status)
+      (record.kind ?? null) !== null
+        ? (record.kind as ReportTimelineItem["kind"])
+        : record.note?.startsWith(JURISDICTION_REPLY_NOTE_PREFIX) === true
+          ? "reply"
+          : timelineKindForStatus(record.status)
     return {
       who: record.who,
       what: record.note ?? statusChangeNote(record.status),
@@ -120,9 +139,21 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
+      // FACET COUNTS ON PAGE 1 ONLY (the policy every admin list now shares — users/events/reports).
+      // The counts describe the whole searched set, so they do not change as the operator scrolls; the
+      // console reads them off the first page and the chips are already rendered by the time page 2 is
+      // fetched. Recomputing them per page bought nothing and cost a facet aggregate per scroll step.
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listReports(args),
-        deps.repo.countByBucket({ q: args.q }),
+        args.cursor === null
+          ? deps.repo.countByBucket({ q: args.q })
+          : Promise.resolve<AdminReportCounts>({
+              all: 0,
+              submitted: 0,
+              in_progress: 0,
+              completed: 0,
+              flagged: 0,
+            }),
       ])
       return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },
@@ -316,6 +347,31 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         throw AppError.notRoutable("No routing contact for this report's jurisdiction")
       }
 
+      // IDEMPOTENCY, not a one-shot latch. What this endpoint sends is the full citizen packet (identity,
+      // exact coordinates, street address, photos), and the send commits in outboundMail BEFORE the status
+      // write — so a failure downstream surfaces as a 500 with the packet already emailed, and an
+      // operator's natural retry would mail the city a second copy. What must be refused is therefore a
+      // repeat of a send that ALREADY REACHED the destination; refusing every non-not_sent state instead
+      // strands the report, because there is no other path that re-mails the packet (sendFollowup is
+      // text-only to the ON-FILE contact with no attachments, jurisdictions save-and-route only flips the
+      // status, and the auto-forward job routes through THIS method):
+      //   bounced        -> the contact address is dead; the report never landed. Re-routable.
+      //   sendFailed     -> every send attempt threw (a 'failed' mail_event, no 'sent' one). The thread is
+      //                     stamped 'sent' before the mailer runs, so this is the only way to see it.
+      //   different toAddr -> the operator is correcting the destination (a one-off override, or a
+      //                     jurisdiction contact fixed in the directory since). The old address got the
+      //                     packet; the right one has not. M5 still constrains an override to the
+      //                     jurisdiction's own domain, so this cannot be turned into an exfiltration retry.
+      // Everything else (sent / delivered / replied to the SAME address) stays a 409, which is what makes a
+      // double-click or a retry-after-500 safe.
+      const existing = await deps.repo.getOutreach(id)
+      const landed =
+        existing.status === "sent" || existing.status === "delivered" || existing.status === "replied"
+      const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)
+      if (landed && existing.sendFailed !== true && !retargeted) {
+        throw AppError.conflict(ALREADY_ROUTED_CONFLICT)
+      }
+
       const media = await deps.repo.listMedia(id)
       const mediaLinks: string[] = []
       const attachments: OutboundAttachment[] = []
@@ -325,9 +381,11 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
         const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
         if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue
+        // Resolve the MIME first: the filename's extension is DERIVED from it, so the two cannot disagree.
+        const contentType = attachmentContentType(m.contentType, bytes)
         attachments.push({
-          filename: attachmentFilename(m.r2Key, attachments.length),
-          contentType: m.contentType && m.contentType.trim() !== "" ? m.contentType : "image/jpeg",
+          filename: attachmentFilename(m.r2Key, attachments.length, contentType),
+          contentType,
           content: bytes,
         })
       }
@@ -408,6 +466,53 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
 }
 
 /**
+ * The MIME type to label a routed packet attachment with.
+ *
+ * `AdminReportMediaRecord.contentType` exists for this, but nothing in production populates it: `media_assets`
+ * stores no MIME column (its `codec` is never written either) and the r2 key carries no extension, so the
+ * request's declared contentType is kept only as the stored object's own Content-Type in R2. Intake accepts
+ * PNG and WebP as well as JPEG, so the previous flat `image/jpeg` fallback mislabeled those in the city's
+ * inbox — some mail clients then refuse to preview the photo the packet exists to deliver.
+ *
+ * We already hold the bytes (they are the attachment), so the type is SNIFFED from the magic number: correct
+ * for exactly the three formats intake allows, with image/jpeg as the last resort for anything else. A repo
+ * that does supply a real contentType still wins.
+ */
+export function attachmentContentType(
+  stored: string | null | undefined,
+  bytes: Uint8Array,
+): string {
+  if (stored !== null && stored !== undefined && stored.trim() !== "") return stored
+  return sniffImageMime(bytes) ?? "image/jpeg"
+}
+
+/** Magic-number MIME sniff for the image formats media intake accepts; null when none matches. */
+function sniffImageMime(bytes: Uint8Array): string | null {
+  // JPEG: FF D8 FF
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg"
+  }
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  if (bytes.length >= PNG.length && PNG.every((b, i) => bytes[i] === b)) return "image/png"
+  // WebP: "RIFF" <4-byte size> "WEBP"
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp"
+  }
+  return null
+}
+
+/**
  * M5: constrain `contactEmailOverride` on POST /admin/reports/:id/route.
  *
  * What that endpoint sends is a FULL report packet: the reporter's display name, the exact lat/lng, the
@@ -442,6 +547,16 @@ export function assertOverrideDomainAllowed(override: string, knownContact: stri
       `A one-off destination must be on the jurisdiction's own mail domain (@${knownDomain}).`,
     )
   }
+}
+
+/**
+ * Case-insensitive email compare for "is this the same destination we already mailed?". Mail local-parts
+ * are case-sensitive per RFC but no real municipal mailbox distinguishes them, and the console prefills the
+ * on-file contact — so a case-only difference must NOT read as a corrected address (which would re-open the
+ * duplicate-send window the 409 exists to close).
+ */
+function sameAddress(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
 /** The lowercased domain of an email address, or null when there is not exactly one usable "@" split. */

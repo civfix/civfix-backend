@@ -3,16 +3,42 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 const ROOTS = ["services/api/src", "services/media-worker/src"]
-const ALLOW_UNSAFE = new Set([
-  "services/api/src/db/migrate.ts",
-  "services/api/src/db/backfill-jurisdictions-core.ts",
-  // Same reviewed shape as the jurisdictions backfill above: `ORDER BY ${sql.unsafe(...)}` over the
-  // JURISDICTION_LAYER_RANK_CASE module constant in db/sql/jurisdiction.ts. No request data reaches it,
-  // and it is an offline CLI, not a served route.
-  "services/api/src/db/backfill-reference-codes-core.ts",
-  "services/api/src/db/sql/jurisdiction.ts",
-  "services/api/src/services/media-worker-repo.ts",
+
+/**
+ * Reviewed dynamic-SQL call sites, keyed `<file>:<method>` so blessing one method never silently blesses
+ * another in the same file. Every entry's query text is a code-defined constant or a migration file the
+ * deploy ships — never request data.
+ *
+ * `raw` / `identifier` are NOT allowlistable for SQL: dynamic identifiers go through postgres.js's
+ * `${sql(name)}` helper over a closed TypeScript union instead (see message-mentions.drizzle.ts).
+ */
+const ALLOW_DYNAMIC_SQL = new Set([
+  // The migration runner: each file's text is read from services/api/drizzle and applied in simple-query
+  // mode (multi-statement), on a reserved connection — hence `reserved.unsafe`, not `sql.unsafe`.
+  "services/api/src/db/migrate.ts:unsafe",
+  // `ORDER BY ${sql.unsafe(...)}` over the JURISDICTION_RESOLVE_ORDER_BY module constant in
+  // db/sql/jurisdiction.ts, inside the offline backfill loops. No request data reaches it.
+  "services/api/src/db/backfill-keyset.ts:unsafe",
+  // The canonical resolver SQL: a module-constant string with bound positional params.
+  "services/api/src/db/sql/jurisdiction.ts:unsafe",
+  // Monthly partition DDL whose name + bounds are derived from a CLOCK, never from user input.
+  "services/api/src/services/media-worker-repo.ts:unsafe",
 ])
+
+/**
+ * Same-named methods that are NOT SQL, kept out of the allowlist above so that stays a list of SQL sites
+ * only: sharp's `.raw()` raw-pixel decode in the media worker's perceptual-hash sandbox.
+ */
+const NOT_SQL = new Set(["services/media-worker/src/sandbox/phash.ts:raw"])
+
+/**
+ * Any receiver, not just an identifier literally named `sql`: the tag is aliased as `tx` / `reserved` /
+ * `sqlTag` all over the codebase, so anchoring on the name would let `tx.unsafe(userInput)` ship unflagged.
+ * Bracket access (`sql["unsafe"](…)`) is matched too. A destructured `const { unsafe } = sql` still evades
+ * this scanner — the reason the gate is a tripwire, not a proof.
+ */
+const DYNAMIC_SQL_CALL =
+  /\.\s*(unsafe|raw|identifier)\s*\(|\[\s*["'`](unsafe|raw|identifier)["'`]\s*\]\s*\(/g
 
 const walk = (dir) =>
   readdirSync(dir).flatMap((name) => {
@@ -168,10 +194,14 @@ const violations = []
 for (const root of ROOTS) {
   for (const file of walk(root)) {
     const code = stripComments(readFileSync(file, "utf8"))
-    if (/\bsql\.identifier\s*\(/.test(code)) violations.push(`${file}: sql.identifier() is forbidden`)
-    if (/\bsql\.raw\s*\(/.test(code)) violations.push(`${file}: sql.raw() is forbidden`)
-    if (/\bsql\.unsafe\s*\(/.test(code) && !ALLOW_UNSAFE.has(file))
-      violations.push(`${file}: sql.unsafe() outside the reviewed allowlist`)
+    const reported = new Set()
+    for (const match of code.matchAll(DYNAMIC_SQL_CALL)) {
+      const method = match[1] ?? match[2]
+      const key = `${file}:${method}`
+      if (ALLOW_DYNAMIC_SQL.has(key) || NOT_SQL.has(key) || reported.has(key)) continue
+      reported.add(key)
+      violations.push(`${file}: .${method}() outside the reviewed allowlist`)
+    }
   }
 }
 

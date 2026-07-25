@@ -867,6 +867,37 @@ describe("listReportsInBBox", () => {
     expect(pending.title).toBeUndefined() // null title is omitted from the DTO
   })
 
+  // firstReadyStillLateral's policy: a `ready` VIDEO that already has its poster is a legitimate still, and
+  // a thumbless video is not (its r2_key is an .mp4 and must never be handed back as a thumbnail). The event
+  // gallery always did this; the map/search/post-card sites now do too, from the one shared fragment.
+  it("previews a video's poster but never a thumbless video's raw key", async () => {
+    const { repo, service } = makeHarness()
+    const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
+
+    const posterOnly = repo.seedReport({
+      status: "published", visibility: "public", category: "trash",
+      lat: 34.10, lng: -118.35, title: "Dumping caught on video",
+    })
+    repo.seedMedia({
+      reportId: posterOnly.id, status: "ready", kind: "video",
+      r2Key: "uploads/clip.mp4", thumbKey: "thumbs/clip.jpg",
+    })
+
+    const thumbless = repo.seedReport({
+      status: "published", visibility: "public", category: "hazard",
+      lat: 34.11, lng: -118.34, title: "Video still transcoding",
+    })
+    repo.seedMedia({
+      reportId: thumbless.id, status: "ready", kind: "video",
+      r2Key: "uploads/raw.mp4", thumbKey: null,
+    })
+
+    const high = await service.listReportsInBBox(bbox, null, null, 16)
+    const byId = new Map(high.pins.map((p) => [p.id, p]))
+    expect(byId.get(posterOnly.id)!.thumbUrl).toBe("memory://thumbs/clip.jpg")
+    expect(byId.get(thumbless.id)!.thumbUrl).toBeNull()
+  })
+
   it("filters by category when provided", async () => {
     const { repo, service } = makeHarness()
     repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })

@@ -22,9 +22,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import type { Sql } from "../db/client.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
-import { makeJurisdictionService } from "../services/jurisdiction-service.js"
-import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
+import { makeGeoidResolver, makeReverseGeocoder } from "../services/route-geo-helpers.js"
+import { makeMediaPresigner } from "../services/media-presign.js"
 import {
   makeReportService,
   type ReportRepository,
@@ -41,7 +40,7 @@ import { makeDrizzleDiscussionRepository } from "../services/discussion-reposito
 import { effectiveJurisdictionHandle } from "../services/discussion-mentions.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
-import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
+import { CappedBBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
 
 const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
@@ -52,18 +51,6 @@ const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 // second while the 60s Cache-Control warms; search is a deliberate user action, so it keeps the tight 30.
 const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
-
-/**
- * M14: hard ceiling on the requested viewport AREA in square degrees.
- *
- * Defense-in-depth behind the zoom clamp (services/report-clustering.ts effectiveMapZoom): even fully
- * clustered, a world-spanning bbox still makes the DB scan up to the candidate cap, and the response is
- * uncacheable in practice because the attacker jitters the bounds. The whole globe is 360x180 = 64,800
- * deg^2; this cap admits a hemispheric/continental view (which is a real, if rare, client state) and
- * rejects only the pathological world-scan. Mirrors the ordering refine in ./query-encoding.ts — a 422
- * with a clear message rather than a silent degradation.
- */
-export const MAX_MAP_BBOX_AREA_DEG2 = 40_000
 
 export interface ReportServiceOverrides {
   repo: ReportRepository
@@ -95,10 +82,8 @@ const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
 
 const MapReportsQuerySchema = z
   .object({
-    bbox: BBoxQueryParam.refine(
-      (b) => (b.east - b.west) * (b.north - b.south) <= MAX_MAP_BBOX_AREA_DEG2,
-      { message: "bbox is too large; zoom in and request a smaller viewport" },
-    ),
+    // M14 area cap (./query-encoding.ts) behind the zoom clamp in services/report-clustering.ts.
+    bbox: CappedBBoxQueryParam,
     categories: CategoriesQueryParam.optional(),
     types: TypesQueryParam.optional(),
     zoom: ZoomQueryParam,
@@ -182,6 +167,8 @@ export async function registerReportRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   function service(): ReportService {
     const overrides = app.reportOverrides
     if (overrides) {
@@ -192,7 +179,7 @@ export async function registerReportRoutes(
         ...(overrides.resolveJurisdictionCode !== undefined
           ? { resolveJurisdictionCode: overrides.resolveJurisdictionCode }
           : {}),
-        presignMedia: overrides.presignMedia ?? defaultPresign(container),
+        presignMedia: overrides.presignMedia ?? makeMediaPresigner(container.storage),
         ...(overrides.reverseGeocode !== undefined ? { reverseGeocode: overrides.reverseGeocode } : {}),
         ...(overrides.loadLinkedEventsForReports !== undefined
           ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
@@ -288,20 +275,10 @@ export async function registerReportRoutes(
           unread: row?.unread ?? 0,
         }
       },
-      resolveJurisdictionGeoid: async (lat, lng) => {
-        const jurisdiction = makeJurisdictionService({
-          sql,
-          geocoder: container.geocoder,
-          jobs: container.jobs,
-          jurisdictionLookup: container.jurisdictionLookup,
-        })
-        const resolved = await jurisdiction.resolveForPoint(lat, lng)
-        return resolved?.geoid ?? null
-      },
+      resolveJurisdictionGeoid: makeGeoidResolver(container),
       resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
-      reverseGeocode: async (lat, lng) =>
-        (await container.streetReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
-      presignMedia: defaultPresign(container),
+      reverseGeocode: makeReverseGeocoder(container),
+      presignMedia: makeMediaPresigner(container.storage),
       jobs: container.jobs,
       isReportVerified: (userId) => isReportVerified(sql, userId),
       awardReportHours: (userId, reportId, geoid) =>
@@ -379,15 +356,6 @@ async function isReportVerified(sql: Sql, userId: string): Promise<boolean> {
     SELECT report_verified FROM user_moderation WHERE user_id = ${userId} LIMIT 1
   `
   return rows[0]?.report_verified ?? false
-}
-
-function defaultPresign(container: Container): ReportServiceDeps["presignMedia"] {
-  return async (r2Key: string, thumbKey: string | null) => {
-    const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
-    if (thumbKey === null) return { url }
-    const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
-    return { url, thumbUrl }
-  }
 }
 
 function ownerOf(request: FastifyRequest): { userId?: string | undefined; anonSessionId?: string | undefined } {

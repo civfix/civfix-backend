@@ -184,7 +184,7 @@ describe("gov claim verify", () => {
         status: "verified",
         evidence: null,
         note: null,
-        actorId: null,
+        actorId: "op-1",
       }),
     ).rejects.toMatchObject({ httpStatus: 404 })
   })
@@ -229,25 +229,27 @@ describe("gov claim approve", () => {
 
   /**
    * M4: a role change is only half a privilege change — the OLD role stays baked into every live session's
-   * Redis projection until it expires (and sliding expiry defers that indefinitely). This path can DEMOTE a
-   * current OPERATOR to gov_admin, so failing to revoke left operator authority live in every one of their
-   * sessions. The grant now goes through applyRoleChange, which always revokes.
+   * Redis projection until it expires (and sliding expiry defers that indefinitely). The escalation
+   * direction needs the revoke as much as a demotion would: the account's warm sessions keep serving
+   * roles:["citizen"], so without the revoke the new gov_admin keeps browsing as a plain citizen until it
+   * re-logs in. The grant goes through applyRoleChange (services/admin/role-change.ts), which always
+   * revokes. (The operator-demotion case this used to cover is now refused outright — see H3 below.)
    */
   it("M4: revokes ALL the elevated user's sessions after the role change", async () => {
     const { repo, users, svc, revoked } = harness()
-    const existing = users.seedUser({ email: "dana@waynesboro-va.gov", role: "operator" })
+    const existing = users.seedUser({ email: "dana@waynesboro-va.gov", role: "citizen" })
     repo.seedClaim({ id: "GOV-1", contactEmail: "dana@waynesboro-va.gov", status: "pending" })
 
     await svc.approve("GOV-1", { actorId: "op-1", note: null })
 
     expect(users.users.get(existing.id)?.role).toBe("gov_admin")
-    // Without this the demoted operator keeps roles:["operator"] in every warm session.
+    // Without this the elevated user keeps the OLD role in every warm session, indefinitely.
     expect(revoked).toEqual([existing.id])
   })
 
   it("M4: a revoke failure SURFACES (a half-applied privilege change must not 200)", async () => {
     const { repo, users } = harness()
-    users.seedUser({ email: "dana@waynesboro-va.gov", role: "operator" })
+    const existing = users.seedUser({ email: "dana@waynesboro-va.gov", role: "citizen" })
     repo.seedClaim({ id: "GOV-1", contactEmail: "dana@waynesboro-va.gov", status: "pending" })
     const svc = makeGovClaimsService({
       repo,
@@ -256,12 +258,60 @@ describe("gov claim approve", () => {
       now: () => NOW,
     })
     await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toThrow("redis down")
+    // applyRoleChange writes BEFORE revoking, so the failure must surface with the role already changed —
+    // the recoverable direction (retry; the revoke is idempotent). The reverse order would leave a window
+    // where the sessions are gone but a re-login re-mints the OLD role.
+    expect(users.users.get(existing.id)?.role).toBe("gov_admin")
+    expect(repo.claims.get("GOV-1")?.status).toBe("approved")
+  })
+
+  /**
+   * H3: an OPERATOR account is not changeable from the console (the same rule admin-user-service.setRole
+   * enforces). Approving a claim whose contact_email happens to be an operator's address would demote them
+   * to gov_admin and revoke all their sessions — one operator stripping another through the gov queue
+   * instead of the role endpoint. Refused before any write.
+   */
+  it("H3: refuses to re-role an OPERATOR account through the gov queue (403, nothing written)", async () => {
+    const { repo, users, svc, revoked } = harness()
+    const operator = users.seedUser({ email: "op@city.gov", role: "operator" })
+    repo.seedClaim({ id: "GOV-1", contactEmail: "op@city.gov", status: "pending" })
+
+    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    // No half-applied change: the role stands, the claim stays pending, no sessions were revoked.
+    expect(users.users.get(operator.id)?.role).toBe("operator")
+    expect(repo.claims.get("GOV-1")?.status).toBe("pending")
+    expect(repo.claims.get("GOV-1")?.userId).toBeNull()
+    expect(revoked).toEqual([])
+  })
+
+  /**
+   * A claim's contact_email is unverified free text typed into the form: elevating a PRE-EXISTING account
+   * whose email is not verified would let an operator (or a duped one) grant gov_admin on an ARBITRARY
+   * victim account by entering its address.
+   */
+  it("refuses to elevate a pre-existing account whose email is NOT verified (422)", async () => {
+    const { repo, users, svc, revoked } = harness()
+    const victim = users.seedUser({
+      email: "victim@example.com",
+      role: "citizen",
+      emailVerified: false,
+    })
+    repo.seedClaim({ id: "GOV-1", contactEmail: "victim@example.com", status: "pending" })
+
+    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
+      httpStatus: 422,
+    })
+    expect(users.users.get(victim.id)?.role).toBe("citizen")
+    expect(repo.claims.get("GOV-1")?.status).toBe("pending")
+    expect(revoked).toEqual([])
   })
 
   it("rejects approving a claim with no contact email", async () => {
     const { repo, svc } = harness()
     repo.seedClaim({ id: "GOV-1", contactEmail: null, status: "pending" })
-    await expect(svc.approve("GOV-1", { actorId: null, note: null })).rejects.toMatchObject({
+    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
       httpStatus: 422,
     })
   })
@@ -302,14 +352,14 @@ describe("gov claim approve", () => {
   it("rejects approving a non-pending claim (conflict)", async () => {
     const { repo, svc } = harness()
     repo.seedClaim({ id: "GOV-1", contactEmail: "x@gov.test", status: "approved" })
-    await expect(svc.approve("GOV-1", { actorId: null, note: null })).rejects.toMatchObject({
+    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
       httpStatus: 409,
     })
   })
 
   it("throws notFound for an unknown claim", async () => {
     const { svc } = harness()
-    await expect(svc.approve("nope", { actorId: null, note: null })).rejects.toMatchObject({
+    await expect(svc.approve("nope", { actorId: "op-1", note: null })).rejects.toMatchObject({
       httpStatus: 404,
     })
   })
@@ -330,14 +380,14 @@ describe("gov claim reject", () => {
   it("rejecting a non-pending claim is a conflict", async () => {
     const { repo, svc } = harness()
     repo.seedClaim({ id: "GOV-1", contactEmail: "x@gov.test", status: "approved" })
-    await expect(svc.reject("GOV-1", { reason: "late", actorId: null })).rejects.toMatchObject({
+    await expect(svc.reject("GOV-1", { reason: "late", actorId: "op-1" })).rejects.toMatchObject({
       httpStatus: 409,
     })
   })
 
   it("rejecting an unknown claim is a notFound", async () => {
     const { svc } = harness()
-    await expect(svc.reject("nope", { reason: "x", actorId: null })).rejects.toMatchObject({
+    await expect(svc.reject("nope", { reason: "x", actorId: "op-1" })).rejects.toMatchObject({
       httpStatus: 404,
     })
   })

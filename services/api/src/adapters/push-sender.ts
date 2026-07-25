@@ -9,6 +9,7 @@ import { makeApnsDispatcher } from "./push-apns.js"
 import { makeFcmDispatcher } from "./push-fcm.js"
 import { makeWebPushDispatcher } from "./push-webpush.js"
 import { makeExpoDispatcher, isExpoPushToken, type ExpoPushConfig } from "./push-expo.js"
+import { expandIpv6Hextets } from "./net-ipv6.js"
 
 export interface PushSenderConfig {
   apns?: {
@@ -286,18 +287,11 @@ function ipv6ToBytes(input: string): number[] | null {
     const lo = ((nums[2]! << 8) | nums[3]!).toString(16)
     s = `${s.slice(0, cut + 1)}${hi}:${lo}`
   }
-  const halves = s.split("::")
-  if (halves.length > 2) return null
-  const head = halves[0] ? halves[0].split(":") : []
-  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(":") : []) : null
-  let groups: string[]
-  if (tail === null) {
-    groups = head
-  } else {
-    const fill = 8 - head.length - tail.length
-    if (fill < 1) return null
-    groups = [...head, ...Array<string>(fill).fill("0"), ...tail]
-  }
+  // Shared expansion (also used by the per-IP rate limiter); the STRICTNESS is this caller's policy — this
+  // is an SSRF guard, so anything not parseable to exactly 8 well-formed hextets is rejected outright.
+  const { hextets: groups, runs, fill } = expandIpv6Hextets(s)
+  if (runs > 1) return null
+  if (runs === 1 && fill < 1) return null
   if (groups.length !== 8) return null
   const bytes: number[] = []
   for (const g of groups) {

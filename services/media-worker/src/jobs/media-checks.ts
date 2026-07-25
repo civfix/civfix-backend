@@ -8,7 +8,9 @@ import type {
 } from "@civfix/api/media-repo"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
-import { DownloadTooLargeError } from "../download.js"
+import { DownloadTooLargeError, type DownloadFn } from "../download.js"
+import { settleWithin } from "../timeout.js"
+import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
 import { thumbnailKey } from "./media-keys.js"
 import {
   processMedia,
@@ -18,11 +20,8 @@ import {
 
 export * from "./media-pipeline.js"
 
-export type DownloadFn = (
-  r2Key: string,
-  maxBytes: number,
-  signal?: AbortSignal,
-) => Promise<Uint8Array>
+/** Re-exported so callers keep one import site for the job's deps (the type is owned by download.ts). */
+export type { DownloadFn }
 
 export class JobTimeoutError extends Error {
   constructor(ms: number) {
@@ -41,35 +40,26 @@ export class MediaInfraError extends Error {
   }
 }
 
+/**
+ * Bound a phase of the job by the wall-clock budget. `onTimeout` is where the phase's cancellation goes
+ * (the rejection alone does not stop the work). The timer is unref'd so a pending budget never keeps the
+ * process alive by itself.
+ */
 export function withJobTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      onTimeout?.()
-      reject(new JobTimeoutError(ms))
-    }, ms)
-    if (typeof timer.unref === "function") timer.unref()
-    p.then(
-      (v) => {
-        clearTimeout(timer)
-        resolve(v)
-      },
-      (err: unknown) => {
-        clearTimeout(timer)
-        reject(err instanceof Error ? err : new Error(String(err)))
-      },
-    )
+  return settleWithin(p, ms, {
+    timeoutError: () => new JobTimeoutError(ms),
+    ...(onTimeout ? { onElapsed: onTimeout } : {}),
+    unref: true,
   })
 }
 
-export interface MediaChecksDeps {
+export interface MediaChecksDeps extends JobObsDeps {
   repo: MediaWorkerRepo
   storage: Storage
   abuseChecks: AbuseChecks
   limits: WorkerLimits
   download: DownloadFn
   findPhashDuplicate?: FindPhashDuplicateFn
-  report?: (err: unknown, context?: Record<string, unknown>) => void
-  log?: (line: string, extra?: Record<string, unknown>) => void
 }
 
 export interface MediaChecksPayload {
@@ -93,17 +83,26 @@ export function parsePayload(data: unknown): MediaChecksPayload | null {
   return null
 }
 
-type LogFn = (line: string, extra?: Record<string, unknown>) => void
-type ReportFn = (err: unknown, context?: Record<string, unknown>) => void
+/**
+ * What the job did. `status` is "missing" when the row was already swept — NOTHING was processed or
+ * persisted in that case, which the plain MediaStatus return cannot express (see runMediaChecksJob).
+ * `reportId` is the asset's binding AS LOADED at the start of the job (null for a row that is still
+ * unattached), so a caller does not have to re-read the row it just processed.
+ */
+export interface MediaChecksOutcome {
+  status: MediaStatus | "missing"
+  reportId: string | null
+}
 
-const defaultLog: LogFn = (line, extra) => console.log(line, extra ?? {})
-
-export async function runMediaChecksJob(
+/**
+ * Run the job and report what happened. Prefer this over runMediaChecksJob in the worker: it distinguishes
+ * "row absent" from "row rejected" and hands back the report binding the job already loaded.
+ */
+export async function runMediaChecksJobDetailed(
   payload: MediaChecksPayload,
   deps: MediaChecksDeps,
-): Promise<MediaStatus> {
-  const log = deps.log ?? defaultLog
-  const report = deps.report ?? (() => {})
+): Promise<MediaChecksOutcome> {
+  const { log, report } = resolveJobObs(deps)
 
   let asset: MediaWorkerAsset | null = null
   try {
@@ -119,8 +118,29 @@ export async function runMediaChecksJob(
   }
   if (!asset) {
     log("media.checks: asset not found (already swept?)", { uploadId: payload.uploadId })
-    return "rejected"
+    return { status: "missing", reportId: null }
   }
+  const reportId = asset.reportId ?? null
+  return { status: await processAsset(asset, deps), reportId }
+}
+
+/**
+ * Run the job, returning the persisted MediaStatus.
+ *
+ * CONTRACT WART: a row that no longer exists also returns "rejected", although nothing was rejected or
+ * persisted — callers reading this value cannot tell "row rejected" from "row gone". Kept for the existing
+ * call sites; use runMediaChecksJobDetailed when the difference matters.
+ */
+export async function runMediaChecksJob(
+  payload: MediaChecksPayload,
+  deps: MediaChecksDeps,
+): Promise<MediaStatus> {
+  const outcome = await runMediaChecksJobDetailed(payload, deps)
+  return outcome.status === "missing" ? "rejected" : outcome.status
+}
+
+async function processAsset(asset: MediaWorkerAsset, deps: MediaChecksDeps): Promise<MediaStatus> {
+  const { log, report } = resolveJobObs(deps)
 
   let bytes: Uint8Array
   const downloadAbort = new AbortController()
@@ -176,6 +196,12 @@ export async function runMediaChecksJob(
   try {
     if (result.status !== "rejected" && result.processedBytes) {
       const tKey = result.thumbnailBytes ? thumbnailKey(asset.r2Key) : null
+      // RETRY SEMANTICS: this overwrites r2_key IN PLACE, before applyResult. If the persist below then
+      // fails and pg-boss retries the job, the retry downloads the ALREADY-STRIPPED re-encode: the outcome
+      // is still safe/idempotent, but the original EXIF is gone (so the exifGps signal for the report
+      // cross-check is lost on the retry) and a JPEG is re-encoded a second time at q90 (generation loss).
+      // The order is deliberate anyway: writing the DB status first would publish `ready` while the bytes
+      // clients fetch are still the un-stripped original.
       await Promise.all([
         deps.storage.put(asset.r2Key, result.processedBytes, {
           ...(result.processedContentType !== null
@@ -194,25 +220,24 @@ export async function runMediaChecksJob(
       if (tKey) patch.thumbKey = tKey
     }
 
-    await deps.repo.applyResult(asset.id, patch)
-
+    // ABUSE FLAGS FIRST, THEN THE STATUS. The anon hold-release gate (inline hook AND the 5-minute sweep)
+    // decides whether to publish a held anon report from media status + countOpenAbuseFlags. Writing the
+    // terminal status before the flags leaves a window where the gate sees "all media ready, zero flags"
+    // and publishes a report whose media was supposed to carry a review flag. Flag first and the gate can
+    // only ever be early, never wrong.
+    //
+    // A flag insert that FAILS is therefore infra, not a warning to swallow: the throw propagates to the
+    // catch below and pg-boss retries the (idempotent) job, leaving the row non-terminal in the meantime so
+    // nothing publishes on a missing flag. A retry re-raising the SAME flag is absorbed by the database:
+    // drizzle/0056_abuse_flags_worker_open_unique.sql makes (subject_type, subject_id, reason) unique among
+    // OPEN worker-raised flags and insertAbuseFlag (services/api/src/services/media-worker-repo.ts) inserts
+    // ON CONFLICT DO NOTHING against exactly that partial index — so the moderator sees one row, not N.
+    // The index is scoped to source='worker' on purpose; the unguarded admin/'api' lanes still insert freely.
     for (const flag of result.flags) {
-      try {
-        await deps.repo.insertAbuseFlag({ subjectId: asset.id, reason: flag.reason })
-      } catch (err) {
-        report(err, {
-          job: "media.checks",
-          phase: "abuse-flag",
-          mediaId: asset.id,
-          reason: flag.reason,
-        })
-        log("media.checks: failed to insert abuse_flag", {
-          mediaId: asset.id,
-          reason: flag.reason,
-          err: String(err),
-        })
-      }
+      await deps.repo.insertAbuseFlag({ subjectId: asset.id, reason: flag.reason })
     }
+
+    await deps.repo.applyResult(asset.id, patch)
   } catch (err) {
     report(err, { job: "media.checks", phase: "persist", mediaId: asset.id })
     log("media.checks: persist infra failure, will retry", { mediaId: asset.id, err: String(err) })
@@ -228,10 +253,15 @@ export async function runMediaChecksJob(
       flags: result.flags.map((f) => f.reason),
     })
     if (asset.reportId && deps.repo.enqueueHeldModerationItem) {
+      // CONTRACT LIMIT (not a bug to "fix" here): `kind` is a ModerationKind, whose members are
+      // image | pattern | appeal | gps | duplicate | user_report - there is NO "video". A held VIDEO
+      // therefore also enqueues as kind:"image" (and 0007_admin_phase2.sql's CHECK would reject anything
+      // else outright). The asset's real kind is carried in the reason string so the operator console is
+      // not actively misleading; widening ModerationKind is a @civfix/shared change, not a worker one.
       await deps.repo
         .enqueueHeldModerationItem({
           reportId: asset.reportId,
-          reason: "NSFW model over threshold",
+          reason: `NSFW model over threshold (${asset.kind})`,
           kind: "image",
           note: result.note ?? null,
         })
@@ -252,7 +282,12 @@ export async function runMediaChecksJob(
   return result.status
 }
 
-function logRejection(asset: MediaWorkerAsset, log: LogFn, report: ReportFn, note: string | null): void {
+function logRejection(
+  asset: MediaWorkerAsset,
+  log: JobLogFn,
+  report: JobReportFn,
+  note: string | null,
+): void {
   log("media.checks: rejected", { mediaId: asset.id, kind: asset.kind, note })
   report(new Error(note ?? "media rejected"), {
     job: "media.checks",
@@ -262,17 +297,31 @@ function logRejection(asset: MediaWorkerAsset, log: LogFn, report: ReportFn, not
   })
 }
 
+/**
+ * Persist the terminal 'rejected' status for bad input.
+ *
+ * The WRITE is the point of this function, so a failed write must NOT be swallowed: the job would then
+ * complete successfully, pg-boss would never retry, and the row would sit at 'validating' forever — no
+ * sweep reconciles an ATTACHED asset (orphan sweep only reaps rows bound to nothing), so the report's
+ * media, and any anon hold-release gate waiting on it, wedges permanently. Rethrow as MediaInfraError
+ * instead: the job is idempotent, so the retry re-derives the same rejection.
+ */
 export async function persistRejection(
   asset: MediaWorkerAsset,
   deps: MediaChecksDeps,
   note: string,
 ): Promise<void> {
-  const log = deps.log ?? defaultLog
-  const report = deps.report ?? (() => {})
+  const { log, report } = resolveJobObs(deps)
   try {
     await deps.repo.applyResult(asset.id, { status: "rejected" })
   } catch (err) {
     report(err, { job: "media.checks", phase: "reject", mediaId: asset.id })
+    log("media.checks: failed to persist rejection, will retry", {
+      mediaId: asset.id,
+      note,
+      err: String(err),
+    })
+    throw new MediaInfraError("reject", err)
   }
   logRejection(asset, log, report, note)
 }

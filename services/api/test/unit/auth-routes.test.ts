@@ -1,11 +1,26 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 import { resolvePostLoginRedirect } from "../../src/routes/auth.routes.js"
 import type { OAuthConfig } from "../../src/auth/oauth.js"
 
+/**
+ * The Apple OAuth state cookie derives SameSite/Secure from isProd() (see appleStart), so the PROD shape
+ * (None+Secure, required for Apple's cross-site form_post) is only reachable through that seam. Flipped
+ * per test, exactly as errors-http-mapper.test.ts does; every OTHER export of src/env.js stays real and
+ * the flag defaults to false, so the rest of this file sees the unmodified test-env behavior. Read at
+ * REQUEST time by the route, so it is flipped around the inject only - never around buildServer, whose
+ * boot-time isProd() reads (cookie defaults, cors, helmet) must stay in their test-env shape.
+ */
+let prod = false
+vi.mock("../../src/env.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/env.js")>()
+  return { ...actual, isProd: () => prod }
+})
+
 let harness: AuthHarness | undefined
 
 afterEach(async () => {
+  prod = false
   if (harness) {
     await harness.app.close()
     harness = undefined
@@ -125,7 +140,21 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(res.json().enabledProviders).toEqual(["apple", "google", "email"])
   })
 
-  it("GET /auth/apple/start redirects to Apple (form_post) with a SameSite=None state cookie", async () => {
+  /**
+   * Lower-cased ATTRIBUTE segments (everything after `name=value`) of the one Set-Cookie line. Attributes
+   * are matched as whole segments, never as substrings of the whole header, so a random signed cookie
+   * value can never satisfy (or falsify) an attribute assertion.
+   */
+  function cookieAttrs(setCookie: string | string[] | undefined): string[] {
+    const list = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : []
+    expect(list.length).toBe(1)
+    return list[0]!
+      .split(";")
+      .slice(1)
+      .map((seg) => seg.trim().toLowerCase())
+  }
+
+  it("GET /auth/apple/start redirects to Apple (form_post) with an httpOnly state cookie carrying the state", async () => {
     harness = await makeAuthHarness({ oauthConfig: OAUTH_WITH_APPLE_WEB })
     const res = await harness.app.inject({ method: "GET", url: "/auth/apple/start" })
     expect(res.statusCode).toBe(302)
@@ -133,11 +162,39 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(location).toContain("appleid.apple.com")
     expect(location).toContain("response_type=code")
     expect(location).toContain("response_mode=form_post")
-    const setCookie = res.headers["set-cookie"]
-    const rawCookie = (
-      Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie)
-    ).toLowerCase()
-    expect(rawCookie).toContain("samesite=none")
+
+    // The cookie is the CSRF binding for the callback: it must carry the same state the redirect asks
+    // Apple to echo back, and must not be readable by script.
+    const state = new URL(location).searchParams.get("state")
+    expect(typeof state).toBe("string")
+    expect(state!.length).toBeGreaterThan(20)
+    expect(parseCookies(res.headers["set-cookie"])["civfix_oauth"]).toContain(state!)
+
+    const attrs = cookieAttrs(res.headers["set-cookie"])
+    expect(attrs).toContain("httponly")
+    expect(attrs).toContain("path=/")
+    expect(attrs).toContain("max-age=600")
+    // Outside production the cookie degrades to Lax and is NOT Secure: a None+Secure cookie is DROPPED by
+    // the browser over plain http, so every dev callback would fail "Invalid OAuth state". Apple cannot
+    // post to a localhost callback anyway, so nothing cross-site is lost here. The PROD shape - the one
+    // the flow actually depends on - is pinned by the next test.
+    expect(attrs).toContain("samesite=lax")
+    expect(attrs).not.toContain("secure")
+  })
+
+  it("GET /auth/apple/start sets the state cookie SameSite=None + Secure in PRODUCTION (cross-site form_post)", async () => {
+    harness = await makeAuthHarness({ oauthConfig: OAUTH_WITH_APPLE_WEB })
+    // Flip the seam for the request only: Apple returns via a CROSS-SITE POST (response_mode=form_post),
+    // which a Lax cookie is NOT sent on, so over https the state cookie MUST be None - and None is only
+    // honored together with Secure. Losing either attribute breaks the entire web Apple sign-in flow.
+    prod = true
+    const res = await harness.app.inject({ method: "GET", url: "/auth/apple/start" })
+    expect(res.statusCode).toBe(302)
+    const attrs = cookieAttrs(res.headers["set-cookie"])
+    expect(attrs).toContain("samesite=none")
+    expect(attrs).toContain("secure")
+    expect(attrs).toContain("httponly")
+    expect(attrs).toContain("path=/")
   })
 
   it("GET /auth/apple/start is rejected when the web Services ID is not configured", async () => {

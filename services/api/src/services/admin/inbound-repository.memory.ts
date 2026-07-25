@@ -1,17 +1,18 @@
 /**
  * In-memory InboundRepository for unit tests (the inbound processor, sweep, and admin inbox routes run
  * fully offline against this). Mirrors the Drizzle impl's behavior: insertIdempotent dedups on
- * message_id; list pages newest-first with status/recipient/q filters; get/setStatus by id.
+ * message_id; list pages newest-first with status/recipient/q filters; get/setStatus by id, with setStatus
+ * recording the `inbox.status_changed` audit row (actor + transition) the Drizzle impl writes in-tx.
  */
 
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import {
   localPartOf,
-  toPreview,
   type InboundEmailInsert,
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
+import { toPreview } from "./mail-preview.js"
 import type {
   InboundEmailDTO,
   InboundEmailListItemDTO,
@@ -26,8 +27,22 @@ interface StoredInbound extends InboundEmailInsert {
   receivedAt: Date
 }
 
+/**
+ * An audit row setStatus would have written. The Drizzle impl writes `inbox.status_changed` into audit_log
+ * inside the SAME transaction as the UPDATE (L6), so the actor and the transition are recoverable; this
+ * fake used to DROP the actorId argument entirely, which made the operator threading unobservable offline.
+ */
+export interface RecordedInboxAudit {
+  actorId: string | null
+  action: "inbox.status_changed"
+  target: string
+  meta: { status: InboundEmailStatus; priorStatus: InboundEmailStatus }
+}
+
 export class InMemoryInboundRepository implements InboundRepository {
   readonly rows: StoredInbound[] = []
+  /** Audit rows recorded by setStatus, mirroring the Drizzle impl's in-tx writeAudit. */
+  readonly audits: RecordedInboxAudit[] = []
   private tick = 0
 
   private nextDate(base?: Date): Date {
@@ -87,10 +102,21 @@ export class InMemoryInboundRepository implements InboundRepository {
     return Promise.resolve(row ? toDTO(row) : null)
   }
 
-  setStatus(id: string, status: InboundEmailStatus): Promise<boolean> {
+  setStatus(
+    id: string,
+    status: InboundEmailStatus,
+    actorId: string | null = null,
+  ): Promise<boolean> {
     const row = this.rows.find((r) => r.id === id)
     if (!row) return Promise.resolve(false)
+    const priorStatus = row.status
     row.status = status
+    this.audits.push({
+      actorId,
+      action: "inbox.status_changed",
+      target: `inbound_email:${id}`,
+      meta: { status, priorStatus },
+    })
     return Promise.resolve(true)
   }
 }
@@ -102,7 +128,7 @@ function toListItem(r: StoredInbound): InboundEmailListItemDTO {
     recipient: r.recipient ?? "",
     localPart: localPartOf(r.recipient),
     subject: r.subject ?? "",
-    preview: toPreview(r.bodyText),
+    preview: toPreview(r.bodyText, r.bodyHtml),
     ts: r.receivedAt.toISOString(),
     status: r.status,
     unread: r.status === "unread",

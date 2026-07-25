@@ -148,8 +148,11 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
       return { id, r2Key }
     }
 
+    // users.handle is NOT NULL with a CHECK on ^[A-Za-z0-9_]{3,20}$ since 0026 - omitting it made this
+    // whole case fail before it could assert anything.
     const [owner] = await h.sql<{ id: string }[]>`
-      INSERT INTO users (display_name) VALUES ('Orphan Lane Owner') RETURNING id
+      INSERT INTO users (display_name, handle) VALUES ('Orphan Lane Owner', 'orphanlaneowner')
+      RETURNING id
     `
     const [post] = await h.sql<{ id: string }[]>`
       INSERT INTO posts (author_id, body) VALUES (${owner!.id}, 'lane test') RETURNING id
@@ -195,6 +198,38 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     const gone = await h.sql<{ id: string }[]>`SELECT id FROM media_assets WHERE id = ${orphan.id}`
     expect(gone.length).toBe(0)
     expect(storage.get(orphan.r2Key)).toBeNull()
+  })
+
+  /**
+   * The 21000 guard in recordLeakedObjects, against the real statement.
+   *
+   * It is ONE multi-row `INSERT ... ON CONFLICT (r2_key) DO UPDATE`, and Postgres aborts such a statement
+   * with 21000 ("ON CONFLICT DO UPDATE command cannot affect row a second time") when one of its rows
+   * repeats the conflict target — which is why the impl collapses `keys` to a Set first. This write is the
+   * ONLY record of a leak whose media row has already been deleted, so a throw here strands the object in
+   * the bucket permanently. Nothing exercised the dedupe on either side of the seam.
+   */
+  it("records a duplicated leaked key ONCE instead of aborting with 21000", async () => {
+    const key = `uploads/2026/06/${randomUUID()}`
+    const mediaId = randomUUID()
+
+    await expect(
+      repo.recordLeakedObjects?.({ mediaId, keys: [key, key], error: "storage delete failed" }),
+    ).resolves.toBeUndefined()
+
+    const [row] = await h.sql<{ attempts: number; last_error: string | null }[]>`
+      SELECT attempts, last_error FROM media_reap_tombstones WHERE r2_key = ${key}
+    `
+    expect(row).toMatchObject({ attempts: 1, last_error: "storage delete failed" })
+
+    // A SEPARATE call is a genuine retry and must bump — the upsert half of the same statement.
+    await repo.recordLeakedObjects?.({ mediaId, keys: [key], error: "still failing" })
+    const [bumped] = await h.sql<{ attempts: number; last_error: string | null }[]>`
+      SELECT attempts, last_error FROM media_reap_tombstones WHERE r2_key = ${key}
+    `
+    expect(bumped).toMatchObject({ attempts: 2, last_error: "still failing" })
+
+    await repo.clearLeakedObject?.(key)
   })
 
   it("partition maintenance creates next month's chat partition idempotently", async () => {

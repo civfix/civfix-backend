@@ -64,16 +64,14 @@ export async function isJurisdictionSender(
 ): Promise<boolean> {
   const fromDomain = domainOf(mail.from?.address ?? null)
   if (fromDomain === null) return false
-  let dto: Awaited<ReturnType<MailRepository["getThread"]>>
+  let recipients: string[]
   try {
-    dto = await mailRepo.getThread(threadId)
+    recipients = await mailRepo.outboundRecipients(threadId)
   } catch {
     return false
   }
-  if (!dto) return false
-  for (const message of dto.messages) {
-    if (message.dir !== "out") continue
-    const contactDomain = domainOf(message.to)
+  for (const recipient of recipients) {
+    const contactDomain = domainOf(recipient)
     if (contactDomain !== null && domainsAligned(fromDomain, contactDomain)) return true
   }
   return false
@@ -156,6 +154,15 @@ export async function onEventReply(
 ): Promise<void> {
   const cleanupId = thread.cleanupId
   if (cleanupId === null) return
+
+  // M7: same gate as onJurisdictionReply. Everything below writes the sender's body into cleanup_timeline
+  // as an OFFICIAL 'city_reply' the event's organizer + attendees read, so it must come from the contact
+  // we actually mailed on this thread. A mismatch is Inbox-only: the message is already persisted on the
+  // thread by the caller (routeThreaded), it simply drives no side effects.
+  if (!(await isJurisdictionSender(mailRepo, thread.id, mail))) {
+    return
+  }
+
   const cleanupRepo = injectedCleanupRepo ?? makeDrizzleCleanupRepository(container.getDb().sql)
   const fullBody = (mail.text ?? mail.html ?? "").trim()
   const preview = replyPreview(fullBody)
@@ -173,13 +180,25 @@ export function replyPreview(body: string): string {
   return collapsed.length > 140 ? `${collapsed.slice(0, 140)}…` : collapsed
 }
 
+/** How much body CONTENT the derived message-id hashes (bounded so a huge body stays cheap to digest). */
+const DERIVED_ID_BODY_PREFIX_CHARS = 4096
+
+/**
+ * The message_id used for replay dedup: the header when present, else a hash of the message's identity.
+ *
+ * The hash covers a PREFIX OF THE BODY, not just its length: two distinct Message-ID-less messages from
+ * one sender with the same subject and Date header collided on equal body lengths, and the second was
+ * dropped as a replay.
+ */
 export function resolveMessageId(mail: ParsedMail): string {
   if (mail.messageId && mail.messageId.length > 0) return mail.messageId
+  const body = mail.text ?? mail.html ?? ""
   const basis = [
     mail.from?.address ?? "",
     mail.headers["date"] ?? "",
     mail.subject ?? "",
-    String((mail.text ?? mail.html ?? "").length),
+    String(body.length),
+    body.slice(0, DERIVED_ID_BODY_PREFIX_CHARS),
   ].join("|")
   return `derived:${createHash("sha256").update(basis).digest("hex")}`
 }

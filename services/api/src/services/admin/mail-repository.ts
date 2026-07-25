@@ -198,6 +198,13 @@ export interface MailRepository {
    */
   getLastOutboundRecipient(threadId: string): Promise<string | null>
   /**
+   * Every distinct non-empty to_addr civfix has sent to on this thread — by construction the jurisdiction
+   * contacts chosen for it. The M7 sender gate (isJurisdictionSender) compares an inbound reply's domain
+   * against these; it is a narrow read on purpose, since the alternative (getThread) loads up to 500
+   * messages with full bodies + attachments on every threaded inbound.
+   */
+  outboundRecipients(threadId: string): Promise<string[]>
+  /**
    * True when a mail_messages row already carries this message_id. The inbound processor's idempotency
    * guard for the threaded path: a re-delivered reply (webhook + sweep racing the same R2 object) is
    * skipped rather than inserted twice. (The catch-all path dedups via the inbound_emails UNIQUE index.)

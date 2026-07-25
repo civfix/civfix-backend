@@ -1,5 +1,5 @@
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { RealAbuseChecks } from "@civfix/api/adapters/abuse-checks"
 import exifr from "exifr"
@@ -733,7 +733,4 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     expect(repo.get(id)!.status).toBe("ready")
     expect(repo.flags.filter((f) => f.reason === "phash_dup")).toHaveLength(0)
   })
-})
-
-afterEach(() => {
 })

@@ -14,13 +14,14 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
 const PostIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 export async function registerPostRoutes(app: FastifyInstance, container: Container): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   const service = () => container.getPostService()
 
   route(app, "createPost", { preHandler: csrfProtect }, async (request, reply) => {

@@ -21,6 +21,7 @@ import type {
   CleanupMemberRole,
 } from "@civfix/shared"
 import { toRelAbs } from "./admin-format.js"
+import { applyRoleChange } from "./role-change.js"
 
 export interface AdminUserRecord {
   id: string
@@ -90,6 +91,13 @@ export interface ListUsersArgs {
 export interface AdminUserRepository {
   listUsers(args: ListUsersArgs): Promise<{ records: AdminUserRecord[]; nextCursor: string | null }>
   countByFacet(args: { q: string | null }): Promise<AdminUserCounts>
+  /**
+   * Cheap existence probe for the sub-list 404 guard. `getUser` is the heaviest read in this repo (message
+   * COUNT(*)s across chat_messages + dm_messages, report/cleanup counts, the city subquery, a verification
+   * EXISTS) and ran before EVERY reports/events/messages page just to decide whether to 404. Reach matches
+   * getUser's — a soft-deleted account still exists for the console.
+   */
+  userExists(id: string): Promise<boolean>
   getUser(id: string): Promise<AdminUserRecord | null>
   listUserReports(
     id: string,
@@ -371,12 +379,22 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         )
       }
 
-      // L5: the role UPDATE and its user.role_changed audit are ONE transaction in the repo, so a committed
-      // privilege change can never be missing its audit row.
-      const ok = await deps.repo.applyRole(id, { role: input.role, actorId: input.actorId })
-      if (!ok) throw AppError.notFound("User not found")
-      // H2: revoke every live session so the role baked into a warm session cannot outlive the change.
-      await deps.sessions.revokeAll(id)
+      // M4: the ONE role-change path (role-change.ts) — write, then revoke every live session, in that
+      // order. H2 is the reason the revoke is not optional: the OLD role is baked into every warm Redis
+      // session projection, and sliding expiry means an actively-used session never expires on its own.
+      // L5: the role UPDATE and its user.role_changed audit are ONE transaction inside `write`, so a
+      // committed privilege change can never be missing its audit row.
+      await applyRoleChange(
+        {
+          write: async (userId, role) => {
+            const ok = await deps.repo.applyRole(userId, { role, actorId: input.actorId })
+            if (!ok) throw AppError.notFound("User not found")
+          },
+          revokeAll: deps.sessions.revokeAll.bind(deps.sessions),
+        },
+        id,
+        input.role,
+      )
     },
 
     async setVerified(
@@ -407,8 +425,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
 }
 
 async function assertUserExists(repo: AdminUserRepository, id: string): Promise<void> {
-  const user = await repo.getUser(id)
-  if (!user) throw AppError.notFound("User not found")
+  if (!(await repo.userExists(id))) throw AppError.notFound("User not found")
 }
 
 /**

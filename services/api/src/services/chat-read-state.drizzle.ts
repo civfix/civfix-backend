@@ -20,8 +20,9 @@ import type { ChatReadState } from "./threads-service.js"
  * ever moves forward (GREATEST against the existing value, COALESCEd from epoch 0 so a NULL prior value is
  * treated as the floor). Shared by dm_read_state (and any future per-user read-state table with a
  * two-column key + a `last_read_at` column). `table`/key columns are caller-supplied module constants
- * (never user input), interpolated as postgres.js identifiers. cleanup_members keeps a plain UPDATE below
- * because the membership row always pre-exists (an INSERT would violate its other NOT NULL columns).
+ * (never user input), interpolated as postgres.js identifiers. The membership tables (cleanup_members,
+ * report_chat_members, chat_group_members) take the UPDATE-shape sibling below instead: their row always
+ * pre-exists, so an INSERT would violate their other NOT NULL columns.
  */
 export async function monotonicReadWatermark(
   tag: Queryable,
@@ -46,14 +47,55 @@ export async function monotonicReadWatermark(
   `
 }
 
+/**
+ * The UPDATE-shape sibling of monotonicReadWatermark, for the membership tables whose row always
+ * pre-exists (cleanup_members / report_chat_members / chat_group_members — an INSERT would violate their
+ * other NOT NULL columns). Same monotonic guarantee: GREATEST against the current value, COALESCEd from
+ * epoch 0 so a NULL prior watermark is the floor. A non-member is a silent no-op (0 rows matched).
+ *
+ * `at` is EITHER a timestamp or a message reference: `{ messagesTable, messageId, scopeColumn }` sets the
+ * watermark to that message's created_at via a FROM-join, and matches nothing unless the message belongs
+ * to the SAME room (so an ack naming another room's message can't move this watermark). `table` / key
+ * columns / the message table + scope column are caller-supplied module constants (never user input),
+ * interpolated as postgres.js identifiers.
+ */
+export async function monotonicReadWatermarkUpdate(
+  tag: Queryable,
+  table: string,
+  keys: Record<string, string>,
+  at: Date | { messagesTable: string; messageId: string; scopeColumn: string; scopeId: string },
+): Promise<void> {
+  const where = Object.entries(keys).reduce(
+    (acc, [c, v], i) => (i === 0 ? tag`m.${tag(c)} = ${v}` : tag`${acc} AND m.${tag(c)} = ${v}`),
+    tag``,
+  )
+  if (at instanceof Date) {
+    await tag`
+      UPDATE ${tag(table)} m
+      SET last_read_at = GREATEST(COALESCE(m.last_read_at, to_timestamp(0)), ${at})
+      WHERE ${where}
+    `
+    return
+  }
+  await tag`
+    UPDATE ${tag(table)} m
+    SET last_read_at = GREATEST(COALESCE(m.last_read_at, to_timestamp(0)), cm.created_at)
+    FROM ${tag(at.messagesTable)} cm
+    WHERE ${where}
+      AND cm.id = ${at.messageId}
+      AND cm.${tag(at.scopeColumn)} = ${at.scopeId}
+  `
+}
+
 export function makeDrizzleChatReadState(sql: Sql): ChatReadState {
   return {
     async markRead(cleanupId: string, userId: string, at: Date): Promise<void> {
-      await sql`
-        UPDATE cleanup_members
-        SET last_read_at = GREATEST(COALESCE(last_read_at, to_timestamp(0)), ${at})
-        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
-      `
+      await monotonicReadWatermarkUpdate(
+        sql,
+        "cleanup_members",
+        { cleanup_id: cleanupId, user_id: userId },
+        at,
+      )
     },
 
     async lastReadAt(cleanupId: string, userId: string): Promise<Date | null> {

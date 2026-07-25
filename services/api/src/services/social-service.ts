@@ -190,7 +190,11 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         ? deps.volunteerHoursTotalFor(view.id)
         : Promise.resolve(undefined),
     ])
-    const pastEvents: CleanupDTO[] = pastEventRecords.map((r) => toCleanupDTO(r, true))
+    // CleanupDTO.joined is the VIEWER's membership, not the profile owner's. These records are the OWNER's
+    // events (organized or attended), so on your own profile every card is genuinely `joined`; on someone
+    // else's it is unknown without a per-event membership lookup, and `false` is the honest answer rather
+    // than telling the viewer they are attending events they never joined (myRole stays omitted either way).
+    const pastEvents: CleanupDTO[] = pastEventRecords.map((r) => toCleanupDTO(r, isSelf))
     const avatarUrl =
       view.avatarR2Key !== null
         ? await presignAvatar(view.avatarR2Key)

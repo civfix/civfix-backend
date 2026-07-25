@@ -220,6 +220,19 @@ describe("loadEnv", () => {
     expect(loadEnv({ NODE_ENV: "development", TRUST_PROXY: "true" }).TRUST_PROXY).toBe(true)
   })
 
+  it("parses CF_TURNSTILE_HOSTNAMES as a lowercased, de-duplicated list and defaults to empty", () => {
+    // L16 token binding. The var did not exist, so the hostname assertion in abuse-checks could never be
+    // configured — it was wired and permanently inert. Empty stays a VALID configuration (the assertion is
+    // skipped with a one-time notice), so adding the var cannot brick a deployment's captcha.
+    expect(loadEnv({ NODE_ENV: "test" }).CF_TURNSTILE_HOSTNAMES).toEqual([])
+    expect(loadEnv({ NODE_ENV: "test", CF_TURNSTILE_HOSTNAMES: "" }).CF_TURNSTILE_HOSTNAMES).toEqual([])
+    const env = loadEnv({
+      NODE_ENV: "test",
+      CF_TURNSTILE_HOSTNAMES: " CivFix.org , www.civfix.org ,civfix.org",
+    })
+    expect(env.CF_TURNSTILE_HOSTNAMES).toEqual(["civfix.org", "www.civfix.org"])
+  })
+
   it("parses boolean flags from 1/true and rejects an out-of-range PORT", () => {
     const env = loadEnv({ NODE_ENV: "test", USE_FAKE_JOBS: "0", USE_FAKE_CHAT: "yes" })
     expect(env.USE_FAKE_JOBS).toBe(false)

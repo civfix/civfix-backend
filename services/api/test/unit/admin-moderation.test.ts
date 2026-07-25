@@ -116,6 +116,49 @@ describe("moderation queue list", () => {
     expect(second.items.every((i) => !firstIds.has(i.id))).toBe(true)
   })
 
+  /**
+   * THE normal operator workflow, and the one the fake used to dead-end on: clear page 1, then ask for page
+   * 2 with the cursor page 1 handed back. The cursor anchors on the LAST item of page 1 — which is no longer
+   * OPEN once it has been actioned — so an implementation that resolves the anchor by looking up its INDEX in
+   * the open set finds -1 and returns an empty page, while the SQL keyset (a `(created_at, id) <` tuple
+   * comparison) keeps paging. Offline tests then "passed" on a queue that silently ends after one page.
+   */
+  it("keeps paging after page 1 has been RESOLVED (keyset tuple, not an index lookup)", async () => {
+    const { repo, svc } = harness()
+    for (let i = 0; i < 5; i++) {
+      repo.seedItem({ id: `M${i}`, createdAt: hoursAgo(i) })
+    }
+    const first = await svc.list({ limit: 2 })
+    expect(first.items.map((i) => i.id)).toEqual(["M0", "M1"])
+    const cursor = first.nextCursor
+    expect(cursor).not.toBeNull()
+
+    // The operator actions both rows on page 1, so the cursor's anchor (M1) leaves the OPEN set entirely.
+    await svc.approve("M0", { actorId: "op-1", note: null })
+    await svc.remove("M1", { actorId: "op-1", reason: null })
+    expect(repo.items.get("M1")?.status).toBe("removed")
+
+    const second = await svc.list({ limit: 2, cursor: cursor ?? undefined })
+    expect(second.items.map((i) => i.id)).toEqual(["M2", "M3"])
+    expect(second.nextCursor).not.toBeNull()
+
+    const third = await svc.list({ limit: 2, cursor: second.nextCursor ?? undefined })
+    expect(third.items.map((i) => i.id)).toEqual(["M4"])
+    expect(third.nextCursor).toBeNull()
+  })
+
+  it("pages deterministically when several items share a createdAt (id is the tiebreak)", async () => {
+    const { repo, svc } = harness()
+    const sameTime = hoursAgo(3)
+    for (const id of ["A", "B", "C"]) repo.seedItem({ id, createdAt: sameTime })
+
+    const first = await svc.list({ limit: 2 })
+    expect(first.items.map((i) => i.id)).toEqual(["C", "B"]) // id DESC tiebreak
+    const second = await svc.list({ limit: 2, cursor: first.nextCursor ?? undefined })
+    expect(second.items.map((i) => i.id)).toEqual(["A"])
+    expect(second.nextCursor).toBeNull()
+  })
+
   it("keeps chat/photo subject ids and exposes only repository-backed admin destinations", async () => {
     const { repo, svc } = harness()
     repo.seedItem({

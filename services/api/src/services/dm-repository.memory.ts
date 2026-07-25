@@ -30,6 +30,7 @@ import type {
   DmThreadAggregate,
 } from "./dm-repository.drizzle.js"
 import type { BlocksRepository } from "./blocks-repository.drizzle.js"
+import type { TimeCursor } from "../db/cursor-helpers.js"
 import type { PersonDTO } from "@civfix/shared"
 
 /** Minimal user fields the in-memory dm/threads paths need to build `from` / `peer`. */
@@ -184,13 +185,14 @@ export class InMemoryDmRepository implements DmRepository {
       kind: input.kind ?? "text",
       // The in-memory dev/test repo has no media_assets / presign pipeline, so it cannot resolve
       // `input.mediaUploadIds` into real MediaDTOs - a media send over the offline path echoes with none.
-      attachments: null,
+      // Empty ARRAY, and no editedAt key at all, because that is what the Drizzle repo emits: the fake must
+      // not hand USE_FAKE_CHAT clients (or unit tests) a wire shape production never produces.
+      attachments: [],
       reactions: [],
       // No persisted mentions on a fresh insert; the gateway projects a send's resolved @-mentions onto its
       // broadcast/ack copy (this in-memory repo keeps no mention store, the dev-path mention bell being moot).
       mentions: [],
       createdAt: this.nextDate().toISOString(),
-      editedAt: null,
       ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
       ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
     }
@@ -431,12 +433,36 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(ms !== undefined ? new Date(ms) : null)
   }
 
+  /**
+   * Same definition as the Drizzle twin (and as this fake's own listThreadsForUser aggregate): live
+   * messages NOT written by the viewer, strictly after max(thread.createdAt, lastRead).
+   */
+  countUnread(threadId: string, userId: string): Promise<number> {
+    const thread = this.threads.get(threadId)
+    if (!thread) return Promise.resolve(0)
+    const baseline = Math.max(
+      thread.createdAt.getTime(),
+      this.reads.get(`${threadId}:${userId}`) ?? 0,
+    )
+    const unread = (this.log.get(threadId) ?? []).filter(
+      (m) =>
+        !m.deleted &&
+        m.dto.from?.id !== userId &&
+        new Date(m.dto.createdAt).getTime() > baseline,
+    ).length
+    return Promise.resolve(unread)
+  }
+
   resolveMessageCreatedAt(threadId: string, messageId: string): Promise<Date | null> {
     const found = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId)
     return Promise.resolve(found ? new Date(found.dto.createdAt) : null)
   }
 
-  async listThreadsForUser(userId: string, limit?: number): Promise<DmThreadAggregate[]> {
+  async listThreadsForUser(
+    userId: string,
+    limit?: number,
+    cursor?: TimeCursor | null,
+  ): Promise<DmThreadAggregate[]> {
     const out: DmThreadAggregate[] = []
     for (const t of this.threads.values()) {
       const peerId = t.userLo === userId ? t.userHi : t.userHi === userId ? t.userLo : null
@@ -471,11 +497,25 @@ export class InMemoryDmRepository implements DmRepository {
         unread,
       })
     }
+    // Same (activity, id) DESC order + keyset cut the Drizzle twin applies (THREADS_CURSOR in
+    // threads-service.ts), so the offline inbox pages identically. The activity comparison is exact here
+    // (the fake's timestamps are millisecond-resolution to begin with).
+    const activityOf = (a: DmThreadAggregate): number =>
+      (a.last?.createdAt ?? a.createdAt).getTime()
     out.sort(
       (a, b) =>
-        (b.last?.createdAt ?? b.createdAt).getTime() - (a.last?.createdAt ?? a.createdAt).getTime(),
+        activityOf(b) - activityOf(a) ||
+        (a.threadId < b.threadId ? 1 : a.threadId > b.threadId ? -1 : 0),
     )
-    return limit !== undefined ? out.slice(0, limit) : out
+    const paged =
+      cursor !== null && cursor !== undefined
+        ? out.filter(
+            (a) =>
+              activityOf(a) < cursor.at.getTime() ||
+              (activityOf(a) === cursor.at.getTime() && a.threadId < cursor.id),
+          )
+        : out
+    return limit !== undefined ? paged.slice(0, limit) : paged
   }
 }
 

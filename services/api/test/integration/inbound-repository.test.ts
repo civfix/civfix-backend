@@ -96,17 +96,43 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
   it("setStatus writes an inbox.status_changed audit row (with the actor + the transition) in-tx", async () => {
     const r = await repo.insertIdempotent(insert({ messageId: "<audit@x>" }))
     const actor = await h.sql<{ id: string }[]>`
-      INSERT INTO users (display_name, handle, role) VALUES ('Op', ${`op-${r.id.slice(0, 8)}`}, 'operator')
+      INSERT INTO users (display_name, handle, role)
+      -- Underscore, not a hyphen: 0026_user_handle_required.sql's users_handle_format_chk is
+      -- ^[A-Za-z0-9_]{3,20}$, so 'op-<hex>' is rejected at insert time.
+      VALUES ('Op', ${`op_${r.id.slice(0, 8)}`}, 'operator')
       RETURNING id
     `
     const actorId = actor[0]!.id
     expect(await repo.setStatus(r.id, "archived", actorId)).toBe(true)
+    // Scoped to THIS row's target: the preceding test also transitions a row (with a null actor), so an
+    // unscoped count is a function of test order, not of the behavior under test.
     const audit = await h.sql<{ actor_id: string; target: string; meta: Record<string, unknown> }[]>`
-      SELECT actor_id, target, meta FROM audit_log WHERE action = 'inbox.status_changed'
+      SELECT actor_id, target, meta FROM audit_log
+      WHERE action = 'inbox.status_changed' AND target = ${`inbound_email:${r.id}`}
     `
     expect(audit).toHaveLength(1)
     expect(audit[0]?.actor_id).toBe(actorId)
     expect(audit[0]?.target).toBe(`inbound_email:${r.id}`)
     expect(audit[0]?.meta).toMatchObject({ status: "archived", priorStatus: "unread" })
+
+    // Every accepted call is logged, including a same-value re-click: the log records the TRANSITION, so a
+    // repeat shows archived -> archived rather than being silently dropped.
+    expect(await repo.setStatus(r.id, "archived", actorId)).toBe(true)
+    const again = await h.sql<{ meta: Record<string, unknown> }[]>`
+      SELECT meta FROM audit_log
+      WHERE action = 'inbox.status_changed' AND target = ${`inbound_email:${r.id}`}
+      ORDER BY created_at ASC, id ASC
+    `
+    expect(again).toHaveLength(2)
+    expect(again[1]?.meta).toMatchObject({ status: "archived", priorStatus: "archived" })
+
+    // A missing row is reported as false and logs nothing.
+    expect(await repo.setStatus("00000000-0000-0000-0000-000000000000", "read", actorId)).toBe(false)
+    const missing = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM audit_log
+      WHERE action = 'inbox.status_changed'
+        AND target = 'inbound_email:00000000-0000-0000-0000-000000000000'
+    `
+    expect(missing[0]!.n).toBe(0)
   })
 })

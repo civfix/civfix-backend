@@ -16,7 +16,9 @@
  * same slug (e.g. two "Springfield"s). We claim the bare slug for the first writer and disambiguate later
  * collisions by appending "_<geoidTail>" (the last 4 chars of the geoid) so every write succeeds and stays
  * deterministic. The UPDATE is guarded `WHERE handle IS NULL` so an already-set handle is never clobbered
- * and re-running is safe.
+ * and re-running is safe. The DB unique index is the real backstop: the probe-then-UPDATE is not atomic, so
+ * a 23505 from a concurrent run is caught and retried with the next candidate (assignHandle) rather than
+ * aborting the run.
  *
  * KEYSET-CURSOR LOOP & TERMINATION. We page over `jurisdictions.geoid` (text PK, total order) with a
  * strictly-advancing cursor, BATCH_SIZE rows at a time, selecting only `handle IS NULL` rows. A row whose
@@ -47,7 +49,7 @@ export async function backfillHandles(sql: Sql): Promise<{ assigned: number; ski
   let assigned = 0
   let skipped = 0
   // In-process claim set so two rows in the SAME run that derive the same slug do not collide before the
-  // DB sees them; the DB UNIQUE index is the ultimate guard (we re-check + disambiguate on conflict).
+  // DB sees them; the DB UNIQUE index is the ultimate guard (assignHandle disambiguates on 23505).
   const claimed = new Set<string>()
   let cursor: string | null = null
 
@@ -69,20 +71,8 @@ export async function backfillHandles(sql: Sql): Promise<{ assigned: number; ski
         skipped += 1
         continue
       }
-      const handle = await claimHandle(sql, base, row.geoid, claimed)
-      const updated = await sql<{ geoid: string }[]>`
-        UPDATE jurisdictions
-        SET handle = ${handle}
-        WHERE geoid = ${row.geoid} AND handle IS NULL
-        RETURNING geoid
-      `
-      if (updated.length > 0) {
-        assigned += 1
-        claimed.add(handle.toLowerCase())
-      } else {
-        // A concurrent run set it first; leave it.
-        skipped += 1
-      }
+      if (await assignHandle(sql, base, row.geoid, claimed)) assigned += 1
+      else skipped += 1
     }
 
     cursor = batch[batch.length - 1]!.geoid
@@ -92,6 +82,53 @@ export async function backfillHandles(sql: Sql): Promise<{ assigned: number; ski
   }
 
   return { assigned, skipped }
+}
+
+/**
+ * Claim + persist a handle for one geoid. Returns true when this run set it, false when the row already had
+ * one (a concurrent run won the row).
+ *
+ * The probe in claimHandle and this UPDATE are NOT atomic: a concurrent run can claim the same slug in
+ * between, and the partial UNIQUE on lower(handle) then raises 23505 — which, unhandled, would abort the
+ * whole CLI run over one collision. Catch it, remember the candidate as taken (so claimHandle cannot return
+ * it again) and retry with the next candidate. Terminates: every attempt permanently removes one candidate
+ * from an infinite deterministic candidate sequence.
+ */
+async function assignHandle(
+  sql: Sql,
+  base: string,
+  geoid: string,
+  claimed: Set<string>,
+): Promise<boolean> {
+  for (;;) {
+    const handle = await claimHandle(sql, base, geoid, claimed)
+    try {
+      const updated = await sql<{ geoid: string }[]>`
+        UPDATE jurisdictions
+        SET handle = ${handle}
+        WHERE geoid = ${geoid} AND handle IS NULL
+        RETURNING geoid
+      `
+      // No row updated = a concurrent run set this geoid's handle first; leave it.
+      if (updated.length === 0) return false
+      claimed.add(handle.toLowerCase())
+      return true
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err
+      claimed.add(handle.toLowerCase())
+    }
+  }
+}
+
+/** Postgres unique-violation SQLSTATE; raised by the partial UNIQUE on lower(handle) under a race. */
+const PG_UNIQUE_VIOLATION = "23505"
+
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
+  )
 }
 
 /**

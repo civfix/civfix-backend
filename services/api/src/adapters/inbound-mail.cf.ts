@@ -18,6 +18,7 @@ import type {
   ParsedMailAttachment,
 } from "@civfix/shared/interfaces"
 import type { AddressObject, Attachment, EmailAddress } from "mailparser"
+import { domainOfOrNull } from "./mail-text.js"
 
 /**
  * Shape gate for a thread token. Deliberately PERMISSIVE (lowercase alphanumeric, 8-40 chars) so it
@@ -133,14 +134,22 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   if (!raw || raw.trim().length === 0) return "unknown"
 
   const results = new Map<string, string>()
-  AUTH_RESULT_RE.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = AUTH_RESULT_RE.exec(raw)) !== null) {
-    const method = (m[1] ?? "").toLowerCase()
-    const result = (m[2] ?? "").toLowerCase()
-    // First verdict wins: a relay may append its own results, and the FIRST (closest to our MTA) is the
-    // one our own infrastructure produced. A later attacker-supplied "dmarc=pass" cannot override it.
-    if (!results.has(method)) results.set(method, result)
+  /** header.d= of the FIRST dkim clause — the only one whose verdict we honor (see below). */
+  let firstDkimDomain: string | undefined
+  // RFC 8601 resinfo clauses are ';'-separated. Parse PER CLAUSE so a `header.d=` parameter is paired with
+  // the dkim verdict it actually belongs to: scanning the whole header for the first `header.d=` anywhere
+  // could pair our trusted `dkim=pass` with a DIFFERENT signer's domain (a mailing list re-signs on top of
+  // the origin signature), mis-failing legitimately aligned mail.
+  for (const clause of raw.split(";")) {
+    for (const m of clause.matchAll(AUTH_RESULT_RE)) {
+      const method = (m[1] ?? "").toLowerCase()
+      const result = (m[2] ?? "").toLowerCase()
+      // First verdict wins: a relay may append its own results, and the FIRST (closest to our MTA) is the
+      // one our own infrastructure produced. A later attacker-supplied "dmarc=pass" cannot override it.
+      if (results.has(method)) continue
+      results.set(method, result)
+      if (method === "dkim") firstDkimDomain = DKIM_DOMAIN_RE.exec(clause)?.[1]?.toLowerCase()
+    }
   }
 
   const dmarc = results.get("dmarc")
@@ -150,10 +159,13 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   // No dmarc= token: accept DKIM only when the signing domain is ALIGNED with the visible From domain
   // (relaxed alignment — equal, or an organizational-suffix match). A DKIM pass from an unrelated
   // domain proves only that *somebody* signed the message, not that the sender is who From says.
+  //
+  // Only the FIRST dkim clause counts, deliberately: a later clause may be attacker-supplied (a forged
+  // Authentication-Results header the message itself carried), so a message whose first signature is an
+  // unaligned re-signer fails closed even if a later clause claims an aligned pass.
   if (results.get("dkim") === "pass") {
-    const signing = DKIM_DOMAIN_RE.exec(raw)?.[1]?.toLowerCase()
-    const fromDomain = domainOf(mail.from?.address ?? null)
-    if (signing && fromDomain && domainsAligned(signing, fromDomain)) return "pass"
+    const fromDomain = domainOfOrNull(mail.from?.address ?? null)
+    if (firstDkimDomain && fromDomain && domainsAligned(firstDkimDomain, fromDomain)) return "pass"
   }
 
   // SPF alone is deliberately NOT sufficient: it authenticates the envelope sender (Return-Path), not
@@ -161,14 +173,14 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   return results.size > 0 ? "fail" : "unknown"
 }
 
-/** Lowercased domain part of an email address, or null when absent/malformed. */
-export function domainOf(address: string | null | undefined): string | null {
-  if (!address) return null
-  const at = address.lastIndexOf("@")
-  if (at < 0 || at === address.length - 1) return null
-  const domain = address.slice(at + 1).trim().toLowerCase()
-  return domain.length > 0 ? domain : null
-}
+/**
+ * Lowercased domain part of an email address, or null when absent/malformed. ONE implementation, in
+ * mail-text (domainOfOrNull); re-exported here under the historical name for the inbound consumers.
+ * Two same-named helpers in this directory with different null behavior was an easy import to get wrong —
+ * mail-text's other export, `domainOf`, falls back to "civfix.org", which would silently ALIGN an
+ * unparseable address with our own domain in the DKIM check below.
+ */
+export const domainOf = domainOfOrNull
 
 /**
  * Relaxed identifier alignment: equal domains, or one is a subdomain of the other

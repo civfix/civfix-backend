@@ -13,10 +13,10 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
+import { roomKeyFor } from "../ws/gateway.js"
+import { chatHistoryPayload, deleteMessageWithPowers } from "./chat-route-helpers.js"
 import {
   makeDrizzleChatRepository,
   type ChatRepository,
@@ -70,6 +70,8 @@ export async function registerReportChatRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   let chatRepo: ChatRepository | undefined
   const getChatRepo = (): ChatRepository =>
     app.chatOverrides?.chatRepo ??
@@ -111,22 +113,17 @@ export async function registerReportChatRoutes(
     )
     const viewerUserId = request.auth?.userId ?? null
     await requireVisibleReport(id, viewerUserId)
-    // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
-    // Pins (P3) ride ONLY the initial page (no before, no around): pagination/around pages stay lean
-    // and the client refreshes its pin rail exactly when it (re)opens the room.
-    const isInitialPage = q.before === undefined && q.around === undefined
-    const [page, pins] = await Promise.all([
-      getChatRepo().reportHistory(id, q.before, limit, viewerUserId, q.around),
-      isInitialPage ? getChatRepo().listReportPins(id, viewerUserId) : Promise.resolve(undefined),
-    ])
-    // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
-    // present — possibly null (window reaches the live head) — on around-mode pages.
-    const payload: ChatHistoryResponse = {
-      items: page.items,
-      nextCursor: page.nextCursor,
-      ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
-      ...(pins !== undefined ? { pins } : {}),
-    }
+    // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together);
+    // the pins-on-the-initial-page-only contract lives in chatHistoryPayload.
+    const payload: ChatHistoryResponse = await chatHistoryPayload(
+      {
+        history: (before, pageLimit, around) =>
+          getChatRepo().reportHistory(id, before, pageLimit, viewerUserId, around),
+        listPins: () => getChatRepo().listReportPins(id, viewerUserId),
+      },
+      q,
+      limit,
+    )
     reply.status(200).send(payload)
   })
 
@@ -143,26 +140,21 @@ export async function registerReportChatRoutes(
       await requireVisibleReport(id, userId)
       // Report chat is view-only until you Join: a MEMBER may self-delete (sender-gated in the repo).
       // A non-member is NOT pre-gated out entirely (P3 Task 3.5): platform OPERATORS hold delete-others
-      // power in the public report rooms WITHOUT a membership row, so when the sender path doesn't apply
-      // we consult the chat-powers resolver before rejecting. Report owners do NOT get delete-others.
-      let tombstone: ChatMessageDTO | null = null
-      if (await getReportChatRepo().isMember(id, userId)) {
-        tombstone = await getChatRepo().softDeleteReport(id, messageId, userId)
-      }
-      if (tombstone === null) {
-        const powers = await resolveChatPowers({ roomKind: "report", roomId: id, userId })
-        if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
-        tombstone = await getChatRepo().softDeleteReport(id, messageId, userId, {
-          bypassSenderGate: true,
-        })
-      }
-      if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
-      void Promise.resolve(
-        container.chatService.broadcast(roomKeyFor("report", id), tombstone),
-      ).catch(() => {})
-      // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
-      // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
-      broadcastMessageUpdate(container.chatService, "report", id, tombstone)
+      // power in the public report rooms WITHOUT a membership row, so the ladder still consults the
+      // chat-powers resolver before rejecting. Report owners do NOT get delete-others.
+      const chatRepo = getChatRepo()
+      const tombstone = await deleteMessageWithPowers({
+        roomKind: "report",
+        roomId: id,
+        messageId,
+        userId,
+        senderPath: await getReportChatRepo().isMember(id, userId),
+        softDelete: (opts) => chatRepo.softDeleteReport(id, messageId, userId, opts),
+        findMessageMeta: (mid) => chatRepo.findMessageMeta(mid),
+        resolveChatPowers,
+        chat: container.chatService,
+        legacyBroadcast: true,
+      })
       reply.status(200).send(tombstone)
     },
   )
@@ -179,12 +171,17 @@ export async function registerReportChatRoutes(
         id,
         messageId,
       })
-      await requireVisibleReport(id, userId)
-      // View-only until you Join: only members may react to report messages.
-      if (!(await getReportChatRepo().isMember(id, userId))) {
-        throw AppError.forbidden("Join the chat to react to messages.")
-      }
-      const reactions = makeChatReactionService({ chat: getChatRepo() })
+      // GATES: both of them (report VISIBILITY -> 404 "Report not found", then report_chat_members
+      // membership -> 403 "Join the chat to react to messages.") run INSIDE the service below, in that
+      // order, off the two deps wired here. This route deliberately does NOT pre-run them: the duplicate
+      // pre-checks cost two extra round trips (a report read + a membership read) on the hottest chat
+      // mutation and answered with the same status and the same copy the service produces.
+      const reactions = makeChatReactionService({
+        chat: getChatRepo(),
+        isReportChatMember: (reportId, uid) => getReportChatRepo().isMember(reportId, uid),
+        isReportVisible: async (reportId, uid) =>
+          isReportVisibleTo(await getReportRepo().findReportForDiscussion(reportId), uid),
+      })
       const updated: ChatMessageDTO = await reactions.toggleReportReaction(
         id,
         messageId,

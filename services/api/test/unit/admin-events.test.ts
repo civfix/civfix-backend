@@ -204,7 +204,7 @@ describe("admin events list", () => {
     ])
   })
 
-  it("search matches title, place, id, and organizer name", async () => {
+  it("search matches title, address, organizer name and organizer handle", async () => {
     const { repo, svc } = harness()
     repo.seedEvent({ id: "evt-1", title: "Beach sweep", place: "Miami", organizer: null })
     repo.seedEvent({
@@ -214,7 +214,7 @@ describe("admin events list", () => {
       organizer: {
         id: "u",
         name: "Pat",
-        handle: "pat",
+        handle: "trailboss",
         emailVerified: false,
         hasOauth: false,
         joinedAt: null,
@@ -223,6 +223,25 @@ describe("admin events list", () => {
     expect((await svc.list({ q: "beach" })).items.map((i) => i.id)).toEqual(["evt-1"])
     expect((await svc.list({ q: "denver" })).items.map((i) => i.id)).toEqual(["evt-2"])
     expect((await svc.list({ q: "pat" })).items.map((i) => i.id)).toEqual(["evt-2"])
+    // u.handle::text is one of the four ILIKE columns; the fake used not to search it at all.
+    expect((await svc.list({ q: "TRAILboss" })).items.map((i) => i.id)).toEqual(["evt-2"])
+  })
+
+  /**
+   * searchEventsFragment's id branch is `OR c.id = $q::uuid`, gated on isUuid(q): an EXACT uuid equality.
+   * The fake used to match any id SUBSTRING, so an id-prefix search "worked" offline and returned nothing
+   * against Postgres.
+   */
+  it("matches an id ONLY on a full uuid — never a substring, never a non-uuid needle", async () => {
+    const { repo, svc } = harness()
+    const id = "7a1b2c33-4455-4666-8777-99aa00bb44dd"
+    repo.seedEvent({ id, title: "Creek cleanup", place: "Boise", organizer: null })
+    repo.seedEvent({ id: "evt-legacy", title: "Park day", place: "Reno", organizer: null })
+
+    expect((await svc.list({ q: id })).items.map((i) => i.id)).toEqual([id])
+    expect((await svc.list({ q: id.toUpperCase() })).items.map((i) => i.id)).toEqual([id])
+    expect((await svc.list({ q: "7a1b2c33" })).items).toHaveLength(0)
+    expect((await svc.list({ q: "evt-legacy" })).items).toHaveLength(0)
   })
 
   it("paginates with a cursor (no overlap)", async () => {

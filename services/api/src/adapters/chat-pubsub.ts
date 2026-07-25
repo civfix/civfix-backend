@@ -15,6 +15,7 @@
  */
 
 import type { RedisClient } from "./redis.js"
+import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"
 
 /** Handler invoked with the raw payload string delivered on a subscribed channel. */
 export type ChatPubSubHandler = (payload: string) => void
@@ -43,8 +44,13 @@ export function chatChannel(cleanupId: string): string {
 export class RedisChatPubSub implements ChatPubSub {
   private readonly pub: RedisClient
   private readonly sub: RedisClient
-  /** channel -> set of handlers registered on THIS worker. */
-  private readonly handlers = new Map<string, Set<ChatPubSubHandler>>()
+  /**
+   * channel -> handlers registered on THIS worker, ref-counted: the first handler triggers the Redis
+   * SUBSCRIBE, the last one triggers UNSUBSCRIBE. A rejected SUBSCRIBE removes the entry (see
+   * RefCountedSubscriptions) — leaving an empty entry behind would make every retry skip the SUBSCRIBE and
+   * attach handlers to a channel Redis never delivers.
+   */
+  private readonly subscriptions: RefCountedSubscriptions<ChatPubSubHandler>
   private wired = false
 
   /**
@@ -54,6 +60,13 @@ export class RedisChatPubSub implements ChatPubSub {
   constructor(redis: RedisClient) {
     this.pub = redis
     this.sub = redis.duplicate()
+    this.subscriptions = new RefCountedSubscriptions<ChatPubSubHandler>(async (channel) => {
+      await this.sub.subscribe(channel)
+      // Last handler gone: UNSUBSCRIBE so Redis stops delivering this channel to this worker.
+      return async () => {
+        await this.sub.unsubscribe(channel)
+      }
+    })
   }
 
   /** Lazily attach the single message listener that routes to per-channel handlers. */
@@ -61,9 +74,10 @@ export class RedisChatPubSub implements ChatPubSub {
     if (this.wired) return
     this.wired = true
     this.sub.on("message", (channel: string, message: string) => {
-      const set = this.handlers.get(channel)
+      const set = this.subscriptions.membersOf(channel)
       if (!set) return
-      for (const h of set) h(message)
+      // Copy so a handler that unsubscribes mid-iteration does not mutate the live set.
+      for (const h of [...set]) h(message)
     })
   }
 
@@ -71,36 +85,16 @@ export class RedisChatPubSub implements ChatPubSub {
     return this.pub.publish(channel, payload).then(() => undefined)
   }
 
-  async subscribe(channel: string, handler: ChatPubSubHandler): Promise<() => Promise<void>> {
+  subscribe(channel: string, handler: ChatPubSubHandler): Promise<() => Promise<void>> {
     this.ensureWired()
-    let set = this.handlers.get(channel)
-    if (!set) {
-      set = new Set()
-      this.handlers.set(channel, set)
-      // First handler for this channel: actually SUBSCRIBE on the Redis connection.
-      await this.sub.subscribe(channel)
-    }
-    set.add(handler)
-
-    let unsubscribed = false
-    return async () => {
-      if (unsubscribed) return
-      unsubscribed = true
-      const current = this.handlers.get(channel)
-      if (!current) return
-      current.delete(handler)
-      if (current.size === 0) {
-        this.handlers.delete(channel)
-        // Last handler gone: UNSUBSCRIBE so Redis stops delivering this channel to this worker.
-        await this.sub.unsubscribe(channel)
-      }
-    }
+    return this.subscriptions.add(channel, handler)
   }
 
   async close(): Promise<void> {
-    this.handlers.clear()
-    // Only the duplicated subscriber connection is owned here; the shared `pub` is closed by the DI
-    // container's redis handle. Disconnect the subscriber so the process can exit cleanly.
+    // No per-channel UNSUBSCRIBE: the subscriber connection itself is going away. Only the duplicated
+    // subscriber connection is owned here; the shared `pub` is closed by the DI container's redis handle.
+    // Disconnect the subscriber so the process can exit cleanly.
+    this.subscriptions.clear()
     this.sub.disconnect()
   }
 }

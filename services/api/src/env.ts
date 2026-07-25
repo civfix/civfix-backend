@@ -309,6 +309,12 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
     CF_ACCESS_SERVICE_TOKENS: parseCsv(source.CF_ACCESS_SERVICE_TOKENS),
 
+    // L16: hostnames a Turnstile token may have been minted on. Lowercased (hostnames are
+    // case-insensitive and abuse-checks compares normalized), and EMPTY is a valid configuration — the
+    // hostname assertion is then skipped with a one-time notice rather than refusing every token, so
+    // adding the variable cannot brick an existing deployment's captcha.
+    CF_TURNSTILE_HOSTNAMES: parseCsvLower(source.CF_TURNSTILE_HOSTNAMES),
+
     // Reviewer-OTP bypass (App Review): OFF by default in EVERY environment; see the C1 block above for
     // the production opt-in pair (REVIEWER_OTP_BYPASS_ACK + REVIEWER_OTP_CODE) it additionally requires.
     OAUTH_REQUIRE_NONCE,

@@ -174,24 +174,139 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(mediaRows[0]!.report_id).toBe(first.id)
   })
 
-  it("does not steal a media asset already attached to a different report", async () => {
+  it("REJECTS (422) a create whose media is already attached to a different report, and leaves it on A", async () => {
     // Create report A owning the media.
     const media = await seedMedia()
     const a = await service.createReport(
       createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [media.uploadId] }),
       { userId },
     )
-    // Report B tries to claim the same upload id.
-    const b = await service.createReport(
-      createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [media.uploadId] }),
-      { userId },
-    )
-    expect(b.media).toHaveLength(0)
+
+    // Report B tries to claim the same upload id. The claim UPDATE matches 0 rows, and (M-media-claim)
+    // an unclaimable id now FAILS THE WHOLE CREATE instead of being silently dropped: the reporter used
+    // to get a 201 with their photo missing from the gallery and no way to tell that had happened.
+    const keyB = randomUUID()
+    await expect(
+      service.createReport(
+        createReq({ idempotencyKey: keyB, mediaUploadIds: [media.uploadId] }),
+        { userId },
+      ),
+    ).rejects.toMatchObject({
+      httpStatus: 422,
+      code: "VALIDATION",
+      fields: { mediaUploadIds: "One or more media uploads are unavailable." },
+    })
+
+    // THE SECURITY ASSERTION (unchanged): the asset stays bound to report A. B must never be able to
+    // re-point another report's photo at itself.
     const [m] = await h.sql<{ report_id: string | null }[]>`
       SELECT report_id FROM media_assets WHERE id = ${media.id}
     `
     expect(m!.report_id).toBe(a.id)
+
+    // ...and the rejection rolled the whole transaction back: no half-created report row, no timeline
+    // row, no idempotency snapshot that a retry would replay as a success.
+    const rows = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM reports WHERE idempotency_key = ${keyB}
+    `
+    expect(rows[0]!.n).toBe(0)
+    const idem = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM idempotency_keys WHERE key = ${keyB} AND scope = 'report_create'
+    `
+    expect(idem[0]!.n).toBe(0)
   })
+
+  it("REJECTS (422) a create naming an UNKNOWN upload id, and creates nothing", async () => {
+    // Same fail-closed rule for an id that matches no media_assets row at all (a typo, a client replaying
+    // a stale draft, or a probe). The pre-fix behavior was a 201 with an empty gallery.
+    const key = randomUUID()
+    await expect(
+      service.createReport(createReq({ idempotencyKey: key, mediaUploadIds: [randomUUID()] }), {
+        userId,
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
+
+    const rows = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM reports WHERE idempotency_key = ${key}
+    `
+    expect(rows[0]!.n).toBe(0)
+  })
+
+  it("REJECTS (422) a create naming a REJECTED asset (moderation cannot be laundered by re-claiming)", async () => {
+    const media = await seedMedia()
+    await h.sql`UPDATE media_assets SET status = 'rejected' WHERE id = ${media.id}`
+
+    const key = randomUUID()
+    await expect(
+      service.createReport(createReq({ idempotencyKey: key, mediaUploadIds: [media.uploadId] }), {
+        userId,
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
+
+    const [m] = await h.sql<{ report_id: string | null; status: string }[]>`
+      SELECT report_id, status FROM media_assets WHERE id = ${media.id}
+    `
+    expect(m!.report_id).toBeNull()
+    expect(m!.status).toBe("rejected")
+  })
+
+  it("L18: an asset already bound to a POST cannot be cross-published into a report (422, stays on the post)", async () => {
+    // The claim used to guard only report_id, so the holder of an uploadId could re-bind an image from a
+    // post (or a private DM/chat message, same column pattern) into a public report gallery. The predicate
+    // now also requires post_id IS NULL AND chat_message_id IS NULL.
+    const media = await seedMedia()
+    const [post] = await h.sql<{ id: string }[]>`
+      INSERT INTO posts (author_id, kind, body) VALUES (${userId}, 'post', 'has a photo') RETURNING id
+    `
+    await h.sql`
+      UPDATE media_assets SET post_id = ${post!.id}, purpose = 'post' WHERE id = ${media.id}
+    `
+
+    const key = randomUUID()
+    await expect(
+      service.createReport(createReq({ idempotencyKey: key, mediaUploadIds: [media.uploadId] }), {
+        userId,
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
+
+    const [m] = await h.sql<{ report_id: string | null; post_id: string | null }[]>`
+      SELECT report_id, post_id FROM media_assets WHERE id = ${media.id}
+    `
+    expect(m!.report_id).toBeNull()
+    expect(m!.post_id).toBe(post!.id)
+  })
+
+  it("accepts a REPEATED upload id in one request (deduped) and attaches it exactly once", async () => {
+    // The claim compares against the DEDUPED input (`new Set(...)`) because one repeated id claims one
+    // row; comparing against the raw array length would 422 a legitimate duplicate-id request.
+    const media = await seedMedia()
+    const dto = await service.createReport(
+      createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [media.uploadId, media.uploadId] }),
+      { userId },
+    )
+    expect(dto.media).toHaveLength(1)
+    expect(dto.media[0]!.id).toBe(media.id)
+    const [m] = await h.sql<{ report_id: string | null }[]>`
+      SELECT report_id FROM media_assets WHERE id = ${media.id}
+    `
+    expect(m!.report_id).toBe(dto.id)
+  })
+
+  /**
+   * A genuinely street-level viewport around PROBE_INSIDE_CITY (where every fixture report is created).
+   *
+   * M14 made the client's `zoom` advisory: the effective zoom is min(requested, impliedZoomForBBox), so a
+   * bbox must be small enough to JUSTIFY per-pin zoom before listReportsInBBox will return pins at all.
+   * The seeded LA_CITY bbox (0.3° lng x 0.2° lat) implies 12, one step under CLUSTER_ZOOM_THRESHOLD, so
+   * these tests use a ~0.04° box (implies 16) — asserting on `pins` with a city-wide bbox would silently
+   * assert on an empty array forever.
+   */
+  const STREET_BBOX = {
+    west: PROBE_INSIDE_CITY.lng - 0.02,
+    east: PROBE_INSIDE_CITY.lng + 0.02,
+    south: PROBE_INSIDE_CITY.lat - 0.01,
+    north: PROBE_INSIDE_CITY.lat + 0.01,
+  }
 
   it("a bbox query returns the inserted point (published + public)", async () => {
     const key = randomUUID()
@@ -202,9 +317,8 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     // The fine-grained type (0021) round-trips through the create transaction onto the DTO.
     expect(created.type).toBe("infrastructure")
 
-    // Query the LA city bbox at high zoom (individual pins) and expect the new pin to be present.
-    const [west, south, east, north] = LA_CITY.bbox
-    const res = await service.listReportsInBBox({ west, south, east, north }, null, null, 16)
+    // Query a street-level bbox at high zoom (individual pins) and expect the new pin to be present.
+    const res = await service.listReportsInBBox(STREET_BBOX, null, null, 16)
     const ids = res.pins.map((p) => p.id)
     expect(ids).toContain(created.id)
     const pin = res.pins.find((p) => p.id === created.id)!
@@ -212,6 +326,35 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(pin.lng).toBeCloseTo(PROBE_INSIDE_CITY.lng, 6)
     // The pin carries the fine-grained type alongside category.
     expect(pin.type).toBe("infrastructure")
+    // The per-category counts cover every candidate regardless of the cluster/pin split.
+    expect(res.counts?.water).toBeGreaterThanOrEqual(1)
+  })
+
+  it("M14: the SAME point over a city-wide bbox clusters even when the client claims zoom 22", async () => {
+    // The anonymous-DoS fix: `zoom` used to be a free query parameter, so bbox=<whole world>&zoom=22
+    // skipped clustering and forced up to 2000 report rows + 2000 media presigns per request. The bbox
+    // extent now caps the zoom, so a claimed street-level zoom over a city cannot reach the per-pin
+    // branch. Proven against a live DB (not just the pure clustering unit test) because the presign
+    // fan-out lives on the service side of that branch.
+    const created = await service.createReport(
+      createReq({ idempotencyKey: randomUUID(), category: "hazard", type: "pavement" }),
+      { userId },
+    )
+
+    const [west, south, east, north] = LA_CITY.bbox
+    const wide = await service.listReportsInBBox({ west, south, east, north }, null, null, 22)
+    expect(wide.pins).toHaveLength(0)
+    expect(wide.clusters.length).toBeGreaterThan(0)
+    // The report is still COUNTED (and clustered near its true location) — it is not filtered out.
+    const total = wide.clusters.reduce((n, c) => n + c.count, 0)
+    expect(total).toBeGreaterThanOrEqual(1)
+    expect(wide.counts?.hazard).toBeGreaterThanOrEqual(1)
+
+    // ...and the identical query over a street-level bbox DOES return it as a pin, so the zero above is
+    // the clamp and not a broken visibility filter.
+    const tight = await service.listReportsInBBox(STREET_BBOX, null, null, 22)
+    expect(tight.clusters).toHaveLength(0)
+    expect(tight.pins.map((p) => p.id)).toContain(created.id)
   })
 
   it("the type filter narrows a bbox query to matching reports only (0021)", async () => {
@@ -220,15 +363,18 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
       createReq({ idempotencyKey: randomUUID(), category: "trash", type: "dump" }),
       { userId },
     )
-    await service.createReport(
+    const graffiti = await service.createReport(
       createReq({ idempotencyKey: randomUUID(), category: "graffiti", type: "graffiti" }),
       { userId },
     )
 
-    const [west, south, east, north] = LA_CITY.bbox
-    const res = await service.listReportsInBBox({ west, south, east, north }, null, ["dump"], 16)
+    const res = await service.listReportsInBBox(STREET_BBOX, null, ["dump"], 16)
     const ids = res.pins.map((p) => p.id)
     expect(ids).toContain(dump.id)
+    expect(ids).not.toContain(graffiti.id)
     expect(res.pins.every((p) => p.type === "dump")).toBe(true)
+    // Unfiltered, both are in view — so the exclusion above is the filter, not the bbox.
+    const all = await service.listReportsInBBox(STREET_BBOX, null, null, 16)
+    expect(all.pins.map((p) => p.id)).toContain(graffiti.id)
   })
 })

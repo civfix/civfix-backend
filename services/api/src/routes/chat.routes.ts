@@ -12,11 +12,11 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
+import { roomKeyFor } from "../ws/gateway.js"
 import { wireChatGateway } from "./chat-gateway-wiring.js"
+import { deleteMessageWithPowers, DELETE_MESSAGE_FORBIDDEN } from "./chat-route-helpers.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
 import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
@@ -43,6 +43,7 @@ import {
   type GroupThreadsSource,
   type ReportThreadsSource,
   type ThreadsRepository,
+  type ThreadsService,
 } from "../services/threads-service.js"
 import type { NotificationService } from "../services/notification-service.js"
 import type { ResolveChatPowers } from "../services/chat-room-roles.js"
@@ -97,6 +98,8 @@ const CHAT_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 const CHAT_DELETE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 export async function registerChatRoutes(app: FastifyInstance, container: Container): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   await app.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 } })
 
   const overrides = app.chatOverrides
@@ -104,10 +107,11 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
 
   const dmThreadsSource: DmThreadsSource = { listDmThreadsFor: wiring.listDmThreadsFor }
 
-  route(app, "listThreads", async (request, reply) => {
-    const userId = requireAuth(request)
-    const pagination = parse(PaginationQuerySchema, request.query)
-    const limit = pagination.limit ?? THREADS_DEFAULT_LIMIT
+  // Built ONCE on first use (never at mount time — the offline route-coverage boot must not open a
+  // connection), like the lazy repo seams in the sibling chat route files.
+  let threadsService: ThreadsService | undefined
+  const getThreads = (): ThreadsService => {
+    if (threadsService) return threadsService
     const threadsRepo: ThreadsRepository = overrides
       ? overrides.threadsRepo
       : makeDrizzleThreadsRepository(container.getDb().sql)
@@ -125,15 +129,26 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     const mutes: ConversationMutesRepository | undefined = overrides
       ? overrides.conversationMutes
       : makeConversationMutesRepository(container.getDb().sql)
-    const threads = makeThreadsService({
+    return (threadsService = makeThreadsService({
       repo: threadsRepo,
       readState: wiring.readState,
       dm: dmThreadsSource,
       report: reportThreadsSource,
       group: groupThreadsSource,
       mutes,
+    }))
+  }
+
+  route(app, "listThreads", async (request, reply) => {
+    const userId = requireAuth(request)
+    const pagination = parse(PaginationQuerySchema, request.query)
+    const limit = pagination.limit ?? THREADS_DEFAULT_LIMIT
+    // The contract's `cursor` is now honored (it used to be parsed and dropped, so the inbox was
+    // truncated at `limit` with no way to reach older threads); nextCursor comes back verbatim.
+    const result = await getThreads().list(userId, {
+      limit,
+      ...(pagination.cursor !== undefined ? { cursor: pagination.cursor } : {}),
     })
-    const result = await threads.listThreads(userId, limit)
     const payload: ListThreadsResponse = { items: result.items, nextCursor: result.nextCursor }
     reply.status(200).send(payload)
   })
@@ -178,29 +193,24 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     async (request, reply) => {
       const userId = requireAuth(request)
       const { cleanupId, messageId } = parse(ThreadMessageParamsSchema, request.params)
+      // Cleanup rooms are private: a non-member never reaches the ladder (an organizer's delete-others
+      // power comes with their membership row, unlike the operator lane in public report rooms).
       if (!(await wiring.isMember(cleanupId, userId))) {
-        throw AppError.forbidden("You can't delete this message.")
+        throw AppError.forbidden(DELETE_MESSAGE_FORBIDDEN)
       }
-      // Sender self-delete first (the common path — no role lookups). When the sender-gated UPDATE
-      // matches nothing, consult the chat-powers resolver (P3 Task 3.5): a cleanup ORGANIZER may delete
-      // other members' messages (bypassing the sender gate; system rows stay untouchable in the repo).
-      let tombstone: ChatMessageDTO | null = await wiring
-        .getChatRepo()
-        .softDelete(cleanupId, messageId, userId)
-      if (tombstone === null) {
-        const powers = await resolveChatPowers({ roomKind: "cleanup", roomId: cleanupId, userId })
-        if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
-        tombstone = await wiring
-          .getChatRepo()
-          .softDelete(cleanupId, messageId, userId, { bypassSenderGate: true })
-      }
-      if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
-      void Promise.resolve(
-        container.chatService.broadcast(roomKeyFor("cleanup", cleanupId), tombstone),
-      ).catch(() => {})
-      // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
-      // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
-      broadcastMessageUpdate(container.chatService, "cleanup", cleanupId, tombstone)
+      const chatRepo = wiring.getChatRepo()
+      const tombstone = await deleteMessageWithPowers({
+        roomKind: "cleanup",
+        roomId: cleanupId,
+        messageId,
+        userId,
+        senderPath: true,
+        softDelete: (opts) => chatRepo.softDelete(cleanupId, messageId, userId, opts),
+        findMessageMeta: (id) => chatRepo.findMessageMeta(id),
+        resolveChatPowers,
+        chat: container.chatService,
+        legacyBroadcast: true,
+      })
       reply.status(200).send(tombstone)
     },
   )
