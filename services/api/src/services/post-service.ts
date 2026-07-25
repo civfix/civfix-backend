@@ -2,6 +2,9 @@
  * PostService: the social-feed post use-cases layered over PostRepository.
  *
  * Responsibilities (the repo does the SQL; the service owns policy):
+ *   - run the slur filter over the post body on create (parity with report title/description and the
+ *     chat write paths — a caption typed on the same screen as a report description must not be held to
+ *     a looser standard);
  *   - validate attachments — event membership (cleanup_members organizer|cohost|member), report
  *     visibility, reply/quote target existence + block filtering;
  *   - resolve + record @-mentions (resolveMentionTargets → mentionedUserIds), block-filtering the
@@ -16,6 +19,7 @@
 import { AppError } from "@civfix/shared"
 import type { HomeFeedQuery, PaginationQuery, PostComposeInput, PostDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
+import { assertNoSlur } from "../abuse/slur-filter.js"
 import { resolveMentionTargets } from "./mention-resolver.drizzle.js"
 import {
   POSTS_DEFAULT_LIMIT,
@@ -89,6 +93,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
   return {
     async createPost(input: PostComposeInput, authorId: string): Promise<PostDTO> {
+      // Post bodies went through NO slur filter while report title/description (report-service.ts) and
+      // chat messages (chat-edit-service.ts) both do. A no-op for a null/blank body, so attachment-only
+      // posts stay legal.
+      assertNoSlur(input.body ?? null, "body")
+
       if (input.kind === "repost") {
         throw AppError.validation({ kind: "Use POST /posts/:id/repost to repost." })
       }

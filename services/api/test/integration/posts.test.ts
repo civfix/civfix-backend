@@ -351,6 +351,59 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     ).rejects.toMatchObject({ httpStatus: 403 })
   })
 
+  // --- "announce to the feed": the event auto-link ------------------------------------------------
+  // The create-an-event flow files the cleanup and then posts `{ eventId }` on the SAME wire surface a
+  // manual composer attachment uses. Two things have to hold for that to work with no server change:
+  // the organizer's `cleanup_members` row must exist in the SAME commit as the cleanup (otherwise the
+  // immediately-following createPost 403s on isEventMember), and the resulting post must reach the
+  // `events` filter, whose predicate is `p.event_id IS NOT NULL`.
+
+  it("ANNOUNCE: the organizer can attach the event they just created, and the post lands in the `events` filter", async () => {
+    const svc = makeService()
+    const cleanupSvc = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+    const host = await newUser("Announce Host", "annhost")
+    const viewer = await newUser("Announce Viewer", "annview")
+    await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${viewer}, ${host})`
+
+    const event = await cleanupSvc.createCleanup(
+      { title: "Alley Sweep", type: "site", eventKind: "cleanup", lat: 34.05, lng: -118.25, scheduledAt: "2026-08-01T17:00:00.000Z" },
+      host,
+    )
+
+    // The organizer membership row is written inside createCleanupTx — this is what makes the very next
+    // createPost legal with no wait and no retry.
+    const [member] = await h.sql<{ role: string }[]>`
+      SELECT role FROM cleanup_members WHERE cleanup_id = ${event.id} AND user_id = ${host}
+    `
+    expect(member?.role).toBe("organizer")
+
+    const announcement = await svc.createPost(
+      { kind: "post", body: "come help out", eventId: event.id, mediaUploadIds: [], mentionedUserIds: [] },
+      host,
+    )
+    expect(announcement.event?.id).toBe(event.id)
+    expect(announcement.event?.title).toBe("Alley Sweep")
+
+    const plain = await svc.createPost(
+      { kind: "post", body: "no event at all", mediaUploadIds: [], mentionedUserIds: [] },
+      host,
+    )
+
+    const events = await svc.homeFeed(viewer, { filter: "events" })
+    const eventIds = events.items.map((p) => p.id)
+    expect(eventIds).toContain(announcement.id)
+    expect(eventIds).not.toContain(plain.id)
+
+    // Signed-out readers see it too — that is the reach the announcement buys.
+    const publicEvents = await svc.publicFeed({ filter: "events" })
+    expect(publicEvents.items.map((p) => p.id)).toContain(announcement.id)
+
+    // ...and it is NOT a "fix": the events post has no report.
+    expect((await svc.homeFeed(viewer, { filter: "fixes" })).items.map((p) => p.id)).not.toContain(
+      announcement.id,
+    )
+  })
+
   // --- H8: post report-attachment bypassed the report visibility gate ------------------------------
   // Two independent holes, both now closed by the shared publicReportFilter() fragment:
   //   (a) isReportAttachable checked `visibility` but NOT `status`, so an anonymous submitter could
@@ -436,6 +489,98 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect((await svc.getPost(post.id, reader)).report?.id).toBe(report)
     await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${report}`
     expect((await svc.getPost(post.id, reader)).report).toBeNull()
+  })
+
+  // --- "share to the feed": the report auto-link, and the THUMB RACE ------------------------------
+  // The report flow files the report and then posts `{ reportId }` 200-400 ms later. At that moment the
+  // report's photo has been finalized but the media-checks worker has NOT flipped it to `ready`, and
+  // firstReadyStillLateral hard-requires `status = 'ready'`. So the authoritative PostDTO comes back with
+  // NO thumbUrl, and only a LATER read (after the worker lands) presigns one. Any client that paints an
+  // optimistic thumbnail and then trusts the server row will make the photo appear and then vanish; this
+  // test is the pin for that timing, so a client-side local-thumb overlay cannot be "optimized away".
+
+  /** A report-bound media asset in the state finalizeMedia leaves behind: `validating`, not `ready`. */
+  async function attachReportMedia(reportId: string, status: string): Promise<string> {
+    const uploadId = randomUUID()
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO media_assets (report_id, upload_id, kind, r2_key, thumb_key, status, purpose, byte_size, width, height)
+      VALUES (${reportId}, ${uploadId}, 'image', ${`uploads/report/${uploadId}`},
+              ${`uploads/report/${uploadId}.thumb`}, ${status}, 'report', 4096, 1200, 900)
+      RETURNING id
+    `
+    return row!.id
+  }
+
+  it("SHARE: a freshly filed report attaches and hydrates, but its still-VALIDATING photo yields NO thumbUrl until the worker lands", async () => {
+    const svc = makeService()
+    const author = await newUser("Share Author", "shrauth")
+    const reader = await newUser("Share Reader", "shrread")
+    const reportId = await insertReport(author, "published", "public", "Couch on the sidewalk")
+    await h.sql`UPDATE reports SET addr = '123 Main St' WHERE id = ${reportId}`
+    // Exactly what media-intake leaves behind when the wizard submits: finalized, checks still queued.
+    const assetId = await attachReportMedia(reportId, "validating")
+
+    // The caption is optional on the wire: an attachment-only post is legal (PostComposeInputSchema's
+    // superRefine is satisfied by hasAttachment), which is what a blank caption ships.
+    const post = await svc.createPost(
+      { kind: "post", reportId, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect(post.body).toBeNull()
+    expect(post.report?.id).toBe(reportId)
+    expect(post.report?.title).toBe("Couch on the sidewalk")
+    expect(post.report?.addr).toBe("123 Main St")
+    expect(post.report?.status).toBe("published")
+    expect(post.report?.lat).toBeCloseTo(34.1, 5)
+    expect(post.report?.lng).toBeCloseTo(-118.35, 5)
+    // THE RACE: the photo exists, is bound to the report, and is still invisible to the feed card.
+    expect(post.report?.thumbUrl ?? null).toBeNull()
+
+    // A refetch while the asset is still validating does NOT rescue it — so an "invalidate and refetch"
+    // repair on the client is not a fix either.
+    expect((await svc.getPost(post.id, reader)).report?.thumbUrl ?? null).toBeNull()
+
+    // Once the media-checks worker flips the asset, the very next read presigns the real thumb, with no
+    // write to the post and no cache bust on the server side.
+    await h.sql`UPDATE media_assets SET status = 'ready' WHERE id = ${assetId}`
+    const afterWorker = await svc.getPost(post.id, reader)
+    expect(afterWorker.report?.thumbUrl).toBeTruthy()
+    expect(afterWorker.report?.thumbUrl).toContain(".thumb")
+
+    // A brand-new report is `published`, so the post is an "all" post, never a "fix" — it migrates into
+    // the fixes filter by itself the day the city resolves the report.
+    await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${reader}, ${author})`
+    expect((await svc.homeFeed(reader, { filter: "all" })).items.map((p) => p.id)).toContain(post.id)
+    expect((await svc.homeFeed(reader, { filter: "fixes" })).items.map((p) => p.id)).not.toContain(
+      post.id,
+    )
+    await h.sql`UPDATE reports SET status = 'resolved' WHERE id = ${reportId}`
+    expect((await svc.homeFeed(reader, { filter: "fixes" })).items.map((p) => p.id)).toContain(post.id)
+  })
+
+  it("SHARE: a slur in the caption is rejected and NO post row is written", async () => {
+    const svc = makeService()
+    const author = await newUser("Slur Author", "slurauth")
+    const reportId = await insertReport(author, "published", "public", "Broken light")
+
+    await expect(
+      svc.createPost(
+        { kind: "post", body: "these retards again", reportId, mediaUploadIds: [], mentionedUserIds: [] },
+        author,
+      ),
+    ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
+
+    const rows = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM posts WHERE author_id = ${author}
+    `
+    expect(rows[0]?.n).toBe(0)
+
+    // The same caption without the slur posts fine — the filter is slurs only, not profanity.
+    const ok = await svc.createPost(
+      { kind: "post", body: "this damn light again", reportId, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect(ok.report?.id).toBe(reportId)
   })
 
   // --- the `fixes` filter x report-card regression guard (H8-b) -----------------------------------

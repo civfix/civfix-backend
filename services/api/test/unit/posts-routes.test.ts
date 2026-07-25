@@ -78,7 +78,9 @@ class InMemoryPostRepository implements PostRepository {
       id,
       authorId: post.authorId,
       kind: post.kind ?? "post",
-      body: post.body ?? "seeded",
+      // An OMITTED body gets the seeding default; an EXPLICIT null stays null, so an attachment-only
+      // post (and a bodyless repost) round-trips faithfully.
+      body: "body" in post ? (post.body ?? null) : "seeded",
       replyToId: post.replyToId ?? null,
       repostOfId: post.repostOfId ?? null,
       eventId: post.eventId ?? null,
@@ -645,6 +647,81 @@ describe("POST /posts (createPost)", () => {
       payload: { kind: "post", body: "see this", reportId },
     })
     expect(ok.statusCode).toBe(201)
+  })
+
+  // --- content filter + rate limit (the "post to feed" hardening) ---------------------------------
+
+  it("422s a body containing a slur, on every post kind that carries one", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("slur@example.com", "Slur")
+    const parent = h.repo.seed({ authorId: me.userId, body: "parent" })
+
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["bare post", { kind: "post", body: "you are a retard" }],
+      ["obfuscated", { kind: "post", body: "f4ggot" }],
+      ["reply", { kind: "reply", body: "retards", replyToId: parent }],
+      ["quote", { kind: "quote", body: "n.i.g.g.e.r", repostOfId: parent }],
+    ]
+    for (const [label, payload] of cases) {
+      const res = await h.app.inject({
+        method: "POST",
+        url: "/v1/posts",
+        headers: bearer(me),
+        payload,
+      })
+      expect(res.statusCode, label).toBe(422)
+      expect(res.json().code, label).toBe("VALIDATION")
+      expect(res.json().fields.body, label).toMatch(/isn't allowed/i)
+    }
+    // The seeded parent is the only row: nothing slurred was written.
+    expect(h.repo.posts.size).toBe(1)
+
+    // General profanity is explicitly OUT of scope for the filter — this must still post.
+    const ok = await h.app.inject({
+      method: "POST",
+      url: "/v1/posts",
+      headers: bearer(me),
+      payload: { kind: "post", body: "this damn pothole again" },
+    })
+    expect(ok.statusCode).toBe(201)
+  })
+
+  it("201s an attachment-only post with NO body (assertNoSlur(null) is a no-op)", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("attach@example.com", "Attach")
+    const reportId = randomUUID()
+    h.repo.attachableReports.add(reportId)
+
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/v1/posts",
+      headers: bearer(me),
+      payload: { kind: "post", reportId, mediaUploadIds: [], mentionedUserIds: [] },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().body).toBeNull()
+    expect(h.repo.posts.get(res.json().id)?.reportId).toBe(reportId)
+  })
+
+  it("rate limits createPost at 120/min PER IP (the route carries its own config.rateLimit bucket)", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("burst@example.com", "Burst")
+    const post = () =>
+      h.app.inject({
+        method: "POST",
+        url: "/v1/posts",
+        headers: bearer(me),
+        payload: { kind: "post", body: "burst" },
+      })
+
+    for (let i = 0; i < 120; i += 1) {
+      expect((await post()).statusCode, `request ${i + 1}`).toBe(201)
+    }
+    // Without the route bucket this would sit at the global 300/min and return a 121st 201. The bucket is
+    // keyed by IP (the inherited global keyGenerator), so it is shared by every user behind one exit -
+    // which is why it is 120 and not the 20-30 the other creates use: this endpoint carries thread
+    // replies, and a whole crew replying from one venue Wi-Fi must not 429 each other.
+    expect((await post()).statusCode).toBe(429)
   })
 
   it("404s a reply whose parent does not exist, and bumps counts.replies when it does", async () => {
