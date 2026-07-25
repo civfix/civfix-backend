@@ -1,0 +1,63 @@
+-- =============================================================================
+-- 0058_sessions_created_at.sql
+-- -----------------------------------------------------------------------------
+-- SECURITY (audit 2026-07-24, M3): make the absolute session ceiling measurable
+-- on every session row.
+--
+-- 0001_core.sql declares sessions.created_at as `timestamptz DEFAULT now()` with
+-- no NOT NULL, so rows predating the column read back NULL — and the absolute
+-- 90-day session ceiling M3 introduced is measured FROM created_at.
+-- PgSessionStore.findById therefore reads a NULL as the epoch: already past the
+-- ceiling, i.e. FAIL CLOSED. The obvious alternative (fall back to last_seen_at)
+-- made the ceiling unreachable — last_seen_at is bumped by every sliding-expiry
+-- write, so an active legacy session was capped from its own last activity and
+-- never expired, which is exactly the unbounded-sliding hole M3 closes.
+--
+-- Failing closed costs one forced re-login per legacy row. This migration removes
+-- the ambiguity for good: backfill the NULLs, then forbid new ones.
+--
+-- The backfill value is last_seen_at, the only surviving evidence of a row's age.
+-- It starts at insert time and only moves forward, so it is a LATE — never early —
+-- estimate of creation: the ceiling it yields is generous to the holder by at most
+-- one sliding window, and the sliding expires_at still bounds the row
+-- independently. now() is a third COALESCE arm purely as belt-and-braces;
+-- last_seen_at is itself NOT NULL DEFAULT now(), so it cannot be reached.
+--
+-- ORDER MATTERS: the UPDATE must precede the ALTER. SET NOT NULL first aborts
+-- (23502) on the first legacy row and rolls the whole file back.
+--
+-- The WHERE clause keeps the backfill off already-populated rows — sessions is a
+-- hot, write-heavy table and a blanket UPDATE would rewrite every row to the value
+-- it already holds. created_at stays the first COALESCE arm anyway so the
+-- statement is correct with or without that WHERE.
+--
+-- No DEFAULT is added: the column already has `DEFAULT now()` from 0001_core.sql
+-- and PgSessionStore.insert deliberately omits created_at so the database stamps
+-- it, so NOT NULL is safe for every future insert.
+--
+-- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
+-- in src/db/schema/sessions.ts is updated in the same change (createdAt gains
+-- .notNull()). The fail-closed `?? new Date(0)` in src/auth/pg-stores.ts is KEPT
+-- as belt-and-braces (the deploy does not auto-migrate) — see its comment.
+--
+-- Conventions (match the rest of the suite): timestamptz; idempotent — the UPDATE
+-- matches nothing on a second run and SET NOT NULL on an already-NOT NULL column
+-- is a no-op. The migrate runner (src/db/migrate.ts) records applied files and
+-- wraps each file in one transaction, so the backfill and the constraint commit
+-- together or not at all. Forward-only — there is no down migration in this suite.
+--
+-- Lock note: SET NOT NULL takes ACCESS EXCLUSIVE on sessions and, there being no
+-- pre-validated CHECK for the planner to reuse, scans the table to prove no NULLs
+-- remain — logins and sliding-expiry writes block for the length of that scan.
+-- sessions is small and self-pruning by construction (the 90-day ceiling plus the
+-- expiry sweep); if it ever isn't, add a `NOT VALID` CHECK and VALIDATE it
+-- out-of-band first, which makes this statement cheap.
+--
+-- Ordering rules: requires 0001_core.sql (sessions).
+-- =============================================================================
+
+UPDATE sessions
+   SET created_at = COALESCE(created_at, last_seen_at, now())
+ WHERE created_at IS NULL;
+
+ALTER TABLE sessions ALTER COLUMN created_at SET NOT NULL;

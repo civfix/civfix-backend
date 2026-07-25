@@ -130,14 +130,25 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
     },
 
     async createDefaultPrefs(userId: string): Promise<NotificationPrefsRecord> {
+      // EVERY pref column is written from DEFAULT_PREFS, exactly like upsertPrefs' insert branch. This
+      // used to name only push/cleanup_chat/report_updates/follows and leave mentions,
+      // post_interactions and quiet_* to their DB column defaults — so the two row-minting paths agreed
+      // only as long as those defaults happened to match DEFAULT_PREFS. DEFAULT_PREFS is the one source.
       const rows = await sql<PrefsRowSelect[]>`
-        INSERT INTO notification_prefs (user_id, push, cleanup_chat, report_updates, follows)
+        INSERT INTO notification_prefs (
+          user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions,
+          quiet_start, quiet_end
+        )
         VALUES (
           ${userId},
           ${DEFAULT_PREFS.push},
           ${DEFAULT_PREFS.cleanupChat},
           ${DEFAULT_PREFS.reportUpdates},
-          ${DEFAULT_PREFS.follows}
+          ${DEFAULT_PREFS.follows},
+          ${DEFAULT_PREFS.mentions},
+          ${DEFAULT_PREFS.postInteractions},
+          ${DEFAULT_PREFS.quietStart}::time,
+          ${DEFAULT_PREFS.quietEnd}::time
         )
         ON CONFLICT (user_id) DO NOTHING
         RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
@@ -235,15 +246,40 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows.length > 0 ? "stored" : "conflict"
     },
 
-    async revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void> {
-      // Soft-revoke (revoked_at = now) every ACTIVE push token on this device owned by a DIFFERENT user, so
-      // a device's token only ever delivers to the account currently signed in on it. device_id is the
-      // device's own secret, so this can never revoke a token on a device the caller does not hold.
-      await sql`
+    async revokeDeviceTokensForOtherUsers(args: {
+      userId: string
+      token: string
+      platform: PushPlatform
+      deviceId: string | null
+    }): Promise<number> {
+      // H12. The old query was `WHERE device_id = $1 AND user_id <> $2` — a caller-supplied string
+      // revoking every other account's token that carried it. One harvested device-id list was a
+      // fleet-wide push blackout, and the "device_id is the device's own secret" claim in the old
+      // comment was never verified by anything.
+      //
+      // The revoke is now anchored ONLY to something the caller provably holds: the push token itself,
+      // which they just presented and which is the address push is actually delivered to. The
+      // device_id-driven branch is GONE — no cross-account write is authorized by a self-declared
+      // string any more. In practice the upsert above already reassigns the (platform, token) row when
+      // the guard allows it, so this usually matches zero rows; it stays as the explicit, correct scope
+      // so a future change to the upsert cannot silently reintroduce a wider revoke.
+      //
+      // COST, stated plainly: a PREVIOUS account's token on a shared device is no longer force-revoked
+      // when the token value has rotated. Those tokens are pruned by delivery feedback instead (an
+      // Expo/APNs DeviceNotRegistered receipt) and by that account's own re-registration. Restoring an
+      // eager device-scoped revoke requires a real possession proof — a silent data push carrying a
+      // server nonce that the client echoes back over an authenticated call — which is the tracked
+      // follow-up. `deviceId` is retained on the row for support/debugging only; it authorizes nothing.
+      const rows = await sql<{ id: string }[]>`
         UPDATE push_tokens
         SET revoked_at = now()
-        WHERE device_id = ${deviceId} AND user_id <> ${userId} AND revoked_at IS NULL
+        WHERE user_id <> ${args.userId}
+          AND revoked_at IS NULL
+          AND platform = ${args.platform}
+          AND token = ${args.token}
+        RETURNING id
       `
+      return rows.length
     },
 
     async deletePushTokensForUser(userId: string): Promise<void> {

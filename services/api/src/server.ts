@@ -1,7 +1,6 @@
-
 import Fastify, { type FastifyInstance } from "fastify"
 import { loadEnv, type Env } from "./env.js"
-import { buildContainer, type Container } from "./di.js"
+import { assertRedisReachable, buildContainer, type Container } from "./di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "./errors/http-mapper.js"
 import { initErrorReporting, flushErrorReporting } from "./errors/glitchtip.js"
 import { genReqId, registerRequestId } from "./plugins/request-id.js"
@@ -11,10 +10,7 @@ import { registerCookie } from "./plugins/cookie.js"
 import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
-import {
-  buildAuthServicesFromContainer,
-  type AuthServices,
-} from "./auth/auth-services.js"
+import { buildAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
 import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
 import type { AnonServiceOverride } from "./routes/anon.routes.js"
@@ -82,7 +78,11 @@ const OVERRIDE_KEYS = [
 ] as const satisfies readonly (keyof BuildServerOptions)[]
 
 export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
-  const env = opts.env ?? loadEnv()
+  // An injected container carries its OWN env, and that env keys the CSRF HMAC (container.csrf) — while
+  // this `env` keys cookie signing. Prefer the container's when no explicit env is passed, so the two can
+  // never be built from different sources (a freshly loadEnv()'d key here + the container's key there
+  // would sign cookies with one secret and CSRF tokens with another). An explicit opts.env still wins.
+  const env = opts.env ?? opts.container?.env ?? loadEnv()
   const container = opts.container ?? buildContainer(env)
 
   const app = Fastify({
@@ -135,9 +135,14 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   await registerCors(app, env.WEB_ORIGINS)
   await registerRateLimit(app, env.REDIS_URL ? { redis: container.getRedis() } : {})
 
+  // H4: the rate limiter's sensitive-route buckets fail CLOSED, but a Redis that is merely MISCONFIGURED
+  // (wrong host in the env) would otherwise let the API boot and serve every request as a 429 — or, on the
+  // lax global bucket, with no limiting at all. Prove reachability once at boot instead.
+  await assertRedisReachable(container)
+
   await registerVersionGate(app)
 
-  const authServices = resolveAuthServices(opts, env, container)
+  const authServices = resolveAuthServices(opts, env, container, app.log)
   if (authServices) {
     app.decorate("authServices", authServices)
   } else if (env.NODE_ENV === "production") {
@@ -171,9 +176,15 @@ function resolveAuthServices(
   opts: BuildServerOptions,
   env: Env,
   container: Container,
+  logger: FastifyInstance["log"],
 ): AuthServices | undefined {
   if (opts.authServices) return opts.authServices
-  if (env.DATABASE_URL && env.REDIS_URL) return buildAuthServicesFromContainer(container)
+  // The logger is not optional in practice: OtpService's only log line (P1-7's cooldown-release
+  // failure, which otherwise locks a user out for 60s with no code and no signal) is a no-op without
+  // it, so the production bundle must be built WITH the server's pino instance.
+  if (env.DATABASE_URL && env.REDIS_URL) {
+    return buildAuthServicesFromContainer(container, { logger })
+  }
   return undefined
 }
 

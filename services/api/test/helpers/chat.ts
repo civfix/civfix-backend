@@ -16,6 +16,7 @@ import {
 } from "../../src/services/chat-reply-hydration.js"
 import { aroundLimits } from "../../src/services/chat-history-window.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
+import type { TimeCursor } from "../../src/db/cursor-helpers.js"
 
 interface StoredMessage {
   dto: ChatMessageDTO
@@ -471,7 +472,20 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
       ?.messages.push({ ...msg, deleted: msg.deleted ?? false })
   }
 
-  listThreadsFor(userId: string, limit: number): Promise<ThreadAggregate[]> {
+  /**
+   * Mirrors the Drizzle repository's keyset page (listThreadFamily): order by
+   * `activity = COALESCE(last message created_at, joined_at)` DESC then room id DESC, and — when a cursor
+   * is supplied — keep only rows strictly before it in that same order.
+   *
+   * The cursor MUST be honored: threads-service pushes it into every family and then re-filters the merged
+   * page with the identical (activity, id) predicate. A family that ignores it re-offers rows the caller
+   * already saw, they lose the re-filter, and page 2+ of the offline inbox silently under-fetches.
+   */
+  listThreadsFor(
+    userId: string,
+    limit: number,
+    cursor?: TimeCursor | null,
+  ): Promise<ThreadAggregate[]> {
     const out: ThreadAggregate[] = []
     for (const c of this.cleanups.values()) {
       const joinedAt = c.members.get(userId)
@@ -492,12 +506,27 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
             : null,
       })
     }
+    const activityOf = (t: ThreadAggregate): number =>
+      t.last?.createdAt.getTime() ?? t.joinedAt.getTime()
+    // (activity, id) DESC — the id tiebreak matters exactly when two rooms share an activity instant,
+    // which is the case a cursor has to survive.
     out.sort((a, b) => {
-      const at = a.last?.createdAt.getTime() ?? a.joinedAt.getTime()
-      const bt = b.last?.createdAt.getTime() ?? b.joinedAt.getTime()
-      return bt - at
+      const cmp = activityOf(b) - activityOf(a)
+      if (cmp !== 0) return cmp
+      return a.cleanupId < b.cleanupId ? 1 : a.cleanupId > b.cleanupId ? -1 : 0
     })
-    return Promise.resolve(out.slice(0, limit))
+    const page =
+      cursor === null || cursor === undefined
+        ? out
+        : out.filter((t) => {
+            const activity = activityOf(t)
+            const at = cursor.at.getTime()
+            // The SQL's bound is deliberately loose (`< at + 1ms`) because created_at is
+            // microsecond-resolution there; a JS Date is already millisecond-resolution, so the loose
+            // term reduces to `activity <= at` and the strict row-value comparison does the real work.
+            return activity <= at && (activity < at || t.cleanupId < cursor.id)
+          })
+    return Promise.resolve(page.slice(0, limit))
   }
 
   countUnread(cleanupId: string, userId: string, after: Date): Promise<number> {

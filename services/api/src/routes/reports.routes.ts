@@ -22,9 +22,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import type { Sql } from "../db/client.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
-import { makeJurisdictionService } from "../services/jurisdiction-service.js"
-import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
+import { makeGeoidResolver, makeReverseGeocoder } from "../services/route-geo-helpers.js"
+import { makeMediaPresigner } from "../services/media-presign.js"
 import {
   makeReportService,
   type ReportRepository,
@@ -41,9 +40,17 @@ import { makeDrizzleDiscussionRepository } from "../services/discussion-reposito
 import { effectiveJurisdictionHandle } from "../services/discussion-mentions.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
-import { BBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
+import { CappedBBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
 
 const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
+// M14: per-IP caps on the two anon-ok, DB+presign-backed public reads. Neither had ANY route-level
+// limit, so they sat at the global 300/min/IP while each request can cost up to MAP_REPORTS_CANDIDATE_CAP
+// rows (and, pre-fix, that many presigns). Sized in the spirit of map.routes' GEOCODER_RATE_LIMIT (30/min)
+// but the map read is allowed more headroom because a genuine pan/zoom session fires several requests per
+// second while the 60s Cache-Control warms; search is a deliberate user action, so it keeps the tight 30.
+const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 export interface ReportServiceOverrides {
   repo: ReportRepository
@@ -75,7 +82,8 @@ const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
 
 const MapReportsQuerySchema = z
   .object({
-    bbox: BBoxQueryParam,
+    // M14 area cap (./query-encoding.ts) behind the zoom clamp in services/report-clustering.ts.
+    bbox: CappedBBoxQueryParam,
     categories: CategoriesQueryParam.optional(),
     types: TypesQueryParam.optional(),
     zoom: ZoomQueryParam,
@@ -159,6 +167,8 @@ export async function registerReportRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   function service(): ReportService {
     const overrides = app.reportOverrides
     if (overrides) {
@@ -169,7 +179,7 @@ export async function registerReportRoutes(
         ...(overrides.resolveJurisdictionCode !== undefined
           ? { resolveJurisdictionCode: overrides.resolveJurisdictionCode }
           : {}),
-        presignMedia: overrides.presignMedia ?? defaultPresign(container),
+        presignMedia: overrides.presignMedia ?? makeMediaPresigner(container.storage),
         ...(overrides.reverseGeocode !== undefined ? { reverseGeocode: overrides.reverseGeocode } : {}),
         ...(overrides.loadLinkedEventsForReports !== undefined
           ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
@@ -265,20 +275,10 @@ export async function registerReportRoutes(
           unread: row?.unread ?? 0,
         }
       },
-      resolveJurisdictionGeoid: async (lat, lng) => {
-        const jurisdiction = makeJurisdictionService({
-          sql,
-          geocoder: container.geocoder,
-          jobs: container.jobs,
-          jurisdictionLookup: container.jurisdictionLookup,
-        })
-        const resolved = await jurisdiction.resolveForPoint(lat, lng)
-        return resolved?.geoid ?? null
-      },
+      resolveJurisdictionGeoid: makeGeoidResolver(container),
       resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
-      reverseGeocode: async (lat, lng) =>
-        (await container.streetReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
-      presignMedia: defaultPresign(container),
+      reverseGeocode: makeReverseGeocoder(container),
+      presignMedia: makeMediaPresigner(container.storage),
       jobs: container.jobs,
       isReportVerified: (userId) => isReportVerified(sql, userId),
       awardReportHours: (userId, reportId, geoid) =>
@@ -316,7 +316,7 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } } }, async (request, reply) => {
+  route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } }, config: { rateLimit: MAP_REPORTS_RATE_LIMIT } }, async (request, reply) => {
     const validated = parse(MapReportsQuerySchema, request.query)
     const payload: ReportClusterResponse = await service().listReportsInBBox(
       validated.bbox,
@@ -328,7 +328,7 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "searchReports", async (request, reply) => {
+  route(app, "searchReports", { config: { rateLimit: SEARCH_REPORTS_RATE_LIMIT } }, async (request, reply) => {
     const validated = parse(SearchReportsQuerySchema, request.query)
     const payload: ListReportsSearchResponse = await service().searchReports(validated)
     reply.status(200).send(payload)
@@ -356,15 +356,6 @@ async function isReportVerified(sql: Sql, userId: string): Promise<boolean> {
     SELECT report_verified FROM user_moderation WHERE user_id = ${userId} LIMIT 1
   `
   return rows[0]?.report_verified ?? false
-}
-
-function defaultPresign(container: Container): ReportServiceDeps["presignMedia"] {
-  return async (r2Key: string, thumbKey: string | null) => {
-    const url = await container.storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
-    if (thumbKey === null) return { url }
-    const thumbUrl = await container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
-    return { url, thumbUrl }
-  }
 }
 
 function ownerOf(request: FastifyRequest): { userId?: string | undefined; anonSessionId?: string | undefined } {

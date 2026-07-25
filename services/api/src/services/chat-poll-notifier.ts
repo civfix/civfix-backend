@@ -11,6 +11,10 @@
  * (chat-bells), and a poll carries neither — so a cleanup poll bells no one, exactly matching a normal
  * cleanup send. So this notifier fires for report + group and is a no-op for cleanup.
  *
+ * BLOCKS: NOT omitted — see the M11 note at the isBlockedEitherWay wiring below. Every bell this module
+ * can raise carries the poll author's name to another member of a room that may be PUBLIC, so the block
+ * gate is as load-bearing here as it is on the gateway's message fan-out.
+ *
  * PRESENCE: omitted (same as report-chat-emitter) — the room presence adapter is built in the gateway
  * wiring and isn't reachable here, so a member currently VIEWING the room also gets a push for a new poll
  * (minor over-notification; the live broadcast already delivers the poll instantly regardless).
@@ -70,18 +74,61 @@ export function makeContainerPollNotifier(
       return false
     }
   }
+  /**
+   * Batch mute shape (one query for the whole member set) so a poll in a large room doesn't pay one round
+   * trip per recipient.
+   *
+   * PROBED, never bound to an empty-Set default (the chat-gateway-wiring stance): the fan-out treats a
+   * present `mutedUserIdsFor` as AUTHORITATIVE and skips the per-user `isMuted` entirely, so a
+   * `?? Promise.resolve(new Set())` fallback on an absent batch method would silently UNMUTE the whole
+   * room. Absent => the dep is omitted and the notifier keeps its per-candidate `isMuted` gate.
+   */
+  const mutedUserIdsForRoom = (
+    kind: "report" | "group",
+  ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined => {
+    const batch = conversationMutes.mutedUserIdsFor
+    if (!batch) return undefined
+    return (roomId, userIds) => batch.call(conversationMutes, kind, roomId, userIds)
+  }
+  const reportMutedUserIdsFor = mutedUserIdsForRoom("report")
+  const groupMutedUserIdsFor = mutedUserIdsForRoom("group")
+
+  // SECURITY (M11): the SAME block gate the gateway's message fan-out applies (chat-gateway-wiring), and
+  // the reason this module's notifiers must never be built without one. A poll create/close raises the
+  // identical member-wide bell a normal send does — sender name + preview on the target's lock screen —
+  // so leaving it off here reproduced the whole M11 scenario on the REST poll path: a blocked user posts
+  // a poll into a shared PUBLIC report or group room and reaches the person who blocked them.
+  const blocksRepo = container.getBlocksRepo()
+  const isBlockedEitherWay = (a: string, b: string): Promise<boolean> =>
+    blocksRepo.isBlockedEitherWay(a, b)
+  // Batch form of the same M11 gate (one user_blocks query for the room's whole candidate set). PROBED
+  // like the mute seam above — the fan-out treats a present `blockedIdsFor` as authoritative, so an
+  // empty-Set default on an absent batch method would unblock the room. Absent => per-candidate gate.
+  const blockedIdsFor = (():
+    | ((actorId: string, candidateIds: string[]) => Promise<Set<string>>)
+    | undefined => {
+    const batch = blocksRepo.blockedIdsAmong
+    if (!batch) return undefined
+    return (actorId, candidateIds) => batch.call(blocksRepo, actorId, candidateIds)
+  })()
 
   const notifyReport = makeReportChatNotifier({
     notificationService,
     reportChatRepo: { listMemberIds: (reportId) => reportChatRepo.listMemberIds(reportId) },
     isMuted: (userId, roomId) => isMuted(userId, "report", roomId),
+    ...(reportMutedUserIdsFor ? { mutedUserIdsFor: reportMutedUserIdsFor } : {}),
     roomKeyFor,
+    isBlockedEitherWay,
+    ...(blockedIdsFor ? { blockedIdsFor } : {}),
   })
   const notifyGroup = makeGroupChatNotifier({
     notificationService,
     groupRepo: { listMemberIds: (groupId) => groupRepo.listMemberIds(groupId) },
     isMuted: (userId, roomId) => isMuted(userId, "group", roomId),
+    ...(groupMutedUserIdsFor ? { mutedUserIdsFor: groupMutedUserIdsFor } : {}),
     roomKeyFor,
+    isBlockedEitherWay,
+    ...(blockedIdsFor ? { blockedIdsFor } : {}),
   })
 
   return (roomKind, roomId, message) => {

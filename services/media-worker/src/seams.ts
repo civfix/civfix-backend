@@ -30,7 +30,7 @@ import { makeDrizzleAnonHoldReleaseRepo } from "@civfix/api/anon-hold-repo"
 import type { AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
 import { R2Storage } from "@civfix/api/adapters/storage"
 import { captureError, initErrorReporting, flushErrorReporting } from "@civfix/api/errors"
-import { loadLimits, parseBool, type WorkerLimits } from "./config.js"
+import { assertRealSeamInProd, loadLimits, parseBool, type WorkerLimits } from "./config.js"
 import { makeDownloader, type DownloadFn } from "./download.js"
 
 export interface WorkerSeams {
@@ -75,18 +75,19 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   const fakeStorage = useFake(source, "USE_FAKE_STORAGE")
   const fakeAbuse = useFake(source, "USE_FAKE_ABUSE_NSFW")
 
-  // PRODUCTION GUARD (mirrors the API's required-creds boot enforcement, and the DATABASE_URL throw
-  // below): the worker fetches the API's real uploaded bytes from storage. A fake in-memory store in
-  // production is ALWAYS empty, so every download misses -> the pipeline would treat real media as an
-  // infra failure and the upload could be lost. Fail boot LOUDLY rather than silently mis-process. Note:
-  // USE_FAKE_ABUSE_NSFW is deliberately NOT guarded - running the NSFW seam fake pre-launch is intended.
-  if (source.NODE_ENV === "production" && fakeStorage) {
-    throw new Error(
-      "media-worker: USE_FAKE_STORAGE must be 0 in production - the worker reads the API's uploaded " +
-        "bytes from R2; a fake in-memory store is empty in prod and would lose media. Provide the R2 " +
-        "credentials (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET).",
-    )
-  }
+  // PRODUCTION GUARD (mirrors the API's required-creds boot enforcement, buildJobs' USE_FAKE_JOBS guard,
+  // and the DATABASE_URL throw below): the worker fetches the API's real uploaded bytes from storage. A
+  // fake in-memory store in production is ALWAYS empty, so every download misses -> the pipeline would
+  // treat real media as an infra failure and the upload could be lost. Note: USE_FAKE_ABUSE_NSFW is
+  // deliberately NOT guarded - running the NSFW seam fake pre-launch is intended.
+  assertRealSeamInProd(
+    source,
+    "USE_FAKE_STORAGE",
+    fakeStorage,
+    "the worker reads the API's uploaded bytes from R2; a fake in-memory store is empty in prod and " +
+      "would lose media. Provide the R2 credentials (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / " +
+      "R2_SECRET_ACCESS_KEY / R2_BUCKET).",
+  )
 
   // Error reporting (shared GlitchTip helper). Safe no-op when GLITCHTIP_DSN is unset.
   await initErrorReporting({
@@ -96,6 +97,13 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   })
 
   // ----- storage -----
+  // R2_PUBLIC_BASE is DELIBERATELY NOT passed here (H-media-1). The worker never hands a URL to a client;
+  // its only read is download.ts fetching the not-yet-processed upload. With publicBase configured,
+  // R2Storage.presignGet returns the UNSIGNED public CDN URL instead of a signed direct-to-R2 GET (the
+  // shared Storage interface has no forceSigned option for the worker to opt out with), so that fetch
+  // would (a) populate the CDN cache with the EXIF/GPS-laden ORIGINAL at the exact key clients later read
+  // the stripped object from, defeating the strip, and (b) let a retry read stale cached bytes rather than
+  // the current object. Omitting publicBase keeps every worker GET signed and direct to the bucket.
   const storage: Storage = fakeStorage
     ? new FakeStorage()
     : new R2Storage({
@@ -103,7 +111,6 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
         accessKeyId: req(source, "R2_ACCESS_KEY_ID"),
         secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
         bucket: req(source, "R2_BUCKET"),
-        ...(source.R2_PUBLIC_BASE ? { publicBase: source.R2_PUBLIC_BASE } : {}),
       })
 
   // ----- db + repo (only when results must be persisted to a real DB) -----

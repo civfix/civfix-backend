@@ -168,7 +168,7 @@ describe("saveAndRoute", () => {
     const { repo, svc } = harness()
     repo.seedJurisdiction({ geoid: "1", name: "City" })
     await expect(
-      svc.saveAndRoute("1", { contacts: {}, defaultEmails: [], formUrl: null }, null),
+      svc.saveAndRoute("1", { contacts: {}, defaultEmails: [], formUrl: null }, "op-1"),
     ).rejects.toMatchObject({ httpStatus: 422 })
   })
 
@@ -178,7 +178,7 @@ describe("saveAndRoute", () => {
       svc.saveAndRoute(
         "nope",
         { contacts: { trash: "a@b.gov" }, defaultEmails: [], formUrl: null },
-        null,
+        "op-1",
       ),
     ).rejects.toMatchObject({ httpStatus: 404 })
   })
@@ -373,7 +373,9 @@ describe("patch", () => {
 
   it("throws notFound for an unknown jurisdiction", async () => {
     const { svc } = harness()
-    await expect(svc.patch("nope", { notes: "x" }, null)).rejects.toMatchObject({ httpStatus: 404 })
+    await expect(svc.patch("nope", { notes: "x" }, "op-1")).rejects.toMatchObject({
+      httpStatus: 404,
+    })
   })
 
   it("sets the discussion @handle and surfaces it on the directory row", async () => {

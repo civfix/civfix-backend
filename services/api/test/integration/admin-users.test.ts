@@ -12,7 +12,7 @@
  *   - toggleFlag upserts user_moderation.flagged + opens/resolves an abuse_flag (subject_type 'user')
  *     + audit;
  *   - setStatus upserts user_moderation.account_status (banned -> user.banned audit);
- *   - recordRoleAudit writes a user.role_changed audit row.
+ *   - applyRole writes users.role + its user.role_changed audit row in ONE transaction (L5).
  *
  * The ban -> revoke-all-sessions behavior lives in SessionService (covered by the auth-session unit
  * test); this repo only persists the status. When Docker is unavailable the block SKIPS; CI runs it.
@@ -127,6 +127,35 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     expect((await repo.getUser(u))?.role).toBe("gov_admin")
   })
 
+  /**
+   * countByFacet has two arms and only the SEARCHED one is capped. The unfiltered arm must stay an exact
+   * aggregate: AdminUserCounts is four bare numbers with no truncation flag, so a capped `all` renders on
+   * the console's chips as if the cap WERE the account total. Pinned against the real schema because the
+   * in-memory fake counts exactly either way and so cannot catch a regression here.
+   */
+  it("countByFacet: the unfiltered counts are exact per bucket; a search still narrows them", async () => {
+    const a = await insertUser(h, { name: "Ann", handle: "annfacet" })
+    const b = await insertUser(h, { name: "Bob", handle: "bobfacet" })
+    const c = await insertUser(h, { name: "Cyd", handle: "cydfacet" })
+    await insertUser(h, { name: "Dee", handle: "deefacet" })
+    // Bob suspended, Cyd flagged (orthogonal to status), Ann/Dee default-active with no moderation row.
+    await repo.setStatus(b, { status: "suspended", reason: null, actorId: null })
+    await repo.toggleFlag(c, { reason: "spam", actorId: null })
+
+    expect(await repo.countByFacet({ q: null })).toEqual({
+      all: 4,
+      active: 3,
+      suspended: 1,
+      flagged: 1,
+    })
+    // The LEFT JOIN's COALESCE default (no user_moderation row at all) must land in `active`, which is the
+    // arm most easily lost when the CTE is replaced by a direct aggregate.
+    expect(await repo.getUser(a)).toMatchObject({ accountStatus: "active" })
+
+    const searched = await repo.countByFacet({ q: "bobfacet" })
+    expect(searched).toEqual({ all: 1, active: 0, suspended: 1, flagged: 0 })
+  })
+
   it("the sub-lists preserve cleanup, standalone group, and report message origins", async () => {
     const u = await insertUser(h, { handle: "sam" })
     await insertReport(h, u)
@@ -199,12 +228,29 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     expect(audit).toHaveLength(1)
   })
 
-  it("recordRoleAudit writes a user.role_changed audit row", async () => {
+  // L5: the role UPDATE and its audit row are ONE transaction, so a committed privilege change can never
+  // be missing its audit. Assert both landed AND that the prior role was captured on the audit meta.
+  it("applyRole writes users.role AND a user.role_changed audit row in one transaction", async () => {
     const u = await insertUser(h)
-    await repo.recordRoleAudit(u, { role: "operator", actorId: null })
-    const audit = await h.sql<{ action: string; target: string }[]>`
-      SELECT action, target FROM audit_log WHERE action = 'user.role_changed'
+    expect(await repo.applyRole(u, { role: "gov_admin", actorId: null })).toBe(true)
+    const rows = await h.sql<{ role: string }[]>`SELECT role FROM users WHERE id = ${u}`
+    expect(rows[0]?.role).toBe("gov_admin")
+    const audit = await h.sql<{ action: string; target: string; meta: Record<string, unknown> }[]>`
+      SELECT action, target, meta FROM audit_log WHERE action = 'user.role_changed'
     `
     expect(audit[0]?.target).toBe(`user:${u}`)
+    expect(audit[0]?.meta).toMatchObject({ role: "gov_admin", priorRole: "citizen" })
+  })
+
+  it("applyRole returns false (and writes nothing) for an unknown user", async () => {
+    const before = await h.sql<{ n: string }[]>`SELECT count(*) AS n FROM audit_log`
+    expect(
+      await repo.applyRole("00000000-0000-0000-0000-000000000000", {
+        role: "gov_admin",
+        actorId: null,
+      }),
+    ).toBe(false)
+    const after = await h.sql<{ n: string }[]>`SELECT count(*) AS n FROM audit_log`
+    expect(after[0]?.n).toBe(before[0]?.n)
   })
 })

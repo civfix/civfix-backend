@@ -16,8 +16,10 @@ import { SESSION_COOKIE } from "../../src/auth/transport.js"
 
 /**
  * Tests for the chat plugin: GET /threads (auth) over an injected in-memory ThreadsRepository, and the
- * dual WS handshake auth (resolveWsUser): a cookie/bearer already on req.auth, OR a ?token query param
- * (mobile), with an unauthenticated handshake rejected.
+ * dual WS handshake auth (resolveWsUser): a cookie/bearer already on req.auth, OR a single-use ?ticket
+ * (mobile), with an unauthenticated handshake rejected. H5: the legacy ?token= query bearer is now OFF
+ * unless the WS_ALLOW_QUERY_TOKEN break-glass flag is set, and the resolved session token rides back to
+ * the caller so the live socket can be re-authorized on each heartbeat (M1).
  */
 
 let current: FastifyInstance | undefined
@@ -179,19 +181,42 @@ describe("resolveWsUser (dual handshake auth)", () => {
   it("accepts an already-resolved session on req.auth (cookie/web transport)", async () => {
     const { sessions } = await withSession()
     const req = fakeReq({ auth: { userId: ME, roles: [], anon: false } })
-    expect(await resolveWsUser(req, sessions)).toBe(ME)
+    expect(await resolveWsUser(req, sessions)).toEqual({ userId: ME })
   })
 
-  it("accepts a ?token query param (mobile transport) and resolves it", async () => {
-    const { sessions, token } = await withSession()
-    const req = fakeReq({ query: { token } })
-    expect(await resolveWsUser(req, sessions)).toBe(ME)
-  })
-
-  it("accepts a bearer token presented in the session cookie", async () => {
+  it("accepts a bearer token presented in the session cookie, and RETAINS it for the live re-check", async () => {
     const { sessions, token } = await withSession()
     const req = fakeReq({ cookies: { [SESSION_COOKIE]: token } })
-    expect(await resolveWsUser(req, sessions)).toBe(ME)
+    // M1: the resolved token rides back so socket-lifecycle can re-authorize the open socket.
+    expect(await resolveWsUser(req, sessions)).toEqual({ userId: ME, token })
+  })
+
+  it("H5: REJECTS a ?token query param by default (the session bearer must never ride in a URL)", async () => {
+    const { sessions, token } = await withSession()
+    const req = fakeReq({ query: { token } })
+    expect(await resolveWsUser(req, sessions)).toBeNull()
+  })
+
+  it("H5: accepts ?token ONLY under the WS_ALLOW_QUERY_TOKEN break-glass flag", async () => {
+    const { sessions, token } = await withSession()
+    const prev = process.env.WS_ALLOW_QUERY_TOKEN
+    process.env.WS_ALLOW_QUERY_TOKEN = "1"
+    try {
+      expect(await resolveWsUser(fakeReq({ query: { token } }), sessions)).toEqual({
+        userId: ME,
+        token,
+      })
+    } finally {
+      if (prev === undefined) delete process.env.WS_ALLOW_QUERY_TOKEN
+      else process.env.WS_ALLOW_QUERY_TOKEN = prev
+    }
+  })
+
+  it("accepts a single-use ?ticket and does NOT retain a token for it", async () => {
+    const { sessions } = await withSession()
+    const req = fakeReq({ query: { ticket: "t-1" } })
+    const redeem = (t: string): Promise<string | null> => Promise.resolve(t === "t-1" ? ME : null)
+    expect(await resolveWsUser(req, sessions, redeem)).toEqual({ userId: ME })
   })
 
   it("rejects (null) an unauthenticated handshake with no cookie and no token", async () => {
@@ -200,10 +225,17 @@ describe("resolveWsUser (dual handshake auth)", () => {
     expect(await resolveWsUser(req, sessions)).toBeNull()
   })
 
-  it("rejects (null) a bogus ?token", async () => {
+  it("rejects (null) a bogus ?token even with the break-glass flag on", async () => {
     const { sessions } = await withSession()
-    const req = fakeReq({ query: { token: "not-a-real-token" } })
-    expect(await resolveWsUser(req, sessions)).toBeNull()
+    const prev = process.env.WS_ALLOW_QUERY_TOKEN
+    process.env.WS_ALLOW_QUERY_TOKEN = "1"
+    try {
+      const req = fakeReq({ query: { token: "not-a-real-token" } })
+      expect(await resolveWsUser(req, sessions)).toBeNull()
+    } finally {
+      if (prev === undefined) delete process.env.WS_ALLOW_QUERY_TOKEN
+      else process.env.WS_ALLOW_QUERY_TOKEN = prev
+    }
   })
 })
 
@@ -299,11 +331,26 @@ describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
     expect(result).toEqual({ ok: true, userId: ME })
   })
 
-  it("accepts a NO-Origin handshake with a ?token (native mobile, not CSWSH-exposed)", async () => {
-    const { sessions, token } = await withSession()
-    const req = fakeReq({ query: { token } }) // no Origin header at all
-    const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
+  it("accepts a NO-Origin handshake with a ?ticket (native mobile, not CSWSH-exposed)", async () => {
+    const { sessions } = await withSession()
+    const req = fakeReq({ query: { ticket: "t-1" } }) // no Origin header at all
+    const result = await checkWsHandshake(req, {
+      sessions,
+      webOrigins: ALLOW,
+      redeemTicket: (t) => Promise.resolve(t === "t-1" ? ME : null),
+    })
+    // No `token` on the ticket path: a connect ticket is not a re-checkable session credential.
     expect(result).toEqual({ ok: true, userId: ME })
+  })
+
+  it("H5: a NO-Origin handshake carrying only ?token is UNAUTHORIZED (query bearer disabled)", async () => {
+    const { sessions, token } = await withSession()
+    const result = await checkWsHandshake(fakeReq({ query: { token } }), {
+      sessions,
+      webOrigins: ALLOW,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).toBe("UNAUTHORIZED")
   })
 
   it("P1-4: REJECTS a NO-Origin handshake that presents a session COOKIE (CSWSH second factor)", async () => {
@@ -331,7 +378,8 @@ describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
       auth: { userId: ME, roles: [], anon: false },
     })
     const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
-    expect(result).toEqual({ ok: true, userId: ME })
+    // M1: the cookie's token is retained so the heartbeat can re-resolve the live socket's session.
+    expect(result).toEqual({ ok: true, userId: ME, token })
   })
 
   it("passes the Origin gate but rejects UNAUTHORIZED when no credential is presented", async () => {
@@ -349,10 +397,13 @@ describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
   it("allows any Origin when the allowlist is empty (dev), still requiring auth", async () => {
     const { sessions, token } = await withSession()
     const ok = await checkWsHandshake(
-      fakeReq({ headers: { origin: "https://anything.example.com" }, query: { token } }),
+      fakeReq({
+        headers: { origin: "https://anything.example.com" },
+        cookies: { [SESSION_COOKIE]: token },
+      }),
       { sessions, webOrigins: [] },
     )
-    expect(ok).toEqual({ ok: true, userId: ME })
+    expect(ok).toEqual({ ok: true, userId: ME, token })
 
     const unauth = await checkWsHandshake(
       fakeReq({ headers: { origin: "https://anything.example.com" } }),

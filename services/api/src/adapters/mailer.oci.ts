@@ -7,7 +7,7 @@ import { domainOf, escapeHtml, sanitizeHeaderValue } from "./mail-text.js"
 import { code, paragraph } from "./email-blocks.js"
 import { renderEmailBody } from "./email-layout.js"
 import { renderMessage } from "../i18n/renderMessage.js"
-import { DEFAULT_LOCALE, resolveLocale } from "../i18n/locales.js"
+import { resolveLocale, type Locale } from "../i18n/locales.js"
 
 const CRLF_RE = /[\r\n\0]/
 const CRLF_GLOBAL_RE = /[\r\n\0]/g
@@ -56,11 +56,25 @@ function classifyMailError(err: unknown, from: string): AppError {
   const responseCode = typeof e.responseCode === "number" ? e.responseCode : undefined
   const code = typeof e.code === "string" ? e.code : undefined
   const response = typeof e.response === "string" ? e.response : undefined
+  const detail = response ? ` (${response})` : ""
 
-  const isPermanentResponse = responseCode !== undefined && responseCode >= 500 && responseCode < 600
-  const isAuthCode = code === "EAUTH" || code === "EENVELOPE"
-  if (isPermanentResponse || (isAuthCode && responseCode !== undefined && responseCode >= 500)) {
-    const detail = response ? ` (${response})` : ""
+  // EAUTH is the SMTP CREDENTIALS being wrong (a 535), not the sender being unapproved. It carries a 5xx
+  // responseCode, so it used to fall into the approved-sender branch below and told the operator to fix
+  // OCI's Approved Senders while the actual fault was the SMTP user/password. Classified first, and as
+  // INTERNAL: it is a deployment misconfiguration (and 5xx routes it to the error tracker), not a conflict
+  // the caller can resolve.
+  if (code === "EAUTH") {
+    return new AppError(
+      ErrorCode.INTERNAL,
+      `Email not sent: the SMTP server rejected our credentials. Check ` +
+        `OCI_EMAIL_SMTP_USER / OCI_EMAIL_SMTP_PASS.${detail}`,
+      { cause: err },
+    )
+  }
+
+  // Any permanent 5xx SMTP response. (The old `EAUTH || EENVELOPE` disjunct alongside this was dead: it
+  // additionally required responseCode >= 500, which this already covers for every code SMTP can emit.)
+  if (responseCode !== undefined && responseCode >= 500 && responseCode < 600) {
     const domain = domainOf(from)
     return new AppError(
       ErrorCode.CONFLICT,
@@ -81,11 +95,27 @@ export class OciMailer implements Mailer {
     this.config = config
   }
 
-  async sendOtp(to: string, code: string): Promise<void> {
-    const body = renderOtp(code)
+  /**
+   * `locale` is an OPTIONAL extra parameter, and it IS supplied in production: auth/otp.ts widens this one
+   * seam structurally (its LocaleAwareMailer type) and passes the account's `users.locale`, so the
+   * email.otp.* catalogs are live and a user whose locale is es/de/ko gets their passcode in that language.
+   * The parameter stays optional only because the shared `Mailer.sendOtp(to, code)` contract has no locale
+   * slot to declare it in — a 2-parameter sendOtp is still assignable, so every other Mailer (FakeMailer,
+   * test doubles) satisfies the widened type and simply keeps rendering `en`. An unknown/absent value is
+   * clamped by resolveLocale, so nothing here depends on the caller validating it.
+   */
+  async sendOtp(to: string, code: string, locale?: string): Promise<void> {
+    const body = renderOtp(code, resolveLocale(locale))
     await this.send(to, body)
   }
 
+  /**
+   * Interface-mandated, but NOTHING in production calls it yet: the report-status notification ships as a
+   * push/bell, and the jurisdiction packet path uses sendOutbound (which carries attachments + an explicit
+   * Message-ID that this template path drops). It is kept — with `report_update` + its four translated
+   * catalogs — because that is exactly the copy a report-status email needs, and covered by unit tests so
+   * the render path cannot rot unnoticed while it waits for its caller.
+   */
   async sendTransactional(
     to: string,
     template: string,
@@ -125,8 +155,11 @@ export class OciMailer implements Mailer {
         text: email.text,
         html: email.html ?? textToHtml(email.text),
         messageId,
-        inReplyTo: email.inReplyTo,
-        references: email.references,
+        // In-Reply-To/References are stored Message-IDs recovered from INBOUND mail, i.e.
+        // attacker-influenced bytes; they get the same header sanitization as every other field rather
+        // than being handed to nodemailer raw.
+        inReplyTo: email.inReplyTo ? sanitizeHeaderValue(email.inReplyTo) : undefined,
+        references: email.references?.map((r) => sanitizeHeaderValue(r)),
         attachments: email.attachments?.map((a) => ({
           filename: a.filename,
           content: Buffer.from(a.content),
@@ -156,7 +189,8 @@ export class OciMailer implements Mailer {
   }
 }
 
-function renderOtp(passcode: string, locale: string = DEFAULT_LOCALE): Rendered {
+/** `locale` is always resolved by the caller (sendOtp), so there is no default to drift from. */
+function renderOtp(passcode: string, locale: Locale): Rendered {
   const subject = renderMessage(locale, "email.otp.subject")
   const { text, html } = renderEmailBody({
     preheader: subject,

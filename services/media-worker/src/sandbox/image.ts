@@ -24,9 +24,10 @@
  * decode pixels); sharp owns all pixel work.
  */
 
-import sharp from "sharp"
+import sharp, { type Sharp } from "sharp"
 import exifr from "exifr"
 import type { WorkerLimits } from "../config.js"
+import { settleWithin } from "../timeout.js"
 
 // Predictable memory under the worker concurrency cap: no internal cache, single libvips thread.
 sharp.cache(false)
@@ -69,24 +70,12 @@ export class ImageProcessingError extends Error {
 
 /** Reject a promise if it does not settle within `ms`. Used to bound native sharp work. */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => {
-      reject(new ImageProcessingError(`${label} timed out after ${ms}ms`))
-    }, ms)
-    p.then(
-      (v) => {
-        clearTimeout(t)
-        resolve(v)
-      },
-      (err: unknown) => {
-        clearTimeout(t)
-        reject(
-          err instanceof ImageProcessingError
-            ? err
-            : new ImageProcessingError(`${label} failed`, err),
-        )
-      },
-    )
+  return settleWithin(p, ms, {
+    timeoutError: () => new ImageProcessingError(`${label} timed out after ${ms}ms`),
+    // Every rejection out of this boundary must be an ImageProcessingError: the pipeline maps that (and
+    // only that) to "reject the asset" rather than "retry the job".
+    normalizeError: (err) =>
+      err instanceof ImageProcessingError ? err : new ImageProcessingError(`${label} failed`, err),
   })
 }
 
@@ -94,8 +83,72 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * TIFF, AVIF, GIF, ...) is rejected before any full decode rather than re-encoded via an unintended codec. */
 const ALLOWED_DECODED_FORMATS: ReadonlySet<string> = new Set(["jpeg", "png", "webp"])
 
-/** Build a guarded sharp instance over untrusted bytes (no decoding happens until a consumer runs). */
-function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): sharp.Sharp {
+/**
+ * MAGIC-BYTE CONTAINER SNIFF (security review L15).
+ *
+ * The ALLOWED_DECODED_FORMATS check runs on `meta.format`, i.e. AFTER `metadata()` — and `metadata()`
+ * is what dispatches untrusted bytes to a libvips loader. libvips picks the loader from the bytes, so an
+ * SVG, PDF or TIFF header reached the corresponding libvips/librsvg/poppler header parser before we ever
+ * got to reject it. The format allowlist was enforced one step too late to keep those codecs off the
+ * untrusted path.
+ *
+ * This sniff runs in pure JS, on the raw bytes, BEFORE any sharp instance is constructed: only JPEG,
+ * PNG and WebP signatures proceed, so libvips is never handed a non-allowlisted container at all. It is
+ * a container gate, not a validity check — `metadata()` and the existing `meta.format` allowlist still
+ * run afterwards and remain the authority on what is actually decoded.
+ *
+ * Signatures:
+ *   JPEG  FF D8 FF
+ *   PNG   89 50 4E 47 0D 0A 1A 0A
+ *   WebP  "RIFF" .... "WEBP"  (RIFF container, WEBP form type at offset 8)
+ */
+export function sniffAllowedImageContainer(bytes: Uint8Array): "jpeg" | "png" | "webp" | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "jpeg"
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "png"
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && // R
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x46 && // F
+    bytes[8] === 0x57 && // W
+    bytes[9] === 0x45 && // E
+    bytes[10] === 0x42 && // B
+    bytes[11] === 0x50 // P
+  ) {
+    return "webp"
+  }
+  return null
+}
+
+/**
+ * Build a guarded sharp instance over untrusted bytes (no decoding happens until a consumer runs).
+ *
+ * EVERY untrusted-decode entry point must go through this, not a bare `sharp()`: it is where the container
+ * sniff, pixel ceiling, failOn, single-page and sequential-read guards live as ONE set. phash.ts had its
+ * own copy of the options and had already drifted (no container sniff), which is why it now calls this.
+ */
+export function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): Sharp {
+  // L15: refuse to even CONSTRUCT the pipeline for a container we would reject anyway, so libvips'
+  // SVG/PDF/TIFF/GIF header loaders never see untrusted bytes.
+  const container = sniffAllowedImageContainer(bytes)
+  if (container === null) {
+    throw new ImageProcessingError("unsupported image container (magic bytes not JPEG/PNG/WebP)")
+  }
   return sharp(Buffer.from(bytes), {
     // Reject decode bombs at header parse: refuse inputs above this pixel ceiling.
     limitInputPixels: limits.sharpPixelLimit,
@@ -116,7 +169,7 @@ function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): sharp.Sharp {
 
 /** Choose the stripped-image output encoder + content type from the detected (allowlisted) input format. */
 function chooseOutput(format: string): {
-  apply: (s: sharp.Sharp) => sharp.Sharp
+  apply: (s: Sharp) => Sharp
   contentType: string
 } {
   switch (format) {

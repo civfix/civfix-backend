@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { loadLimits } from "../../src/config.js"
-import { runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
+import { LEAK_RETRY_MAX_ATTEMPTS, runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
 import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
 
@@ -70,6 +70,117 @@ describe("orphan.sweep", () => {
     expect(repo.byId.has("fresh-1")).toBe(true)
   })
 
+  /**
+   * REGRESSION (blocker): the orphan predicate was `report_id IS NULL` alone, and EVERY non-report lane
+   * leaves report_id NULL. Combined with the 6h TTL and the drain loop, the first sweep after deploy
+   * would have deleted every user avatar, every social-post photo and every chat/DM attachment older
+   * than 6h — rows AND R2 objects, with avatar_media_id silently NULLed by its ON DELETE SET NULL FK.
+   *
+   * One row per binding lane, all old enough to be swept, none of them orphans.
+   */
+  it("never reaps a BOUND row: chat/DM, post, avatar and verification lanes all survive", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+
+    const bound = [
+      // FORWARD: chat + DM attachment (message-attachments.drizzle.ts stamps chat_message_id and its
+      // attach guard REQUIRES report_id IS NULL, so every one of these matched the old predicate).
+      { id: "chat-1", uploadId: "cu", r2Key: "uploads/chat1", chatMessageId: "msg-1" },
+      // FORWARD: social-feed post media (post_id + purpose='post').
+      { id: "post-1", uploadId: "pu", r2Key: "uploads/post1", postId: "post-abc", purpose: "post" },
+      // OUT-OF-BAND: verification document, referenced only from user_verification.documents jsonb.
+      { id: "verif-1", uploadId: "vu", r2Key: "uploads/verif1", purpose: "verification" },
+      // REVERSE: users.avatar_media_id / chat_groups.avatar_media_id point AT the row (seeded below).
+      { id: "avatar-1", uploadId: "au", r2Key: "uploads/avatar1" },
+    ] as const
+    for (const row of bound) {
+      repo.seed({ ...row, kind: "image", reportId: null, createdAt: old })
+      await storage.put(row.r2Key, Buffer.from([1]))
+    }
+    repo.seedAvatarReference("avatar-1")
+
+    // A genuine orphan alongside them, so a predicate that simply matched nothing would not pass.
+    const orphan = repo.seed({
+      id: "orphan-only",
+      uploadId: "ou",
+      kind: "image",
+      r2Key: "uploads/orphan-only",
+      reportId: null,
+      createdAt: old,
+    })
+    await storage.put(orphan.r2Key, Buffer.from([1]))
+
+    const res = await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
+
+    expect(res.deleted).toBe(1)
+    expect(res.errors).toBe(0)
+    expect(repo.byId.has("orphan-only")).toBe(false)
+    expect(storage.get("uploads/orphan-only")).toBeNull()
+
+    // Every bound row keeps BOTH its database row and its bytes.
+    for (const row of bound) {
+      expect(repo.byId.has(row.id), `${row.id} row must survive`).toBe(true)
+      expect(storage.get(row.r2Key), `${row.id} object must survive`).not.toBeNull()
+    }
+  })
+
+  it("M10: DRAINS the backlog across pages instead of reaping one bounded batch per run", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+
+    // 25 orphans against a page size of 10. The old sweep reaped ONE page per hourly run, against a
+    // presign rate limit that creates orders of magnitude more rows per day — so the backlog could
+    // only ever grow. The sweep now keeps paging while a page comes back full.
+    const total = 25
+    for (let i = 0; i < total; i++) {
+      const row = repo.seed({
+        id: `drain-${i}`,
+        uploadId: `du${i}`,
+        kind: "image",
+        r2Key: `uploads/d${i}`,
+        reportId: null,
+        createdAt: old,
+      })
+      await storage.put(row.r2Key, Buffer.from([1]))
+    }
+
+    const paged = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 50 }
+    const res = await runOrphanSweep({ repo, storage, limits: paged, now: () => now, log: () => {} })
+
+    expect(res.deleted).toBe(total)
+    expect(res.scanned).toBe(total)
+    expect(repo.byId.size).toBe(0)
+  })
+
+  it("M10: stops at orphanSweepMaxPages so one run cannot monopolize the worker", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+
+    for (let i = 0; i < 30; i++) {
+      const row = repo.seed({
+        id: `cap-${i}`,
+        uploadId: `cu${i}`,
+        kind: "image",
+        r2Key: `uploads/c${i}`,
+        reportId: null,
+        createdAt: old,
+      })
+      await storage.put(row.r2Key, Buffer.from([1]))
+    }
+
+    const capped = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 2 }
+    const res = await runOrphanSweep({ repo, storage, limits: capped, now: () => now, log: () => {} })
+
+    expect(res.deleted).toBe(20)
+    expect(repo.byId.size).toBe(10)
+  })
+
   it("never throws: a per-row delete failure is counted, not propagated", async () => {
     const storage = new FakeStorage()
     const repo = new InMemoryWorkerRepo()
@@ -95,6 +206,96 @@ describe("orphan.sweep", () => {
     })
     expect(res.errors).toBe(1)
     expect(res.deleted).toBe(0)
+    expect(reports.length).toBe(1)
+  })
+
+  /**
+   * B35: the row is deleted BEFORE its objects, so a failed storage delete is the one leak nothing could
+   * rediscover. media_reap_tombstones (0057) is that memory — assert the whole round trip, because a
+   * tombstone that is written but never retried is indistinguishable from the bug it replaced.
+   */
+  it("tombstones objects whose delete failed, then reclaims them on the next run", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const realDelete = storage.delete.bind(storage)
+    let r2Down = true
+    storage.delete = (key: string) =>
+      r2Down ? Promise.reject(new Error("R2 unavailable")) : realDelete(key)
+
+    const orphan = repo.seed({
+      id: "leaky-1",
+      uploadId: "lu1",
+      kind: "image",
+      r2Key: "uploads/leak1",
+      reportId: null,
+      createdAt: new Date(now.getTime() - limits.orphanTtlMs - 60_000),
+    })
+    await storage.put(orphan.r2Key, Buffer.from([1, 2, 3]))
+
+    const first = await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
+    // The row IS reaped (that half succeeded); every derived key leaked and was tombstoned.
+    expect(first.deleted).toBe(1)
+    expect(repo.byId.has("leaky-1")).toBe(false)
+    expect(first.leaked).toBe(repo.tombstones.size)
+    expect(repo.tombstones.get("uploads/leak1")).toMatchObject({ mediaId: "leaky-1", attempts: 1 })
+    // The bytes really are still there — this is the leak the tombstone exists to close.
+    expect(storage.get("uploads/leak1")).not.toBeNull()
+
+    r2Down = false
+    const second = await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
+    expect(second.retried).toBe(first.leaked)
+    expect(second.reclaimed).toBe(first.leaked)
+    expect(repo.tombstones.size).toBe(0)
+    expect(storage.get("uploads/leak1")).toBeNull()
+  })
+
+  /**
+   * The real recordLeakedObjects is ONE multi-row upsert, so it collapses `keys` to a Set first: Postgres
+   * aborts a statement that tries to affect the same row twice (21000), and a throw there makes the leak
+   * permanent (the media row is already gone). The fake has to agree, or a duplicate key would bump
+   * attempts twice here and once in production — retiring the key from the retry range a run early.
+   */
+  it("counts a key repeated inside ONE call as a single attempt (mirrors the real upsert)", async () => {
+    const repo = new InMemoryWorkerRepo()
+
+    await repo.recordLeakedObjects({
+      mediaId: "dup-1",
+      keys: ["uploads/dup", "uploads/dup", "uploads/other"],
+    })
+    expect(repo.tombstones.size).toBe(2)
+    expect(repo.tombstones.get("uploads/dup")).toMatchObject({ mediaId: "dup-1", attempts: 1 })
+
+    // A SEPARATE call is a real retry, so it does bump.
+    await repo.recordLeakedObjects({ mediaId: "dup-1", keys: ["uploads/dup"] })
+    expect(repo.tombstones.get("uploads/dup")?.attempts).toBe(2)
+  })
+
+  it("stops retrying a tombstone at the attempt cap and reports it as permanent", async () => {
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    storage.delete = () => Promise.reject(new Error("R2 unavailable"))
+    await repo.recordLeakedObjects({ mediaId: "gone-1", keys: ["uploads/stuck"], error: "first" })
+
+    const reports: unknown[] = []
+    let lastRetried = 0
+    // Attempts start at 1, so the runs that still retry are (cap - 1); one extra run proves it stopped.
+    for (let run = 0; run < LEAK_RETRY_MAX_ATTEMPTS; run++) {
+      const res = await runOrphanSweep({
+        repo,
+        storage,
+        limits,
+        now: () => now,
+        log: () => {},
+        report: (e) => reports.push(e),
+      })
+      lastRetried = res.retried
+    }
+    expect(lastRetried).toBe(0)
+    // Kept, not deleted: the row is the operator-visible record that a manual bucket cleanup is owed.
+    expect(repo.tombstones.get("uploads/stuck")?.attempts).toBe(LEAK_RETRY_MAX_ATTEMPTS)
+    // Exactly one "gave up" report, on the attempt that reached the cap.
     expect(reports.length).toBe(1)
   })
 })

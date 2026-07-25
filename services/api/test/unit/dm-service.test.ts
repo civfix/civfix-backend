@@ -111,4 +111,31 @@ describe("DmService.openDm", () => {
     expect(reopened.lastFromMe).toBe(true)
     expect(reopened.ago).not.toBeNull()
   })
+
+  it("reports the viewer's REAL unread: peer messages count, own don't, and a read clears it", async () => {
+    const opened = await service.openDm(ALICE, BOB)
+    // Two from the peer + one of the viewer's own: unread counts only the peer's (you are never unread
+    // on what you wrote). This used to be a hardcoded 0, so a thread opened from a profile rendered with
+    // no badge until the inbox refetched and threads-service stamped the real count.
+    await dm.persist({ threadId: opened.id, senderId: BOB, body: "yo" })
+    await dm.persist({ threadId: opened.id, senderId: BOB, body: "you there?" })
+    await dm.persist({ threadId: opened.id, senderId: ALICE, body: "hi" })
+    expect((await service.openDm(ALICE, BOB)).unread).toBe(2)
+    // The PEER's own view of the same thread: Alice's one message is unread for Bob.
+    expect((await service.openDm(BOB, ALICE)).unread).toBe(1)
+
+    // Reading up to now clears it (same watermark the inbox uses).
+    await dm.markRead(opened.id, ALICE, new Date())
+    expect((await service.openDm(ALICE, BOB)).unread).toBe(0)
+  })
+
+  it("an unread lookup failure fails OPEN (0) rather than failing the open", async () => {
+    const opened = await service.openDm(ALICE, BOB)
+    await dm.persist({ threadId: opened.id, senderId: BOB, body: "yo" })
+    // The repo instance is rebuilt per test, so patching it here needs no restore.
+    dm.countUnread = () => Promise.reject(new Error("db down"))
+    const thread = await service.openDm(ALICE, BOB)
+    expect(thread.unread).toBe(0)
+    expect(thread.id).toBe(opened.id)
+  })
 })

@@ -3,7 +3,6 @@ import { ReportContentRequestSchema, type ReportContentResponse } from "@civfix/
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { writeAudit } from "../services/admin/audit.js"
@@ -14,12 +13,14 @@ import {
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
 import { reportOwnedBy } from "../services/report-sql.js"
 
-export const REPORT_CONTENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+const REPORT_CONTENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
 export async function registerReportContentRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   function moderation(): ModerationService {
     const overrides = app.moderationOverrides
     if (overrides) {

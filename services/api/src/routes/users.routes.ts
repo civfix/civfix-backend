@@ -31,7 +31,7 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect, clearCsrfCookie } from "../auth/csrf.js"
+import { clearCsrfCookie } from "../auth/csrf.js"
 import { clearSessionCookie } from "../auth/transport.js"
 import { searchByHandlePrefix, searchMentionable } from "../services/social-repository.drizzle.js"
 import { toUserDTO } from "../auth/auth-services.js"
@@ -62,7 +62,7 @@ declare module "fastify" {
  * Tighter per-IP rate limit for the data-export request (each assembles + emails a full export; a real
  * client needs at most a handful). Mirrors the verification apply limit shape.
  */
-export const DATA_EXPORT_RATE_LIMIT = { max: 5, timeWindow: "1 hour" } as const
+const DATA_EXPORT_RATE_LIMIT = { max: 5, timeWindow: "1 hour" } as const
 
 /** Path param schema for the routes that take a user UUID in the URL. */
 const UserIdParamsSchema = z.object({ id: IdSchema }).strict()
@@ -83,11 +83,17 @@ const SettingsLocaleSchema = z
 const USER_SEARCH_DEFAULT_LIMIT = 10
 
 /** Tighter per-IP rate limit for the @handle search surface. 30/min is ample for typeahead. */
-export const USER_SEARCH_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
-/** Modest per-IP cap on block/unblock churn — idempotent, but bound abuse below the global ceiling. */
+const USER_SEARCH_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+/**
+ * Modest per-IP cap on block/unblock churn — idempotent, but bound abuse below the global ceiling.
+ * Exported so the route test can assert the dedicated bucket actually engages (the HOME_TURF_* pattern:
+ * a limit no test references is a limit nothing notices losing).
+ */
 export const BLOCK_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
 export async function registerUsersRoutes(app: FastifyInstance, container: Container): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   /** The blocks repo: container singleton unless a test injected one via chatOverrides. */
   function blocksRepo(): BlocksRepository {
     return app.chatOverrides?.blocksRepo ?? container.getBlocksRepo()
@@ -181,14 +187,18 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
 
   // DELETE /me  [auth][csrf] — SOFT delete: tombstone + DMs off (KEEP PII for admin truth), then REVOKE all
   // sessions (set deleted_at alone does NOT log a warm Redis session out) + set the banned marker, clear
-  // the session + csrf cookies, and audit. The user's posts/reports/comments/events survive (the FKs
-  // reference the kept row); public projections render "Deleted User".
+  // the session + csrf cookies, unlink the OAuth identities (else a provider sign-in re-enters the
+  // tombstone), drop device push tokens, and audit. The user's posts/reports/comments/events survive (the
+  // FKs reference the kept row); public projections render "Deleted User".
   route(app, "deleteAccount", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const store = app.authServices?.users
     const sessions = app.authServices?.sessions
     const otp = app.authServices?.otp
-    if (!store || !sessions || !otp) throw AppError.unauthorized("Authentication required.")
+    const oauth = app.authServices?.oauth
+    if (!store || !sessions || !otp || !oauth) {
+      throw AppError.unauthorized("Authentication required.")
+    }
 
     // EMAIL-OTP GATE: deleting an account requires re-proving control of the account email. The client
     // first requests a one-time code (POST /auth/otp/request) and submits it here; we verify it BEFORE any
@@ -196,6 +206,12 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     // A bad/expired code throws 401 from verifyOtp and nothing below runs. (We never issue the OTP's
     // session — verifyOtp only proves the email; the existing session is used for this very request, so no
     // session/CSRF rotation, unlike calling the sign-in /auth/otp/verify from the client.)
+    //
+    // Because it IS the sign-in issue endpoint, that request shares the sign-in 60s per-email cooldown
+    // (`otp:rl:email:` in auth/otp.ts). That used to 429 the erasure path for a user who had just signed
+    // in; verifyOtp now RELEASES the cooldown whenever a code is successfully consumed (the sign-in itself
+    // consumed one), so the deletion code can be requested immediately. See the G17 note in issueOtp for
+    // why the release is safe and why a per-purpose namespace is not available server-side.
     const { emailOtp } = parse(DeleteAccountRequestSchema, request.body)
     const me = await store.findById(userId)
     const email = me?.email ?? null
@@ -214,18 +230,56 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
 
     await store.softDeleteAndAnonymize(userId)
     // banUser revokes ALL durable sessions + cache entries AND sets the veto marker (so any warm session
-    // that slipped a revoke is rejected on its next request).
+    // that slipped a revoke is rejected on its next request). A failure here MUST surface: the sessions
+    // would still be live on a tombstoned account.
     await sessions.banUser(userId)
-    // Erasure: hard-delete the user's device push tokens (a leftover device identifier) so no notifications
-    // are delivered to a deleted account's devices and no identifier is left behind. Built on-demand like
-    // the other notification touchpoints (see discussion.routes).
-    await makeDrizzleNotificationRepository(container.getDb().sql).deletePushTokensForUser(userId)
+
+    // The tombstone + revocation ARE the deletion. Everything below is cleanup, so the caller's cookies are
+    // cleared FIRST and no cleanup failure is allowed to turn a COMPLETED deletion into a 500 the client
+    // reads as "deletion failed": a retry can only 401 (every session is revoked) or 422 (the email the OTP
+    // gate needs was just nulled), so it is a dead end rather than a second chance. Failures are logged.
     clearSessionCookie(reply)
     clearCsrfCookie(reply)
-    await writeAudit(container.getDb().sql, {
-      actorId: userId,
-      action: "account.deleted",
-      target: `user:${userId}`,
+    // Erasure, in THREE INDEPENDENT steps: (1) unlink the provider identities, so a Google/Apple sign-in
+    // cannot walk back into the tombstone once the ban marker's TTL lapses — OAuthService also refuses a
+    // soft-deleted account, this removes the dangling row; (2) hard-delete device push tokens (a leftover
+    // device identifier) so no notification reaches a deleted account's devices; (3) write the
+    // `account.deleted` audit row — the only append-only record that this erasure ran. Built on-demand like
+    // the other notification touchpoints (see discussion.routes).
+    //
+    // PER-STEP ISOLATION (not one chained try): the steps are independent, and chaining them made the
+    // FIRST one the gate — a transient unlink failure silently skipped both the push-token erasure (device
+    // identifiers retained on a GDPR erasure path) and the audit row, while the client still got 200.
+    // allSettled runs all three and logs each rejection with the step name, so a partial failure is
+    // actionable from the logs instead of being attributed to whichever step happened to be first.
+    // Same shape as SessionService.revokeAllForUser's cache-eviction fan-out.
+    const cleanups: ReadonlyArray<readonly [step: string, run: () => Promise<unknown>]> = [
+      ["oauth.unlink", () => oauth.unlinkAllForUser(userId)],
+      [
+        "push-tokens.delete",
+        () =>
+          makeDrizzleNotificationRepository(container.getDb().sql).deletePushTokensForUser(userId),
+      ],
+      [
+        "audit.account-deleted",
+        () =>
+          writeAudit(container.getDb().sql, {
+            actorId: userId,
+            action: "account.deleted",
+            target: `user:${userId}`,
+          }),
+      ],
+    ]
+    // `async` wrapper deliberately: a step that throws SYNCHRONOUSLY (e.g. building the repo hits a
+    // Redis/DB handle error) becomes a rejected promise here rather than escaping allSettled as a 500.
+    const outcomes = await Promise.allSettled(cleanups.map(async ([, run]) => run()))
+    outcomes.forEach((outcome, i) => {
+      if (outcome.status === "rejected") {
+        request.log.error(
+          { err: outcome.reason, userId, step: cleanups[i]![0] },
+          "account deletion: post-revocation cleanup step failed (the account IS deleted and every session revoked)",
+        )
+      }
     })
     const payload: DeleteAccountResponse = { ok: true }
     reply.status(200).send(payload)
@@ -245,7 +299,6 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
         makeDataExportService({
           sql: container.getDb().sql,
           mailer: container.mailer,
-          storage: container.storage,
           users: store,
           fromNoReply: container.env.MAIL_FROM_NOREPLY,
         })

@@ -76,4 +76,76 @@ describe("DI container", () => {
     const c = buildContainer(loadEnv({ NODE_ENV: "test" }))
     await expect(c.close()).resolves.toBeUndefined()
   })
+
+  it("threads CF_TURNSTILE_HOSTNAMES into RealAbuseChecks, and omits it when unset (L16)", () => {
+    // The hostname assertion existed in abuse-checks but nothing ever supplied the list, so a token minted
+    // on another origin using our sitekey could be replayed. Read back off the constructed instance: the
+    // wiring IS the fix, so asserting the env value reaches the adapter is the only meaningful pin.
+    const configOf = (checks: unknown): { turnstileHostnames?: readonly string[] } =>
+      (checks as { config: { turnstileHostnames?: readonly string[] } }).config
+
+    const wired = buildContainer(
+      loadEnv({
+        NODE_ENV: "test",
+        USE_FAKE_ABUSE_NSFW: "0",
+        CF_TURNSTILE_SECRET: "ts-secret",
+        CF_TURNSTILE_HOSTNAMES: "civfix.org,www.civfix.org",
+      }),
+    )
+    expect(configOf(wired.abuseChecks).turnstileHostnames).toEqual(["civfix.org", "www.civfix.org"])
+
+    // Unset -> the key is OMITTED rather than passed as [], so abuse-checks still logs its one-time
+    // "not configured" notice instead of reading as "configured with an empty allowlist".
+    const unwired = buildContainer(
+      loadEnv({ NODE_ENV: "test", USE_FAKE_ABUSE_NSFW: "0", CF_TURNSTILE_SECRET: "ts-secret" }),
+    )
+    expect(configOf(unwired.abuseChecks).turnstileHostnames).toBeUndefined()
+  })
+})
+
+/**
+ * H10: raw inbound email (.eml + attachments) must never be reachable on the public CDN. Two guarantees
+ * live in di.ts — the inbound Storage is built WITHOUT a publicBase, and the old silent
+ * `R2_INBOUND_BUCKET ?? R2_BUCKET` fallback cannot route inbound mail into the published media bucket.
+ */
+describe("DI container: inbound-mail storage is never public", () => {
+  const realStorageEnv = {
+    NODE_ENV: "test" as const,
+    USE_FAKE_STORAGE: "0",
+    R2_ACCOUNT_ID: "a",
+    R2_ACCESS_KEY_ID: "b",
+    R2_SECRET_ACCESS_KEY: "c",
+    R2_BUCKET: "civfix-media",
+  }
+
+  /** R2Storage keeps its config privately; read what we assert on without widening the public type. */
+  type WithConfig = { config: { bucket: string; publicBase?: string } }
+
+  it("builds the inbound storage on its own bucket and with no publicBase", () => {
+    const env = loadEnv({
+      ...realStorageEnv,
+      R2_PUBLIC_BASE: "https://cdn.civfix.org",
+      R2_INBOUND_BUCKET: "civfix-inbound",
+    })
+    const c = buildContainer(env)
+    const media = (c.storage as unknown as WithConfig).config
+    const inbound = (c.inboundStorage as unknown as WithConfig).config
+    expect(inbound.bucket).toBe("civfix-inbound")
+    expect(inbound.bucket).not.toBe(media.bucket)
+    // The media bucket keeps its CDN base; the inbound one must NOT have one at all.
+    expect(media.publicBase).toBe("https://cdn.civfix.org")
+    expect(inbound.publicBase).toBeUndefined()
+  })
+
+  it("throws rather than falling back to the media bucket when a public base is set", () => {
+    // loadEnv is the first line of defence; construct the env object directly to prove di.ts also
+    // refuses, so no future env change can reintroduce the leak silently.
+    const env = { ...loadEnv(realStorageEnv), R2_PUBLIC_BASE: "https://cdn.civfix.org" }
+    expect(() => buildContainer(env)).toThrow(/R2_INBOUND_BUCKET is required/)
+  })
+
+  it("still shares the media bucket when nothing is publicly addressable", () => {
+    const c = buildContainer(loadEnv(realStorageEnv))
+    expect((c.inboundStorage as unknown as WithConfig).config.bucket).toBe("civfix-media")
+  })
 })

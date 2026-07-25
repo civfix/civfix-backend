@@ -71,6 +71,15 @@ export const en = {
   "notification.cleanup_role.removed.title": "Removed from event",
   "notification.cleanup_role.removed.body": "You were removed from {{title}}.",
 
+  // Event-cancellation bell (L24, type 'cleanup_cancelled'): the host called the event off. Fanned out to
+  // every OTHER member by cleanup-service.notifyCancellation. The reason is OPTIONAL on the wire, so there
+  // are two bodies rather than one with an empty tail; {{reason}} is the host's own words (user content,
+  // slur-gated by assertEventTextClean) and only the wrapper copy is translated.
+  "notification.cleanup_cancelled.title": "Event cancelled",
+  "notification.cleanup_cancelled.body": "This event has been cancelled by the host.",
+  "notification.cleanup_cancelled.body_reason":
+    "This event has been cancelled by the host. Reason: {{reason}}",
+
   // ---- Account / OTP emails (backend-emails) -----------------------------------------------------
   // Sign-in passcode email. {{code}} = the numeric OTP.
   "email.otp.subject": "Your civfix sign-in code",

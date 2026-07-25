@@ -19,7 +19,10 @@ function round2(n: number): number {
 
 export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepository {
   private readonly reportLedger = new Set<string>()
-  private readonly eventLedger = new Map<string, number>()
+  // The prior credit AND the jurisdiction it was booked into. The geoid is stored because an event whose
+  // location was edited must MOVE its rollup rather than delta against whichever jurisdiction it happens
+  // to be in now — the same rule the Drizzle impl's per-geoid deltas implement.
+  private readonly eventLedger = new Map<string, { hours: number; geoid: string | null }>()
   private readonly rollup = new Map<string, number>()
   private readonly users = new Map<string, MemoryLeaderboardUser>()
   private readonly jurisdictionNames = new Map<string, string>()
@@ -42,9 +45,18 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   logEventHours(args: LogEventHoursArgs): Promise<number> {
     for (const entry of args.entries) {
       const key = `${args.cleanupId}|${entry.userId}`
-      const previous = this.eventLedger.get(key) ?? 0
-      this.eventLedger.set(key, entry.hours)
-      if (args.geoid !== null) this.addRollup(entry.userId, args.geoid, entry.hours - previous)
+      const previous = this.eventLedger.get(key) ?? null
+      this.eventLedger.set(key, { hours: entry.hours, geoid: args.geoid })
+      // Re-log in the SAME jurisdiction: move the rollup by the difference. Re-log after the event
+      // MOVED: reverse the whole prior credit out of the old jurisdiction and book the full amount in
+      // the new one, so neither leaderboard keeps hours the event no longer took place in.
+      if (previous !== null && previous.geoid !== null && previous.geoid !== args.geoid) {
+        this.addRollup(entry.userId, previous.geoid, -previous.hours)
+      }
+      if (args.geoid !== null) {
+        const priorHere = previous !== null && previous.geoid === args.geoid ? previous.hours : 0
+        this.addRollup(entry.userId, args.geoid, entry.hours - priorHere)
+      }
     }
     return Promise.resolve(args.entries.length)
   }

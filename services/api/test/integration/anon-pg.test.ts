@@ -167,10 +167,32 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     `
     expect(row!.status).toBe("published")
     expect(row!.published_at).not.toBeNull()
-    // Now it surfaces on the map.
-    const bbox = { west: PROBE_INSIDE_CITY.lng - 0.5, south: PROBE_INSIDE_CITY.lat - 0.5, east: PROBE_INSIDE_CITY.lng + 0.5, north: PROBE_INSIDE_CITY.lat + 0.5 }
+    // Now it surfaces on the map. The bbox must be STREET-LEVEL: M14 clamps the effective zoom to what
+    // the bbox extent can imply (effectiveMapZoom), so the old +/-0.5 degree box implied zoom 10 and
+    // returned clusters only — `pins` would have been empty regardless of visibility.
+    const bbox = {
+      west: PROBE_INSIDE_CITY.lng - 0.02,
+      south: PROBE_INSIDE_CITY.lat - 0.01,
+      east: PROBE_INSIDE_CITY.lng + 0.02,
+      north: PROBE_INSIDE_CITY.lat + 0.01,
+    }
     const map = await reports.listReportsInBBox(bbox, null, null, 16)
     expect(map.pins.some((p) => p.id === response.reportId)).toBe(true)
+
+    // The same released report is also COUNTED (not dropped) when the viewport is wide enough to cluster.
+    const wide = await reports.listReportsInBBox(
+      {
+        west: PROBE_INSIDE_CITY.lng - 0.5,
+        south: PROBE_INSIDE_CITY.lat - 0.5,
+        east: PROBE_INSIDE_CITY.lng + 0.5,
+        north: PROBE_INSIDE_CITY.lat + 0.5,
+      },
+      null,
+      null,
+      16,
+    )
+    expect(wide.pins).toHaveLength(0)
+    expect(wide.clusters.reduce((n, c) => n + c.count, 0)).toBeGreaterThanOrEqual(1)
   })
 
   it("stays held when a media is rejected (no publish)", async () => {

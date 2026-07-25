@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { pageInMemoryById } from "./pagination.js"
 import {
   computeContactState,
   type DiscoveryContactRecord,
@@ -110,11 +110,14 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
   ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
     let rows = [...this.tasks.values()].map((s) => s.task)
 
-    // Search: place OR id, case-insensitive.
+    // Search: jurisdiction name OR geoid, case-insensitive — MIRRORS the SQL
+    // `ilikeAnyOf(sql, [j.name, t.geoid], q)` in discovery-repository.drizzle.ts. It used to search the
+    // TASK id instead of the geoid, which SQL never looks at: a `q` matching a task id found the row
+    // offline and nothing in production.
     if (args.q !== null) {
       const needle = args.q.toLowerCase()
       rows = rows.filter(
-        (r) => r.place.toLowerCase().includes(needle) || r.id.toLowerCase().includes(needle),
+        (r) => r.place.toLowerCase().includes(needle) || r.geoid.toLowerCase().includes(needle),
       )
     }
 
@@ -134,25 +137,21 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
-    // Keyset over a synthetic (sortValue, id) anchor encoded in the cursor's createdAt slot. The shared
-    // cursor helper carries a Date; we encode the sort value as epoch-ms so the format stays "<iso>|<id>"
-    // compatible without a bespoke cursor. For the in-memory repo we page by array position after the
-    // anchor id, which is sufficient + deterministic for the unit tests.
-    const limit = clampLimit(args.limit)
-    const anchor = decodeCursor(args.cursor)
-    let start = 0
-    if (anchor) {
-      const idx = rows.findIndex((r) => r.id === anchor.id)
-      start = idx >= 0 ? idx + 1 : rows.length
-    }
-    const slice = rows.slice(start, start + limit + 1)
-    if (slice.length <= limit) {
-      return { records: slice, nextCursor: null }
-    }
-    const records = slice.slice(0, limit)
-    const last = records[records.length - 1]
-    const nextCursor = last ? encodeCursor({ createdAt: this.now, id: last.id }) : null
-    return { records, nextCursor }
+    // Keyset over a synthetic (sortValue, id) anchor encoded in the cursor's createdAt slot: the shared
+    // cursor helper carries a Date, so the sort value rides as epoch-ms and the format stays "<iso>|<id>"
+    // compatible without a bespoke cursor — the same encoding the Drizzle repo's SQL keyset consumes.
+    const sortValue = (r: DiscoveryTaskRecord): number =>
+      args.sort === "reports" ? r.total : (r.population ?? 0)
+    // requireUuid=true: the Drizzle keyset casts the anchor to `${id}::uuid` and therefore DROPS a
+    // non-uuid anchor (degrading to page one). Without the same rule the offline twin would page from
+    // cursors production silently discards, which is exactly the drift a fake exists to catch.
+    return pageInMemoryById(
+      rows,
+      args.cursor,
+      args.limit,
+      (r) => ({ createdAt: new Date(sortValue(r)), id: r.id }),
+      true,
+    )
   }
 
   async getDetail(id: string): Promise<DiscoveryDetailRecord | null> {

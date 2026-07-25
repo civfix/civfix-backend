@@ -1,6 +1,7 @@
 
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
+import { flaggedReportExpr } from "./admin-report-repository.drizzle.js"
 import { toEventStatus } from "./event-status.js"
 import { DISCOVERY_SLA_HOURS } from "./discovery-service.js"
 import type {
@@ -34,8 +35,12 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             AND r.jurisdiction_geoid IS NOT NULL
             AND NOT (
               EXISTS (
+                -- The empty-string test matters: a contact row saved with a blank email routes nothing.
+                -- Without it this counter called the report routed while the discovery queue
+                -- (discovery-jobs.ts, taskAggregateSql) still counted it waiting -- two home numbers, one
+                -- report, no agreement.
                 SELECT 1 FROM jurisdiction_contacts jc
-                WHERE jc.geoid = r.jurisdiction_geoid AND jc.email IS NOT NULL
+                WHERE jc.geoid = r.jurisdiction_geoid AND jc.email IS NOT NULL AND jc.email <> ''
               )
               OR EXISTS (
                 SELECT 1 FROM jurisdictions j
@@ -67,17 +72,17 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async reportsSummary(): Promise<ReportsSectionCounts> {
+      // The flagged chip counts flagged reports that still EXIST. Counting open abuse_flags directly (which
+      // this did) kept counting a report after it was removed, so the home chip and the reports page's own
+      // flagged count drifted apart the moment an operator removed a flagged report. Same predicate as the
+      // reports repo, imported rather than re-inlined.
       const rows = await sql<{ flagged: string; in_progress: string; completed: string }[]>`
         SELECT
-          (
-            SELECT COUNT(DISTINCT af.subject_id)::text
-            FROM abuse_flags af
-            WHERE af.subject_type = 'report' AND af.resolved_at IS NULL
-          ) AS flagged,
-          COUNT(*) FILTER (WHERE status IN ('in_progress', 'acknowledged'))::text AS in_progress,
-          COUNT(*) FILTER (WHERE status = 'resolved')::text AS completed
-        FROM reports
-        WHERE deleted_at IS NULL
+          COUNT(*) FILTER (WHERE ${flaggedReportExpr(sql)})::text AS flagged,
+          COUNT(*) FILTER (WHERE r.status IN ('in_progress', 'acknowledged'))::text AS in_progress,
+          COUNT(*) FILTER (WHERE r.status = 'resolved')::text AS completed
+        FROM reports r
+        WHERE r.deleted_at IS NULL
       `
       const r = rows[0]
       return {
@@ -108,12 +113,16 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async mailSummary(): Promise<MailSectionCounts> {
-      const stats = await mailRepo.stats7d()
-      const rows = await sql<{ needs_action: string }[]>`
-        SELECT COUNT(*)::text AS needs_action
-        FROM mail_threads
-        WHERE status IN ('needs_action', 'bounced')
-      `
+      // Independent reads; the home dashboard fires every section at once, so serializing these two adds a
+      // round-trip to its slowest path for nothing.
+      const [stats, rows] = await Promise.all([
+        mailRepo.stats7d(),
+        sql<{ needs_action: string }[]>`
+          SELECT COUNT(*)::text AS needs_action
+          FROM mail_threads
+          WHERE status IN ('needs_action', 'bounced')
+        `,
+      ])
       return {
         unread: stats.unread,
         needsAction: num(rows[0]?.needs_action),
@@ -149,61 +158,61 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
 
     async recentPins(limit: number): Promise<HomeMapPinRecord[]> {
       const half = Math.max(1, Math.floor(limit / 2))
-      const reportRows = await sql<
-        {
-          id: string
-          lat: number
-          lng: number
-          category: ReportCategory
-          status: string
-          flagged: boolean
-          title: string | null
-          place: string | null
-        }[]
-      >`
-        SELECT
-          r.id::text AS id,
-          ST_Y(r.geom) AS lat,
-          ST_X(r.geom) AS lng,
-          r.category AS category,
-          r.status AS status,
-          EXISTS (
-            SELECT 1 FROM abuse_flags af
-            WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
-          ) AS flagged,
-          r.title AS title,
-          j.name AS place
-        FROM reports r
-        LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-        WHERE r.deleted_at IS NULL AND r.visibility = 'public'
-        ORDER BY r.created_at DESC NULLS LAST
-        LIMIT ${half}
-      `
-      const eventRows = await sql<
-        {
-          id: string
-          lat: number
-          lng: number
-          status: string
-          event_kind: EventKind
-          title: string
-          place: string | null
-          attendees: string
-        }[]
-      >`
-        SELECT
-          c.id::text AS id,
-          ST_Y(c.geom) AS lat,
-          ST_X(c.geom) AS lng,
-          c.status AS status,
-          c.event_kind AS event_kind,
-          c.title AS title,
-          c.address AS place,
-          (SELECT COUNT(*) FROM cleanup_members m WHERE m.cleanup_id = c.id)::text AS attendees
-        FROM cleanups c
-        ORDER BY c.scheduled_at DESC NULLS LAST
-        LIMIT ${half}
-      `
+      // Independent halves of one map layer; awaited together.
+      const [reportRows, eventRows] = await Promise.all([
+        sql<
+          {
+            id: string
+            lat: number
+            lng: number
+            category: ReportCategory
+            status: string
+            flagged: boolean
+            title: string | null
+            place: string | null
+          }[]
+        >`
+          SELECT
+            r.id::text AS id,
+            ST_Y(r.geom) AS lat,
+            ST_X(r.geom) AS lng,
+            r.category AS category,
+            r.status AS status,
+            ${flaggedReportExpr(sql)} AS flagged,
+            r.title AS title,
+            j.name AS place
+          FROM reports r
+          LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+          WHERE r.deleted_at IS NULL AND r.visibility = 'public'
+          ORDER BY r.created_at DESC NULLS LAST
+          LIMIT ${half}
+        `,
+        sql<
+          {
+            id: string
+            lat: number
+            lng: number
+            status: string
+            event_kind: EventKind
+            title: string
+            place: string | null
+            attendees: string
+          }[]
+        >`
+          SELECT
+            c.id::text AS id,
+            ST_Y(c.geom) AS lat,
+            ST_X(c.geom) AS lng,
+            c.status AS status,
+            c.event_kind AS event_kind,
+            c.title AS title,
+            c.address AS place,
+            (SELECT COUNT(*) FROM cleanup_members m WHERE m.cleanup_id = c.id)::text AS attendees
+          FROM cleanups c
+          ORDER BY c.scheduled_at DESC NULLS LAST
+          LIMIT ${half}
+        `,
+      ])
 
       const reportPins: HomeMapPinRecord[] = reportRows.map((r) => ({
         refType: "report",

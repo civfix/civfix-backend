@@ -11,6 +11,7 @@ import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-h
 const HOST = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
 const CAROL = "33333333-3333-3333-3333-333333333333"
+const DAVE = "44444444-4444-4444-4444-444444444444"
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const CLEANUP = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 const GEOID_A = "0644000"
@@ -91,22 +92,80 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
 
   it("credits each listed attendee their OWN hours and reports the row count", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
-    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL] })
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL, DAVE] })
 
+    // M21: the acting host is deliberately NOT among the credited entries — self-crediting is refused
+    // (see the dedicated test below); a co-host or operator has to credit the organizer.
     const result = await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: HOST,
       entries: [
-        { userId: HOST, hours: 2 },
+        { userId: DAVE, hours: 2 },
         { userId: BOB, hours: 4.5 },
         { userId: CAROL, hours: 1 },
       ],
     })
     expect(result.credited).toBe(3)
 
-    expect((await repo.totalsFor(HOST)).totalHours).toBe(2)
+    expect((await repo.totalsFor(DAVE)).totalHours).toBe(2)
     expect((await repo.totalsFor(BOB)).totalHours).toBe(4.5)
     expect((await repo.totalsFor(CAROL)).totalHours).toBe(1)
+  })
+
+  // --- M21: a verified host could credit THEMSELVES ------------------------------------------------
+  // Nothing excluded the actor from `entries`, and the organizer is auto-inserted as a cleanup member
+  // at create time, so they always passed the membership filter. A verified host could therefore mint
+  // unlimited hours onto the PUBLIC jurisdiction leaderboard with no second party anywhere in the flow.
+  it("M21: refuses to credit the acting host themselves (403)", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
+
+    await expect(
+      service.logEventHours({
+        cleanupId: CLEANUP,
+        actorId: HOST,
+        entries: [{ userId: HOST, hours: 8 }],
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect((await repo.totalsFor(HOST)).totalHours).toBe(0)
+  })
+
+  it("M21: rejects the WHOLE request when the actor smuggles themselves into a valid batch", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL] })
+
+    await expect(
+      service.logEventHours({
+        cleanupId: CLEANUP,
+        actorId: HOST,
+        entries: [
+          { userId: BOB, hours: 2 },
+          { userId: HOST, hours: 8 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    // Nothing is credited: the check runs before any repo write.
+    expect((await repo.totalsFor(HOST)).totalHours).toBe(0)
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(0)
+  })
+
+  it("M21: a DIFFERENT verified host may still credit the organizer (the second-party path)", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB],
+      cohosts: [BOB],
+      verified: { [BOB]: true },
+    })
+
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: BOB,
+      entries: [{ userId: HOST, hours: 5 }],
+    })
+    expect(result.credited).toBe(1)
+    expect((await repo.totalsFor(HOST)).totalHours).toBe(5)
   })
 
   it("credits a SUBSET of attendees without touching the rest", async () => {
@@ -125,13 +184,13 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
 
   it("re-logging overwrites per row via the rollup delta (no double-count)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
-    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL] })
 
-    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([HOST, BOB], 2) })
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([CAROL, BOB], 2) })
     await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: [{ userId: BOB, hours: 3 }] })
 
     expect((await repo.totalsFor(BOB)).totalHours).toBe(3)
-    expect((await repo.totalsFor(HOST)).totalHours).toBe(2)
+    expect((await repo.totalsFor(CAROL)).totalHours).toBe(2)
   })
 
   it("a VERIFIED cohost can log hours (D4: actor gate is organizer|cohost)", async () => {

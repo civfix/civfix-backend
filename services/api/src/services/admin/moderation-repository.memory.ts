@@ -148,12 +148,17 @@ export class InMemoryModerationRepository implements ModerationRepository {
 
     const limit = clampLimit(args.limit)
     const anchor = decodeCursor(args.cursor)
-    let start = 0
-    if (anchor) {
-      const idx = rows.findIndex((r) => r.id === anchor.id)
-      start = idx >= 0 ? idx + 1 : rows.length
-    }
-    const slice = rows.slice(start, start + limit + 1)
+    // Compare (createdAt, id) tuples like the SQL keyset — NOT the anchor's index. Anchoring by index
+    // dead-ended the moment the anchor item left the OPEN set (the normal operator workflow: resolve the
+    // items on page 1, then ask for page 2), returning an empty page where Postgres keeps paging.
+    const remaining =
+      anchor === null
+        ? rows
+        : rows.filter((r) => {
+            const d = r.createdAt.getTime() - anchor.createdAt.getTime()
+            return d !== 0 ? d < 0 : r.id < anchor.id
+          })
+    const slice = remaining.slice(0, limit + 1)
     if (slice.length <= limit) {
       return { records: slice, nextCursor: null }
     }
@@ -184,10 +189,13 @@ export class InMemoryModerationRepository implements ModerationRepository {
   ): Promise<ModerationItemRecord | null> {
     const item = this.resolve(id, "approved")
     if (!item) return null
-    // Underlying effect: publish the held report subject.
-    if (item.subjectType === "report") {
+    // Underlying effect: publish the held report subject. Prod's UPDATE is guarded on status = 'held', so a
+    // subject this repo already resolved transitions nothing and — crucially — fires NO chat-mirror signal;
+    // asserting the signal unconditionally would assert behavior prod does not have. A test models an
+    // already-resolved (non-held) subject by pre-setting reportStatus.
+    if (item.subjectType === "report" && !this.reportStatus.has(item.subjectId)) {
       this.reportStatus.set(item.subjectId, "published")
-      // D-D1: signal the report-chat mirror (a report subject transitions to published on approve).
+      // D-D1: signal the report-chat mirror (a HELD report subject transitioned to published).
       item.reportTimelineStatus = "published"
     }
     return item
@@ -199,10 +207,11 @@ export class InMemoryModerationRepository implements ModerationRepository {
   ): Promise<ModerationItemRecord | null> {
     const item = this.resolve(id, "removed")
     if (!item) return null
-    // Underlying effect: reject the report subject.
-    if (item.subjectType === "report") {
+    // Underlying effect: reject the report subject. Prod's tombstone is guarded on deleted_at IS NULL — an
+    // already-rejected subject flips nothing and fires no signal, but a published one still can.
+    if (item.subjectType === "report" && this.reportStatus.get(item.subjectId) !== "rejected") {
       this.reportStatus.set(item.subjectId, "rejected")
-      // D-D1: signal the report-chat mirror (a report subject is tombstoned on remove).
+      // D-D1: signal the report-chat mirror (a report subject was tombstoned).
       item.reportTimelineStatus = "rejected"
     }
     return item

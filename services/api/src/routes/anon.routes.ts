@@ -22,7 +22,8 @@
  *
  * The service is built per request from either an injected override (tests: in-memory repo + fakes, so
  * the whole abuse + held-create flow runs offline) or from the container (production: the Drizzle anon
- * repo + the real AbuseChecks + a Redis CounterStore + the real jurisdiction service).
+ * repo + the real AbuseChecks + the container's shared Redis CounterStore + the real jurisdiction
+ * service).
  */
 
 import {
@@ -39,16 +40,15 @@ import { ANON_COOKIE } from "../auth/transport.js"
 import { isProd } from "../env.js"
 import { ANON_TOKEN_TTL_SECONDS } from "../abuse/anon-token.js"
 import { cfGeoFromTrustedEdge } from "../abuse/gps-sanity.js"
-import { RedisCounterStore } from "../abuse/counter-store.js"
 import { makeAnonService, type AnonService } from "../services/anon-service.js"
 import { makeDrizzleAnonReportRepository } from "../services/anon-repository.drizzle.js"
-import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { makeGeoidResolver, makeReverseGeocoder } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
 /** Response header carrying a freshly-issued anon token (mobile reads + re-sends it as anonToken). */
-export const ANON_TOKEN_HEADER = "x-anon-token"
+const ANON_TOKEN_HEADER = "x-anon-token"
 
 /**
  * Optional injected anon-service (tests). When present the routes use it directly so the full HTTP
@@ -110,27 +110,21 @@ export async function registerAnonRoutes(
     return makeAnonService({
       repo: makeDrizzleAnonReportRepository(sql),
       abuseChecks: container.abuseChecks,
-      counters: new RedisCounterStore(container.getRedis()),
+      // The container's SHARED lazy counter store: one RedisCounterStore per process, resolved on the
+      // first incr rather than here (service() is rebuilt per request, and getRedis() THROWS on an empty
+      // REDIS_URL — constructing the client eagerly would 500 this route on a no-infra boot before the
+      // handler ever counted anything). The anon caps still fail CLOSED when Redis is truly unreachable.
+      counters: container.getCounterStore(),
       anonTokenSigningKey: container.env.ANON_TOKEN_SIGNING_KEY,
-      resolveJurisdictionGeoid: async (lat, lng) => {
-        const jurisdiction = makeJurisdictionService({
-          sql,
-          geocoder: container.geocoder,
-          jobs: container.jobs,
-          // Write-time Census fallback: the anon path also self-maps on a local miss instead of "Unmapped"
-          // (fake/no-op outside production).
-          jurisdictionLookup: container.jurisdictionLookup,
-        })
-        const resolved = await jurisdiction.resolveForPoint(lat, lng)
-        return resolved?.geoid ?? null
-      },
+      // The anon path resolves the owning jurisdiction exactly like the authed report path, INCLUDING the
+      // write-time Census fallback that self-maps a local miss instead of leaving it "Unmapped".
+      resolveJurisdictionGeoid: makeGeoidResolver(container),
       // Resolve the geoid's compact jurisdictions.code (reference-code JURCODE segment, #56) pre-tx; 0
       // when the geoid is null or has no code on file (D5). The anon repo allocates the code from it (M3).
       resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
-      // Derive an address from the pin when the reporter supplied none (street-level Photon, falling back
-      // to the local "City, ST" label). Best-effort: null leaves addr empty and never blocks the submit.
-      reverseGeocode: async (lat, lng) =>
-        (await container.streetReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng),
+      // Derive an address from the pin when the reporter supplied none. Best-effort: null leaves addr
+      // empty and never blocks the submit.
+      reverseGeocode: makeReverseGeocoder(container),
       // media-intake already enqueues media.checks at finalize (the worker dedupes on the uploadId
       // singletonKey), so anon-create does not re-enqueue. The seam stays available for a future path
       // that attaches not-yet-finalized media; left as the no-op default here.

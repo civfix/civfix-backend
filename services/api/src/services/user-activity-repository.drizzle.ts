@@ -3,15 +3,16 @@
  * attributable activity sources, newest-first. Written against the raw postgres-js tag (`Sql`).
  *
  * Sources (each a parenthesized leg projecting the SAME columns so UNION ALL aligns):
- *   - created_report   reports the user filed       (public, non-deleted, not held/rejected)
+ *   - created_report   reports the user filed       (the canonical publicReportFilter predicate)
  *   - hosted_event     cleanups they organized      (not cancelled)
  *   - attended_event   cleanups they joined         (as a member, not organizer; not cancelled)
  *   - followed_user    people they followed
  *
  * PRIVACY (intentional exclusions): private messaging NEVER appears in a profile's activity — both DMs
  * (dm_messages) AND group/cleanup chat (chat_messages) are excluded — plus blocks (user_blocks), anon reports
- * (reporter_user_id IS NULL), held/hidden/removed reports, cancelled cleanups, and ALL message bodies are
- * never selected — only the public action + a deep-link reference.
+ * (reporter_user_id IS NULL), any report that is not publicly readable (report-sql.ts publicReportFilter —
+ * this leg used to spell out its own inverse of that predicate and so admitted `submitted`), cancelled
+ * cleanups, and ALL message bodies are never selected — only the public action + a deep-link reference.
  *
  * KEYSET PAGINATION: each leg applies the same `(at, id) < (cursorAt, cursorId)` row-value filter and is
  * bounded to `limit + 1`, then the outer query merges + orders (at DESC, id DESC) + limits `limit + 1`.
@@ -20,6 +21,7 @@
  */
 
 import type { Sql } from "../db/client.js"
+import { publicReportFilter } from "./report-sql.js"
 import type { CursorAnchor } from "./admin/pagination.js"
 import type { UserActivityKind } from "@civfix/shared"
 import type { UserActivityRecord, UserActivityRepository } from "./user-activity-service.js"
@@ -79,9 +81,7 @@ export function makeDrizzleUserActivityRepository(sql: Sql): UserActivityReposit
                  'report'::text AS ref_kind, r.id::text AS ref_id
           FROM reports r
           WHERE r.reporter_user_id = ${userId}
-            AND r.deleted_at IS NULL
-            AND r.visibility = 'public'
-            AND r.status NOT IN ('held', 'rejected')
+            AND ${publicReportFilter(sql)}
             ${reportCur}
           ORDER BY r.created_at DESC, r.id DESC
           LIMIT ${lim}

@@ -1,9 +1,15 @@
-
 import type postgres from "postgres"
 import { AppError } from "@civfix/shared"
-import type { ReportCategory, ReportDTO, ReportStatus, ReportType, ReportVisibility } from "@civfix/shared"
+import type {
+  ReportCategory,
+  ReportDTO,
+  ReportStatus,
+  ReportType,
+  ReportVisibility,
+} from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
-import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+import { isPubliclyVisibleStatus } from "./report-visibility.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { escapeLike } from "./admin/like.js"
 import type {
@@ -41,6 +47,27 @@ function isUniqueViolation(err: unknown): boolean {
     err !== null &&
     (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
   )
+}
+
+/**
+ * L12 — what a NON-owner mutation attempt reveals.
+ *
+ * These owner-only mutations used to answer a flat `forbidden` (403) for every report that exists but
+ * isn't yours, INCLUDING held (pre-moderation, anonymous) reports and reports the owner had unlisted.
+ * That is an existence oracle: the READ path (report-service.getReport) correctly 404s anything not
+ * visible to the caller, so a 403 here confirmed the existence — and the exact reference id — of content
+ * the caller was never allowed to know about. A report that is ALREADY publicly readable leaks nothing
+ * by admitting it exists, so that case keeps the honest 403 ("this exists, you don't own it"); every
+ * other case now mirrors the read path's 404. Deliberately reuses the same predicate as
+ * report-sql.ts:publicReportFilter / report-visibility.ts:isReportVisibleTo (the deleted_at term is
+ * already handled by the caller before this is reached).
+ */
+function notOwnerOutcome(row: {
+  status: ReportStatus
+  visibility: ReportVisibility
+}): "not_found" | "forbidden" {
+  const publiclyVisible = isPubliclyVisibleStatus(row.status) && row.visibility === "public"
+  return publiclyVisible ? "forbidden" : "not_found"
 }
 
 export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
@@ -92,7 +119,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     return grouped
   }
 
-  async function loadTimelineForReports(reportIds: string[]): Promise<Map<string, ReportTimelineView[]>> {
+  async function loadTimelineForReports(
+    reportIds: string[],
+  ): Promise<Map<string, ReportTimelineView[]>> {
     const grouped = new Map<string, ReportTimelineView[]>()
     if (reportIds.length === 0) return grouped
     const rows = await sql<(TimelineRowSelect & { report_id: string })[]>`
@@ -146,12 +175,27 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           `
 
           if (args.mediaUploadIds.length > 0) {
-            await tx`
+            const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}
               WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
+                -- L18: an asset already bound to a post or a chat/DM message must NOT be re-bindable to a
+                -- report. Guarding only report_id let the holder of an uploadId cross-publish an image from
+                -- a private DM into a public report gallery. Mirrors the post path's claim predicate.
+                AND post_id IS NULL AND chat_message_id IS NULL
+                AND status IN ('ready', 'validating')
+              RETURNING upload_id
             `
+            // M-media-claim: an unclaimable id (unknown, rejected, or already bound elsewhere) used to be
+            // silently ignored — the reporter got a 201 with their photo missing and no way to tell. Fail
+            // the whole create instead, exactly as post-repository.createPost does for the same condition.
+            // Compared against the DEDUPED input because one repeated id claims one row.
+            if (claimed.length !== new Set(args.mediaUploadIds).size) {
+              throw AppError.validation({
+                mediaUploadIds: "One or more media uploads are unavailable.",
+              })
+            }
           }
 
           await tx`
@@ -247,9 +291,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     ): Promise<{ records: ReportRecord[]; nextCursor: string | null }> {
       const anchor = parseTimeCursor(cursor)
       const cursorFilter: SqlFragment =
-        anchor !== null
-          ? sql`AND (created_at, id) < (${anchor.at}, ${anchor.id}::uuid)`
-          : sql``
+        anchor !== null ? sql`AND (created_at, id) < (${anchor.at}, ${anchor.id}::uuid)` : sql``
       const rows = await sql<ReportRowSelect[]>`
         SELECT ${reportColumns(sql)}
         FROM reports
@@ -259,13 +301,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const records = page.map(toRecord)
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeTimeCursor({ at: last.created_at, id: last.id }) : null
-      return { records, nextCursor }
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      return { records: items.map(toRecord), nextCursor }
     },
 
     async findMapCandidates(
@@ -275,7 +312,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       cap: number,
     ): Promise<ReportMapPoint[]> {
       const categoryFilter: SqlFragment =
-        categories !== null && categories.length > 0 ? sql`AND r.category IN ${sql(categories)}` : sql``
+        categories !== null && categories.length > 0
+          ? sql`AND r.category IN ${sql(categories)}`
+          : sql``
       const typeFilter: SqlFragment =
         types !== null && types.length > 0 ? sql`AND r.type IN ${sql(types)}` : sql``
       const extraFilters = sql`
@@ -302,9 +341,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       }
       const anchor = parseTimeCursor(args.cursor)
       const cursorFilter: SqlFragment =
-        anchor !== null
-          ? sql`AND (r.created_at, r.id) < (${anchor.at}, ${anchor.id}::uuid)`
-          : sql``
+        anchor !== null ? sql`AND (r.created_at, r.id) < (${anchor.at}, ${anchor.id}::uuid)` : sql``
       const categoryFilter: SqlFragment =
         args.categories !== null && args.categories.length > 0
           ? sql`AND r.category IN ${sql(args.categories)}`
@@ -325,12 +362,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         sql`ORDER BY r.created_at DESC, r.id DESC`,
         args.limit + 1,
       )
-      const hasMore = rows.length > args.limit
-      const page = hasMore ? rows.slice(0, args.limit) : rows
-      const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeTimeCursor({ at: last.created_at, id: last.id }) : null
-      return { points: page.map(toMapPoint), nextCursor }
+      const { items, nextCursor } = paginate(rows, args.limit, (r) => ({
+        at: r.created_at,
+        id: r.id,
+      }))
+      return { points: items.map(toMapPoint), nextCursor }
     },
 
     async resolveByOwner(
@@ -339,8 +375,15 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       input: { status: ReportStatus; note: string },
     ): Promise<"updated" | "not_found" | "forbidden"> {
       return sql.begin(async (tx) => {
-        const rows = await tx<{ reporter_user_id: string | null; deleted_at: Date | null }[]>`
-          SELECT reporter_user_id, deleted_at
+        const rows = await tx<
+          {
+            reporter_user_id: string | null
+            deleted_at: Date | null
+            status: ReportStatus
+            visibility: ReportVisibility
+          }[]
+        >`
+          SELECT reporter_user_id, deleted_at, status, visibility
           FROM reports
           WHERE id = ${reportId}
           LIMIT 1
@@ -348,7 +391,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         `
         const row = rows[0]
         if (!row || row.deleted_at !== null) return "not_found"
-        if (row.reporter_user_id !== userId) return "forbidden"
+        if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
 
         await tx`UPDATE reports SET status = ${input.status} WHERE id = ${reportId}`
         await tx`
@@ -366,9 +409,14 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     ): Promise<"updated" | "not_found" | "forbidden"> {
       return sql.begin(async (tx) => {
         const rows = await tx<
-          { reporter_user_id: string | null; deleted_at: Date | null; status: ReportStatus }[]
+          {
+            reporter_user_id: string | null
+            deleted_at: Date | null
+            status: ReportStatus
+            visibility: ReportVisibility
+          }[]
         >`
-          SELECT reporter_user_id, deleted_at, status
+          SELECT reporter_user_id, deleted_at, status, visibility
           FROM reports
           WHERE id = ${reportId}
           LIMIT 1
@@ -376,7 +424,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         `
         const row = rows[0]
         if (!row || row.deleted_at !== null) return "not_found"
-        if (row.reporter_user_id !== userId) return "forbidden"
+        if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
 
         await tx`UPDATE reports SET visibility = ${input.visibility} WHERE id = ${reportId}`
         await tx`

@@ -20,6 +20,7 @@
 import { randomUUID } from "node:crypto"
 import type {
   AttendeeView,
+  CancelCleanupOutcome,
   CleanupBBox,
   CleanupPersonView,
   CleanupRecord,
@@ -34,6 +35,19 @@ import type {
 } from "../../src/services/cleanup-service.js"
 import type { CleanupMemberRole, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
+// The CANONICAL keyset primitives cleanup-repository.drizzle.ts uses — imported, never re-implemented, so
+// the fake cannot drift into accepting a cursor the production parser rejects (or vice versa).
+import {
+  encodeNearCursor,
+  encodeTimeCursor,
+  pageWith,
+  parseNearCursor,
+  parseTimeCursor,
+} from "../../src/db/cursor-helpers.js"
+// The CANONICAL public-visibility status set (report-visibility.ts / PUBLIC_REPORT_STATUSES) — the same
+// source publicReportFilter's SQL twin reads. Imported, never re-typed as `status === "published"`: the
+// widening to published/acknowledged/in_progress/resolved must not have to be applied twice.
+import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
 
 /** A stored cleanup (the persisted fields; geom is kept decoded as lat/lng). */
 interface StoredCleanup {
@@ -59,6 +73,13 @@ interface StoredMember {
   cleanupId: string
   userId: string
   role: CleanupMemberRole
+}
+
+/** A stored ban row (cleanup_bans, M17): written by removeMember, checked by joinCleanupTx. */
+interface StoredBan {
+  cleanupId: string
+  userId: string
+  bannedByUserId: string
 }
 
 /** A stored user (the subset the organizer person join needs). */
@@ -111,6 +132,8 @@ export function haversineMeters(a: NearPoint, b: NearPoint): number {
 export class InMemoryCleanupRepository implements CleanupRepository {
   readonly cleanups = new Map<string, StoredCleanup>()
   readonly members: StoredMember[] = []
+  /** cleanup_bans rows (M17), inspectable by tests. */
+  readonly bans: StoredBan[] = []
   readonly users = new Map<string, StoredUser>()
   /** Follow edges as "<followerId>:<followeeId>" so listAttendees can resolve isFollowing. */
   readonly follows = new Set<string>()
@@ -193,9 +216,18 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     this.links.push({ cleanupId, reportId, linkedByUserId, linkedAt: this.now() })
   }
 
-  /** True when a report is visible (published+public, not deleted) - mirrors the SQL filter. */
+  /**
+   * True when a report is publicly visible - the exact mirror of publicReportFilter(): a status in
+   * PUBLIC_REPORT_STATUSES (published AND the progress states acknowledged/in_progress/resolved), public
+   * visibility, not soft-deleted.
+   */
   private reportVisible(r: StoredReport | undefined): r is StoredReport {
-    return r !== undefined && !r.deleted && r.status === "published" && r.visibility === "public"
+    return (
+      r !== undefined &&
+      !r.deleted &&
+      isPubliclyVisibleStatus(r.status) &&
+      r.visibility === "public"
+    )
   }
 
   /** Test helper: seed a cleanup directly (and optionally its organizer membership). */
@@ -477,11 +509,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
               (x) => x.dist > cursor.dist || (x.dist === cursor.dist && x.c.id > cursor.id),
             )
           : withDist
-      const hasMore = after.length > filters.limit
-      const page = hasMore ? after.slice(0, filters.limit) : after
-      const last = page[page.length - 1]
-      const records = page.map((x) => this.toRecord(x.c, near))
-      const nextCursor = hasMore && last ? `${last.dist}|${last.c.id}` : null
+      // Same split + encoder as the Drizzle near branch.
+      const { items, nextCursor } = pageWith(after, filters.limit, (last) =>
+        encodeNearCursor({ dist: last.dist, id: last.c.id }),
+      )
+      const records = items.map((x) => this.toRecord(x.c, near))
       return Promise.resolve({ records, nextCursor })
     }
 
@@ -503,11 +535,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
             return t > ct || (t === ct && c.id > cursor.id)
           })
         : all
-    const hasMore = after.length > filters.limit
-    const page = hasMore ? after.slice(0, filters.limit) : after
-    const last = page[page.length - 1]
-    const records = page.map((c) => this.toRecord(c, null))
-    const nextCursor = hasMore && last ? `${last.scheduledAt.toISOString()}|${last.id}` : null
+    // Same split + encoder as the Drizzle when branch (scheduled_at anchors both directions).
+    const { items, nextCursor } = pageWith(after, filters.limit, (last) =>
+      encodeTimeCursor({ at: last.scheduledAt, id: last.id }),
+    )
+    const records = items.map((c) => this.toRecord(c, null))
     return Promise.resolve({ records, nextCursor })
   }
 
@@ -539,12 +571,33 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(true)
   }
 
-  removeMember(cleanupId: string, userId: string): Promise<{ removed: boolean; going: number }> {
+  // M17: removal writes a ban row in the SAME operation as the membership delete (the Drizzle impl
+  // does both in one transaction), which is what makes it stick against the self-service join.
+  removeMember(
+    cleanupId: string,
+    userId: string,
+    actorId: string,
+  ): Promise<{ removed: boolean; going: number }> {
     const idx = this.members.findIndex(
       (m) => m.cleanupId === cleanupId && m.userId === userId && m.role !== "organizer",
     )
-    if (idx >= 0) this.members.splice(idx, 1)
+    if (idx >= 0) {
+      this.members.splice(idx, 1)
+      if (!this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
+        this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
+      }
+    }
     return Promise.resolve({ removed: idx >= 0, going: this.memberCountOf(cleanupId) })
+  }
+
+  isBanned(cleanupId: string, userId: string): Promise<boolean> {
+    return Promise.resolve(this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId))
+  }
+
+  unbanMember(cleanupId: string, userId: string): Promise<boolean> {
+    const idx = this.bans.findIndex((b) => b.cleanupId === cleanupId && b.userId === userId)
+    if (idx >= 0) this.bans.splice(idx, 1)
+    return Promise.resolve(idx >= 0)
   }
 
   listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
@@ -565,12 +618,16 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? c.organizerUserId : null)
   }
 
-  joinCleanupTx(cleanupId: string, userId: string): Promise<boolean> {
-    if (!this.cleanups.has(cleanupId)) return Promise.resolve(false)
+  joinCleanupTx(cleanupId: string, userId: string): Promise<"joined" | "not_found" | "banned"> {
+    if (!this.cleanups.has(cleanupId)) return Promise.resolve("not_found")
+    // M17: a removed attendee cannot re-join themselves.
+    if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
+      return Promise.resolve("banned")
+    }
     if (!this.members.some((m) => m.cleanupId === cleanupId && m.userId === userId)) {
       this.members.push({ cleanupId, userId, role: "member" })
     }
-    return Promise.resolve(true)
+    return Promise.resolve("joined")
   }
 
   leaveCleanup(cleanupId: string, userId: string): Promise<boolean> {
@@ -582,16 +639,23 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
   cancelCleanupTx(
     id: string,
-    input: { note: string; reason: string | null; actorId: string },
-  ): Promise<boolean> {
+    input: { note: string; body: string; reason: string | null; actorId: string },
+  ): Promise<CancelCleanupOutcome> {
     const c = this.cleanups.get(id)
-    if (!c) return Promise.resolve(false)
+    // No such cleanup: the service turns this into a 404 (distinct from a legal repeat cancel).
+    if (!c) return Promise.resolve("not_found")
+    // Mirrors the Drizzle impl's guarded `UPDATE ... WHERE id = $1 AND status <> 'cancelled'`: exactly
+    // one caller can make the upcoming->cancelled transition, so only that caller is told "cancelled".
+    // Re-cancelling is a legal no-op that still returns the DTO — but it writes NO second timeline row
+    // and earns NO second attendee bell, which is why the outcome has to be observable here.
+    if (c.status === "cancelled") return Promise.resolve("already_cancelled")
     c.status = "cancelled"
     // Mirror the Drizzle impl's observable timeline write so a service test can assert the 'cancel' row.
-    // The notification fan-out is NOT modeled here (the per-member INSERT...SELECT is covered by the
-    // PG integration test); the service test asserts the status flip + host gate + timeline 'cancel'.
+    // The notification fan-out is NOT modeled here — post-L24 it no longer lives in the repo at all: the
+    // service fans it out through NotificationService after this transaction commits (see
+    // cleanup-service.notifyCancellation), so tests observe bells through the notifier, not the fake.
     this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", note: input.note, actorId: input.actorId })
-    return Promise.resolve(true)
+    return Promise.resolve("cancelled")
   }
 
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]> {
@@ -643,25 +707,3 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   }
 }
 
-/** Parse a `${dist}|${id}` near cursor; null when absent/malformed. Mirrors the Drizzle impl. */
-function parseNearCursor(cursor: string | null): { dist: number; id: string } | null {
-  if (cursor === null) return null
-  const idx = cursor.indexOf("|")
-  if (idx <= 0) return null
-  const dist = Number(cursor.slice(0, idx))
-  const id = cursor.slice(idx + 1)
-  if (!Number.isFinite(dist) || id.length === 0) return null
-  return { dist, id }
-}
-
-/** Parse an `${iso}|${id}` time cursor; null when absent/malformed. Mirrors the Drizzle impl. */
-function parseTimeCursor(cursor: string | null): { at: Date; id: string } | null {
-  if (cursor === null) return null
-  const idx = cursor.indexOf("|")
-  if (idx <= 0) return null
-  const iso = cursor.slice(0, idx)
-  const id = cursor.slice(idx + 1)
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || id.length === 0) return null
-  return { at, id }
-}

@@ -2,11 +2,12 @@
  * Anonymous reporting service: the logged-out submit + status half of the reports domain, with the
  * full API-layer abuse stack and the hold-then-publish lifecycle.
  *
- * submitAnonReport runs the abuse controls IN ORDER (Turnstile, honeypot, idempotency fast-path, anon
- * token + per-token cap, per-IP cap, per-H3-cell cap, GPS sanity) and only then creates the report HELD
- * in ONE transaction (createAnonReportTx) — see the inline (1)..(7) markers. The claim code is stored
- * PER REPORT (reports.claim_code, 0005), NOT on the shared anon_tokens row, so each of a token's
- * up-to-5 reports stays independently status-queryable/claimable.
+ * submitAnonReport runs the abuse controls IN ORDER (Turnstile, honeypot, idempotency fast-path, per-IP
+ * cap, per-H3-cell cap, GPS sanity, anon token + per-token cap) and only then creates the report HELD in
+ * ONE transaction (createAnonReportTx) — see the inline (1)..(7) markers. Token issuance is LAST because
+ * it is the only gate that WRITES a row. The claim code is stored PER REPORT (reports.claim_code, 0005),
+ * NOT on the shared anon_tokens row, so each of a token's up-to-5 reports stays independently
+ * status-queryable/claimable.
  *
  * HELD reports stay HIDDEN (status "held", never published+public), so getReport + the map/list
  * candidate queries already exclude them; status is observable ONLY via anonReportStatus with the
@@ -246,20 +247,13 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         return { response: existing }
       }
 
-      // (4) Anon token: resolve the presented token (from the request body) or issue a fresh one,
-      // enforcing the per-token cap.
-      const { record: tokenRow, issuedToken } = await resolveOrIssueAnonToken(
-        input.anonToken,
-        tokenDeps,
-      )
-
-      // (5) Per-IP hourly cap (full IPv4 / IPv6 /64). Only reached for a genuinely NEW submission.
+      // (4) Per-IP hourly cap (full IPv4 / IPv6 /64). Only reached for a genuinely NEW submission.
       await enforceIpRateLimit(ctx.ip, { counters: deps.counters })
 
-      // (6) Per-H3-cell hourly cap (ANON-ONLY; this is the anon path so it always applies).
+      // (5) Per-H3-cell hourly cap (ANON-ONLY; this is the anon path so it always applies).
       await enforceH3CellCap(input.lat, input.lng, { counters: deps.counters })
 
-      // (7) GPS sanity vs the coarse IP geo (CF headers). EXIF is deferred to the worker.
+      // (6) GPS sanity vs the coarse IP geo (CF headers). EXIF is deferred to the worker.
       const ipGeo = resolveTrustedCfGeo(ctx, log)
       const gps = await gpsSanityCheck(
         { point: { lat: input.lat, lng: input.lng }, ipGeo },
@@ -268,6 +262,17 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       if (!gps.ok) {
         throw AppError.gpsImplausible()
       }
+
+      // (7) Anon token: resolve the presented token (from the request body) or issue a fresh one,
+      // enforcing the per-token cap. LAST of the gates on purpose (L-anon-token-row): issuing a token for
+      // a token-less caller WRITES an anon_tokens row, so running it ahead of the caps meant every
+      // rate-limited or GPS-rejected request still minted a row — unbounded growth in exactly the table
+      // the caps exist to protect. Nothing above this line needs the token: the honeypot branch verifies
+      // the PRESENTED token's signature on its own, and the idempotency fast path is keyed on the request.
+      const { record: tokenRow, issuedToken } = await resolveOrIssueAnonToken(
+        input.anonToken,
+        tokenDeps,
+      )
 
       // First submit. The jurisdiction resolve and the (only-when-no-addr) reverse-geocode are independent
       // lookups OUTSIDE the tx — run them concurrently to shorten the create hot path.
@@ -312,8 +317,8 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         h3Cell,
         mediaUploadIds: input.mediaUploadIds,
         claimCode,
-        // Authoritative per-token cap enforced atomically inside the tx (bugs P0-1). The pre-tx
-        // assertUnderReportCap above is a cheap fast-fail; THIS is the race-safe bound.
+        // Authoritative per-token cap enforced atomically inside the tx (bugs P0-1). The assertUnderReportCap
+        // inside resolveOrIssueAnonToken at step (7) is a cheap fast-fail; THIS is the race-safe bound.
         reportCap: ANON_TOKEN_REPORT_CAP,
         responseSnapshot,
       })

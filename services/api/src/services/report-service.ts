@@ -24,11 +24,13 @@ import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
   clusterByZoom,
   countByCategory,
+  effectiveMapZoom,
   mapPointToUnsignedPin,
   reportH3Cell,
   MAP_REPORTS_CANDIDATE_CAP,
   type UnsignedReportPin,
 } from "./report-clustering.js"
+import { isPubliclyVisibleStatus } from "./report-visibility.js"
 import {
   REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
@@ -90,7 +92,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(pin.title !== null ? { title: pin.title } : {}),
       description: pin.description,
       thumbUrl,
+      // Search-row enrichment (the /reports/search list reads these to render its location + "<type>:
       // <reference>" headline). addr stays nullable; referenceCode is omitted when null, mirroring title.
+      // The /map/reports route's fast-json-stringify schema does NOT declare these, so the hot map path
+      // drops them - they ride only on the unschematized search response.
       addr: pin.addr,
       ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
     }
@@ -273,7 +278,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const viewerId = viewer.userId ?? null
       const mine = viewerId !== null && record.reporterUserId === viewerId
 
-      const isPublic = record.status === "published" && record.visibility === "public"
+      // The TS twin of report-sql.ts:publicReportFilter — see report-visibility.ts:PUBLIC_REPORT_STATUSES
+      // for why the whole in-progress tail of the lifecycle is public, and keep the three in lockstep.
+      const isPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
       if (!isPublic && !mine) {
         throw AppError.notFound("Report not found")
       }
@@ -330,8 +337,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       types: ReportType[] | null,
       zoom: number,
     ): Promise<ReportClusterResponse> {
+      // M14: the client's `zoom` is advisory only — it is clamped to what the requested bbox extent can
+      // actually imply, so a world-sized bbox can never reach the per-pin (per-presign) branch no matter
+      // what zoom is claimed. See effectiveMapZoom in report-clustering.ts.
       const points = await deps.repo.findMapCandidates(bbox, categories, types, MAP_REPORTS_CANDIDATE_CAP)
-      const { clusters, pins: unsignedPins } = clusterByZoom(points, zoom)
+      const { clusters, pins: unsignedPins } = clusterByZoom(points, effectiveMapZoom(bbox, zoom))
       const counts = countByCategory(points)
 
       const pins: ReportPinDTO[] = await mapWithLimit(unsignedPins, PRESIGN_CONCURRENCY, toMapPinDTO)

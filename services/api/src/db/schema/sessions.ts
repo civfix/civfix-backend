@@ -17,7 +17,11 @@ export const sessions = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    // NOT NULL as of drizzle/0058_sessions_created_at.sql, which backfilled the legacy NULL rows
+    // from last_seen_at. The absolute 90-day session ceiling (M3) is measured FROM this column, so
+    // a NULL is unrepresentable by schema rather than merely unexpected. Inserts omit it and let
+    // the DB default stamp it (see PgSessionStore.insert).
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     userAgent: text("user_agent"),

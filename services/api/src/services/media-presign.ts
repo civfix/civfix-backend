@@ -1,4 +1,4 @@
-import { MEDIA_GET_URL_TTL_SEC } from "./media-intake-service.js"
+import { MEDIA_GET_URL_TTL_SEC, MEDIA_PRIVATE_GET_URL_TTL_SEC } from "./media-intake-service.js"
 
 export type PresignMedia = (
   r2Key: string,
@@ -7,8 +7,11 @@ export type PresignMedia = (
 
 // Structural slice of the storage seam (presigned-GET issuer) so this module pulls in neither Container
 // nor the Storage interface — avoids an import cycle through di.ts.
+//
+// `opts.forceSigned` is optional on purpose: an adapter that has no public-CDN mode (FakeStorage) simply
+// declares two parameters and stays assignable here, while R2Storage honors it (adapters/storage.r2.ts).
 interface PresignStorage {
-  presignGet(key: string, ttlSec: number): Promise<string>
+  presignGet(key: string, ttlSec: number, opts?: { forceSigned?: boolean }): Promise<string>
 }
 
 export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
@@ -16,6 +19,26 @@ export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
     const url = await storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
     if (thumbKey === null) return { url } // images: only url, no thumbnail
     const thumbUrl = await storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
+    return { url, thumbUrl }
+  }
+}
+
+/**
+ * Presigner for PRIVATE media (chat/DM attachments, an owner's own held/unlisted report media,
+ * not-yet-committed uploads). Two differences from the public presigner, both load-bearing (H9):
+ *
+ *   - `forceSigned: true` — never emit a public CDN URL. A CDN URL is unsigned and permanent, so a DM
+ *     attachment served through one stays world-readable to anyone who ever saw the link, and no later
+ *     unlist / delete / block can revoke it.
+ *   - a much shorter TTL, so a leaked URL expires in minutes rather than an hour.
+ */
+export function makePrivateMediaPresigner(storage: PresignStorage): PresignMedia {
+  return async (r2Key, thumbKey) => {
+    const url = await storage.presignGet(r2Key, MEDIA_PRIVATE_GET_URL_TTL_SEC, { forceSigned: true })
+    if (thumbKey === null) return { url }
+    const thumbUrl = await storage.presignGet(thumbKey, MEDIA_PRIVATE_GET_URL_TTL_SEC, {
+      forceSigned: true,
+    })
     return { url, thumbUrl }
   }
 }

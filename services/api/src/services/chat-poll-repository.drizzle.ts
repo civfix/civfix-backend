@@ -59,7 +59,8 @@ export interface ChatPollRepository {
   /**
    * Atomic vote replace: DELETE the voter's existing ballots for this poll, then INSERT the new set, in
    * ONE transaction. An empty `optionIdxs` retracts (delete only). The option idxs are assumed already
-   * validated against the poll's options (the service does that off findPollMeta).
+   * validated against the poll's options (the service does that off findPollMeta). The tx re-asserts the
+   * poll is still OPEN under a share lock, so a close racing the vote wins and the replace no-ops.
    */
   replaceVotes(pollId: string, userId: string, optionIdxs: number[]): Promise<void>
   /**
@@ -117,6 +118,17 @@ export function makeChatPollRepository(sql: Sql): ChatPollRepository {
 
     async replaceVotes(pollId: string, userId: string, optionIdxs: number[]): Promise<void> {
       await sql.begin(async (tx) => {
+        // Re-assert OPEN inside the tx, holding the poll row FOR SHARE. The service checked closed_at off
+        // findPollMeta in an earlier statement, so a close committing in between would otherwise have let
+        // this ballot land on a closed poll; the share lock makes `close` (an UPDATE of this row) wait, and
+        // if the close won the race the re-check now sees it and the whole replace becomes a no-op (the
+        // caller's re-read then shows the closed poll without the vote).
+        const open = await tx<{ message_id: string }[]>`
+          SELECT message_id FROM chat_polls
+          WHERE message_id = ${pollId} AND closed_at IS NULL
+          FOR SHARE
+        `
+        if (open.length === 0) return
         await tx`
           DELETE FROM chat_poll_votes WHERE poll_id = ${pollId} AND user_id = ${userId}
         `

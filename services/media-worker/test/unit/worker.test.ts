@@ -5,10 +5,18 @@ import {
   ORPHAN_SWEEP_JOB,
   CHAT_PARTITION_JOB,
   ANON_HOLD_RELEASE_JOB,
+  ANON_HOLD_RELEASE_SWEEP_JOB,
+  RETENTION_SWEEP_JOB,
 } from "../../src/worker.js"
-import { buildJobs } from "../../src/jobs.js"
+import { buildJobs, type ScheduleOptions } from "../../src/jobs.js"
 import { buildSeams, type WorkerSeams } from "../../src/seams.js"
-import { loadLimits } from "../../src/config.js"
+import {
+  CHAT_PARTITION_CRON,
+  HOLD_RELEASE_SWEEP_CRON,
+  ORPHAN_SWEEP_CRON,
+  RETENTION_SWEEP_CRON,
+  loadLimits,
+} from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import type { AnonHoldReleaseRepo, HeldReportView } from "@civfix/api/anon-hold-release"
@@ -69,6 +77,98 @@ describe("media-worker wiring", () => {
     expect(mediaQueue?.options).toEqual({ policy: "short", retryLimit: 5, retryBackoff: true })
     expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({ policy: "short" })
     expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toBeUndefined()
+
+    await worker.stop()
+  })
+
+  it("creates a queue for EVERY job it registers a handler on (pg-boss v10 requires it first)", async () => {
+    const handle = buildJobs()
+    const queues: string[] = []
+    // A Set because the two work() entry points delegate to each other (which way round is the seam
+    // implementation's business); what matters is that every job name got a handler.
+    const worked = new Set<string>()
+    const originalCreate = handle.jobs.createQueue.bind(handle.jobs)
+    handle.jobs.createQueue = (name, options) => {
+      queues.push(name)
+      return originalCreate(name, options)
+    }
+    const originalWork = handle.jobs.workWithSettings.bind(handle.jobs)
+    handle.jobs.workWithSettings = (name, handler, settings) => {
+      worked.add(name)
+      return originalWork(name, handler, settings)
+    }
+    const originalPlainWork = handle.jobs.work.bind(handle.jobs)
+    handle.jobs.work = (name, handler) => {
+      worked.add(name)
+      return originalPlainWork(name, handler)
+    }
+    const seams = await buildSeams()
+    const worker = await buildWorker(handle, seams)
+    await worker.start()
+
+    const expected = [
+      MEDIA_CHECKS_JOB,
+      ORPHAN_SWEEP_JOB,
+      CHAT_PARTITION_JOB,
+      ANON_HOLD_RELEASE_JOB,
+      ANON_HOLD_RELEASE_SWEEP_JOB,
+      RETENTION_SWEEP_JOB,
+    ]
+    expect(queues.sort()).toEqual([...expected].sort())
+    expect([...worked].sort()).toEqual([...expected].sort())
+
+    await worker.stop()
+  })
+
+  /**
+   * The cron registrations ARE the guarantee for two invariants that have no other enforcement: the
+   * hold-release sweep is the P2-8 self-healing backstop (an anon report whose inline release enqueue was
+   * lost stays held until this fires) and the retention sweep is privacy 7.1 (expired OTPs/sessions/anon
+   * tokens are deleted daily). Only two of the four names were asserted, and the per-schedule options were
+   * not asserted at all - so dropping either registration, or the single-flight singletonKey that keeps two
+   * fires of the same sweep from overlapping, would have passed.
+   */
+  it("schedules ALL FOUR crons with their expressions and single-flight expire/singleton options", async () => {
+    const handle = buildJobs()
+    const scheduled: { name: string; cron: string; data: unknown; options?: ScheduleOptions }[] = []
+    const original = handle.jobs.schedule.bind(handle.jobs)
+    handle.jobs.schedule = (name, cron, data, options) => {
+      scheduled.push({ name, cron, data, ...(options ? { options } : {}) })
+      return original(name, cron, data, options)
+    }
+    const seams = await buildSeams()
+    const worker = await buildWorker(handle, seams)
+    await worker.start()
+
+    // 25 minutes: comfortably above the worst-case sweep run, and BELOW the hourly orphan cron so a stuck
+    // job cannot block the next fire forever. singletonKey = the job name is the single-flight guarantee.
+    const opts = { expireInSeconds: 1500, singletonKey: "" }
+    expect(scheduled).toEqual([
+      {
+        name: ORPHAN_SWEEP_JOB,
+        cron: ORPHAN_SWEEP_CRON,
+        data: undefined,
+        options: { ...opts, singletonKey: ORPHAN_SWEEP_JOB },
+      },
+      {
+        name: CHAT_PARTITION_JOB,
+        cron: CHAT_PARTITION_CRON,
+        data: undefined,
+        options: { ...opts, singletonKey: CHAT_PARTITION_JOB },
+      },
+      {
+        name: ANON_HOLD_RELEASE_SWEEP_JOB,
+        cron: HOLD_RELEASE_SWEEP_CRON,
+        data: undefined,
+        options: { ...opts, singletonKey: ANON_HOLD_RELEASE_SWEEP_JOB },
+      },
+      {
+        name: RETENTION_SWEEP_JOB,
+        cron: RETENTION_SWEEP_CRON,
+        data: undefined,
+        options: { ...opts, singletonKey: RETENTION_SWEEP_JOB },
+      },
+    ])
 
     await worker.stop()
   })

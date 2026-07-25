@@ -7,6 +7,13 @@ export const PROBE_TIMEOUT_MS = 2000
 
 const PG_UNDEFINED_TABLE = "42P01"
 
+/**
+ * LIKE pattern for the media worker's pg-boss queues (today: "media.checks"). The depth probe used to count
+ * EVERY queue's pending jobs, so an outreach-digest or inbound-sweep backlog warned on the "Media worker"
+ * tile.
+ */
+const MEDIA_QUEUE_LIKE = "media.%"
+
 function withTimeout<T>(run: () => Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     run(),
@@ -50,9 +57,11 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
   const probes: SystemHealthProbes = {}
 
   if (deps.getSql) {
+    // Resolved INSIDE each probe: `getSql` is a lazy seam (the DB handle may not exist when the probes are
+    // constructed), and calling it here defeated that.
     const getSql = deps.getSql
-    const sql = getSql()
     probes.postgres = async (): Promise<ProbeResult> => {
+      const sql = getSql()
       const rows = await withQueryTimeout(
         sql<{ n: string }[]>`SELECT COUNT(*)::text AS n FROM jurisdictions`,
         PROBE_TIMEOUT_MS,
@@ -61,6 +70,7 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
     }
 
     probes.ociEmail = async (): Promise<ProbeResult> => {
+      const sql = getSql()
       const rows = await withQueryTimeout(
         sql<{ n: string }[]>`
           SELECT COUNT(*)::text AS n
@@ -74,12 +84,14 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
     }
 
     probes.mediaWorker = async (): Promise<ProbeResult> => {
+      const sql = getSql()
       try {
         const rows = await withQueryTimeout(
           sql<{ n: string }[]>`
             SELECT COUNT(*)::text AS n
             FROM pgboss.job
             WHERE state IN ('created', 'active', 'retry')
+              AND name LIKE ${MEDIA_QUEUE_LIKE}
           `,
           PROBE_TIMEOUT_MS,
         )

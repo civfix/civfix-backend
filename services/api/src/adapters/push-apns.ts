@@ -1,6 +1,15 @@
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 
 /**
+ * True when APNs is telling us this device token is permanently dead, so it must be pruned rather than
+ * retried: HTTP 410 (Unregistered) or a 400 whose reason is Unregistered / BadDeviceToken. Pure + exported
+ * so the prune-vs-warn matrix is unit-testable without the node-apn SDK.
+ */
+export function isApnsPruneFailure(status: string, reason: string): boolean {
+  return status === "410" || reason === "Unregistered" || reason === "BadDeviceToken"
+}
+
+/**
  * APNs dispatcher (node-apn). Builds a token-auth Provider once (memoized) on first send. Maps the payload
  * to an apn.Notification (alert title/body, topic = bundleId, data merged into the payload). Tokens whose
  * response status is 410 (Unregistered) or 400 with BadDeviceToken are reported invalid for pruning.
@@ -50,7 +59,7 @@ export function makeApnsDispatcher(
       for (const failure of result.failed ?? []) {
         const status = String(failure.status ?? "")
         const reason = failure.response?.reason ?? ""
-        if (status === "410" || reason === "Unregistered" || reason === "BadDeviceToken") {
+        if (isApnsPruneFailure(status, reason)) {
           if (typeof failure.device === "string") invalidTokens.push(failure.device)
         } else {
           logger.warn({ status, reason, device: failure.device }, "push(apns): delivery failure")

@@ -13,6 +13,14 @@ const PRUNE_CODES = new Set([
 ])
 
 /**
+ * True when the FCM per-token error code means the token is dead and must be pruned (vs a transient failure
+ * we only warn about). Pure + exported so the prune-vs-warn matrix is unit-testable without firebase-admin.
+ */
+export function isFcmPruneCode(code: string): boolean {
+  return PRUNE_CODES.has(code)
+}
+
+/**
  * FCM dispatcher (firebase-admin). Initializes a NAMED app once (memoized) from the service-account JSON so
  * it never clashes with any other firebase usage. Chunks tokens into ≤500 slices, maps each slice's
  * responses to the prune set.
@@ -72,7 +80,7 @@ export function makeFcmDispatcher(
       resp.responses.forEach((r: { success: boolean; error?: { code?: string } }, i: number) => {
         if (r.success) return
         const code: string = r.error?.code ?? ""
-        if (PRUNE_CODES.has(code)) {
+        if (isFcmPruneCode(code)) {
           const tok = tokens[i]
           if (tok !== undefined) invalidTokens.push(tok)
         } else {

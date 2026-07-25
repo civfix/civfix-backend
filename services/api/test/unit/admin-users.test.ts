@@ -5,14 +5,14 @@ import {
   resolveUserFilter,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
-import { avatarGradient, type Role } from "@civfix/shared"
+import { avatarGradient } from "@civfix/shared"
 
 /**
  * Offline unit tests for the admin users service over the in-memory AdminUserRepository (no DB, no
  * Docker). They cover the list (status + flagged facet, search, pagination), the detail (role + derived
  * trust/status/counts), the three sub-activity lists (reports/events/messages, paginated), the flag
  * toggle (user_moderation + audit), setStatus (ban revokes sessions + sets account_status + audit) and
- * setRole (delegates to the injected setUserRole seam + audit), plus the pure helper.
+ * setRole (repo-atomic role+audit write, the H3 escalation guards, session revoke), plus the pure helper.
  */
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
@@ -26,8 +26,6 @@ interface Harness {
   cleared: string[]
   /** Records of sessions.revokeAll(userId) calls (H2). */
   revoked: string[]
-  /** Records of setUserRole(userId, role) calls. */
-  roleWrites: Array<{ userId: string; role: Role }>
 }
 
 function harness(): Harness {
@@ -35,7 +33,6 @@ function harness(): Harness {
   const banned: string[] = []
   const cleared: string[] = []
   const revoked: string[] = []
-  const roleWrites: Array<{ userId: string; role: Role }> = []
   const svc = makeAdminUserService({
     repo,
     sessions: {
@@ -52,13 +49,9 @@ function harness(): Harness {
         return Promise.resolve(1)
       },
     },
-    setUserRole: (userId, role) => {
-      roleWrites.push({ userId, role })
-      return Promise.resolve()
-    },
     now: () => NOW,
   })
-  return { repo, svc, banned, cleared, revoked, roleWrites }
+  return { repo, svc, banned, cleared, revoked }
 }
 
 /** A timestamp `hours` before NOW. */
@@ -320,7 +313,6 @@ describe("admin users mutations", () => {
         clearBan: () => Promise.resolve(),
         revokeAll: () => Promise.resolve(0),
       },
-      setUserRole: () => Promise.resolve(),
       now: () => NOW,
     })
     await expect(
@@ -335,25 +327,78 @@ describe("admin users mutations", () => {
     ).rejects.toMatchObject({ httpStatus: 404 })
   })
 
-  it("setRole delegates to setUserRole, audits, AND revokes sessions so the role change takes effect (H2)", async () => {
-    const { repo, svc, roleWrites, revoked } = harness()
-    repo.seedUser({ id: "u-1", role: "operator" })
+  it("setRole writes the role + audit atomically AND revokes sessions so the change takes effect (H2/L5)", async () => {
+    const { repo, svc, revoked } = harness()
+    repo.seedUser({ id: "u-1", role: "gov_admin" })
     await svc.setRole("u-1", { role: "citizen", actorId: "op-1" })
-    expect(roleWrites).toEqual([{ userId: "u-1", role: "citizen" }])
-    // H2: the demotion revokes all the user's sessions so the cached operator role cannot outlive it.
+    // L5: the repo applied the role itself, in the same step as the audit (no separate setUserRole seam).
+    expect(repo.users.get("u-1")?.role).toBe("citizen")
+    // H2: the demotion revokes all the user's sessions so the cached role cannot outlive it.
     expect(revoked).toEqual(["u-1"])
     expect(repo.audits.at(-1)).toMatchObject({
       action: "user.role_changed",
-      meta: { role: "citizen" },
+      meta: { role: "citizen", priorRole: "gov_admin" },
     })
   })
 
   it("setRole throws notFound for an unknown user (before writing the role or revoking)", async () => {
-    const { svc, roleWrites, revoked } = harness()
-    await expect(svc.setRole("nope", { role: "operator", actorId: null })).rejects.toMatchObject({
+    const { svc, revoked } = harness()
+    await expect(svc.setRole("nope", { role: "citizen", actorId: null })).rejects.toMatchObject({
       httpStatus: 404,
     })
-    expect(roleWrites).toHaveLength(0)
     expect(revoked).toHaveLength(0)
+  })
+
+  // --- H3: the three privilege-escalation guards on POST /admin/users/:id/role ---
+
+  it("H3: REFUSES to grant `operator` (no console-minted operator backdoor)", async () => {
+    const { repo, svc, revoked } = harness()
+    repo.seedUser({ id: "u-1", role: "citizen" })
+    await expect(svc.setRole("u-1", { role: "operator", actorId: "op-1" })).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    // Nothing was written and no session was touched.
+    expect(repo.users.get("u-1")?.role).toBe("citizen")
+    expect(repo.audits).toHaveLength(0)
+    expect(revoked).toHaveLength(0)
+  })
+
+  it("H3: REFUSES a self-targeted role change", async () => {
+    const { repo, svc, revoked } = harness()
+    repo.seedUser({ id: "op-1", role: "operator" })
+    await expect(svc.setRole("op-1", { role: "citizen", actorId: "op-1" })).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    expect(repo.users.get("op-1")?.role).toBe("operator")
+    expect(revoked).toHaveLength(0)
+  })
+
+  it("H3: REFUSES to demote an existing operator (one operator cannot strip the others)", async () => {
+    const { repo, svc, revoked } = harness()
+    repo.seedUser({ id: "u-1", role: "operator" })
+    await expect(svc.setRole("u-1", { role: "citizen", actorId: "op-2" })).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    expect(repo.users.get("u-1")?.role).toBe("operator")
+    expect(repo.audits).toHaveLength(0)
+    expect(revoked).toHaveLength(0)
+  })
+
+  it("H3: REFUSES to ban an existing operator", async () => {
+    const { repo, svc, banned } = harness()
+    repo.seedUser({ id: "u-1", role: "operator", accountStatus: "active" })
+    await expect(
+      svc.setStatus("u-1", { status: "banned", reason: "hostile takeover", actorId: "op-2" }),
+    ).rejects.toMatchObject({ httpStatus: 403 })
+    expect(repo.users.get("u-1")?.accountStatus).toBe("active")
+    expect(banned).toHaveLength(0)
+  })
+
+  it("H3: still allows a normal non-operator role change (the guards are not a blanket refusal)", async () => {
+    const { repo, svc, revoked } = harness()
+    repo.seedUser({ id: "u-1", role: "citizen" })
+    await svc.setRole("u-1", { role: "gov_admin", actorId: "op-1" })
+    expect(repo.users.get("u-1")?.role).toBe("gov_admin")
+    expect(revoked).toEqual(["u-1"])
   })
 })

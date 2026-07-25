@@ -10,12 +10,13 @@
  * this repo writes the effect + timeline only.
  */
 
-import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
-import { STATUS_BUCKETS } from "./admin-report-status.js"
+import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { personSelect, toPersonRecord } from "./admin-person.js"
+import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"
 import {
   REPORT_VERIFIED_THRESHOLD,
   type AdminReporterRecord,
@@ -26,6 +27,7 @@ import {
   type AdminReportTimelineRecord,
   type ListReportsArgs,
   type NotifyReporterInput,
+  type ReportOutreachState,
 } from "./admin-report-service.js"
 import type {
   AdminReportCounts,
@@ -34,18 +36,17 @@ import type {
   ReportOutreachStatus,
   ReportTimelineItem,
 } from "@civfix/shared"
-import { likeContains } from "./like.js"
-
-/** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
-type SqlFragment = postgres.Fragment
-
 // A bucket count saturates at this cap so countByBucket scans at most ~cap*3 rows instead of running an
 // exact COUNT(*) over an unbounded reports table on every chip refresh (the chip just needs "this many or
 // more"). Above the cap the counts are an estimate.
 const FACET_COUNT_CAP = 999
 
-/** A report is flagged when it has an OPEN abuse_flag (subject_type 'report', resolved_at NULL). */
-function flaggedReportExpr(sql: Queryable): SqlFragment {
+/**
+ * A report is flagged when it has an OPEN abuse_flag (subject_type 'report', resolved_at NULL). Assumes the
+ * query exposes `reports r`. Exported because the home dashboard's pin list projects the same flag and had
+ * re-inlined it — two copies of "what flagged means" is how the home chip and the reports chip disagree.
+ */
+export function flaggedReportExpr(sql: Queryable): SqlFragment {
   return sql`EXISTS (
     SELECT 1 FROM abuse_flags af
     WHERE af.subject_type = 'report' AND af.subject_id = r.id::text AND af.resolved_at IS NULL
@@ -59,16 +60,13 @@ function flaggedReportExpr(sql: Queryable): SqlFragment {
  */
 function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
-  // SECURITY: escape LIKE metacharacters so %/_ in q match literally (wildcard injection / trigram DoS).
-  const like = likeContains(q)
-  const idBranch = isUuid(q) ? sql`OR r.id = ${q}::uuid` : sql``
-  return sql`AND (
-    r.title ILIKE ${like} ESCAPE '\\'
-    OR j.name ILIKE ${like} ESCAPE '\\'
-    ${idBranch}
-    OR u.display_name ILIKE ${like} ESCAPE '\\'
-    OR (u.handle::text) ILIKE ${like} ESCAPE '\\'
-  )`
+  // ilikeAnyOf escapes the LIKE metacharacters so %/_ in q match literally (wildcard injection/trigram DoS).
+  return sql`AND ${ilikeAnyOf(
+    sql,
+    [sql`r.title`, sql`j.name`, sql`u.display_name`, sql`u.handle::text`],
+    q,
+    isUuid(q) ? [sql`r.id = ${q}::uuid`] : [],
+  )}`
 }
 
 /** Max media assets returned for a report detail. */
@@ -103,17 +101,17 @@ interface ReportRowSelect {
 
 /** Project a selected report row into the structural record the service consumes. */
 function toRecord(r: ReportRowSelect): AdminReportRecord {
-  const reporter: AdminReporterRecord | null =
-    r.reporter_id !== null
-      ? {
-          id: r.reporter_id,
-          name: r.reporter_name ?? "Neighbor",
-          handle: r.reporter_handle,
-          emailVerified: r.reporter_email_verified ?? false,
-          hasOauth: r.reporter_has_oauth ?? false,
-          joinedAt: r.reporter_joined,
-        }
-      : null
+  const reporter: AdminReporterRecord | null = toPersonRecord(
+    {
+      id: r.reporter_id,
+      name: r.reporter_name,
+      handle: r.reporter_handle,
+      emailVerified: r.reporter_email_verified,
+      hasOauth: r.reporter_has_oauth,
+      joinedAt: r.reporter_joined,
+    },
+    "Neighbor",
+  )
   return {
     id: r.id,
     category: r.category,
@@ -170,12 +168,7 @@ function reportSelect(
       -- The reporter's earned report-verified flag (D7); null for an anonymous report (no user_moderation
       -- row joins), false when the reporter has a user row but no moderation row yet.
       CASE WHEN u.id IS NULL THEN NULL ELSE COALESCE(um.report_verified, false) END AS reporter_report_verified,
-      u.id AS reporter_id,
-      u.display_name AS reporter_name,
-      u.handle AS reporter_handle,
-      u.email_verified AS reporter_email_verified,
-      EXISTS (SELECT 1 FROM oauth_identities oi WHERE oi.user_id = u.id) AS reporter_has_oauth,
-      u.created_at AS reporter_joined
+      ${personSelect(sql, "u", "reporter")}
     FROM reports r
     LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
     LEFT JOIN users u ON u.id = r.reporter_user_id
@@ -205,7 +198,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       if (anchor !== null) {
         conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
-      const extraWhere = conds.reduce<SqlFragment>((acc, c) => sql`${acc} ${c}`, sql``)
+      const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY r.created_at DESC, r.id DESC LIMIT ${limit + 1}`
 
       const rows = (await reportSelect(sql, extraWhere, orderLimit)) as unknown as ReportRowSelect[]
@@ -261,6 +254,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         {
           status: AdminReportStatus
           note: string | null
+          kind: string | null
           who: string | null
           created_at: Date
         }[]
@@ -268,6 +262,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         SELECT
           t.status,
           t.note,
+          t.kind,
           COALESCE(u.display_name, u.handle) AS who,
           t.created_at
         FROM report_timeline t
@@ -278,6 +273,10 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       return rows.map((r) => ({
         status: r.status,
         note: r.note,
+        // 0031's `kind` is the row's OWN recorded kind; pre-0031 rows carry NULL and the service falls back
+        // to deriving one from the status. Narrowed on read: the column is plain text, so a value outside
+        // the contract's kind union is treated as absent rather than shipped into the DTO.
+        kind: toTimelineKind(r.kind),
         who: r.who ?? "system",
         createdAt: r.created_at,
       }))
@@ -330,12 +329,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       }
     },
 
-    async getOutreach(id: string): Promise<{
-      status: ReportOutreachStatus
-      threadId: string | null
-      routedTo: string | null
-      routedAt: string | null
-    }> {
+    async getOutreach(id: string): Promise<ReportOutreachState> {
       // The newest per-report mail thread (report_id = id) + its OUT-message aggregates (latest to_addr,
       // earliest created_at) and whether any inbound reply has landed. One row (or none -> not_sent).
       const rows = await sql<
@@ -345,6 +339,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           has_inbound: boolean
           routed_to: string | null
           routed_at: Date | null
+          send_failed: boolean
         }[]
       >`
         SELECT
@@ -361,7 +356,15 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           (
             SELECT MIN(m.created_at) FROM mail_messages m
             WHERE m.thread_id = t.id AND m.direction = 'out'
-          ) AS routed_at
+          ) AS routed_at,
+          (
+            -- The thread row is created with status 'sent' BEFORE the mailer runs, so a delivery throw is
+            -- indistinguishable from a real send by status alone. deliverAndRecord records a 'failed'
+            -- mail_event on a throw and a 'sent' one only after delivery returned, so "a failure recorded
+            -- and no success ever" is the positive signal that nothing reached the city on this thread.
+            EXISTS (SELECT 1 FROM mail_events e WHERE e.thread_id = t.id AND e.type = 'failed')
+            AND NOT EXISTS (SELECT 1 FROM mail_events e WHERE e.thread_id = t.id AND e.type = 'sent')
+          ) AS send_failed
         FROM mail_threads t
         WHERE t.report_id = ${id}
         ORDER BY t.created_at DESC, t.id DESC
@@ -369,13 +372,14 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       `
       const row = rows[0]
       if (!row) {
-        return { status: "not_sent", threadId: null, routedTo: null, routedAt: null }
+        return { status: "not_sent", threadId: null, routedTo: null, routedAt: null, sendFailed: false }
       }
       return {
         status: mapOutreachStatus(row.thread_status, row.has_inbound),
         threadId: row.thread_id,
         routedTo: row.routed_to,
         routedAt: row.routed_at ? row.routed_at.toISOString() : null,
+        sendFailed: row.send_failed,
       }
     },
 

@@ -36,7 +36,15 @@ export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scra
   const safeExt = /^[a-z0-9]{1,8}$/i.test(ext) ? ext : "bin"
   const inputPath = join(dir, `input.${safeExt}`)
   if (bytes !== undefined) {
-    await writeFile(inputPath, bytes)
+    try {
+      await writeFile(inputPath, bytes)
+    } catch (err) {
+      // The caller never receives a cleanup() when the stage fails, so the dir would leak until the next
+      // process restart (sweepStaleScratchDirs runs at boot + on the hourly reap cron, not per job). Most
+      // likely cause is ENOSPC - i.e. exactly when disk pressure makes leaks expensive.
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+      throw err
+    }
   }
   let cleaned = false
   return {
@@ -56,10 +64,11 @@ export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scra
 }
 
 /**
- * Boot-time backstop: per-call cleanup() runs in a finally, but a SIGKILL mid-pipeline (e.g. an OOM kill)
- * skips it, leaking scratch dirs that accumulate in a long-running worker. On startup, remove any
- * civfix-media-* dir older than `maxAgeMs` (default 1h, comfortably above the per-job budget so an
- * in-flight job's dir is never reaped). Never throws.
+ * Backstop for dirs no cleanup() will ever reach: per-call cleanup() runs in a finally, but a SIGKILL
+ * mid-pipeline (e.g. an OOM kill) skips it, leaking scratch dirs that accumulate in a long-running worker.
+ * Remove any civfix-media-* dir older than `maxAgeMs` (default 1h, comfortably above the per-job budget so
+ * an in-flight job's dir is never reaped). Called at worker start AND from the hourly orphan-sweep cron, so
+ * a leak in a process that stays up for weeks is still collected. Never throws.
  */
 export async function sweepStaleScratchDirs(maxAgeMs = 60 * 60 * 1000): Promise<number> {
   const root = tmpdir()

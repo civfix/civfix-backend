@@ -5,7 +5,7 @@ import {
   type GatewayDeps,
 } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
-import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
+import { InMemoryChatPubSub, chatChannel } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 import {
@@ -238,23 +238,74 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(pubsub.channelCount).toBe(0)
   })
 
-  it("close() tears down the pub/sub layer (subscriber connection) even with rooms still open", async () => {
-    // Spy on the pub/sub close so we prove the chat service propagates shutdown to it (in production this
-    // is what disconnects the DEDICATED Redis subscriber connection the container's redis.disconnect()
-    // does NOT own). Without this propagation the subscriber connection leaks and the process hangs.
+  it("close() unsubscribes every open room but leaves the INJECTED pub/sub open (it does not own it)", async () => {
+    // OWNERSHIP CONTRACT: di.ts wires ONE RedisChatPubSub into BOTH this service and RedisUserChannel and
+    // closes that layer itself, AFTER both consumers. So close() must NOT close the pub/sub it was handed -
+    // that would disconnect the shared subscriber connection out from under the user channel. What close()
+    // DOES owe is tearing down every room subscription it opened: a leaked room subscription keeps
+    // delivering pub/sub frames to sockets that are gone.
     const closeSpy = vi.spyOn(pubsub, "close")
+
+    // A co-consumer subscribed on the SAME pub/sub layer (RedisUserChannel in production, sharing the one
+    // dedicated subscriber connection). Its delivery must survive the chat service's shutdown.
+    const coConsumer = vi.fn()
+    await pubsub.subscribe("user:co-consumer", coConsumer)
+
+    const aConn = new MockConnection("A")
+    const aSession = sessionFor(ALICE, aConn)
+    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    expect(chat.roomSize(ROOM)).toBe(1)
+    expect(pubsub.channelCount).toBe(2) // chat:<ROOM> + the co-consumer's channel
+
+    await chat.close()
+
+    // Rooms are dropped and REALLY unsubscribed (no leaked handle): only the co-consumer's channel is left,
+    // and a frame published on the room's channel now reaches nobody (a leaked subscription would pass this
+    // non-envelope payload straight through to A's socket).
+    expect(chat.roomSize(ROOM)).toBe(0)
+    expect(pubsub.channelCount).toBe(1)
+    const framesBefore = aConn.sent.length
+    await pubsub.publish(chatChannel(ROOM), "post-close-frame")
+    expect(aConn.sent).toHaveLength(framesBefore)
+
+    // The injected layer itself is untouched: never closed, and the co-consumer still receives.
+    expect(closeSpy).not.toHaveBeenCalled()
+    await pubsub.publish("user:co-consumer", "still-live")
+    expect(coConsumer).toHaveBeenCalledWith("still-live")
+  })
+
+  it("container-level teardown closes the shared pub/sub exactly once, after the chat service", async () => {
+    // The other half of the contract: the subscriber connection still MUST be closed at shutdown (otherwise
+    // it keeps the event loop alive past SIGTERM) - by the owner, i.e. the DI container, after every
+    // consumer of it has closed. This pins di.ts's order: consumers first, then the shared pub/sub.
+    const coConsumer = vi.fn()
+    await pubsub.subscribe("user:co-consumer", coConsumer)
 
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
     await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     expect(chat.roomSize(ROOM)).toBe(1)
 
-    await chat.close()
+    const chatCloseSpy = vi.spyOn(chat, "close")
+    const pubsubCloseSpy = vi.spyOn(pubsub, "close")
 
-    // Rooms are dropped AND the pub/sub was closed exactly once.
+    // di.ts close(): userChannel.close() -> chatService.close() -> sharedPubSub.close().
+    await chat.close()
+    await pubsub.close()
+
+    expect(pubsubCloseSpy).toHaveBeenCalledTimes(1)
+    expect(chatCloseSpy.mock.invocationCallOrder[0]!).toBeLessThan(
+      pubsubCloseSpy.mock.invocationCallOrder[0]!,
+    )
+
+    // Nothing survives shutdown: no room, no channel, no delivery on either side.
     expect(chat.roomSize(ROOM)).toBe(0)
     expect(pubsub.channelCount).toBe(0)
-    expect(closeSpy).toHaveBeenCalledTimes(1)
+    const framesBefore = aConn.sent.length
+    await pubsub.publish(chatChannel(ROOM), "post-shutdown-frame")
+    await pubsub.publish("user:co-consumer", "post-shutdown-signal")
+    expect(aConn.sent).toHaveLength(framesBefore)
+    expect(coConsumer).not.toHaveBeenCalled()
   })
 })
 

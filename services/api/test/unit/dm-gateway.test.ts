@@ -35,7 +35,6 @@ let signals: Array<{ userId: string; topic: string; id?: string | undefined }>
 
 function dmDeps(): GatewayDmDeps {
   return {
-    isParticipant: (threadId, userId) => dmRepo.isParticipant(threadId, userId),
     peerOf: (threadId, userId) => Promise.resolve(dmRepo.peerOf(threadId, userId)),
     persist: (input) => dmRepo.persist(input),
     markRead: (threadId, userId, upToId) => {

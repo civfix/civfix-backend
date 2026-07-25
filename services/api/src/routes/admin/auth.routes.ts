@@ -19,7 +19,10 @@
  *                                               returns the AdminLoginResponse. 503 when Access is not
  *                                               configured; 401 missing/invalid JWT; 403 not allowlisted.
  *   GET  /admin/auth/session          [public]  current operator {id,name,email,role} or unauthenticated.
- *   POST /admin/auth/logout           [public]  revoke the app session (the SPA also navigates to
+ *   POST /admin/auth/logout           [public]  revoke the app session, clear both cookies, and audit
+ *                                               "operator.logout" (best-effort) when the caller held an
+ *                                               operator session; idempotent, so a stale tab can always
+ *                                               clean itself up (the SPA also navigates to
  *                                               /cdn-cgi/access/logout to end the Access session).
  *
  * Transport is the WEB cookie flow (the dashboard is a browser SPA): the exchange + logout responses set
@@ -38,14 +41,17 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import type { AuthServices } from "../../auth/auth-services.js"
 import type { UserRecord } from "../../auth/stores.js"
-import { requireAuth } from "../../auth/context.js"
 import { resolveLocale } from "../../i18n/locales.js"
 import { isAdminEmail } from "../../auth/admin-allowlist.js"
 import { createAccessVerifier, type AccessIdentity, type VerifyAccessJwt } from "../../auth/cf-access.js"
 import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
-import { csrfProtect, generateCsrfToken, setCsrfCookie, clearCsrfCookie } from "../../auth/csrf.js"
 import {
-  CSRF_COOKIE,
+  generateCsrfToken,
+  setCsrfCookie,
+  clearCsrfCookie,
+  type Csrf,
+} from "../../auth/csrf.js"
+import {
   presentedSessionToken,
   setSessionCookie,
   clearSessionCookie,
@@ -58,8 +64,10 @@ const ADMIN_AUTH_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 
 /**
  * Optional injected admin-auth overrides (tests).
- *  - `auditSink` captures the operator.login audit instead of writing through container.getDb() (the
- *    offline auth harness has no DB), so the "exchange writes operator.login" gate is assertable.
+ *  - `auditSink` captures the operator session audits (operator.login from the exchange, operator.logout
+ *    from logout) instead of writing through container.getDb() (the offline auth harness has no DB), so
+ *    both gates are assertable. NOTE the logout write is best-effort: a sink that REJECTS is swallowed
+ *    there by design, so a test asserting the row must use a resolving sink.
  *  - `verifyAccessJwt` substitutes the Cloudflare Access verifier so the exchange route can be HTTP-tested
  *    offline with a locally minted token (the real verifier fetches a remote JWKS).
  */
@@ -86,6 +94,10 @@ export async function registerAdminAuthRoutes(
 ): Promise<void> {
   const services = app.authServices
   const env = container.env
+  // ONE csrf instance for both halves: the exchange mints with it and the mutations verify with it, so
+  // both read the key this container was built from (see auth/csrf.ts).
+  const csrf = container.csrf
+  const csrfProtect = csrf.protect
 
   // Build the Access JWT verifier ONCE (it caches the remote JWKS + auto-rotates). Null when Access is
   // not configured; the exchange then fails loudly (503) instead of silently accepting nothing. A test
@@ -95,7 +107,13 @@ export async function registerAdminAuthRoutes(
   const defaultVerify: VerifyAccessJwt | null =
     teamDomain && aud ? createAccessVerifier({ teamDomain, aud }) : null
 
-  /** Find-or-create the operator by verified email, ensure the operator role, and audit the login. */
+  /**
+   * Find-or-create the operator by verified email, ensure the operator role, and audit the login.
+   *
+   * The find-then-create below is NOT a lost-update hazard on a double-submitted first login:
+   * UserStore.create is itself an upsert (INSERT ... ON CONFLICT (email) DO NOTHING, then re-read), so the
+   * loser of the race converges on the winner's row instead of surfacing a unique violation.
+   */
   async function provisionOperator(email: string): Promise<UserRecord> {
     let user = await services.users.findByEmail(email)
     if (!user) {
@@ -107,7 +125,7 @@ export async function registerAdminAuthRoutes(
     }
     const operator =
       user.role === "operator" ? user : await services.users.setRole(user.id, "operator")
-    await auditLogin(app, container, {
+    await auditOperatorAuth(app, container, {
       actorId: operator.id,
       action: "operator.login",
       target: `user:${operator.id}`,
@@ -129,23 +147,59 @@ export async function registerAdminAuthRoutes(
       throw AppError.forbidden("This account is not authorized for the operator dashboard.")
     }
     const operator = await provisionOperator(email)
-    const payload = await establishOperatorSession(services, request, reply, operator)
+    const payload = await establishOperatorSession(services, csrf, request, reply, operator)
     reply.status(200).send(payload)
   })
 
   route(app, "adminSession", async (request, reply) => {
-    const payload = await buildAdminSession(services, request, reply)
+    const payload = await buildAdminSession(services, csrf, request, reply)
     reply.status(200).send(payload)
   })
 
+  /**
+   * Keyed on the PRESENTED credential, not on a resolved session — the same rule as the citizen logout
+   * (routes/auth.routes.ts):
+   *   - a token that no longer resolves (expired / revoked / banned) is still logged out best-effort, and
+   *     the cookies ARE cleared. requireAuth would 401 that caller and leave the stale tab's dead session
+   *     + CSRF cookies in the browser forever — the one thing logout exists to clean up;
+   *   - a request carrying NO credential has nothing to revoke and nothing of its own to clear, so it stays
+   *     401, which is what the contract's `adminLogout.auth === "required"` pins. Answering 200 to an
+   *     anonymous POST made this half of the refactor disagree with its citizen twin.
+   * CSRF is unaffected: a cross-site POST bearing the victim's cookies DOES present a session cookie, so
+   * csrfProtect enforced the session-bound token before this handler ran.
+   */
   route(app, "adminLogout", { preHandler: csrfProtect, config: { rateLimit: ADMIN_AUTH_RATE_LIMIT } }, async (request, reply) => {
-    requireAuth(request)
     const token = presentedSessionToken(request)
-    if (token) {
-      await services.sessions.revokeSession(token)
+    if (token === null) {
+      throw AppError.unauthorized()
     }
+    // Read the actor BEFORE the revoke: afterwards the session is gone and there is nothing left to
+    // attribute the audit row to.
+    const { userId, roles } = request.auth
+    await services.sessions.revokeSession(token)
     clearSessionCookie(reply)
     clearCsrfCookie(reply)
+    // `operator.logout` was in the AdminAuditAction catalogue but never written, so the audit log could
+    // answer "who signed in" and never "who signed out" — the closing half of every operator session.
+    //
+    // AFTER the revoke and best-effort: this route's job is to leave no live session behind, so a failing
+    // audit write must not abort it (that would clear the cookies while the session stayed live, i.e. an
+    // unrevokable session). Only an authenticated OPERATOR is recorded: a presented-but-dead token has no
+    // resolved actor — a NULL-actor row would read as a system action.
+    if (userId !== null && roles.includes("operator")) {
+      await auditOperatorAuth(app, container, {
+        actorId: userId,
+        action: "operator.logout",
+        target: `user:${userId}`,
+        // A live session was actually killed. Always true HERE by construction: an actor only resolves
+        // when the presented token was still live at the onRequest hook, and a stale tab clearing its own
+        // dead cookies resolves none and writes no row at all. Kept explicit so the audit row states what
+        // happened rather than leaving the reader to infer it. The token is a credential; never recorded.
+        meta: { sessionRevoked: true },
+      }).catch((err: unknown) => {
+        request.log.warn({ err }, "operator.logout audit write failed")
+      })
+    }
     const payload: AdminLogoutResponse = { ok: true }
     reply.status(200).send(payload)
   })
@@ -166,11 +220,12 @@ async function verifyHeader(
 }
 
 /**
- * Write the operator.login audit. Uses the injected sink when present (tests: the offline harness has no
- * DB), else the raw sql tag (production). Keeping the audit write here (not skipped) means production
- * always records the login; the sink lets a unit/HTTP test assert it.
+ * Write an operator session audit (operator.login on the exchange, operator.logout on logout). Uses the
+ * injected sink when present (tests: the offline harness has no DB), else the raw sql tag (production).
+ * Keeping the audit write here (not skipped) means production always records both ends of a session; the
+ * sink lets a unit/HTTP test assert them.
  */
-async function auditLogin(
+async function auditOperatorAuth(
   app: FastifyInstance,
   container: Container,
   input: WriteAuditInput,
@@ -190,6 +245,7 @@ async function auditLogin(
  */
 async function establishOperatorSession(
   services: AuthServices,
+  csrf: Csrf,
   request: FastifyRequest,
   reply: FastifyReply,
   user: UserRecord,
@@ -200,7 +256,10 @@ async function establishOperatorSession(
   })
   const ttl = services.sessions.ttl
   setSessionCookie(reply, token, ttl)
-  const csrfToken = generateCsrfToken()
+  // Session-BOUND, like the citizen surface: the CSRF token is an HMAC over the session, so it proves the
+  // holder owns this session rather than merely being able to read a cookie on the domain. It is also
+  // deterministic, which is what makes the reuse branch in buildAdminSession work.
+  const csrfToken = await csrf.tokenForSession(token)
   setCsrfCookie(reply, csrfToken, ttl)
   return { user: toUserPayload(user), csrfToken }
 }
@@ -208,11 +267,12 @@ async function establishOperatorSession(
 /**
  * Build the GET /admin/auth/session response from the resolved req.auth (Redis-backed). Returns the
  * operator identity only for an authenticated session whose role is operator; anything else is
- * unauthenticated. For the web cookie flow the current CSRF token is surfaced so the SPA can recover it
- * after a reload (minting + setting one when the cookie is absent, mirroring the Phase 1 session route).
+ * unauthenticated. For the web cookie flow the session-bound CSRF token is re-derived and re-set so the
+ * SPA can recover it after a reload, mirroring the Phase 1 session route.
  */
 async function buildAdminSession(
   services: AuthServices,
+  csrf: Csrf,
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<AdminSessionResponse> {
@@ -233,11 +293,20 @@ async function buildAdminSession(
   }
 
   // Web cookie flow: surface/refresh the CSRF token so the SPA can echo it on state-changing calls.
-  const existing = request.cookies[CSRF_COOKIE]
-  if (existing && existing.length > 0) {
-    return { authenticated: true, operator, csrfToken: existing }
-  }
-  const token = generateCsrfToken()
+  //
+  // ALWAYS RE-DERIVED from the presented session, never echoed back from the CSRF cookie — the same
+  // stance as the citizen session route (routes/auth.routes.ts webCsrfToken). The old echo-the-cookie
+  // branch existed because the token used to be a fresh RANDOM value on every bootstrap, which rotated it
+  // out from under a tab still holding the previous one (and read the pre-`__Host-` cookie name, so in
+  // production it never even fired). A session-bound token is DETERMINISTIC, so re-deriving returns the
+  // byte-identical value for any legitimately-bound cookie and there is nothing left to rotate.
+  //
+  // Re-deriving is also what HEALS a stale cookie: a browser still holding a pre-binding random value (or
+  // one planted by a cookie-writing sibling origin) would otherwise be handed that value back on every
+  // poll — and since nothing verifies it any more, the console would 403 on every mutation with no way
+  // out. The overwrite below replaces it with the token this session's mutations actually require.
+  const sessionToken = presentedSessionToken(request)
+  const token = sessionToken ? await csrf.tokenForSession(sessionToken) : generateCsrfToken()
   setCsrfCookie(reply, token, services.sessions.ttl)
   return { authenticated: true, operator, csrfToken: token }
 }

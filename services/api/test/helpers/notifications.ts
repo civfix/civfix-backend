@@ -9,6 +9,9 @@ import type {
   PushTokenUpsertOutcome,
 } from "../../src/services/notification-service.js"
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
+// The CANONICAL keyset primitives the real repository uses — imported, never re-implemented, so the fake
+// cannot drift into accepting a cursor the production parser rejects (or vice versa).
+import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
 export interface StoredPushToken {
@@ -68,12 +71,9 @@ export class InMemoryNotificationRepository implements NotificationRepository {
           })
         : mine
 
-    const hasMore = after.length > limit
-    const page = hasMore ? after.slice(0, limit) : after
-    const last = page[page.length - 1]
-    const nextCursor =
-      hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null
-    return Promise.resolve({ records: page, nextCursor })
+    // Same split + encoder as notification-repository.drizzle.ts.
+    const { items, nextCursor } = paginate(after, limit, (n) => ({ at: n.createdAt, id: n.id }))
+    return Promise.resolve({ records: items, nextCursor })
   }
 
   markRead(userId: string, ids: string[]): Promise<void> {
@@ -165,14 +165,27 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve("stored")
   }
 
-  revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void> {
-    // Mirror the Drizzle UPDATE: soft-revoke active rows on this device owned by a DIFFERENT user.
+  revokeDeviceTokensForOtherUsers(args: {
+    userId: string
+    token: string
+    platform: PushPlatform
+    deviceId: string | null
+  }): Promise<number> {
+    // Mirror the Drizzle UPDATE (H12): the revoke is scoped to the PRESENTED TOKEN, which the caller
+    // provably holds. A self-declared deviceId no longer authorizes any cross-account write.
+    let revoked = 0
     for (const t of this.pushTokens) {
-      if (t.deviceId === deviceId && t.userId !== userId && t.revokedAt === null) {
+      if (
+        t.userId !== args.userId &&
+        t.revokedAt === null &&
+        t.platform === args.platform &&
+        t.token === args.token
+      ) {
         t.revokedAt = this.now()
+        revoked++
       }
     }
-    return Promise.resolve()
+    return Promise.resolve(revoked)
   }
 
   deletePushTokensForUser(userId: string): Promise<void> {
@@ -189,13 +202,3 @@ export class InMemoryNotificationRepository implements NotificationRepository {
   }
 }
 
-function parseTimeCursor(cursor: string | null): { at: Date; id: string } | null {
-  if (cursor === null) return null
-  const idx = cursor.indexOf("|")
-  if (idx <= 0) return null
-  const iso = cursor.slice(0, idx)
-  const id = cursor.slice(idx + 1)
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime()) || id.length === 0) return null
-  return { at, id }
-}

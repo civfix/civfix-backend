@@ -1,4 +1,4 @@
-import type { Queryable, Sql } from "../db/client.js"
+import type { Queryable } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 
@@ -11,10 +11,10 @@ export type MessageMediaColumn = "chat_message_id" | "discussion_message_id"
 
 const ALL_COLUMNS: readonly MessageMediaColumn[] = ["chat_message_id", "discussion_message_id"]
 
+// Only the write side rides the repo object (chat-attachments.drizzle binds `attach`); every reader calls
+// the standalone loadReadyAttachmentsFor below with its own tag, so there is no repo-shaped load method.
 export interface MessageAttachmentRepo {
   attach(tx: Queryable, messageId: string, uploadIds: string[]): Promise<void>
-  // Batched: presigned, status-'ready' attachments for a set of message ids, grouped by message id.
-  loadReadyFor(messageIds: string[], presign: PresignMedia): Promise<Map<string, MediaDTO[]>>
 }
 
 interface MediaRow {
@@ -29,7 +29,7 @@ interface MediaRow {
   height: number | null
 }
 
-export function makeAttachmentRepo(sql: Sql, column: MessageMediaColumn): MessageAttachmentRepo {
+export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmentRepo {
   // The siblings that must be NULL for an upload to be claimable here: every message-media column except
   // this one, plus report_id (a report attachment is never re-bindable to a message).
   const otherCols = ALL_COLUMNS.filter((c) => c !== column)
@@ -50,10 +50,6 @@ export function makeAttachmentRepo(sql: Sql, column: MessageMediaColumn): Messag
           ${nullGuards}
           AND status IN ('ready', 'validating')
       `
-    },
-
-    loadReadyFor(messageIds, presign) {
-      return loadReadyAttachmentsFor(sql, column, messageIds, presign)
     },
   }
 }

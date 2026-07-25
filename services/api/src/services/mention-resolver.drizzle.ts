@@ -44,11 +44,12 @@ export async function resolveMentionTargets(
   sql: Sql,
   input: { handles: string[]; userIds: string[]; authorUserId: string },
 ): Promise<UserMentionDTO[]> {
-  const byHandle = await resolveHandles(sql, input.handles, input.authorUserId)
-  const byId =
-    input.userIds.length > 0
-      ? await resolveUserIdsToMentions(sql, input.userIds, input.authorUserId)
-      : []
+  // Independent lookups, so they go out together — this sits on the WS send hot path for every
+  // mention-bearing message. Each already short-circuits to [] on an empty input list.
+  const [byHandle, byId] = await Promise.all([
+    resolveHandles(sql, input.handles, input.authorUserId),
+    resolveUserIdsToMentions(sql, input.userIds, input.authorUserId),
+  ])
   const seen = new Set<string>()
   const out: UserMentionDTO[] = []
   for (const m of [...byHandle, ...byId]) {

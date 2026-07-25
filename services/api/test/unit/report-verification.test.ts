@@ -179,7 +179,6 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
         clearBan: async () => {},
         revokeAll: async () => 0,
       },
-      setUserRole: async () => {},
       now: () => NOW,
     })
     return { repo, svc }

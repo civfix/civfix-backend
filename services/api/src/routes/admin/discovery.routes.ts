@@ -12,20 +12,26 @@ import {
   DiscoveryListQuerySchema,
   FlagDiscoveryRequestSchema,
   SaveDraftRequestSchema,
-  type AdminOkResponse,
   type DiscoveryListResponse,
   type DiscoveryTaskDetailDTO,
   type ReportCategory,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { csrfProtect } from "../../auth/csrf.js"
+import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
-import { idParam, parse } from "./_route-utils.js"
+import {
+  httpUrlField,
+  idParam,
+  overridableService,
+  parse,
+  parseBodyWithId,
+  sendOk,
+  spreadNow,
+} from "./_route-utils.js"
 import {
   makeDiscoveryService,
   type DiscoveryRepository,
-  type DiscoveryService,
 } from "../../services/admin/discovery-service.js"
 import { makeDrizzleDiscoveryRepository } from "../../services/admin/discovery-repository.drizzle.js"
 
@@ -49,18 +55,18 @@ export async function registerAdminDiscoveryRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   /** Build the discovery service from injected overrides (tests) or the container (production). */
-  function service(): DiscoveryService {
-    const overrides = app.discoveryOverrides
-    if (overrides) {
-      return makeDiscoveryService({
-        repo: overrides.repo,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
-      })
-    }
-    const repo: DiscoveryRepository = makeDrizzleDiscoveryRepository(container.getDb().sql)
-    return makeDiscoveryService({ repo })
-  }
+  const service = overridableService(
+    app,
+    "discoveryOverrides",
+    (overrides) => makeDiscoveryService({ repo: overrides.repo, ...spreadNow(overrides) }),
+    () => {
+      const repo: DiscoveryRepository = makeDrizzleDiscoveryRepository(container.getDb().sql)
+      return makeDiscoveryService({ repo })
+    },
+  )
 
   route(app, "listDiscovery", async (request, reply) => {
     const query = parse(DiscoveryListQuerySchema, request.query)
@@ -75,46 +81,42 @@ export async function registerAdminDiscoveryRoutes(
   })
 
   route(app, "addDiscoveryNote", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(AddNoteRequestSchema, { ...(request.body as object), id })
-    const actorId = request.auth.userId
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(AddNoteRequestSchema, request)
     const who = await operatorLabel(app, actorId)
     // addNote persists the note AS the audit_log discovery.note_added row (the note store), so the write
     // is atomic + audited in one place; no separate writeAudit here.
     await service().addNote(id, { text: body.text, actorId, who })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   route(app, "flagDiscovery", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(FlagDiscoveryRequestSchema, { ...(request.body as object), id })
-    await service().flag(id, { reason: body.reason ?? null, actorId: request.auth.userId })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(FlagDiscoveryRequestSchema, request)
+    await service().flag(id, { reason: body.reason ?? null, actorId })
+    sendOk(reply)
   })
 
   route(app, "saveDiscoveryDraft", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(SaveDraftRequestSchema, { ...(request.body as object), id })
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(SaveDraftRequestSchema, request)
     await service().saveDraft(id, {
       contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
       defaultEmails: body.defaultEmails ?? [],
-      formUrl: body.formUrl ?? null,
-      actorId: request.auth.userId,
+      // L7: reject javascript:/data: URIs the shared `.url()` schema lets through (see httpUrlField).
+      formUrl: httpUrlField(body.formUrl, "formUrl"),
+      actorId,
     })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 }
 
 /**
  * Resolve a human "who" label for an operator note from the operator's user record: @handle (the canonical
- * identifier), else display name, else email, else a short id. Falls back to "operator" when the auth
- * bundle / user is absent.
+ * identifier), else display name, else email, else a short id. Falls back to "operator" when the user
+ * record cannot be read.
  */
-async function operatorLabel(app: FastifyInstance, actorId: string | null): Promise<string> {
-  if (actorId === null) return "operator"
+async function operatorLabel(app: FastifyInstance, actorId: string): Promise<string> {
   try {
     const user = await app.authServices.users.findById(actorId)
     if (!user) return "operator"

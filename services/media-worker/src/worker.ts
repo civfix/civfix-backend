@@ -11,7 +11,7 @@ import {
   RETENTION_SWEEP_CRON,
   type WorkerLimits,
 } from "./config.js"
-import { runMediaChecksJob, parsePayload } from "./jobs/media-checks.js"
+import { runMediaChecksJobDetailed, parsePayload } from "./jobs/media-checks.js"
 import { runOrphanSweep } from "./jobs/orphan-sweep.js"
 import { runHoldReleaseSweep } from "./jobs/hold-release-sweep.js"
 import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
@@ -55,8 +55,9 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       })
       return
     }
-    await runMediaChecksJob(payload, {
-      repo: seams.repo,
+    const repo = seams.repo
+    const outcome = await runMediaChecksJobDetailed(payload, {
+      repo,
       storage: seams.storage,
       abuseChecks: seams.abuseChecks,
       limits: seams.limits,
@@ -66,10 +67,15 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
     })
 
     try {
-      const asset =
-        (await seams.repo.findById(payload.mediaId)) ??
-        (await seams.repo.findByUploadId(payload.uploadId))
-      const reportId = asset?.reportId ?? null
+      // The job already loaded the row, so its reportId comes back with the outcome instead of costing
+      // another read. Re-read ONLY when the row existed but was still unattached: media.checks is enqueued
+      // at upload-complete, BEFORE any report exists, so an upload can be committed to a report WHILE this
+      // job runs and the binding we loaded at job start would miss it (the 5-minute hold-release sweep
+      // would eventually reconcile it, but the inline enqueue is the fast path). A row that was already
+      // swept has nothing to re-read.
+      const reportId =
+        outcome.reportId ??
+        (outcome.status === "missing" ? null : await findReportId(repo, payload))
       if (reportId && (await shouldEnqueueHoldRelease(seams, reportId))) {
         await jobs.enqueue(
           ANON_HOLD_RELEASE_JOB,
@@ -79,7 +85,7 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       } else {
         console.debug("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
           uploadId: payload.uploadId,
-          found: Boolean(asset),
+          status: outcome.status,
         })
       }
     } catch (err) {
@@ -89,6 +95,16 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       })
     }
   }
+}
+
+/** Re-read the asset's report binding (only needed when the job saw an unattached row). */
+async function findReportId(
+  repo: NonNullable<WorkerSeams["repo"]>,
+  payload: { mediaId: string; uploadId: string },
+): Promise<string | null> {
+  const asset =
+    (await repo.findById(payload.mediaId)) ?? (await repo.findByUploadId(payload.uploadId))
+  return asset?.reportId ?? null
 }
 
 function parseHoldReleasePayload(data: unknown): { reportId: string } | null {
@@ -140,6 +156,11 @@ function requireRepo<K extends keyof WorkerSeams>(
 
 function makeOrphanSweepHandler(seams: WorkerSeams): JobHandler {
   return async () => {
+    // Scratch dirs leak only when a SIGKILL skips the per-call cleanup (OOM kill mid-pipeline), so the
+    // boot-time backstop misses them for as long as the process stays up. Piggyback on the hourly reap
+    // cron rather than adding a timer: same "delete what nothing owns any more" job, and it is cheap
+    // (one readdir + stat per civfix-media-* dir). Never throws.
+    await sweepStaleScratchDirs().catch(() => 0)
     const repo = requireRepo(seams, ORPHAN_SWEEP_JOB, "repo")
     if (!repo) return
     await runOrphanSweep({ repo, storage: seams.storage, limits: seams.limits, report: seams.report })
@@ -171,7 +192,12 @@ function makeRetentionSweepHandler(seams: WorkerSeams): JobHandler {
   return async () => {
     const dbHandle = requireRepo(seams, RETENTION_SWEEP_JOB, "dbHandle")
     if (!dbHandle) return
-    await runRetentionSweep({ sql: dbHandle.sql, report: seams.report })
+    await runRetentionSweep({
+      sql: dbHandle.sql,
+      batchSize: seams.limits.retentionSweepBatch,
+      maxPages: seams.limits.retentionSweepMaxPages,
+      report: seams.report,
+    })
   }
 }
 

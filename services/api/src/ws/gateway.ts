@@ -11,15 +11,18 @@
  * request's Origin against the configured WEB_ORIGINS allowlist. NO-ORIGIN HANDLING (P1-4): a handshake
  * with a session cookie REQUIRES a present, allowlisted Origin (a real browser always sends one, so a
  * missing Origin on the cookie path is a non-browser client replaying a stolen cookie — the CSWSH second
- * factor); a cookie-less handshake (native mobile ?token bearer, server-to-server, tests) may omit Origin
- * because it carries no ambient cookie and the bearer/?token path still validates the credential.
+ * factor); a cookie-less handshake (native mobile ?ticket, server-to-server, tests) may omit Origin
+ * because it carries no ambient cookie and the ticket/bearer path still validates the credential.
  *
  * DUAL HANDSHAKE AUTH: (a) COOKIE (web, same-origin SPA) — the httpOnly session cookie is sent
  * automatically on the upgrade, so the auth onRequest hook already resolved req.auth from it. (b)
- * ?token=<bearer> QUERY PARAM (mobile) — a React Native WebSocket cannot set an Authorization header, so
- * the native client passes its bearer as a query param, resolved via session-service during the handshake.
- * A handshake that resolves to no user is REJECTED (closed with a policy-violation code + one
- * {type:"error"} frame), so unauthenticated sockets never join.
+ * ?ticket=<single-use, short-lived> (mobile) — a React Native WebSocket cannot set an Authorization
+ * header, so the native client mints a connect ticket over authenticated HTTP and redeems it here. The
+ * legacy ?token=<30-day session bearer> query param is DISABLED by default (H5: a full-privilege
+ * credential in a URL leaks into every proxy/CDN/APM log) and only re-enabled by the temporary
+ * WS_ALLOW_QUERY_TOKEN break-glass env flag; see ws/handshake.ts. A handshake that resolves to no user
+ * is REJECTED (closed with a policy-violation code + one {type:"error"} frame), so unauthenticated
+ * sockets never join. A LIVE socket is re-authorized on every heartbeat (M1, ws/socket-lifecycle.ts).
  *
  * MEMBERSHIP-GATED ROOMS: chat membership == cleanup membership. join/send verify the user is a
  * cleanup_member before the ChatService admits the socket or accepts a message. Inbound frames are

@@ -9,13 +9,20 @@
  * (contact_emails, contact_updated_at), so it is safe to run through the same `sql` tag.
  *
  * Write-time Census fallback (OPTIONAL, best-effort, dep-gated): when the local resolver MISSES and a
- * `jurisdictionLookup` dep is present, resolveForPoint queries the US Census Geocoder, lazily UPSERTS the
- * most-specific place/county/state it returns as a NULL-geom jurisdiction row, and maps the report to it —
- * so the common municipal case self-maps with zero ops instead of staying "Unmapped". The lookup is best-
- * effort (it never throws and falls through to null on any failure), the upsert is idempotent and PRESERVES
- * operator contacts, and the new row carries no polygon (geom NULL, 0015) so it only ever resolves for its
- * own geoid. When the dep is ABSENT, behavior is exactly today's local-only resolution (backward
- * compatible). See src/adapters/jurisdiction-lookup.census.ts + documents/20-jurisdiction-mapping.md.
+ * `jurisdictionLookup` dep is present, resolveForPoint queries the US Census Geocoder, lazily INSERTS the
+ * most-specific place/county/state it returns as a NULL-geom jurisdiction row (only when no row exists
+ * yet), and maps the report to it — so the common municipal case self-maps with zero ops instead of staying
+ * "Unmapped". The lookup is best-effort (it never throws and falls through to null on any failure), the
+ * insert is idempotent and PRESERVES everything about an existing row, and the new row carries no polygon
+ * (geom NULL, 0015) so it only ever resolves for its own geoid. When the dep is ABSENT, behavior is exactly
+ * today's local-only resolution (backward compatible).
+ *
+ * REPEAT-CALL COST is the CALLER's business: because the lazily-inserted row has a NULL geom, it can never
+ * satisfy the resolver's ST_Contains, so every later resolve of the same point takes this same fallback
+ * path. This service therefore does no memoization of its own; the anon-ok map resolve wires a TTL-memoized
+ * lookup (services/route-geo-helpers.ts -> CachedJurisdictionLookup) so a repeat caller cannot drive one
+ * outbound Census request per request, while the authenticated submit paths stay uncached and always
+ * re-check live coverage. See src/adapters/jurisdiction-lookup.census.ts + documents/20-jurisdiction-mapping.md.
  *
  * Discovery-enqueue idempotency: the decision is the PURE function `needsDiscovery(row, now)` so it is
  * unit-testable with no DB. When it returns true we enqueue ONE job via the Jobs seam with
@@ -208,9 +215,9 @@ const LAYER_PRIORITY: Record<JurisdictionLookupResult["layer"], number> = {
 }
 
 /**
- * Write-time Census fallback on a LOCAL MISS: query the lookup, and on a hit lazily upsert the returned
- * jurisdiction (NULL geom) and map the report to it. Best-effort throughout — `lookup` never throws and a
- * miss returns null (today's "Unmapped" behavior).
+ * Write-time Census fallback on a LOCAL MISS: query the lookup, and on a hit lazily insert the returned
+ * jurisdiction (NULL geom, only when absent) and map the report to it. Best-effort throughout — `lookup`
+ * never throws and a miss returns null (today's "Unmapped" behavior).
  *
  * The returned DTO is NOT routable: a brand-new contact-less row has no routing configured yet. We do NOT
  * enqueue discovery here — the row simply lacks contacts, which is exactly the state `needsDiscovery` flags
@@ -226,7 +233,7 @@ async function resolveViaLookup(
   const hit = await lookup.lookup(lat, lng)
   if (!hit) return null
 
-  await upsertApiSourcedJurisdiction(sql, hit)
+  await insertApiSourcedJurisdictionIfAbsent(sql, hit)
 
   return {
     geoid: hit.geoid,
@@ -241,7 +248,8 @@ async function resolveViaLookup(
 }
 
 /**
- * Lazily upsert an API-sourced jurisdiction (geoid + name + layer, NO polygon). Idempotent by geoid.
+ * Lazily INSERT an API-sourced jurisdiction (geoid + name + layer, NO polygon) when no row exists yet.
+ * Idempotent by geoid: an existing row of any origin is left completely untouched.
  *
  * Geometry access rule: written through the raw `sql` tag like every other jurisdiction write — even though
  * geom is NULL here so no PostGIS function appears (a plain insert), we keep the raw tag for consistency
@@ -251,28 +259,33 @@ async function resolveViaLookup(
  * compact JURCODE for reference codes — the SAME single-sequence source the backfill + every other lazy
  * insert use, so no two jurisdictions collide on a code.
  *
- * PRESERVATION on conflict (CRITICAL): the ON CONFLICT SET list updates ONLY name + layer. It deliberately
- * does NOT touch:
- *   - geom: an existing self-hosted polygon row keeps its boundary (a later real ingest is never clobbered
- *     by this null-geom fallback; and re-hitting an already-API-sourced row leaves its NULL geom as-is).
- *   - contact_emails / contact_updated_at: operator-mapped / discovered routing is never wiped.
- *   - priority: left as the existing row's value on update (only the fresh INSERT sets it from LAYER_PRIORITY).
- *   - code: an existing row KEEPS its already-allocated JURCODE — the conflict path never re-issues a code
- *     (a stable, immutable identity), so an established jurisdiction's reference codes stay consistent.
+ * WHY `WHERE NOT EXISTS` AND NOT A PLAIN `VALUES ... ON CONFLICT` (A15 follow-up): a VALUES list is
+ * evaluated BEFORE the conflict is detected, so `nextval` was consumed on every conflict too — and this
+ * statement is on an anon-ok path (POST /map/resolve-jurisdiction) whose repeat calls always conflict,
+ * because a NULL-geom row can never satisfy the resolver's ST_Contains. That burned one `code` value per
+ * request forever. Guarding the insert with NOT EXISTS makes the target list unevaluated (zero rows out)
+ * on the repeat path, so no sequence value is drawn. `ON CONFLICT (geoid) DO NOTHING` still covers the
+ * narrow race where a concurrent request inserts the same geoid between the probe and the write (that one
+ * loses its drawn value — a gappy sequence is expected and harmless, unlike a per-request burn).
+ *
+ * NOTHING IS UPDATED on the existing-row path (deliberate). The previous version refreshed name + layer;
+ * for a NULL-geom row those columns came from this very lookup (a rewrite of identical values), and for a
+ * self-hosted row the authoritative refresh is the boundary ingest (db/ingest-jurisdictions-core.ts, which
+ * DOES update name/layer/geom/population). Skipping the update also means this fallback can never clobber
+ * a curated name, and — as before — geom, contact_emails/contact_updated_at, priority and code are never
+ * touched: an established jurisdiction keeps its boundary, its operator-mapped routing and its JURCODE.
  */
-async function upsertApiSourcedJurisdiction(
+async function insertApiSourcedJurisdictionIfAbsent(
   sql: Sql,
   hit: JurisdictionLookupResult,
 ): Promise<void> {
   await sql`
     INSERT INTO jurisdictions (geoid, name, layer, priority, geom, contact_emails, code)
-    VALUES (
+    SELECT
       ${hit.geoid}, ${hit.name}, ${hit.layer}, ${LAYER_PRIORITY[hit.layer]}, NULL, NULL,
       nextval('jurisdiction_code_seq')
-    )
-    ON CONFLICT (geoid) DO UPDATE SET
-      name = EXCLUDED.name,
-      layer = EXCLUDED.layer
+    WHERE NOT EXISTS (SELECT 1 FROM jurisdictions WHERE geoid = ${hit.geoid})
+    ON CONFLICT (geoid) DO NOTHING
   `
 }
 

@@ -51,7 +51,9 @@ export interface LinkedReportView {
   lat: number
   lng: number
   addr: string | null
-  // The report's first ready-media thumb object key (or its r2 key), or null when no ready media.
+  // The report's earliest ready-media thumb object key — or, for an image with no thumb yet, its r2 key.
+  // Null when the report has no ready asset that can render as a still (a thumbless video is skipped
+  // rather than handed over as a raw video key). The service presigns whatever this is.
   thumbKey: string | null
   linkedAt: Date
 }
@@ -137,7 +139,17 @@ export interface UpdateCleanupPatch {
   lng?: number
   address?: string | null
   bring?: string[] | null
+  // Re-resolved from a moved lat+lng by cleanup-service (the geoid routes the event's municipal
+  // resource-request email and buckets its volunteer-hours rollup, so it cannot stay behind when the
+  // event moves). ABSENT = leave the stored geoid alone; null = the new position is outside coverage.
+  // reference_code's JURCODE segment is never re-minted (immutable public identity, D1).
+  jurisdictionGeoid?: string | null
 }
+
+// The outcome of a cancel attempt. "already_cancelled" is NOT an error (cancelling twice is a legal
+// no-op that still returns the DTO) but it must be distinguishable from a fresh transition, because the
+// attendee bell fan-out may only fire once — see cancelCleanupTx / cleanup-service.cancelCleanup.
+export type CancelCleanupOutcome = "cancelled" | "already_cancelled" | "not_found"
 
 // A point the caller can sort/measure distance from (for `near` listings).
 export interface NearPoint {
@@ -222,7 +234,23 @@ export interface CleanupRepository {
   // Remove a NON-organizer member row (the same row that gates chat access, so removal drops the chat
   // roster too) and return the fresh member count in the SAME transaction. `removed` is false when no
   // such member row existed (or the target is the organizer — guarded in SQL as defense-in-depth).
-  removeMember(cleanupId: string, userId: string): Promise<{ removed: boolean; going: number }>
+  //
+  // SECURITY (M17): the same transaction ALSO writes the cleanup_bans row that makes the removal
+  // stick. Before this, removal was a bare membership delete against an unconditional self-service
+  // join, so the removed user re-joined instantly and in a loop. `actorId` is the removing host,
+  // recorded on the ban row. Same-transaction is load-bearing: a ban written afterwards would leave a
+  // window in which the target could re-join.
+  removeMember(
+    cleanupId: string,
+    userId: string,
+    actorId: string,
+  ): Promise<{ removed: boolean; going: number }>
+  // Whether `userId` is banned from `cleanupId` (M17). Read by the join path; also lets the service
+  // distinguish "not attending" from "removed" when an organizer targets a non-member.
+  isBanned(cleanupId: string, userId: string): Promise<boolean>
+  // Lift a ban (organizer-only at the service layer). Returns true when a ban row existed; deleting a
+  // non-existent ban is an idempotent no-op that returns false.
+  unbanMember(cleanupId: string, userId: string): Promise<boolean>
   // The user ids of a cleanup's members, capped at `limit` (a soft fan-out bound). Used by the WS gateway
   // to fan a thread-unread signal to the room's members.
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
@@ -231,20 +259,38 @@ export interface CleanupRepository {
   // The organizer's user id, or null when the cleanup does not exist.
   organizerOf(cleanupId: string): Promise<string | null>
   // Upsert a cleanup_members(role 'member') row in a transaction (idempotent: re-joining is a no-op).
-  // Returns true when the cleanup exists (so the route can 404 a missing cleanup).
-  joinCleanupTx(cleanupId: string, userId: string): Promise<boolean>
+  //
+  // SECURITY (M17): the ban probe and the membership insert happen in ONE transaction that first takes a
+  // FOR SHARE row lock on the cleanups row, and removeMember takes the conflicting FOR NO KEY UPDATE on
+  // the same row — so a ban landing concurrently cannot be raced past. (A transaction alone was NOT
+  // enough: a plain SELECT on cleanup_bans locks nothing, so a removal could commit between this probe
+  // and this insert and leave the target both banned and a member.)
+  //
+  // Outcomes: "not_found" (no such cleanup — the route 404s), "banned" (a cleanup_bans row exists — the
+  // service 403s and NO membership row is written), "joined" (membership present, whether newly inserted
+  // or already there).
+  joinCleanupTx(cleanupId: string, userId: string): Promise<"joined" | "not_found" | "banned">
   // Delete a cleanup_members row. Returns true when the cleanup exists. Deleting a non-existent membership
   // on an existing cleanup is an idempotent no-op that still returns true.
   leaveCleanup(cleanupId: string, userId: string): Promise<boolean>
-  // Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a 'cancel' cleanup_timeline row + fan
-  // out a notification row to EVERY other member (set-based INSERT ... SELECT). Returns false when the
-  // cleanup does not exist. The service composes ALL user-facing copy — the timeline `note` and the
-  // notification `body` — and passes them in; the repo only persists (layer separation). `reason` is the
-  // raw operator-supplied reason (kept for the fake's observable contract).
+  // Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a 'cancel' cleanup_timeline row.
+  // The service composes ALL user-facing copy — the timeline `note` and the notification `body` — and
+  // passes them in; the repo only persists (layer separation). `reason` is the raw operator-supplied
+  // reason (kept for the fake's observable contract).
+  //
+  // The outcome distinguishes a FRESH transition from a repeat: this used to return a bare boolean that
+  // was true both for "cancelled" and for "was already cancelled", and the caller fanned the attendee
+  // bell out unconditionally — so re-cancelling in a loop pushed every attendee's lock screen on every
+  // pass. Only "cancelled" writes the timeline row, and only "cancelled" earns a bell.
+  //
+  // L24: this used to ALSO fan a notifications row out to every member with a raw set-based INSERT,
+  // bypassing NotificationService (no prefs, no quiet hours, no locale, no user-channel signal). That
+  // fan-out now lives in cleanup-service.cancelCleanup and rides the real pipeline; the transaction is
+  // reserved for the two writes that genuinely have to be atomic.
   cancelCleanupTx(
     id: string,
     input: { note: string; body: string; reason: string | null; actorId: string },
-  ): Promise<boolean>
+  ): Promise<CancelCleanupOutcome>
   // The attendee roster: cleanup_members joined to their (non-deleted) user, with the viewer's
   // `isFollowing` per row. Ordered organizer-first then by join time. `onlyFollowed` restricts the roster.
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>

@@ -5,7 +5,8 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, paginate } from "./pagination.js"
+import { isUuid } from "../../db/cursor-helpers.js"
+import { pageInMemoryById } from "./pagination.js"
 import type {
   AdminReporterRecord,
   AdminReportMediaRecord,
@@ -15,12 +16,12 @@ import type {
   AdminReportTimelineRecord,
   ListReportsArgs,
   NotifyReporterInput,
+  ReportOutreachState,
 } from "./admin-report-service.js"
 import type {
   AdminReportCounts,
   AdminReportStatus,
   ReportCategory,
-  ReportOutreachStatus,
   ReportTimelineItem,
 } from "@civfix/shared"
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
@@ -56,6 +57,12 @@ export interface SeededOutreach {
   hasInbound: boolean
   routedTo: string | null
   routedAt: Date | null
+  /**
+   * Whether every send on the thread threw: a 'failed' mail_event and no 'sent' one (the Drizzle impl
+   * derives this in SQL). The thread is stamped 'sent' before the mailer runs, so this is the only way to
+   * tell a lost send from a real one — the route endpoint's retry gate reads it.
+   */
+  sendFailed: boolean
 }
 
 /** A seeded report plus its detail extras (routing/media/outreach) held in one place. */
@@ -148,6 +155,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
         hasInbound: input.outreach?.hasInbound ?? false,
         routedTo: input.outreach?.routedTo ?? null,
         routedAt: input.outreach?.routedAt ?? null,
+        sendFailed: input.outreach?.sendFailed ?? false,
       },
     }
     this.reports.set(id, seeded)
@@ -194,7 +202,10 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
-    return pageByCursor(rows, args.cursor, args.limit)
+    return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
+      createdAt: r.createdAt,
+      id: r.id,
+    }))
   }
 
   async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
@@ -237,15 +248,10 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     return this.reports.get(id)?.routing ?? null
   }
 
-  async getOutreach(id: string): Promise<{
-    status: ReportOutreachStatus
-    threadId: string | null
-    routedTo: string | null
-    routedAt: string | null
-  }> {
+  async getOutreach(id: string): Promise<ReportOutreachState> {
     const o = this.reports.get(id)?.outreach
     if (!o || o.threadStatus === null) {
-      return { status: "not_sent", threadId: null, routedTo: null, routedAt: null }
+      return { status: "not_sent", threadId: null, routedTo: null, routedAt: null, sendFailed: false }
     }
     return {
       // Same mapping the Drizzle impl uses (shared mapOutreachStatus), so the two repos agree.
@@ -253,6 +259,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       threadId: o.threadId,
       routedTo: o.routedTo,
       routedAt: o.routedAt ? o.routedAt.toISOString() : null,
+      sendFailed: o.sendFailed,
     }
   }
 
@@ -262,15 +269,14 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   ): Promise<void> {
     const seeded = this.reports.get(id)
     if (!seeded) return
-    // A system row at the report's current status, no actor, no audit (mirrors the Drizzle impl). The admin
-    // timeline record carries only the short `note`; `kind`/`body` (D13) are persisted to report_timeline
-    // for the PUBLIC timeline projection, not surfaced on the admin DTO, so they are accepted but not stored
-    // here (the public report-service path tests cover the kind/body projection).
-    void input.kind
+    // A system row at the report's current status, no actor, no audit (mirrors the Drizzle impl). `kind` is
+    // stored the way 0031's column is (listTimeline reads it back and the DTO prefers it); `body` is the
+    // PUBLIC timeline's full-reply text and has no admin surface, so it is accepted and not stored.
     void input.body
     this.appendTimeline(id, {
       status: seeded.record.status,
       note: input.note,
+      kind: input.kind ?? null,
       who: "system",
       createdAt: this.nextDate(),
     })
@@ -292,13 +298,13 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   ): Promise<boolean> {
     const seeded = this.reports.get(id)
     if (!seeded) return false
-    // kind/body (D13) feed the PUBLIC timeline projection, not the admin DTO, so accept-but-don't-store here.
-    void input.kind
+    // `body` (D13) feeds the PUBLIC timeline projection only; `kind` is stored like 0031's column.
     void input.body
     seeded.record.status = input.status
     this.appendTimeline(id, {
       status: input.status,
       note: input.note,
+      kind: input.kind ?? null,
       who: "operator",
       createdAt: this.nextDate(),
     })
@@ -436,33 +442,23 @@ function defaultReporter(): AdminReporterRecord {
   }
 }
 
-/** Search predicate shared by listReports + countByBucket so the chips and the list always agree. */
+/**
+ * Search predicate shared by listReports + countByBucket so the chips and the list always agree.
+ *
+ * MIRRORS searchReportsFragment (admin-report-repository.drizzle.ts) COLUMN FOR COLUMN:
+ *   `r.title ILIKE %q% OR j.name ILIKE %q% OR u.display_name ILIKE %q% OR u.handle ILIKE %q%`
+ *   `OR r.id = $q::uuid` — the id branch only when q is a uuid.
+ * Two drifts used to make search unit tests pass against behavior production does not have: the id was
+ * matched as a SUBSTRING (SQL does an exact uuid equality, so "rep-1" or a uuid prefix finds nothing), and
+ * the reporter HANDLE was not searched at all (SQL matches `u.handle::text`).
+ */
 function matchesSearch(record: AdminReportRecord, q: string): boolean {
   const needle = q.toLowerCase()
   return (
     record.title.toLowerCase().includes(needle) ||
     record.place.toLowerCase().includes(needle) ||
-    record.id.toLowerCase().includes(needle) ||
-    (record.reporter?.name.toLowerCase().includes(needle) ?? false)
+    (isUuid(q) && record.id.toLowerCase() === needle) ||
+    (record.reporter?.name.toLowerCase().includes(needle) ?? false) ||
+    (record.reporter?.handle?.toLowerCase().includes(needle) ?? false)
   )
-}
-
-/** Page a sorted array by the shared "<iso>|<id>" id-keyset cursor (one-extra-row probe). */
-function pageByCursor(
-  rows: AdminReportRecord[],
-  cursor: string | null,
-  limit: number | undefined,
-): { records: AdminReportRecord[]; nextCursor: string | null } {
-  const lim = clampLimit(limit)
-  const anchor = decodeCursor(cursor)
-  let start = 0
-  if (anchor) {
-    const idx = rows.findIndex((r) => r.id === anchor.id)
-    start = idx >= 0 ? idx + 1 : rows.length
-  }
-  const { items, nextCursor } = paginate(rows.slice(start, start + lim + 1), lim, (r) => ({
-    createdAt: r.createdAt,
-    id: r.id,
-  }))
-  return { records: items, nextCursor }
 }

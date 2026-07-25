@@ -44,7 +44,6 @@ import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import {
   makeCleanupService,
@@ -58,17 +57,18 @@ import {
   makeDrizzleChatRepository,
   type ChatRepository,
 } from "../services/chat-repository.drizzle.js"
-import { makeMediaPresigner } from "../services/media-presign.js"
-import { makeJurisdictionService } from "../services/jurisdiction-service.js"
+import { makePrivateMediaPresigner } from "../services/media-presign.js"
+import type { CounterStore } from "../abuse/counter-store.js"
+import { makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
 import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
-import { makeNotificationService } from "../services/notification-service.js"
-import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
+import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
-import { BBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
+import { chatHistoryPayload } from "./chat-route-helpers.js"
+import { CappedBBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
 
 // Optional injected cleanup-service dependencies (tests): the routes build the service from these instead
 // of the container, so the whole HTTP flow runs offline. The same repo backs the member-gated history
@@ -84,6 +84,9 @@ export interface CleanupServiceOverrides {
   // WS4: the cleanup_role bell seam (promote/demote/remove). Tests inject a recording fake; unset in a
   // test harness means "no bells" (the service treats the notifier as optional).
   notifier?: CleanupServiceDeps["notifier"]
+  // M18/M20: an in-memory CounterStore so the resource-request budget + role-change cooldown run
+  // offline. Unset in production, where the routes count through the container's shared lazy store.
+  counters?: CleanupServiceDeps["counters"]
 }
 
 declare module "fastify" {
@@ -109,7 +112,8 @@ const CleanupRefOrIdParamsSchema = z.object({ id: ReportRefOrIdSchema }).strict(
 // ListCleanupsRequest (the single source of truth) — `limit` stays a raw string here so it is coerced
 // once, by the shared schema. (NOT .strict(); the re-validation against the shared .strict() schema gates.)
 const ListCleanupsQuerySchema = z.object({
-  bbox: BBoxQueryParam.optional(),
+  // M14 area cap (./query-encoding.ts): anon-ok viewport read, same cost profile as the map pin reads.
+  bbox: CappedBBoxQueryParam.optional(),
   near: LatLngQueryParam.optional(),
   when: z.enum(["upcoming", "past", "attending"]).optional(),
   cursor: z.string().optional(),
@@ -118,10 +122,32 @@ const ListCleanupsQuerySchema = z.object({
 
 const HISTORY_DEFAULT_LIMIT = 30
 
+/**
+ * M18: per-IP caps on the two member-management mutations, which had none at all and therefore sat at
+ * the global 300/min/IP. Promote/demote rings the target's lock screen on every flip, and remove now
+ * writes a ban row, so both are cheap for the attacker and loud for the victim. Tightness matches
+ * map.routes' GEOCODER_RATE_LIMIT family; no legitimate host manages members faster than this.
+ *
+ * This limiter is per-IP and therefore evadable by rotating exits — it is the OUTER of two layers. The
+ * inner, non-evadable one is the per-(cleanup, target) role-change cooldown in cleanup-service.ts,
+ * which counts at the receiver in the shared store.
+ */
+const MEMBER_MANAGEMENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
+/**
+ * Per-IP cap on create, mirroring reports.routes' CREATE_REPORT_RATE_LIMIT (20/min). Creating an event
+ * runs the same expensive write path a report create does — the external Census lookup behind
+ * resolveJurisdictionGeoid, a lazy jurisdiction upsert, and discovery-task pressure — so it does not
+ * belong at the global 300/min. No legitimate organizer creates faster than this.
+ */
+const CREATE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
 export async function registerCleanupRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   function repo(): CleanupRepository {
     const overrides = app.cleanupOverrides
     if (overrides) return overrides.repo
@@ -132,15 +158,31 @@ export async function registerCleanupRoutes(
   // the pin rail reads the chat REPOSITORY (pins live on message rows). An injected chatOverrides.chatRepo
   // wins; else the lazily-built Drizzle repo — except under USE_FAKE_CHAT (offline dev, no DB), where
   // there is no chat repo at all and the initial page simply omits the `pins` key.
+  //
+  // H9: PRIVATE presigner, like every other chat/DM/group/report chat-repo construction site. Pins
+  // hydrate real message attachments, and GET /cleanups/:id/messages returns them alongside the signed
+  // `items` — so a public presigner here would hand back a member-only pinned photo as a permanent,
+  // unauthenticated CDN URL (R2_PUBLIC_BASE), which leaving, removal or deletion could never revoke.
   let pinsChatRepo: ChatRepository | undefined
   function pinsRepo(): ChatRepository | null {
     if (app.chatOverrides?.chatRepo) return app.chatOverrides.chatRepo
     if (container.env.USE_FAKE_CHAT) return null
     return (pinsChatRepo ??= makeDrizzleChatRepository(
       container.getDb().sql,
-      makeMediaPresigner(container.storage),
+      makePrivateMediaPresigner(container.storage),
     ))
   }
+
+  // The shared (Redis) abuse counter behind the cleanup service's resource-request budget and
+  // role-change cooldown: container.getCounterStore(), the ONE process-wide lazy wrapper (di.ts), which
+  // the anon + home-turf caps count through as well.
+  //
+  // Lazy matters here: only the MUTATION paths (resource requests, role changes) ever count, but service()
+  // is rebuilt for every request including the anon-ok reads — and container.getRedis() THROWS when
+  // REDIS_URL is empty. The wrapper resolves its client on the first actual incr, so a read touches Redis
+  // not at all; a mutation on a Redis-less boot still fails closed (the throw becomes a 500) instead of
+  // getting a free budget.
+  const lazyCounters: CounterStore = container.getCounterStore()
 
   function service(): CleanupService {
     const overrides = app.cleanupOverrides
@@ -162,16 +204,7 @@ export async function registerCleanupRoutes(
       ...(overrides
         ? {}
         : {
-            resolveJurisdictionGeoid: async (lat: number, lng: number) => {
-              const jurisdiction = makeJurisdictionService({
-                sql: container.getDb().sql,
-                geocoder: container.geocoder,
-                jobs: container.jobs,
-                jurisdictionLookup: container.jurisdictionLookup,
-              })
-              const resolved = await jurisdiction.resolveForPoint(lat, lng)
-              return resolved?.geoid ?? null
-            },
+            resolveJurisdictionGeoid: makeGeoidResolver(container),
             resolveJurisdictionCode: (geoid: string | null) =>
               resolveJurisdictionCode(container.getDb().sql, geoid),
             // Event resource-request (D19): the outbound-mail seam (per-event thread) + the identity-
@@ -188,22 +221,23 @@ export async function registerCleanupRoutes(
               makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
             // WS4 cleanup_role bells (promote/demote/remove) ride the real notification pipeline
             // (in-app row + push + user-channel signal), same wiring as social.routes' notifier.
-            notifier: makeNotificationService({
-              repo: makeDrizzleNotificationRepository(container.getDb().sql),
-              pushSender: container.pushSender,
-              userChannel: container.userChannel,
-              logger: app.log,
-            }),
+            notifier: makeRouteNotificationService(container, app.log),
+            // M18/M20: the SHARED abuse budget behind the resource-request caps and the role-change
+            // cooldown. Both were in-process Maps, so every pod carried its own allowance and a deploy
+            // reset it — which is exactly what made the municipal-email relay (M20) work. The container's
+            // shared wrapper resolves its Redis client lazily, so merely mounting the plugin opens nothing.
+            counters: lazyCounters,
           }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
       ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
       ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      ...(overrides?.counters !== undefined ? { counters: overrides.counters } : {}),
       logger: app.log,
     })
   }
 
-  route(app, "createCleanup", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "createCleanup", { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(CreateCleanupRequestSchema, request.body)
     const dto: CleanupDTO = await service().createCleanup(body, userId)
@@ -248,7 +282,7 @@ export async function registerCleanupRoutes(
   // WS4 (D3): organizer-only promote/demote — PATCH /cleanups/:id/members/:userId. Path params are
   // merged into the body BEFORE parsing (the CancelCleanupRequest pattern: the typed client extracts
   // both into the path, the route reconciles them back). The service enforces the whole matrix.
-  route(app, "setCleanupMemberRole", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "setCleanupMemberRole", { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } }, async (request, reply) => {
     const actorId = requireAuth(request)
     const { id, userId } = parse(MemberParamsSchema, request.params)
     const body = parse(SetMemberRoleRequestSchema, { ...(request.body as object), id, userId })
@@ -264,7 +298,7 @@ export async function registerCleanupRoutes(
   // WS4 (D3): remove an attendee — DELETE /cleanups/:id/members/:userId (organizer: cohosts+members;
   // cohost: plain members only; the organizer is irremovable). Same path-param merge; a DELETE body is
   // typically absent, and `{ ...(null|undefined) }` spreads to {} so the merge stays safe.
-  route(app, "removeCleanupMember", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "removeCleanupMember", { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } }, async (request, reply) => {
     const actorId = requireAuth(request)
     const { id, userId } = parse(MemberParamsSchema, request.params)
     const body = parse(RemoveMemberRequestSchema, { ...(request.body as object), id, userId })
@@ -330,22 +364,22 @@ export async function registerCleanupRoutes(
 
     const limit = q.limit ?? HISTORY_DEFAULT_LIMIT
     // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together).
-    // Pins (P3) ride ONLY the initial page (no before, no around) — see report-chat.routes.ts. Absent
-    // entirely when no chat repo is reachable (offline dev path).
-    const isInitialPage = q.before === undefined && q.around === undefined
-    const repoForPins = isInitialPage ? pinsRepo() : null
-    const [page, pins] = await Promise.all([
-      container.chatService.history(id, q.before, limit, userId, q.around),
-      repoForPins !== null ? repoForPins.listPins(id, userId) : Promise.resolve(undefined),
-    ])
-    // prevCursor is ABSENT on before-mode pages (byte-identical to pre-2.4 responses) and always
-    // present — possibly null (window reaches the live head) — on around-mode pages.
-    const payload: ChatHistoryResponse = {
-      items: page.items,
-      nextCursor: page.nextCursor,
-      ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
-      ...(pins !== undefined ? { pins } : {}),
-    }
+    // The page contract — pins on the INITIAL page only, prevCursor absent in before-mode and always
+    // present (possibly null) in around-mode — lives in chatHistoryPayload, shared with the report /
+    // group / dm history routes. This room is the reason `listPins` is optional there: its ITEMS come
+    // from container.chatService while its pin rail needs the chat REPOSITORY, which the offline dev path
+    // has none of. The source is resolved HERE rather than inside listPins so a paged read never builds
+    // the Drizzle pin repo at all.
+    const pinsSource = q.before === undefined && q.around === undefined ? pinsRepo() : null
+    const payload: ChatHistoryResponse = await chatHistoryPayload(
+      {
+        history: (before, pageLimit, around) =>
+          container.chatService.history(id, before, pageLimit, userId, around),
+        ...(pinsSource !== null ? { listPins: () => pinsSource.listPins(id, userId) } : {}),
+      },
+      q,
+      limit,
+    )
     reply.status(200).send(payload)
   })
 }

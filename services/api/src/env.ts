@@ -44,6 +44,16 @@ export {
 const DEV_SESSION_SIGNING_KEY = "dev-insecure-session-signing-key-do-not-use-in-prod"
 const DEV_ANON_TOKEN_SIGNING_KEY = "dev-insecure-anon-token-signing-key-do-not-use-in-prod"
 
+/**
+ * Minimum length of REVIEWER_OTP_CODE. The reviewer bypass is an authentication bypass, so its code is
+ * held to secret-material standards (not OTP standards): long enough that online guessing is hopeless even
+ * with the route's rate limit removed. auth-services re-checks this before wiring the bypass at all.
+ */
+export const REVIEWER_OTP_CODE_MIN_LENGTH = 20
+
+/** sslmode values that actually negotiate TLS. `prefer`/`allow`/`disable` are silent-plaintext modes. */
+const TLS_SSLMODES = new Set(["require", "verify-ca", "verify-full"])
+
 const TILES_MIN_ZOOM_DEFAULT = 1
 const TILES_MAX_ZOOM_DEFAULT = 19
 const TILES_BOUNDS_DEFAULT: [number, number, number, number] = [-125, 24, -66, 50]
@@ -157,12 +167,57 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     if (ANON_TOKEN_SIGNING_KEY.length === 0) ANON_TOKEN_SIGNING_KEY = DEV_ANON_TOKEN_SIGNING_KEY
   }
 
+  // M15: Postgres must speak TLS in production. postgres.js defaults to ssl:false and will happily send
+  // credentials + every row in cleartext, so the ONLY thing standing between us and a plaintext link is
+  // the connection string. Require an sslmode that actually negotiates TLS (db/client.ts then turns that
+  // sslmode into an explicit postgres() `ssl` option). Not enforced outside production: local dev and the
+  // testcontainers integration suite connect to a loopback container with no TLS at all.
+  if (isProd && DATABASE_URL.length > 0 && !TLS_SSLMODES.has(sslModeOf(DATABASE_URL) ?? "")) {
+    errors.push(
+      "DATABASE_URL: production requires TLS — append ?sslmode=require (or verify-ca / verify-full); " +
+        "postgres.js otherwise connects in cleartext",
+    )
+  }
+
   const TRUST_PROXY = parseTrustProxy(source.TRUST_PROXY)
+  // L20: `TRUST_PROXY=true` tells Fastify to believe ANY X-Forwarded-For, so every request.ip becomes
+  // attacker-chosen and every per-IP control (rate limits, OTP caps, anon report caps, audit IPs) is
+  // defeated by a header. There is no legitimate production shape for it: name the real proxy CIDRs, or
+  // use a hop count. Rejected at boot rather than warned about, because the failure is silent.
+  if (isProd && TRUST_PROXY === true) {
+    errors.push(
+      "TRUST_PROXY: must not be `true` in production (it trusts any client-supplied X-Forwarded-For). " +
+        "Use a hop count (e.g. 1) or an explicit CIDR list; leave unset for the safe internal-ranges default",
+    )
+  }
 
   const R2_ACCOUNT_ID = reqStr("R2_ACCOUNT_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
   const R2_ACCESS_KEY_ID = reqStr("R2_ACCESS_KEY_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
   const R2_SECRET_ACCESS_KEY = reqStr("R2_SECRET_ACCESS_KEY", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
   const R2_BUCKET = reqStr("R2_BUCKET", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
+
+  // H10: the inbound-mail buffer holds raw .eml bodies and every emailed attachment — citizen<->city
+  // correspondence. R2_PUBLIC_BASE makes objects in the media bucket addressable on the CDN with NO
+  // signature, so sharing one bucket between media and inbound mail publishes that correspondence at a
+  // guessable URL. Two invariants, checked whenever storage is real:
+  //   (1) R2_PUBLIC_BASE set  => R2_INBOUND_BUCKET is required (it is only [OPT] while nothing is public);
+  //   (2) the two buckets must never be the same name.
+  const R2_INBOUND_BUCKET = (source.R2_INBOUND_BUCKET ?? "").trim()
+  const R2_PUBLIC_BASE = (source.R2_PUBLIC_BASE ?? "").trim()
+  if (!fakeFlags.USE_FAKE_STORAGE) {
+    if (R2_PUBLIC_BASE.length > 0 && R2_INBOUND_BUCKET.length === 0) {
+      errors.push(
+        "R2_INBOUND_BUCKET: required [BOOT] whenever R2_PUBLIC_BASE is set — a shared bucket would " +
+          "publish raw inbound email and its attachments on the public CDN",
+      )
+    }
+    if (R2_INBOUND_BUCKET.length > 0 && R2_INBOUND_BUCKET === R2_BUCKET) {
+      errors.push(
+        "R2_INBOUND_BUCKET: must be a DIFFERENT bucket from R2_BUCKET (inbound mail must never live in " +
+          "the media bucket)",
+      )
+    }
+  }
 
   const OCI_EMAIL_SMTP_HOST = reqStr("OCI_EMAIL_SMTP_HOST", { gatedOff: fakeFlags.USE_FAKE_MAILER })
   const OCI_EMAIL_SMTP_PORT = reqPort("OCI_EMAIL_SMTP_PORT", 587)
@@ -171,6 +226,40 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
   const OUTREACH_DIGEST_CRON = reqCron("OUTREACH_DIGEST_CRON", "0 14 * * *")
   const INBOUND_SWEEP_CRON = reqCron("INBOUND_SWEEP_CRON", "*/5 * * * *")
+
+  // C1: the reviewer-OTP bypass is a full authentication bypass (it mints a real 30-day session for a
+  // fixed address with no mailbox proof). It therefore defaults OFF everywhere — the old default-ON
+  // shipped a universal login backdoor to production — and production additionally demands a second,
+  // deliberate opt-in plus a real secret. Same fail-closed idiom as the signing keys above: aggregate an
+  // error and refuse to boot rather than degrade silently to "backdoor open".
+  // H1 TRANSITION: mandatory server-issued sign-in nonces for the NATIVE Apple/Google flows. Defaults OFF
+  // because no shipped mobile build sends a nonce yet and flipping it on would 422 every installed app's
+  // sign-in until an EAS build cleared App Store review. A nonce that IS presented is always validated,
+  // so updated clients are protected immediately; flip this to true once they are the store floor.
+  const OAUTH_REQUIRE_NONCE = parseBool(source.OAUTH_REQUIRE_NONCE, false)
+  const REVIEWER_OTP_BYPASS = parseBool(source.REVIEWER_OTP_BYPASS, false)
+  const REVIEWER_OTP_BYPASS_ACK = parseBool(source.REVIEWER_OTP_BYPASS_ACK, false)
+  const REVIEWER_OTP_CODE = (source.REVIEWER_OTP_CODE ?? "").trim()
+  if (REVIEWER_OTP_CODE.length > 0 && REVIEWER_OTP_CODE.length < REVIEWER_OTP_CODE_MIN_LENGTH) {
+    errors.push(
+      `REVIEWER_OTP_CODE: must be at least ${REVIEWER_OTP_CODE_MIN_LENGTH} characters ` +
+        "(it is a login secret, not a 6-digit OTP)",
+    )
+  }
+  if (isProd && REVIEWER_OTP_BYPASS) {
+    if (!REVIEWER_OTP_BYPASS_ACK) {
+      errors.push(
+        "REVIEWER_OTP_BYPASS: refusing to enable an authentication bypass in production without the " +
+          "explicit second opt-in REVIEWER_OTP_BYPASS_ACK=true",
+      )
+    }
+    if (REVIEWER_OTP_CODE.length === 0) {
+      errors.push(
+        "REVIEWER_OTP_CODE: required whenever REVIEWER_OTP_BYPASS is on in production (a per-review, " +
+          `rotated secret of at least ${REVIEWER_OTP_CODE_MIN_LENGTH} characters)`,
+      )
+    }
+  }
 
   if (errors.length > 0) {
     const header =
@@ -220,8 +309,18 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
     CF_ACCESS_SERVICE_TOKENS: parseCsv(source.CF_ACCESS_SERVICE_TOKENS),
 
-    // Reviewer-OTP bypass (App Review): ON by default; set REVIEWER_OTP_BYPASS=false to disable.
-    REVIEWER_OTP_BYPASS: parseBool(source.REVIEWER_OTP_BYPASS, true),
+    // L16: hostnames a Turnstile token may have been minted on. Lowercased (hostnames are
+    // case-insensitive and abuse-checks compares normalized), and EMPTY is a valid configuration — the
+    // hostname assertion is then skipped with a one-time notice rather than refusing every token, so
+    // adding the variable cannot brick an existing deployment's captcha.
+    CF_TURNSTILE_HOSTNAMES: parseCsvLower(source.CF_TURNSTILE_HOSTNAMES),
+
+    // Reviewer-OTP bypass (App Review): OFF by default in EVERY environment; see the C1 block above for
+    // the production opt-in pair (REVIEWER_OTP_BYPASS_ACK + REVIEWER_OTP_CODE) it additionally requires.
+    OAUTH_REQUIRE_NONCE,
+    REVIEWER_OTP_BYPASS,
+    REVIEWER_OTP_BYPASS_ACK,
+    ...(REVIEWER_OTP_CODE.length > 0 ? { REVIEWER_OTP_CODE } : {}),
 
     ...optGroup(source, [
       "R2_INBOUND_BUCKET",
@@ -265,6 +364,21 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
 
   return env
+}
+
+/**
+ * Extract the lowercased `sslmode` query parameter from a Postgres connection string, or undefined when
+ * the URL is unparseable or carries no sslmode. Kept tolerant (never throws): a malformed DATABASE_URL is
+ * already reported by the connection attempt, and here a missing/unreadable sslmode simply means "no TLS
+ * was requested", which is exactly what the production check rejects.
+ */
+export function sslModeOf(databaseUrl: string): string | undefined {
+  try {
+    const value = new URL(databaseUrl).searchParams.get("sslmode")
+    return value === null ? undefined : value.trim().toLowerCase()
+  } catch {
+    return undefined
+  }
 }
 
 /** Build a partial object of the present optional string keys, trimming values (blank/absent omitted). */

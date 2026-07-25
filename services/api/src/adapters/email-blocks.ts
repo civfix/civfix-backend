@@ -18,9 +18,13 @@ function htmlText(value: string): string {
   return escapeHtml(value).replace(/\n/g, "<br>")
 }
 
+// Every element that inlines a light-theme color also carries the matching cv-* class, which the layout's
+// prefers-color-scheme:dark media query recolors (see email-layout.ts). Without the class the inlined
+// near-black ink stays near-black on the dark card and the text is unreadable.
+
 export function heading(text: string): EmailBlock {
   return {
-    html: `<h2 style="margin:18px 0 8px;font-family:${FONT};font-size:15px;line-height:1.3;font-weight:700;color:${INK};">${escapeHtml(text)}</h2>`,
+    html: `<h2 class="cv-ink" style="margin:18px 0 8px;font-family:${FONT};font-size:15px;line-height:1.3;font-weight:700;color:${INK};">${escapeHtml(text)}</h2>`,
     text,
   }
 }
@@ -28,19 +32,25 @@ export function heading(text: string): EmailBlock {
 export function paragraph(text: string, opts: { muted?: boolean } = {}): EmailBlock {
   const color = opts.muted ? INK3 : INK2
   const size = opts.muted ? "13px" : "15px"
+  const inkClass = opts.muted ? "cv-ink3" : "cv-ink2"
   return {
-    html: `<p style="margin:0 0 14px;font-family:${FONT};font-size:${size};line-height:1.55;color:${color};">${htmlText(text)}</p>`,
+    html: `<p class="${inkClass}" style="margin:0 0 14px;font-family:${FONT};font-size:${size};line-height:1.55;color:${color};">${htmlText(text)}</p>`,
     text,
   }
 }
 
 export function kvTable(rows: Array<[string, string]>): EmailBlock {
   const cells = rows
-    .map(
-      ([label, value], i) =>
-        `<tr><td style="padding:7px 12px 7px 0;font-family:${FONT};font-size:13px;color:${INK3};font-weight:600;white-space:nowrap;vertical-align:top;border-bottom:${i < rows.length - 1 ? `1px solid ${BORDER}` : "none"};">${escapeHtml(label)}</td>` +
-        `<td style="padding:7px 0;font-family:${FONT};font-size:14px;color:${INK};vertical-align:top;border-bottom:${i < rows.length - 1 ? `1px solid ${BORDER}` : "none"};">${htmlText(value)}</td></tr>`,
-    )
+    .map(([label, value], i) => {
+      // The hairline divider between rows is dark-mode-recolored via cv-rule; the last row has none.
+      const ruled = i < rows.length - 1
+      const rule = ruled ? `1px solid ${BORDER}` : "none"
+      const ruleClass = ruled ? " cv-rule" : ""
+      return (
+        `<tr><td class="cv-ink3${ruleClass}" style="padding:7px 12px 7px 0;font-family:${FONT};font-size:13px;color:${INK3};font-weight:600;white-space:nowrap;vertical-align:top;border-bottom:${rule};">${escapeHtml(label)}</td>` +
+        `<td class="cv-ink${ruleClass}" style="padding:7px 0;font-family:${FONT};font-size:14px;color:${INK};vertical-align:top;border-bottom:${rule};">${htmlText(value)}</td></tr>`
+      )
+    })
     .join("")
   const pad = Math.max(...rows.map(([label]) => label.length)) + 2
   const text = rows.map(([label, value]) => `${(label + ":").padEnd(pad)}${value}`).join("\n")
@@ -52,7 +62,7 @@ export function kvTable(rows: Array<[string, string]>): EmailBlock {
 
 export function quote(text: string): EmailBlock {
   return {
-    html: `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 14px;"><tr><td style="padding:10px 14px;background:${tokens.color.neutral.paper2};border-left:3px solid ${BORDER};font-family:${FONT};font-size:14px;line-height:1.55;color:${INK2};">${htmlText(text)}</td></tr></table>`,
+    html: `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 14px;"><tr><td class="cv-panel cv-ink2" style="padding:10px 14px;background:${tokens.color.neutral.paper2};border-left:3px solid ${BORDER};font-family:${FONT};font-size:14px;line-height:1.55;color:${INK2};">${htmlText(text)}</td></tr></table>`,
     text: text
       .split("\n")
       .map((line) => `> ${line}`)
@@ -73,7 +83,7 @@ export function button(href: string, label: string): EmailBlock {
 
 export function code(value: string): EmailBlock {
   return {
-    html: `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 16px;"><tr><td style="padding:14px 24px;background:${tokens.color.neutral.paper2};border-radius:10px;font-family:${FONT};font-size:30px;font-weight:700;letter-spacing:6px;color:${INK};">${escapeHtml(value)}</td></tr></table>`,
+    html: `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 16px;"><tr><td class="cv-panel cv-ink" style="padding:14px 24px;background:${tokens.color.neutral.paper2};border-radius:10px;font-family:${FONT};font-size:30px;font-weight:700;letter-spacing:6px;color:${INK};">${escapeHtml(value)}</td></tr></table>`,
     text: value,
   }
 }
@@ -82,11 +92,11 @@ export function linkList(label: string, items: Array<{ label: string; href: stri
   const lis = items
     .map(
       (it) =>
-        `<li style="margin:0 0 4px;font-family:${FONT};font-size:14px;"><a href="${escapeHtml(it.href)}" style="color:${LINK};">${escapeHtml(it.label)}</a></li>`,
+        `<li class="cv-ink2" style="margin:0 0 4px;font-family:${FONT};font-size:14px;"><a class="cv-link" href="${escapeHtml(it.href)}" style="color:${LINK};">${escapeHtml(it.label)}</a></li>`,
     )
     .join("")
   return {
-    html: `<p style="margin:0 0 6px;font-family:${FONT};font-size:13px;color:${INK3};font-weight:600;">${escapeHtml(label)}</p><ul style="margin:0 0 14px;padding-left:20px;">${lis}</ul>`,
+    html: `<p class="cv-ink3" style="margin:0 0 6px;font-family:${FONT};font-size:13px;color:${INK3};font-weight:600;">${escapeHtml(label)}</p><ul style="margin:0 0 14px;padding-left:20px;">${lis}</ul>`,
     text: `${label}:\n${items.map((it) => `  ${it.label}: ${it.href}`).join("\n")}`,
   }
 }

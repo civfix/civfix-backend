@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 
@@ -59,6 +59,11 @@ async function insertCleanup(
 }
 
 describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAndAnonymize)", () => {
+  // Release this file's pools + drop its database (the shared container itself is globalSetup's).
+  afterAll(async () => {
+    await pg?.teardown()
+  })
+
   it("unlists the deleted user's public reports + active events, sparing others and past events", async () => {
     const h = pg!
     const victim = await insertUser(h, "Victim")

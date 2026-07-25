@@ -15,8 +15,11 @@ const ABS_FORMAT = new Intl.DateTimeFormat("en-US", {
   minute: "2-digit",
 })
 
-/** Format one Date into the design's absolute label, or "-" when null. */
-export function absoluteLabel(date: Date | null): string {
+/**
+ * Format one Date into the design's absolute label, or "-" when null. MODULE-PRIVATE: `toRelAbs` is the
+ * only supported surface, so no caller can render an `abs` without its paired `rel`.
+ */
+function absoluteLabel(date: Date | null): string {
   if (date === null) return "-"
   const t = date.getTime()
   if (Number.isNaN(t)) return "-"

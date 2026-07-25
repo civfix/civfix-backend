@@ -1,15 +1,13 @@
 // Composable SQL fragments + the row->record projector for the Drizzle admin-event repo. Extracted so the
 // repo file holds query orchestration only and the flagged/search expressions have ONE definition each.
 
-import type postgres from "postgres"
 import type { Queryable } from "../../db/client.js"
 import { isUuid } from "../../db/cursor-helpers.js"
-import { likeContains } from "./like.js"
+import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { personSelect, toPersonRecord } from "./admin-person.js"
 import { toEventStatus } from "./event-status.js"
 import type { AdminEventRecord, AdminOrganizerRecord } from "./admin-event-service.js"
 import type { EventKind } from "@civfix/shared"
-
-export type SqlFragment = postgres.Fragment
 
 // The "is flagged" boolean: the most recent cleanup_timeline flag/unflag row is a 'flag'. The ONE
 // definition — eventSelect + countByBucket both build their flagged column/filter from this so they can't
@@ -28,16 +26,13 @@ export function flaggedEventExpr(sql: Queryable): SqlFragment {
 // listEvents + countByBucket. Assumes the query selects `cleanups c` LEFT JOIN `users u`. Empty when null.
 export function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
-  // Escape LIKE metacharacters so %/_ in q match literally (wildcard injection / trigram-index DoS).
-  const like = likeContains(q)
-  const idBranch = isUuid(q) ? sql`OR c.id = ${q}::uuid` : sql``
-  return sql`AND (
-    c.title ILIKE ${like} ESCAPE '\\'
-    OR c.address ILIKE ${like} ESCAPE '\\'
-    ${idBranch}
-    OR u.display_name ILIKE ${like} ESCAPE '\\'
-    OR (u.handle::text) ILIKE ${like} ESCAPE '\\'
-  )`
+  // ilikeAnyOf escapes the LIKE metacharacters so %/_ in q match literally (wildcard injection/trigram DoS).
+  return sql`AND ${ilikeAnyOf(
+    sql,
+    [sql`c.title`, sql`c.address`, sql`u.display_name`, sql`u.handle::text`],
+    q,
+    isUuid(q) ? [sql`c.id = ${q}::uuid`] : [],
+  )}`
 }
 
 // A cleanups list/detail row as selected back (geom decoded, organizer joined, aggregates computed).
@@ -66,17 +61,17 @@ export interface EventRowSelect {
 }
 
 export function toRecord(r: EventRowSelect): AdminEventRecord {
-  const organizer: AdminOrganizerRecord | null =
-    r.organizer_id !== null
-      ? {
-          id: r.organizer_id,
-          name: r.organizer_name ?? "Organizer",
-          handle: r.organizer_handle,
-          emailVerified: r.organizer_email_verified ?? false,
-          hasOauth: r.organizer_has_oauth ?? false,
-          joinedAt: r.organizer_joined,
-        }
-      : null
+  const organizer: AdminOrganizerRecord | null = toPersonRecord(
+    {
+      id: r.organizer_id,
+      name: r.organizer_name,
+      handle: r.organizer_handle,
+      emailVerified: r.organizer_email_verified,
+      hasOauth: r.organizer_has_oauth,
+      joinedAt: r.organizer_joined,
+    },
+    "Organizer",
+  )
   return {
     id: r.id,
     // Map the stored Phase-1 cleanups.status -> the Phase-2 EventStatus DTO (H1); defensive so a legacy
@@ -122,12 +117,7 @@ export function eventSelect(
       ST_Y(c.geom) AS lat,
       ST_X(c.geom) AS lng,
       c.scheduled_at,
-      u.id AS organizer_id,
-      u.display_name AS organizer_name,
-      u.handle AS organizer_handle,
-      u.email_verified AS organizer_email_verified,
-      EXISTS (SELECT 1 FROM oauth_identities oi WHERE oi.user_id = u.id) AS organizer_has_oauth,
-      u.created_at AS organizer_joined
+      ${personSelect(sql, "u", "organizer")}
     FROM cleanups c
     LEFT JOIN users u ON u.id = c.organizer_user_id
     WHERE true

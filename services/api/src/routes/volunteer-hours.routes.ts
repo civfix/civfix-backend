@@ -10,7 +10,6 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import {
   makeVolunteerHoursService,
   type CleanupHoursLookup,
@@ -41,6 +40,8 @@ export async function registerVolunteerHoursRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   function repo(): VolunteerHoursRepository {
     const overrides = app.volunteerOverrides
     if (overrides) return overrides.repo

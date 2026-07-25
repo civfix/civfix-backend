@@ -41,6 +41,32 @@ export function parseTimeOfDayMinutes(value: string): number | null {
   return hours * 60 + mins
 }
 
+/**
+ * Whether `now` falls inside the quiet window [start, end) — wrapping past midnight when start > end.
+ * Either bound null (or unparseable), or start == end, means "no quiet hours" (never suppress).
+ *
+ * KNOWN LIMITATION — the window is evaluated in UTC, not the user's local time.
+ *
+ * quiet_start/quiet_end are pg `time` values: a time of day with NO zone. The client collects them from
+ * a local-time picker, so "22:00–07:00" means 22:00 local to the person who set it, while the comparison
+ * below is against now.getUTCHours(). For a Los Angeles user that suppresses push roughly 15:00–00:00
+ * local instead of overnight — the feature is not merely inert, it is wrong in both directions.
+ *
+ * This is NOT fixable inside this function, because the server is never told the zone: notification_prefs
+ * has no tz/utc-offset column (src/db/schema/notification_prefs.ts), the frozen @civfix/shared QuietHours
+ * schema carries only { start, end }, and users.locale ("en"/"es"/"de"/"ko") does not imply a zone. Nor
+ * can it be inferred from other data — a user's reports pin a place, not their own zone, and guessing
+ * would silently mis-suppress notifications.
+ *
+ * Closing it requires a contract + migration change, one of:
+ *   1. add `tz` (IANA name) to notification_prefs + QuietHours, and evaluate with Intl.DateTimeFormat in
+ *      that zone — the only option that survives DST, and the recommended one; or
+ *   2. define QuietHours as UTC on the wire and convert client-side — no migration, but it silently
+ *      breaks twice a year for every DST zone and re-interprets rows already stored as local time.
+ * Until then this stays UTC-anchored (deterministic regardless of the pod's TZ env) rather than pretending
+ * to a precision it does not have. Failing OPEN (delivering) is the deliberate default: a suppressed bell
+ * is data the user never learns existed.
+ */
 export function isWithinQuietHours(
   now: Date,
   start: string | null,

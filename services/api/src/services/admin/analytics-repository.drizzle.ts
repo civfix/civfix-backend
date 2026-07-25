@@ -181,15 +181,28 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     },
 
     async resolutionByCategory(): Promise<CategoryMedian[]> {
+      // "Time to resolution" is measured from submission to the RESOLVED TRANSITION (the newest
+      // report_timeline row at status='resolved'), falling back to published_at only for a resolved report
+      // with no transition row (pre-timeline rows). Never now(): the previous COALESCE(published_at, now())
+      // measured publish latency, and for a resolved-but-unpublished report it grew by a day every day, so
+      // the dashboard number inflated on its own and no two page loads agreed.
+      //
+      // A resolved report with neither a transition row nor published_at contributes NOTHING (rather than a
+      // wall-clock guess): percentile_cont ignores NULLs, so the median stays over rows we can actually time.
       const rows = await sql<{ category: ReportCategory; median_hours: string | null }[]>`
         SELECT
-          category,
+          r.category,
           percentile_cont(0.5) WITHIN GROUP (
-            ORDER BY EXTRACT(EPOCH FROM (COALESCE(published_at, now()) - created_at)) / 3600.0
+            ORDER BY EXTRACT(EPOCH FROM (COALESCE(t.resolved_at, r.published_at) - r.created_at)) / 3600.0
           )::text AS median_hours
-        FROM reports
-        WHERE deleted_at IS NULL AND status = 'resolved' AND visibility = 'public'
-        GROUP BY category
+        FROM reports r
+        LEFT JOIN LATERAL (
+          SELECT MAX(rt.created_at) AS resolved_at
+          FROM report_timeline rt
+          WHERE rt.report_id = r.id AND rt.status = 'resolved'
+        ) t ON true
+        WHERE r.deleted_at IS NULL AND r.status = 'resolved' AND r.visibility = 'public'
+        GROUP BY r.category
       `
       return rows.map((r) => ({ category: r.category, medianHours: num(r.median_hours) }))
     },

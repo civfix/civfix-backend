@@ -1,10 +1,10 @@
 
-import type postgres from "postgres"
 import type { ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
-import { decodeCursor, clampLimit } from "./pagination.js"
-import { likeContains } from "./like.js"
+import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { ADMIN_CATEGORIES } from "./category-counts.js"
+import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import {
   type CreateModerationItemInput,
   type ListModerationArgs,
@@ -14,7 +14,6 @@ import {
   type ModerationUserSnapshot,
 } from "./moderation-service.js"
 
-type SqlFragment = postgres.Fragment
 
 const MEDIA_URL_PREFIX = "/media/"
 
@@ -26,59 +25,43 @@ function itemColumns(sql: Queryable): SqlFragment {
 }
 
 /**
- * Resolve only destinations backed by an admin detail page. A chat message may belong to a report,
- * cleanup event, or standalone group; media may point directly at a report or inherit its chat parent.
+ * The admin-page destination for a subject that is NOT its own destination: a chat message belongs to a
+ * report, a cleanup event, or a standalone group (no page); media points at a report directly or inherits
+ * its chat parent. Direct subjects (report/event/user/profile) resolve with no query at all — see
+ * resolveDestination.
+ *
+ * ONE subquery per row instead of two. The kind and the id used to be fetched by two near-identical
+ * correlated subqueries over the same row (each with a pointless ORDER BY on a primary-key equality
+ * lookup), doubling the per-row work on every list page. They can never disagree — the kind IS whichever
+ * id resolved — so the pair travels as one '<kind>:<uuid>' string and is split in TS (a uuid holds no ':').
  */
-function destinationColumns(sql: Queryable): SqlFragment {
+function destinationRefColumn(sql: Queryable): SqlFragment {
   return sql`
     CASE
-      WHEN subject_type = 'report' THEN 'report'
-      WHEN subject_type = 'event' THEN 'event'
-      WHEN subject_type IN ('user', 'profile') THEN 'user'
       WHEN subject_type = 'chat' THEN (
         SELECT CASE
-          WHEN cm.report_id IS NOT NULL THEN 'report'
-          WHEN cm.cleanup_id IS NOT NULL THEN 'event'
+          WHEN cm.report_id IS NOT NULL THEN 'report:' || cm.report_id::text
+          WHEN cm.cleanup_id IS NOT NULL THEN 'event:' || cm.cleanup_id::text
           ELSE NULL
         END
         FROM chat_messages cm
         WHERE cm.id = moderation_items.subject_id
-        ORDER BY cm.created_at DESC
         LIMIT 1
       )
       WHEN subject_type = 'photo' THEN (
         SELECT CASE
-          WHEN ma.report_id IS NOT NULL OR cm.report_id IS NOT NULL THEN 'report'
-          WHEN cm.cleanup_id IS NOT NULL THEN 'event'
+          WHEN COALESCE(ma.report_id, cm.report_id) IS NOT NULL
+            THEN 'report:' || COALESCE(ma.report_id, cm.report_id)::text
+          WHEN cm.cleanup_id IS NOT NULL THEN 'event:' || cm.cleanup_id::text
           ELSE NULL
         END
         FROM media_assets ma
         LEFT JOIN chat_messages cm ON cm.id = ma.chat_message_id
         WHERE ma.id = moderation_items.subject_id
-        ORDER BY cm.created_at DESC NULLS LAST
         LIMIT 1
       )
       ELSE NULL
-    END AS destination_kind,
-    CASE
-      WHEN subject_type IN ('report', 'event', 'user', 'profile') THEN subject_id::text
-      WHEN subject_type = 'chat' THEN (
-        SELECT COALESCE(cm.report_id, cm.cleanup_id)::text
-        FROM chat_messages cm
-        WHERE cm.id = moderation_items.subject_id
-        ORDER BY cm.created_at DESC
-        LIMIT 1
-      )
-      WHEN subject_type = 'photo' THEN (
-        SELECT COALESCE(ma.report_id, cm.report_id, cm.cleanup_id)::text
-        FROM media_assets ma
-        LEFT JOIN chat_messages cm ON cm.id = ma.chat_message_id
-        WHERE ma.id = moderation_items.subject_id
-        ORDER BY cm.created_at DESC NULLS LAST
-        LIMIT 1
-      )
-      ELSE NULL
-    END AS destination_id
+    END AS destination_ref
   `
 }
 
@@ -98,8 +81,42 @@ interface ModerationItemRow {
   similar: unknown
   meta: unknown
   created_at: Date
-  destination_kind?: ModerationItemRecord["destinationKind"]
-  destination_id?: string | null
+  /** '<kind>:<uuid>' for a chat/photo subject; null when it has no admin page. Absent when not selected. */
+  destination_ref?: string | null
+}
+
+type Destination = { kind: ModerationItemRecord["destinationKind"]; id: string | null }
+
+const NO_DESTINATION: Destination = { kind: null, id: null }
+
+/**
+ * A subject that IS its own destination resolves in TS; a chat/photo subject resolves from the
+ * destination_ref the query fetched. A row that did not select it (the approve/remove/hold RETURNING lists
+ * only the item columns) carries no destination, exactly as before.
+ */
+function resolveDestination(row: ModerationItemRow): Destination {
+  switch (row.subject_type) {
+    case "report":
+      return { kind: "report", id: row.subject_id }
+    case "event":
+      return { kind: "event", id: row.subject_id }
+    case "user":
+    case "profile":
+      return { kind: "user", id: row.subject_id }
+    default:
+      return parseDestinationRef(row.destination_ref)
+  }
+}
+
+function parseDestinationRef(ref: string | null | undefined): Destination {
+  if (ref === null || ref === undefined) return NO_DESTINATION
+  const sep = ref.indexOf(":")
+  if (sep <= 0 || sep === ref.length - 1) return NO_DESTINATION
+  const kind = ref.slice(0, sep)
+  const id = ref.slice(sep + 1)
+  if (kind === "report") return { kind: "report", id }
+  if (kind === "event") return { kind: "event", id }
+  return NO_DESTINATION
 }
 
 interface MediaRow {
@@ -171,38 +188,20 @@ function parseMeta(raw: unknown): {
   return { reporter, reporterUserId, desc, user }
 }
 
-const CATEGORY_VALUES: readonly string[] = [
-  "trash",
-  "recycling",
-  "graffiti",
-  "hazard",
-  "encampment",
-  "water",
-  "other",
-]
-
 function toRecord(row: ModerationItemRow, media: ModerationMediaRecord[]): ModerationItemRecord {
   const meta = parseMeta(row.meta)
   const category =
-    row.category !== null && CATEGORY_VALUES.includes(row.category)
+    row.category !== null && (ADMIN_CATEGORIES as readonly string[]).includes(row.category)
       ? (row.category as ReportCategory)
       : null
-  const directDestination =
-    row.subject_type === "report"
-      ? { kind: "report" as const, id: row.subject_id }
-      : row.subject_type === "event"
-        ? { kind: "event" as const, id: row.subject_id }
-        : row.subject_type === "user" || row.subject_type === "profile"
-          ? { kind: "user" as const, id: row.subject_id }
-          : { kind: null, id: null }
+  const destination = resolveDestination(row)
   return {
     id: row.id,
     kind: row.kind,
     subjectType: row.subject_type,
     subjectId: row.subject_id,
-    destinationKind:
-      row.destination_kind === undefined ? directDestination.kind : row.destination_kind,
-    destinationId: row.destination_id === undefined ? directDestination.id : row.destination_id,
+    destinationKind: destination.kind,
+    destinationId: destination.id,
     flag: row.flag,
     reason: row.reason,
     category,
@@ -257,21 +256,22 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             : sql``
       const search =
         args.q !== null
-          ? (() => {
-              const like = likeContains(args.q)
-              return sql`AND (
-              COALESCE(flag, '') ILIKE ${like} ESCAPE '\\'
-              OR COALESCE(meta->>'reporter', '') ILIKE ${like} ESCAPE '\\'
-              OR COALESCE(reason, '') ILIKE ${like} ESCAPE '\\'
-            )`
-            })()
+          ? sql`AND ${ilikeAnyOf(
+              sql,
+              [
+                sql`COALESCE(flag, '')`,
+                sql`COALESCE(meta->>'reporter', '')`,
+                sql`COALESCE(reason, '')`,
+              ],
+              args.q,
+            )}`
           : sql``
       const keyset = anchor
         ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
         : sql``
 
       const rows = (await sql`
-        SELECT ${itemColumns(sql)}, ${destinationColumns(sql)}
+        SELECT ${itemColumns(sql)}, ${destinationRefColumn(sql)}
         FROM moderation_items
         WHERE status = 'open'
         ${facet}
@@ -285,13 +285,14 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       const page = hasMore ? rows.slice(0, limit) : rows
       const records = page.map((r) => toRecord(r, []))
       const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? `${last.created_at.toISOString()}|${last.id}` : null
+      const nextCursor =
+        hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null
       return { records, nextCursor }
     },
 
     async getItem(id: string): Promise<ModerationItemRecord | null> {
       const rows = (await sql`
-        SELECT ${itemColumns(sql)}, ${destinationColumns(sql)}
+        SELECT ${itemColumns(sql)}, ${destinationRefColumn(sql)}
         FROM moderation_items
         WHERE id = ${id}
         LIMIT 1

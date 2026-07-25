@@ -73,12 +73,42 @@ export function makeContainerReportChatEmitter(
     }
   }
 
+  /**
+   * Batch mute shape: one query for the room's whole member set instead of one per recipient.
+   *
+   * PROBED, never bound to an empty-Set default (the chat-gateway-wiring stance): the fan-out treats a
+   * present `mutedUserIdsFor` as AUTHORITATIVE and skips the per-user `isMuted` entirely, so a
+   * `?? Promise.resolve(new Set())` fallback would silently UNMUTE the whole room the moment this is
+   * built over a mutes store without the batch method (it is optional on the interface). Absent => the
+   * dep is omitted and the notifier keeps its per-candidate `isMuted` gate.
+   */
+  const mutedUserIdsFor = (():
+    | ((roomId: string, userIds: string[]) => Promise<Set<string>>)
+    | undefined => {
+    const batch = conversationMutes.mutedUserIdsFor
+    if (!batch) return undefined
+    return (roomId, userIds) => batch.call(conversationMutes, "report", roomId, userIds)
+  })()
+
   const notify = makeReportChatNotifier({
     notificationService,
     reportChatRepo: { listMemberIds: (reportId) => reportChatRepo.listMemberIds(reportId) },
     isMuted,
+    ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
     // presence intentionally omitted — not reachable from the admin/citizen service context (see header).
     roomKeyFor,
+    // M11: this emitter only ever fans out SENDER-LESS `kind:"system"` messages (a timeline reflection
+    // has no author), so the block gate can never fire on this path — the notifier short-circuits on a
+    // null actor. Wired to the real repo anyway rather than a `() => false` stub: the dep is required
+    // precisely so nobody has to reason about whether a given caller "needs" it, and if a future
+    // timeline event ever gains an author this path is already correct.
+    // Resolved LAZILY (inside the closure), like every other container read on this best-effort path: the
+    // factory is called per timeline event from services whose own wiring may not have a blocks repo at
+    // all, and a throw HERE would abort the caller (the emit() try/catch only covers the emit itself).
+    // The BATCH form (blockedIdsAmong) is deliberately NOT wired here for the same reason — probing it
+    // requires the repo at construction time, and it would buy nothing: see above, a null actor
+    // short-circuits the gate before either shape is consulted.
+    isBlockedEitherWay: (a, b) => container.getBlocksRepo().isBlockedEitherWay(a, b),
   })
 
   return makeReportChatSystemEmitter({

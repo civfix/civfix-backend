@@ -7,16 +7,19 @@
  * Read-only operator view (no audit written for a read). The requireOperator guard is applied by
  * routes/admin/index.ts. The query is validated against the shared ActivityListQuerySchema via parse().
  * The service is built lazily from the container (Drizzle repo) or a test override (in-memory repo).
+ *
+ * The whole query (q / filter / sort / cursor / limit) is forwarded verbatim: `filter` and `sort` are
+ * free-form strings on the wire, and the service NORMALIZES them (parseActivityFilter / parseActivitySort)
+ * so an unrecognized value degrades to the default instead of 422ing or reaching SQL.
  */
 
 import { ActivityListQuerySchema, type ActivityListResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { parse } from "./_route-utils.js"
+import { overridableService, parse, spreadNow } from "./_route-utils.js"
 import {
   makeActivityService,
   type ActivityRepository,
-  type ActivityService,
 } from "../../services/admin/activity-service.js"
 import { makeDrizzleActivityRepository } from "../../services/admin/activity-repository.drizzle.js"
 import { route } from "../../versioning/route.js"
@@ -42,23 +45,19 @@ export async function registerAdminActivityRoutes(
   container: Container,
 ): Promise<void> {
   /** Build the activity service from injected overrides (tests) or the container (production). */
-  function service(): ActivityService {
-    const overrides = app.activityOverrides
-    if (overrides) {
-      return makeActivityService({
-        repo: overrides.repo,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
-      })
-    }
-    const repo: ActivityRepository = makeDrizzleActivityRepository(container.getDb().sql)
-    return makeActivityService({ repo })
-  }
+  const service = overridableService(
+    app,
+    "activityOverrides",
+    (overrides) => makeActivityService({ repo: overrides.repo, ...spreadNow(overrides) }),
+    () => {
+      const repo: ActivityRepository = makeDrizzleActivityRepository(container.getDb().sql)
+      return makeActivityService({ repo })
+    },
+  )
 
   route(app, "adminActivity", async (request, reply) => {
     const query = parse(ActivityListQuerySchema, request.query)
-    const payload: ActivityListResponse = await service().list({
-      ...(query.limit !== undefined ? { limit: query.limit } : {}),
-    })
+    const payload: ActivityListResponse = await service().list(query)
     reply.status(200).send(payload)
   })
 }

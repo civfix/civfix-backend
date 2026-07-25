@@ -1,13 +1,18 @@
 
-import type postgres from "postgres"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
-import { decodeCursor, encodeCursor, clampLimit } from "./pagination.js"
+import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { writeAudit } from "./audit.js"
-import { likeContains } from "./like.js"
+import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import {
-  DISCOVERY_CATEGORIES,
-  computeContactState,
+  ADMIN_CATEGORIES,
+  categoryCountsFragment,
+  categoryCountsProjection,
+  parseCategoryCounts,
+  parseCount,
+  type CategoryCountRow,
+} from "./category-counts.js"
+import {
   type DiscoveryContactRecord,
   type DiscoveryContactSuggestionRecord,
   type DiscoveryDetailRecord,
@@ -18,13 +23,12 @@ import {
   type ListDiscoveryArgs,
 } from "./discovery-service.js"
 
-type SqlFragment = postgres.Fragment
-
 const SAMPLE_PIN_CAP = 50
 
 const DISCOVERY_NOTE_CAP = 200
 
-interface TaskAggRow {
+/** The `cat_*` count columns come from category-counts.ts (CategoryCountRow), not re-listed per category. */
+interface TaskAggRow extends CategoryCountRow {
   id: string
   geoid: string | null
   place: string | null
@@ -34,35 +38,14 @@ interface TaskAggRow {
   total: string
   oldest_waiting_at: Date | null
   newest_waiting_at: Date | null
-  cat_trash: string
-  cat_recycling: string
-  cat_graffiti: string
-  cat_hazard: string
-  cat_encampment: string
-  cat_water: string
-  cat_other: string
   contact_categories: string[] | null
   has_default_contact: boolean
 }
 
 function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
-  const perCategory: Partial<Record<ReportCategory, number>> = {}
-  const counts: Record<ReportCategory, string> = {
-    trash: r.cat_trash,
-    recycling: r.cat_recycling,
-    graffiti: r.cat_graffiti,
-    hazard: r.cat_hazard,
-    encampment: r.cat_encampment,
-    water: r.cat_water,
-    other: r.cat_other,
-  }
-  for (const category of DISCOVERY_CATEGORIES) {
-    const n = Number(counts[category] ?? "0")
-    if (n > 0) perCategory[category] = n
-  }
   const rawContacts = r.contact_categories ?? []
   const contactCategories = rawContacts.filter((c): c is ReportCategory =>
-    (DISCOVERY_CATEGORIES as readonly string[]).includes(c),
+    (ADMIN_CATEGORIES as readonly string[]).includes(c),
   )
   return {
     id: r.id,
@@ -71,8 +54,8 @@ function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
     layer: (r.layer ?? "place") as JurisdictionLayer,
     population: r.population,
     status: r.status,
-    perCategory,
-    total: Number(r.total ?? "0"),
+    perCategory: parseCategoryCounts(r),
+    total: parseCount(r.total),
     oldestWaitingAt: r.oldest_waiting_at,
     newestWaitingAt: r.newest_waiting_at,
     contactCategories,
@@ -80,7 +63,51 @@ function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
   }
 }
 
-const LIST_FETCH_CAP = 1000
+/**
+ * "This jurisdiction has SOME usable routing contact" — a default/all-categories `jurisdiction_contacts`
+ * row or the legacy `jurisdictions.contact_emails[]`. One definition because it is read twice per row: as
+ * the `has_default_contact` output column AND inside the attention predicate below (a SELECT alias is not
+ * visible in WHERE, so the expression itself has to be shared).
+ */
+function hasDefaultContactExpr(sql: Queryable): SqlFragment {
+  // COALESCE around array_length, not an IS NOT NULL guard: array_length('{}', 1) is NULL, so the guarded
+  // form evaluated to NULL for a jurisdiction with an EMPTY contact_emails array. As an output column that
+  // NULL was a boolean field lying about itself; inside the WHERE below it would make such a task match
+  // NEITHER facet (NULL and NOT NULL are both non-true) and disappear from the queue.
+  return sql`(
+    COALESCE(c.has_default, false)
+    OR COALESCE(array_length(j.contact_emails, 1), 0) > 0
+  )`
+}
+
+/**
+ * The queue's "needs attention" predicate, IN SQL: some category has waiting reports and nothing routes
+ * it. Mirrors computeContactState (discovery-service.ts) exactly — a default contact covers every category,
+ * otherwise a waiting category needs its own `jurisdiction_contacts` row — but evaluated in the database so
+ * the facet narrows BEFORE the page window instead of filtering an already-capped fetch in JS (which made
+ * tasks past the cap unreachable on every page).
+ *
+ * Restricted to the canonical categories for the same reason toTaskRecord is: a row carrying an unknown
+ * category must not silently demand attention nobody can resolve.
+ */
+function needsAttentionExpr(sql: Queryable): SqlFragment {
+  return sql`(
+    NOT ${hasDefaultContactExpr(sql)}
+    AND EXISTS (
+      SELECT 1
+      FROM unnest(COALESCE(w.waiting_categories, ARRAY[]::text[])) AS wc
+      WHERE wc = ANY(${[...ADMIN_CATEGORIES]}::text[])
+        AND NOT (wc = ANY(COALESCE(c.categories, ARRAY[]::text[])))
+    )
+  )`
+}
+
+/** The list's sort expression; the keyset anchors on this value plus `t.id`. */
+function sortValueExpr(sql: Queryable, sort: ListDiscoveryArgs["sort"]): SqlFragment {
+  return sort === "reports"
+    ? sql`COALESCE(w.total, 0)::bigint`
+    : sql`COALESCE(j.population, t.population, 0)::bigint`
+}
 
 async function taskAggregateSql(
   sql: Queryable,
@@ -98,16 +125,9 @@ async function taskAggregateSql(
       COALESCE(w.total, 0)::text AS total,
       w.oldest_waiting_at,
       w.newest_waiting_at,
-      COALESCE(w.cat_trash, 0)::text AS cat_trash,
-      COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
-      COALESCE(w.cat_graffiti, 0)::text AS cat_graffiti,
-      COALESCE(w.cat_hazard, 0)::text AS cat_hazard,
-      COALESCE(w.cat_encampment, 0)::text AS cat_encampment,
-      COALESCE(w.cat_water, 0)::text AS cat_water,
-      COALESCE(w.cat_other, 0)::text AS cat_other,
+      ${categoryCountsProjection(sql, "w")},
       c.categories AS contact_categories,
-      COALESCE(c.has_default, false)
-        OR (j.contact_emails IS NOT NULL AND array_length(j.contact_emails, 1) > 0) AS has_default_contact
+      ${hasDefaultContactExpr(sql)} AS has_default_contact
     FROM jurisdiction_discovery_tasks t
     LEFT JOIN jurisdictions j ON j.geoid = t.geoid
     LEFT JOIN LATERAL (
@@ -115,13 +135,10 @@ async function taskAggregateSql(
         COUNT(*) AS total,
         MIN(r.created_at) AS oldest_waiting_at,
         MAX(r.created_at) AS newest_waiting_at,
-        COUNT(*) FILTER (WHERE r.category = 'trash') AS cat_trash,
-        COUNT(*) FILTER (WHERE r.category = 'recycling') AS cat_recycling,
-        COUNT(*) FILTER (WHERE r.category = 'graffiti') AS cat_graffiti,
-        COUNT(*) FILTER (WHERE r.category = 'hazard') AS cat_hazard,
-        COUNT(*) FILTER (WHERE r.category = 'encampment') AS cat_encampment,
-        COUNT(*) FILTER (WHERE r.category = 'water') AS cat_water,
-        COUNT(*) FILTER (WHERE r.category = 'other') AS cat_other
+        ${categoryCountsFragment(sql, "r")},
+        -- The distinct categories that HAVE waiting reports; the attention predicate diffs this against
+        -- the jurisdiction's per-category contacts.
+        array_agg(DISTINCT r.category) AS waiting_categories
       FROM reports r
       WHERE r.jurisdiction_geoid = t.geoid
         AND r.deleted_at IS NULL
@@ -144,44 +161,47 @@ async function taskAggregateSql(
 
 export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
   return {
+    /**
+     * KEYSET: the queue's sort key is a derived aggregate (waiting total / population), not a timestamp, so
+     * the anchor rides in the cursor's createdAt slot as epoch-ms — `new Date(sortValue)` out, `getTime()`
+     * back in — keeping the wire cursor the same opaque "<iso>|<id>" string every other admin list uses.
+     * Paging is a real SQL keyset now: the facet + search + window all narrow in the database, so a task is
+     * reachable however deep the queue is.
+     */
     async listTasks(
       args: ListDiscoveryArgs,
     ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
-      const search =
-        args.q !== null
-          ? (() => {
-              const like = likeContains(args.q)
-              return sql`AND (j.name ILIKE ${like} ESCAPE '\\' OR t.geoid ILIKE ${like} ESCAPE '\\')`
-            })()
-          : sql``
-      const order =
-        args.sort === "reports"
-          ? sql`ORDER BY COALESCE(w.total, 0) DESC, t.id DESC`
-          : sql`ORDER BY COALESCE(j.population, t.population, 0) DESC, t.id DESC`
-      const rows = await taskAggregateSql(sql, search, sql`${order} LIMIT ${LIST_FETCH_CAP}`)
-      let records = rows.map(toTaskRecord)
-
-      if (args.filter === "attention") {
-        records = records.filter((r) => computeContactState(r).missing.length > 0)
-      } else if (args.filter === "clear") {
-        records = records.filter((r) => computeContactState(r).missing.length === 0)
-      }
-
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor)
-      let start = 0
-      if (anchor) {
-        const idx = records.findIndex((r) => r.id === anchor.id)
-        start = idx >= 0 ? idx + 1 : records.length
+      // requireUuid: the keyset casts the anchor id to uuid, so a forged non-uuid cursor must degrade to
+      // "from the start" rather than raising a Postgres 22P02.
+      const anchor = decodeCursor(args.cursor, true)
+      const sortValue = sortValueExpr(sql, args.sort)
+
+      const conds: SqlFragment[] = []
+      if (args.q !== null) {
+        conds.push(sql`AND ${ilikeAnyOf(sql, [sql`j.name`, sql`t.geoid`], args.q)}`)
       }
-      const slice = records.slice(start, start + limit + 1)
-      if (slice.length <= limit) {
-        return { records: slice, nextCursor: null }
+      if (args.filter === "attention") {
+        conds.push(sql`AND ${needsAttentionExpr(sql)}`)
+      } else if (args.filter === "clear") {
+        conds.push(sql`AND NOT ${needsAttentionExpr(sql)}`)
       }
-      const page = slice.slice(0, limit)
-      const last = page[page.length - 1]
-      const nextCursor = last ? encodeCursor({ createdAt: new Date(0), id: last.id }) : null
-      return { records: page, nextCursor }
+      if (anchor !== null) {
+        conds.push(
+          sql`AND (${sortValue}, t.id) < (${anchor.createdAt.getTime()}::bigint, ${anchor.id}::uuid)`,
+        )
+      }
+
+      const rows = await taskAggregateSql(
+        sql,
+        andAll(sql, conds),
+        sql`ORDER BY ${sortValue} DESC, t.id DESC LIMIT ${limit + 1}`,
+      )
+      const { items, nextCursor } = paginate(rows.map(toTaskRecord), limit, (r) => ({
+        createdAt: new Date(args.sort === "reports" ? r.total : (r.population ?? 0)),
+        id: r.id,
+      }))
+      return { records: items, nextCursor }
     },
 
     async getDetail(id: string): Promise<DiscoveryDetailRecord | null> {
@@ -371,7 +391,7 @@ async function loadContacts(sql: Queryable, geoid: string): Promise<DiscoveryCon
   `
   return rows
     .filter((r): r is { category: ReportCategory; email: string | null } =>
-      r.category !== null && (DISCOVERY_CATEGORIES as readonly string[]).includes(r.category),
+      r.category !== null && (ADMIN_CATEGORIES as readonly string[]).includes(r.category),
     )
     .map((r) => ({ category: r.category, email: r.email }))
 }

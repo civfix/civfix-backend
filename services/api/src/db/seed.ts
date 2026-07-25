@@ -14,6 +14,11 @@
  * The inserts are factored into `seedJurisdictions(sql)` (which also calls `seedFederalLands`) so the
  * Testcontainers harness seeds a fresh database with the exact same data the CLI seed produces. Requires
  * DATABASE_URL + live Postgres when run as a CLI; not exercised by the offline unit suite.
+ *
+ * Each row draws a `code` (the reference-code JURCODE, 0030/D2) from `jurisdiction_code_seq`, the same
+ * single sequence the ingest + lazy-Census upserts use — so dev and the integration harness mint real
+ * '<TYPE>-<JURCODE>-NNNNNN' reference codes instead of everything landing in the unknown '0' bucket. The
+ * sequence advances on a DO NOTHING conflict too; gaps are expected and harmless.
  */
 
 import type { Sql } from "./client.js"
@@ -30,7 +35,7 @@ export async function seedJurisdictions(sql: Sql): Promise<number> {
   for (const j of JURISDICTION_SEEDS) {
     const [xmin, ymin, xmax, ymax] = j.bbox
     const rows = await sql`
-      INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population, contact_emails)
+      INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population, contact_emails, code)
       VALUES (
         ${j.geoid},
         ${j.name},
@@ -38,7 +43,8 @@ export async function seedJurisdictions(sql: Sql): Promise<number> {
         ${j.priority},
         ST_Multi(ST_MakeEnvelope(${xmin}, ${ymin}, ${xmax}, ${ymax}, 4326)),
         ${j.population},
-        ${j.contactEmails}
+        ${j.contactEmails},
+        nextval('jurisdiction_code_seq')
       )
       ON CONFLICT (geoid) DO NOTHING
       RETURNING geoid
@@ -62,7 +68,7 @@ export async function seedFederalLands(sql: Sql): Promise<number> {
     const geojson = federalLandGeoJson(land.bbox)
     const priority = land.layer === "tribal" ? -1 : -2
     const rows = await sql`
-      INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population, contact_emails, report_form_url)
+      INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population, contact_emails, report_form_url, code)
       VALUES (
         ${land.geoid},
         ${land.name},
@@ -71,7 +77,8 @@ export async function seedFederalLands(sql: Sql): Promise<number> {
         ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(${geojson}), 4326)),
         ${land.population},
         ${land.contactEmails},
-        ${land.reportFormUrl}
+        ${land.reportFormUrl},
+        nextval('jurisdiction_code_seq')
       )
       ON CONFLICT (geoid) DO NOTHING
       RETURNING geoid

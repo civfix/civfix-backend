@@ -5,6 +5,8 @@ import {
   clusterByZoom,
   countByCategory,
   clusterCellSizeDeg,
+  effectiveMapZoom,
+  impliedZoomForBBox,
   reportH3Cell,
   CLUSTER_ZOOM_THRESHOLD,
   REPORT_H3_RESOLUTION,
@@ -612,6 +614,43 @@ describe("resolveReport (owner status toggle)", () => {
       code: "NOT_FOUND",
     })
   })
+
+  // --- L12: 403-vs-404 was an existence oracle ----------------------------------------------------
+  // A flat 403 for "exists but not yours" confirmed the existence — and the exact id — of held
+  // (pre-moderation, anonymous) reports and owner-unlisted ones, which the READ path deliberately 404s.
+  // The 403 survives ONLY where the report is already publicly readable and therefore leaks nothing.
+
+  it("L12: 404s (not 403) a stranger probing a HELD report", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "held", visibility: "public" })
+    await expect(service.resolveReport("stranger", r.id, true)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    // Identical to the answer for an id that does not exist at all — that is the point.
+    await expect(
+      service.resolveReport("stranger", "00000000-0000-0000-0000-000000000000", true),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+    expect(repo.reports.get(r.id)!.status).toBe("held")
+  })
+
+  it("L12: 404s a stranger probing an owner-UNLISTED report", async () => {
+    const { repo, service } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "hidden" })
+    await expect(service.resolveReport("stranger", r.id, true)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(service.unlistReport("stranger", r.id, false)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    expect(repo.reports.get(r.id)!.visibility).toBe("hidden")
+  })
+
+  it("L12: the owner is unaffected — they still mutate their own held/unlisted report", async () => {
+    const { repo, service } = makeHarness()
+    const held = repo.seedReport({ reporterUserId: "owner", status: "held", visibility: "public" })
+    await service.unlistReport("owner", held.id, true)
+    expect(repo.reports.get(held.id)!.visibility).toBe("hidden")
+  })
 })
 
 describe("unlistReport (owner visibility toggle)", () => {
@@ -774,7 +813,9 @@ describe("listReportsInBBox", () => {
     repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
 
-    const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
+    // M14: a per-pin (zoom >= 13) read now needs a bbox a real client could be showing at that zoom —
+    // effectiveMapZoom clamps the claimed zoom to what the extent implies. This ~5 km box implies 14.
+    const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
     const high = await service.listReportsInBBox(bbox, null, null, 16)
     expect(high.clusters).toHaveLength(0)
     expect(high.pins).toHaveLength(2)
@@ -782,7 +823,8 @@ describe("listReportsInBBox", () => {
 
   it("enriches high-zoom pins with title + a presigned first-photo thumbUrl", async () => {
     const { repo, service } = makeHarness()
-    const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
+    // M14: see above — a zoom-16 read requires a viewport-sized bbox.
+    const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
 
     // (1) A report whose first ready photo has a generated thumbnail -> thumbUrl is the THUMB key signed.
     // It also carries a description, which must ride onto the pin DTO (null for the others below).
@@ -825,12 +867,43 @@ describe("listReportsInBBox", () => {
     expect(pending.title).toBeUndefined() // null title is omitted from the DTO
   })
 
+  // firstReadyStillLateral's policy: a `ready` VIDEO that already has its poster is a legitimate still, and
+  // a thumbless video is not (its r2_key is an .mp4 and must never be handed back as a thumbnail). The event
+  // gallery always did this; the map/search/post-card sites now do too, from the one shared fragment.
+  it("previews a video's poster but never a thumbless video's raw key", async () => {
+    const { repo, service } = makeHarness()
+    const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
+
+    const posterOnly = repo.seedReport({
+      status: "published", visibility: "public", category: "trash",
+      lat: 34.10, lng: -118.35, title: "Dumping caught on video",
+    })
+    repo.seedMedia({
+      reportId: posterOnly.id, status: "ready", kind: "video",
+      r2Key: "uploads/clip.mp4", thumbKey: "thumbs/clip.jpg",
+    })
+
+    const thumbless = repo.seedReport({
+      status: "published", visibility: "public", category: "hazard",
+      lat: 34.11, lng: -118.34, title: "Video still transcoding",
+    })
+    repo.seedMedia({
+      reportId: thumbless.id, status: "ready", kind: "video",
+      r2Key: "uploads/raw.mp4", thumbKey: null,
+    })
+
+    const high = await service.listReportsInBBox(bbox, null, null, 16)
+    const byId = new Map(high.pins.map((p) => [p.id, p]))
+    expect(byId.get(posterOnly.id)!.thumbUrl).toBe("memory://thumbs/clip.jpg")
+    expect(byId.get(thumbless.id)!.thumbUrl).toBeNull()
+  })
+
   it("filters by category when provided", async () => {
     const { repo, service } = makeHarness()
     repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
 
-    const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
+    const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
     const onlyTrash = await service.listReportsInBBox(bbox, ["trash"], null, 16)
     expect(onlyTrash.pins).toHaveLength(1)
     expect(onlyTrash.pins[0]!.category).toBe("trash")
@@ -844,6 +917,45 @@ describe("listReportsInBBox", () => {
     expect(empty.clusters).toHaveLength(0)
     expect(empty.pins).toHaveLength(0)
     expect(empty.counts).toBeUndefined()
+  })
+
+  // --- M14: the client's zoom is advisory, the bbox is authoritative -------------------------------
+  it("M14: a world bbox at zoom 22 produces ZERO per-pin rows (no presign fan-out)", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 40.71, lng: -74.0 })
+
+    const world = { west: -180, south: -85, east: 180, north: 85 }
+    const attack = await service.listReportsInBBox(world, null, null, 22)
+
+    // The whole exploit was reaching this branch: 2000 full rows + 2000 presigns per request.
+    expect(attack.pins).toHaveLength(0)
+    expect(attack.clusters.length).toBeGreaterThanOrEqual(1)
+    // Counts are computed over all candidates regardless of the split, so the data is still there.
+    expect(attack.counts).toEqual({ trash: 1, graffiti: 1 })
+  })
+})
+
+describe("effectiveMapZoom / impliedZoomForBBox (M14)", () => {
+  it("clamps a claimed street-level zoom down to what a world bbox implies", () => {
+    const world = { west: -180, south: -90, east: 180, north: 90 }
+    expect(impliedZoomForBBox(world)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
+    expect(effectiveMapZoom(world, 22)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
+  })
+
+  it("leaves a genuine neighborhood viewport alone (clamping is one-directional)", () => {
+    // ~5 km across — a real phone/desktop map viewport at zoom 13-15.
+    const hood = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
+    expect(impliedZoomForBBox(hood)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
+    // Asking to be zoomed further OUT than the viewport is always honored: that only coarsens
+    // clustering, which is cheaper, so there is nothing to defend against.
+    expect(effectiveMapZoom(hood, 4)).toBe(4)
+  })
+
+  it("never returns a negative or non-finite zoom for a degenerate bbox", () => {
+    const degenerate = { west: 0, south: 0, east: 0, north: 0 }
+    expect(impliedZoomForBBox(degenerate)).toBe(0)
+    expect(effectiveMapZoom(degenerate, Number.NaN)).toBe(0)
   })
 })
 

@@ -23,6 +23,17 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.report_mention.title": "Du wurdest erwähnt",
   "notification.report_mention.body": "Jemand hat dich in einer Berichtsdiskussion erwähnt.",
 
+  "notification.post.like.title": "Neues Like",
+  "notification.post.like.body": "{{name}} gefällt dein Beitrag.",
+  "notification.post.repost.title": "Neuer Repost",
+  "notification.post.repost.body": "{{name}} hat deinen Beitrag repostet.",
+  "notification.post.reply.title": "Neue Antwort",
+  "notification.post.reply.body": "{{name}} hat auf deinen Beitrag geantwortet.",
+  "notification.post.quote.title": "Neues Zitat",
+  "notification.post.quote.body": "{{name}} hat deinen Beitrag zitiert.",
+  "notification.post.mention.title": "{{name}} hat dich erwähnt",
+  "notification.post.mention.body": "{{name}} hat dich in einem Beitrag erwähnt.",
+
   "notification.chat_mention.title": "{{name}} hat dich erwähnt",
   "notification.chat_reply.title": "{{name}} hat dir geantwortet",
 
@@ -39,6 +50,11 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_role.demoted.body": "Du bist nicht mehr Co-Host von {{title}}.",
   "notification.cleanup_role.removed.title": "Aus dem Event entfernt",
   "notification.cleanup_role.removed.body": "Du wurdest aus {{title}} entfernt.",
+
+  "notification.cleanup_cancelled.title": "Event abgesagt",
+  "notification.cleanup_cancelled.body": "Dieses Event wurde vom Host abgesagt.",
+  "notification.cleanup_cancelled.body_reason":
+    "Dieses Event wurde vom Host abgesagt. Grund: {{reason}}",
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Dein civfix-Anmeldecode",

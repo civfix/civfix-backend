@@ -9,8 +9,9 @@ import {
   searchEventsFragment,
   toRecord,
   type EventRowSelect,
-  type SqlFragment,
 } from "./admin-event-sql.js"
+import { andAll, type SqlFragment } from "./sql-fragments.js"
+import { publicReportFilter } from "../report-sql.js"
 import type {
   AdminEventMessageRecord,
   AdminEventRecord,
@@ -34,6 +35,14 @@ const LINK_REPORTS_MAX = 100
 
 export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository {
   return {
+    /**
+     * KEYSET ON scheduled_at, deliberately: the events list is ordered by when the event HAPPENS, which is
+     * what an operator scans for, and a keyset must anchor on the column it sorts by. Unlike every other
+     * admin list (created_at) that column is MUTABLE — rescheduling an event while an operator pages can
+     * make it skip or repeat across page boundaries. Accepted: the alternative is paging in one order and
+     * displaying another. The anchor rides in the cursor's `createdAt` slot because that is the shared
+     * anchor shape, NOT because it is a creation time.
+     */
     async listEvents(
       args: ListEventsArgs,
     ): Promise<{ records: AdminEventRecord[]; nextCursor: string | null }> {
@@ -49,7 +58,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       if (anchor !== null) {
         conds.push(sql`AND (c.scheduled_at, c.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
-      const extraWhere = conds.reduce<SqlFragment>((acc, c) => sql`${acc} ${c}`, sql``)
+      const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY c.scheduled_at DESC, c.id DESC LIMIT ${limit + 1}`
 
       const rows = (await eventSelect(sql, extraWhere, orderLimit)) as unknown as EventRowSelect[]
@@ -211,12 +220,28 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       })
     },
 
+    /**
+     * IDEMPOTENT (`true` = "this event is cancelled", `false` = no such event).
+     *
+     * The `status <> 'cancelled'` guard is the concurrency primitive — exactly one of N racing cancels
+     * matches a row, so exactly one writes the `'cancel'` row into the PUBLIC cleanup_timeline and the
+     * audit log. Without it every repeat operator cancel appended another public timeline entry. A miss
+     * must then be told apart from a missing event (`true` vs the service's 404), same shape as
+     * cleanup-repository.drizzle.ts:cancelCleanupTx.
+     */
     async cancel(id: string, input: { note: string; actorId: string | null }): Promise<boolean> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
-          UPDATE cleanups SET status = 'cancelled' WHERE id = ${id} RETURNING id
+          UPDATE cleanups SET status = 'cancelled'
+          WHERE id = ${id} AND status <> 'cancelled'
+          RETURNING id
         `
-        if (updated.length === 0) return false
+        if (updated.length === 0) {
+          const existing = await tx<{ id: string }[]>`
+            SELECT id FROM cleanups WHERE id = ${id} LIMIT 1
+          `
+          return existing.length > 0
+        }
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
@@ -297,9 +322,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           LIMIT 1
         ) m ON true
         WHERE cr.cleanup_id = ${id}
-          AND r.deleted_at IS NULL
-          AND r.status = 'published'
-          AND r.visibility = 'public'
+          AND ${publicReportFilter(sql)}
         ORDER BY cr.linked_at DESC, r.id
       `
       return rows.map((r) => ({
@@ -333,7 +356,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
                 SELECT ${id}, r.id, ${actorId}
                 FROM reports r
                 WHERE r.id = ANY(${ids}::uuid[])
-                  AND r.deleted_at IS NULL AND r.status = 'published' AND r.visibility = 'public'
+                  AND ${publicReportFilter(tx)}
                 ON CONFLICT (cleanup_id, report_id) DO NOTHING
                 RETURNING report_id
               `

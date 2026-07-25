@@ -177,11 +177,19 @@ export class InMemoryMailRepository implements MailRepository {
   upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
     let best: MailThreadRecord | null = null
     for (const t of this.threads.values()) {
-      if (t.jurisdictionGeoid !== geoid || t.reportId !== null) continue
+      // Both ids must be null: the Drizzle partial-unique target is (geoid) WHERE report_id IS NULL AND
+      // cleanup_id IS NULL, so an EVENT thread that happens to carry the geoid is NOT the digest thread.
+      if (t.jurisdictionGeoid !== geoid || t.reportId !== null || t.cleanupId !== null) continue
       if (best === null || cmpThreadNewest(t, best) > 0) best = t
     }
     if (best) return Promise.resolve({ ...best })
-    return this.createThread({ ...init, jurisdictionGeoid: geoid, threadToken: mintThreadToken() })
+    return this.createThread({
+      ...init,
+      jurisdictionGeoid: geoid,
+      reportId: null,
+      cleanupId: null,
+      threadToken: mintThreadToken(),
+    })
   }
 
   findThreadByToken(token: string): Promise<MailThreadRecord | null> {
@@ -317,6 +325,17 @@ export class InMemoryMailRepository implements MailRepository {
   getThreadRecord(id: string): Promise<MailThreadRecord | null> {
     const t = this.threads.get(id)
     return Promise.resolve(t ? { ...t } : null)
+  }
+
+  outboundRecipients(threadId: string): Promise<string[]> {
+    const out = new Set<string>()
+    for (const m of this.messages) {
+      if (m.threadId !== threadId) continue
+      if (m.direction !== "out") continue
+      if (m.toAddr === null || m.toAddr === "") continue
+      out.add(m.toAddr)
+    }
+    return Promise.resolve([...out])
   }
 
   getLastOutboundRecipient(threadId: string): Promise<string | null> {

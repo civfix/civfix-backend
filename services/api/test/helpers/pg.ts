@@ -1,120 +1,185 @@
 /**
  * Postgres integration-test harness.
  *
- * `withPg()` starts a throwaway `postgis/postgis:16-3.4` container (via @testcontainers/postgresql),
- * applies the canonical hand SQL migrations + the jurisdiction seed, and hands back a postgres-js tag
- * (`sql`), a Drizzle client (`db`), and a `teardown()`.
+ * `withPg()` hands back a private, fully migrated + seeded database: a postgres-js tag (`sql`), a Drizzle
+ * client (`db`), its `uri`, and a `teardown()`.
+ *
+ * The container is NOT started here. test/global-setup-pg.ts starts ONE `postgis/postgis:16-3.4`
+ * container per vitest run and applies the canonical migrations + jurisdiction seed once into a TEMPLATE
+ * database; this helper clones that template (`CREATE DATABASE ... TEMPLATE ...`, an in-server file copy)
+ * so each test FILE still gets an isolated database — the same isolation a private container gave it,
+ * without ~44 container boots and 44 × 60 migrations per run.
  *
  * CRITICAL for local dev: Docker may be absent (this repo is developed on machines with no Docker).
- * Starting a container then throws. We DETECT that and return null instead of failing, so tests can
- * `describe.skipIf(!pg)` and the suite stays green locally. In CI (Docker present) the same tests run
- * for real. We probe/start exactly once and memoize the outcome (a started handle OR a "skip"
- * sentinel) so a whole file of tests shares one container and we never re-pay startup or re-attempt a
- * failed Docker probe.
+ * globalSetup detects that and reports it instead of throwing; withPg() then returns null, so tests can
+ * `describe.skipIf(!pg)` and the suite stays green locally. That leniency is DEVELOPER-ONLY: in CI (or
+ * under CIVFIX_REQUIRE_PG) assertPgSkipAllowed turns a Docker-absent run into a hard failure, because a
+ * green build in which the whole integration suite silently did not run is worse than a red one. The
+ * outcome is memoized per worker (a live handle OR a "skip" sentinel), so a whole file of tests shares one
+ * database and never re-pays setup or re-attempts a failed Docker probe.
+ *
+ * `teardown()` closes this file's pools and drops its database; it never stops the shared container
+ * (globalSetup owns that). A file that forgets to call it therefore leaks nothing beyond the run.
  */
 
-import { fileURLToPath } from "node:url"
 import { randomUUID } from "node:crypto"
+import { inject } from "vitest"
 import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql"
 import type { Sql } from "../../src/db/client.js"
 import * as schema from "../../src/db/schema/index.js"
-import { applyMigrations } from "../../src/db/migrate.js"
-import { seedJurisdictions } from "../../src/db/seed.js"
+import type { ProvidedPg } from "../global-setup-pg.js"
+import {
+  assertPgSkipAllowed,
+  createDatabase,
+  dropDatabaseIfExists,
+  startSharedPg,
+  uniqueTestDbName,
+  uriWithDatabase,
+} from "./pg-container.js"
 
-/** The PostGIS image we run. Pinned so spatial behavior is reproducible. */
-export const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
-
-/** Absolute path to the canonical migrations directory (services/api/drizzle), cross-platform. */
-const MIGRATIONS_DIR = fileURLToPath(new URL("../../drizzle/", import.meta.url))
+// The globalSetup -> worker channel. Typed here because this is the module that reads it.
+declare module "vitest" {
+  export interface ProvidedContext {
+    civfixPg: ProvidedPg
+  }
+}
 
 export interface PgHarness {
-  /** Raw postgres-js tag bound to the container. */
+  /** Raw postgres-js tag bound to this file's database. */
   sql: Sql
   /** Drizzle client bound to the civfix schema. */
   db: ReturnType<typeof drizzle<typeof schema>>
-  /** Connection URI of the container (for diagnostics). */
+  /** Connection URI of this file's database (pass to loadEnv as DATABASE_URL). */
   uri: string
-  /** Stop the container and close the pool. Safe to call once. */
+  /** Close this file's pools and drop its database. Safe to call more than once. */
   teardown(): Promise<void>
 }
 
 /**
- * Memoized start outcome. `undefined` = not attempted yet; `null` = attempted and Docker unavailable
- * (skip); otherwise the live harness. Shared process-wide so multiple test files reuse one container.
+ * Memoized outcome. `undefined` = not attempted yet; `null` = attempted and Docker unavailable (skip);
+ * otherwise the live harness. Per worker/module-registry, which is per test file under vitest's default
+ * isolation — `torn` lets a file that already tore down (or a non-isolated worker running a second file)
+ * get a fresh database instead of a closed pool.
  */
 let memo: PgHarness | null | undefined
-
-/** Reason captured when Docker is unavailable, surfaced once so the skip is visible in output. */
-let skipReason: string | undefined
+let torn = false
+/** The in-flight setup, so two concurrent withPg() calls share one database instead of creating two. */
+let pending: Promise<PgHarness | null> | undefined
 
 /**
- * Try to bring up Postgres for tests. Returns a harness, or null when Docker is unavailable (in which
- * case the caller should skip). Never throws for the Docker-absent case.
+ * Get this file's Postgres harness, or null when Docker is unavailable (in which case the caller should
+ * skip). On a developer machine the Docker-absent case never throws; in CI (or under CIVFIX_REQUIRE_PG)
+ * it DOES — see assertPgSkipAllowed. A failed migration/seed/clone always throws, because that is a real
+ * error and the test must fail rather than silently skip.
  */
 export async function withPg(): Promise<PgHarness | null> {
-  if (memo !== undefined) return memo
-
-  let started: StartedPostgreSqlContainer
+  if (memo === null) return null
+  if (memo !== undefined && !torn) return memo
+  if (pending !== undefined) return await pending
+  pending = create()
   try {
-    started = await new PostgreSqlContainer(POSTGIS_IMAGE).start()
-  } catch (err) {
-    // Docker not installed / daemon not running / image unavailable: skip, do not fail.
-    skipReason = err instanceof Error ? err.message : String(err)
+    return await pending
+  } finally {
+    pending = undefined
+  }
+}
 
-    console.warn(`[pg harness] skipped: docker unavailable (${firstLine(skipReason)})`)
+async function create(): Promise<PgHarness | null> {
+  const provided = readProvided()
+
+  // No globalSetup in play (a bare/one-off vitest config), or it decided no pg test was selected and
+  // one turned out to need it after all: fall back to this worker's own container, the pre-globalSetup
+  // behavior. Correctness first — a misread of the CLI filters must never silently skip a real test.
+  if (provided === undefined || provided.kind === "not-started") {
+    return await bootOwnContainer()
+  }
+
+  if (provided.kind === "unavailable") {
+    // Belt to globalSetup's braces: it already refuses to report `unavailable` where a skip is
+    // forbidden, so reaching here in CI means the guard was bypassed — fail rather than skip.
+    assertPgSkipAllowed(provided.reason)
+    console.warn(`[pg harness] skipped: docker unavailable (${firstLine(provided.reason)})`)
     memo = null
     return null
   }
 
-  const uri = started.getConnectionUri()
-  // Raw client (full postgres.js serialization) for the repositories, test-side inserts, and migrations.
+  const dbName = uniqueTestDbName()
+  await createDatabase(provided.adminUri, dbName, provided.templateDb)
+  const harness = openHarness(uriWithDatabase(provided.adminUri, dbName), () =>
+    dropDatabaseIfExists(provided.adminUri, dbName),
+  )
+  torn = false
+  memo = harness
+  return harness
+}
+
+/**
+ * Build the clients + teardown for an already-created database.
+ *
+ * `after` runs once the pools are closed (drop the cloned database, or stop the fallback container).
+ */
+function openHarness(uri: string, after: () => Promise<void>): PgHarness {
+  // Raw client (full postgres.js serialization) for the repositories and test-side inserts.
   const sql = postgres(uri, { max: 4, onnotice: () => {} }) as Sql
   // Drizzle gets its OWN client so it never clobbers `sql`'s value serializers (see makeDb in
   // src/db/client.ts and drizzle-orm#3108).
   const drizzleSql = postgres(uri, { max: 2, onnotice: () => {} })
   const db = drizzle(drizzleSql, { schema })
 
-  const closeClients = () =>
-    Promise.all([sql.end({ timeout: 5 }), drizzleSql.end({ timeout: 5 })]).catch(() => {})
-
-  try {
-    // Apply the EXACT canonical SQL the production runner applies, then the shared seed.
-    await applyMigrations(sql, MIGRATIONS_DIR)
-    await seedJurisdictions(sql)
-    await applyTestFixtureDefaults(sql)
-  } catch (err) {
-    // A migration/seed failure is a real error: clean up and rethrow so the test FAILS (not skips).
-    await closeClients()
-    await started.stop().catch(() => {})
-    throw err
-  }
-
-  let torn = false
-  const harness: PgHarness = {
+  let done = false
+  return {
     sql,
     db,
     uri,
     async teardown() {
-      if (torn) return
+      if (done) return
+      done = true
       torn = true
-      await closeClients()
-      await started.stop().catch(() => {})
+      await Promise.all([sql.end({ timeout: 5 }), drizzleSql.end({ timeout: 5 })]).catch(() => {})
+      await after()
     },
   }
+}
+
+/**
+ * Legacy path: start a container for THIS worker, migrate it, and use it directly. Only reached when no
+ * shared container was provided (see withPg). teardown() stops it, so nothing outlives the file.
+ */
+async function bootOwnContainer(): Promise<PgHarness | null> {
+  // startSharedPg has already applied the skip guard (it throws where a skip is forbidden), so an
+  // !ok result here is a legitimate developer-machine skip.
+  const result = await startSharedPg()
+  if (!result.ok) {
+    console.warn(`[pg harness] skipped: docker unavailable (${firstLine(result.reason)})`)
+    memo = null
+    return null
+  }
+  const { adminUri, templateDb, stop } = result.pg
+  const dbName = uniqueTestDbName()
+  try {
+    await createDatabase(adminUri, dbName, templateDb)
+  } catch (err) {
+    await stop()
+    throw err
+  }
+  const harness = openHarness(uriWithDatabase(adminUri, dbName), stop)
+  torn = false
   memo = harness
   return harness
 }
 
-/** True if a prior withPg() attempt found Docker unavailable. */
-export function pgSkipped(): boolean {
-  return memo === null
-}
-
-/** The captured Docker-unavailable reason, if any (for test diagnostics). */
-export function pgSkipReason(): string | undefined {
-  return skipReason
+/**
+ * Read the globalSetup channel. A config with no globalSetup provides nothing (inject yields undefined),
+ * and outside a vitest worker inject throws while reaching for worker state — both are the same
+ * "no shared container was handed to me" answer, not an error.
+ */
+function readProvided(): ProvidedPg | undefined {
+  try {
+    return inject("civfixPg") as ProvidedPg | undefined
+  } catch {
+    return undefined
+  }
 }
 
 function firstLine(s: string): string {
@@ -123,30 +188,52 @@ function firstLine(s: string): string {
 }
 
 /**
- * Test-harness-only column defaults for two NOT-NULL columns the PRODUCTION app always supplies but
- * that raw fixture inserts here would otherwise have to hand-roll at ~30 call sites:
- *
- *   - users.handle   — made NOT NULL (no default) by 0026_user_handle_required.sql. The app assigns a
- *                      handle during registration; fixtures that insert a bare user don't care about it.
- *   - reports.type   — 0021_report_type.sql adds it with a default 'other' then DROPS the default, so
- *                      the app must send a type. Fixtures that set up a report to exercise a read query
- *                      don't care about the fine type.
- *
- * These defaults change ONLY the throwaway test container (never the canonical migrations / production
- * schema) and weaken NO assertion: the suite has no test that a bare insert of these columns is rejected,
- * and every place that actually cares supplies an explicit value (which overrides the default). A fixture
- * that must pin a handle passes one; one that doesn't get a unique generated placeholder.
- */
-async function applyTestFixtureDefaults(sql: Sql): Promise<void> {
-  await sql`ALTER TABLE users ALTER COLUMN handle SET DEFAULT 'u' || substr(md5(random()::text), 1, 12)`
-  await sql`ALTER TABLE reports ALTER COLUMN type SET DEFAULT 'other'`
-}
-
-/**
  * A valid, unique-enough @handle (matches HANDLE_REGEX ^[A-Za-z0-9_]{3,20}$) for a fixture user whose
  * handle is immaterial to the test. Use where a helper passes handle EXPLICITLY (an explicit value —
- * even null — bypasses the SET DEFAULT above); pass a real handle instead when the test asserts on it.
+ * even null — bypasses the SET DEFAULT applied to the test template); pass a real handle instead when the
+ * test asserts on it.
  */
 export function testHandle(): string {
   return "u" + randomUUID().replace(/-/g, "").slice(0, 12)
+}
+
+/**
+ * Seed ONE follow edge the way production does — the edge row AND the two denormalized counters
+ * (drizzle/0059_users_follow_counters.sql).
+ *
+ * 0059 deliberately installs no trigger: "anything writing follows_people outside those two methods (a
+ * psql session, a test fixture, a future bulk import) must bump the counters too". So a fixture that
+ * `INSERT INTO follows_people` and nothing else leaves users.follower_count / following_count at 0 while
+ * the edge exists, and every profile/roster read in that file reports `followers: 0` — a wrong-by-fixture
+ * number that looks exactly like a product bug. Use this (or the repository's addFollow) instead of a raw
+ * INSERT whenever the test might read a count.
+ *
+ * Mirrors social-repository.drizzle.ts addFollow: ON CONFLICT DO NOTHING ... RETURNING, and the counters
+ * move ONLY when a row was actually inserted, so a repeated seed is a no-op rather than a double count.
+ * Returns whether an edge was created. `createdAt` is for fixtures that order or window on the edge's age
+ * (the column otherwise defaults to now()). Deliberately does NOT check for a soft-deleted followee
+ * (addFollow refuses one; fixtures legitimately seed tombstone edges, which 0059 counts).
+ */
+export async function seedFollowEdge(
+  sql: Sql,
+  followerId: string,
+  followeeId: string,
+  createdAt?: Date,
+): Promise<boolean> {
+  return await sql.begin(async (tx) => {
+    const inserted = await tx<{ follower_id: string }[]>`
+      INSERT INTO follows_people (follower_id, followee_id, created_at)
+      VALUES (${followerId}, ${followeeId}, ${createdAt ?? sql`now()`})
+      ON CONFLICT (follower_id, followee_id) DO NOTHING
+      RETURNING follower_id
+    `
+    if (inserted.length === 0) return false
+    await tx`
+      UPDATE users SET
+        follower_count = follower_count + CASE WHEN id = ${followeeId} THEN 1 ELSE 0 END,
+        following_count = following_count + CASE WHEN id = ${followerId} THEN 1 ELSE 0 END
+      WHERE id IN (${followerId}, ${followeeId})
+    `
+    return true
+  })
 }

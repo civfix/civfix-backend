@@ -26,7 +26,8 @@
  * view already read, with no schema change. See discovery-repository.drizzle.ts addNote/listNotes.
  */
 
-import { AppError, relativeAgo } from "@civfix/shared"
+import { AppError, REPORT_CATEGORY_LABELS, relativeAgo } from "@civfix/shared"
+import { ADMIN_CATEGORIES } from "./category-counts.js"
 import type {
   DiscoveryContact,
   DiscoveryListQuery,
@@ -42,33 +43,16 @@ import type {
 } from "@civfix/shared"
 
 /**
- * The 6 canonical civfix report categories in display order (matches ReportCategorySchema / the DB
- * REPORT_CATEGORY_VALUES). Declared locally because @civfix/shared exports the zod enum + the inferred
- * type but not a plain array constant, and the discovery projections iterate the categories directly.
+ * The canonical civfix report categories in display order. ONE derivation for the whole admin domain lives
+ * in category-counts.ts (ADMIN_CATEGORIES, from the contract enum that db/schema/types.ts mirrors under a
+ * drift test); this alias exists only so the discovery projections below keep reading in domain terms. A
+ * second hand-copied list is how a new category silently drops out of the projections that iterate it —
+ * per-category waiting counts, contact state, the dominant-category pin.
  */
-export const DISCOVERY_CATEGORIES: readonly ReportCategory[] = [
-  "trash",
-  "recycling",
-  "graffiti",
-  "hazard",
-  "encampment",
-  "water",
-  "other",
-]
+const DISCOVERY_CATEGORIES = ADMIN_CATEGORIES
 
 /** Discovery SLA: a task breaches when its oldest waiting report is older than this many hours. */
 export const DISCOVERY_SLA_HOURS = 24
-
-/** Human label per report category (drives catLabel + the dominant-category pin title). */
-export const CATEGORY_LABELS: Record<ReportCategory, string> = {
-  trash: "Trash",
-  recycling: "Recycling",
-  graffiti: "Graffiti",
-  hazard: "Hazard",
-  encampment: "Encampment",
-  water: "Water",
-  other: "Other",
-}
 
 /**
  * A discovery task row joined with its jurisdiction, plus the derived waiting-report aggregates the
@@ -268,11 +252,6 @@ export function computeContactState(record: DiscoveryTaskRecord): {
   return { routed, missing }
 }
 
-/** A task "needs attention" when it has at least one waiting report whose category has no contact. */
-export function needsAttention(record: DiscoveryTaskRecord): boolean {
-  return computeContactState(record).missing.length > 0
-}
-
 /** Whether the oldest waiting report breaches the discovery SLA as of `now`. */
 export function isOverSla(oldestWaitingAt: Date | null, now: Date): boolean {
   if (oldestWaitingAt === null) return false
@@ -318,15 +297,15 @@ export interface DiscoveryServiceDeps {
 export interface DiscoveryService {
   list(query: DiscoveryListQuery): Promise<DiscoveryListResponse>
   getTask(id: string): Promise<DiscoveryTaskDetailDTO>
-  addNote(id: string, input: { text: string; actorId: string | null; who: string }): Promise<DiscoveryNote>
-  flag(id: string, input: { reason: string | null; actorId: string | null }): Promise<void>
+  addNote(id: string, input: { text: string; actorId: string; who: string }): Promise<DiscoveryNote>
+  flag(id: string, input: { reason: string | null; actorId: string }): Promise<void>
   saveDraft(
     id: string,
     input: {
       contacts: Partial<Record<ReportCategory, string | null>>
       defaultEmails: string[]
       formUrl: string | null
-      actorId: string | null
+      actorId: string
     },
   ): Promise<void>
 }
@@ -348,7 +327,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
       place: record.place,
       layer: record.layer,
       category,
-      catLabel: CATEGORY_LABELS[category],
+      catLabel: REPORT_CATEGORY_LABELS[category],
       pop: record.population ?? 0,
       reports: record.total,
       perCategoryCounts: fullPerCategoryCounts(record.perCategory),
@@ -414,7 +393,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
 
     async addNote(
       id: string,
-      input: { text: string; actorId: string | null; who: string },
+      input: { text: string; actorId: string; who: string },
     ): Promise<DiscoveryNote> {
       const ref = now()
       const task = await deps.repo.getTask(id)
@@ -423,7 +402,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
       return toNoteDTO(note, ref)
     },
 
-    async flag(id: string, input: { reason: string | null; actorId: string | null }): Promise<void> {
+    async flag(id: string, input: { reason: string | null; actorId: string }): Promise<void> {
       const ok = await deps.repo.flagTask(id, input)
       if (!ok) throw AppError.notFound("Discovery task not found")
     },
@@ -434,7 +413,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
         contacts: Partial<Record<ReportCategory, string | null>>
         defaultEmails: string[]
         formUrl: string | null
-        actorId: string | null
+        actorId: string
       },
     ): Promise<void> {
       const ok = await deps.repo.saveDraft(id, input)

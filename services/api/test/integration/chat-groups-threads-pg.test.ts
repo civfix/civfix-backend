@@ -288,6 +288,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
         isMuted: (userId, roomId) => mutes.isMuted(userId, "group", roomId),
         presence,
         roomKeyFor,
+        isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
       })
       const deps: GatewayDeps = {
         chat: new WsChatService({ repo: chatRepo, pubsub: new InMemoryChatPubSub() }),

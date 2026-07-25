@@ -37,6 +37,11 @@ import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repositor
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatEditService } from "../../src/services/chat-edit-service.js"
+import { makeDrizzleDiscussionRepository } from "../../src/services/discussion-repository.drizzle.js"
+import { makeChatPollRepository } from "../../src/services/chat-poll-repository.drizzle.js"
+import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
+import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
 
 const pg = await withPg()
 
@@ -59,11 +64,17 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     return u!.id
   }
 
-  /** Insert a minimal report and return its id (fixture mirror of report-chat-members-pg). */
-  async function newReport(): Promise<string> {
+  /**
+   * Insert a minimal report and return its id (fixture mirror of report-chat-members-pg).
+   *
+   * Defaults to 'submitted' — NOT a publicly-visible status. The service-level tests above wire no report
+   * lookup at all, so visibility is not part of what they exercise; the HTTP describe at the bottom
+   * ("report VISIBILITY gate") passes an explicit status because there the gate is live.
+   */
+  async function newReport(status = "submitted"): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
-      VALUES (${randomUUID()}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', 'submitted', 'h0')
+      VALUES (${randomUUID()}, ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', 'dump', ${status}, 'h0')
       RETURNING id
     `
     return r!.id
@@ -543,6 +554,232 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         else expect(res.statusCode).toBe(200)
       }
       expect(saw429).toBe(true)
+    })
+  })
+
+  /**
+   * The report-VISIBILITY gate on the unified /messages surfaces, over an app that wires
+   * `discussionOverrides` — i.e. the PRODUCTION shape.
+   *
+   * The describe above (and chat-polls-pg) deliberately wires chatOverrides with NO report lookup, which
+   * makes messages.routes' `isReportVisible` short-circuit to `true`; that is why those tests can drive
+   * report rooms whose report sits at 'submitted'. Production always builds the lookup, so a
+   * report_chat_members row — which OUTLIVES the report being held, unlisted or removed — must stop
+   * granting edit / react / pin / poll rights. All four routes answer 404 (never 403): an invisible report
+   * must not be distinguishable from a missing one, matching report-chat.routes' requireVisibleReport.
+   */
+  describe("report VISIBILITY gate on the unified routes (discussionOverrides wired)", () => {
+    let app: FastifyInstance
+    let authServices: AuthServices
+
+    beforeAll(async () => {
+      const env = loadEnv({ NODE_ENV: "test" })
+      authServices = buildAuthServices({
+        stores: makeInMemoryStores(),
+        cache: new InMemoryCacheClient(() => Date.now()),
+        mailer: new FakeMailer(),
+        oauthConfig: {},
+        verifier: new StubJwksVerifier(),
+        now: () => Date.now(),
+      })
+      const cleanups = makeDrizzleCleanupRepository(h.sql)
+      const dm = makeDrizzleDmRepository(h.sql)
+      const reportChat = makeReportChatRepository(h.sql)
+      const groups = makeChatGroupRepository(h.sql)
+      const overrides: ChatGatewayOverrides = {
+        isMember: (cleanupId, userId) => cleanups.isMember(cleanupId, userId),
+        threadsRepo: new InMemoryThreadsRepository(),
+        dmRepo: dm,
+        chatRepo: makeDrizzleChatRepository(h.sql),
+        blocksRepo: makeDrizzleBlocksRepository(h.sql),
+        reportChat,
+        groups,
+        chatPolls: makeChatPollRepository(h.sql),
+        // The REAL powers resolver (the offline branch fails report/global roles closed, which would 403
+        // the PUBLISHED control's pin before the visibility gate could be shown to be the difference).
+        chatPowers: makeChatPowersResolver({
+          isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
+          cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
+          reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
+          globalRoleOf: (userId) => globalRoleOf(h.sql, userId),
+          groupRoleOf: (groupId, userId) => groups.roleOf(groupId, userId),
+        }),
+      }
+      app = await buildServer({
+        env,
+        container: buildContainer(env),
+        authServices,
+        chatOverrides: overrides,
+        // THE difference from the harness above: the real report lookup behind isReportVisible.
+        discussionOverrides: { repo: makeDrizzleDiscussionRepository(h.sql) },
+      })
+    })
+
+    afterAll(async () => {
+      await app.close()
+    })
+
+    /** A report at `status` whose chat has `ownerId` joined as OWNER, plus one message they authored. */
+    async function seedRoom(
+      status: string,
+      name: string,
+    ): Promise<{ reportId: string; ownerId: string; messageId: string; tok: string }> {
+      const ownerId = await newUser(name)
+      const reportId = await newReport(status)
+      await makeReportChatRepository(h.sql).join(reportId, ownerId, "owner")
+      const msg = await makeDrizzleChatRepository(h.sql).insertMessage(
+        { cleanupId: reportId, roomKind: "report", userId: ownerId, body: "civic note" },
+        randomUUID(),
+      )
+      return {
+        reportId,
+        ownerId,
+        messageId: msg.id,
+        tok: await authServices.sessions.createSession(ownerId, []),
+      }
+    }
+
+    function call(
+      tok: string,
+      method: "PATCH" | "POST" | "PUT",
+      url: string,
+      payload: Record<string, unknown>,
+    ) {
+      return app.inject({
+        method,
+        url,
+        headers: { authorization: `Bearer ${tok}`, "x-client": "mobile" },
+        payload,
+      })
+    }
+
+    /** The four unified surfaces, as (name, response) pairs for one seeded room. */
+    async function hitAll(room: {
+      reportId: string
+      messageId: string
+      tok: string
+    }): Promise<Array<[string, Awaited<ReturnType<typeof call>>]>> {
+      const ref = { roomKind: "report", roomId: room.reportId, messageId: room.messageId }
+      return [
+        ["PATCH /messages", await call(room.tok, "PATCH", "/v1/messages", { ...ref, body: "edited" })],
+        [
+          "POST /messages/reactions",
+          await call(room.tok, "POST", "/v1/messages/reactions", { ...ref, emoji: "like" }),
+        ],
+        [
+          "PUT /messages/pin",
+          await call(room.tok, "PUT", "/v1/messages/pin", { ...ref, pinned: true }),
+        ],
+        [
+          "POST /messages/poll",
+          await call(room.tok, "POST", "/v1/messages/poll", {
+            roomKind: "report",
+            roomId: room.reportId,
+            question: "Best day?",
+            options: ["Sat", "Sun"],
+          }),
+        ],
+      ]
+    }
+
+    it("a HELD report 404s all four unified surfaces for the room's own OWNER", async () => {
+      const room = await seedRoom("held", "Held Report Owner")
+
+      for (const [label, res] of await hitAll(room)) {
+        expect(res.statusCode, `${label} on a held report`).toBe(404)
+      }
+
+      // Nothing was written: the message is untouched and no poll row exists for the room.
+      const reread = await makeDrizzleChatRepository(h.sql).findReportMessage(
+        room.reportId,
+        room.messageId,
+        room.ownerId,
+      )
+      expect(reread?.body).toBe("civic note")
+      expect(reread?.editedAt ?? null).toBeNull()
+      expect(reread?.pinnedAt ?? null).toBeNull()
+      expect(reread?.reactions).toEqual([])
+      // chat_polls is keyed on the message id, so count the poll MESSAGES in this room instead.
+      const polls = await h.sql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count FROM chat_messages
+        WHERE report_id = ${room.reportId} AND kind = 'poll'
+      `
+      expect(polls[0]!.count).toBe(0)
+    })
+
+    it("a 'submitted' report 404s them too (pre-publication is not publicly visible)", async () => {
+      const room = await seedRoom("submitted", "Submitted Report Owner")
+
+      for (const [label, res] of await hitAll(room)) {
+        expect(res.statusCode, `${label} on a submitted report`).toBe(404)
+      }
+    })
+
+    it("a PUBLISHED report allows all four — so the 404s above are the gate, not the harness", async () => {
+      const room = await seedRoom("published", "Published Report Owner")
+
+      for (const [label, res] of await hitAll(room)) {
+        expect(res.statusCode, `${label} on a published report`).toBe(200)
+      }
+
+      const reread = await makeDrizzleChatRepository(h.sql).findReportMessage(
+        room.reportId,
+        room.messageId,
+        room.ownerId,
+      )
+      expect(reread?.body).toBe("edited")
+      expect(reread?.pinnedAt).toBeTruthy()
+      expect(reread?.reactions).toEqual([{ emoji: "like", count: 1, mine: true }])
+    })
+
+    it("a RESOLVED report still allows them (the widened public-status set, not 'published' only)", async () => {
+      const room = await seedRoom("resolved", "Resolved Report Owner")
+
+      const res = await call(room.tok, "PATCH", "/v1/messages", {
+        roomKind: "report",
+        roomId: room.reportId,
+        messageId: room.messageId,
+        body: "still editable after the fix landed",
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().body).toBe("still editable after the fix landed")
+    })
+
+    it("a report the owner can see but is NOT a chat member of still 403s (visibility is not membership)", async () => {
+      const reportId = await newReport("published")
+      const posterId = await newUser("Vis Poster")
+      await makeReportChatRepository(h.sql).join(reportId, posterId, "owner")
+      const msg = await makeDrizzleChatRepository(h.sql).insertMessage(
+        { cleanupId: reportId, roomKind: "report", userId: posterId, body: "members only" },
+        randomUUID(),
+      )
+      const strangerId = await newUser("Vis Stranger")
+      const tok = await authServices.sessions.createSession(strangerId, [])
+
+      // Visible report, no membership row: the gate ladder falls through to the membership/powers 403 —
+      // the visibility check must not be doing double duty as the authorization check.
+      const edit = await call(tok, "PATCH", "/v1/messages", {
+        roomKind: "report",
+        roomId: reportId,
+        messageId: msg.id,
+        body: "not mine",
+      })
+      expect(edit.statusCode).toBe(403)
+      const react = await call(tok, "POST", "/v1/messages/reactions", {
+        roomKind: "report",
+        roomId: reportId,
+        messageId: msg.id,
+        emoji: "like",
+      })
+      expect(react.statusCode).toBe(403)
+      const pinned = await call(tok, "PUT", "/v1/messages/pin", {
+        roomKind: "report",
+        roomId: reportId,
+        messageId: msg.id,
+        pinned: true,
+      })
+      expect(pinned.statusCode).toBe(403)
+      expect(pinned.json().fields).toMatchObject({ code: "pin_forbidden" })
     })
   })
 })

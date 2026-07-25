@@ -1,5 +1,7 @@
 
+import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
+import { ADMIN_CATEGORIES } from "./category-counts.js"
 import type { MailRepository } from "./mail-repository.drizzle.js"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 
@@ -21,25 +23,11 @@ export interface OutreachRepository {
   ): Promise<boolean>
 }
 
-export const OUTREACH_CATEGORIES: readonly ReportCategory[] = [
-  "trash",
-  "recycling",
-  "graffiti",
-  "hazard",
-  "encampment",
-  "water",
-  "other",
-]
-
-const CATEGORY_LABELS: Record<ReportCategory, string> = {
-  trash: "Trash",
-  recycling: "Recycling",
-  graffiti: "Graffiti",
-  hazard: "Hazard",
-  encampment: "Encampment",
-  water: "Water",
-  other: "Other",
-}
+/**
+ * Digest category order = the canonical ADMIN_CATEGORIES order (also the contact-preference order the
+ * digest query's `array_position` uses). Kept as a named export because the outreach repository reads it.
+ */
+export const OUTREACH_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
 export function isThrottled(
   lastOutreachAt: Date | null,
@@ -67,7 +55,7 @@ export function digestBody(digest: OutreachDigest): string {
   lines.push("")
   for (const category of OUTREACH_CATEGORIES) {
     const count = digest.perCategory[category] ?? 0
-    if (count > 0) lines.push(`- ${CATEGORY_LABELS[category]}: ${count}`)
+    if (count > 0) lines.push(`- ${REPORT_CATEGORY_LABELS[category]}: ${count}`)
   }
   lines.push("")
   lines.push(
@@ -134,8 +122,20 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
       if (!won) {
         return { geoid, sent: false, skipped: "throttled", reportCount: 0 }
       }
-      const threadId = await sendDigest(digest)
-      return { geoid, sent: true, reportCount: digest.total, threadId }
+      try {
+        const threadId = await sendDigest(digest)
+        return { geoid, sent: true, reportCount: digest.total, threadId }
+      } catch (err) {
+        // The claim stamped last_outreach_at BEFORE the send (that is what makes it a claim — it is the
+        // concurrency guard). If the mailer then fails, releasing the claim is what keeps a transient
+        // outage from silencing this jurisdiction for the whole throttle window: restore the timestamp the
+        // claim replaced (null when there was none) so the next tick retries. Best-effort — if the release
+        // itself fails the window simply stands, which is the pre-existing behavior.
+        await deps.mailRepo
+          .setOutreachState(geoid, { lastOutreachAt: state?.lastOutreachAt ?? null })
+          .catch(() => {})
+        throw err
+      }
     }
 
     const threadId = await sendDigest(digest)

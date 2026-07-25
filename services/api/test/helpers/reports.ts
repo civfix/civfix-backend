@@ -10,8 +10,12 @@
  *   - media attach only binds an asset whose report_id is null or already this report (never steals a
  *     foreign asset; unknown upload ids no-op).
  *   - listMyReports pages newest-first with an ISO-timestamp keyset cursor.
- *   - findMapCandidates returns only published + public + non-deleted points whose lat/lng fall inside
- *     the bbox, optionally category-filtered, newest first, capped.
+ *   - findMapCandidates returns only publicly-visible + public + non-deleted points whose lat/lng fall
+ *     inside the bbox, optionally category-filtered, newest first, capped. "Publicly visible" is the
+ *     shared isPubliclyVisibleStatus() predicate (src/services/report-visibility.ts), NOT a hardcoded
+ *     `status === "published"`: a report stays public while the city works it (acknowledged /
+ *     in_progress / resolved), and a hardcoded twin here would silently diverge from the SQL
+ *     publicReportFilter() the Drizzle repo uses.
  *
  * The Drizzle-backed repository is covered by the Docker-gated integration test; this fake exercises the
  * same ReportRepository seam.
@@ -33,6 +37,10 @@ import {
   reportScopeKey,
   typeCodeFor,
 } from "../../src/db/reference-code.js"
+import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
+// The CANONICAL keyset primitives report-repository.drizzle.ts uses — imported, never re-implemented, so
+// the fake cannot drift into accepting a cursor the production parser rejects (or vice versa).
+import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import type { ReportDTO } from "@civfix/shared"
 
 /** A stored media asset (the subset the report flow reads + the report_id binding). */
@@ -82,6 +90,26 @@ export class InMemoryReportRepository implements ReportRepository {
     const seq = (this.refCounters.get(scope) ?? 0) + 1
     this.refCounters.set(scope, seq)
     return formatReferenceCode(typeCode, jurCode, seq)
+  }
+
+  /**
+   * The fake's mirror of report-sql.ts:firstReadyStillLateral — the report's first VISIBLE still: a `ready`
+   * asset that is an image (its r2_key is a usable full-size fallback) or already carries a poster
+   * (thumb_key), ordered (created_at ASC, id ASC) so the pick is total. ONE method for both pin surfaces so
+   * the fake cannot drift from the SQL fragment (or from itself).
+   */
+  private firstReadyStill(reportId: string): StoredMediaAsset | undefined {
+    return this.media
+      .filter(
+        (m) =>
+          m.reportId === reportId &&
+          m.status === "ready" &&
+          (m.kind === "image" || m.thumbKey !== null),
+      )
+      .sort((a, b) => {
+        const cmp = a.createdAt.getTime() - b.createdAt.getTime()
+        return cmp !== 0 ? cmp : a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+      })[0]
   }
 
   /** Monotonic clock so created_at ordering is deterministic across inserts in a single test. */
@@ -295,11 +323,12 @@ export class InMemoryReportRepository implements ReportRepository {
   ): Promise<{ records: ReportRecord[]; nextCursor: string | null }> {
     // Mirror the Drizzle impl's keyset: total order (created_at DESC, id DESC) with a row-value cursor
     // "<iso>|<id>" so a created_at tie at a page boundary never skips a row.
-    const anchor = parseCursor(cursor)
+    const anchor = parseTimeCursor(cursor)
     const isBefore = (r: ReportRecord): boolean => {
       if (anchor === null) return true
       const t = r.createdAt.getTime()
-      if (t !== anchor.at) return t < anchor.at
+      const at = anchor.at.getTime()
+      if (t !== at) return t < at
       return r.id < anchor.id // tie on created_at -> compare id (DESC means strictly less)
     }
     const all = [...this.reports.values()]
@@ -310,12 +339,9 @@ export class InMemoryReportRepository implements ReportRepository {
         if (cmp !== 0) return cmp
         return a.id < b.id ? 1 : a.id > b.id ? -1 : 0 // id DESC tiebreak
       })
-    const hasMore = all.length > limit
-    const page = hasMore ? all.slice(0, limit) : all
-    const last = page[page.length - 1]
-    const nextCursor =
-      hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null
-    return Promise.resolve({ records: page.map((r) => ({ ...r })), nextCursor })
+    // Same split + encoder as the Drizzle impl.
+    const { items, nextCursor } = paginate(all, limit, (r) => ({ at: r.createdAt, id: r.id }))
+    return Promise.resolve({ records: items.map((r) => ({ ...r })), nextCursor })
   }
 
   findMapCandidates(
@@ -329,7 +355,9 @@ export class InMemoryReportRepository implements ReportRepository {
     const rows = [...this.reports.values()]
       .filter(
         (r) =>
-          r.status === "published" &&
+          // The TS twin of report-sql.ts:publicReportFilter — read the status set from
+          // report-visibility.ts so this fake can never diverge from the Drizzle map query.
+          isPubliclyVisibleStatus(r.status) &&
           r.visibility === "public" &&
           r.deletedAt === null &&
           inBox(r) &&
@@ -339,16 +367,9 @@ export class InMemoryReportRepository implements ReportRepository {
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, cap)
       .map((r) => {
-        // First VISIBLE (`ready`) image per report, ordered like the Drizzle LATERAL (created_at ASC, id
-        // ASC), projected to its key pair for the pin's thumbUrl. null keys => the pin carries a null thumb.
-        const firstPhoto = this.media
-          .filter(
-            (m) => m.reportId === r.id && m.kind === "image" && m.status === "ready",
-          )
-          .sort((a, b) => {
-            const cmp = a.createdAt.getTime() - b.createdAt.getTime()
-            return cmp !== 0 ? cmp : a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-          })[0]
+        // The report's first visible still, projected to its key pair for the pin's thumbUrl. null keys =>
+        // the pin carries a null thumb.
+        const firstPhoto = this.firstReadyStill(r.id)
         return {
           id: r.id,
           lat: r.lat,
@@ -374,7 +395,8 @@ export class InMemoryReportRepository implements ReportRepository {
     cursor: string | null
     limit: number
   }): Promise<{ points: ReportMapPoint[]; nextCursor: string | null }> {
-    // Mirror the Drizzle impl: published + public + non-deleted, optional case-insensitive substring match
+    // Mirror the Drizzle impl: publicly visible (isPubliclyVisibleStatus, the TS twin of
+    // report-sql.ts:publicReportFilter) + public + non-deleted, optional case-insensitive substring match
     // on title OR addr, optional category filter, total order (created_at DESC, id DESC) with the SAME
     // "<iso>|<id>" row-value keyset cursor as listMyReports, and limit+1 to compute nextCursor.
     const needle = args.q !== null ? args.q.toLowerCase() : null
@@ -385,17 +407,18 @@ export class InMemoryReportRepository implements ReportRepository {
         (r.addr !== null && r.addr.toLowerCase().includes(needle))
       )
     }
-    const anchor = parseCursor(args.cursor)
+    const anchor = parseTimeCursor(args.cursor)
     const isBefore = (r: ReportRecord): boolean => {
       if (anchor === null) return true
       const t = r.createdAt.getTime()
-      if (t !== anchor.at) return t < anchor.at
+      const at = anchor.at.getTime()
+      if (t !== at) return t < at
       return r.id < anchor.id // tie on created_at -> id DESC means strictly less
     }
     const all = [...this.reports.values()]
       .filter(
         (r) =>
-          r.status === "published" &&
+          isPubliclyVisibleStatus(r.status) &&
           r.visibility === "public" &&
           r.deletedAt === null &&
           (args.categories === null || args.categories.includes(r.category)) &&
@@ -408,18 +431,14 @@ export class InMemoryReportRepository implements ReportRepository {
         if (cmp !== 0) return cmp
         return a.id < b.id ? 1 : a.id > b.id ? -1 : 0 // id DESC tiebreak
       })
-    const hasMore = all.length > args.limit
-    const page = hasMore ? all.slice(0, args.limit) : all
-    const last = page[page.length - 1]
-    const nextCursor = hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null
-    const points: ReportMapPoint[] = page.map((r) => {
-      // First VISIBLE (`ready`) image per report, ordered like the Drizzle LATERAL (created_at ASC, id ASC).
-      const firstPhoto = this.media
-        .filter((m) => m.reportId === r.id && m.kind === "image" && m.status === "ready")
-        .sort((a, b) => {
-          const cmp = a.createdAt.getTime() - b.createdAt.getTime()
-          return cmp !== 0 ? cmp : a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-        })[0]
+    // Same split + encoder as the Drizzle impl.
+    const { items, nextCursor } = paginate(all, args.limit, (r) => ({
+      at: r.createdAt,
+      id: r.id,
+    }))
+    const points: ReportMapPoint[] = items.map((r) => {
+      // Same "first visible still" pick as the map path (and as the Drizzle LATERAL).
+      const firstPhoto = this.firstReadyStill(r.id)
       return {
         id: r.id,
         lat: r.lat,
@@ -448,7 +467,7 @@ export class InMemoryReportRepository implements ReportRepository {
     // findReportById, which returns a copy, then projects the new status).
     const r = this.reports.get(reportId)
     if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
-    if (r.reporterUserId !== userId) return Promise.resolve("forbidden")
+    if (r.reporterUserId !== userId) return Promise.resolve(notOwnerOutcome(r))
     r.status = input.status
     this.timeline.push({
       reportId,
@@ -470,7 +489,7 @@ export class InMemoryReportRepository implements ReportRepository {
     // findReportById, which returns a copy, then projects the new visibility).
     const r = this.reports.get(reportId)
     if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
-    if (r.reporterUserId !== userId) return Promise.resolve("forbidden")
+    if (r.reporterUserId !== userId) return Promise.resolve(notOwnerOutcome(r))
     r.visibility = input.visibility
     this.timeline.push({
       reportId,
@@ -482,16 +501,21 @@ export class InMemoryReportRepository implements ReportRepository {
   }
 }
 
-/** Parse a "<iso>|<id>" listMyReports cursor into { at(ms), id }; null when absent/malformed. */
-function parseCursor(cursor: string | null): { at: number; id: string } | null {
-  if (cursor === null) return null
-  const idx = cursor.indexOf("|")
-  if (idx < 0) {
-    const at = new Date(cursor).getTime()
-    return Number.isNaN(at) ? null : { at, id: "ffffffff-ffff-ffff-ffff-ffffffffffff" }
-  }
-  const at = new Date(cursor.slice(0, idx)).getTime()
-  const id = cursor.slice(idx + 1)
-  if (Number.isNaN(at) || id.length === 0) return null
-  return { at, id }
+/**
+ * L12: mirrors the Drizzle repo's notOwnerOutcome. A report that is already publicly readable leaks
+ * nothing by admitting it exists, so a non-owner gets the honest 403; anything NOT publicly readable
+ * (held, submitted, rejected, unlisted) gets the same 404 the read path returns, so the 403/404 split
+ * stops being an existence oracle for pre-moderation and owner-hidden content.
+ *
+ * H8-b: reads the status set from report-visibility.ts (the same isPubliclyVisibleStatus the Drizzle
+ * repo's notOwnerOutcome uses) instead of hardcoding `status === "published"` — a report the city has
+ * acknowledged / is working / has resolved is still publicly readable, so it must keep the honest 403.
+ */
+function notOwnerOutcome(r: {
+  status: ReportRecord["status"]
+  visibility: ReportRecord["visibility"]
+}): "not_found" | "forbidden" {
+  const publiclyVisible = isPubliclyVisibleStatus(r.status) && r.visibility === "public"
+  return publiclyVisible ? "forbidden" : "not_found"
 }
+

@@ -10,6 +10,52 @@ export const MAP_REPORTS_CANDIDATE_CAP = 2000
 // clusters with counts. 13 is "neighborhood" zoom (the clients' default landing zoom).
 export const CLUSTER_ZOOM_THRESHOLD = 13
 
+/**
+ * M14 — the bbox, not the client, decides the effective zoom.
+ *
+ * `zoom` arrives as a FREE query parameter that was never correlated with `bbox`, so an anonymous
+ * caller sent `bbox=<whole world>&zoom=22`, skipped clustering entirely, and forced 2000 full report
+ * rows plus 2000 media presign round-trips per request — with the 60s Cache-Control defeated by
+ * jittering the bbox by a metre. Zoom and viewport extent are not independent in any real map client:
+ * a Web-Mercator viewport `W` pixels wide at zoom `z` shows `360 * (W/256) / 2^z` degrees of longitude.
+ * Inverting that gives the zoom a given span actually implies, and we take the MINIMUM of that and what
+ * the client asked for. A client can still ask to be zoomed further OUT than its viewport (harmless —
+ * that only coarsens clustering); it can no longer claim street-level zoom over a continent.
+ *
+ * The reference viewport is deliberately generous (2048 CSS px ≈ 8 tiles) so that a genuine desktop map
+ * is never down-clamped: reaching CLUSTER_ZOOM_THRESHOLD still only requires a span of
+ * 360*8/2^13 ≈ 0.35° (~35 km), which is a real neighborhood viewport, while a world bbox tops out at an
+ * implied zoom of 3 and can therefore NEVER reach the per-pin branch.
+ */
+export const MAP_VIEWPORT_REFERENCE_TILES = 8
+
+export interface MapBBox {
+  west: number
+  south: number
+  east: number
+  north: number
+}
+
+/** The largest zoom a viewport of this extent could plausibly be displaying. Clamped to [0, 22]. */
+export function impliedZoomForBBox(bbox: MapBBox): number {
+  const lngSpan = bbox.east - bbox.west
+  // Latitude runs over a 180° axis where longitude runs over 360°, so double it before comparing.
+  const latSpan = (bbox.north - bbox.south) * 2
+  // Guard a degenerate/non-finite span (the route's BBoxQueryParam refine already rejects west >= east,
+  // this is defense-in-depth): a zero span would send log2 to +Infinity, i.e. no clamp at all.
+  const span = Math.max(lngSpan, latSpan)
+  if (!Number.isFinite(span) || span <= 0) return 0
+  const z = Math.log2((360 * MAP_VIEWPORT_REFERENCE_TILES) / span)
+  if (!Number.isFinite(z)) return 0
+  return Math.max(0, Math.min(22, Math.floor(z)))
+}
+
+/** The zoom the map read should actually use: never more than the bbox extent can justify. */
+export function effectiveMapZoom(bbox: MapBBox, requestedZoom: number): number {
+  const requested = Number.isFinite(requestedZoom) ? requestedZoom : 0
+  return Math.min(requested, impliedZoomForBBox(bbox))
+}
+
 // Pure; wraps h3-js. The per-report H3 index stored on each row (reports.h3_cell).
 export function reportH3Cell(lat: number, lng: number): string {
   return latLngToCell(lat, lng, REPORT_H3_RESOLUTION)

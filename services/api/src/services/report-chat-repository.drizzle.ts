@@ -24,6 +24,7 @@
 import type { Sql } from "../db/client.js"
 import { ReportStatusSchema, type ChatMessageDTO } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
+import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 
 /**
  * The strict `system` payload shape from ChatMessageDTO (indexed-access so it stays in lock-step with
@@ -145,18 +146,20 @@ export function makeReportChatRepository(
     },
 
     async advanceReadWatermark(reportId: string, userId: string, upToMessageId: string): Promise<void> {
-      // Set last_read_at to the target message's created_at, monotonically (GREATEST against the current
-      // value, floored at epoch 0 so a NULL prior watermark is treated as the floor). No-op when the
-      // membership row is absent (non-member) or the message id does not resolve to a report row.
-      await sql`
-        UPDATE report_chat_members m
-        SET last_read_at = GREATEST(COALESCE(m.last_read_at, to_timestamp(0)), cm.created_at)
-        FROM chat_messages cm
-        WHERE m.report_id = ${reportId}
-          AND m.user_id = ${userId}
-          AND cm.id = ${upToMessageId}
-          AND cm.report_id = ${reportId}
-      `
+      // Set last_read_at to the target message's created_at, monotonically, through the shared watermark
+      // helper (chat-read-state.drizzle.ts). No-op when the membership row is absent (non-member) or the
+      // message id does not resolve to a row in THIS report.
+      await monotonicReadWatermarkUpdate(
+        sql,
+        "report_chat_members",
+        { report_id: reportId, user_id: userId },
+        {
+          messagesTable: "chat_messages",
+          messageId: upToMessageId,
+          scopeColumn: "report_id",
+          scopeId: reportId,
+        },
+      )
     },
 
     async insertSystemMessage(input: {

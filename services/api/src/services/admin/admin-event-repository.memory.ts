@@ -3,8 +3,9 @@
  *
  * Mirrors the Drizzle impl's OBSERVABLE contract so the admin event service can be unit-tested with NO
  * database (no Docker):
- *   - listEvents applies the search (title/place/id/organizer) + the status + flagged-only facet and
- *     pages newest-id-keyset; flagged is derived from the seeded timeline kinds;
+ *   - listEvents applies the search (title/address/organizer name+handle, exact-uuid id — see
+ *     matchesQuery) + the status + flagged-only facet and pages newest-id-keyset; flagged is derived from
+ *     the seeded timeline kinds;
  *   - getEvent/listTimeline/listMessages read the seeded cleanup + its extras;
  *   - setStatus / toggleFlag / cancel mutate the cleanup + append a cleanup_timeline row;
  *
@@ -18,8 +19,10 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { isUuid } from "../../db/cursor-helpers.js"
+import { pageInMemoryById } from "./pagination.js"
 import { flaggedFromTimeline } from "./admin-event-helpers.js"
+import { isPubliclyVisibleStatus } from "../report-visibility.js"
 import {
   toEventStatus,
   toStoredCleanupStatus,
@@ -180,9 +183,16 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     this.links.push({ cleanupId, reportId, linkedAt: this.nextDate() })
   }
 
-  /** True when a report is visible (published+public, not deleted) - mirrors the SQL filter. */
+  /**
+   * True when a report is publicly visible - mirrors publicReportFilter(sql), which the Drizzle repo uses
+   * for both the gallery read and the link-insert validator. Reads the status set from
+   * report-visibility.ts rather than re-typing it: a hardcoded `status === "published"` here would make
+   * the fake UNDER-select relative to prod (a resolved report would vanish from an event's gallery).
+   */
   private reportVisible(r: SeededAdminReport | undefined): r is SeededAdminReport {
-    return r !== undefined && !r.deleted && r.status === "published" && r.visibility === "public"
+    return (
+      r !== undefined && !r.deleted && isPubliclyVisibleStatus(r.status) && r.visibility === "public"
+    )
   }
 
   async listEvents(
@@ -207,21 +217,12 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
-    const limit = clampLimit(args.limit)
-    const anchor = decodeCursor(args.cursor)
-    let start = 0
-    if (anchor) {
-      const idx = rows.findIndex((r) => r.id === anchor.id)
-      start = idx >= 0 ? idx + 1 : rows.length
-    }
-    const slice = rows.slice(start, start + limit + 1)
-    if (slice.length <= limit) {
-      return { records: slice, nextCursor: null }
-    }
-    const records = slice.slice(0, limit)
-    const last = records[records.length - 1]
-    const nextCursor = last ? encodeCursor({ createdAt: last.scheduledAt, id: last.id }) : null
-    return { records, nextCursor }
+    // The anchor is the row's scheduled_at (the list's sort key), carried in the cursor's createdAt slot
+    // exactly as the Drizzle repo does.
+    return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
+      createdAt: r.scheduledAt,
+      id: r.id,
+    }))
   }
 
   async countByBucket(args: { q: string | null }): Promise<AdminEventCounts> {
@@ -312,6 +313,9 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   async cancel(id: string, input: { note: string; actorId: string | null }): Promise<boolean> {
     const seeded = this.events.get(id)
     if (!seeded) return false
+    // Mirrors the Drizzle repo's `AND status <> 'cancelled'` guard: a repeat cancel must not append a
+    // second public timeline row, but the event IS cancelled, so it is not a 404.
+    if (seeded.storedStatus === toStoredCleanupStatus("cancelled")) return true
     // Round-trip through the mappers like setStatus does, so a future non-trivial 'cancelled' mapping
     // can't drift between cancel and setStatus.
     seeded.storedStatus = toStoredCleanupStatus("cancelled")
@@ -447,14 +451,27 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   }
 }
 
-// The search-needle filter shared by listEvents + countByBucket (mirrors the SQL ILIKE-over-N-columns).
+/**
+ * The search-needle filter shared by listEvents + countByBucket.
+ *
+ * MIRRORS searchEventsFragment (admin-event-sql.ts) COLUMN FOR COLUMN:
+ *   `c.title ILIKE %q% OR c.address ILIKE %q% OR u.display_name ILIKE %q% OR u.handle ILIKE %q%`
+ *   `OR c.id = $q::uuid` — the id branch only when q is a uuid.
+ * The id was previously matched as a SUBSTRING, which SQL never does (an exact uuid equality), so an
+ * id-prefix search passed offline and returned nothing in production. `place` and `address` are both
+ * checked because the SQL projection reads ONE column into both (`c.address AS place, c.address`) while
+ * the fake lets a test seed them separately — so whichever a test set is the address SQL would search.
+ * The organizer HANDLE (`u.handle::text`) was missing entirely.
+ */
 function matchesQuery(record: AdminEventRecord, q: string): boolean {
   const needle = q.toLowerCase()
   return (
     record.title.toLowerCase().includes(needle) ||
     record.place.toLowerCase().includes(needle) ||
-    record.id.toLowerCase().includes(needle) ||
-    (record.organizer?.name.toLowerCase().includes(needle) ?? false)
+    record.address.toLowerCase().includes(needle) ||
+    (isUuid(q) && record.id.toLowerCase() === needle) ||
+    (record.organizer?.name.toLowerCase().includes(needle) ?? false) ||
+    (record.organizer?.handle?.toLowerCase().includes(needle) ?? false)
   )
 }
 

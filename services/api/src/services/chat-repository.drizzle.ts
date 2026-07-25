@@ -1,7 +1,6 @@
 
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
-import { AppError } from "@civfix/shared"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
@@ -16,13 +15,19 @@ import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interface
 import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./chat-reactions.drizzle.js"
 import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
-import { isUuid } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
-import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
 import { loadPollsFor } from "./chat-poll-repository.drizzle.js"
+import {
+  PIN_LIST_CAP,
+  roomFindMessage,
+  roomHistory,
+  roomListPins,
+  roomSetPinned,
+  type RoomScopeSql,
+} from "./chat-room-scope.drizzle.js"
 
 // The report's jurisdiction, resolved ONCE per report-scoped query (it is constant per report). Drives the
 // @city `cityMention` chip on report messages. null when the report has no resolved jurisdiction.
@@ -190,8 +195,12 @@ export interface SoftDeleteOpts {
   bypassSenderGate?: boolean
 }
 
-/** Cap for a room's pin list (both the listPins query and the initial-history `pins` array). */
-export const PIN_LIST_CAP = 25
+/**
+ * Cap for a room's pin list (both the listPins query and the initial-history `pins` array). Defined with
+ * the shared room-scope core that applies it and re-exported here, which is where every consumer (dm
+ * repositories, routes, tests) already imports it from.
+ */
+export { PIN_LIST_CAP }
 
 interface ChatRowSelect {
   id: string
@@ -411,8 +420,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
   type RoomScope = { column: "cleanup_id" | "report_id" | "group_id"; id: string }
 
   // scope.column is a trusted internal identifier from the closed union above, rendered as an ident.
+  // This is the UN-ALIASED form, for the statements with no row alias to qualify the column with (the
+  // edit/pin/delete UPDATEs and the cursor-anchor probes); the aliased form rides on roomSql below.
   const anchorScope = (scope: RoomScope) => sql`${sql(scope.column)} = ${scope.id}`
-  const rowScope = (scope: RoomScope) => sql`cm.${sql(scope.column)} = ${scope.id}`
 
   // The report's jurisdiction (geoid/name/handle) is constant per report, so we resolve it ONCE per
   // report-scoped query to drive the @city cityMention chip. cleanup/dm scope skips this entirely (returns
@@ -470,150 +480,15 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     )
   }
 
-  async function historyScoped(
-    scope: RoomScope,
-    before: string | undefined,
-    limit: number,
-    viewerUserId: string | null,
-    around?: string,
-  ): Promise<ChatHistoryPage> {
-    // Around-mode (P2 2.4): a center-window fetch is a separate path; the before-mode fast path below
-    // stays byte-identical. The route schemas reject around+before together, so `before` is undefined here.
-    if (around !== undefined) return aroundScoped(scope, around, limit, viewerUserId)
-
-    // Resolve the `before` cursor to a keyset anchor. The anchor's (created_at, id) tuple deliberately
-    // NEVER leaves the database (a row-valued subquery on the anchor id): round-tripping created_at
-    // through the driver truncates microseconds to milliseconds (postgres-js serializes Date params via
-    // a JS Date), so same-millisecond messages could repeat/skip across pages — the exact bug the group
-    // member-list cursor fixed. The existence pre-check preserves the stale-cursor fallback (an
-    // unknown/foreign-room `before` returns the newest page; without it the NULL-row subquery would
-    // instead produce an all-NULL filter => empty page). No deleted_at filter (2.4 review): the anchor
-    // is used solely for its keyset position, so a tombstoned cursor id must still page correctly.
-    let cursorFilter = sql``
-    if (before !== undefined && isUuid(before)) {
-      const anchorRows = await sql<{ id: string }[]>`
-        SELECT id FROM chat_messages
-        WHERE id = ${before} AND ${anchorScope(scope)}
-        LIMIT 1
-      `
-      if (anchorRows[0]) {
-        cursorFilter = sql`
-          AND (cm.created_at, cm.id) < (
-            SELECT a.created_at, a.id
-            FROM chat_messages a
-            WHERE a.id = ${before} AND a.${sql(scope.column)} = ${scope.id}
-          )
-        `
-      }
-    }
-
-    const isReport = scope.column === "report_id"
-    const [rows, reportCity] = await Promise.all([
-      sql<ChatRowSelect[]>`
-        SELECT ${chatColumns(sql, isReport)}
-        FROM chat_messages cm
-        LEFT JOIN users u ON u.id = cm.sender_id
-        WHERE ${rowScope(scope)}
-          AND cm.deleted_at IS NULL
-          ${cursorFilter}
-        ORDER BY cm.created_at DESC, cm.id DESC
-        LIMIT ${limit + 1}
-      `,
-      resolveReportCity(scope),
-    ])
-    const hasMore = rows.length > limit
-    const page = hasMore ? rows.slice(0, limit) : rows
-    const items = await hydrateRows(page, viewerUserId, reportCity)
-    const last = page[page.length - 1]
-    const nextCursor = hasMore && last ? last.id : null
-    return { items, nextCursor }
-  }
-
   /**
-   * Around-mode history (P2 2.4): a window of ceil(limit/2) rows at-or-older than the target (the
-   * target row INCLUDED) + floor(limit/2) strictly newer, merged newest-first — the same ordering as a
-   * before-mode page. See chat-history-window.ts for the window/cursor semantics (nextCursor = older
-   * end, prevCursor = newer end, each null when that side reaches the edge).
-   *
-   * The anchor lookup is scoped to THIS room and — unlike the `before` anchor — INCLUDES soft-deleted
-   * targets: jumping to a deleted message's position is valid, and its tombstone rides in the window
-   * (every OTHER deleted row stays filtered out, as in before-mode). A missing/foreign-room id is a
-   * 404: a jump target the client explicitly named must exist, whereas an unknown `before` cursor just
-   * falls back to the newest page.
+   * Single-row hydration for the one-row seek: the same inputs hydrateRows batches, but on the single-id
+   * loaders, with the report jurisdiction resolved in the SAME Promise.all.
    */
-  async function aroundScoped(
+  async function hydrateRow(
     scope: RoomScope,
-    around: string,
-    limit: number,
+    row: ChatRowSelect,
     viewerUserId: string | null,
-  ): Promise<ChatHistoryPage> {
-    // Non-uuid ids can never match; short-circuit to the same 404 (avoids a 22P02 cast error -> 500).
-    if (!isUuid(around)) throw AppError.notFound("Message not found")
-    const anchorRows = await sql<{ id: string }[]>`
-      SELECT id FROM chat_messages
-      WHERE id = ${around} AND ${anchorScope(scope)}
-      LIMIT 1
-    `
-    if (!anchorRows[0]) throw AppError.notFound("Message not found")
-    // The anchor tuple stays entirely in SQL (row-valued subquery) — see historyScoped: a driver
-    // round-trip truncates created_at's microseconds, which here would eject the target from its own
-    // <=-window whenever its timestamp carries sub-millisecond precision.
-    const anchorTuple = sql`(
-      SELECT a.created_at, a.id
-      FROM chat_messages a
-      WHERE a.id = ${around} AND a.${sql(scope.column)} = ${scope.id}
-    )`
-
-    const limits = aroundLimits(limit)
-    const isReport = scope.column === "report_id"
-    // Fetch +1 on EACH side so has-more resolves independently per end.
-    const [olderDesc, newerAsc, reportCity] = await Promise.all([
-      sql<ChatRowSelect[]>`
-        SELECT ${chatColumns(sql, isReport)}
-        FROM chat_messages cm
-        LEFT JOIN users u ON u.id = cm.sender_id
-        WHERE ${rowScope(scope)}
-          AND (cm.deleted_at IS NULL OR cm.id = ${around})
-          AND (cm.created_at, cm.id) <= ${anchorTuple}
-        ORDER BY cm.created_at DESC, cm.id DESC
-        LIMIT ${limits.olderLimit + 1}
-      `,
-      sql<ChatRowSelect[]>`
-        SELECT ${chatColumns(sql, isReport)}
-        FROM chat_messages cm
-        LEFT JOIN users u ON u.id = cm.sender_id
-        WHERE ${rowScope(scope)}
-          AND cm.deleted_at IS NULL
-          AND (cm.created_at, cm.id) > ${anchorTuple}
-        ORDER BY cm.created_at ASC, cm.id ASC
-        LIMIT ${limits.newerLimit + 1}
-      `,
-      resolveReportCity(scope),
-    ])
-    const { rows, hasOlder, hasNewer } = mergeAroundWindow(olderDesc, newerAsc, limits)
-    const items = await hydrateRows(rows, viewerUserId, reportCity)
-    return {
-      items,
-      nextCursor: hasOlder ? rows[rows.length - 1]!.id : null,
-      prevCursor: hasNewer ? rows[0]!.id : null,
-    }
-  }
-
-  async function findMessageScoped(
-    scope: RoomScope,
-    messageId: string,
-    viewerUserId: string | null,
-  ): Promise<ChatMessageDTO | null> {
-    const isReport = scope.column === "report_id"
-    const rows = await sql<ChatRowSelect[]>`
-      SELECT ${chatColumns(sql, isReport)}
-      FROM chat_messages cm
-      LEFT JOIN users u ON u.id = cm.sender_id
-      WHERE cm.id = ${messageId} AND ${rowScope(scope)} AND cm.deleted_at IS NULL
-      LIMIT 1
-    `
-    const row = rows[0]
-    if (!row) return null
+  ): Promise<ChatMessageDTO> {
     const pollIds = row.kind === "poll" && row.deleted_at === null ? [row.id] : []
     const [reactions, mentions, attachmentsByMessage, reportCity, replyByTarget, pollsByMessage] =
       await Promise.all([
@@ -635,6 +510,51 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
       pollsByMessage.get(row.id) ?? null,
     )
+  }
+
+  /**
+   * The descriptor the shared room-scope core (chat-room-scope.drizzle.ts, also bound by the dm
+   * repository) reads this table through. Built PER CALL because the chat side specializes per scope:
+   * only report rows carry the @city forward column and a jurisdiction context. The users join is a LEFT
+   * join — a report SYSTEM row has no sender.
+   */
+  function roomSql(scope: RoomScope): RoomScopeSql<ChatRowSelect, ReportCityContext | null> {
+    const isReport = scope.column === "report_id"
+    return {
+      table: "chat_messages",
+      alias: "cm",
+      scope: (prefix) =>
+        prefix === null ? anchorScope(scope) : sql`${sql(prefix)}.${sql(scope.column)} = ${scope.id}`,
+      columns: chatColumns(sql, isReport),
+      from: sql`FROM chat_messages cm LEFT JOIN users u ON u.id = cm.sender_id`,
+      context: () => resolveReportCity(scope),
+      hydratePage: hydrateRows,
+      hydrateOne: (row, viewerUserId) => hydrateRow(scope, row, viewerUserId),
+    }
+  }
+
+  /**
+   * Newest-first page of the room's live messages, or — with `around` — a window centered on a target
+   * message. Both modes (the keyset cursor anchor, the around window, their cursors) live in the shared
+   * core; see chat-room-scope.drizzle.ts for the semantics the chat and dm repositories now share.
+   */
+  function historyScoped(
+    scope: RoomScope,
+    before: string | undefined,
+    limit: number,
+    viewerUserId: string | null,
+    around?: string,
+  ): Promise<ChatHistoryPage> {
+    return roomHistory(sql, roomSql(scope), before, limit, viewerUserId, around)
+  }
+
+  /** One LIVE message of this room, fully hydrated; null when unknown / foreign-room / tombstoned. */
+  function findMessageScoped(
+    scope: RoomScope,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    return roomFindMessage(sql, roomSql(scope), messageId, viewerUserId)
   }
 
   async function editScoped(
@@ -662,52 +582,19 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     return findMessageScoped(scope, messageId, senderId)
   }
 
-  /**
-   * Pin/unpin flip (P3). The WHERE gates room scope + live row + non-system kind + an ACTUAL state
-   * change (`(pinned_at IS NULL) = pin` matches unpinned rows when pinning and pinned rows when
-   * unpinning), so a repeat pin is a no-op that keeps the original pinned_at. The current DTO is then
-   * re-read (hydrated like any history row) regardless of whether the UPDATE matched — idempotent
-   * calls return the same payload.
-   */
-  async function setPinnedScoped(
+  /** Idempotent pin/unpin flip + a re-read of the current hydrated DTO (semantics in the shared core). */
+  function setPinnedScoped(
     scope: RoomScope,
     messageId: string,
     userId: string,
     pinned: boolean,
   ): Promise<ChatMessageDTO | null> {
-    await sql`
-      UPDATE chat_messages
-      SET pinned_at = CASE WHEN ${pinned} THEN now() END,
-          pinned_by = CASE WHEN ${pinned} THEN ${userId}::uuid END
-      WHERE id = ${messageId}
-        AND ${anchorScope(scope)}
-        AND deleted_at IS NULL
-        AND kind <> 'system'
-        AND (pinned_at IS NULL) = ${pinned}
-    `
-    return findMessageScoped(scope, messageId, userId)
+    return roomSetPinned(sql, roomSql(scope), messageId, userId, pinned)
   }
 
   /** The room's pins, newest-pin first over the partial index, hydrated like a history page. */
-  async function listPinsScoped(
-    scope: RoomScope,
-    viewerUserId: string | null,
-  ): Promise<ChatMessageDTO[]> {
-    const isReport = scope.column === "report_id"
-    const [rows, reportCity] = await Promise.all([
-      sql<ChatRowSelect[]>`
-        SELECT ${chatColumns(sql, isReport)}
-        FROM chat_messages cm
-        LEFT JOIN users u ON u.id = cm.sender_id
-        WHERE ${rowScope(scope)}
-          AND cm.pinned_at IS NOT NULL
-          AND cm.deleted_at IS NULL
-        ORDER BY cm.pinned_at DESC, cm.id DESC
-        LIMIT ${PIN_LIST_CAP}
-      `,
-      resolveReportCity(scope),
-    ])
-    return hydrateRows(rows, viewerUserId, reportCity)
+  function listPinsScoped(scope: RoomScope, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+    return roomListPins(sql, roomSql(scope), viewerUserId)
   }
 
   async function softDeleteScoped(

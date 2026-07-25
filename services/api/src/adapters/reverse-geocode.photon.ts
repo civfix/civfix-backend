@@ -9,6 +9,8 @@
  * address - report creation must not depend on an external geocoder being reachable.
  */
 
+import { fetchJsonOrNull } from "./http-fetch.js"
+
 /** Public Photon reverse endpoint. Self-host + override via the factory `url` for higher volume. */
 const PHOTON_REVERSE_URL = "https://photon.komoot.io/reverse"
 /** Cap the geocode so a slow/hung Photon never delays a report submit. */
@@ -61,32 +63,30 @@ export function makePhotonReverseGeocode(
 ): (lat: number, lng: number) => Promise<string | null> {
   const baseUrl = opts.url ?? PHOTON_REVERSE_URL
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const doFetch = opts.fetchImpl ?? fetch
+  // Left undefined when not injected so the helper resolves globalThis.fetch at CALL time.
+  const doFetch = opts.fetchImpl
 
   return async (lat: number, lng: number): Promise<string | null> => {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let url: string
     try {
-      const url = new URL(baseUrl)
-      url.searchParams.set("lat", String(lat))
-      url.searchParams.set("lon", String(lng))
-      url.searchParams.set("lang", "en")
-      const res = await doFetch(url.toString(), {
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-        // A compromised/MITM Photon must not be able to 30x us into an internal address (SSRF).
-        redirect: "error",
-      })
-      if (!res.ok) return null
-      const data = (await res.json()) as { features?: { properties?: PhotonReverseProps }[] }
-      const props = data.features?.[0]?.properties
-      return props ? formatPhotonReverse(props) : null
+      const u = new URL(baseUrl)
+      u.searchParams.set("lat", String(lat))
+      u.searchParams.set("lon", String(lng))
+      u.searchParams.set("lang", "en")
+      url = u.toString()
     } catch {
-      // Network / abort / parse failure: degrade to null (the caller falls back or stores no address).
+      // A misconfigured base URL must not throw out of a best-effort geocode.
       return null
-    } finally {
-      clearTimeout(timer)
     }
+    // Network / abort / non-2xx / parse failure all degrade to null (the caller falls back or stores no
+    // address); redirect:"error" (the helper's default) keeps a MITM Photon from 30x-ing us internally.
+    const data = await fetchJsonOrNull<{ features?: { properties?: PhotonReverseProps }[] }>(url, {
+      timeoutMs,
+      ...(doFetch !== undefined ? { fetchImpl: doFetch } : {}),
+      init: { headers: { Accept: "application/json" } },
+    })
+    const props = data?.features?.[0]?.properties
+    return props ? formatPhotonReverse(props) : null
   }
 }

@@ -1,6 +1,7 @@
 import type postgres from "postgres"
 import type { Queryable } from "../db/client.js"
 import type { ReportCategory, ReportStatus, ReportType } from "@civfix/shared"
+import { PUBLIC_REPORT_STATUSES } from "./report-visibility.js"
 import type {
   ReportMapPoint,
   ReportMediaView,
@@ -117,6 +118,64 @@ export function toTimelineView(t: TimelineRowSelect): ReportTimelineView {
   return { status: t.status, note: t.note, kind: t.kind, body: t.body, createdAt: t.created_at }
 }
 
+/**
+ * THE canonical "this report is publicly readable" SQL predicate (H8).
+ *
+ * This is the SQL half of the decision `report-visibility.ts:isReportVisibleTo` makes in TypeScript —
+ * the two MUST agree, minus the owner carve-out (`mine`), which no anonymous/public read path has.
+ * It existed only inlined inside `selectPublicPins`, so `post-repository.drizzle.ts` drifted twice:
+ * `isReportAttachable` checked `visibility` but not `status` (a HELD, pre-moderation anon report could
+ * be attached to a public post), and `loadReports` re-read the row on every render checking NEITHER (so
+ * an owner's later `unlist` was silently ineffective for the life of the post). Every new call site
+ * MUST use this fragment rather than re-typing the three conditions.
+ *
+ * The status SET comes from report-visibility.ts:PUBLIC_REPORT_STATUSES — a report stays public while
+ * the city works it (acknowledged / in_progress / resolved); read that constant's doc before narrowing
+ * this again.
+ *
+ * Callers must alias the `reports` table as `r` (every current one already does); a fixed alias keeps
+ * the fragment free of dynamic identifier interpolation.
+ */
+export function publicReportFilter(sql: Queryable): SqlFragment {
+  return sql`
+    r.status = ANY(${[...PUBLIC_REPORT_STATUSES]}::text[])
+    AND r.visibility = 'public'
+    AND r.deleted_at IS NULL
+  `
+}
+
+/**
+ * "The report's first VISIBLE still" LEFT JOIN LATERAL, aliased `m` (so callers read `m.thumb_key` /
+ * `m.r2_key`) and safe to join against a `reports r`.
+ *
+ * One fragment because it encodes a PREVIEW POLICY that must not drift: only `ready` media is visible to
+ * the public (matching findMediaForReport's status rule), and (created_at, id) is a TOTAL order so two
+ * assets uploaded in the same millisecond still pick the same one on every render. LEFT so a report with
+ * no visible media still yields a row with null keys — no pin is ever dropped for lack of a photo. The
+ * service presigns the keys; the repo never signs.
+ *
+ * WHICH ASSETS CAN STAND IN AS A STILL: an `image` (whose `r2_key` is a usable full-size fallback until
+ * its thumb exists) OR any other kind that ALREADY has a poster (`thumb_key IS NOT NULL`) — a
+ * transcoded video's poster is a real photo of the problem, and every consumer prefers `thumb_key` over
+ * `r2_key`, so a raw .mp4 key can never be handed back as a thumbnail (that WAS the bug the event
+ * gallery's hand-rolled copy of this join fixed locally). Keeping the two policies identical is the whole
+ * point of the fragment: before this, a video-with-poster report rendered a thumbnail in the event
+ * gallery but none on the map pin, in search, or on the post's report card.
+ */
+export function firstReadyStillLateral(sql: Queryable): SqlFragment {
+  return sql`
+    LEFT JOIN LATERAL (
+      SELECT thumb_key, r2_key
+      FROM media_assets
+      WHERE report_id = r.id
+        AND status = 'ready'
+        AND (kind = 'image' OR thumb_key IS NOT NULL)
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    ) m ON true
+  `
+}
+
 // A public map/search pin row before projection. created_at backs the search keyset cursor; the map path
 // ignores it.
 export interface PublicPinRow {
@@ -154,9 +213,7 @@ export function toMapPoint(r: PublicPinRow): ReportMapPoint {
 
 // findMapCandidates + searchReports are ~85% identical: same status/visibility gate, same first-visible-
 // photo LATERAL preview, same projection. Only the extra WHERE fragments, ORDER BY, and LIMIT differ, so
-// they thread in here. The LATERAL picks the report's earliest VISIBLE (`ready`) image — the same status
-// visibility the public detail read uses — and a LEFT JOIN so a report with no visible media still returns
-// a row with null keys (no pin is dropped). The service presigns thumb_key/r2_key (the repo never signs).
+// they thread in here. The preview join is the shared firstReadyStillLateral fragment above.
 export async function selectPublicPins(
   sql: Queryable,
   extraFilters: SqlFragment,
@@ -179,18 +236,8 @@ export async function selectPublicPins(
       m.r2_key,
       r.created_at
     FROM reports r
-    LEFT JOIN LATERAL (
-      SELECT thumb_key, r2_key
-      FROM media_assets
-      WHERE report_id = r.id
-        AND kind = 'image'
-        AND status = 'ready'
-      ORDER BY created_at ASC, id ASC
-      LIMIT 1
-    ) m ON true
-    WHERE r.status = 'published'
-      AND r.visibility = 'public'
-      AND r.deleted_at IS NULL
+    ${firstReadyStillLateral(sql)}
+    WHERE ${publicReportFilter(sql)}
       ${extraFilters}
     ${order}
     LIMIT ${limit}

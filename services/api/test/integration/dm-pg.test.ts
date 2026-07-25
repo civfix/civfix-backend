@@ -6,6 +6,8 @@
  *     the participants lo<hi;
  *   - persist lands in the PARTITIONED dm_messages table and history pages newest-first with a cursor;
  *   - the dm read watermark (dm_read_state) is monotonic;
+ *   - countUnread (what openDm reports) counts only the PEER's live messages after the watermark, and
+ *     agrees with the unread the inbox aggregate computes for the same thread;
  *   - user_blocks: block is idempotent, isBlockedEitherWay is bidirectional, listBlocked projects PersonDTOs;
  *   - searchByHandlePrefix excludes self / no-handle / DM-off / soft-deleted / blocked-either-way;
  *   - listThreadsForUser (the threads UNION's DM half) includes a dm thread and excludes a blocked one.
@@ -130,6 +132,43 @@ describe.skipIf(!pg)("direct messages (integration)", () => {
     const t2 = new Date("2026-06-01T13:00:00.000Z")
     await repo.markRead(thread.id, a, t2)
     expect((await repo.lastReadAt(thread.id, a))!.getTime()).toBe(t2.getTime())
+  })
+
+  it("countUnread agrees with the inbox aggregate: peer-only, watermarked, tombstone-aware", async () => {
+    const a = await newUser("DM Unread A")
+    const b = await newUser("DM Unread B")
+    const repo = makeDrizzleDmRepository(h.sql)
+    const thread = await repo.openOrCreateThread(a, b)
+
+    // Never read + no messages: zero.
+    expect(await repo.countUnread(thread.id, a)).toBe(0)
+
+    const first = await repo.persist({ threadId: thread.id, senderId: b, body: "yo" })
+    await repo.persist({ threadId: thread.id, senderId: b, body: "you there?" })
+    await repo.persist({ threadId: thread.id, senderId: a, body: "hi" })
+
+    // Only the PEER's live messages count, for each side of the thread...
+    expect(await repo.countUnread(thread.id, a)).toBe(2)
+    expect(await repo.countUnread(thread.id, b)).toBe(1)
+    // ...and this is the same number the inbox row shows (single-sourced predicate — openDm reporting a
+    // different unread than the threads list would be the bug this method exists to prevent).
+    const inbox = await repo.listThreadsForUser(a)
+    expect(inbox.find((t) => t.threadId === thread.id)!.unread).toBe(2)
+
+    // A tombstoned message stops counting.
+    await h.sql`UPDATE dm_messages SET deleted_at = now() WHERE id = ${first.id}`
+    expect(await repo.countUnread(thread.id, a)).toBe(1)
+
+    // The watermark clears the rest (dm_read_state, the same row markRead advances). The watermark is
+    // taken from the DATABASE clock, not this process's: created_at is written by the server (now()), and
+    // the ack path likewise resolves a real message's created_at rather than trusting a client timestamp,
+    // so comparing against a host-side `new Date()` would be at the mercy of container clock skew.
+    const [clock] = await h.sql<{ at: Date }[]>`SELECT now() AS at`
+    await repo.markRead(thread.id, a, clock!.at)
+    expect(await repo.countUnread(thread.id, a)).toBe(0)
+    // A message after the watermark counts again.
+    await repo.persist({ threadId: thread.id, senderId: b, body: "still there?" })
+    expect(await repo.countUnread(thread.id, a)).toBe(1)
   })
 
   it("user_blocks: block idempotent, isBlockedEitherWay bidirectional, listBlocked projects PersonDTOs", async () => {

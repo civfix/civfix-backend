@@ -64,6 +64,10 @@ export function parseNameCursor(cursor: string | null | undefined): NameCursor |
   return { name, id }
 }
 
+export function encodeNameCursor(c: NameCursor): string {
+  return `${c.name}|${c.id}`
+}
+
 export interface NearCursor {
   dist: number
   id: string
@@ -79,12 +83,24 @@ export function parseNearCursor(cursor: string | null | undefined): NearCursor |
   return { dist, id }
 }
 
-// Given rows fetched with `limit + 1`, split off the has-more probe row and derive { items, nextCursor }.
-// `pick` extracts the keyset anchor (an `at` or `createdAt` Date + id) from the last emitted row.
-export function paginate<T>(
+export function encodeNearCursor(c: NearCursor): string {
+  return `${c.dist}|${c.id}`
+}
+
+/**
+ * THE keyset page split: given rows fetched with `limit + 1`, drop the has-more probe row and derive
+ * { items, nextCursor }. `encode` builds the cursor from the LAST EMITTED row and may return null when
+ * that row cannot anchor a keyset (so the page simply ends).
+ *
+ * M-pagination: every repository that pages a keyset must go through this (or `paginate` below) rather
+ * than re-deriving hasMore/slice/last — six repos each hand-rolled it with subtly different encoders,
+ * which is how a page could advertise a cursor its own WHERE clause could not consume. The encoder is a
+ * parameter precisely because the anchor differs per surface (time / display name / distance / offset).
+ */
+export function pageWith<T>(
   rows: readonly T[],
   limit: number,
-  pick: (row: T) => { at?: Date; createdAt?: Date; id: string },
+  encode: (last: T) => string | null,
 ): { items: T[]; nextCursor: string | null } {
   if (rows.length <= limit) {
     return { items: [...rows], nextCursor: null }
@@ -92,8 +108,19 @@ export function paginate<T>(
   const items = rows.slice(0, limit)
   const last = items[items.length - 1]
   if (last === undefined) return { items, nextCursor: null }
-  const anchor = pick(last)
-  const at = anchor.at ?? anchor.createdAt
-  const nextCursor = at !== undefined ? encodeTimeCursor({ at, id: anchor.id }) : null
-  return { items, nextCursor }
+  return { items, nextCursor: encode(last) }
+}
+
+// The time-cursor specialization of `pageWith`. `pick` extracts the keyset anchor (an `at` or `createdAt`
+// Date + id) from the last emitted row.
+export function paginate<T>(
+  rows: readonly T[],
+  limit: number,
+  pick: (row: T) => { at?: Date; createdAt?: Date; id: string },
+): { items: T[]; nextCursor: string | null } {
+  return pageWith(rows, limit, (last) => {
+    const anchor = pick(last)
+    const at = anchor.at ?? anchor.createdAt
+    return at !== undefined ? encodeTimeCursor({ at, id: anchor.id }) : null
+  })
 }

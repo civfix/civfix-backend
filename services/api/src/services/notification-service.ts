@@ -1,4 +1,5 @@
 
+import { AppError } from "@civfix/shared"
 import type {
   ListNotificationsResponse,
   NotificationDTO,
@@ -103,13 +104,28 @@ export interface NotificationRepository {
     deviceId: string | null
   }): Promise<PushTokenUpsertOutcome>
 
-  // DEVICE-CLAIM (cross-account leak fix). A device's push token must only deliver to the account that is
-  // currently signed in ON that device. When a user registers a token with a device_id (the device's own
-  // secret, shared across accounts on the device), soft-revoke every OTHER user's active token for that
-  // same device_id — they are no longer the signed-in account on this device. Secure: only this device can
-  // present its device_id, so this cannot revoke a token on a device the caller does not hold. No-op when
-  // no row matches.
-  revokeDeviceTokensForOtherUsers(userId: string, deviceId: string): Promise<void>
+  /**
+   * DEVICE-CLAIM. A device's push token must only deliver to the account currently signed in ON that
+   * device, so when a user registers a token for a device we soft-revoke OTHER users' active tokens for
+   * the same device.
+   *
+   * H12 — the old contract took a caller-supplied `deviceId` on the claim that "device_id is the
+   * device's own secret". It is not: it is an unvalidated string from a JSON body, and one request
+   * revoked every active token carrying it, across every account. A harvested device-id list was a
+   * fleet-wide push blackout.
+   *
+   * The revoke is now scoped by POSSESSION OF THE TOKEN, which the caller demonstrably holds (they just
+   * presented it and it is what push is delivered to): only rows whose `token` matches, or whose
+   * device_id matches AND that device already had a row for this user, are touched. `deviceId` alone can
+   * no longer authorize anything. Returns the number of rows revoked so the caller can log a
+   * cross-account revoke.
+   */
+  revokeDeviceTokensForOtherUsers(args: {
+    userId: string
+    token: string
+    platform: PushPlatform
+    deviceId: string | null
+  }): Promise<number>
 
   // Account erasure (DELETE /me): a push token (token + device_id) is a device identifier, so erasure
   // HARD-deletes the rows rather than soft-revoking (which is what normal rotation does, keeping an audit
@@ -291,21 +307,38 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         deviceId: req.deviceId ?? null,
       })
       if (outcome === "conflict") {
+        // H11 — this used to log a warning and return {ok:true}. The client then believed registration
+        // had succeeded while the token stayed bound to whoever registered it FIRST, so the legitimate
+        // owner of the device silently never received push again, with no signal anywhere. Surface it:
+        // a real error status lets the client retry, fall back, or tell the user, and makes the
+        // (attacker-driven) first-registration land in logs as a failed request rather than a warning
+        // nobody reads.
         deps.logger?.warn(
           { userId, platform: req.platform, hasDeviceId: req.deviceId !== undefined },
-          "push token re-registration refused: token owned by another user (no device-ownership proof)",
+          "push token re-registration refused: token is bound to another account (no possession proof)",
         )
-        return { ok: true }
+        throw AppError.conflict(
+          "This push token is registered to another account. Sign out on the other account or reinstall the app.",
+        )
       }
-      // DEVICE-CLAIM (cross-account leak fix): this account is now the one signed in on this device, so any
-      // OTHER user's active token for the SAME device must stop receiving here. Gated on a presented
-      // device_id (the device's own secret) so it can only ever revoke tokens on the caller's own device.
-      if (req.deviceId) {
-        try {
-          await deps.repo.revokeDeviceTokensForOtherUsers(userId, req.deviceId)
-        } catch (err) {
-          deps.logger?.warn({ err, userId }, "device-claim revoke failed (suppressed)")
+      // DEVICE-CLAIM: this account is now the one signed in on this device, so another account's active
+      // token for the same device must stop receiving here. Scoped by possession of the presented TOKEN
+      // (see NotificationRepository.revokeDeviceTokensForOtherUsers) — a self-declared deviceId alone no
+      // longer authorizes any cross-account write (H12).
+      try {
+        const revoked = await deps.repo.revokeDeviceTokensForOtherUsers({
+          userId,
+          token: req.token,
+          platform: req.platform,
+          deviceId: req.deviceId ?? null,
+        })
+        if (revoked > 0) {
+          // Cross-account revokes are rare and security-relevant (account handoff on a shared device).
+          // Log every one so an anomalous burst is visible.
+          deps.logger?.warn({ userId, platform: req.platform, revoked }, "device-claim revoked other accounts' push tokens")
         }
+      } catch (err) {
+        deps.logger?.warn({ err, userId }, "device-claim revoke failed (suppressed)")
       }
       try {
         await deps.pushSender.registerToken(userId, req.token, req.platform, req.deviceId)

@@ -19,6 +19,9 @@ const STRANGER = "22222222-2222-2222-2222-222222222222"
 const R1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
 const R2 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"
 const R3 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"
+// A report the city already FIXED. `resolved` is a PUBLIC status (report-visibility.ts:
+// PUBLIC_REPORT_STATUSES), so it is linkable and gallery-visible exactly like `published`.
+const R4 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4"
 
 let repo: InMemoryCleanupRepository
 let service: CleanupService
@@ -45,6 +48,7 @@ beforeEach(() => {
   repo.seedReport({ id: R1, title: "Bin 1", category: "trash", thumbKey: "thumb/r1.jpg" })
   repo.seedReport({ id: R2, title: "Graffiti", category: "graffiti" })
   repo.seedReport({ id: R3, title: "Held one", status: "held" })
+  repo.seedReport({ id: R4, title: "Fixed hazard", category: "hazard", status: "resolved" })
   service = makeCleanupService({ repo })
 })
 
@@ -145,6 +149,36 @@ describe("updateCleanup (host-gated PATCH)", () => {
     expect(updated.eventKind).toBe("other_volunteer")
     expect(updated.linkedReports).toEqual([])
     expect(repo.links.filter((l) => l.cleanupId === created.id)).toHaveLength(0)
+  })
+})
+
+describe("linking a report in a post-publication status (H8-b widening)", () => {
+  // The fake's reportVisible used to hardcode status === "published" while the SQL twin
+  // (publicReportFilter) had widened to PUBLIC_REPORT_STATUSES, so these two paths — link validation
+  // (filterVisibleReportIds) and the gallery loader — green-lit the PRE-widening behavior offline.
+  it("links a resolved report at create time and shows it in the gallery", async () => {
+    const dto = await service.createCleanup(baseInput({ linkedReportIds: [R1, R4] }), ORG)
+    expect(dto.linkedReports.map((r) => r.id).sort()).toEqual([R1, R4].sort())
+    const fixed = dto.linkedReports.find((r) => r.id === R4)
+    expect(fixed?.status).toBe("resolved")
+  })
+
+  it("links a report in each other public progress status (acknowledged, in_progress)", async () => {
+    const ack = repo.seedReport({ title: "Acked", status: "acknowledged" })
+    const wip = repo.seedReport({ title: "Being fixed", status: "in_progress" })
+    const dto = await service.createCleanup(baseInput({ linkedReportIds: [ack.id, wip.id] }), ORG)
+    expect(dto.linkedReports.map((r) => r.id).sort()).toEqual([ack.id, wip.id].sort())
+  })
+
+  it("still rejects the PRE-publication and moderator-hidden statuses", async () => {
+    const submitted = repo.seedReport({ title: "Fresh", status: "submitted" })
+    const rejected = repo.seedReport({ title: "Nope", status: "rejected" })
+    const hidden = repo.seedReport({ title: "Unlisted", visibility: "hidden" })
+    for (const id of [R3, submitted.id, rejected.id, hidden.id]) {
+      await expect(
+        service.createCleanup(baseInput({ linkedReportIds: [id] }), ORG),
+      ).rejects.toMatchObject({ code: "VALIDATION" })
+    }
   })
 })
 

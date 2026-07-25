@@ -23,10 +23,10 @@ import type { Container } from "../../di.js"
 import {
   makeAnalyticsService,
   type AnalyticsRepository,
-  type AnalyticsService,
 } from "../../services/admin/analytics-service.js"
 import { makeDrizzleAnalyticsRepository } from "../../services/admin/analytics-repository.drizzle.js"
 import { route } from "../../versioning/route.js"
+import { overridableService, spreadNow } from "./_route-utils.js"
 
 /**
  * Optional injected analytics-service dependencies (tests). When present the routes build the service from
@@ -49,17 +49,15 @@ export async function registerAdminAnalyticsRoutes(
   container: Container,
 ): Promise<void> {
   /** Build the analytics service from injected overrides (tests) or the container (production). */
-  function service(): AnalyticsService {
-    const overrides = app.analyticsOverrides
-    if (overrides) {
-      return makeAnalyticsService({
-        repo: overrides.repo,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
-      })
-    }
-    const repo: AnalyticsRepository = makeDrizzleAnalyticsRepository(container.getDb().sql)
-    return makeAnalyticsService({ repo })
-  }
+  const service = overridableService(
+    app,
+    "analyticsOverrides",
+    (overrides) => makeAnalyticsService({ repo: overrides.repo, ...spreadNow(overrides) }),
+    () => {
+      const repo: AnalyticsRepository = makeDrizzleAnalyticsRepository(container.getDb().sql)
+      return makeAnalyticsService({ repo })
+    },
+  )
 
   route(app, "analyticsKpis", async (_request, reply) => {
     reply.status(200).send(await service().kpis())

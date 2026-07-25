@@ -10,6 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { randomUUID } from "node:crypto"
 import { FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
@@ -59,6 +60,21 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       INSERT INTO users (display_name, handle) VALUES (${name}, ${handle ?? testHandle()}) RETURNING id
     `
     return u!.id
+  }
+
+  /**
+   * A finalized, unattached media_asset — what media-intake leaves behind once the upload validates.
+   * `ready` (not `validating`) because loadMedia only renders `ready` assets into the PostDTO.
+   */
+  async function seedMedia(status = "ready"): Promise<{ id: string; uploadId: string }> {
+    const uploadId = randomUUID()
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO media_assets (upload_id, kind, r2_key, thumb_key, status, byte_size, width, height)
+      VALUES (${uploadId}, 'image', ${`uploads/post/${uploadId}`}, ${`uploads/post/${uploadId}.thumb`},
+              ${status}, 2048, 800, 600)
+      RETURNING id
+    `
+    return { id: row!.id, uploadId }
   }
 
   it("create → get → like → repost → reply → save → delete round-trip with denormalized counts", async () => {
@@ -118,6 +134,153 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     // delete (author-only)
     await expect(svc.deletePost(created.id, author)).resolves.toEqual({ ok: true })
     await expect(svc.getPost(created.id, author)).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  // --- post media: the 0054 CHECK bug + the claim predicate --------------------------------------
+  // Every createPost in this file used to pass mediaUploadIds: [], so the claim path
+  // (`UPDATE media_assets SET post_id = $1, purpose = 'post'`) was NEVER exercised — and it could not
+  // succeed: 0051 introduced purpose='post' in the mirror, the shared enum and the claim SQL, but no
+  // migration widened the inline CHECK 0016 added (purpose IN ('report','verification')). Every post with
+  // a photo raised 23514, aborted the create transaction and 500'd. 0054_media_purpose_post.sql widened
+  // the CHECK; these are the tests that keep it widened.
+  // (The value-set half of the same class is guarded schema-wide in test/integration/schema.test.ts.)
+
+  it("creates a post WITH media: the asset is claimed (post_id + purpose='post') and renders on the DTO", async () => {
+    const svc = makeService()
+    const author = await newUser("Media Author", "medauth")
+    const reader = await newUser("Media Reader", "medread")
+    const media = await seedMedia()
+
+    const created = await svc.createPost(
+      { kind: "post", body: "look at this photo", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+      author,
+    )
+    expect(created.media).toHaveLength(1)
+    expect(created.media[0]!.id).toBe(media.id)
+    expect(created.media[0]!.kind).toBe("image")
+    expect(created.media[0]!.status).toBe("ready")
+    // The repo hands the keys to the service to presign; the echo presigner in this file makes the
+    // mapping visible, which also proves the thumb key round-tripped.
+    expect(created.media[0]!.url).toBe(`m://uploads/post/${media.uploadId}`)
+    expect(created.media[0]!.thumbUrl).toBe(`m://uploads/post/${media.uploadId}.thumb`)
+
+    // The claim landed in the database: bound to THIS post, repurposed, and still unbound to any report.
+    const [row] = await h.sql<{ post_id: string | null; purpose: string; report_id: string | null }[]>`
+      SELECT post_id, purpose, report_id FROM media_assets WHERE id = ${media.id}
+    `
+    expect(row!.post_id).toBe(created.id)
+    expect(row!.purpose).toBe("post")
+    expect(row!.report_id).toBeNull()
+
+    // Another viewer sees the same gallery (media is not viewer-scoped).
+    const fetched = await svc.getPost(created.id, reader)
+    expect(fetched.media.map((m) => m.id)).toEqual([media.id])
+  })
+
+  it("REJECTS (422) a post whose media is already claimed by another post, leaving it on the first", async () => {
+    const svc = makeService()
+    const author = await newUser("Claim First", "claim1")
+    const thief = await newUser("Claim Second", "claim2")
+    const media = await seedMedia()
+
+    const first = await svc.createPost(
+      { kind: "post", body: "mine", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+      author,
+    )
+    await expect(
+      svc.createPost(
+        { kind: "post", body: "also mine?", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+        thief,
+      ),
+    ).rejects.toMatchObject({
+      httpStatus: 422,
+      code: "VALIDATION",
+      fields: { mediaUploadIds: "One or more media uploads are unavailable." },
+    })
+
+    const [row] = await h.sql<{ post_id: string | null }[]>`
+      SELECT post_id FROM media_assets WHERE id = ${media.id}
+    `
+    expect(row!.post_id).toBe(first.id)
+    // The rejected create rolled back completely — no orphan post row for the thief.
+    const posts = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM posts WHERE author_id = ${thief}
+    `
+    expect(posts[0]!.n).toBe(0)
+  })
+
+  it("REJECTS (422) an UNKNOWN upload id and a REJECTED asset, creating no post either way", async () => {
+    const svc = makeService()
+    const author = await newUser("Bad Media", "badmed")
+    const rejected = await seedMedia("rejected")
+
+    for (const uploadId of [randomUUID(), rejected.uploadId]) {
+      await expect(
+        svc.createPost(
+          { kind: "post", body: "nope", mediaUploadIds: [uploadId], mentionedUserIds: [] },
+          author,
+        ),
+      ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
+    }
+
+    const posts = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM posts WHERE author_id = ${author}
+    `
+    expect(posts[0]!.n).toBe(0)
+    // The rejected asset was not repurposed on the way out.
+    const [row] = await h.sql<{ post_id: string | null; purpose: string }[]>`
+      SELECT post_id, purpose FROM media_assets WHERE id = ${rejected.id}
+    `
+    expect(row!.post_id).toBeNull()
+    expect(row!.purpose).toBe("report")
+  })
+
+  it("REJECTS (422) an asset already bound to a REPORT (no cross-publishing into the feed)", async () => {
+    const svc = makeService()
+    const author = await newUser("Cross Publisher", "crosspub")
+    const media = await seedMedia()
+    const report = await insertReport(author, "published", "public", "Report with a photo")
+    await h.sql`UPDATE media_assets SET report_id = ${report} WHERE id = ${media.id}`
+
+    await expect(
+      svc.createPost(
+        { kind: "post", body: "recycling a report photo", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+        author,
+      ),
+    ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
+
+    const [row] = await h.sql<{ report_id: string | null; post_id: string | null; purpose: string }[]>`
+      SELECT report_id, post_id, purpose FROM media_assets WHERE id = ${media.id}
+    `
+    expect(row!.report_id).toBe(report)
+    expect(row!.post_id).toBeNull()
+    expect(row!.purpose).toBe("report")
+  })
+
+  it("attaches MULTIPLE assets in upload order and tolerates a repeated id (deduped, claimed once)", async () => {
+    const svc = makeService()
+    const author = await newUser("Gallery Author", "gallauth")
+    const a = await seedMedia()
+    const b = await seedMedia()
+
+    const created = await svc.createPost(
+      {
+        kind: "post",
+        body: "two photos",
+        // `a` repeated: the claim compares against the DEDUPED input, so this must NOT 422.
+        mediaUploadIds: [a.uploadId, b.uploadId, a.uploadId],
+        mentionedUserIds: [],
+      },
+      author,
+    )
+    // loadMedia orders by created_at ASC, so the gallery reads in upload order.
+    expect(created.media.map((m) => m.id)).toEqual([a.id, b.id])
+
+    const rows = await h.sql<{ id: string; post_id: string | null }[]>`
+      SELECT id, post_id FROM media_assets WHERE id = ANY(${[a.id, b.id]}::uuid[])
+    `
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.post_id === created.id)).toBe(true)
   })
 
   it("delete is author-only (403 for a non-author)", async () => {
@@ -186,6 +349,222 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
         outsider,
       ),
     ).rejects.toMatchObject({ httpStatus: 403 })
+  })
+
+  // --- H8: post report-attachment bypassed the report visibility gate ------------------------------
+  // Two independent holes, both now closed by the shared publicReportFilter() fragment:
+  //   (a) isReportAttachable checked `visibility` but NOT `status`, so an anonymous submitter could
+  //       attach their own HELD (pre-moderation) report and publish its title, exact lat/lng, address
+  //       and photo into the SIGNED-OUT public feed before any moderator saw it;
+  //   (b) loadReports re-read the row on every render checking NEITHER, so the owner's later `unlist`
+  //       was silently ineffective for as long as the post existed.
+
+  async function insertReport(
+    reporter: string | null,
+    status: string,
+    visibility: string,
+    title: string,
+  ): Promise<string> {
+    const [r] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (reporter_user_id, idempotency_key, geom, geom_source, category, status, visibility, h3_cell, title)
+      VALUES (
+        ${reporter}, gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), 'manual',
+        'trash', ${status}, ${visibility}, 'h0', ${title}
+      )
+      RETURNING id
+    `
+    return r!.id
+  }
+
+  it("H8: a HELD report cannot be attached to a post (status was never checked)", async () => {
+    const svc = makeService()
+    const author = await newUser("Held Attacher", "heldatt")
+    const held = await insertReport(author, "held", "public", "Held report")
+
+    await expect(
+      svc.createPost(
+        { kind: "post", body: "look at this", reportId: held, mediaUploadIds: [], mentionedUserIds: [] },
+        author,
+      ),
+    ).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("H8: an owner-UNLISTED and a soft-DELETED report are equally unattachable", async () => {
+    const svc = makeService()
+    const author = await newUser("Unlist Attacher", "unlatt")
+    const unlisted = await insertReport(author, "published", "hidden", "Unlisted report")
+    const deleted = await insertReport(author, "published", "public", "Deleted report")
+    await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${deleted}`
+
+    for (const id of [unlisted, deleted]) {
+      await expect(
+        svc.createPost(
+          { kind: "post", body: "look", reportId: id, mediaUploadIds: [], mentionedUserIds: [] },
+          author,
+        ),
+      ).rejects.toMatchObject({ httpStatus: 404 })
+    }
+  })
+
+  it("H8: a later unlist RETROACTIVELY strips the attachment card from the rendered post", async () => {
+    const svc = makeService()
+    const author = await newUser("Retro Author", "retroauth")
+    const reader = await newUser("Retro Reader", "retroread")
+    const report = await insertReport(author, "published", "public", "Public report")
+
+    const post = await svc.createPost(
+      { kind: "post", body: "my report", reportId: report, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect(post.report?.id).toBe(report)
+    expect(post.report?.title).toBe("Public report")
+
+    // The owner unlists it. This USED to change nothing about the rendered post: loadReports re-read the
+    // row every render and re-published the title, exact coordinates, address and photo regardless.
+    await h.sql`UPDATE reports SET visibility = 'hidden' WHERE id = ${report}`
+
+    const afterUnlist = await svc.getPost(post.id, reader)
+    expect(afterUnlist.report).toBeNull()
+    // The post itself survives — hydrate degrades it to a body-only post rather than dropping the row.
+    expect(afterUnlist.id).toBe(post.id)
+    expect(afterUnlist.body).toBe("my report")
+
+    // Same for a moderator pulling it back to `held`, and for a soft delete.
+    await h.sql`UPDATE reports SET visibility = 'public', status = 'held' WHERE id = ${report}`
+    expect((await svc.getPost(post.id, reader)).report).toBeNull()
+    await h.sql`UPDATE reports SET status = 'published' WHERE id = ${report}`
+    expect((await svc.getPost(post.id, reader)).report?.id).toBe(report)
+    await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${report}`
+    expect((await svc.getPost(post.id, reader)).report).toBeNull()
+  })
+
+  // --- the `fixes` filter x report-card regression guard (H8-b) -----------------------------------
+  // H8's first fix routed BOTH post report paths through publicReportFilter(), whose status set was
+  // `status = 'published'` EXACTLY. That made the product's headline surface structurally unrenderable:
+  // the feeds' `fixes` filter selects posts whose report is `resolved`, so every post the filter could
+  // return was simultaneously stripped of the report card it exists to show — and `isReportAttachable`
+  // 404'd any attempt to create one in the first place. PUBLIC_REPORT_STATUSES now widens the predicate
+  // to published/acknowledged/in_progress/resolved (a report stays public while the city works it), and
+  // these tests are the guard: they FAIL if that set is ever narrowed back to 'published'.
+
+  it("FIXES FILTER: a RESOLVED report is attachable and its post renders the report card", async () => {
+    const svc = makeService()
+    const author = await newUser("Fix Author", "fixauth")
+    const reader = await newUser("Fix Reader", "fixread")
+    const resolved = await insertReport(author, "resolved", "public", "Pothole fixed")
+
+    // isReportAttachable must accept `resolved` — this is the create that used to 404.
+    const post = await svc.createPost(
+      { kind: "post", body: "the city fixed it", reportId: resolved, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect(post.report?.id).toBe(resolved)
+    expect(post.report?.title).toBe("Pothole fixed")
+    expect(post.report?.status).toBe("resolved")
+
+    // ...and loadReports must still render the card on a later read, for a different viewer.
+    const rendered = await svc.getPost(post.id, reader)
+    expect(rendered.report?.id).toBe(resolved)
+    expect(rendered.report?.status).toBe("resolved")
+  })
+
+  it("FIXES FILTER: every mid-lifecycle public status is attachable and renders; pre-publication is not", async () => {
+    const svc = makeService()
+    const author = await newUser("Lifecycle Author", "lifeauth")
+
+    // The whole public set: a report stays visible while the city works it.
+    for (const status of ["published", "acknowledged", "in_progress", "resolved"]) {
+      const id = await insertReport(author, status, "public", `Report ${status}`)
+      const post = await svc.createPost(
+        { kind: "post", body: `status ${status}`, reportId: id, mediaUploadIds: [], mentionedUserIds: [] },
+        author,
+      )
+      expect(post.report?.id, `attach failed for status ${status}`).toBe(id)
+      expect((await svc.getPost(post.id, author)).report?.status).toBe(status)
+    }
+
+    // The pre-publication + moderator-rejected states stay unattachable (the H8 half must not regress).
+    for (const status of ["submitted", "held", "rejected"]) {
+      const id = await insertReport(author, status, "public", `Report ${status}`)
+      await expect(
+        svc.createPost(
+          { kind: "post", body: `status ${status}`, reportId: id, mediaUploadIds: [], mentionedUserIds: [] },
+          author,
+        ),
+      ).rejects.toMatchObject({ httpStatus: 404 })
+    }
+  })
+
+  it("FIXES FILTER: the home + public feeds return the resolved-report post and exclude non-resolved ones", async () => {
+    const svc = makeService()
+    const author = await newUser("Feed Fix Author", "ffauth")
+    const viewer = await newUser("Feed Fix Viewer", "ffview")
+    await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${viewer}, ${author})`
+
+    const resolved = await insertReport(author, "resolved", "public", "Fixed thing")
+    const working = await insertReport(author, "in_progress", "public", "Still being worked")
+
+    const fixPost = await svc.createPost(
+      { kind: "post", body: "fixed!", reportId: resolved, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    const wipPost = await svc.createPost(
+      { kind: "post", body: "in progress", reportId: working, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    const plainPost = await svc.createPost(
+      { kind: "post", body: "no report at all", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+
+    const home = await svc.homeFeed(viewer, { filter: "fixes" })
+    const homeIds = home.items.map((p) => p.id)
+    expect(homeIds).toContain(fixPost.id)
+    expect(homeIds).not.toContain(wipPost.id)
+    expect(homeIds).not.toContain(plainPost.id)
+    // THE regression the widened predicate exists for: the returned item carries its report card, so the
+    // filter and the renderer agree. Under `status = 'published'` this was null on every fixes-filter row.
+    expect(home.items.find((p) => p.id === fixPost.id)?.report?.id).toBe(resolved)
+
+    // Same for the signed-out public feed (no viewer, no follow scope).
+    const publicFeed = await svc.publicFeed({ filter: "fixes" })
+    const publicIds = publicFeed.items.map((p) => p.id)
+    expect(publicIds).toContain(fixPost.id)
+    expect(publicIds).not.toContain(wipPost.id)
+    expect(publicFeed.items.find((p) => p.id === fixPost.id)?.report?.title).toBe("Fixed thing")
+
+    // Unfiltered, all three are in the home feed — so the exclusions above are the filter, not visibility.
+    const all = await svc.homeFeed(viewer, { filter: "all" })
+    const allIds = all.items.map((p) => p.id)
+    expect(allIds).toContain(fixPost.id)
+    expect(allIds).toContain(wipPost.id)
+    expect(allIds).toContain(plainPost.id)
+    // ...and the in_progress report ALSO renders its card (mid-lifecycle is public, just not a "fix").
+    expect(all.items.find((p) => p.id === wipPost.id)?.report?.id).toBe(working)
+  })
+
+  it("FIXES FILTER: unlisting/soft-deleting the resolved report drops the card but keeps the fixes match", async () => {
+    // The filter reads `reports.status` directly while the CARD goes through publicReportFilter, so the two
+    // can legitimately disagree once the owner unlists. Pinned so the degraded state is deliberate: the post
+    // stays in the fixes feed (its report IS resolved) but publishes nothing about the report.
+    const svc = makeService()
+    const author = await newUser("Fix Unlist Author", "fuauth")
+    const viewer = await newUser("Fix Unlist Viewer", "fuview")
+    await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${viewer}, ${author})`
+    const resolved = await insertReport(author, "resolved", "public", "Fixed then hidden")
+
+    const post = await svc.createPost(
+      { kind: "post", body: "fixed", reportId: resolved, mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect(post.report?.id).toBe(resolved)
+
+    await h.sql`UPDATE reports SET visibility = 'hidden' WHERE id = ${resolved}`
+    const home = await svc.homeFeed(viewer, { filter: "fixes" })
+    const item = home.items.find((p) => p.id === post.id)
+    expect(item).toBeDefined()
+    expect(item?.report).toBeNull()
+    expect(item?.body).toBe("fixed")
   })
 
   it("like notifies the post author (not self); blocked → none; @mention notifies the mentioned user", async () => {

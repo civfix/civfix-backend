@@ -6,6 +6,11 @@ import type {
   ReportCategory,
 } from "@civfix/shared"
 
+/**
+ * The pg-boss queue the outreach digest runs on: enqueued here by save-and-route and scheduled/worked by
+ * registerOutreachJobs (which re-exports this constant). Declared in this zero-runtime module so both sides
+ * share ONE literal without the service importing the job registration.
+ */
 export const OUTREACH_DIGEST_JOB = "outreach.digest"
 
 /**
@@ -108,10 +113,21 @@ export interface SaveContactsInput {
   forwardBodyTemplate?: string | null
 }
 
-/** The optional-field contacts/notes/form/flag patch input (shared by the repo + service + route). */
+/**
+ * The optional-field contacts/notes/form/flag patch input (shared by the repo + service + route).
+ *
+ * CLEARING: per-category contacts, the @handle and the forward templates all clear on null/"". The legacy
+ * `defaultEmails` and `formUrl` do NOT: the shared contacts upsert only ever writes a non-empty array and
+ * COALESCEs the form URL, so `[]` / null read as "leave alone" rather than "clear". Both repository
+ * bindings behave the same way, so it is consistent — just asymmetric, and clearing a stale legacy email or
+ * form URL is a wire-semantics decision (an operator form that always posts the field would otherwise wipe
+ * it) plus a change to upsertJurisdictionContacts.
+ */
 export interface PatchContactsInput {
   contacts?: Partial<Record<ReportCategory, string | null>>
+  /** Legacy default emails. An empty array is "unchanged", NOT a clear (see the interface note). */
   defaultEmails?: string[]
+  /** Report form URL. null/"" is "unchanged", NOT a clear (see the interface note). */
   formUrl?: string | null
   notes?: string | null
   flagged?: boolean
@@ -150,13 +166,10 @@ export interface JurisdictionContactsRepository {
   listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult>
   /** One jurisdiction's simplified boundary geometry for the map, or null when it has no stored boundary. */
   getGeometry(geoid: string): Promise<JurisdictionGeometryRecord | null>
-  /**
-   * Stamp `bounced_at = now()` on every jurisdiction_contacts row carrying this address: the inbound bounce
-   * handler calls this when an outbound hard-bounces, so the directory surfaces a `bounced` contact (which
-   * takes precedence over verified/pending) and re-opens discovery. A re-saved contact clears the marker.
-   * No-op when the address matches no contact.
-   */
-  markContactBounced(email: string): Promise<void>
+  // NOTE: bounce stamping is NOT on this seam. The inbound bounce handler owns it end to end
+  // (inbound-bounce.ts markBouncedContact), because it runs from the mail path with only a raw Sql handle
+  // and also needs geoidForContact to re-open discovery. A parallel repo method existed here with zero
+  // callers and a duplicate UPDATE; it was removed rather than left to drift.
 }
 
 /** The Jobs seam slice the service needs (enqueue only); structurally compatible with the shared Jobs. */
@@ -173,11 +186,17 @@ export interface JurisdictionContactsServiceDeps {
   now?: () => Date
 }
 
+/**
+ * `actorId` is NON-NULL on both mutating methods: the only callers are the operator-guarded jurisdiction
+ * routes, where `requireOperator(request)` returns a `string` or throws, so an unattributed audit row for
+ * a "Save & route" is not a reachable state. The REPOSITORY audit slot above stays nullable — its writes
+ * are also driven by the system-owned outreach/autoforward jobs, which genuinely have no operator.
+ */
 export interface JurisdictionContactsService {
   /** Save & route: persist contacts, route pending pins, enqueue throttled outreach. Audited in-tx (H4). */
-  saveAndRoute(geoid: string, input: SaveContactsInput, actorId: string | null): Promise<SaveAndRouteResult>
+  saveAndRoute(geoid: string, input: SaveContactsInput, actorId: string): Promise<SaveAndRouteResult>
   /** Patch a jurisdiction's contacts/notes/form WITHOUT routing. Audited in-tx (H4). */
-  patch(geoid: string, input: PatchContactsInput, actorId: string | null): Promise<void>
+  patch(geoid: string, input: PatchContactsInput, actorId: string): Promise<void>
   /** List the jurisdiction directory (org/dept/email/form/method/status/coverage/lastRouted). */
   listDirectory(query: JurisdictionListQuery): Promise<JurisdictionDirectoryResponse>
   /** One jurisdiction's boundary geometry for the verification map; 404s when the geoid has no boundary. */

@@ -2,10 +2,25 @@
 import { AppError } from "@civfix/shared"
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
-import { parseNearCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import {
+  encodeNearCursor,
+  encodeTimeCursor,
+  pageWith,
+  parseNearCursor,
+  parseTimeCursor,
+} from "../db/cursor-helpers.js"
 import { allocateEventReferenceCode } from "../db/reference-code.js"
+// THE canonical "this report is publicly readable" predicate (report-sql.ts H8). Both report reads in
+// this file used to re-type its three conditions inline, which is exactly the drift the fragment exists
+// to prevent: whatever set of statuses counts as publicly visible, the event gallery and the link
+// validator must agree with the report surfaces, or a report progressing past 'published' silently
+// disappears from its linked events while still being linkable (or vice versa). Requires alias `r`.
+// firstReadyStillLateral is the same story for the PREVIEW half: one join, one policy for which ready
+// asset may stand in as a report's thumbnail across the gallery, the map pins, search and post cards.
+import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
 import type {
   AttendeeView,
+  CancelCleanupOutcome,
   CleanupRecord,
   CleanupRepository,
   CreateCleanupTxArgs,
@@ -103,6 +118,11 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       if (patch.address !== undefined) sets.push(sql`address = ${patch.address}`)
       if (patch.bring !== undefined) {
         sets.push(sql`bring = ${patch.bring as unknown as string[] | null}`)
+      }
+      // Set in the SAME statement as geom (the service re-resolves it from the moved point), so the
+      // stored position and its jurisdiction can never disagree. reference_code is untouched by design.
+      if (patch.jurisdictionGeoid !== undefined) {
+        sets.push(sql`jurisdiction_geoid = ${patch.jurisdictionGeoid}`)
       }
 
       if (sets.length === 0) {
@@ -205,21 +225,19 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ST_X(r.geom) AS lng,
           ST_Y(r.geom) AS lat,
           r.addr,
-          m.thumb_key,
+          -- The gallery card renders ONE key, so the poster wins and the image's full-size r2_key is the
+          -- fallback until its thumb exists. (A non-image only qualifies WITH a poster, so this can never
+          -- resolve to a raw .mp4 key — see firstReadyStillLateral.)
+          COALESCE(m.thumb_key, m.r2_key) AS thumb_key,
           cr.linked_at
         FROM cleanup_reports cr
         JOIN reports r ON r.id = cr.report_id
-        LEFT JOIN LATERAL (
-          SELECT COALESCE(ma.thumb_key, ma.r2_key) AS thumb_key
-          FROM media_assets ma
-          WHERE ma.report_id = r.id AND ma.status = 'ready'
-          ORDER BY ma.created_at ASC
-          LIMIT 1
-        ) m ON true
+        -- THE shared "report's first visible still" join (report-sql.ts), not a local copy: this query used
+        -- to hand-roll it with a wider kind guard than the map/search/post-card sites, so a
+        -- video-with-poster report showed a thumbnail here and nowhere else.
+        ${firstReadyStillLateral(sql)}
         WHERE cr.cleanup_id = ANY(${cleanupIds}::uuid[])
-          AND r.deleted_at IS NULL
-          AND r.status = 'published'
-          AND r.visibility = 'public'
+          AND ${publicReportFilter(sql)}
         ORDER BY cr.cleanup_id, cr.linked_at DESC, r.id
       `
       for (const r of rows) {
@@ -319,11 +337,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     async filterVisibleReportIds(reportIds: string[]): Promise<Set<string>> {
       if (reportIds.length === 0) return new Set()
       const rows = await sql<{ id: string }[]>`
-        SELECT id FROM reports
-        WHERE id = ANY(${reportIds}::uuid[])
-          AND deleted_at IS NULL
-          AND status = 'published'
-          AND visibility = 'public'
+        SELECT r.id FROM reports r
+        WHERE r.id = ANY(${reportIds}::uuid[])
+          AND ${publicReportFilter(sql)}
       `
       return new Set(rows.map((r) => r.id))
     },
@@ -372,8 +388,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ORDER BY c.geom <-> ${point} ASC, c.id ASC
           LIMIT ${filters.limit + 1}
         `
+        // A row with no measurable distance cannot anchor the (knn, id) keyset, so the page just ends
+        // (pageWith drops the cursor on a null encode) rather than emitting one the WHERE cannot consume.
         return paginate(rows, filters.limit, (last) =>
-          last.knn === null || last.knn === undefined ? null : `${Number(last.knn)}|${last.id}`,
+          last.knn === null || last.knn === undefined
+            ? null
+            : encodeNearCursor({ dist: Number(last.knn), id: last.id }),
         )
       }
 
@@ -401,7 +421,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         ${order}
         LIMIT ${filters.limit + 1}
       `
-      return paginate(rows, filters.limit, (last) => `${last.scheduled_at.toISOString()}|${last.id}`)
+      return paginate(rows, filters.limit, (last) =>
+        encodeTimeCursor({ at: last.scheduled_at, id: last.id }),
+      )
     },
 
     async isMember(cleanupId: string, userId: string): Promise<boolean> {
@@ -449,21 +471,59 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     async removeMember(
       cleanupId: string,
       userId: string,
+      actorId: string,
     ): Promise<{ removed: boolean; going: number }> {
-      // Delete + fresh count in ONE transaction so the returned `going` is consistent with the delete.
-      // Deleting the cleanup_members row is the whole removal: the same row gates chat access
-      // (isMember), so the target drops out of the event group chat automatically.
+      // Ban + delete + fresh count in ONE transaction so the returned `going` is consistent with the
+      // delete AND there is no window between the two writes. Deleting the cleanup_members row drops
+      // the target from the event group chat (the same row gates isMember); the cleanup_bans row is
+      // what stops them walking straight back in via the self-service join (M17 — before this, removal
+      // was purely cosmetic and could be undone by the removed user in a loop).
+      //
+      // Statement ORDER inside the transaction is not by itself what makes the removal stick — the row
+      // lock is. FOR NO KEY UPDATE on the cleanups row conflicts with the FOR SHARE joinCleanupTx takes
+      // on the same row, so a concurrent join is serialized against this whole transaction instead of
+      // interleaving its (unlocked) ban probe with our delete. Deliberately NOT the stronger FOR UPDATE:
+      // that one also conflicts with the FOR KEY SHARE every FK-referencing insert takes on the parent
+      // row, which would stall unrelated writes for this event (chat messages, timeline rows, other
+      // people's joins) for the length of this transaction. FOR NO KEY UPDATE excludes the join and
+      // nothing else. Same reason the join side takes SHARE and not UPDATE.
       return sql.begin(async (tx) => {
+        await tx`SELECT 1 FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR NO KEY UPDATE`
         const deleted = await tx<{ user_id: string }[]>`
           DELETE FROM cleanup_members
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
           RETURNING user_id
         `
+        if (deleted.length > 0) {
+          await tx`
+            INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
+            VALUES (${cleanupId}, ${userId}, ${actorId})
+            ON CONFLICT (cleanup_id, user_id) DO NOTHING
+          `
+        }
         const counted = await tx<{ count: number }[]>`
           SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
         `
         return { removed: deleted.length > 0, going: counted[0]?.count ?? 0 }
       })
+    },
+
+    async isBanned(cleanupId: string, userId: string): Promise<boolean> {
+      const rows = await sql<{ one: number }[]>`
+        SELECT 1 AS one FROM cleanup_bans
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows.length > 0
+    },
+
+    async unbanMember(cleanupId: string, userId: string): Promise<boolean> {
+      const rows = await sql<{ user_id: string }[]>`
+        DELETE FROM cleanup_bans
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        RETURNING user_id
+      `
+      return rows.length > 0
     },
 
     async listMemberIds(cleanupId: string, limit: number): Promise<string[]> {
@@ -490,18 +550,38 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows[0]?.organizer_user_id ?? null
     },
 
-    async joinCleanupTx(cleanupId: string, userId: string): Promise<boolean> {
+    async joinCleanupTx(
+      cleanupId: string,
+      userId: string,
+    ): Promise<"joined" | "not_found" | "banned"> {
       return sql.begin(async (tx) => {
+        // FOR SHARE is what makes the ban probe below race-safe, and it is why the existence probe is
+        // also the lock: removeMember takes the conflicting FOR NO KEY UPDATE on this same cleanups row,
+        // so a removal either commits entirely before this probe (we see its ban) or waits until after
+        // our insert (its delete then removes the membership we just wrote). SHARE rather than an
+        // exclusive mode because concurrent joins touch disjoint cleanup_members rows and must not
+        // queue behind each other.
         const exists = await tx<{ one: number }[]>`
-          SELECT 1 AS one FROM cleanups WHERE id = ${cleanupId} LIMIT 1
+          SELECT 1 AS one FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
-        if (exists.length === 0) return false
+        if (exists.length === 0) return "not_found"
+        // M17: joining was an unconditional self-service INSERT, which made attendee removal a
+        // no-op the target could undo instantly. The ban probe runs INSIDE the join transaction, under
+        // the row lock above — a bare transaction was NOT sufficient, because a plain SELECT on
+        // cleanup_bans takes no lock at all: a removal committing between this probe and the insert
+        // below used to leave the target banned AND a member (its delete ran before our insert).
+        const banned = await tx<{ one: number }[]>`
+          SELECT 1 AS one FROM cleanup_bans
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+          LIMIT 1
+        `
+        if (banned.length > 0) return "banned"
         await tx`
           INSERT INTO cleanup_members (cleanup_id, user_id, role)
           VALUES (${cleanupId}, ${userId}, 'member')
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
-        return true
+        return "joined"
       })
     },
 
@@ -519,7 +599,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     async cancelCleanupTx(
       id: string,
       input: { note: string; body: string; reason: string | null; actorId: string },
-    ): Promise<boolean> {
+    ): Promise<CancelCleanupOutcome> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
           UPDATE cleanups SET status = 'cancelled'
@@ -527,22 +607,25 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           RETURNING id
         `
         if (updated.length === 0) {
+          // The guarded UPDATE is the concurrency primitive: exactly one of N racing cancels matches a
+          // row, so exactly one caller is told "cancelled" and gets to ring the roster. A miss is either
+          // an already-cancelled event or no event at all, which the caller must tell apart (404 vs 200).
           const existing = await tx<{ id: string }[]>`
             SELECT id FROM cleanups WHERE id = ${id} LIMIT 1
           `
-          return existing.length > 0
+          return existing.length > 0 ? "already_cancelled" : "not_found"
         }
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
         `
-        await tx`
-          INSERT INTO notifications (user_id, type, title, body, link)
-          SELECT cm.user_id, 'cleanup_cancelled', 'Event cancelled', ${input.body}, ${`/cleanups/${id}`}
-          FROM cleanup_members cm
-          WHERE cm.cleanup_id = ${id} AND cm.user_id <> ${input.actorId}
-        `
-        return true
+        // L24: the cancellation fan-out USED to INSERT notification rows directly here, bypassing
+        // NotificationService entirely — so it ignored the recipient's push prefs, their quiet hours
+        // and their locale, and never emitted the user-channel signal, unlike every other bell in the
+        // product. The fan-out now lives in cleanup-service.cancelCleanup and rides the real pipeline.
+        // The repo's job ends at the status flip + the timeline row, which is what has to be atomic;
+        // a bell is best-effort by design and must never hold a transaction open.
+        return "cancelled"
       })
     },
 
@@ -642,14 +725,17 @@ async function linkReportsInTx(
   return newlyLinked
 }
 
+/**
+ * The has-more split + cursor derivation for listCleanups, over the canonical `pageWith` (db/cursor-
+ * helpers). `cursorOf` stays a parameter because this one function serves BOTH keysets the list has: the
+ * near branch anchors on distance (`dist|id`) and the when branch on scheduled_at (`iso|id`). Only the
+ * row->record projection is local.
+ */
 function paginate(
   rows: CleanupRowSelect[],
   limit: number,
   cursorOf: (last: CleanupRowSelect) => string | null,
 ): { records: CleanupRecord[]; nextCursor: string | null } {
-  const hasMore = rows.length > limit
-  const page = hasMore ? rows.slice(0, limit) : rows
-  const last = page[page.length - 1]
-  const nextCursor = hasMore && last ? cursorOf(last) : null
-  return { records: page.map(toRecord), nextCursor }
+  const { items, nextCursor } = pageWith(rows, limit, cursorOf)
+  return { records: items.map(toRecord), nextCursor }
 }

@@ -88,8 +88,19 @@ let visibleReports: Set<string>
 let sendLimiter: RateLimiter | undefined
 let cityForwardSeen: Map<string, number>
 // Membership repo fake (D-C3): report rooms are member-only to post/type; ack advances a watermark.
-// When left undefined, deps.reportChat is omitted (backward-compat: send/typing fall back to public).
+// When left undefined, deps.reportChat is omitted and the send/typing gate FAILS CLOSED (the group
+// lane's stance): with no membership source there is nothing to authorize a post against.
 let reportChat: GatewayReportChat | undefined
+
+/** GatewayReportChat fake: `isMember` drives the member-only send/typing gate; the ack write is spied. */
+function makeReportChat(
+  isMember: boolean,
+): GatewayReportChat & { advanceReadWatermark: ReturnType<typeof vi.fn> } {
+  return {
+    isMember: () => Promise.resolve(isMember),
+    advanceReadWatermark: vi.fn(() => Promise.resolve()),
+  }
+}
 
 function canForwardCity(reportId: string, geoid: string): boolean {
   const key = `${reportId}:${geoid}`
@@ -159,6 +170,7 @@ describe("report chat gateway", () => {
   })
 
   it("persists an authed report SEND as a report-scoped message (roomKind report, report_id routed)", async () => {
+    reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
@@ -176,6 +188,8 @@ describe("report chat gateway", () => {
   })
 
   it("refuses WS JOIN and SEND for a non-visible (held) report and persists nothing", async () => {
+    // A MEMBER fake, so the only possible reason for the refusal below is visibility.
+    reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: HELD_REPORT, roomKind: "report" }))
@@ -193,6 +207,7 @@ describe("report chat gateway", () => {
   })
 
   it("rate-limits the report send path per user+report (over-limit send refused, not persisted)", async () => {
+    reportChat = makeReportChat(true)
     sendLimiter = makeTokenBucketLimiter({ capacity: 2, refillPerSec: 0 })
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
@@ -211,6 +226,7 @@ describe("report chat gateway", () => {
   })
 
   it("fires the @city forward when a report message mentions the report's jurisdiction", async () => {
+    reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
@@ -227,6 +243,7 @@ describe("report chat gateway", () => {
   })
 
   it("DEDUPES the @city forward within the window (a flood can't email-bomb the jurisdiction)", async () => {
+    reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
@@ -242,6 +259,7 @@ describe("report chat gateway", () => {
   })
 
   it("does NOT forward a report message that mentions no city handle", async () => {
+    reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
@@ -255,6 +273,7 @@ describe("report chat gateway", () => {
   })
 
   it("serves report history to an anonymous viewer (public-read, null viewer)", async () => {
+    reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
@@ -271,13 +290,6 @@ describe("report chat gateway", () => {
 })
 
 describe("report chat gateway — member-only send/typing + read watermark (D-C3)", () => {
-  function makeReportChat(isMember: boolean): GatewayReportChat & { advanceReadWatermark: ReturnType<typeof vi.fn> } {
-    return {
-      isMember: () => Promise.resolve(isMember),
-      advanceReadWatermark: vi.fn(() => Promise.resolve()),
-    }
-  }
-
   it("still authorizes a report JOIN by a NON-member socket (public join preserved)", async () => {
     reportChat = makeReportChat(false)
     const conn = new MockConnection("A")
@@ -304,6 +316,29 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     expect(errors[0]).toMatchObject({ type: "error", code: "FORBIDDEN", roomKind: "report", cleanupId: REPORT })
     expect(conn.framesOfType("ack")).toHaveLength(0)
     expect(conn.framesOfType("message")).toHaveLength(0)
+    expect(chatRepo.count(REPORT)).toBe(0)
+  })
+
+  it("FAILS CLOSED on report SEND and TYPING when no membership source is wired", async () => {
+    // deps.reportChat omitted entirely. The gate that decides who may post does not exist, so there is
+    // nothing to authorize against and the frame is refused — the group lane's stance. (This used to
+    // fall through to "authorized", so a wiring that forgot reportChat made the room world-writable.)
+    reportChat = undefined
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    // The public READ join is unaffected — only send/typing require the membership source.
+    expect(session.joined.has(`report:${REPORT}`)).toBe(true)
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "unwired" }),
+    )
+    await handleClientFrame(session, JSON.stringify({ type: "typing", cleanupId: REPORT, roomKind: "report" }))
+
+    const errors = conn.framesOfType("error")
+    expect(errors).toHaveLength(2)
+    expect(errors.every((e) => (e as { code: string }).code === "FORBIDDEN")).toBe(true)
+    expect(conn.framesOfType("ack")).toHaveLength(0)
     expect(chatRepo.count(REPORT)).toBe(0)
   })
 

@@ -8,9 +8,14 @@
  * an address inside an incorporated city resolves to the city; a point in unincorporated county land
  * (inside the county polygon but outside every place polygon) resolves to the county; outside all -> null.
  *
- * The ordering is done by the layer rank, NOT by the `priority` column, so this query is correct even
- * if priorities are not yet curated. The GiST index on jurisdictions.geom (0001_core.sql) makes the
- * ST_Contains scan an index lookup.
+ * The ordering is `layer rank, priority, geoid` (JURISDICTION_RESOLVE_ORDER_BY below): the rank decides
+ * BETWEEN layers, so the specificity above holds whatever `priority` contains, and `priority` then
+ * `geoid` only break ties WITHIN one layer (same-layer overlaps are common — overlapping PAD-US federal
+ * parcels, a dev fixture polygon over the real boundary — and without a total order Postgres could hand
+ * the write-time resolver and the backfill different rows for the same point). `priority` is therefore a
+ * live sort key at every resolution site: it cannot change which layer wins, but curating it DOES change
+ * which of two same-layer polygons a point routes to. The GiST index on jurisdictions.geom (0001_core.sql)
+ * makes the ST_Contains scan an index lookup.
  *
  * This is THE query the jurisdiction-service will use; importing it here keeps a single definition so
  * the spatial integration test and the service can never drift. It is written against the raw
@@ -35,11 +40,13 @@ export interface ResolvedJurisdiction {
  * state/ELSE(4): the two land-OWNERSHIP overrides (federal, then tribal) supersede local incorporation,
  * then the most-specific civil boundary (place, then county, then state) wins.
  *
- * This constant is interpolated into TWO places so they can NEVER drift:
+ * It reaches every resolution site through JURISDICTION_RESOLVE_ORDER_BY (below), which appends the
+ * tie-breaks, so they can NEVER drift:
  *   1. JURISDICTION_RESOLVE_SQL below — the write-time resolver run on every report/anon insert.
- *   2. The Phase-5 backfill CLI (src/db/backfill-jurisdictions.ts), which re-resolves NULL
- *      reports.jurisdiction_geoid rows via the same LATERAL `ORDER BY` (embedded with `sql.unsafe`,
- *      since this is a trusted, code-defined string — never user input).
+ *   2. The backfill loops (src/db/backfill-keyset.ts, driven by backfill-jurisdictions.ts and the
+ *      reference-code backfill), which re-resolve NULL jurisdiction_geoid rows via the same correlated
+ *      `ORDER BY` (embedded with `sql.unsafe`, since this is a trusted, code-defined string — never user
+ *      input).
  *
  * The byte-for-byte tie between this constant and JURISDICTION_RESOLVE_SQL is asserted by
  * jurisdiction-sql.test.ts; the literal value is pinned by jurisdiction-backfill.test.ts. Keep it free
@@ -49,17 +56,30 @@ export const JURISDICTION_LAYER_RANK_CASE =
   "CASE layer WHEN 'federal' THEN 0 WHEN 'tribal' THEN 1 WHEN 'place' THEN 2 WHEN 'county' THEN 3 ELSE 4 END" as const
 
 /**
+ * THE `ORDER BY` list every resolution site uses: the layer rank FIRST, then two total-order tie-breaks.
+ *
+ * The rank alone leaves SAME-LAYER overlaps undecided, and those are common: PAD-US emits overlapping
+ * federal Fee parcels, and a dev-seeded fixture polygon can overlap the real boundary it duplicates.
+ * Without a stable secondary key Postgres is free to return either row, so the write-time resolver and the
+ * backfill could stamp DIFFERENT jurisdictions (hence different routing) for the same point.
+ *
+ * `priority` comes second so curated per-row ordering is honoured within a layer (it is uniform per layer
+ * today: federal -2, tribal -1, place 0, county 1, state 2 — see ingest LAYER_RANK / LAYER_PRIORITY), and
+ * `geoid` (the PK, a total order) breaks the remaining ties so the choice is deterministic forever.
+ */
+export const JURISDICTION_RESOLVE_ORDER_BY = `${JURISDICTION_LAYER_RANK_CASE}, priority, geoid` as const
+
+/**
  * The canonical SQL text, exported for assertions/inspection. Uses positional params $1 (lng) and
  * $2 (lat). NOTE the coordinate order: ST_MakePoint takes (x=lng, y=lat).
  *
- * The `ORDER BY` interpolates JURISDICTION_LAYER_RANK_CASE so the resolver and the backfill CLI share
- * one ranking definition. The interpolation is value-preserving: the resulting string is byte-identical
- * to the previous hand-written literal (asserted in jurisdiction-sql.test.ts).
+ * The `ORDER BY` interpolates JURISDICTION_RESOLVE_ORDER_BY (which embeds JURISDICTION_LAYER_RANK_CASE)
+ * so the resolver and the backfill CLI share one ordering definition.
  */
 export const JURISDICTION_RESOLVE_SQL = `SELECT geoid, name, layer
 FROM jurisdictions
 WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326))
-ORDER BY ${JURISDICTION_LAYER_RANK_CASE}
+ORDER BY ${JURISDICTION_RESOLVE_ORDER_BY}
 LIMIT 1` as const
 
 /**

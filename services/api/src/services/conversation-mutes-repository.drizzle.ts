@@ -38,6 +38,17 @@ export interface ConversationMutesRepository {
     roomKind: ConversationMuteRoomKind,
     roomIds: string[],
   ): Promise<Set<string>>
+  /**
+   * The INVERSE batch shape, for a room fan-out: of the given `userIds`, which ones have muted THIS room?
+   * Same short-circuit on an empty list. OPTIONAL on the interface so the offline fakes that predate it
+   * still satisfy it; callers must therefore probe (`repo.mutedUserIdsFor?.(...)`) and fall back to the
+   * per-user `isMuted`.
+   */
+  mutedUserIdsFor?(
+    roomKind: ConversationMuteRoomKind,
+    roomId: string,
+    userIds: string[],
+  ): Promise<Set<string>>
 }
 
 export function makeConversationMutesRepository(sql: Sql): ConversationMutesRepository {
@@ -83,6 +94,19 @@ export function makeConversationMutesRepository(sql: Sql): ConversationMutesRepo
         WHERE user_id = ${userId} AND room_kind = ${roomKind} AND room_id = ANY(${roomIds}::uuid[])
       `
       return new Set(rows.map((r) => r.room_id))
+    },
+
+    async mutedUserIdsFor(
+      roomKind: ConversationMuteRoomKind,
+      roomId: string,
+      userIds: string[],
+    ): Promise<Set<string>> {
+      if (userIds.length === 0) return new Set()
+      const rows = await sql<{ user_id: string }[]>`
+        SELECT user_id FROM conversation_mutes
+        WHERE room_kind = ${roomKind} AND room_id = ${roomId} AND user_id = ANY(${userIds}::uuid[])
+      `
+      return new Set(rows.map((r) => r.user_id))
     },
   }
 }

@@ -7,6 +7,13 @@
  * mirrors chat-repository.drizzle.ts: the read joins the sender's user row to build ChatMessageDTO.from,
  * and history pages newest-first over (created_at, id) with a room-scoped cursor anchor.
  *
+ * Because those reads were LITERAL twins of the chat repository's, they now run through the
+ * table-parameterized core in chat-room-scope.drizzle.ts (history + around-window + one-row seek + pin
+ * flip + pin list), bound below by a RoomScopeSql descriptor over (dm_messages, thread_id) — so a fix to
+ * the cursor/window/pin semantics can no longer land on one table and miss the other. What stays here is
+ * what genuinely differs: the flat dm row and its DTO mapping (no SYSTEM rows, no @city chips, no polls),
+ * the INNER users join, the writes, and the dm-only surface (threads, peers, read state, blocks).
+ *
  * The ChatMessageDTO this returns carries cleanupId = the dm thread id and roomKind:"dm" (the wire
  * contract keeps the field name `cleanupId` for both kinds — both are bare UUIDs and clients route by
  * (roomKind, cleanupId)).
@@ -34,11 +41,15 @@ import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.j
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import { monotonicReadWatermark } from "./chat-read-state.drizzle.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
-import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
-import { AppError } from "@civfix/shared"
-import { isUuid } from "../db/cursor-helpers.js"
+import type { TimeCursor } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
-import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
+import {
+  roomFindMessage,
+  roomHistory,
+  roomListPins,
+  roomSetPinned,
+  type RoomScopeSql,
+} from "./chat-room-scope.drizzle.js"
 
 /** A dm thread row (the participant pair ordered lo < hi). */
 export interface DmThread {
@@ -182,6 +193,13 @@ export interface DmRepository {
   markRead(threadId: string, userId: string, at: Date): Promise<void>
   /** The last-read timestamp for (thread, user), or null when never recorded. */
   lastReadAt(threadId: string, userId: string): Promise<Date | null>
+  /**
+   * The viewer's unread count for ONE thread, on exactly the definition the inbox aggregate uses
+   * (listThreadsForUser): live messages from the PEER strictly after max(thread.created_at,
+   * last_read_at). Single-sourced with that subquery so the count a freshly-opened thread reports can
+   * never disagree with the count the inbox row shows for the same thread.
+   */
+  countUnread(threadId: string, userId: string): Promise<number>
   /** Resolve a message's created_at (scoped to the thread), for the ack watermark. Null when unknown. */
   resolveMessageCreatedAt(threadId: string, messageId: string): Promise<Date | null>
   /**
@@ -190,7 +208,11 @@ export interface DmRepository {
    * user's full thread set isn't materialized on every inbox load (the merge in threads-service slices the
    * combined cleanup+dm set, so capping each half is sufficient).
    */
-  listThreadsForUser(userId: string, limit?: number): Promise<DmThreadAggregate[]>
+  listThreadsForUser(
+    userId: string,
+    limit?: number,
+    cursor?: TimeCursor | null,
+  ): Promise<DmThreadAggregate[]>
 }
 
 /** A dm message row joined with its sender's person fields, as selected for the DTO. */
@@ -274,6 +296,37 @@ function toMessageDTO(
 }
 
 /**
+ * The `SELECT <dm row + sender columns> FROM <cte> JOIN users` projection that the three CTE-returning
+ * writes (persist / editMessage / softDelete) read their row back through — ONE definition instead of
+ * three copies of the same 16-column list, which is how one copy loses a column without looking wrong.
+ * Mirrors chat-repository's selectChatRowFrom: `cte` is a trusted internal identifier rendered via
+ * sql(...) as an ident, and the tag is a parameter so the projection can also run on a transaction handle.
+ */
+function selectDmRowFrom(tag: Queryable, cte: string) {
+  return tag`
+    SELECT
+      ${tag(cte)}.id,
+      ${tag(cte)}.thread_id,
+      ${tag(cte)}.sender_id,
+      ${tag(cte)}.body,
+      ${tag(cte)}.kind,
+      ${tag(cte)}.attachments,
+      ${tag(cte)}.created_at,
+      ${tag(cte)}.edited_at,
+      ${tag(cte)}.deleted_at,
+      ${tag(cte)}.reply_to_id,
+      ${tag(cte)}.pinned_at,
+      u.display_name AS sender_display_name,
+      u.handle AS sender_handle,
+      u.bio AS sender_bio,
+      u.avatar_url AS sender_avatar_url,
+      u.deleted_at AS sender_deleted_at
+    FROM ${tag(cte)}
+    JOIN users u ON u.id = ${tag(cte)}.sender_id
+  `
+}
+
+/**
  * @param presign OPTIONAL media presigner (see makeDrizzleChatRepository). When supplied, dm message
  *   attachments (media_assets bound by `chat_message_id`, status "ready") are presigned on read and a
  *   send's `mediaUploadIds` are bound to the new message. Omit it (offline tests) to project `[]`.
@@ -330,68 +383,48 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
   }
 
   /**
-   * Around-mode dm history (P2 2.4): mirror of the chat repo's aroundScoped over dm_messages/thread_id.
-   * Window = ceil(limit/2) at-or-older rows (target INCLUDED — even when it is a tombstone; jumping to
-   * a deleted message's position is valid and its tombstone rides in the window) + floor(limit/2)
-   * strictly newer, merged newest-first. nextCursor = older end, prevCursor = newer end (see
-   * chat-history-window.ts — prevCursor is today a "there are newer messages" signal, not a follow
-   * cursor). A missing/foreign-thread target is a 404 (a jump target the client named must exist).
+   * Single-row hydration for the one-row seek: the same inputs hydrateDmRows batches, on the single-id
+   * loaders. An edit changes neither reactions/mentions nor attachments, but the DTO carries them all so
+   * the client can reconcile the message in place without blanking the bubble's media.
    */
-  async function historyAround(
-    threadId: string,
-    around: string,
-    limit: number,
-    viewerUserId: string | null,
-  ): Promise<ChatHistoryPage> {
-    if (!isUuid(around)) throw AppError.notFound("Message not found")
-    const anchorRows = await sql<{ id: string }[]>`
-      SELECT id FROM dm_messages
-      WHERE id = ${around} AND thread_id = ${threadId}
-      LIMIT 1
-    `
-    if (!anchorRows[0]) throw AppError.notFound("Message not found")
-    // Anchor tuple stays in SQL (see history's cursor comment): a ms-truncated round-trip would eject
-    // the target from its own <=-window whenever its timestamp carries sub-millisecond precision.
-    const anchorTuple = sql`(
-      SELECT a.created_at, a.id
-      FROM dm_messages a
-      WHERE a.id = ${around} AND a.thread_id = ${threadId}
-    )`
-
-    const limits = aroundLimits(limit)
-    // Fetch +1 on EACH side so has-more resolves independently per end.
-    const [olderDesc, newerAsc] = await Promise.all([
-      sql<DmRowSelect[]>`
-        SELECT ${dmColumns}
-        FROM dm_messages dm
-        JOIN users u ON u.id = dm.sender_id
-        WHERE dm.thread_id = ${threadId}
-          AND (dm.deleted_at IS NULL OR dm.id = ${around})
-          AND (dm.created_at, dm.id) <= ${anchorTuple}
-        ORDER BY dm.created_at DESC, dm.id DESC
-        LIMIT ${limits.olderLimit + 1}
-      `,
-      sql<DmRowSelect[]>`
-        SELECT ${dmColumns}
-        FROM dm_messages dm
-        JOIN users u ON u.id = dm.sender_id
-        WHERE dm.thread_id = ${threadId}
-          AND dm.deleted_at IS NULL
-          AND (dm.created_at, dm.id) > ${anchorTuple}
-        ORDER BY dm.created_at ASC, dm.id ASC
-        LIMIT ${limits.newerLimit + 1}
-      `,
+  async function hydrateDmRow(row: DmRowSelect, viewerUserId: string | null): Promise<ChatMessageDTO> {
+    const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
+      loadChatReactions(sql, row.id, viewerUserId),
+      loadChatMentions(sql, row.id),
+      presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+      replyMapForRows(sql, "dm_messages", [row]),
     ])
-    const { rows, hasOlder, hasNewer } = mergeAroundWindow(olderDesc, newerAsc, limits)
-    const items = await hydrateDmRows(rows, viewerUserId)
+    return toMessageDTO(
+      row,
+      reactions,
+      mentions,
+      viewerUserId,
+      undefined,
+      attachmentsByMessage.get(row.id) ?? [],
+      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+    )
+  }
+
+  /**
+   * The descriptor the shared room-scope core (chat-room-scope.drizzle.ts) reads dm_messages through: ONE
+   * thread, scoped on thread_id, with an INNER users join (every dm row has a live-or-tombstoned sender
+   * row) and no side context — there is no dm equivalent of a report's jurisdiction.
+   */
+  function roomSql(threadId: string): RoomScopeSql<DmRowSelect, null> {
     return {
-      items,
-      nextCursor: hasOlder ? rows[rows.length - 1]!.id : null,
-      prevCursor: hasNewer ? rows[0]!.id : null,
+      table: "dm_messages",
+      alias: "dm",
+      scope: (prefix) =>
+        prefix === null ? sql`thread_id = ${threadId}` : sql`${sql(prefix)}.thread_id = ${threadId}`,
+      columns: dmColumns,
+      from: sql`FROM dm_messages dm JOIN users u ON u.id = dm.sender_id`,
+      context: () => Promise.resolve(null),
+      hydratePage: (rows, viewerUserId) => hydrateDmRows(rows, viewerUserId),
+      hydrateOne: hydrateDmRow,
     }
   }
 
-  const repo: DmRepository = {
+  return {
     async openOrCreateThread(userA: string, userB: string): Promise<DmThread> {
       // Order the pair so the unique (user_lo, user_hi) key is stable regardless of who initiates.
       const lo = userA < userB ? userA : userB
@@ -475,25 +508,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           )
           RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
-        SELECT
-          inserted.id,
-          inserted.thread_id,
-          inserted.sender_id,
-          inserted.body,
-          inserted.kind,
-          inserted.attachments,
-          inserted.created_at,
-          inserted.edited_at,
-          inserted.deleted_at,
-          inserted.reply_to_id,
-          inserted.pinned_at,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
-        FROM inserted
-        JOIN users u ON u.id = inserted.sender_id
+        ${selectDmRowFrom(q, "inserted")}
       `
       const rows = wantsMedia
         ? await sql.begin(async (tx) => {
@@ -536,46 +551,13 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND deleted_at IS NULL
           RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
-        SELECT
-          updated.id,
-          updated.thread_id,
-          updated.sender_id,
-          updated.body,
-          updated.kind,
-          updated.attachments,
-          updated.created_at,
-          updated.edited_at,
-          updated.deleted_at,
-          updated.reply_to_id,
-          updated.pinned_at,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
-        FROM updated
-        JOIN users u ON u.id = updated.sender_id
+        ${selectDmRowFrom(sql, "updated")}
       `
       const row = rows[0]
       if (!row) return null
-      // An edit changes neither reactions/mentions nor attachments, but read them all back so the returned
-      // DTO is complete (the client reconciles the edited message in place, so dropping its media here would
-      // blank the bubble's attachments).
-      const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
-        loadChatReactions(sql, row.id, senderId),
-        loadChatMentions(sql, row.id),
-        presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        replyMapForRows(sql, "dm_messages", [row]),
-      ])
-      return toMessageDTO(
-        row,
-        reactions,
-        mentions,
-        senderId,
-        undefined,
-        attachmentsByMessage.get(row.id) ?? [],
-        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
-      )
+      // Hydrated exactly like a one-row seek (reactions/mentions/attachments/reply preview) so the edited
+      // DTO is complete — see hydrateDmRow.
+      return hydrateDmRow(row, senderId)
     },
 
     async findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
@@ -626,25 +608,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             AND deleted_at IS NULL
           RETURNING id, thread_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at
         )
-        SELECT
-          updated.id,
-          updated.thread_id,
-          updated.sender_id,
-          updated.body,
-          updated.kind,
-          updated.attachments,
-          updated.created_at,
-          updated.edited_at,
-          updated.deleted_at,
-          updated.reply_to_id,
-          updated.pinned_at,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
-        FROM updated
-        JOIN users u ON u.id = updated.sender_id
+        ${selectDmRowFrom(sql, "updated")}
       `
       const row = rows[0]
       if (!row) return null
@@ -663,105 +627,24 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       )
     },
 
-    async history(
+    history(
       threadId: string,
       before: string | undefined,
       limit: number,
       viewerUserId: string | null = null,
       around?: string,
     ): Promise<ChatHistoryPage> {
-      // Around-mode (P2 2.4): center-window fetch on a separate path; the before-mode fast path below
-      // stays untouched. The route schema rejects around+before together, so `before` is undefined here.
-      if (around !== undefined) return historyAround(threadId, around, limit, viewerUserId)
-
-      // Resolve the `before` cursor id to a keyset anchor. The anchor lookup is SCOPED TO THIS thread:
-      // a `before` id from another thread (or unknown) finds no anchor, so we return the newest page
-      // (defensive), and a foreign cursor can never seek into or leak another thread's ordering. The
-      // anchor's (created_at, id) tuple deliberately NEVER leaves the database (row-valued subquery):
-      // a driver round-trip truncates created_at's microseconds, so same-millisecond messages could
-      // repeat/skip across pages. Mirrors the cleanup chat repo (P1-5). No deleted_at filter (2.4
-      // review): the anchor is only a keyset position, so a tombstoned cursor id still pages correctly.
-      let cursorFilter = sql``
-      if (before !== undefined) {
-        const anchorRows = await sql<{ id: string }[]>`
-          SELECT id FROM dm_messages
-          WHERE id = ${before} AND thread_id = ${threadId}
-          LIMIT 1
-        `
-        if (anchorRows[0]) {
-          cursorFilter = sql`
-            AND (dm.created_at, dm.id) < (
-              SELECT a.created_at, a.id
-              FROM dm_messages a
-              WHERE a.id = ${before} AND a.thread_id = ${threadId}
-            )
-          `
-        }
-      }
-
-      const rows = await sql<DmRowSelect[]>`
-        SELECT ${dmColumns}
-        FROM dm_messages dm
-        JOIN users u ON u.id = dm.sender_id
-        WHERE dm.thread_id = ${threadId}
-          AND dm.deleted_at IS NULL
-          ${cursorFilter}
-        ORDER BY dm.created_at DESC, dm.id DESC
-        LIMIT ${limit + 1}
-      `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
-      const items = await hydrateDmRows(page, viewerUserId)
-      const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? last.id : null
-      return { items, nextCursor }
+      // Before-mode paging (thread-scoped keyset anchor, so a foreign cursor can never seek into or leak
+      // another thread's ordering) and around-mode windows both live in the shared room-scope core.
+      return roomHistory(sql, roomSql(threadId), before, limit, viewerUserId, around)
     },
 
-    async findMessage(
+    findMessage(
       threadId: string,
       messageId: string,
       viewerUserId: string | null,
     ): Promise<ChatMessageDTO | null> {
-      const rows = await sql<DmRowSelect[]>`
-        SELECT
-          dm.id,
-          dm.thread_id,
-          dm.sender_id,
-          dm.body,
-          dm.kind,
-          dm.attachments,
-          dm.created_at,
-          dm.edited_at,
-          dm.deleted_at,
-          dm.reply_to_id,
-          dm.pinned_at,
-          u.display_name AS sender_display_name,
-          u.handle AS sender_handle,
-          u.bio AS sender_bio,
-          u.avatar_url AS sender_avatar_url,
-          u.deleted_at AS sender_deleted_at
-        FROM dm_messages dm
-        JOIN users u ON u.id = dm.sender_id
-        WHERE dm.id = ${messageId} AND dm.thread_id = ${threadId} AND dm.deleted_at IS NULL
-        LIMIT 1
-      `
-      const row = rows[0]
-      if (!row) return null
-      const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
-        loadChatReactions(sql, row.id, viewerUserId),
-        loadChatMentions(sql, row.id),
-        presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        replyMapForRows(sql, "dm_messages", [row]),
-      ])
-      return toMessageDTO(
-        row,
-        reactions,
-        mentions,
-        viewerUserId,
-        undefined,
-        attachmentsByMessage.get(row.id) ?? [],
-        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
-      )
+      return roomFindMessage(sql, roomSql(threadId), messageId, viewerUserId)
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
@@ -780,6 +663,24 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       return rows[0]?.last_read_at ?? null
     },
 
+    async countUnread(threadId: string, userId: string): Promise<number> {
+      // The SAME predicate as listThreadsForUser's `unread` subquery, scoped to one thread: live messages
+      // NOT written by the viewer (a 2-party thread has no third author, and dm has no sender-less system
+      // rows) strictly after max(thread.created_at, last_read_at). to_timestamp(0) is the never-read
+      // baseline, so a thread with no dm_read_state row counts every peer message since it was created.
+      const rows = await sql<{ unread: number }[]>`
+        SELECT count(*)::int AS unread
+        FROM dm_messages m
+        JOIN dm_threads t ON t.id = m.thread_id
+        LEFT JOIN dm_read_state rs ON rs.thread_id = t.id AND rs.user_id = ${userId}
+        WHERE m.thread_id = ${threadId}
+          AND m.deleted_at IS NULL
+          AND m.sender_id <> ${userId}
+          AND m.created_at > GREATEST(t.created_at, COALESCE(rs.last_read_at, to_timestamp(0)))
+      `
+      return Number(rows[0]?.unread ?? 0)
+    },
+
     async resolveMessageCreatedAt(threadId: string, messageId: string): Promise<Date | null> {
       // PARTITION PRUNING: dm_messages is PARTITIONED BY RANGE(created_at) per calendar month (0009).
       // This resolves a DM read-ack watermark, and an ack is always for a very recently received message,
@@ -796,12 +697,27 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       return rows[0]?.created_at ?? null
     },
 
-    async listThreadsForUser(userId: string, limit?: number): Promise<DmThreadAggregate[]> {
+    async listThreadsForUser(
+      userId: string,
+      limit?: number,
+      cursor?: TimeCursor | null,
+    ): Promise<DmThreadAggregate[]> {
       // For each thread the user participates in, find the OTHER participant (peer), the last non-deleted
       // message, and the unread count (peer's messages after max(thread.created_at, last_read_at)). Exclude
       // any thread where EITHER party blocked the other (NOT EXISTS over user_blocks both directions).
       // Cap the scan when a limit is supplied so a heavy user's full thread set isn't materialized per load.
       const limitClause = limit !== undefined ? sql`LIMIT ${limit}` : sql``
+      // The dm half of the inbox keyset (THREADS_CURSOR in threads-service.ts). The activity bound is the
+      // cursor's millisecond or older — an ISO cursor is millisecond-resolution while created_at is not —
+      // with the thread id as the tie-break; the threads service re-applies the exact cut on the merge.
+      let cursorFilter = sql``
+      if (cursor !== null && cursor !== undefined) {
+        const msCeiling = new Date(cursor.at.getTime() + 1)
+        cursorFilter = sql`
+          AND COALESCE(last_msg.created_at, t.created_at) < ${msCeiling}
+          AND (COALESCE(last_msg.created_at, t.created_at) < ${cursor.at} OR t.id < ${cursor.id}::uuid)
+        `
+      }
       const rows = await sql<
         {
           thread_id: string
@@ -854,7 +770,8 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
             WHERE (b.blocker_id = ${userId} AND b.blocked_id = peer.id)
                OR (b.blocker_id = peer.id AND b.blocked_id = ${userId})
           )
-        ORDER BY COALESCE(last_msg.created_at, t.created_at) DESC
+          ${cursorFilter}
+        ORDER BY COALESCE(last_msg.created_at, t.created_at) DESC, t.id DESC
         ${limitClause}
       `
       return rows.map((r) => ({
@@ -875,41 +792,19 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       }))
     },
 
-    async setPinned(
+    setPinned(
       threadId: string,
       messageId: string,
       userId: string,
       pinned: boolean,
     ): Promise<ChatMessageDTO | null> {
-      // Mirror of the chat repo's setPinnedScoped: gated on thread scope + live row + non-system kind +
-      // an ACTUAL state change ((pinned_at IS NULL) = pin), so a repeat pin is a no-op that keeps the
-      // original pinned_at. Re-read the CURRENT hydrated DTO either way (idempotent responses).
-      await sql`
-        UPDATE dm_messages
-        SET pinned_at = CASE WHEN ${pinned} THEN now() END,
-            pinned_by = CASE WHEN ${pinned} THEN ${userId}::uuid END
-        WHERE id = ${messageId}
-          AND thread_id = ${threadId}
-          AND deleted_at IS NULL
-          AND kind <> 'system'
-          AND (pinned_at IS NULL) = ${pinned}
-      `
-      return repo.findMessage(threadId, messageId, userId)
+      // Gated on thread scope + live row + non-system kind + an ACTUAL state change, then a re-read of the
+      // current hydrated DTO either way (idempotent responses) — see the shared core.
+      return roomSetPinned(sql, roomSql(threadId), messageId, userId, pinned)
     },
 
-    async listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
-      const rows = await sql<DmRowSelect[]>`
-        SELECT ${dmColumns}
-        FROM dm_messages dm
-        JOIN users u ON u.id = dm.sender_id
-        WHERE dm.thread_id = ${threadId}
-          AND dm.pinned_at IS NOT NULL
-          AND dm.deleted_at IS NULL
-        ORDER BY dm.pinned_at DESC, dm.id DESC
-        LIMIT ${PIN_LIST_CAP}
-      `
-      return hydrateDmRows(rows, viewerUserId)
+    listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+      return roomListPins(sql, roomSql(threadId), viewerUserId)
     },
   }
-  return repo
 }

@@ -15,8 +15,11 @@
  * ABUSE ORDERING (mirrors services/anon-service.ts submitAnonReport): Turnstile FIRST (the human gate
  * is cheap and spends no other budget) → honeypot (a filled hidden field is a bot; respond with the
  * SAME 200 {ok:true} a real submit gets so the bot learns nothing, and send NO mail) → per-IP hourly
- * cap. The per-IP counter needs a CounterStore: production wires RedisCounterStore lazily off the
- * container (REDIS_URL is [BOOT] in prod), while a no-infra boot (empty REDIS_URL, no override) simply
+ * cap → coordinator notification → per-RECIPIENT daily cap → submitter confirmation. The recipient cap
+ * sits AFTER the notification on purpose: it gates the request-addressed mail (the amplification vector),
+ * so charging it before a send that can fail would spend the victim's whole daily budget on a mailer
+ * blip. The per-IP counter needs a CounterStore: production uses the container's shared lazy store
+ * (REDIS_URL is [BOOT] in prod), while a no-infra boot (empty REDIS_URL, no override) simply
  * skips the hourly cap and relies on the per-route 5/min + global rate limits — this route must work
  * whenever the mailer + abuseChecks are in the container, with NO DB/Redis auth bundle required.
  *
@@ -31,7 +34,7 @@ import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { honeypotTripped } from "../abuse/honeypot.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
-import { RedisCounterStore, type CounterStore } from "../abuse/counter-store.js"
+import type { CounterStore } from "../abuse/counter-store.js"
 import { heading, kvTable, paragraph } from "../adapters/email-blocks.js"
 import { renderEmailBody } from "../adapters/email-layout.js"
 import { sanitizeHeaderValue } from "../adapters/mail-text.js"
@@ -59,8 +62,22 @@ export const HOME_TURF_IP_WINDOW_SECONDS = 60 * 60
 const HOME_TURF_IP_COUNTER_PREFIX = "abuse:home-turf:ip:"
 
 /**
+ * Per-RECIPIENT cap (M8). The per-IP cap does not protect the victim of the amplification: the attacker
+ * chooses the recipient, so rotating source IPs (or a botnet) delivers unlimited civfix-DKIM-signed mail
+ * to one address. This bucket is keyed on the submitted EMAIL, independent of source IP, so a given
+ * address can receive at most one confirmation per window no matter who submits or from where.
+ */
+const HOME_TURF_EMAIL_COUNTER_PREFIX = "abuse:home-turf:email:"
+
+/** One confirmation per recipient address per day. */
+export const HOME_TURF_EMAIL_LIMIT_PER_DAY = 1
+
+/** Window length for the per-recipient counter: one day, in seconds. */
+export const HOME_TURF_EMAIL_WINDOW_SECONDS = 24 * 60 * 60
+
+/**
  * Optional injected seams (tests): an in-memory CounterStore so the per-IP hourly cap runs offline.
- * Left unset in production, where the route builds a RedisCounterStore lazily from the container.
+ * Left unset in production, where the route counts through the container's shared lazy counter store.
  */
 export interface HomeTurfOverrides {
   counters?: CounterStore
@@ -113,20 +130,54 @@ export async function enforceHomeTurfIpCap(
   }
 }
 
+/**
+ * Enforce the per-RECIPIENT daily cap (M8). Keyed on the normalized submitted address, NOT the source
+ * IP, so it is the control that actually bounds how much mail one victim can be made to receive. The
+ * error is deliberately the same generic 429 the IP cap throws — a distinct message would tell an
+ * attacker which addresses have already been targeted. Exported for direct unit testing.
+ */
+export async function enforceHomeTurfRecipientCap(
+  email: string,
+  counters: CounterStore,
+): Promise<void> {
+  const key = HOME_TURF_EMAIL_COUNTER_PREFIX + email.trim().toLowerCase()
+  const count = await counters.incr(key, HOME_TURF_EMAIL_WINDOW_SECONDS)
+  if (count > HOME_TURF_EMAIL_LIMIT_PER_DAY) {
+    throw AppError.rateLimited("Too many submissions from this network. Try again later.")
+  }
+}
+
 export async function registerHomeTurfRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  // Lazy per-IP counter store: an injected override (tests) wins; otherwise Redis when configured
-  // (production — REDIS_URL is [BOOT] there); otherwise null (no-infra boot: skip the hourly cap and
-  // rely on the per-route + global rate limits).
-  let redisCounters: CounterStore | undefined
+  // Per-IP counter store: an injected override (tests) wins; otherwise the container's SHARED lazy
+  // counter store when Redis is configured (production — REDIS_URL is [BOOT] there); otherwise null
+  // (no-infra boot: skip the hourly cap and rely on the per-route + global rate limits).
+  //
+  // container.getCounterStore() rather than a route-local RedisCounterStore: the container's wrapper
+  // resolves ONE RedisCounterStore per process on first incr (and drops it in close()), so the form,
+  // anon and cleanup caps all count through the same client instead of each holding their own.
   function counters(): CounterStore | null {
     const injected = app.homeTurfOverrides?.counters
     if (injected) return injected
     if (!container.env.REDIS_URL) return null
-    if (!redisCounters) redisCounters = new RedisCounterStore(container.getRedis())
-    return redisCounters
+    return container.getCounterStore()
+  }
+
+  /**
+   * M8: the abuse caps now FAIL CLOSED. The old behaviour silently SKIPPED both caps whenever no counter
+   * store was available (empty REDIS_URL and no injected override), leaving a public endpoint that sends
+   * DKIM-signed mail to an attacker-chosen recipient protected by nothing but a per-IP request limiter.
+   * A cap that vanishes on misconfiguration is not a cap. If we cannot count, we do not send.
+   */
+  function requireCounters(): CounterStore {
+    const store = counters()
+    if (store === null) {
+      app.log.error("home-turf form: no counter store (REDIS_URL unset) — refusing to send")
+      throw AppError.internal("This form is temporarily unavailable. Please try again later.")
+    }
+    return store
   }
 
   app.post(
@@ -149,11 +200,10 @@ export async function registerHomeTurfRoutes(
         return reply.status(200).send({ ok: true })
       }
 
-      // (3) Per-IP hourly cap (only reached for a genuine submission; see counters() for availability).
-      const store = counters()
-      if (store) {
-        await enforceHomeTurfIpCap(request.ip, store)
-      }
+      // (3) Per-IP hourly cap — FAILS CLOSED (see requireCounters). Bounds one source's submission rate
+      // before any SMTP budget is spent.
+      const store = requireCounters()
+      await enforceHomeTurfIpCap(request.ip, store)
 
       // (4) Notification to the coordinator — awaited: a failure here is the repo's standard mailer
       // 5xx and the submit fails loudly (nothing worse than a silently-dropped sign-up).
@@ -161,7 +211,15 @@ export async function registerHomeTurfRoutes(
       const notification = buildNotificationEmail(form, from, container.env.HOME_TURF_NOTIFY_TO)
       await container.mailer.sendOutbound(notification)
 
-      // (5) Confirmation to the submitter — best-effort: the sign-up already reached the coordinator,
+      // (5) Per-RECIPIENT daily cap (M8) — charged HERE, not before the sends. It is the control that
+      // bounds how much mail one victim can be made to receive, so it must gate the confirmation below,
+      // which is the only mail addressed from the request body; charging it EARLIER meant a transient
+      // mailer failure on step (4) still consumed the submitter's whole daily budget, and their retry
+      // 429'd for 24h. Only the coordinator's notification (a FIXED internal address, bounded by the
+      // per-IP cap) can now precede a 429.
+      await enforceHomeTurfRecipientCap(form.email, store)
+
+      // (6) Confirmation to the submitter — best-effort: the sign-up already reached the coordinator,
       // so a confirmation failure only logs a warning and the request still succeeds.
       try {
         await container.mailer.sendOutbound(
@@ -219,22 +277,31 @@ function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): F
 }
 
 /**
- * The submitter confirmation: a receipt — the same field table the coordinator gets, wrapped in
- * fixed copy. Everything user-supplied (including the free-text notes) is HTML-escaped by
- * kvTable/paragraph, and the surrounding copy is fixed, so reflected content renders inert.
+ * The submitter confirmation: FIXED COPY ONLY (M8).
+ *
+ * It used to echo the whole submitted form back — coachName, school, and up to 2000 characters of free
+ * text — to an address taken from the same request body. HTML-escaping made the echo inert as *markup*,
+ * but the text itself was still attacker-authored, delivered from civfix's own DKIM-signed domain, so it
+ * cleared SPF/DMARC and landed in the victim's inbox looking like legitimate civfix mail. That is a
+ * phishing amplifier regardless of escaping: the payload was never the HTML, it was the prose.
+ *
+ * Nothing from the request body is interpolated here. The recipient address is still request-derived
+ * (that is inherent to a confirmation), which is why the per-recipient cap above exists. The coordinator
+ * notification still carries the full field table — that goes to a FIXED internal address.
  */
 function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: string): FormOutboundEmail {
   const subject = "We got your Home Turf sign-up"
   const { text, html } = renderEmailBody({
     preheader: subject,
     blocks: [
-      paragraph(`Thanks, coach ${form.coachName}. We received your Home Turf sign-up for ${form.school}.`),
+      paragraph("Thanks — we received your Home Turf sign-up."),
       paragraph(
         "The civfix event coordination team will call you soon to find a date that works for your season.",
       ),
-      heading("Your sign-up"),
-      kvTable(formRows(form)),
-      paragraph(`If anything changes, email ${notifyTo}.`, { muted: true }),
+      paragraph(
+        `If you did not fill out this form, you can ignore this message; nothing was created. Questions or corrections: email ${notifyTo}.`,
+        { muted: true },
+      ),
       paragraph("The civfix team"),
     ],
   })

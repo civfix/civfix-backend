@@ -6,29 +6,34 @@
  */
 
 import {
-  AppError,
   ApproveGovClaimRequestSchema,
   GovClaimListQuerySchema,
   RejectGovClaimRequestSchema,
   VerifyCheckRequestSchema,
-  type AdminOkResponse,
   type GetGovClaimResponse,
   type GovClaimListResponse,
   type Role,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { csrfProtect } from "../../auth/csrf.js"
+import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
-import { idParam, parse } from "./_route-utils.js"
+import {
+  idParam,
+  overridableService,
+  parse,
+  parseBodyWithId,
+  sendOk,
+  spreadNow,
+} from "./_route-utils.js"
 import {
   makeGovClaimsService,
   type GovClaimsRepository,
-  type GovClaimsService,
   type ProvisionedUser,
   type UserProvisioner,
 } from "../../services/admin/gov-claims-service.js"
 import { makeDrizzleGovClaimsRepository } from "../../services/admin/gov-claims-repository.drizzle.js"
+import type { RevokeAllSessions } from "../../services/admin/role-change.js"
 import type { UserStore } from "../../auth/stores.js"
 
 /**
@@ -39,6 +44,8 @@ import type { UserStore } from "../../auth/stores.js"
 export interface GovClaimsRouteOverrides {
   repo: GovClaimsRepository
   users: UserProvisioner
+  /** M4: session-revoke seam (a spy in tests). Defaults to the real SessionService when omitted. */
+  revokeSessions?: RevokeAllSessions
   now?: () => Date
 }
 
@@ -83,26 +90,39 @@ export async function registerAdminGovRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
+  /**
+   * M4: the session-revoke a role change requires. Wired to SessionService.revokeAllForUser, the same seam
+   * the admin users router uses — approving a gov claim can demote a live OPERATOR, and the operator role
+   * would otherwise stay warm in Redis until session expiry (which sliding expiry defers indefinitely).
+   *
+   * The auth bundle is read unguarded, like the sibling users/auth routers: server.ts mounts /admin/*
+   * only when it exists, and without it requireOperatorPreHandler already fails closed before any handler.
+   */
+  const revokeSessions: RevokeAllSessions = (userId) =>
+    app.authServices.sessions.revokeAllForUser(userId)
+
   /** Build the gov-claims service from injected overrides (tests) or the container (production). */
-  function service(): GovClaimsService {
-    const overrides = app.govClaimsOverrides
-    if (overrides) {
-      return makeGovClaimsService({
+  const service = overridableService(
+    app,
+    "govClaimsOverrides",
+    (overrides) =>
+      makeGovClaimsService({
         repo: overrides.repo,
         users: overrides.users,
-        ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+        revokeSessions: overrides.revokeSessions ?? revokeSessions,
+        ...spreadNow(overrides),
+      }),
+    () => {
+      const repo: GovClaimsRepository = makeDrizzleGovClaimsRepository(container.getDb().sql)
+      return makeGovClaimsService({
+        repo,
+        users: provisionerFromUserStore(app.authServices.users),
+        revokeSessions,
       })
-    }
-    const repo: GovClaimsRepository = makeDrizzleGovClaimsRepository(container.getDb().sql)
-    const store = app.authServices?.users
-    if (!store) {
-      // The auth bundle (and thus the UserStore) is only mounted when the Pg/Redis auth infra is present;
-      // gov approve provisions a user, so it requires that bundle. A missing store is a server config
-      // error, not a client error.
-      throw AppError.internal("Auth services are not available for gov provisioning")
-    }
-    return makeGovClaimsService({ repo, users: provisionerFromUserStore(store) })
-  }
+    },
+  )
 
   route(app, "listGovClaims", async (request, reply) => {
     const query = parse(GovClaimListQuerySchema, request.query)
@@ -117,32 +137,29 @@ export async function registerAdminGovRoutes(
   })
 
   route(app, "verifyGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(VerifyCheckRequestSchema, { ...(request.body as object), id })
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(VerifyCheckRequestSchema, request)
     await service().verify(id, {
       check: body.check,
       status: body.status,
       evidence: body.evidence ?? null,
       note: body.note ?? null,
-      actorId: request.auth.userId,
+      actorId,
     })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    sendOk(reply)
   })
 
   route(app, "approveGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(ApproveGovClaimRequestSchema, { ...(request.body as object), id })
-    await service().approve(id, { actorId: request.auth.userId, note: body.note ?? null })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(ApproveGovClaimRequestSchema, request)
+    await service().approve(id, { actorId, note: body.note ?? null })
+    sendOk(reply)
   })
 
   route(app, "rejectGovClaim", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = idParam(request)
-    const body = parse(RejectGovClaimRequestSchema, { ...(request.body as object), id })
-    await service().reject(id, { reason: body.reason, actorId: request.auth.userId })
-    const payload: AdminOkResponse = { ok: true }
-    reply.status(200).send(payload)
+    const actorId = requireOperator(request)
+    const { id, body } = parseBodyWithId(RejectGovClaimRequestSchema, request)
+    await service().reject(id, { reason: body.reason, actorId })
+    sendOk(reply)
   })
 }

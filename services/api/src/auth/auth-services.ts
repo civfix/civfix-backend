@@ -5,7 +5,6 @@ import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService } from "./session-service.js"
 import {
   OtpService,
-  REVIEWER_OTP_CODE,
   REVIEWER_OTP_EMAIL,
   type OtpLogger,
   type ReviewerOtpConfig,
@@ -14,6 +13,7 @@ import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
 import { handleChangeableAtFrom, type AuthStores, type UserRecord, type UserStore } from "./stores.js"
 import { PgAuthStores } from "./pg-stores.js"
+import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../env.js"
 import { resolveLocale } from "../i18n/locales.js"
 
 export interface AuthServices {
@@ -76,18 +76,55 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
   }
 }
 
-export function buildAuthServicesFromContainer(container: Container): AuthServices {
+/**
+ * Build the production auth bundle from the container. `logger` should be the server's pino instance:
+ * the OTP service's only log line (P1-7's cooldown-release failure, which otherwise locks a user out for
+ * 60s with no code and no signal) is a no-op without it.
+ */
+export function buildAuthServicesFromContainer(
+  container: Container,
+  opts: { logger?: OtpLogger } = {},
+): AuthServices {
   const stores = new PgAuthStores(container.getDb().db)
   const cache = new RedisCacheClient(container.getRedis())
+  const reviewerConfig = reviewerOtpConfigFromEnv(container.env)
   return buildAuthServices({
     stores,
     cache,
     mailer: container.mailer,
     oauthConfig: oauthConfigFromEnv(container.env),
-    ...(container.env.REVIEWER_OTP_BYPASS !== false
-      ? { reviewer: { email: REVIEWER_OTP_EMAIL, code: REVIEWER_OTP_CODE } }
-      : {}),
+    ...(opts.logger ? { logger: opts.logger } : {}),
+    ...(reviewerConfig !== null ? { reviewer: reviewerConfig } : {}),
   })
+}
+
+/**
+ * Minimum length of an environment-supplied reviewer code, RE-EXPORTED from the env loader so the wiring
+ * gate and the boot-time validation can never enforce different floors (they used to be two independently
+ * maintained 20s, so raising one silently left the other at the old value).
+ */
+export const REVIEWER_OTP_MIN_CODE_LENGTH = REVIEWER_OTP_CODE_MIN_LENGTH
+
+/**
+ * Decide whether to wire the reviewer-OTP bypass, from the environment ONLY (C1).
+ *
+ * Two independent things must BOTH be true, and the failure mode of either is "no bypass at all":
+ *   1. REVIEWER_OTP_BYPASS is EXPLICITLY true. The old wiring tested `!== false`, so an unset, empty,
+ *      misspelled or otherwise unparsed value left a production authentication bypass switched ON.
+ *   2. REVIEWER_OTP_CODE is supplied by the environment and long enough to be a real secret. There is
+ *      no default and no source constant to fall back to, so a deployment that forgets the code gets a
+ *      disabled bypass rather than a guessable one.
+ *
+ * The env value is read defensively (the loaded Env type may not declare it yet) precisely because the
+ * safe answer to "not present" is to disable the feature.
+ */
+export function reviewerOtpConfigFromEnv(env: Container["env"]): ReviewerOtpConfig | null {
+  if (env.REVIEWER_OTP_BYPASS !== true) return null
+  const code = (env as { REVIEWER_OTP_CODE?: string }).REVIEWER_OTP_CODE
+  if (typeof code !== "string") return null
+  const trimmed = code.trim()
+  if (trimmed.length < REVIEWER_OTP_MIN_CODE_LENGTH) return null
+  return { email: REVIEWER_OTP_EMAIL, code: trimmed }
 }
 
 export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {

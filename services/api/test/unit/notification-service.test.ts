@@ -11,6 +11,7 @@ import {
   type NotificationPrefsRecord,
 } from "../../src/services/notification-service.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import { normalizeDeviceId } from "../../src/routes/notifications.routes.js"
 
 
 const U = "11111111-1111-1111-1111-111111111111"
@@ -290,13 +291,17 @@ describe("registerPushToken", () => {
     expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "d1", revokedAt: null })
   })
 
-  it("P1-3: a DIFFERENT user with a different/absent device_id CANNOT hijack the token", async () => {
+  it("P1-3 / H11: a DIFFERENT user with a different/absent device_id CANNOT hijack the token, and gets a real ERROR", async () => {
     const { repo, push, service } = makeHarness()
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
     expect(push.tokens).toHaveLength(1)
 
-    const res = await service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "d2" })
-    expect(res).toEqual({ ok: true })
+    // H11: this used to resolve {ok:true}, so the client believed registration succeeded while the
+    // token stayed bound to whoever registered FIRST — the legitimate device owner silently lost push
+    // forever with no signal anywhere. The conflict is now surfaced as an error the client can act on.
+    await expect(
+      service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "d2" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
 
     expect(repo.pushTokens).toHaveLength(1)
     expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "d1", revokedAt: null })
@@ -312,14 +317,18 @@ describe("registerPushToken", () => {
     expect(repo.pushTokens[0]).toMatchObject({ userId: V, deviceId: "shared-device", revokedAt: null })
   })
 
-  it("device-claim: registering on a device soft-revokes ANOTHER user's active token on that same device", async () => {
+  it("H12: a self-declared device_id does NOT revoke another account's token (mass-revoke closed)", async () => {
     const { repo, service } = makeHarness()
     await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
+    // V claims the same device_id with a DIFFERENT token. Previously this soft-revoked every active
+    // token carrying that device_id across every account — one harvested device-id list was a
+    // fleet-wide push blackout. The device_id branch is gone: the revoke is scoped to the presented
+    // TOKEN, which the caller provably holds.
     await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "shared" })
 
     const uRow = repo.pushTokens.find((t) => t.token === "tok-U")
     const vRow = repo.pushTokens.find((t) => t.token === "tok-V")
-    expect(uRow?.revokedAt).not.toBeNull()
+    expect(uRow).toMatchObject({ userId: U, revokedAt: null })
     expect(vRow).toMatchObject({ userId: V, revokedAt: null })
   })
 
@@ -491,5 +500,32 @@ describe("createNotification (per-user signal)", () => {
     const { repo, service } = makeHarness(() => at(12, 0))
     await service.createNotification(U, { type: "system", title: "ok" })
     expect(repo.notifications).toHaveLength(1)
+  })
+})
+
+/**
+ * H12 — `deviceId` arrives from a JSON body as an unconstrained string in the shared contract and the
+ * server used it to key a destructive cross-account write. It is now shape-gated at the route boundary
+ * and, critically, DROPPED rather than rejected: 422-ing an older client would cost it push entirely,
+ * which is the exact silent-failure mode H11 is about.
+ */
+describe("normalizeDeviceId (H12)", () => {
+  it("accepts a UUID (the shape the mobile client stores in SecureStore), normalized", () => {
+    expect(normalizeDeviceId("3F2504E0-4F89-41D3-9A0C-0305E82C3301")).toBe(
+      "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    )
+    expect(normalizeDeviceId("  3f2504e0-4f89-41d3-9a0c-0305e82c3301  ")).toBe(
+      "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    )
+  })
+
+  it("DROPS a malformed value instead of rejecting the registration", () => {
+    for (const bad of ["*", "%", "a".repeat(5000), "not-a-uuid", "'; DROP", ""]) {
+      expect(normalizeDeviceId(bad)).toBeUndefined()
+    }
+  })
+
+  it("passes through an absent value unchanged", () => {
+    expect(normalizeDeviceId(undefined)).toBeUndefined()
   })
 })

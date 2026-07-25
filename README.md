@@ -45,6 +45,10 @@ civfix-backend/
 - Node >= 22 (see `.nvmrc`)
 - pnpm 9.12.0 (this repo is pnpm-only)
 - Docker is only needed later for integration tests / running infra; not required to build or test.
+  The Docker-gated suites SKIP themselves on a machine with no Docker so `pnpm test` stays green — but
+  only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
+  container start FAILS the run instead of silently dropping every integration test from it. Set
+  `CIVFIX_ALLOW_PG_SKIP=1` to opt a CI job back into skipping.
 
 ## The shared contract (`@civfix/shared` from the private registry)
 
@@ -277,17 +281,32 @@ the relevant flag off (e.g. `USE_FAKE_CHAT=0`).
 ## Reviewer-OTP bypass (App Review)
 
 So App Store / Play reviewers can sign in to a build that is already in review (no new mobile release),
-the OTP flow has a fixed-credential bypass:
+the OTP flow can accept one operator-supplied secret code for the address `reviewer@civfix.org`.
 
-- email `reviewer@civfix.org`, code `000000`
-- requesting a code for that email sends **no** email and stores nothing; verifying with `000000`
-  signs in and, on first use, creates a fully set-up citizen account (handle `@reviewer`, name
-  "Reviewer Reviewer", `email_verified`, `profile_complete`). The fixed code only works for this exact
-  email, and this email never accepts a mailed code.
+**There is no built-in code.** The code lives only in the deployment's environment, is never committed,
+and is per-review and rotated. Three variables gate it, and in production enabling the bypass requires
+**all three**: with the switch on and either of the other two missing, the API refuses to boot rather than
+silently running a half-configured authentication bypass.
 
-Paste those credentials into the App Review notes. The bypass is **ON by default**; set
-`REVIEWER_OTP_BYPASS=false` (then redeploy/restart) to disable it — the email then behaves like any
-other. `@reviewer` is on the reserved-handle blocklist so no real user can take it.
+| Variable | Meaning |
+| --- | --- |
+| `REVIEWER_OTP_BYPASS` | the master switch. Truthy values are `1` / `true` / `yes` / `on` (case-insensitive, trimmed); unset, empty, `false` or anything unrecognised leaves the bypass **off**, which is the default |
+| `REVIEWER_OTP_BYPASS_ACK` | **production only:** the explicit second opt-in, same truthy parsing. With `REVIEWER_OTP_BYPASS` on in `NODE_ENV=production` and this not truthy, `loadEnv` throws and **the API refuses to boot** (the error names the variable). Not consulted outside production |
+| `REVIEWER_OTP_CODE` | the secret code, **at least 20 characters** (`REVIEWER_OTP_CODE_MIN_LENGTH` in `services/api/src/env.ts`). A non-empty value shorter than that **fails boot in every environment**. Missing entirely: production with the bypass on fails boot; elsewhere the bypass is simply not wired |
+
+Generate one per review, e.g. `openssl rand -base64 24`, set all three variables in the deployment's
+sops env, restart, and paste the address + that code into the App Review notes.
+
+**Turning it off again, in this order:** set `REVIEWER_OTP_BYPASS=false` **first**, then remove
+`REVIEWER_OTP_CODE`. Removing the code while the switch is still truthy is exactly the production
+boot-failure case above.
+
+Behaviour when wired: requesting a code for that address sends **no** email and stores nothing;
+verifying with the configured code signs in and, on first use, creates a fully set-up citizen account
+(handle `@reviewer`, name "Reviewer Reviewer", `email_verified`, `profile_complete`). The code only
+works for this exact address, that address never accepts a mailed code, and a wrong guess spends the
+same per-IP verify throttle as any other failed sign-in. `@reviewer` is on the reserved-handle
+blocklist so no real user can take it.
 
 ## Phase-1 acceptance
 

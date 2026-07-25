@@ -15,6 +15,17 @@ export const LEADERBOARD_MAX_LIMIT = 50
 export const LEADERBOARD_MAX_OFFSET = 500
 export const EVENT_HOURS_MEMBER_CAP = 2000
 
+/**
+ * L23 — `entries` is an unbounded array in the frozen shared wire schema (no `.max()`), capped only by
+ * the 256 KB body limit, which admits roughly 6000 entries in one request. Every entry becomes a row in
+ * a single advisory-locked transaction, so the array length is a direct lever on how long that lock is
+ * held. Clamped here exactly as cleanup-service's clampLinkIds / MAX_LINKED_REPORTS clamps its arrays.
+ * The cap is the member cap, because an entry that is not a current member is rejected anyway.
+ * FOLLOW-UP: the real fix is `.max()` on LogEventHoursRequestSchema in @civfix/shared, which this repo
+ * cannot edit.
+ */
+export const MAX_EVENT_HOURS_ENTRIES = EVENT_HOURS_MEMBER_CAP
+
 // WS5 per-attendee shape: one {userId, hours} entry per credited attendee, upserted per row on the
 // (cleanup_id, user_id) WHERE source='event' partial-unique index. `actorId` is the logging host
 // (organizer or cohost) recorded as logged_by_user_id.
@@ -115,8 +126,26 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       // service is safe under direct construction): hours in (0, MAX_EVENT_HOURS], no duplicate
       // userIds (a duplicate would also break the single-statement per-row upsert), and every entry
       // must be a CURRENT member of the cleanup.
+      // L23: bound the unbounded shared array before doing any per-entry work.
+      if (input.entries.length > MAX_EVENT_HOURS_ENTRIES) {
+        throw AppError.validation({
+          entries: `at most ${MAX_EVENT_HOURS_ENTRIES} attendees may be credited in one request`,
+        })
+      }
+
       const seen = new Set<string>()
       for (const entry of input.entries) {
+        // M21: a host cannot credit THEMSELVES. Nothing excluded the actor before, and the organizer is
+        // auto-inserted as a member at create time, so they always passed the membership filter below —
+        // a verified host could mint unlimited public-leaderboard hours for their own account with no
+        // second party involved anywhere in the flow. Crediting the organizer is still possible, but it
+        // now requires a DIFFERENT host (a co-host) or an operator to do it, which is the whole point:
+        // someone else has to attest to the hours.
+        if (entry.userId === input.actorId) {
+          throw AppError.forbidden(
+            "You can't log volunteer hours for yourself — another host must credit you.",
+          )
+        }
         if (!(entry.hours > 0) || entry.hours > MAX_EVENT_HOURS) {
           throw AppError.validation({
             entries: `hours must be greater than 0 and at most ${MAX_EVENT_HOURS}`,

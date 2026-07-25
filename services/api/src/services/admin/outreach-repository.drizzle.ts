@@ -5,25 +5,19 @@ import {
   type OutreachDigest,
   type OutreachRepository,
 } from "./outreach-service.js"
-import type { ReportCategory } from "@civfix/shared"
+import {
+  categoryCountsFragment,
+  categoryCountsProjection,
+  parseCategoryCounts,
+  parseCount,
+  type CategoryCountRow,
+} from "./category-counts.js"
 
-interface DigestRow {
+interface DigestRow extends CategoryCountRow {
   org: string | null
   to_addr: string | null
   total: string
   oldest_waiting_at: Date | null
-  cat_trash: string
-  cat_recycling: string
-  cat_graffiti: string
-  cat_hazard: string
-  cat_encampment: string
-  cat_water: string
-  cat_other: string
-}
-
-function parseCount(value: string | null | undefined): number {
-  const n = Number.parseInt(value ?? "0", 10)
-  return Number.isNaN(n) ? 0 : n
 }
 
 export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
@@ -57,25 +51,13 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
           ) AS to_addr,
           COALESCE(w.total, 0)::text AS total,
           w.oldest_waiting_at,
-          COALESCE(w.cat_trash, 0)::text AS cat_trash,
-          COALESCE(w.cat_recycling, 0)::text AS cat_recycling,
-          COALESCE(w.cat_graffiti, 0)::text AS cat_graffiti,
-          COALESCE(w.cat_hazard, 0)::text AS cat_hazard,
-          COALESCE(w.cat_encampment, 0)::text AS cat_encampment,
-          COALESCE(w.cat_water, 0)::text AS cat_water,
-          COALESCE(w.cat_other, 0)::text AS cat_other
+          ${categoryCountsProjection(sql, "w")}
         FROM jurisdictions j
         LEFT JOIN LATERAL (
           SELECT
             COUNT(*) AS total,
             MIN(r.created_at) AS oldest_waiting_at,
-            COUNT(*) FILTER (WHERE r.category = 'trash') AS cat_trash,
-            COUNT(*) FILTER (WHERE r.category = 'recycling') AS cat_recycling,
-            COUNT(*) FILTER (WHERE r.category = 'graffiti') AS cat_graffiti,
-            COUNT(*) FILTER (WHERE r.category = 'hazard') AS cat_hazard,
-            COUNT(*) FILTER (WHERE r.category = 'encampment') AS cat_encampment,
-            COUNT(*) FILTER (WHERE r.category = 'water') AS cat_water,
-            COUNT(*) FILTER (WHERE r.category = 'other') AS cat_other
+            ${categoryCountsFragment(sql, "r")}
           FROM reports r
           WHERE r.jurisdiction_geoid = j.geoid
             AND r.deleted_at IS NULL
@@ -90,25 +72,11 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
       const total = parseCount(row.total)
       if (toAddr === null || toAddr === "" || total === 0) return null
 
-      const counts: Record<ReportCategory, string> = {
-        trash: row.cat_trash,
-        recycling: row.cat_recycling,
-        graffiti: row.cat_graffiti,
-        hazard: row.cat_hazard,
-        encampment: row.cat_encampment,
-        water: row.cat_water,
-        other: row.cat_other,
-      }
-      const perCategory: Partial<Record<ReportCategory, number>> = {}
-      for (const category of OUTREACH_CATEGORIES) {
-        const n = parseCount(counts[category])
-        if (n > 0) perCategory[category] = n
-      }
       return {
         geoid,
         org: row.org,
         toAddr,
-        perCategory,
+        perCategory: parseCategoryCounts(row),
         total,
         oldestWaitingAt: row.oldest_waiting_at,
       }

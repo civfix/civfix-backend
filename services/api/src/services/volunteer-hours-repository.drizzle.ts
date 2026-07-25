@@ -1,11 +1,18 @@
 import { REPORT_VOLUNTEER_HOURS, avatarGradient } from "@civfix/shared"
 import type { LeaderboardEntryDTO, MyVolunteerHoursDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
+import { pageWith } from "../db/cursor-helpers.js"
 import type {
   LeaderboardPage,
   LogEventHoursArgs,
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
+
+/**
+ * `pageWith`'s encoder must return a cursor STRING or null; the leaderboard pages by offset, so this is
+ * the "there is another page" marker its boolean has-more collapses into. Never leaves this module.
+ */
+const MORE_PAGES = "more"
 
 export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
   return {
@@ -36,22 +43,86 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const hoursByRow = args.entries.map((e) => e.hours)
       return sql.begin(async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
+
+        // M21 (history): the upsert below overwrites `hours` in place and overwrites
+        // `logged_by_user_id` with it, so before this there was NO record that a value had ever been
+        // different — a host could inflate a credit and later restore it invisibly, against a number
+        // that feeds the PUBLIC jurisdiction leaderboard. Snapshot the pre-image INSIDE the
+        // advisory-locked transaction (so it is exactly what the upsert is about to replace) and append
+        // an immutable journal row per credited attendee. NULL previous_hours = no prior credit, which
+        // is deliberately distinct from a stored 0.
+        //
+        // This runs BEFORE the upsert and in the SAME transaction: an audit row written afterwards
+        // could be lost to a crash while the mutation committed, which is the one ordering that must
+        // never happen for a journal.
+        await tx`
+          INSERT INTO volunteer_hours_audit
+            (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
+          SELECT
+            ${args.cleanupId}, t.u, ${args.actorId}, prev.hours, t.h
+          FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
+          LEFT JOIN volunteer_hours prev
+            ON prev.cleanup_id = ${args.cleanupId}
+           AND prev.source = 'event'
+           AND prev.user_id = t.u
+        `
+
+        // The event has NO jurisdiction (a host moved it outside all coverage, or it never had one). The
+        // ledger row is still written/updated, with jurisdiction_geoid NULL — and any PRIOR credit that
+        // was booked into a real jurisdiction must be REVERSED out of that rollup, exactly as the
+        // non-null branch below reverses a move from one geoid to another. Without the reversal the old
+        // jurisdiction's PUBLIC leaderboard keeps hours for an event that no longer takes place in it,
+        // with no ledger row backing them and no way to ever settle up (this branch is the only writer
+        // that can leave the rollup without a matching volunteer_hours row).
+        // volunteer-hours-repository.memory.ts:53-55 is the in-memory twin of this reversal.
         if (args.geoid === null) {
           const upserted = await tx<{ user_id: string }[]>`
-            INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-            SELECT t.u, t.h, 'event', ${args.cleanupId}, NULL, ${args.actorId}
-            FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
-            ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
-            DO UPDATE SET hours = EXCLUDED.hours, logged_by_user_id = EXCLUDED.logged_by_user_id
-            RETURNING user_id
+            WITH prev AS (
+              SELECT user_id, hours AS old_hours, jurisdiction_geoid AS old_geoid
+              FROM volunteer_hours
+              WHERE cleanup_id = ${args.cleanupId}
+                AND source = 'event'
+                AND user_id = ANY(${userIds}::uuid[])
+            ),
+            upsert AS (
+              INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
+              SELECT t.u, t.h, 'event', ${args.cleanupId}, NULL, ${args.actorId}
+              FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
+              ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
+              DO UPDATE SET
+                hours = EXCLUDED.hours,
+                jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
+                logged_by_user_id = EXCLUDED.logged_by_user_id
+              RETURNING user_id
+            ),
+            reversal AS (
+              INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
+              SELECT p.user_id, p.old_geoid, -p.old_hours
+              FROM upsert up
+              JOIN prev p ON p.user_id = up.user_id
+              WHERE p.old_geoid IS NOT NULL
+              ON CONFLICT (user_id, jurisdiction_geoid)
+              DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
+              RETURNING user_id
+            )
+            SELECT user_id FROM upsert
           `
+          // `reversal` is a data-modifying CTE: Postgres runs it to completion whether or not the main
+          // query reads it, so the count below stays "attendees credited" (one row per input attendee).
           return upserted.length
         }
         // Same delta-based rollup maintenance as before, now per row: each attendee's rollup moves by
         // (their new hours - their previous event credit), so a re-log overwrites without double-count.
+        //
+        // The delta is booked PER GEOID, not against the current one blindly. An event's
+        // jurisdiction_geoid changes when a host edits its location (cleanup-service re-resolves it), and
+        // the previous credit is then sitting in the OLD jurisdiction's rollup: applying (new - old) to
+        // the NEW geoid would under-credit there and leave the stale hours behind in the old one, drifting
+        // BOTH public leaderboards. So the current geoid gets the full amount whenever the prior credit
+        // lived elsewhere, and the old geoid gets that prior credit reversed out.
         const upserted = await tx<{ user_id: string }[]>`
           WITH prev AS (
-            SELECT user_id, hours AS old_hours
+            SELECT user_id, hours AS old_hours, jurisdiction_geoid AS old_geoid
             FROM volunteer_hours
             WHERE cleanup_id = ${args.cleanupId}
               AND source = 'event'
@@ -67,16 +138,34 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
               jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
               logged_by_user_id = EXCLUDED.logged_by_user_id
             RETURNING user_id, hours
+          ),
+          deltas AS (
+            SELECT
+              up.user_id,
+              ${args.geoid}::text AS geoid,
+              up.hours - COALESCE(
+                CASE WHEN p.old_geoid = ${args.geoid} THEN p.old_hours END, 0
+              ) AS delta
+            FROM upsert up
+            LEFT JOIN prev p ON p.user_id = up.user_id
+            UNION ALL
+            -- The event moved jurisdictions since this attendee was last credited: take the stale hours
+            -- back out of the jurisdiction it no longer belongs to. Disjoint from the branch above (that
+            -- one is always the CURRENT geoid), so no (user, geoid) pair is inserted twice.
+            SELECT p.user_id, p.old_geoid, -p.old_hours
+            FROM upsert up
+            JOIN prev p ON p.user_id = up.user_id
+            WHERE p.old_geoid IS NOT NULL AND p.old_geoid <> ${args.geoid}
           )
           INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
-          SELECT up.user_id, ${args.geoid}, up.hours - COALESCE(p.old_hours, 0)
-          FROM upsert up
-          LEFT JOIN prev p ON p.user_id = up.user_id
+          SELECT d.user_id, d.geoid, d.delta FROM deltas d
           ON CONFLICT (user_id, jurisdiction_geoid)
           DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
           RETURNING user_id
         `
-        return upserted.length
+        // Rows credited, NOT rows written: the reversal branch can emit a second row for the same
+        // attendee, and the caller's `credited` count is per attendee.
+        return new Set(upserted.map((r) => r.user_id)).size
       })
     },
 
@@ -140,8 +229,12 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         LIMIT ${limit + 1} OFFSET ${offset}
       `
 
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
+      // OFFSET paging, not a keyset: the contract carries `nextOffset` because a leaderboard row's
+      // sort key (total_hours) moves under the reader. So only the has-more SPLIT is shared with the
+      // keyset repos — `pageWith` drops the probe row and the encoder just marks "another page exists";
+      // the offset arithmetic stays here. A `null` marker on a limit-0 page (unreachable: clampLimit
+      // floors the limit at 1) correctly ends the page instead of advertising the same offset forever.
+      const { items: page, nextCursor: more } = pageWith(rows, limit, () => MORE_PAGES)
       const entries: LeaderboardEntryDTO[] = page.map((r, i) => ({
         rank: offset + i + 1,
         userId: r.user_id,
@@ -156,7 +249,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       return {
         jurisdictionName,
         entries,
-        nextOffset: hasMore ? offset + limit : null,
+        nextOffset: more === null ? null : offset + limit,
       }
     },
   }

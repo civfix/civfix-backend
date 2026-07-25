@@ -74,7 +74,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
   })
 
   beforeEach(async () => {
-    await h.sql`TRUNCATE jurisdiction_discovery_tasks, jurisdiction_contacts, report_timeline, abuse_flags, audit_log, outreach_state RESTART IDENTITY CASCADE`
+    await h.sql`TRUNCATE jurisdiction_discovery_tasks, jurisdiction_contacts, report_timeline, abuse_flags, audit_log, outreach_state, mail_events, mail_messages, mail_threads RESTART IDENTITY CASCADE`
     await h.sql`DELETE FROM reports`
     await h.sql`UPDATE jurisdictions SET contact_emails = NULL, report_form_url = NULL, contact_updated_at = NULL, notes = NULL WHERE geoid = ${GEOID}`
   })
@@ -300,6 +300,88 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
       limit: 100,
     })
     expect(none.records.some((r) => r.geoid === GEOID)).toBe(false)
+  })
+
+  /**
+   * The directory's `bounced` flag has to be CLEARABLE, and only a real database can prove it.
+   *
+   * The flag ORs two sources: the per-contact `jurisdiction_contacts.bounced_at` stamp (which a re-save
+   * nulls) and, as a fallback for a bounce with no per-contact row (a digest-only bounce), the existence of
+   * a `mail_events` row of type 'bounced' for the geoid. `mail_events` rows are never deleted, so the
+   * unscoped EXISTS pinned the row to 'bounced' FOREVER: re-entering a good address cleared bounced_at —
+   * and cleared the flag in the in-memory repo, which is what the offline tests asserted — while production
+   * still read bounced. The fallback is now scoped to events NEWER than the last contact save.
+   */
+  describe("directory 'bounced' flag clears on a contact re-save", () => {
+    /** A mail_events 'bounced' row for the seeded jurisdiction, at the given time. */
+    async function seedBounceEvent(at: Date): Promise<void> {
+      const rows = await h.sql<{ id: string }[]>`
+        INSERT INTO mail_threads (thread_token, jurisdiction_geoid, subject, status)
+        VALUES (${`tok-${at.getTime()}`}, ${GEOID}, 'Digest', 'bounced')
+        RETURNING id
+      `
+      await h.sql`
+        INSERT INTO mail_events (thread_id, type, created_at)
+        VALUES (${rows[0]!.id}, 'bounced', ${at})
+      `
+    }
+
+    async function directoryRow(): Promise<{ bounced: boolean } | undefined> {
+      const { records } = await contacts.listDirectory({
+        q: null,
+        filter: "all",
+        sort: "population",
+        layer: null,
+        cursor: null,
+        limit: 100,
+      })
+      return records.find((r) => r.geoid === GEOID)
+    }
+
+    async function saveContact(email: string): Promise<void> {
+      await contacts.saveAndRoute(
+        GEOID,
+        { contacts: {}, defaultEmails: [email], formUrl: null },
+        { actorId: null },
+      )
+    }
+
+    it("reads bounced from the per-contact stamp, then CLEARS it when a good address is re-saved", async () => {
+      await saveContact("bad@lacity.gov")
+      // The inbound bounce handler's stamp (inbound-bounce.ts markBouncedContact).
+      await h.sql`
+        UPDATE jurisdiction_contacts SET bounced_at = now()
+        WHERE geoid = ${GEOID} AND category IS NULL
+      `
+      expect((await directoryRow())?.bounced).toBe(true)
+
+      // Re-saving nulls bounced_at AND bumps contact_updated_at.
+      await saveContact("good@lacity.gov")
+      expect((await directoryRow())?.bounced).toBe(false)
+      const stamps = await h.sql<{ bounced_at: Date | null }[]>`
+        SELECT bounced_at FROM jurisdiction_contacts WHERE geoid = ${GEOID}
+      `
+      expect(stamps.every((s) => s.bounced_at === null)).toBe(true)
+    })
+
+    it("clears a mail_events-only bounce once the contact is saved AFTER the event", async () => {
+      // A digest-only bounce: a mail_events row with no per-contact stamp at all.
+      await seedBounceEvent(new Date(Date.now() - 60 * 60 * 1000))
+      await h.sql`UPDATE jurisdictions SET contact_updated_at = NULL WHERE geoid = ${GEOID}`
+      expect((await directoryRow())?.bounced).toBe(true)
+
+      // The operator enters a working address; the event is now OLDER than the save.
+      await saveContact("good@lacity.gov")
+      expect((await directoryRow())?.bounced).toBe(false)
+    })
+
+    it("RE-flags when a bounce arrives after the last save (the fallback is not dead)", async () => {
+      await saveContact("good@lacity.gov")
+      expect((await directoryRow())?.bounced).toBe(false)
+      // A fresh bounce, one hour into the future of the save.
+      await seedBounceEvent(new Date(Date.now() + 60 * 60 * 1000))
+      expect((await directoryRow())?.bounced).toBe(true)
+    })
   })
 
   it("getGeometry returns the simplified boundary + bbox + interior point for a seeded jurisdiction", async () => {

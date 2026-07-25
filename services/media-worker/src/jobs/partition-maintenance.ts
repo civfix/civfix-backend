@@ -24,13 +24,10 @@
 
 import { ensureNextMonthChatPartition, ensureNextMonthDmPartition } from "@civfix/api/media-repo"
 import type { Sql } from "@civfix/api/db"
+import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
-export interface PartitionMaintenanceDeps {
+export interface PartitionMaintenanceDeps extends JobObsDeps {
   sql: Sql
-  /** Injectable clock for deterministic tests (defaults to now). */
-  now?: () => Date
-  log?: (line: string, extra?: Record<string, unknown>) => void
-  report?: (err: unknown, context?: Record<string, unknown>) => void
 }
 
 /**
@@ -40,9 +37,8 @@ export interface PartitionMaintenanceDeps {
 export async function runPartitionMaintenance(
   deps: PartitionMaintenanceDeps,
 ): Promise<string | null> {
-  const log = deps.log ?? ((l: string, e?: Record<string, unknown>) => console.log(l, e ?? {}))
-  const report = deps.report ?? (() => {})
-  const at = (deps.now ?? (() => new Date()))()
+  const { log, report, now } = resolveJobObs(deps)
+  const at = now()
   try {
     const table = await ensureNextMonthChatPartition(deps.sql, at)
     const dmTable = await ensureNextMonthDmPartition(deps.sql, at)

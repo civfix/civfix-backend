@@ -104,6 +104,45 @@ describe("POST /media/upload", () => {
   })
 })
 
+describe("media byte quota wiring", () => {
+  it("charges through container.getByteMeter() when Redis is configured (one shared client)", async () => {
+    // M10's daily quota used to run on a RedisByteMeter the route built itself, so container.close()'s
+    // reset of the shared client protected nothing. Pin the wiring: with a Redis-configured container and
+    // no injected meter, createUpload must charge through the container's meter.
+    const env = loadEnv({ NODE_ENV: "test" })
+    const charges: { subject: string; bytes: number }[] = []
+    // The SERVER sees an env with no Redis (in-memory limiter, no connection opened) while the CONTAINER
+    // reports a REDIS_URL — that is exactly the branch production takes in redisFallbackMeter().
+    const container = {
+      ...buildContainer(env),
+      env: { ...env, REDIS_URL: "redis://cache:6379" },
+      getByteMeter: () => ({
+        add: (subject: string, bytes: number) => {
+          charges.push({ subject, bytes })
+          return Promise.resolve(bytes)
+        },
+      }),
+    } as unknown as ReturnType<typeof buildContainer>
+    const repo = new InMemoryMediaRepository()
+    const app = await buildServer({ env, container, mediaRepo: repo })
+    current = {
+      app,
+      repo,
+      storage: container.storage as unknown as FakeStorage,
+      jobs: container.jobs as unknown as FakeJobs,
+    }
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/media/upload",
+      payload: { kind: "image", contentType: "image/jpeg", byteSize: 4096, sha256: SHA },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(charges).toHaveLength(1)
+    expect(charges[0]!.bytes).toBe(4096)
+  })
+})
+
 describe("POST /media/:uploadId/finalize", () => {
   it("finalizes after upload: marks the media validating and enqueues the media.checks worker job", async () => {
     const { app, repo, storage, jobs } = await makeHarness()

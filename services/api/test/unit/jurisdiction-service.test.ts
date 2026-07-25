@@ -8,7 +8,11 @@ import {
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionHealthRow,
 } from "../../src/services/jurisdiction-service.js"
-import { FakeJurisdictionLookup } from "../../src/adapters/jurisdiction-lookup.census.js"
+import {
+  CachedJurisdictionLookup,
+  FakeJurisdictionLookup,
+  type JurisdictionLookup,
+} from "../../src/adapters/jurisdiction-lookup.census.js"
 
 /**
  * Unit tests for the jurisdiction service. The pure `needsDiscovery` decision is tested directly; the
@@ -342,14 +346,83 @@ describe("resolveForPoint write-time Census fallback", () => {
     // A brand-new contact-less row is never routable yet.
     expect(dto?.routable).toBe(false)
 
-    // The lazy upsert ran: exactly one tagged-template call (the INSERT ... ON CONFLICT), and it carries
-    // the geoid/name/layer/priority the lookup returned. (The health read is skipped on this path.)
+    // The lazy insert ran: exactly one tagged-template call, and it carries the geoid/name/layer/priority
+    // the lookup returned. (The health read is skipped on this path.)
     expect(taggedCalls).toHaveLength(1)
     const upsert = taggedCalls[0]!
     expect(upsert.strings.join("")).toContain("INSERT INTO jurisdictions")
-    expect(upsert.strings.join("")).toContain("ON CONFLICT (geoid) DO UPDATE SET")
-    // VALUES (${geoid}, ${name}, ${layer}, ${priority}) — priority 2 is the 'place' rank.
-    expect(upsert.values).toEqual(["0644000", "Los Angeles", "place", 2])
+    expect(upsert.strings.join("")).toContain("ON CONFLICT (geoid) DO NOTHING")
+    // SELECT ${geoid}, ${name}, ${layer}, ${priority} (priority 2 is the 'place' rank) + the geoid again
+    // in the NOT EXISTS guard.
+    expect(upsert.values).toEqual(["0644000", "Los Angeles", "place", 2, "0644000"])
+  })
+
+  /**
+   * A15 follow-up: `nextval('jurisdiction_code_seq')` must NOT sit in a VALUES list, because a VALUES list
+   * is evaluated before the conflict is detected — every repeat call on this (anon-ok) path conflicts, so
+   * the sequence was burned once per request forever. The guard has to be inside the statement; asserting
+   * the SQL shape is the only offline way to pin it (the real-DB proof is in map-pg.test.ts).
+   */
+  it("draws the JURCODE inside a NOT EXISTS guard, never from a VALUES list", async () => {
+    const taggedCalls: TaggedCall[] = []
+    const sql = makeFakeSql({ resolveRows: [], taggedCalls })
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs: new FakeJobs(),
+      jurisdictionLookup: new FakeJurisdictionLookup({
+        geoid: "0644000",
+        name: "Los Angeles",
+        layer: "place",
+      }),
+      now: () => NOW,
+    })
+
+    await service.resolveForPoint(34.05, -118.25)
+
+    const text = taggedCalls[0]!.strings.join("")
+    expect(text).toContain("nextval('jurisdiction_code_seq')")
+    expect(text).toContain("WHERE NOT EXISTS (SELECT 1 FROM jurisdictions WHERE geoid =")
+    expect(text).not.toContain("VALUES (")
+  })
+
+  /**
+   * The service itself does no memoization (a NULL-geom row can never become a local hit, so every repeat
+   * call re-enters this path); the CALLER wraps the lookup. Pins the anon map wiring's effect: one
+   * outbound lookup and one write for N resolves of the same point.
+   */
+  it("with a CachedJurisdictionLookup, a repeat resolve of the same point re-fires nothing", async () => {
+    const taggedCalls: TaggedCall[] = []
+    const sql = makeFakeSql({ resolveRows: [], taggedCalls })
+    let lookupCalls = 0
+    const inner: JurisdictionLookup = {
+      lookup: (_lat, _lng) => {
+        lookupCalls += 1
+        return Promise.resolve({ geoid: "0644000", name: "Los Angeles", layer: "place" as const })
+      },
+    }
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs: new FakeJobs(),
+      jurisdictionLookup: new CachedJurisdictionLookup(inner),
+      now: () => NOW,
+    })
+
+    const first = await service.resolveForPoint(34.05, -118.25)
+    const second = await service.resolveForPoint(34.05, -118.25)
+
+    expect(second).toEqual(first)
+    // The expensive part — the outbound Census request — happens ONCE for N resolves of the same point.
+    expect(lookupCalls).toBe(1)
+    // The idempotent insert is still attempted per call (deliberate: it self-heals a row an ops prune
+    // removed, and it is a single indexed probe). What it must never do is draw a code: every statement
+    // on this path is the NOT EXISTS-guarded form, whose target list is unevaluated once the row exists.
+    for (const call of taggedCalls) {
+      const text = call.strings.join("")
+      expect(text).toContain("WHERE NOT EXISTS (SELECT 1 FROM jurisdictions WHERE geoid =")
+      expect(text).not.toContain("VALUES (")
+    }
   })
 
   it("local miss + lookup MISS -> returns null and does NOT upsert", async () => {

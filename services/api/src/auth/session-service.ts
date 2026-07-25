@@ -14,6 +14,9 @@
  * expires_at is pushed forward by a full TTL and Redis is refreshed; otherwise NO write happens. This
  * keeps active sessions alive without a write on every request. last_seen_at is updated only as part
  * of that same extension write (throttled to the sliding-expiry cadence) so reads stay cheap.
+ *
+ * Absolute lifetime: sliding expiry is bounded by ABSOLUTE_SESSION_MAX_SECONDS measured from the row's
+ * created_at, so no amount of activity can keep a session (or a stolen token) alive indefinitely.
  */
 
 import type { Role } from "@civfix/shared"
@@ -23,6 +26,18 @@ import type { SessionStore } from "./stores.js"
 
 /** Default session lifetime: 30 days. */
 export const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+
+/**
+ * Absolute session lifetime: 90 days from CREATION, regardless of activity (M3).
+ *
+ * Sliding expiry alone has no ceiling, so on a passwordless product one request every 15 days keeps a
+ * token alive forever: a stolen session is a PERMANENT credential, and the only thing that ever ends it
+ * is an explicit revoke by someone who has noticed. The cap makes every session mortal — after 90 days
+ * it stops being extendable AND stops resolving, and the holder (attacker or owner) must re-authenticate
+ * through a channel the real account owner controls. 90 days is chosen to be long enough that a normal
+ * mobile user is never surprised by it, while bounding the blast radius of an undetected token theft.
+ */
+export const ABSOLUTE_SESSION_MAX_SECONDS = 90 * 24 * 60 * 60
 
 /**
  * Extra seconds the banned marker outlives the session TTL, so it can veto any session that could still
@@ -62,11 +77,19 @@ export interface SessionMeta {
   ip?: string | null
 }
 
-/** Shape stored in Redis. Kept minimal; expiresAt is epoch ms for cheap comparison. */
+/**
+ * Shape stored in Redis. Kept minimal; timestamps are epoch ms for cheap comparison.
+ *
+ * `createdAtMs` is what makes the absolute cap (M3) enforceable on the cache-hit path, which never reads
+ * the durable row. It is optional ONLY so that entries written by an older build (which had no such
+ * field) are recognizable: those are treated as a cache MISS rather than as uncapped, so the ceiling is
+ * enforced from the durable createdAt and the entry self-heals on its first use.
+ */
 interface CachedSession {
   userId: string
   roles: Role[]
   expiresAtMs: number
+  createdAtMs?: number
 }
 
 export interface SessionServiceOptions {
@@ -74,6 +97,8 @@ export interface SessionServiceOptions {
   cache: CacheClient
   /** Total session lifetime in seconds. Defaults to 30 days. */
   ttlSeconds?: number
+  /** Absolute lifetime from creation, in seconds. Defaults to 90 days. */
+  absoluteMaxSeconds?: number
   /** Injectable clock (epoch ms) for deterministic sliding-expiry tests. */
   now?: () => number
 }
@@ -94,12 +119,14 @@ export class SessionService {
   private readonly store: SessionStore
   private readonly cache: CacheClient
   private readonly ttlSeconds: number
+  private readonly absoluteMaxSeconds: number
   private readonly now: () => number
 
   constructor(opts: SessionServiceOptions) {
     this.store = opts.store
     this.cache = opts.cache
     this.ttlSeconds = opts.ttlSeconds ?? DEFAULT_SESSION_TTL_SECONDS
+    this.absoluteMaxSeconds = opts.absoluteMaxSeconds ?? ABSOLUTE_SESSION_MAX_SECONDS
     this.now = opts.now ?? Date.now
   }
 
@@ -129,7 +156,7 @@ export class SessionService {
     // Derive the cache TTL from the SAME nowMs used for expiresAt (P1-6), not a second clock read.
     await this.writeCache(
       hash,
-      { userId, roles: [...roles], expiresAtMs: expiresAt.getTime() },
+      { userId, roles: [...roles], expiresAtMs: expiresAt.getTime(), createdAtMs: nowMs },
       nowMs,
     )
     return token
@@ -154,10 +181,17 @@ export class SessionService {
     const cachedRaw = await this.cache.get(sessionKey(hash))
     if (cachedRaw !== null) {
       const cached = this.parseCache(cachedRaw)
-      if (cached && cached.expiresAtMs > nowMs) {
+      // An entry without createdAtMs predates the absolute cap (M3) and cannot be checked against it, so
+      // it is deliberately NOT trusted here: falling through to the durable row applies the ceiling and
+      // rewrites the entry with its creation time.
+      if (cached && cached.createdAtMs !== undefined && cached.expiresAtMs > nowMs) {
+        if (this.absolutelyExpired(cached.createdAtMs, nowMs)) {
+          await this.expireSession(hash)
+          return null
+        }
         // Veto a banned account BEFORE sliding (V1): never extend a session whose account is inactive.
         if (!(await this.isUserActive(cached.userId))) return null
-        await this.maybeSlide(hash, cached.expiresAtMs, nowMs)
+        await this.maybeSlide(hash, cached.expiresAtMs, cached.createdAtMs, nowMs)
         return { userId: cached.userId, roles: cached.roles, source: "cache" }
       }
       // Corrupt or stale cache entry: drop it (best-effort — a del blip must not 500 a resolvable
@@ -168,10 +202,13 @@ export class SessionService {
     // --- Miss path: durable store is the source of truth. ---
     const row = await this.store.findById(hash)
     if (!row) return null
-    if (row.expiresAt.getTime() <= nowMs) {
-      // Expired: clean up both layers so it cannot be re-warmed. The cache del is best-effort.
-      await this.store.deleteById(hash)
-      await this.cache.del(sessionKey(hash)).catch(() => {})
+    // Past its sliding expiry, or past the absolute ceiling measured from creation (M3): either way the
+    // session is over. Clean up both layers so it cannot be re-warmed.
+    if (
+      row.expiresAt.getTime() <= nowMs ||
+      this.absolutelyExpired(row.createdAt.getTime(), nowMs)
+    ) {
+      await this.expireSession(hash)
       return null
     }
 
@@ -185,10 +222,11 @@ export class SessionService {
         userId: row.userId,
         roles: row.roles,
         expiresAtMs: row.expiresAt.getTime(),
+        createdAtMs: row.createdAt.getTime(),
       },
       nowMs,
     )
-    await this.maybeSlide(hash, row.expiresAt.getTime(), nowMs)
+    await this.maybeSlide(hash, row.expiresAt.getTime(), row.createdAt.getTime(), nowMs)
     return { userId: row.userId, roles: row.roles, source: "store" }
   }
 
@@ -250,17 +288,46 @@ export class SessionService {
     return this.ttlSeconds
   }
 
+  /** Whether a session created at `createdAtMs` has passed its absolute ceiling (M3). */
+  private absolutelyExpired(createdAtMs: number, nowMs: number): boolean {
+    return nowMs >= createdAtMs + this.absoluteMaxSeconds * 1000
+  }
+
+  /**
+   * End a session in both layers. The durable delete is the one that matters (it is the source of truth
+   * a cache miss falls back to); the cache del is best-effort, since a del blip must not 500 a request
+   * that is being denied anyway.
+   */
+  private async expireSession(hash: string): Promise<void> {
+    await this.store.deleteById(hash)
+    await this.cache.del(sessionKey(hash)).catch(() => {})
+  }
+
   /**
    * Sliding expiry: extend only when less than half the window remains. When extended, push
    * expires_at forward by a full TTL, refresh the cache TTL, and bump last_seen_at in the same write.
    * Above the halfway mark, do nothing (no store or cache write).
+   *
+   * The extension is CLAMPED to the absolute ceiling (M3): a session may be renewed up to, but never
+   * past, createdAt + absoluteMaxSeconds. Without the clamp the sliding window is self-perpetuating, so
+   * a token that keeps being used never expires. Once the clamp would not move the expiry forward there
+   * is nothing left to extend and the write is skipped; resolveSession refuses the session outright
+   * once the ceiling itself is reached.
    */
-  private async maybeSlide(hash: string, currentExpiryMs: number, nowMs: number): Promise<void> {
+  private async maybeSlide(
+    hash: string,
+    currentExpiryMs: number,
+    createdAtMs: number,
+    nowMs: number,
+  ): Promise<void> {
     const remainingMs = currentExpiryMs - nowMs
     const halfWindowMs = (this.ttlSeconds * 1000) / 2
     if (remainingMs >= halfWindowMs) return
 
-    const newExpiresAt = new Date(nowMs + this.ttlSeconds * 1000)
+    const ceilingMs = createdAtMs + this.absoluteMaxSeconds * 1000
+    const extendedMs = Math.min(nowMs + this.ttlSeconds * 1000, ceilingMs)
+    if (extendedMs <= currentExpiryMs) return
+    const newExpiresAt = new Date(extendedMs)
     await this.store.updateExpiry(hash, newExpiresAt, new Date(nowMs))
 
     // Refresh the cache value + TTL to match the new expiry. We need the identity to rewrite the
@@ -297,6 +364,7 @@ export class SessionService {
           userId: parsed.userId,
           roles: parsed.roles as Role[],
           expiresAtMs: parsed.expiresAtMs,
+          ...(typeof parsed.createdAtMs === "number" ? { createdAtMs: parsed.createdAtMs } : {}),
         }
       }
       return null

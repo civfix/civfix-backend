@@ -30,7 +30,6 @@
 
 import {
   AddGroupMembersRequestSchema,
-  AppError,
   CreateChatGroupRequestSchema,
   GetChatGroupRequestSchema,
   GroupHistoryRequestSchema,
@@ -40,17 +39,15 @@ import {
   SetGroupMemberRoleRequestSchema,
   UpdateChatGroupRequestSchema,
   type ChatHistoryResponse,
-  type ChatMessageDTO,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { csrfProtect } from "../auth/csrf.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { broadcastMessageUpdate } from "../ws/gateway.js"
-import { makeMediaPresigner } from "../services/media-presign.js"
+import { chatHistoryPayload, deleteMessageWithPowers } from "./chat-route-helpers.js"
+import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import {
   makeChatGroupRepository,
   type ChatGroupRepository,
@@ -79,22 +76,37 @@ export const CREATE_GROUP_RATE_LIMIT = { max: 10, timeWindow: "1 hour" } as cons
 export const ADD_GROUP_MEMBERS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 /** Self-serve join (P5): 20/min bounds scripted join sweeps across public rooms; ample for a real user. */
 export const JOIN_GROUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+/**
+ * L11: the remaining state-changing group routes carried no route limit at all (only the global
+ * 300/min/IP). Each of these is a moderation action a human performs a handful of times per session,
+ * so 30/min is generous while bounding a hijacked session's ability to churn a room's name/roster/roles
+ * or sweep its history. Same order of magnitude as ADD_GROUP_MEMBERS_RATE_LIMIT.
+ */
+export const GROUP_MODERATION_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 export async function registerChatGroupRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
   const overrides = app.chatOverrides
 
   let groupsRepo: ChatGroupRepository | undefined
   const getGroups = (): ChatGroupRepository =>
     overrides?.groups ??
-    (groupsRepo ??= makeChatGroupRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+    (groupsRepo ??= makeChatGroupRepository(
+      container.getDb().sql,
+      makePrivateMediaPresigner(container.storage),
+    ))
 
   let chatRepo: ChatRepository | undefined
   const getChatRepo = (): ChatRepository =>
     overrides?.chatRepo ??
-    (chatRepo ??= makeDrizzleChatRepository(container.getDb().sql, makeMediaPresigner(container.storage)))
+    (chatRepo ??= makeDrizzleChatRepository(
+      container.getDb().sql,
+      makePrivateMediaPresigner(container.storage),
+    ))
 
   // Mute lookup for ChatGroupDTO.muted. When chatOverrides is present WITHOUT a mutes fake we must
   // not touch getDb() (offline harness) — fail open to muted:false, mirroring listThreads' stance.
@@ -104,11 +116,24 @@ export async function registerChatGroupRoutes(
       ? overrides.conversationMutes
       : (mutesRepo ??= makeConversationMutesRepository(container.getDb().sql))
 
+  /**
+   * Nudge a user's open inbox to refetch (the same best-effort signal joinReportChat sends): a room the
+   * user just joined — or was added to — otherwise only surfaces on the client's next manual refresh.
+   * Carries no room id, so it is safe to fire at anyone whose membership may have changed.
+   */
+  const nudgeThreads = (userId: string): void => {
+    void Promise.resolve(container.userChannel?.publishToUser(userId, { topic: "threads" })).catch(
+      () => {},
+    )
+  }
+
   const svc = (): ChatGroupService => {
     const mutes = getMutes()
     return makeChatGroupService({
       groups: getGroups(),
-      ...(mutes ? { isMutedFor: (userId, groupId) => mutes.isMuted(userId, "group", groupId) } : {}),
+      ...(mutes
+        ? { isMutedFor: (userId, groupId) => mutes.isMuted(userId, "group", groupId) }
+        : {}),
     })
   }
 
@@ -130,12 +155,17 @@ export async function registerChatGroupRoutes(
     reply.status(200).send(await svc().getGroup(userId, id))
   })
 
-  route(app, "updateChatGroup", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(GroupIdParamsSchema, request.params)
-    const body = parse(UpdateChatGroupRequestSchema, { ...(request.body as object), id })
-    reply.status(200).send(await svc().updateGroup(userId, body))
-  })
+  route(
+    app,
+    "updateChatGroup",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(GroupIdParamsSchema, request.params)
+      const body = parse(UpdateChatGroupRequestSchema, { ...(request.body as object), id })
+      reply.status(200).send(await svc().updateGroup(userId, body))
+    },
+  )
 
   route(
     app,
@@ -145,7 +175,9 @@ export async function registerChatGroupRoutes(
       const userId = requireAuth(request)
       // Same params shape as getChatGroup ({ id }); the body is empty on the wire.
       const { id } = parse(GetChatGroupRequestSchema, request.params)
-      reply.status(200).send(await svc().joinGroup(userId, id))
+      const dto = await svc().joinGroup(userId, id)
+      nudgeThreads(userId)
+      reply.status(200).send(dto)
     },
   )
 
@@ -164,24 +196,44 @@ export async function registerChatGroupRoutes(
       const userId = requireAuth(request)
       const { id } = parse(GroupIdParamsSchema, request.params)
       const body = parse(AddGroupMembersRequestSchema, { ...(request.body as object), id })
-      reply.status(200).send(await svc().addMembers(userId, body))
+      const { page, added } = await svc().addMembers(userId, body)
+      // Nudge exactly the invitees the service seated. `added` (not the returned page) is the source of
+      // truth: an invitee the block filter (M12) dropped is absent from it and must learn nothing, while a
+      // real invitee is absent from PAGE ONE in any group at/over GROUP_MEMBERS_DEFAULT_LIMIT members
+      // (fresh members sort last), which is why deriving the nudge set from the page silently stopped
+      // nudging anyone in exactly the big rooms where it matters most.
+      for (const memberId of added) nudgeThreads(memberId)
+      reply.status(200).send(page)
     },
   )
 
-  route(app, "removeGroupMember", { preHandler: csrfProtect }, async (request, reply) => {
-    const actorId = requireAuth(request)
-    const params = parse(GroupMemberParamsSchema, request.params)
-    parse(RemoveGroupMemberRequestSchema, params)
-    await svc().removeMember(actorId, params.id, params.userId)
-    reply.status(200).send({ ok: true })
-  })
+  route(
+    app,
+    "removeGroupMember",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireAuth(request)
+      const params = parse(GroupMemberParamsSchema, request.params)
+      parse(RemoveGroupMemberRequestSchema, params)
+      await svc().removeMember(actorId, params.id, params.userId)
+      reply.status(200).send({ ok: true })
+    },
+  )
 
-  route(app, "setGroupMemberRole", { preHandler: csrfProtect }, async (request, reply) => {
-    const actorId = requireAuth(request)
-    const params = parse(GroupMemberParamsSchema, request.params)
-    const body = parse(SetGroupMemberRoleRequestSchema, { ...(request.body as object), ...params })
-    reply.status(200).send(await svc().setMemberRole(actorId, body.id, body.userId, body.role))
-  })
+  route(
+    app,
+    "setGroupMemberRole",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireAuth(request)
+      const params = parse(GroupMemberParamsSchema, request.params)
+      const body = parse(SetGroupMemberRoleRequestSchema, {
+        ...(request.body as object),
+        ...params,
+      })
+      reply.status(200).send(await svc().setMemberRole(actorId, body.id, body.userId, body.role))
+    },
+  )
 
   route(app, "groupMessages", async (request, reply) => {
     const userId = requireAuth(request)
@@ -190,41 +242,49 @@ export async function registerChatGroupRoutes(
     // 404 unknown / 403 private non-member; a PUBLIC group's history is readable pre-join.
     await svc().requireReadable(userId, id)
     const limit = Math.min(Math.max(q.limit ?? GROUP_HISTORY_DEFAULT, 1), GROUP_HISTORY_MAX)
-    // Pins ride ONLY the initial page (no before, no around) — same contract as the other rooms.
-    const isInitialPage = q.before === undefined && q.around === undefined
-    const [page, pins] = await Promise.all([
-      getChatRepo().groupHistory(id, q.before, limit, userId, q.around),
-      isInitialPage ? getChatRepo().listGroupPins(id, userId) : Promise.resolve(undefined),
-    ])
-    const payload: ChatHistoryResponse = {
-      items: page.items,
-      nextCursor: page.nextCursor,
-      ...(page.prevCursor !== undefined ? { prevCursor: page.prevCursor } : {}),
-      ...(pins !== undefined ? { pins } : {}),
-    }
+    // Pins ride ONLY the initial page (no before, no around) — same contract as the other rooms, owned
+    // by chatHistoryPayload.
+    const payload: ChatHistoryResponse = await chatHistoryPayload(
+      {
+        history: (before, pageLimit, around) =>
+          getChatRepo().groupHistory(id, before, pageLimit, userId, around),
+        listPins: () => getChatRepo().listGroupPins(id, userId),
+      },
+      q,
+      limit,
+    )
     reply.status(200).send(payload)
   })
 
   const resolveChatPowers = wireChatPowers(app, container)
 
-  route(app, "deleteGroupMessage", { preHandler: csrfProtect }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id, messageId } = parse(GroupMessageParamsSchema, request.params)
-    // Membership pre-gate doubles as the room-existence check (a member row implies the group row).
-    const role = await svc().requireReadable(userId, id)
-    // Sender path first (sender-gated in the repo's WHERE) — members may always self-delete.
-    let tombstone: ChatMessageDTO | null = null
-    if (role !== null) {
-      tombstone = await getChatRepo().softDeleteGroup(id, messageId, userId)
-    }
-    if (tombstone === null) {
-      // Not the sender (or not a member): the chat-powers group lane decides (owner/admin only).
-      const powers = await resolveChatPowers({ roomKind: "group", roomId: id, userId })
-      if (!powers.canDeleteOthers) throw AppError.forbidden("You can't delete this message.")
-      tombstone = await getChatRepo().softDeleteGroup(id, messageId, userId, { bypassSenderGate: true })
-    }
-    if (tombstone === null) throw AppError.forbidden("You can't delete this message.")
-    broadcastMessageUpdate(container.chatService, "group", id, tombstone)
-    reply.status(200).send(tombstone)
-  })
+  route(
+    app,
+    "deleteGroupMessage",
+    { preHandler: csrfProtect, config: { rateLimit: GROUP_MODERATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id, messageId } = parse(GroupMessageParamsSchema, request.params)
+      // Readability pre-gate doubles as the room-existence check (404 unknown / 403 private non-member).
+      // A public group's NON-member (role null) still reaches the ladder, where the group lane's
+      // owner/admin-only delete-others power decides.
+      const role = await svc().requireReadable(userId, id)
+      const chatRepo = getChatRepo()
+      const tombstone = await deleteMessageWithPowers({
+        roomKind: "group",
+        roomId: id,
+        messageId,
+        userId,
+        senderPath: role !== null,
+        softDelete: (opts) => chatRepo.softDeleteGroup(id, messageId, userId, opts),
+        findMessageMeta: (mid) => chatRepo.findMessageMeta(mid),
+        resolveChatPowers,
+        chat: container.chatService,
+        // Group rooms shipped after P0: they never emitted the legacy {type:"message"} frame, and one
+        // here would re-insert the deleted bubble on clients that upsert by id.
+        legacyBroadcast: false,
+      })
+      reply.status(200).send(tombstone)
+    },
+  )
 }

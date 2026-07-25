@@ -54,10 +54,17 @@ describe("thread token round-trip (mint -> {kind}-{token}@ -> extract)", () => {
     expect(fake.extractThreadToken(mail)).toBeNull()
   })
 
-  it("an X-Thread-Token header carrying a token is recovered by both", () => {
+  it("M7: the REAL adapter IGNORES an X-Thread-Token header (spoofable thread selector)", () => {
     const token = mintThreadToken()
     const mail = mailTo("clerk@lacity.gov", { "x-thread-token": token })
-    expect(real.extractThreadToken(mail)).toBe(token)
+    // The header path is deleted: a token is only ever accepted from a recipient address on our own
+    // reply domain. Anyone who has seen one outbound civfix email knows a live token (it is printed in
+    // the From address on purpose), so a header-selected thread let a forged message drive report
+    // status changes and post an "official city reply" into the public report chat.
+    expect(real.extractThreadToken(mail)).toBeNull()
+    // The shared FakeInboundMail (an external @civfix/shared package) still honors the header. That is
+    // dev/test-only — the real adapter is what production uses — and the processor's DMARC gate now
+    // stands in front of the threaded path regardless. Tracked for the next @civfix/shared release.
     expect(fake.extractThreadToken(mail)).toBe(token)
   })
 

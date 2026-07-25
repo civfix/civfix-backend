@@ -68,7 +68,15 @@ export class PgSessionStore implements SessionStore {
       id: r.id,
       userId: r.userId,
       roles: rolesFor(r.role),
-      createdAt: r.createdAt ?? r.lastSeenAt,
+      // sessions.created_at is NOT NULL as of drizzle/0058_sessions_created_at.sql (it backfills the legacy
+      // NULL rows from last_seen_at), and the absolute 90-day ceiling (M3) is measured FROM it. This
+      // fallback is KEPT as belt-and-braces: the production deploy does not auto-migrate (see the operator
+      // runbook), so a box running this code against the pre-0058 schema must still fail closed. A NULL
+      // reads as the epoch: already past the ceiling (the holder re-authenticates once). Falling back to
+      // last_seen_at instead would make the ceiling unreachable — last_seen_at is bumped by every
+      // sliding-expiry write, so an active legacy session was capped from its own last activity and never
+      // expired, which is the unbounded-sliding hole M3 closes.
+      createdAt: r.createdAt ?? new Date(0),
       expiresAt: r.expiresAt,
       lastSeenAt: r.lastSeenAt,
       userAgent: r.userAgent,
@@ -204,7 +212,16 @@ export class PgUserStore implements UserStore {
     }
     let updated: (typeof users.$inferSelect)[]
     try {
-      updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
+      // Never write a profile onto a TOMBSTONE: a soft-deleted row would otherwise take the display
+      // name/handle/bio/avatar and profile_complete of whoever still held a session, resurrecting a
+      // deleted identity's public surface. Unreachable today (deletion revokes every session), so this
+      // is the structural guard, not a fix for a live path — and the empty result falls into the 404
+      // below, the same answer a caller gets for an id that never existed.
+      updated = await this.db
+        .update(users)
+        .set(set)
+        .where(and(eq(users.id, id), isNull(users.deletedAt)))
+        .returning()
     } catch (err) {
       if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
       throw err
@@ -296,6 +313,10 @@ export class PgOAuthIdentityStore implements OAuthIdentityStore {
         set: { userId },
       })
   }
+
+  async deleteAllForUser(userId: string): Promise<void> {
+    await this.db.delete(oauthIdentities).where(eq(oauthIdentities.userId, userId))
+  }
 }
 
 export class PgOtpStore implements OtpStore {
@@ -348,8 +369,15 @@ export class PgOtpStore implements OtpStore {
     return updated[0]?.attempts ?? 0
   }
 
-  async markConsumed(id: string, at: Date): Promise<void> {
-    await this.db.update(emailOtps).set({ consumedAt: at }).where(eq(emailOtps.id, id))
+  async markConsumed(id: string, at: Date): Promise<boolean> {
+    // Conditional on consumed_at IS NULL so the RETURNING row identifies the single winner among
+    // concurrent verifies of the same code (see the OtpStore doc).
+    const claimed = await this.db
+      .update(emailOtps)
+      .set({ consumedAt: at })
+      .where(and(eq(emailOtps.id, id), isNull(emailOtps.consumedAt)))
+      .returning({ id: emailOtps.id })
+    return claimed.length > 0
   }
 }
 

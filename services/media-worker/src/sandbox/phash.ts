@@ -13,8 +13,7 @@
  * the dedupe POLICY stay decoupled. sharp is confined to sandbox/ per the seam rule.
  */
 
-import sharp from "sharp"
-import { ImageProcessingError } from "./image.js"
+import { guardedSharp, ImageProcessingError } from "./image.js"
 import type { WorkerLimits } from "../config.js"
 
 /** dHash grid: (HASH_W + 1) columns x HASH_H rows -> HASH_W*HASH_H comparison bits. */
@@ -23,31 +22,25 @@ const HASH_H = 8
 
 /**
  * Compute the dHash hex string for `bytes`. The SECOND untrusted-decode boundary (the image path is the
- * first), so it mirrors guardedSharp's hardening: limitInputPixels + failOn "warning" + pages:1/
- * animated:false (decode one frame only). Throws ImageProcessingError if the bytes cannot be decoded.
+ * first), so it uses image.ts's guardedSharp rather than its own sharp options: that is the single place
+ * the container sniff (L15), pixel ceiling, failOn "warning", single-page and sequential-read guards live.
+ * It previously duplicated the options and had drifted — no magic-byte sniff — which mattered because
+ * seams.ts injects this function into RealAbuseChecks.pHash, where a future caller need not have run
+ * processImage's container check first. Throws ImageProcessingError if the bytes cannot be decoded.
  */
 export async function perceptualHash(bytes: Uint8Array, limits: WorkerLimits): Promise<string> {
   let raw: Buffer
   try {
-    raw = await sharp(Buffer.from(bytes), {
-      limitInputPixels: limits.sharpPixelLimit,
-      // sharp's documented untrusted-input value (matches image.ts guardedSharp).
-      failOn: "warning",
-      // Decode only the first frame/page (no animation surface) — matches the image path's cap.
-      pages: 1,
-      animated: false,
-      // Stream large progressive inputs in one forward pass so the hash decode never keeps more of the
-      // surface resident than needed under the worker concurrency cap.
-      sequentialRead: true,
-    })
-      .timeout({ seconds: Math.max(1, Math.ceil(limits.imageTimeoutMs / 1000)) })
+    raw = await guardedSharp(bytes, limits)
       // Grayscale, exact small size (ignore aspect so the grid is fixed), raw 1-channel pixels.
       .greyscale()
       .resize(HASH_W + 1, HASH_H, { fit: "fill" })
       .raw()
       .toBuffer()
   } catch (err) {
-    throw new ImageProcessingError("perceptual hash decode failed", err)
+    throw err instanceof ImageProcessingError
+      ? err
+      : new ImageProcessingError("perceptual hash decode failed", err)
   }
 
   const cols = HASH_W + 1
@@ -72,15 +65,4 @@ export async function perceptualHash(bytes: Uint8Array, limits: WorkerLimits): P
     hex += nibble.toString(16)
   }
   return hex
-}
-
-/** Hamming distance between two equal-length hex hashes (number of differing bits). */
-export function hammingDistanceHex(a: string, b: string): number {
-  if (a.length !== b.length) return Math.max(a.length, b.length) * 4
-  let dist = 0
-  for (let i = 0; i < a.length; i++) {
-    const xor = (parseInt(a[i] ?? "0", 16) ^ parseInt(b[i] ?? "0", 16)) & 0xf
-    dist += (xor & 1) + ((xor >> 1) & 1) + ((xor >> 2) & 1) + ((xor >> 3) & 1)
-  }
-  return dist
 }

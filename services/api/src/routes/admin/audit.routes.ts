@@ -5,12 +5,8 @@
 import { AuditListQuerySchema, type AuditListResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import { parse } from "./_route-utils.js"
-import {
-  makeAuditService,
-  type AuditRepository,
-  type AuditService,
-} from "../../services/admin/audit-service.js"
+import { overridableService, parse } from "./_route-utils.js"
+import { makeAuditService, type AuditRepository } from "../../services/admin/audit-service.js"
 import { makeDrizzleAuditRepository } from "../../services/admin/audit-repository.drizzle.js"
 import { route } from "../../versioning/route.js"
 
@@ -29,12 +25,15 @@ export async function registerAdminAuditRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  function service(): AuditService {
-    const overrides = app.auditOverrides
-    if (overrides) return makeAuditService({ repo: overrides.repo })
-    const repo: AuditRepository = makeDrizzleAuditRepository(container.getDb().sql)
-    return makeAuditService({ repo })
-  }
+  const service = overridableService(
+    app,
+    "auditOverrides",
+    (overrides) => makeAuditService({ repo: overrides.repo }),
+    () => {
+      const repo: AuditRepository = makeDrizzleAuditRepository(container.getDb().sql)
+      return makeAuditService({ repo })
+    },
+  )
 
   route(app, "listAudit", async (request, reply) => {
     const query = parse(AuditListQuerySchema, request.query)

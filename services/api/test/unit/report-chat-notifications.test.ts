@@ -11,23 +11,48 @@ import {
 import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import type { ConversationMuteRoomKind } from "../../src/db/schema/conversation_mutes.js"
 
-/** In-memory ConversationMutesRepository mirroring the Drizzle one's isMuted semantics (row exists ⇒ muted). */
+/**
+ * In-memory ConversationMutesRepository mirroring the Drizzle one's isMuted semantics (row exists ⇒ muted).
+ *
+ * Deliberately does NOT implement the OPTIONAL `mutedUserIdsFor` batch member lookup: it is the stand-in
+ * for the pre-batch fakes the interface keeps that member optional for, and the fan-out's per-candidate
+ * `isMuted` fallback has to keep working for them (pinned below in "report fan-out mute seam").
+ */
 class InMemoryConversationMutes implements ConversationMutesRepository {
   private readonly muted = new Set<string>()
-  private key(u: string, k: ConversationMuteRoomKind, r: string): string {
+  /** Every isMuted lookup, so a test can tell the per-user fallback from the batch path. */
+  readonly isMutedCalls: string[] = []
+  protected key(u: string, k: ConversationMuteRoomKind, r: string): string {
     return `${u}|${k}|${r}`
+  }
+  protected has(u: string, k: ConversationMuteRoomKind, r: string): boolean {
+    return this.muted.has(this.key(u, k, r))
   }
   mute(userId: string, roomKind: ConversationMuteRoomKind, roomId: string): void {
     this.muted.add(this.key(userId, roomKind, roomId))
   }
   isMuted(userId: string, roomKind: ConversationMuteRoomKind, roomId: string): Promise<boolean> {
-    return Promise.resolve(this.muted.has(this.key(userId, roomKind, roomId)))
+    this.isMutedCalls.push(this.key(userId, roomKind, roomId))
+    return Promise.resolve(this.has(userId, roomKind, roomId))
   }
   setMuted(): Promise<void> {
     return Promise.resolve()
   }
   mutedRoomIdsFor(): Promise<Set<string>> {
     return Promise.resolve(new Set())
+  }
+}
+
+/** The same store, plus the batch member lookup the Drizzle repo implements. */
+class InMemoryConversationMutesBatch extends InMemoryConversationMutes {
+  readonly batchCalls: Array<{ roomKind: ConversationMuteRoomKind; roomId: string }> = []
+  mutedUserIdsFor(
+    roomKind: ConversationMuteRoomKind,
+    roomId: string,
+    userIds: string[],
+  ): Promise<Set<string>> {
+    this.batchCalls.push({ roomKind, roomId })
+    return Promise.resolve(new Set(userIds.filter((u) => this.has(u, roomKind, roomId))))
   }
 }
 
@@ -109,6 +134,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       isMuted: (userId) => Promise.resolve(muted.has(userId)),
       presence: { online: () => Promise.resolve([...present]) },
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     await notify(REPORT, userMessage(ACTOR, "Dana", "hello everyone"))
@@ -137,6 +163,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       isMuted: (userId) => Promise.resolve(muted.has(userId)),
       presence: { online: () => Promise.resolve([...present]) },
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     await notify(REPORT, systemMessage())
@@ -157,6 +184,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     await notify(REPORT, userMessage(ACTOR, "Dana", "hi"))
@@ -172,6 +200,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     // ACTOR replies to A's message: A is excluded from the member fan-out; B still gets it.
@@ -187,6 +216,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
     })
 
     const mention: UserMentionDTO = { id: B, handle: "bee", displayName: "Bee" }
@@ -194,6 +224,83 @@ describe("makeReportChatNotifier (D-E2)", () => {
 
     expect(reportNotifs(B)).toHaveLength(0)
     expect(reportNotifs(A)).toHaveLength(1)
+  })
+})
+
+/**
+ * The mute seam has TWO shapes and the fan-out must honour a mute through either. `mutedUserIdsFor` is
+ * OPTIONAL on ConversationMutesRepository (the offline fakes predate it), and the fan-out treats a PRESENT
+ * batch lookup as authoritative — skipping the per-candidate `isMuted` entirely. So:
+ *
+ *   - a repo WITHOUT the batch method must not be wired into the batch slot at all (a bound-but-absent
+ *     method resolving to an empty Set would silently unmute the entire room), and the per-user fallback
+ *     must carry the mute;
+ *   - a repo WITH it must be used, once, for the whole candidate set.
+ *
+ * `mutedUserIdsForRoom` below is the production probe from chat-gateway-wiring.ts, copied so the wiring
+ * decision itself is under test rather than assumed.
+ */
+describe("report fan-out mute seam (batch lookup vs per-user fallback)", () => {
+  function mutedUserIdsForRoom(
+    repo: ConversationMutesRepository,
+    kind: "report",
+  ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined {
+    const batch = repo.mutedUserIdsFor
+    if (!batch) return undefined
+    return (roomId, userIds) => batch.call(repo, kind, roomId, userIds)
+  }
+
+  function notifierOver(mutes: ConversationMutesRepository) {
+    const batch = mutedUserIdsForRoom(mutes, "report")
+    return makeReportChatNotifier({
+      notificationService: notifications,
+      reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
+      isMuted: (userId, roomId) => mutes.isMuted(userId, "report", roomId),
+      ...(batch ? { mutedUserIdsFor: batch } : {}),
+      roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false),
+    })
+  }
+
+  it("a repo WITHOUT mutedUserIdsFor still suppresses a muted member, via the per-user isMuted fallback", async () => {
+    const mutes = new InMemoryConversationMutes()
+    mutes.mute(B, "report", REPORT)
+
+    await notifierOver(mutes)(REPORT, userMessage(ACTOR, "Dana", "poll time"))
+
+    expect(reportNotifs(A)).toHaveLength(1)
+    expect(reportNotifs(B)).toHaveLength(0)
+    // The fallback really ran: one lookup per candidate (the actor is filtered out before the gate).
+    expect(mutes.isMutedCalls.sort()).toEqual([`${A}|report|${REPORT}`, `${B}|report|${REPORT}`].sort())
+  })
+
+  it("a repo WITH mutedUserIdsFor suppresses via ONE batch query and never calls the per-user isMuted", async () => {
+    const mutes = new InMemoryConversationMutesBatch()
+    mutes.mute(B, "report", REPORT)
+
+    await notifierOver(mutes)(REPORT, userMessage(ACTOR, "Dana", "poll time"))
+
+    expect(reportNotifs(A)).toHaveLength(1)
+    expect(reportNotifs(B)).toHaveLength(0)
+    expect(mutes.batchCalls).toEqual([{ roomKind: "report", roomId: REPORT }])
+    expect(mutes.isMutedCalls).toEqual([])
+  })
+
+  it("an ERRORING batch lookup fails OPEN: a mute store blip must not silence the room", async () => {
+    const mutes = new InMemoryConversationMutesBatch()
+    mutes.mute(B, "report", REPORT)
+    const exploding: ConversationMutesRepository = {
+      isMuted: (u, k, r) => mutes.isMuted(u, k, r),
+      setMuted: () => Promise.resolve(),
+      mutedRoomIdsFor: () => Promise.resolve(new Set<string>()),
+      mutedUserIdsFor: () => Promise.reject(new Error("mute store down")),
+    }
+
+    await notifierOver(exploding)(REPORT, userMessage(ACTOR, "Dana", "poll time"))
+
+    // Everyone gets the bell — including B, whose mute could not be read.
+    expect(reportNotifs(A)).toHaveLength(1)
+    expect(reportNotifs(B)).toHaveLength(1)
   })
 })
 

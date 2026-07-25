@@ -48,6 +48,46 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(bobItem.avatar).toHaveLength(2)
   })
 
+  // --- L13: the follower/following pages ignored blocks --------------------------------------------
+  // Every other people-listing surface — suggestFollows, people search, the home/replies/saves feeds,
+  // every DM surface — carries a symmetric user_blocks NOT EXISTS. The connection pages were the one
+  // exception, so a blocked account stayed visible in a roster the viewer can page through, which
+  // contradicts the mutual-invisibility semantics blocks have everywhere else in this product.
+  it("L13: listFollowers / listFollowing hide a blocked account in BOTH directions", async () => {
+    const repo = makeDrizzleSocialRepository(h.sql)
+    const viewer = await newUser("Block Viewer", "blkview")
+    const blockedByViewer = await newUser("Aaa Blocked", "blkbyv")
+    const blockerOfViewer = await newUser("Bbb Blocker", "blkofv")
+    const innocent = await newUser("Ccc Innocent", "blkinn")
+    const subject = await newUser("Ddd Subject", "blksubj")
+
+    // All three follow `subject` and are followed BY `subject`, so they appear on both pages.
+    for (const u of [blockedByViewer, blockerOfViewer, innocent]) {
+      await repo.addFollow(u, subject)
+      await repo.addFollow(subject, u)
+    }
+    await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${viewer}, ${blockedByViewer})`
+    await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${blockerOfViewer}, ${viewer})`
+
+    const followers = await repo.listFollowers({ id: subject, viewerId: viewer, cursor: null, limit: 50 })
+    const followerIds = followers.items.map((p) => p.id)
+    expect(followerIds).toContain(innocent)
+    expect(followerIds).not.toContain(blockedByViewer)
+    expect(followerIds).not.toContain(blockerOfViewer)
+
+    const following = await repo.listFollowing({ id: subject, viewerId: viewer, cursor: null, limit: 50 })
+    const followingIds = following.items.map((p) => p.id)
+    expect(followingIds).toContain(innocent)
+    expect(followingIds).not.toContain(blockedByViewer)
+    expect(followingIds).not.toContain(blockerOfViewer)
+
+    // An ANONYMOUS viewer has no block relationships, so nothing is filtered for them.
+    const anon = await repo.listFollowers({ id: subject, viewerId: null, cursor: null, limit: 50 })
+    expect(anon.items.map((p) => p.id)).toEqual(
+      expect.arrayContaining([blockedByViewer, blockerOfViewer, innocent]),
+    )
+  })
+
   it("follow/unfollow: idempotent, created flag, follower counts", async () => {
     const repo = makeDrizzleSocialRepository(h.sql)
     const a = await newUser("Follower A")

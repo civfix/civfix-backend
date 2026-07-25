@@ -19,6 +19,15 @@
  *
  * Coordinates are real-ish LA-area lon/lat but deliberately rectangular, not the true boundaries.
  * Envelope bounds: [xmin(lng), ymin(lat), xmax(lng), ymax(lat)].
+ *
+ * REAL geoids, PLACEHOLDER contacts (deliberate): the geoids below are the true Census GEOIDs, so the first
+ * real TIGER load UPSERTS these very rows and replaces the rectangles with authentic boundaries instead of
+ * leaving fake duplicates overlapping them (unlike the federal/tribal fixtures, nothing prunes stale
+ * place/county/state rows). The example.* contact addresses are the flip side of that: they must NOT survive
+ * as the routing target for California / Los Angeles on a box where the seed ran before the first refresh,
+ * so upsertJurisdiction (ingest-jurisdictions-core.ts) clears contact_emails when EVERY address is an
+ * example.* placeholder. Keep any contact added here inside an example.* domain (RFC 2606) so it stays
+ * self-cleaning.
  */
 
 /**

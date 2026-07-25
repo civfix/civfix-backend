@@ -182,12 +182,27 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
           // SQL. Semantics are unchanged: each row's report_id is set only when unattached or already ours,
           // foreign assets stay untouched, and unknown ids no-op.
           if (args.mediaUploadIds.length > 0) {
-            await tx`
+            const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}
               WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
+                -- L18: see the same guard on the authenticated create path. An asset already bound to a post
+                -- or a chat/DM message is never re-bindable to a report, so an uploadId cannot be used to
+                -- cross-publish private media into a public report gallery.
+                AND post_id IS NULL AND chat_message_id IS NULL
+                AND status IN ('ready', 'validating')
+              RETURNING upload_id
             `
+            // M-media-claim: reject the whole submit when any id is unclaimable (unknown, rejected, or
+            // already bound elsewhere) instead of committing a report with the photo silently missing —
+            // the same rule the authed create path and post-repository.createPost enforce. The throw rolls
+            // the tx back, so the token quota bump does not persist either.
+            if (claimed.length !== new Set(args.mediaUploadIds).size) {
+              throw AppError.validation({
+                mediaUploadIds: "One or more media uploads are unavailable.",
+              })
+            }
           }
 
           // 4) Initial timeline: submitted, then held (the anon flow records both transitions). Both
@@ -236,6 +251,10 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
         if (isUniqueViolation(err)) {
           const stored = await readSnapshot(args.idempotencyKey, ANON_REPORT_CREATE_SCOPE)
           if (stored) return { kind: "replayed", snapshot: stored }
+          // L-anon-race: the winner of the idempotency race has taken the key but not yet committed its
+          // snapshot, so there is nothing to replay YET. Answer the retryable 409 the authenticated path
+          // answers (report-repository.createReportTx) instead of leaking the raw postgres error as a 500.
+          throw AppError.conflict("Report submit is still settling; retry")
         }
         // A cap-reached AppError (or any other) propagates unchanged: the tx already rolled back, so no
         // report row, timeline, media-attach, or quota bump persisted.

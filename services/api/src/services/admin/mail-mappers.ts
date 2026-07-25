@@ -4,6 +4,7 @@
  */
 
 import type { CursorAnchor } from "./pagination.js"
+import { toPreview } from "./mail-preview.js"
 import type {
   MailMessageRecord,
   MailThreadRecord,
@@ -122,6 +123,10 @@ export function deriveWho(direction: MailDirection, fromAddr: string | null): st
  * Map a thread + its latest message to MailThreadListItemDTO. `dir` falls back to "out" for a thread
  * with no messages yet (civfix originates outreach); `ts` is last_message_at (or created_at). Empty-string
  * fallbacks keep the DTO `.strict()` shape valid.
+ *
+ * `preview` is a bounded one-line preview (the shared mail-preview policy), not the message body: an
+ * inbound municipal reply can be tens of KB and the list ships a page of them. The full body stays on the
+ * thread DTO's `messages`.
  */
 export function toThreadListItem(
   thread: MailThreadRecord,
@@ -135,7 +140,7 @@ export function toThreadListItem(
     to: latest?.toAddr ?? "",
     org: thread.org ?? "",
     subject: thread.subject ?? "",
-    preview: latest?.body ?? "",
+    preview: toPreview(latest?.body),
     ts,
     unread: thread.unread,
     status: thread.status,

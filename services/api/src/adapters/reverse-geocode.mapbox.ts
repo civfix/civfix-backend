@@ -1,4 +1,5 @@
 import type { ReverseGeocode } from "./reverse-geocode.chain.js"
+import { fetchJsonOrNull } from "./http-fetch.js"
 
 const MAPBOX_REVERSE_URL = "https://api.mapbox.com/search/geocode/v6/reverse"
 const DEFAULT_TIMEOUT_MS = 4000
@@ -45,32 +46,29 @@ export function redactMapboxToken(url: string): string {
 export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeocode {
   const baseUrl = opts.url ?? MAPBOX_REVERSE_URL
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const doFetch = opts.fetchImpl ?? fetch
+  // Left undefined when not injected so the helper resolves globalThis.fetch at CALL time.
+  const doFetch = opts.fetchImpl
   return async (lat: number, lng: number): Promise<string | null> => {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let url: string
     try {
-      const url = new URL(baseUrl)
-      url.searchParams.set("longitude", String(lng))
-      url.searchParams.set("latitude", String(lat))
-      url.searchParams.set("access_token", opts.token)
-      url.searchParams.set("limit", "1")
-      url.searchParams.set("types", "address")
-      url.searchParams.set("language", "en")
-      const res = await doFetch(url.toString(), {
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-        redirect: "error",
-      })
-      if (!res.ok) return null
-      const data = (await res.json()) as { features?: { properties?: MapboxReverseProps }[] }
-      const props = data.features?.[0]?.properties
-      return props ? formatMapboxReverse(props) : null
+      const u = new URL(baseUrl)
+      u.searchParams.set("longitude", String(lng))
+      u.searchParams.set("latitude", String(lat))
+      u.searchParams.set("access_token", opts.token)
+      u.searchParams.set("limit", "1")
+      u.searchParams.set("types", "address")
+      u.searchParams.set("language", "en")
+      url = u.toString()
     } catch {
       return null
-    } finally {
-      clearTimeout(timer)
     }
+    const data = await fetchJsonOrNull<{ features?: { properties?: MapboxReverseProps }[] }>(url, {
+      timeoutMs,
+      ...(doFetch !== undefined ? { fetchImpl: doFetch } : {}),
+      init: { headers: { Accept: "application/json" } },
+    })
+    const props = data?.features?.[0]?.properties
+    return props ? formatMapboxReverse(props) : null
   }
 }

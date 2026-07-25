@@ -9,8 +9,9 @@
  *     keep working). Block and DM-disabled are deliberately INDISTINGUISHABLE: all of these 403s use a
  *     single generic message so neither state leaks.
  *   - Otherwise openOrCreateThread (idempotent) and build a MessageThreadDTO (kind:"dm", peer, refId =
- *     threadId, title = displayName else @handle, members:2, unread:0, last/ago/lastFromMe from the last
- *     message when one exists).
+ *     threadId, title = displayName else @handle, members:2, last/ago/lastFromMe from the last message
+ *     when one exists, `unread` from the repo's own inbox definition (countUnread) and `muted` from
+ *     conversation_mutes when the mute seam is wired).
  *
  * All DB access sits behind small seams (DmRepository, BlocksRepository, a user-lookup function) so the
  * service is unit-testable with no database.
@@ -42,6 +43,12 @@ export interface DmServiceDeps {
   blocks: BlocksRepository
   /** Load the target user (and their DM toggle). */
   loadUser: DmUserLookup
+  /**
+   * conversation_mutes lookup for roomKind 'dm' (the chat-group-service isMutedFor pattern). Absent
+   * (offline harnesses) => never muted. Without it, reopening a MUTED thread reported muted:false until the
+   * inbox refreshed and threads-service stamped the real state.
+   */
+  isMutedFor?: (userId: string, threadId: string) => Promise<boolean>
   /** Injectable clock (defaults to now) so `ago` is deterministic in tests. */
   now?: () => Date
 }
@@ -108,8 +115,16 @@ export function makeDmService(deps: DmServiceDeps): DmService {
 
       const thread = existing ?? (await deps.dm.openOrCreateThread(viewerId, targetUserId))
 
-      // Project the last message (if any) for the inbox preview.
-      const page = await deps.dm.history(thread.id, undefined, 1)
+      // Project the last message (if any) for the inbox preview, the viewer's real mute state, and their
+      // real unread count — all in one round of concurrent reads. Both side lookups fail OPEN (un-muted /
+      // zero unread): neither is worth failing an OPEN on, matching the inbox's stance.
+      const [page, muted, unread] = await Promise.all([
+        deps.dm.history(thread.id, undefined, 1),
+        deps.isMutedFor
+          ? deps.isMutedFor(viewerId, thread.id).catch(() => false)
+          : Promise.resolve(false),
+        deps.dm.countUnread(thread.id, viewerId).catch(() => 0),
+      ])
       const last = page.items[0] ?? null
 
       const peer = peerOf(target)
@@ -134,10 +149,12 @@ export function makeDmService(deps: DmServiceDeps): DmService {
         // DM messages always have an author (no sender-less SYSTEM messages on the dm path); optional-chain
         // to satisfy the nullable contract type without changing the "from me" result.
         lastFromMe: last !== null && last.from?.id === viewerId,
-        unread: 0,
+        // The viewer's REAL unread (repo.countUnread, the inbox's own definition). Opening a thread that
+        // has unacked peer messages must not report 0 — the client renders the row's badge off this DTO,
+        // and a hardcoded 0 made a thread opened from a profile look read until the inbox refetched.
+        unread,
         members: 2,
-        // TODO(D-E1/D-E3): stamp real per-conversation mute from conversation_mutes
-        muted: false,
+        muted,
       }
     },
   }

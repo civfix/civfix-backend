@@ -2,6 +2,8 @@
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
+import { assertNoSlur } from "../abuse/slur-filter.js"
+import { InMemoryCounterStore, type CounterStore } from "../abuse/counter-store.js"
 import type {
   CleanupAttendeesResponse,
   CleanupDTO,
@@ -59,23 +61,77 @@ function isUuid(value: string): boolean {
   return UUID_RE.test(value)
 }
 
-const RESOURCE_REQUEST_COOLDOWN_MS = 10 * 60 * 1000
+/**
+ * M20 — resource-request anti-spam.
+ *
+ * This WAS an in-process `Map` keyed on `${cleanupId}:${actorId}`, which bounded nothing that mattered:
+ * every new throwaway event minted a fresh cooldown key, the Map was per-instance (so N API pods meant
+ * N times the budget), and a deploy cleared it outright. A verified host looped
+ * create-event -> request-resources and relayed ~150 branded emails/minute into municipal inboxes,
+ * DKIM-signed by civfix's own authenticated SMTP domain.
+ *
+ * The budget is now shared (Redis) and keyed on the two things an attacker cannot mint for free:
+ *   - the ACTOR (a verified-host account), capped per day, and
+ *   - the JURISDICTION GEOID (the receiving municipal inbox), capped per hour — this is the one that
+ *     protects a city from being flooded by a set of colluding or compromised host accounts.
+ * `cleanupId` is deliberately NOT part of any key: it was the whole bypass.
+ *
+ * Both windows are anchored at their first hit (CounterStore applies the TTL only on creation), so a
+ * host that trips the daily cap waits out the remainder of that day's window rather than a rolling one.
+ */
+export const RESOURCE_REQUEST_PER_HOST_PER_DAY = 10
+const RESOURCE_REQUEST_HOST_WINDOW_SEC = 24 * 60 * 60
 
-const RESOURCE_REQUEST_MAX_KEYS = 5000
+export const RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR = 30
+const RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC = 60 * 60
 
-const resourceRequestSeen = new Map<string, number>()
+/**
+ * M18 — promote/demote notification bombing.
+ *
+ * `setMemberRole` short-circuits when the target already holds the requested role, but there are
+ * exactly two legal values, so alternating cohost/member defeats that idempotency check completely and
+ * every flip fires a real lock-screen push. Combined with the (now added) per-route rate limit this
+ * caps how often ONE victim can be rung about ONE event no matter how many IPs or sessions the attacker
+ * rotates through — the route limit alone is per-IP and therefore evadable.
+ *
+ * Counted per (cleanup, target), not per actor: the harm is measured at the receiver.
+ */
+export const ROLE_CHANGES_PER_TARGET_PER_WINDOW = 6
+const ROLE_CHANGE_WINDOW_SEC = 60 * 60
 
-function withinResourceRequestCooldown(cleanupId: string, actorId: string): boolean {
-  const key = `${cleanupId}:${actorId}`
-  const t = Date.now()
-  const until = resourceRequestSeen.get(key)
-  if (until !== undefined && until > t) return true
-  resourceRequestSeen.set(key, t + RESOURCE_REQUEST_COOLDOWN_MS)
-  if (resourceRequestSeen.size > RESOURCE_REQUEST_MAX_KEYS) {
-    for (const [k, exp] of resourceRequestSeen) if (exp <= t) resourceRequestSeen.delete(k)
-  }
-  return false
-}
+/**
+ * L23 — `bring` is an unbounded array in the frozen shared wire schema (no `.max()`), capped only by the
+ * 256 KB body limit, which admits thousands of entries that are then rendered to every attendee. Clamped
+ * here exactly as MAX_LINKED_REPORTS / clampLinkIds already clamps `linkedReportIds`. FOLLOW-UP: the
+ * real fix is `.max(MAX_BRING_ITEMS)` on CreateCleanupRequestSchema/UpdateCleanupRequestSchema in
+ * @civfix/shared, which this repo cannot edit.
+ */
+export const MAX_BRING_ITEMS = 30
+
+/**
+ * Fan-out bound for the cancellation bell (L24). The old raw SQL was a single set-based INSERT with no
+ * cap; routing through NotificationService means one pipeline call per recipient, so the roster read is
+ * bounded like every other member fan-out. Matches EVENT_HOURS_MEMBER_CAP — an event with more
+ * attendees than this has bigger problems than a truncated bell.
+ */
+const CANCEL_FANOUT_MEMBER_CAP = 2000
+
+/**
+ * Concurrency for that fan-out. The bell used to be awaited one recipient at a time on the request
+ * path, so cancelling a well-attended event took CANCEL_FANOUT_MEMBER_CAP sequential pipeline calls
+ * (each an insert + a prefs read + a push) before the host got their response. Bounded rather than
+ * unbounded for the same reason PRESIGN_CONCURRENCY is: a 2000-wide Promise.all would open 2000
+ * concurrent DB/push operations off one HTTP request.
+ */
+const CANCEL_FANOUT_CONCURRENCY = 8
+
+/**
+ * Degraded fallback for a service constructed with no CounterStore (offline tests, USE_FAKE_* dev). It
+ * carries the SAME weaknesses the old code had in production — per-process, cleared on restart — which
+ * is precisely why production MUST wire the Redis-backed store (see cleanups.routes.ts). Keeping a
+ * fallback rather than failing open means the limits are still exercised by the unit suite.
+ */
+const fallbackCounters = new InMemoryCounterStore()
 
 export interface CleanupServiceDeps {
   repo: CleanupRepository
@@ -88,6 +144,10 @@ export interface CleanupServiceDeps {
   // Optional seam: production wires the real NotificationService; a test may omit it (no bell) or
   // inject a recording fake. Failures are logged + suppressed so a bell can never fail the mutation.
   notifier?: Pick<NotificationService, "createNotification">
+  // M18/M20: the SHARED (Redis-backed in production) counter behind the resource-request budget and the
+  // role-change cooldown. Both were in-process before, which meant per-pod budgets that a deploy reset.
+  // Optional so an offline test can run without Redis — see fallbackCounters above for what that costs.
+  counters?: CounterStore
   logger?: { warn(obj: unknown, msg?: string): void }
   newId?: () => string
 }
@@ -129,6 +189,34 @@ export interface CleanupService {
 export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const newId = deps.newId ?? (() => randomUUID())
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
+  const counters = deps.counters ?? fallbackCounters
+
+  /**
+   * M19 — the slur filter reached reports, profiles and chat but NOT a single event field, even though
+   * events are the platform's most public user-generated surface: they render on the anonymously
+   * readable map behind a 60s public cache, and the cancellation reason is fanned out verbatim to every
+   * attendee's notification. Mirrors report-service.createReport's title/description checks; each field
+   * is named so the 422 tells the host exactly which one to fix.
+   */
+  function assertEventTextClean(input: {
+    title?: string | undefined
+    description?: string | null | undefined
+    address?: string | null | undefined
+    bring?: string[] | null | undefined
+  }): void {
+    assertNoSlur(input.title ?? null, "title")
+    assertNoSlur(input.description ?? null, "description")
+    assertNoSlur(input.address ?? null, "address")
+    for (const item of input.bring ?? []) assertNoSlur(item, "bring")
+  }
+
+  // L23: clamp the unbounded shared `bring` array (see MAX_BRING_ITEMS).
+  function clampBring<T extends string[] | null | undefined>(bring: T): T {
+    if (bring !== null && bring !== undefined && bring.length > MAX_BRING_ITEMS) {
+      throw AppError.validation({ bring: `at most ${MAX_BRING_ITEMS} items may be listed` })
+    }
+    return bring
+  }
 
   function notFoundCleanup(): never {
     throw AppError.notFound("Cleanup not found")
@@ -164,6 +252,71 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         "cleanup_role notification failed (suppressed)",
       )
     }
+  }
+
+  /**
+   * L24 — the event-cancellation fan-out.
+   *
+   * This used to be a raw `INSERT INTO notifications ... SELECT FROM cleanup_members` inside
+   * cancelCleanupTx, the ONLY bell in the product that bypassed NotificationService: it ignored the
+   * recipient's push preferences and quiet hours, never localized (hardcoded English), and never
+   * emitted the user-channel signal that refreshes an open client's bell badge. It now rides the same
+   * pipeline as every other notification — including the LOCALIZATION half: the title/body travel as
+   * `notification.cleanup_cancelled.*` keys + a `{{reason}}` var, so the pipeline renders them in the
+   * recipient's own locale exactly like the cleanup_role bells above (a literal English title/body here
+   * would be English on every lock screen no matter what `users.locale` says).
+   *
+   * Best-effort, exactly like notifyRoleChange: the cancellation itself is already committed, so a
+   * notification failure is logged and suppressed rather than failing the mutation the host just made.
+   * Best-effort PER RECIPIENT, which the L24 rewrite was not: one try/catch wrapped the whole sequential
+   * loop, so a single bad prefs row or push-adapter error abandoned every remaining attendee silently.
+   * Each recipient now fails on its own and the rest still get their bell.
+   *
+   * Called ONLY on a fresh upcoming->cancelled transition (see cancelCleanup): re-cancelling an
+   * already-cancelled event must not re-ring 2000 lock screens, which is the same bell-bombing class
+   * M18's role-flip cooldown exists for.
+   *
+   * `reason` is the host's already-trimmed, slur-gated cancellation reason or null when they gave none —
+   * the RAW reason, not the composed sentence: the wrapper copy is the catalog's job, and a null reason
+   * selects the reason-less body key rather than rendering a dangling "Reason:".
+   */
+  async function notifyCancellation(
+    cleanup: { id: string; title: string },
+    reason: string | null,
+    actorId: string,
+  ): Promise<void> {
+    const notifier = deps.notifier
+    if (notifier === undefined) return
+    let memberIds: string[]
+    try {
+      memberIds = await deps.repo.listMemberIds(cleanup.id, CANCEL_FANOUT_MEMBER_CAP)
+    } catch (err) {
+      deps.logger?.warn(
+        { err, cleanupId: cleanup.id },
+        "cleanup_cancelled roster read failed (suppressed)",
+      )
+      return
+    }
+    const recipients = memberIds.filter((userId) => userId !== actorId)
+    await mapWithLimit(recipients, CANCEL_FANOUT_CONCURRENCY, async (userId) => {
+      try {
+        await notifier.createNotification(userId, {
+          type: "cleanup_cancelled",
+          titleKey: "notification.cleanup_cancelled.title",
+          bodyKey:
+            reason !== null
+              ? "notification.cleanup_cancelled.body_reason"
+              : "notification.cleanup_cancelled.body",
+          ...(reason !== null ? { vars: { reason } } : {}),
+          link: `/cleanups/${cleanup.id}`,
+        })
+      } catch (err) {
+        deps.logger?.warn(
+          { err, cleanupId: cleanup.id, userId },
+          "cleanup_cancelled notification failed (suppressed)",
+        )
+      }
+    })
   }
 
   async function hydrateLinkedReports(
@@ -225,6 +378,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       input: CreateCleanupRequest,
       organizerUserId: string,
     ): Promise<CleanupDTO> {
+      assertEventTextClean(input)
+      clampBring(input.bring)
       const linkedReportIds = clampLinkIds(input.linkedReportIds ?? [])
       if (input.eventKind !== "cleanup" && linkedReportIds.length > 0) {
         throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
@@ -267,6 +422,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       patch: UpdateCleanupRequest,
       requesterUserId: string,
     ): Promise<CleanupDTO> {
+      assertEventTextClean(patch)
+      clampBring(patch.bring)
       const organizerId = await deps.repo.organizerOf(id)
       if (organizerId === null) notFoundCleanup()
       // WS4 (D3): co-hosts can edit the event too — the gate is organizer OR cohost.
@@ -293,6 +450,25 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         await assertReportsLinkable(desiredLinks)
       }
 
+      // A moved event belongs to a DIFFERENT government. cleanups.jurisdiction_geoid routes
+      // requestResources' municipal email (resolveJurisdictionContact) and buckets the event's
+      // volunteer-hours rollup, so it is re-resolved with the geometry instead of being left pointing at
+      // the city the event was created in. The repo rebuilds geom only when BOTH coordinates are present
+      // (UpdateCleanupPatch's contract), so that same pair gates the re-resolve.
+      //
+      // reference_code is deliberately NOT re-issued: it is the event's immutable public identity, and
+      // its JURCODE segment stays that of the creating jurisdiction by design (D1).
+      const movedTo =
+        patch.lat !== undefined && patch.lng !== undefined
+          ? { lat: patch.lat, lng: patch.lng }
+          : null
+      // undefined = don't touch the stored geoid; null = the new position is outside coverage (which is
+      // a real answer, and makes requestResources correctly report the event as not routable).
+      const reresolvedGeoid =
+        movedTo !== null && deps.resolveJurisdictionGeoid !== undefined
+          ? await deps.resolveJurisdictionGeoid(movedTo.lat, movedTo.lng)
+          : undefined
+
       const scalarPatch: UpdateCleanupPatch = {
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
@@ -303,6 +479,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         ...(patch.lng !== undefined ? { lng: patch.lng } : {}),
         ...(patch.address !== undefined ? { address: patch.address } : {}),
         ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
+        ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
       }
       const updated = await deps.repo.updateCleanup(id, scalarPatch)
       if (!updated) notFoundCleanup()
@@ -329,20 +506,33 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       const trimmed = reason?.trim()
       const cleanReason = trimmed && trimmed.length > 0 ? trimmed : null
+      // M19: the raw 500-char reason is interpolated into a body pushed to EVERY attendee's lock
+      // screen and written into the public event timeline, so it gets the same gate as report text.
+      assertNoSlur(cleanReason, "reason")
       const note = cleanReason ? `Event cancelled: ${cleanReason}` : "Event cancelled"
+      // The `body` the repo takes is a vestige of the pre-L24 in-transaction bell: nothing persists it
+      // any more (the Drizzle tx writes only the status flip + the `note` timeline row), and the bell
+      // itself is now rendered per-recipient from the notification catalog in notifyCancellation. Kept as
+      // the English composition it always was so the repo contract is unchanged — FOLLOW-UP: drop the
+      // field from CleanupRepository.cancelCleanupTx + both implementations + the test fake together.
       const body = cleanReason
         ? `This event has been cancelled by the host. Reason: ${cleanReason}`
         : `This event has been cancelled by the host.`
-      const ok = await deps.repo.cancelCleanupTx(id, {
+      const outcome = await deps.repo.cancelCleanupTx(id, {
         note,
         body,
         reason: cleanReason,
         actorId: requesterUserId,
       })
-      if (!ok) notFoundCleanup()
+      if (outcome === "not_found") notFoundCleanup()
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
+      // Cancelling is idempotent at the HTTP layer (same 200 + DTO either way), but the fan-out is not
+      // idempotent at the receiver: the repo reports whether THIS call made the transition, and only a
+      // fresh one rings the roster. Without this an organizer (or a retrying client) could loop
+      // /cancel and push every attendee's lock screen on each pass.
+      if (outcome === "cancelled") await notifyCancellation(record, cleanReason, requesterUserId)
       const linkedReports = await hydrateLinkedReports(id, record.eventKind)
       // The canceller passed the organizer-only gate above, so their role is organizer by definition.
       return toCleanupDTO(record, true, linkedReports, "organizer")
@@ -394,8 +584,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     },
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
-      const exists = await deps.repo.joinCleanupTx(id, userId)
-      if (!exists) notFoundCleanup()
+      // M17: the join is no longer unconditional — a host's removal writes a cleanup_bans row and the
+      // repo refuses to re-create the membership while it exists. 403 (not 404): the event is public
+      // and listed on the map, so its existence is not the secret; the removal is the answer.
+      const outcome = await deps.repo.joinCleanupTx(id, userId)
+      if (outcome === "not_found") notFoundCleanup()
+      if (outcome === "banned") {
+        throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
+      }
       const going = await deps.repo.memberCount(id)
       return { joined: true, going }
     },
@@ -452,10 +648,34 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       const targetRole = await deps.repo.roleOf(id, targetUserId)
       if (targetRole === null) {
+        // M17 (the unban path): a removed attendee has NO membership row but DOES have a ban row.
+        // Re-asserting the plain 'member' role on such a person is the organizer's "let them back in"
+        // gesture, so it lifts the ban. Reusing this endpoint is deliberate — the route table lives in
+        // the frozen @civfix/shared registry, so a dedicated DELETE /bans endpoint cannot be added from
+        // this repo. It fires no bell (the person was never notified of the ban itself either) and it
+        // does NOT re-join them: they RSVP again themselves, which is the normal consent flow.
+        if (role === "member" && (await deps.repo.isBanned(id, targetUserId))) {
+          await deps.repo.unbanMember(id, targetUserId)
+          return { ok: true }
+        }
         throw AppError.notFound("That person isn't attending this event.")
       }
       // Idempotent: setting the role they already have is a no-op success (and no bell).
       if (targetRole === role) return { ok: true }
+
+      // M18: there are exactly two legal roles, so alternating them defeats the idempotency check
+      // above and turns this endpoint into a lock-screen push cannon aimed at anyone who joined a
+      // public event. The cooldown is counted per (event, TARGET) in the shared store, so it survives
+      // the attacker rotating IPs (which evades the per-route limiter) and pods.
+      const flips = await counters.incr(
+        `cleanup:role:${id}:${targetUserId}`,
+        ROLE_CHANGE_WINDOW_SEC,
+      )
+      if (flips > ROLE_CHANGES_PER_TARGET_PER_WINDOW) {
+        throw AppError.rateLimited(
+          "This attendee's role has been changed too many times recently. Please try again later.",
+        )
+      }
 
       const flipped = await deps.repo.setMemberRole(id, targetUserId, role)
       if (!flipped) throw AppError.notFound("That person isn't attending this event.")
@@ -496,9 +716,16 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.forbidden("Only the organizer can remove a co-host.")
       }
 
-      // Leave semantics: deleting the cleanup_members row is the whole removal (the same row gates
-      // chat access, so the target drops out of the event group chat automatically).
-      const { removed, going } = await deps.repo.removeMember(id, targetUserId)
+      // M17: removal is the membership delete AND a cleanup_bans row, written in one transaction.
+      // Deleting the membership drops the target from the event group chat (the same row gates
+      // isMember); the ban is what stops them re-joining a second later via the self-service join. The
+      // organizer lifts it by re-asserting the 'member' role on them (see setMemberRole above).
+      //
+      // KNOWN GAP (ws/** is out of scope for this change): an ALREADY-OPEN WebSocket is never
+      // re-authorized, so the removed user keeps reading the room in real time until they reconnect.
+      // Closing it needs a revocation publish on the room channel from ws/socket-lifecycle.ts — see the
+      // handover notes accompanying this fix.
+      const { removed, going } = await deps.repo.removeMember(id, targetUserId, actorId)
       if (!removed) throw AppError.notFound("That person isn't attending this event.")
 
       await notifyRoleChange(targetUserId, "removed", { id: record.id, title: record.title })
@@ -531,9 +758,28 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         )
       }
 
-      if (withinResourceRequestCooldown(record.id, input.actorId)) {
+      // M20: the budget is charged AFTER every authorization gate (so a failed 403 costs nothing) and
+      // BEFORE the send. Both counters are incremented on every attempt — an attempt that trips the
+      // jurisdiction cap still consumes the host's daily allowance, which is the correct direction: it
+      // makes probing for a city's remaining headroom expensive.
+      const hostSends = await counters.incr(
+        `cleanup:res-req:host:${input.actorId}`,
+        RESOURCE_REQUEST_HOST_WINDOW_SEC,
+      )
+      // A null geoid never reaches here (resolveJurisdictionContact returned non-null above), but the
+      // bucket key falls back explicitly rather than interpolating "null" by accident.
+      const jurisdictionSends = await counters.incr(
+        `cleanup:res-req:jur:${record.jurisdictionGeoid ?? "unknown"}`,
+        RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC,
+      )
+      if (hostSends > RESOURCE_REQUEST_PER_HOST_PER_DAY) {
         throw AppError.rateLimited(
-          "You've already requested resources for this event recently. Please wait before sending another.",
+          "You've sent the maximum number of resource requests for today. Please try again tomorrow.",
+        )
+      }
+      if (jurisdictionSends > RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR) {
+        throw AppError.rateLimited(
+          "This area has received too many resource requests in the past hour. Please try again later.",
         )
       }
 

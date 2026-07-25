@@ -217,7 +217,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       j.forwardBodyTemplate = template === null || template === "" ? null : template
     }
     j.contactUpdatedAt = this.now
-    j.lastRoutedAt = this.now
 
     // Mark the open discovery task(s) for this geoid resolved.
     let taskResolved = false
@@ -236,6 +235,10 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         routedReports += 1
       }
     }
+    // lastRoutedAt is derived in prod from the 'acknowledged' report_timeline rows this save writes, so a
+    // save that routed NOTHING leaves it null there. Stamping it unconditionally let offline tests see a
+    // timestamp production would not have.
+    if (routedReports > 0) j.lastRoutedAt = this.now
 
     // Mirror the Drizzle in-tx audit (H4) so the service/route tests can assert the save was recorded.
     this.audits.push({
@@ -327,15 +330,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     return this.outreach.get(geoid) ?? null
   }
 
-  async markContactBounced(email: string): Promise<void> {
-    // Mark every seeded jurisdiction whose default OR per-category contact carries this address as bounced
-    // (mirrors the Drizzle UPDATE ... WHERE email = $1 stamping bounced_at, surfaced as the directory flag).
-    for (const j of this.jurisdictions.values()) {
-      const inDefault = j.defaultEmails.includes(email)
-      const inCategory = [...j.categoryContacts.values()].includes(email)
-      if (inDefault || inCategory) j.bounced = true
-    }
-  }
+  // No bounce stamping here either: it lives entirely in the inbound bounce handler (see the note on
+  // JurisdictionContactsRepository). A test that needs a bounced row seeds `bounced: true`.
 
   async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
     const all = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))

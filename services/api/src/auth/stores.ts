@@ -290,6 +290,8 @@ export interface OAuthIdentityRecord {
 export interface OAuthIdentityStore {
   findByProvider(provider: string, providerUserId: string): Promise<OAuthIdentityRecord | null>
   linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void>
+  /** Drop every identity linked to a user (account deletion). Idempotent. */
+  deleteAllForUser(userId: string): Promise<void>
 }
 
 export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
@@ -307,6 +309,13 @@ export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
   linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void> {
     const k = this.key(provider, providerUserId)
     this.identities.set(k, { id: randomUUID(), userId, provider, providerUserId })
+    return Promise.resolve()
+  }
+
+  deleteAllForUser(userId: string): Promise<void> {
+    for (const [k, row] of this.identities) {
+      if (row.userId === userId) this.identities.delete(k)
+    }
     return Promise.resolve()
   }
 }
@@ -332,7 +341,13 @@ export interface OtpStore {
   insert(row: OtpInsert): Promise<OtpRecord>
   findLatestActive(email: string, now: Date): Promise<OtpRecord | null>
   incrementAttempts(id: string): Promise<number>
-  markConsumed(id: string, at: Date): Promise<void>
+  /**
+   * Consume a code, returning whether THIS call is the one that consumed it. The write is CONDITIONAL on
+   * the row still being unconsumed so "single-use" holds under racing, not merely in its absence: two
+   * concurrent verifies of the same correct code both clear the attempt ceiling, so the claim is what
+   * decides which one may mint a session.
+   */
+  markConsumed(id: string, at: Date): Promise<boolean>
 }
 
 export class InMemoryOtpStore implements OtpStore {
@@ -380,10 +395,11 @@ export class InMemoryOtpStore implements OtpStore {
     return Promise.resolve(row.attempts)
   }
 
-  markConsumed(id: string, at: Date): Promise<void> {
+  markConsumed(id: string, at: Date): Promise<boolean> {
     const row = this.rows.find((r) => r.id === id)
-    if (row) row.consumedAt = at
-    return Promise.resolve()
+    if (!row || row.consumedAt !== null) return Promise.resolve(false)
+    row.consumedAt = at
+    return Promise.resolve(true)
   }
 
   all(): readonly OtpRecord[] {
