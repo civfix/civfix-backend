@@ -555,6 +555,11 @@ async function resolveSubjectAuthor(
         SELECT organizer_user_id FROM cleanups WHERE id = ${subjectId} LIMIT 1`
       return r[0]?.organizer_user_id ?? null
     }
+    case "post": {
+      const r = await tx<{ author_id: string | null }[]>`
+        SELECT author_id FROM posts WHERE id = ${subjectId} LIMIT 1`
+      return r[0]?.author_id ?? null
+    }
     case "photo": {
       // media_assets.discussion_message_id was dropped with the discussion system; a photo's owner is now
       // resolved via its report only.
@@ -651,6 +656,14 @@ async function tombstoneSubject(
       const rows = await tx<{ id: string }[]>`
         UPDATE cleanups SET status = 'cancelled'
         WHERE id = ${subjectId} AND status <> 'cancelled' RETURNING id`
+      return rows.length > 0
+    }
+    case "post": {
+      // Soft delete, matching the user-facing delete: the row survives so replies keep their parent and
+      // `loadRefs` can still render the "no longer available" tombstone instead of a dangling reference.
+      const rows = await tx<{ id: string }[]>`
+        UPDATE posts SET deleted_at = now()
+        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
       return rows.length > 0
     }
     case "profile":

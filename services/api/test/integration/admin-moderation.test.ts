@@ -144,6 +144,44 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     expect(page.records).toHaveLength(0)
   })
 
+  // A reported POST has to resolve to its author (so the strike lands on the right account) and has to be
+  // removable. Both switches in the repository fall through to a `default` that returns null/false, so a
+  // subject type added to the enum without a case here files a queue item that no operator can action.
+  it("removes a reported post: soft-deletes it and strikes its author", async () => {
+    const authorId = await insertUser(h, "postauthor")
+    const [post] = await h.sql<{ id: string }[]>`
+      INSERT INTO posts (author_id, kind, body) VALUES (${authorId}, 'post', 'reported content')
+      RETURNING id
+    `
+    const postId = post!.id
+
+    const id = (await repo.createItem({
+      kind: "user_report",
+      subjectType: "post",
+      subjectId: postId,
+      flag: "User report",
+      reason: "harassment",
+    }))!
+
+    // The snapshot resolves through posts.author_id, not through a report's reporter.
+    const detail = await repo.getItem(id)
+    expect(detail?.user?.handle).toBe("postauthor")
+
+    await repo.remove(id, { actorId: null, reason: "harassment" })
+
+    // Soft delete, matching the user-facing delete: the row survives so replies keep their parent.
+    const [row] = await h.sql<{ deleted_at: Date | null }[]>`
+      SELECT deleted_at FROM posts WHERE id = ${postId}
+    `
+    expect(row?.deleted_at).not.toBeNull()
+
+    const [um] = await h.sql<{ strikes: number; removals: number }[]>`
+      SELECT strikes, removals FROM user_moderation WHERE user_id = ${authorId}
+    `
+    expect(um?.strikes).toBe(1)
+    expect(um?.removals).toBe(1)
+  })
+
   it("remove strikes the reporter and createItem captures a real user snapshot", async () => {
     const userId = await insertUser(h, "rmreporter")
     const reportId = await insertReport(h, { status: "held", reporterUserId: userId })

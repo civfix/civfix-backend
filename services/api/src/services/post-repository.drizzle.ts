@@ -425,6 +425,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         excerpt: deleted ? "" : excerptOf(r.body, r.event_id !== null, r.report_id !== null),
         createdAt: r.created_at.toISOString(),
         ...(deleted ? { deleted: true } : {}),
+        // Filled by the caller from the shared media load (one query covers posts + refs). A tombstoned
+        // post shows no media even if its rows survive the soft delete.
+        media: [],
       })
     }
     return out
@@ -500,17 +503,37 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     const authorIds = [...new Set(rows.map((r) => r.author_id))]
     const eventIds = [...new Set(rows.map((r) => r.event_id).filter((x): x is string => x !== null))]
     const reportIds = [...new Set(rows.map((r) => r.report_id).filter((x): x is string => x !== null))]
-    const refIds = [...new Set(rows.map((r) => r.repost_of_id).filter((x): x is string => x !== null))]
+    // Refs cover BOTH the repost/quote target and the REPLY PARENT: `replyTo` is the parent preview a
+    // "Replying to @handle" line needs, and it is loaded through the same blocked-author-filtered path, so
+    // a parent from a blocked account resolves to null instead of leaking that it exists.
+    const refIds = [
+      ...new Set(
+        rows
+          .flatMap((r) => [r.repost_of_id, r.reply_to_id])
+          .filter((x): x is string => x !== null),
+      ),
+    ]
+    // ONE media query for posts AND refs. Splitting them would double the presign fan-out for a feed page
+    // where a quote's target is also a post on the same page.
+    const mediaIds = [...new Set([...postIds, ...refIds])]
 
     const [authors, media, mentions, events, reports, refs, flags] = await Promise.all([
       loadAuthors(authorIds, viewerId),
-      loadMedia(postIds),
+      loadMedia(mediaIds),
       loadMentionsFor(sql, "post_mentions", postIds, "post_id"),
       loadEvents(eventIds),
       loadReports(reportIds),
       loadRefs(refIds, viewerId),
       loadViewerFlags(rows, viewerId),
     ])
+
+    // Attach each ref's own media now that both loads have resolved. A tombstoned ref keeps its empty
+    // list: `loadRefs` already blanks the excerpt for a deleted post, and showing its photos would undo
+    // exactly what the delete was for.
+    for (const ref of refs.values()) {
+      if (ref.deleted) continue
+      ref.media = media.get(ref.id) ?? []
+    }
 
     const out: PostDTO[] = []
     for (const r of rows) {
@@ -546,6 +569,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         report: reportBase ? { ...reportBase, linkedAt: r.created_at.toISOString() } : null,
         repostOf,
         replyToId: r.reply_to_id,
+        replyTo: r.reply_to_id !== null ? (refs.get(r.reply_to_id) ?? null) : null,
         threadRootId: r.thread_root_id,
       }
       out.push(dto)

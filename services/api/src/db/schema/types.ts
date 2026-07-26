@@ -261,6 +261,7 @@ export const MODERATION_SUBJECT_TYPE_VALUES = [
   "event",
   "profile",
   "photo",
+  "post",
 ] as const
 
 /** moderation_items.priority. Mirrors shared PrioritySchema. */

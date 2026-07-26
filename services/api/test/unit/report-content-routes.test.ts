@@ -100,6 +100,28 @@ describe("POST /content-reports", () => {
     expect(item.reporterId).toBe(userId)
   })
 
+  // A feed post was the only UGC in civfix with no report path: ContentReportSubject had no "post"
+  // member, so the request 400'd at the schema boundary before it ever reached the queue.
+  it("accepts a POST subject and files it under its own subject type", async () => {
+    const { app, mailer, repo } = await harness()
+    const { token } = await signIn(app, mailer, "reporter@example.com")
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/content-reports",
+      headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      payload: { subjectType: "post", subjectId: SUBJECT, reason: "harassment" },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const item = [...repo.items.values()][0]!
+    expect(item.kind).toBe("user_report")
+    // NOT folded into "comment": the queue resolves a subject's author and its takedown target per type,
+    // so a post filed as a comment would resolve to no author and could not be removed.
+    expect(item.subjectType).toBe("post")
+    expect(item.subjectId).toBe(SUBJECT)
+  })
+
   it("dedupes a second open report against the same subject (one queue item)", async () => {
     const { app, mailer, repo } = await harness()
     const { token } = await signIn(app, mailer, "reporter@example.com")

@@ -320,9 +320,10 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **60 files**, `0000_extensions.sql` … `0059_users_follow_counters.sql`. The eight rows
-below are exactly what this change set adds — `0052`–`0059`, contiguous, no gaps — and everything from
-`0000` through `0051_social_posts.sql` predates it. Both backfills live **inside** their own migration file
+`drizzle/` holds **61 files**, `0000_extensions.sql` … `0060_moderation_subject_post.sql`. The nine rows
+below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
+`0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
+redesign; it is listed here because this table is the single operator runbook.) Both backfills live **inside** their own migration file
 (`0058`'s `sessions.created_at`, `0059`'s follow counters; §2 and §6 below), so there is no separate
 backfill step to remember: the three `db:backfill*` scripts in `services/api/package.json` (report
 jurisdiction geoids, reference codes, ACS population) are boundary/ingest tooling and are not part of this
@@ -338,6 +339,7 @@ deploy.
 | `0057_media_reap_tombstones.sql` | `media_reap_tombstones`: R2 keys the orphan sweep failed to delete, retried by later sweeps | Orphan-sweep leaks are logged/reported but not retried (the pre-wave-2 behavior). One extra error per sweep; no data loss |
 | `0058_sessions_created_at.sql` | backfills NULL `sessions.created_at` from `last_seen_at`, then `SET NOT NULL` (M3) | Every legacy NULL-`created_at` session keeps failing closed, i.e. one forced re-login each — see below |
 | `0059_users_follow_counters.sql` | adds `users.follower_count` / `users.following_count` (`int NOT NULL DEFAULT 0`) and backfills both from `follows_people` | **Every people surface fails** (42703, undefined column): profiles, people search, the follower/following rosters, follow suggestions and every post author card read these columns — see below |
+| `0060_moderation_subject_post.sql` | widens the `moderation_items.subject_type` CHECK to include `'post'`, so a reported feed post can be queued | **Every "Report post" fails** (23514): the row is rejected by the CHECK, the request 500s, and the post stays unreportable. Widening only — no existing row can violate it |
 
 **0056 is order-critical in BOTH directions — apply it, then deploy the worker:**
 
