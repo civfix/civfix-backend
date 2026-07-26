@@ -120,9 +120,18 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     )
     expect(reply.kind).toBe("reply")
     expect(reply.replyToId).toBe(created.id)
+    // The reply carries a PREVIEW of its parent, not just the id: a reply surfaced in the home feed has
+    // to be able to say who it is replying to without a second fetch.
+    expect(reply.replyTo?.id).toBe(created.id)
+    expect(reply.replyTo?.author?.id).toBe(author)
     expect((await svc.getPost(created.id, author)).counts.replies).toBe(1)
     const replies = await svc.listReplies(created.id, author, {})
     expect(replies.items.map((p) => p.id)).toContain(reply.id)
+    // ...and it survives the list projection too, not just the create response.
+    expect(replies.items.find((p) => p.id === reply.id)?.replyTo?.id).toBe(created.id)
+
+    // A top-level post has no parent to preview.
+    expect((await svc.getPost(created.id, author)).replyTo ?? null).toBeNull()
 
     // save
     const saved = await svc.savePost(created.id, actor)
@@ -175,6 +184,46 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     // Another viewer sees the same gallery (media is not viewer-scoped).
     const fetched = await svc.getPost(created.id, reader)
     expect(fetched.media.map((m) => m.id)).toEqual([media.id])
+  })
+
+  // A quote card renders the post it quotes. Without the ref carrying its own media, quoting a photo post
+  // showed a bare excerpt with the actual subject invisible.
+  it("carries the quoted post's OWN media on the ref, and blanks it for a deleted target", async () => {
+    const svc = makeService()
+    const author = await newUser("Quote Target", "qtarget")
+    const quoter = await newUser("Quoter", "qquoter")
+    const media = await seedMedia()
+
+    const target = await svc.createPost(
+      { kind: "post", body: "the original photo", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+      author,
+    )
+    const quote = await svc.createPost(
+      { kind: "quote", repostOfId: target.id, body: "look at this", mediaUploadIds: [], mentionedUserIds: [] },
+      quoter,
+    )
+
+    expect(quote.repostOf?.id).toBe(target.id)
+    expect(quote.repostOf?.media.map((m) => m.id)).toEqual([media.id])
+    expect(quote.repostOf?.media[0]!.url).toBe(`m://uploads/post/${media.uploadId}`)
+    // The quote itself still has none of its own.
+    expect(quote.media).toEqual([])
+
+    // It survives the LIST projection too, not just the create response.
+    const listed = await svc.listUserPosts(quoter, quoter, {})
+    expect(listed.items.find((p) => p.id === quote.id)?.repostOf?.media.map((m) => m.id)).toEqual([media.id])
+
+    // Deleting the target tombstones the ref: no excerpt AND no media. Surfacing a deleted post's photos
+    // through a quote card would undo the delete. (`getPost` on the quote 404s instead - `requireReadable`
+    // treats a quote of a deleted target as unreadable - so the tombstone is only observable in a list.)
+    await svc.deletePost(target.id, author)
+    await expect(svc.getPost(quote.id, quoter)).rejects.toThrow(/not found/i)
+
+    const afterDelete = await svc.listUserPosts(quoter, quoter, {})
+    const tombstoned = afterDelete.items.find((p) => p.id === quote.id)
+    expect(tombstoned?.repostOf?.deleted).toBe(true)
+    expect(tombstoned?.repostOf?.excerpt).toBe("")
+    expect(tombstoned?.repostOf?.media).toEqual([])
   })
 
   it("REJECTS (422) a post whose media is already claimed by another post, leaving it on the first", async () => {
