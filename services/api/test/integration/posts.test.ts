@@ -372,6 +372,70 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(ids).not.toContain(hidden.id)
   })
 
+  // --- REGRESSION: replies must never reach the timeline -------------------------------------------
+  // `homeFeed` shipped WITHOUT the `AND p.reply_to_id IS NULL` term that `publicFeed` has always carried,
+  // so a signed-OUT reader got a clean timeline and a signed-IN reader got a reply dump. This is the only
+  // suite that executes the changed query (the route tests run against an in-memory fake), and it has to
+  // cover BOTH arms of the home-feed OR: the viewer's own reply arrives via `p.author_id = viewerId`, a
+  // followed author's via the follows_people subquery, and a test that seeds only one leaves the other
+  // unproven — which is exactly how the bug survived the fan-out test above.
+  it("home feed is TOP-LEVEL only: a reply never reaches the timeline, only the thread", async () => {
+    const svc = makeService()
+    const viewer = await newUser("Reply Viewer")
+    const author = await newUser("Reply Author")
+    await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${viewer}, ${author})`
+
+    const parent = await svc.createPost(
+      { kind: "post", body: "the original thought", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    // Arm 1: an author the viewer FOLLOWS replies.
+    const theirReply = await svc.createPost(
+      { kind: "reply", replyToId: parent.id, body: "count me in", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    // Arm 2: the VIEWER themself replies (the `p.author_id = viewerId` arm).
+    const myReply = await svc.createPost(
+      { kind: "reply", replyToId: parent.id, body: "me too", mediaUploadIds: [], mentionedUserIds: [] },
+      viewer,
+    )
+    expect(theirReply.replyToId).toBe(parent.id)
+    expect(myReply.replyToId).toBe(parent.id)
+
+    const homeIds = (await svc.homeFeed(viewer, { filter: "all" })).items.map((p) => p.id)
+    expect(homeIds).toContain(parent.id)
+    expect(homeIds).not.toContain(theirReply.id)
+    expect(homeIds).not.toContain(myReply.id)
+
+    // The signed-out feed agrees — the whole point of reusing publicFeed's exact predicate is that the two
+    // timelines can no longer disagree about what a timeline row IS.
+    const publicIds = (await svc.publicFeed({ filter: "all" })).items.map((p) => p.id)
+    expect(publicIds).toContain(parent.id)
+    expect(publicIds).not.toContain(theirReply.id)
+    expect(publicIds).not.toContain(myReply.id)
+
+    // Nothing was hidden, only relocated: the thread still holds both replies...
+    const threadIds = (await svc.listReplies(parent.id, viewer, {})).items.map((p) => p.id)
+    expect(threadIds).toContain(theirReply.id)
+    expect(threadIds).toContain(myReply.id)
+    // ...and a reply is still readable by permalink (notification deep links land here).
+    expect((await svc.getPost(theirReply.id, viewer)).id).toBe(theirReply.id)
+
+    // THE DELIBERATE CARVE-OUT: a REPOST of a reply stays in the timeline. The repost's own row is
+    // `kind='repost', repost_of_id=<the reply>, reply_to_id=NULL`, so `reply_to_id IS NULL` keeps it —
+    // amplifying is a deliberate act by someone the viewer follows, exactly as on Twitter. Pinned here so
+    // a future "tighten the predicate" pass has to change this assertion on purpose.
+    await svc.repostPost(theirReply.id, viewer)
+    const [repostRow] = await h.sql<{ id: string }[]>`
+      SELECT id FROM posts
+      WHERE author_id = ${viewer} AND kind = 'repost' AND repost_of_id = ${theirReply.id}
+    `
+    expect(repostRow?.id).toBeTruthy()
+    const afterRepost = (await svc.homeFeed(viewer, { filter: "all" })).items.map((p) => p.id)
+    expect(afterRepost).toContain(repostRow!.id)
+    expect(afterRepost).not.toContain(theirReply.id)
+  })
+
   it("attaching an event requires membership (member ok, non-member 403)", async () => {
     const svc = makeService()
     const cleanupSvc = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })

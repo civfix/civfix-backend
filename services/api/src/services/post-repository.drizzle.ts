@@ -817,6 +817,25 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return hydrated[0] ?? null
     },
 
+    // The signed-in home timeline: the viewer's own posts + the people they follow, newest first.
+    // TOP-LEVEL ONLY (`reply_to_id IS NULL`) — byte-identical to the predicate publicFeed carries below,
+    // so the signed-in and signed-out timelines show the same SHAPE of content and differ only in scope.
+    // THE BUG THIS FIXES: the predicate shipped with publicFeed and was never backfilled here, so a
+    // signed-out reader got a clean timeline while a signed-in reader got a reply dump — every reply the
+    // viewer or anyone they followed wrote arrived as a top-level row. A reply is thread content: out of
+    // its thread it reads as a non-sequitur (a bare "count me in" with no referent), it belongs to
+    // listReplies() and the thread view, and leaving it here let one chatty conversation bury the feed.
+    // WHY `reply_to_id IS NULL` AND NOT `kind <> 'reply'` (the tempting alternative, which listUserPosts
+    // uses): the two can diverge, because PostComposeInputSchema only requires replyToId WHEN kind is
+    // 'reply' — it does not reject `{kind:"post", replyToId:<parent>}`, and post-service passes replyToId
+    // through regardless of kind. `reply_to_id IS NULL` is the stricter of the two AND it keeps this query
+    // textually identical to publicFeed's, which is what stops the two feeds drifting apart again.
+    // REPOSTS AND QUOTES OF A REPLY DO STILL APPEAR, deliberately: repost()/quote rows never set
+    // reply_to_id, so their OWN row is top-level and survives this filter. Amplifying is a deliberate act
+    // by someone the viewer follows, exactly as on Twitter — see the integration test that pins it.
+    // FILTERING IN SQL, NOT IN THE CLIENT, is load-bearing twice over: `LIMIT ${limit + 1}` + the keyset
+    // cursor means every page still returns a full `limit` items with no gaps or duplicates (a client-side
+    // filter would hand back short pages), and it reaches every already-shipped binary on the next deploy.
     async homeFeed(args: HomeFeedArgs): Promise<FeedPage> {
       const cursor = parseTimeCursor(args.cursor)
       const cursorFilter =
@@ -834,6 +853,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
           p.created_at, p.updated_at
         FROM posts p
         WHERE p.deleted_at IS NULL
+          AND p.reply_to_id IS NULL
           AND (
             p.author_id = ${args.viewerId}
             OR p.author_id IN (SELECT followee_id FROM follows_people WHERE follower_id = ${args.viewerId})
