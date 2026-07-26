@@ -264,9 +264,18 @@ class InMemoryPostRepository implements PostRepository {
     return Promise.resolve(p ? this.dto(p, viewerId) : null)
   }
 
+  /**
+   * The shared source for BOTH timeline feeds, so the reply exclusion below lands on each of them at
+   * once — exactly as `AND p.reply_to_id IS NULL` does in the two SQL queries.
+   */
   private byFilter(filter: "all" | "events" | "fixes"): StoredPost[] {
     return [...this.posts.values()].filter((p) => {
       if (p.deletedAt !== null) return false
+      // Both byFilter feeds are TOP-LEVEL only, matching `reply_to_id IS NULL` in homeFeed + publicFeed.
+      // A reply is thread content and belongs to listReplies, not the timeline. Note this fake had drifted
+      // BOTH ways: publicFeed's SQL always carried the predicate and the fake never did, while homeFeed's
+      // SQL was missing it entirely (the bug) — so the route suite was certifying a reply dump.
+      if (p.replyToId !== null) return false
       if (filter === "events") return p.eventId !== null
       if (filter === "fixes") return p.reportId !== null
       return true
@@ -288,10 +297,16 @@ class InMemoryPostRepository implements PostRepository {
   }
 
   listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage> {
-    const rows = [...this.posts.values()].filter((p) => p.authorId === authorId && p.deletedAt === null)
+    // `kind !== "reply"`, matching the SQL's `AND p.kind <> 'reply'` — the profile "Posts" tab is the
+    // Twitter Posts-vs-Replies split. The fake had omitted this, so the profile-tab test below could have
+    // certified a reply the real query rejects.
+    const rows = [...this.posts.values()].filter(
+      (p) => p.authorId === authorId && p.deletedAt === null && p.kind !== "reply",
+    )
     return Promise.resolve(this.page(rows, args.viewerId, args))
   }
 
+  /** NO reply exclusion, matching the SQL: the viewer explicitly bookmarked that reply. */
   listSaves(args: PostListArgs): Promise<FeedPage> {
     const rows = [...this.posts.values()].filter(
       (p) => p.saves.has(args.viewerId) && p.deletedAt === null,
@@ -1107,6 +1122,61 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     })
     expect(bad.statusCode).toBe(422)
     expect(bad.json().fields.filter).toBeDefined()
+  })
+
+  // REGRESSION: the home timeline used to include replies. `homeFeed`'s SQL was missing the
+  // `AND p.reply_to_id IS NULL` term that `publicFeed` shipped with, so a signed-OUT reader got a clean
+  // timeline while a signed-IN reader got a reply dump. This is the route-level guard; the real-SQL proof
+  // lives in test/integration/posts.test.ts. Both are needed: this one only exercises the fake, and the
+  // fake's byFilter had drifted from the SQL in exactly the way that let the bug hide.
+  it("keeps replies OFF the home timeline while the thread, saves and reposts-of-a-reply still show them", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("noreplies@example.com", "NoReplies")
+    const parent = h.repo.seed({ authorId: me.userId, body: "the original thought" })
+    const reply = h.repo.seed({ authorId: me.userId, kind: "reply", replyToId: parent, body: "count me in" })
+    // A repost of the reply: its OWN row is top-level (repost never sets replyToId), so it MUST survive —
+    // amplifying is a deliberate act, and this is the documented carve-out, not an oversight.
+    const repostOfReply = h.repo.seed({ authorId: me.userId, kind: "repost", repostOfId: reply, body: null })
+
+    const home = await h.app.inject({ method: "GET", url: "/v1/feed/home", headers: bearer(me) })
+    expect(home.statusCode).toBe(200)
+    const homeIds = home.json().items.map((p: PostDTO) => p.id)
+    expect(homeIds).toContain(parent)
+    expect(homeIds).not.toContain(reply)
+    expect(homeIds).toContain(repostOfReply)
+
+    // Signed-out reads the SAME shape — the whole point of using publicFeed's exact predicate.
+    const publicIds = (await h.app.inject({ method: "GET", url: "/v1/feed/home" })).json()
+      .items.map((p: PostDTO) => p.id)
+    expect(publicIds).toContain(parent)
+    expect(publicIds).not.toContain(reply)
+
+    // The thread is untouched: the reply is still there, and still readable by permalink.
+    const replies = await h.app.inject({
+      method: "GET",
+      url: `/v1/posts/${parent}/replies`,
+      headers: bearer(me),
+    })
+    expect(replies.statusCode).toBe(200)
+    expect(replies.json().items.map((p: PostDTO) => p.id)).toEqual([reply])
+    expect(
+      (await h.app.inject({ method: "GET", url: `/v1/posts/${reply}`, headers: bearer(me) })).json().id,
+    ).toBe(reply)
+
+    // The profile "Posts" tab excludes it too (`kind <> 'reply'`), but a BOOKMARKED reply still shows:
+    // the viewer asked for that one by name.
+    expect(
+      (await h.app.inject({
+        method: "GET",
+        url: `/v1/people/${me.userId}/posts`,
+        headers: bearer(me),
+      })).json().items.map((p: PostDTO) => p.id),
+    ).not.toContain(reply)
+    await h.app.inject({ method: "POST", url: `/v1/posts/${reply}/save`, headers: bearer(me) })
+    expect(
+      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json()
+        .items.map((p: PostDTO) => p.id),
+    ).toContain(reply)
   })
 
   it("omits soft-deleted posts from every list surface", async () => {
