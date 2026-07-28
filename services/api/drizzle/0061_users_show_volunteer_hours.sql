@@ -1,0 +1,62 @@
+-- =============================================================================
+-- 0061_users_show_volunteer_hours.sql
+-- -----------------------------------------------------------------------------
+-- P6 (hours privacy): UserProfileDTO.volunteerHours is populated on EVERY profile
+-- today, including for anonymous viewers (social-service.ts:185-216, wired
+-- unconditionally at social.routes.ts:87-99). There has never been an opt-out.
+-- This column is that opt-out.
+--
+-- *** THE COLUMN IS A NULLABLE TRI-STATE — NOT `NOT NULL DEFAULT true`. ***
+--
+--   NULL  = never chosen  -> aggregate volunteerHours + byJurisdiction + the
+--                            leaderboard stay VISIBLE (byte-identical to today);
+--                            the itemised ledger returns `items: []`.
+--   true  = explicit opt-in  -> aggregate AND the itemised per-event rows.
+--   false = explicit opt-out -> hidden everywhere public.
+--
+-- WHY NOT `NOT NULL DEFAULT true` (do not "fix" this back): a default of true is
+-- right about the AGGREGATE and wrong about what this feature set ADDS.
+-- GET /people/:id/volunteer-hours returns ITEMISED rows carrying eventTitle,
+-- jurisdictionName, occurredAt and creditedBy — a public, paginated record of
+-- where a named person physically was, on which dates. That is a NEW category of
+-- disclosure, not a preserved one, and DEFAULT true would switch it on
+-- retroactively for every existing account with no notice and no opt-in.
+--
+-- BINDING PREDICATES (three-valued logic is the whole point here):
+--   * aggregate / leaderboard / profile total: `show_volunteer_hours IS NOT FALSE`
+--     — NEVER a bare truth test. `AND show_volunteer_hours` is NULL for every
+--     account that exists today, which would silently empty the leaderboard.
+--   * itemised items[] on someone ELSE's profile: `show_volunteer_hours IS TRUE`.
+--   * own profile always shows everything, regardless of this column.
+-- The shared UserProfileDTO.showVolunteerHours is `.optional()` and models the
+-- same tri-state: ABSENT = never chosen. Emit it only when the column is non-null.
+--
+-- WHY A COLUMN ON users AND NOT A user_privacy SIDE TABLE: allow_direct_messages
+-- is the precedent — the same class of per-user visibility flag, read on the same
+-- hot profile/leaderboard projections. A side table would add a LEFT JOIN to every
+-- one of them for a single bit.
+--
+-- LOCK PROFILE: ADD COLUMN with NO default is metadata-only on every supported
+-- PostgreSQL (no table rewrite, a brief ACCESS EXCLUSIVE only). There is
+-- deliberately NO backfill UPDATE here — 0059_users_follow_counters.sql's banner
+-- documents that ADD COLUMN + a backfill UPDATE in the same file holds ACCESS
+-- EXCLUSIVE for the whole backfill and blocks READS on users, which on this table
+-- would take the whole API down. NULL is a meaningful value here, so there is
+-- nothing to backfill.
+--
+-- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
+-- lives at src/db/schema/users.ts.
+--
+-- Conventions (match the rest of the suite): additive IF NOT EXISTS so a partial
+-- or repeat apply is safe; the migrate runner (src/db/migrate.ts) records applied
+-- files and wraps each file in ONE transaction. Forward-only — there is no down
+-- migration in this suite.
+--
+-- Ordering rules: requires 0001_core.sql (users).
+-- =============================================================================
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS show_volunteer_hours boolean;
+
+COMMENT ON COLUMN users.show_volunteer_hours IS
+  'P6 privacy tri-state. NULL = never chosen: aggregate volunteerHours + leaderboard visible (pre-migration behaviour), itemised ledger empty. TRUE = itemised public ledger opted in. FALSE = hidden everywhere public. Own profile always shows. Predicates: aggregate/leaderboard use IS NOT FALSE; items[] uses IS TRUE.';

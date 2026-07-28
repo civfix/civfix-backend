@@ -1,0 +1,35 @@
+-- =============================================================================
+-- 0062_volunteer_hours_user_created_idx.sql
+-- -----------------------------------------------------------------------------
+-- P4 (per-entry service-hours ledger read): until now nothing ever READ
+-- volunteer_hours row-by-row — the profile total and the leaderboard both go
+-- through the user_jurisdiction_hours rollup, and the ledger was write-only. The
+-- new transcript endpoints (GET /me/volunteer-hours/entries and
+-- GET /people/:id/volunteer-hours) page the ledger newest-first with the house
+-- keyset cursor "<created_at iso>|<id>" (src/db/cursor-helpers.ts), whose row-value
+-- comparison needs (user_id, created_at DESC, id DESC) to avoid a sort.
+--
+-- The pre-existing volunteer_hours_user_idx (user_id) becomes a redundant
+-- left-most prefix of this index. It is deliberately NOT dropped: this suite is
+-- forward-only and additive, and dropping an index is a lock plus a plan change
+-- with no upside worth the deploy risk. Noted here so a future cleanup pass knows.
+--
+-- LOCK HAZARD: a non-CONCURRENTLY CREATE INDEX inside the file's transaction takes
+-- a SHARE lock and blocks WRITES to volunteer_hours for its duration. That table is
+-- small today (one row per credited attendee per event plus 0.1h per report). If it
+-- has grown by the time this ships, build the index out of band with
+-- CREATE INDEX CONCURRENTLY first — the IF NOT EXISTS below then no-ops. The
+-- migrate runner (src/db/migrate.ts) documents this exact escape hatch.
+--
+-- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle mirror
+-- lives at src/db/schema/volunteer-hours.ts.
+--
+-- Conventions (match the rest of the suite): additive IF NOT EXISTS so a partial
+-- or repeat apply is safe; the migrate runner wraps each file in ONE transaction
+-- (so no CREATE INDEX CONCURRENTLY here). Forward-only — no down migration.
+--
+-- Ordering rules: requires 0035_volunteer_hours.sql.
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS volunteer_hours_user_created_idx
+  ON volunteer_hours (user_id, created_at DESC, id DESC);

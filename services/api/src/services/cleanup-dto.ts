@@ -91,6 +91,11 @@ export function toCleanupDTO(
     ...(record.jurisdictionGeoid !== null ? { jurisdictionGeoid: record.jurisdictionGeoid } : {}),
     ...(record.referenceCode !== null ? { referenceCode: record.referenceCode } : {}),
     linkedReports,
+    // PLACEHOLDER: populated by the detail hydration; a list read keeps [] and reports slotCount.
+    // CleanupDTOSchema.slots is a `.default([])` field, so `slots` is REQUIRED on the inferred output
+    // type and this explicitly-annotated `: CleanupDTO` literal — the sole construction point for every
+    // call site — must supply it, exactly like `linkedReports` above.
+    slots: [],
   }
 }
 

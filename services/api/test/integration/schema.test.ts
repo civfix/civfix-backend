@@ -103,6 +103,13 @@ const EXPECTED_TABLES = [
   "cleanup_bans",
   "volunteer_hours_audit",
   "media_reap_tombstones",
+  // --- service hours / signup slots (0063, 0064) ---------------------------------------------------
+  // P9 host-defined signup roles on an event and the one-slot-per-person claim (0063_cleanup_slots.sql),
+  // and the issued, publicly verifiable PDF transcripts of a user's volunteer service
+  // (0064_service_hours_certificates.sql).
+  "cleanup_slots",
+  "cleanup_slot_claims",
+  "service_hours_certificates",
 ] as const
 
 /** Tables present in the container but NOT created by our migrations. */

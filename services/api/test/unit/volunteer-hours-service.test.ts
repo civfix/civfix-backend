@@ -324,7 +324,10 @@ describe("volunteer hours: leaderboard", () => {
     })
 
     const service = makeService({ repo, view: null })
-    const page = await service.leaderboard(GEOID_A, {})
+    // LeaderboardQuerySchema.geoid became REQUIRED in @civfix/shared 0.31.0 (it is echoed on the
+    // response and drives the viewer-rank projection), so the query object carries it too even though
+    // the service takes the geoid positionally. See the route's T1 fix.
+    const page = await service.leaderboard(GEOID_A, { geoid: GEOID_A })
 
     expect(page.geoid).toBe(GEOID_A)
     expect(page.jurisdictionName).toBe("San Francisco")
@@ -353,12 +356,12 @@ describe("volunteer hours: leaderboard", () => {
     })
 
     const service = makeService({ repo, view: null })
-    const first = await service.leaderboard(GEOID_A, { limit: 2, offset: 0 })
+    const first = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 2, offset: 0 })
     expect(first.entries).toHaveLength(2)
     expect(first.nextOffset).toBe(2)
     expect(first.entries.map((e) => e.rank)).toEqual([1, 2])
 
-    const second = await service.leaderboard(GEOID_A, { limit: 2, offset: 2 })
+    const second = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 2, offset: 2 })
     expect(second.entries).toHaveLength(1)
     expect(second.nextOffset).toBeNull()
     expect(second.entries[0]?.rank).toBe(3)
