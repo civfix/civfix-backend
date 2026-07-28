@@ -257,13 +257,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       await maybeEnqueueAutoForward(deps, reportId, owner.userId)
 
-      await maybeAwardReportHours(
-        deps,
-        result.snapshot.id,
-        owner.userId,
-        result.snapshot.jurisdictionGeoid ?? null,
-      )
-
+      // Creating a report credits NO volunteer hours. It used to award 0.1h with source='report', which
+      // ranked report filings on the public jurisdiction leaderboard and itemised them on signed service
+      // transcripts as if they were volunteer service. Removed (write path + repository capability), and
+      // every historical credit is voided by drizzle/0065_void_report_volunteer_hours.sql.
       return result.snapshot
     },
 
@@ -417,20 +414,6 @@ async function maybeEnqueueAutoForward(
     )
   } catch (err) {
     deps.logger?.warn({ err, reportId }, "report.autoforward enqueue failed")
-  }
-}
-
-async function maybeAwardReportHours(
-  deps: ReportServiceDeps,
-  reportId: string,
-  userId: string,
-  geoid: string | null,
-): Promise<void> {
-  if (deps.awardReportHours === undefined) return
-  try {
-    await deps.awardReportHours(userId, reportId, geoid)
-  } catch (err) {
-    deps.logger?.warn({ err, reportId }, "volunteer-hours: report award failed")
   }
 }
 

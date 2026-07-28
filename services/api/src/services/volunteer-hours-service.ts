@@ -142,11 +142,20 @@ export interface LeaderboardPage {
   viewerHours: number | null
 }
 
+/**
+ * The sources an itemised ledger read may return when the caller does not filter — i.e. the OWNER's own
+ * transcript. Deliberately NOT every source: `'report'` is excluded because filing a report is not
+ * volunteer service and never was, so a historical `source='report'` row (all of which 0065 voided) must
+ * not re-enter a service total or a transcript line even if one survives the void. Both repository impls
+ * default `listEntries` to this, so the twin and the real thing cannot drift.
+ */
+export const ITEMISED_SOURCES: readonly VolunteerHoursSource[] = ["event", "manual"]
+
 export interface ListEntriesArgs {
   userId: string
   cursor: TimeCursor | null
   limit: number
-  /** The public projection passes ["event"] — report auto-awards are aggregated, never itemised. */
+  /** The public projection passes ["event"]; omitted means ITEMISED_SOURCES (never 'report'). */
   sources?: VolunteerHoursSource[]
 }
 
@@ -172,7 +181,12 @@ export interface CertificateEntriesPage {
 }
 
 export interface VolunteerHoursRepository {
-  awardReportHours(userId: string, reportId: string, geoid: string | null): Promise<void>
+  /**
+   * `logEventHours` is the ONLY writer of credited hours. There is no `awardReportHours`: report filings
+   * were credited 0.1h each until 2026-07-28, which put them on the public leaderboard and on signed PDF
+   * transcripts. The capability was removed from the interface (not just unwired) so it cannot come back
+   * through a dep seam; the historical rows are voided by drizzle/0065_void_report_volunteer_hours.sql.
+   */
   logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult>
   totalsFor(userId: string): Promise<MyVolunteerHoursDTO>
   totalHoursFor(userId: string): Promise<number>
@@ -192,8 +206,6 @@ export interface VolunteerHoursRepository {
   ): Promise<{ items: VolunteerHoursEntryView[]; nextCursor: string | null }>
   /** `viewerId` null = no per-user filter (the acting-host `scope: "all"` read). */
   listEventHours(cleanupId: string, viewerId: string | null): Promise<EventHoursLedger>
-  /** Total of source='report' credits — the public projection's aggregated `reportHours`. */
-  reportHoursFor(userId: string): Promise<number>
   hoursVisibilityFor(userId: string): Promise<HoursVisibility>
   entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage>
 }
@@ -414,9 +426,8 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       }
 
       const limit = clampEntriesLimit(query.limit)
-      const [totals, reportHours, page] = await Promise.all([
+      const [totals, page] = await Promise.all([
         deps.repo.totalsFor(userId),
-        deps.repo.reportHoursFor(userId),
         visibility.items
           ? deps.repo.listEntries({
               userId,
@@ -432,7 +443,11 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         totalHours: totals.totalHours,
         byJurisdiction: totals.byJurisdiction,
         items: page.items.map(toVolunteerHoursEntryDTO),
-        reportHours,
+        // ALWAYS 0 since 2026-07-28: report filings are not volunteer service and are no longer credited
+        // (0065 voided every historical row). The wire field stays — it is `.default(0)` in @civfix/shared
+        // and removing it would be a hard break for shipped clients — but nothing reads the ledger for it
+        // any more, so a stray un-voided row can never surface as public "report hours".
+        reportHours: 0,
         nextCursor: page.nextCursor,
       }
     },

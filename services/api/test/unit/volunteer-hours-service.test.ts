@@ -1,6 +1,5 @@
 import { afterEach, describe, it, expect } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { REPORT_VOLUNTEER_HOURS } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import {
   makeVolunteerHoursService,
@@ -92,28 +91,47 @@ function flat(userIds: string[], hours: number): { userId: string; hours: number
   return userIds.map((userId) => ({ userId, hours }))
 }
 
-describe("volunteer hours: awardReportHours (once per report)", () => {
-  it("credits a report's hours exactly once no matter how many times it is awarded", async () => {
+/**
+ * Filing a report is NOT volunteer service. It used to auto-award 0.1h with `source='report'`, which
+ * ranked report filings on the public jurisdiction leaderboard and printed them on signed PDF service
+ * transcripts. The write path is gone and the capability was removed from the repository interface
+ * (drizzle/0065_void_report_volunteer_hours.sql voids the historical rows), so what is pinned here is the
+ * ABSENCE — plus the read filters that keep a surviving pre-0065 row out of anything that counts.
+ */
+describe("volunteer hours: a report filing is not volunteer service", () => {
+  it("the repository exposes NO way to credit a report", () => {
     const repo = new InMemoryVolunteerHoursRepository()
-    repo.seedJurisdiction(GEOID_A, "San Francisco")
-
-    await repo.awardReportHours(HOST, REPORT, GEOID_A)
-    await repo.awardReportHours(HOST, REPORT, GEOID_A)
-    await repo.awardReportHours(HOST, REPORT, GEOID_A)
-
-    const totals = await repo.totalsFor(HOST)
-    expect(totals.totalHours).toBe(REPORT_VOLUNTEER_HOURS)
-    expect(totals.byJurisdiction).toEqual([
-      { geoid: GEOID_A, name: "San Francisco", hours: REPORT_VOLUNTEER_HOURS },
-    ])
+    expect("awardReportHours" in repo).toBe(false)
   })
 
-  it("does not touch the rollup when the report has no jurisdiction", async () => {
+  it("a pre-0065 report row is neither itemised to the owner nor printed on a transcript", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
-    await repo.awardReportHours(HOST, REPORT, null)
-    const totals = await repo.totalsFor(HOST)
-    expect(totals.totalHours).toBe(0)
-    expect(totals.byJurisdiction).toEqual([])
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    repo.seedLegacyReportEntry(HOST, REPORT, GEOID_A)
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: [{ userId: HOST, hours: 2 }],
+    })
+
+    // The owner's own transcript defaults to ITEMISED_SOURCES, which excludes 'report'...
+    const page = await repo.listEntries({ userId: HOST, cursor: null, limit: 50 })
+    expect(page.items.map((e) => e.source)).toEqual(["event"])
+
+    // ...and the certificate read excludes it too, which is what keeps a report filing off a signed,
+    // publicly verifiable document. That read can never be corrected after issue, so it does not rely on
+    // the 0065 void having run.
+    const cert = await repo.entriesForCertificate({
+      userId: HOST,
+      geoid: null,
+      from: null,
+      to: null,
+      limit: 50,
+    })
+    expect(cert.items.map((e) => e.source)).toEqual(["event"])
+    expect(cert.totalHours).toBe(2)
+    expect(cert.entryCount).toBe(1)
   })
 })
 
@@ -355,7 +373,13 @@ describe("volunteer hours: leaderboard", () => {
       geoid: GEOID_A,
       entries: flat([HOST, BOB, CAROL], 1),
     })
-    await repo.awardReportHours(BOB, REPORT, GEOID_A)
+    // A small second credit for Bob, so the ranking has a fractional total to order on.
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      geoid: GEOID_A,
+      entries: flat([BOB], 0.1),
+    })
     await repo.logEventHours({
       actorId: HOST,
       cleanupId: "cccccccc-cccc-cccc-cccc-cccccccccccc",
@@ -884,13 +908,18 @@ describe("volunteer hours: totalsFor aggregates per jurisdiction", () => {
       geoid: GEOID_A,
       entries: flat([HOST], 2),
     })
-    await repo.awardReportHours(HOST, REPORT, GEOID_B)
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      geoid: GEOID_B,
+      entries: flat([HOST], 0.1),
+    })
 
     const totals = await repo.totalsFor(HOST)
     expect(totals.totalHours).toBe(2.1)
     expect(totals.byJurisdiction).toEqual([
       { geoid: GEOID_A, name: "San Francisco", hours: 2 },
-      { geoid: GEOID_B, name: "Oakland", hours: REPORT_VOLUNTEER_HOURS },
+      { geoid: GEOID_B, name: "Oakland", hours: 0.1 },
     ])
     expect(await repo.totalHoursFor(HOST)).toBe(2.1)
   })

@@ -1,12 +1,8 @@
-import { REPORT_VOLUNTEER_HOURS, avatarGradient } from "@civfix/shared"
-import type {
-  LeaderboardEntryDTO,
-  MyVolunteerHoursDTO,
-  VolunteerHoursSource,
-} from "@civfix/shared"
+import { avatarGradient } from "@civfix/shared"
+import type { LeaderboardEntryDTO, MyVolunteerHoursDTO, VolunteerHoursSource } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
-import { EVENT_HOURS_MEMBER_CAP } from "./volunteer-hours-service.js"
+import { EVENT_HOURS_MEMBER_CAP, ITEMISED_SOURCES } from "./volunteer-hours-service.js"
 import type {
   CertificateEntriesPage,
   EntriesForCertificateArgs,
@@ -25,9 +21,6 @@ import type {
  * the "there is another page" marker its boolean has-more collapses into. Never leaves this module.
  */
 const MORE_PAGES = "more"
-
-/** Every source, i.e. "do not filter" — the owner's own transcript itemises all three. */
-const ALL_SOURCES: readonly VolunteerHoursSource[] = ["report", "event", "manual"]
 
 /** The shape every ledger read below selects, so the row -> view mapping has ONE implementation. */
 interface LedgerRow {
@@ -77,25 +70,9 @@ function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
 
 export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
   return {
-    async awardReportHours(userId: string, reportId: string, geoid: string | null): Promise<void> {
-      await sql.begin(async (tx) => {
-        const inserted = await tx<{ id: string }[]>`
-          INSERT INTO volunteer_hours (user_id, hours, source, report_id, jurisdiction_geoid)
-          VALUES (${userId}, ${REPORT_VOLUNTEER_HOURS}, 'report', ${reportId}, ${geoid})
-          ON CONFLICT (report_id) WHERE source = 'report' DO NOTHING
-          RETURNING id
-        `
-        if (inserted.length === 0) return
-        if (geoid === null) return
-        await tx`
-          INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
-          VALUES (${userId}, ${geoid}, ${REPORT_VOLUNTEER_HOURS})
-          ON CONFLICT (user_id, jurisdiction_geoid)
-          DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
-        `
-      })
-    },
-
+    // There is NO awardReportHours. See the VolunteerHoursRepository interface: `logEventHours` below is
+    // the only writer of `volunteer_hours` / `user_jurisdiction_hours` in the whole service, which is what
+    // makes 0065's rollup RECOMPUTE safe (no value in the rollup can lack a backing ledger row).
     async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
       if (args.entries.length === 0) return { credited: 0, changed: [] }
       // Parallel arrays for the set-based per-row upsert: unnest(uuid[], float8[]) pairs them up
@@ -412,7 +389,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
     async listEntries(
       args: ListEntriesArgs,
     ): Promise<{ items: VolunteerHoursEntryView[]; nextCursor: string | null }> {
-      const sources = args.sources ?? ALL_SOURCES
+      const sources = args.sources ?? ITEMISED_SOURCES
       // House idiom (post-/report-/notification-repository): the keyset predicate is a CONDITIONAL
       // fragment rather than a `$1 IS NULL OR …`, so page 1 plans without a dead comparison.
       const keyset =
@@ -496,20 +473,6 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
     },
 
     /**
-     * The public projection's aggregated `reportHours`: report auto-awards are summed, never itemised,
-     * because a public list of every report a user filed is a privacy leak (reports can be held, unlisted
-     * or sensitive) and the id deep-links into them.
-     */
-    async reportHoursFor(userId: string): Promise<number> {
-      const rows = await sql<{ total: number }[]>`
-        SELECT COALESCE(SUM(hours), 0)::float8 AS total
-        FROM volunteer_hours
-        WHERE user_id = ${userId} AND source = 'report' AND voided_at IS NULL
-      `
-      return rows[0]?.total ?? 0
-    },
-
-    /**
      * C18's two predicates, from ONE row read. `aggregate` is `IS NOT FALSE` (NULL — every account that
      * exists today — stays visible, byte-identical to the `volunteerHours` scalar their profile already
      * publishes); `items` is `IS TRUE` (the per-event list with dates and crediting hosts is new
@@ -535,6 +498,12 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
      * FULL matching count even when `items` was truncated, so the document can say so honestly, while
      * `totalHours` sums only the returned rows — B40b: a printed total that does not equal the sum of the
      * printed lines is a self-contradicting document.
+     *
+     * `vh.source <> 'report'` is on BOTH queries and is the highest-value predicate in this file: it is
+     * what keeps a report filing off a signed, publicly verifiable PDF handed to a school, an employer or
+     * a court. 0065 voided every historical report row, so this is belt AND braces — a certificate is
+     * frozen at issue time and CANNOT be corrected afterwards (0064's banner), so the read that feeds it
+     * must not depend on a data migration having run.
      */
     async entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage> {
       const geoidFilter =
@@ -567,6 +536,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
         WHERE vh.user_id = ${args.userId}
           AND vh.voided_at IS NULL
+          AND vh.source <> 'report'
           ${geoidFilter}
           ${fromFilter}
           ${toFilter}
@@ -578,6 +548,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         FROM volunteer_hours vh
         WHERE vh.user_id = ${args.userId}
           AND vh.voided_at IS NULL
+          AND vh.source <> 'report'
           ${geoidFilter}
           ${fromFilter}
           ${toFilter}

@@ -432,10 +432,9 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
         if (err instanceof CertificateConflictError && err.kind === "code") continue
 
         if (err instanceof CertificateConflictError && err.kind === "fingerprint") {
-          // Two simultaneous taps. This branch is what makes them safe WITHOUT a lock, mirroring the
-          // `ON CONFLICT DO NOTHING` + re-read idiom `awardReportHours` already uses: re-read the
-          // winner, drop the loser's object, and hand back the winner's document so both taps see one
-          // certificate with one code.
+          // Two simultaneous taps. This branch is what makes them safe WITHOUT a lock, on the house
+          // "let the unique index arbitrate, then re-read" idiom: re-read the winner, drop the loser's
+          // object, and hand back the winner's document so both taps see one certificate with one code.
           const winner = await repo.findLiveByFingerprint(userId, fingerprint)
           await bestEffortDelete(r2Key, "issue-race-loser")
           if (winner === null) throw err

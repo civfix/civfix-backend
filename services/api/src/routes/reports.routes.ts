@@ -281,8 +281,10 @@ export async function registerReportRoutes(
       presignMedia: makeMediaPresigner(container.storage),
       jobs: container.jobs,
       isReportVerified: (userId) => isReportVerified(sql, userId),
-      awardReportHours: (userId, reportId, geoid) =>
-        container.getVolunteerHoursRepo().awardReportHours(userId, reportId, geoid),
+      // NO volunteer-hours award here. Filing a report is not volunteer SERVICE, and crediting it put
+      // report hours on the public leaderboard and on signed PDF transcripts. The capability was removed
+      // from VolunteerHoursRepository outright (see drizzle/0065_void_report_volunteer_hours.sql) so it
+      // cannot be re-wired from this seam; `logEventHours` is now the only writer of credited hours.
       joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
       // D-D1: owner resolve/reopen/hide/re-list posts a system message into the report chat (best-effort,
       // no-op under fake-chat). Built from container primitives — no chat-gateway wiring instances needed.

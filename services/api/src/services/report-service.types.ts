@@ -214,7 +214,9 @@ export interface ReportServiceDeps {
   loadReportChatMeta?: (reportId: string, viewerUserId: string | null) => Promise<ReportChatMeta>
   jobs?: Jobs
   isReportVerified?: (userId: string) => Promise<boolean>
-  awardReportHours?: (userId: string, reportId: string, geoid: string | null) => Promise<void>
+  // There is deliberately NO `awardReportHours` seam. Filing a report is not volunteer service, so
+  // createReport credits nothing; see the note at its former call site in report-service.ts and
+  // drizzle/0065_void_report_volunteer_hours.sql.
   // Auto-join the report's creator as an "owner" member of its chat, once the report row is committed.
   // Best-effort (see maybeJoinReportChatAsOwner): a failure here must NOT fail report creation.
   joinReportChatAsOwner?: (reportId: string, userId: string) => Promise<void>

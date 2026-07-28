@@ -9,8 +9,9 @@
  *   - `voided_at` rows are excluded from every read, so the dormant column needs no read change later;
  *   - the PUBLIC projection's two C18 gates: aggregate (`IS NOT FALSE`) vs itemised (`IS TRUE`), a
  *     never-chosen user getting `visible: true` with `items: []`, and hidden reported at 200 not 403;
- *   - only `source='event'` rows are itemised publicly, with report auto-awards summed into `reportHours`
- *     (a public list of every report someone filed is a privacy leak and the id deep-links into them);
+ *   - only `source='event'` rows are itemised publicly (a public list of every report someone filed is a
+ *     privacy leak and the id deep-links into them), and `reportHours` is now a hard 0 — filing a report
+ *     is not volunteer service, so pre-0065 report rows are excluded from EVERY read, owner's included;
  *   - `creditedBy` is carried — the whole point of a transcript a school can trust;
  *   - the `getEventHours` scope matrix, including `anyLogged`, which is the only thing that lets an
  *     uncredited attendee's receipt say "not credited" instead of "the host hasn't logged yet" forever.
@@ -177,25 +178,26 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     }
   })
 
-  it("itemises EVERY source for the owner, and excludes voided rows", async () => {
+  it("itemises the SERVICE sources for the owner, never 'report', and excludes voided rows", async () => {
     const repo = makeRepo()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    await repo.awardReportHours(BOB, REPORT_ONE, GEOID_A)
+    // A pre-0065 row: filing a report used to auto-award 0.1h. It is not volunteer service, so it is not
+    // itemised even to the owner — ITEMISED_SOURCES is ["event", "manual"], and 0065 voided these rows.
+    repo.seedLegacyReportEntry(BOB, REPORT_ONE, GEOID_A)
     await creditEvent(repo, EVENT_IDS[0], BOB, 3, { title: "Kept" })
     await creditEvent(repo, EVENT_IDS[1], BOB, 4, { title: "Voided" })
     const service = makeService(repo)
 
     const all = await service.getMyHoursEntries(BOB, {})
-    expect(all.items.map((e) => e.source).sort()).toEqual(["event", "event", "report"])
+    expect(all.items.map((e) => e.source).sort()).toEqual(["event", "event"])
 
-    // Nothing writes voided_at in production yet — the READ filter ships from day one so a future void
-    // path needs no read change and no backfill.
+    // `voided_at` is what 0065 wrote to retire the report credits; the READ filter has been live since
+    // day one, so voiding needed no read change and no backfill.
     const voided = all.items.find((e) => e.eventTitle === "Voided")!
     repo.voidEntry(voided.id)
     const after = await service.getMyHoursEntries(BOB, {})
-    // The report row survives (it carries no event title — the field is OMITTED, not sent as null).
-    expect(after.items.map((e) => e.source)).toEqual(["event", "report"])
-    expect(after.items.map((e) => e.eventTitle)).toEqual(["Kept", undefined])
+    expect(after.items.map((e) => e.source)).toEqual(["event"])
+    expect(after.items.map((e) => e.eventTitle)).toEqual(["Kept"])
   })
 
   it("carries the joined event + jurisdiction + creditedBy identity", async () => {
@@ -229,11 +231,13 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null, verified: true })
     await creditEvent(repo, EVENT_IDS[0], BOB, 2, { title: "Ocean Beach sweep" })
     await creditEvent(repo, EVENT_IDS[1], BOB, 1, { title: "Dolores clean-up" })
-    await repo.awardReportHours(BOB, REPORT_ONE, GEOID_A)
-    await repo.awardReportHours(BOB, REPORT_TWO, GEOID_A)
+    // Two PRE-0065 report auto-awards, still in the ledger and (as in production before the migration
+    // recomputes it) still in the rollup `totalHours` reads. They must not surface anywhere public.
+    repo.seedLegacyReportEntry(BOB, REPORT_ONE, GEOID_A)
+    repo.seedLegacyReportEntry(BOB, REPORT_TWO, GEOID_A)
   }
 
-  it("TRUE (explicit opt-in): aggregate AND items, event rows only, report hours aggregated", async () => {
+  it("TRUE (explicit opt-in): aggregate AND items, event rows only, report hours always zero", async () => {
     const repo = makeRepo()
     await seedBob(repo)
     repo.seedUser(BOB, {
@@ -252,7 +256,9 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     // leak (reports can be held, unlisted or sensitive) and the id deep-links straight into them.
     expect(res.items.map((e) => e.source)).toEqual(["event", "event"])
     expect(res.items.map((e) => e.eventTitle)).toEqual(["Dolores clean-up", "Ocean Beach sweep"])
-    expect(res.reportHours).toBeCloseTo(0.2, 5)
+    // `reportHours` is now a hard 0, not a ledger read: report filings are not volunteer service, so
+    // there is no honest aggregate to publish. The field stays on the wire for shipped clients.
+    expect(res.reportHours).toBe(0)
     // ...and the crediting host IS named — that is the whole point of a transcript a school can trust.
     expect(res.items[0]?.creditedBy?.handle).toBe("ann")
   })
@@ -267,7 +273,7 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     // The aggregate is byte-identical to what their profile already publishes...
     expect(res.visible).toBe(true)
     expect(res.totalHours).toBe(3.2)
-    expect(res.reportHours).toBeCloseTo(0.2, 5)
+    expect(res.reportHours).toBe(0)
     // ...while the per-event list — where they physically were, on which dates — stays closed.
     expect(res.items).toEqual([])
     expect(res.nextCursor).toBeNull()

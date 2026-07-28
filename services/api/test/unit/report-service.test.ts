@@ -396,6 +396,37 @@ describe("createReport: idempotency replay", () => {
   })
 })
 
+/**
+ * Filing a report is NOT volunteer service. createReport used to award 0.1h with `source='report'`
+ * through an optional `awardReportHours` dep, which ranked report filings on the PUBLIC jurisdiction
+ * leaderboard and itemised them on signed PDF service transcripts. The dep is gone from
+ * ReportServiceDeps and the capability was deleted from VolunteerHoursRepository outright
+ * (drizzle/0065_void_report_volunteer_hours.sql voids the historical rows) — but a best-effort dep seam
+ * is easy to re-add by accident, so this pins the ABSENCE: a spy is attached under the old name (through
+ * a cast, since the property no longer type-checks) and must never be called.
+ */
+describe("createReport: credits no volunteer hours", () => {
+  it("never reaches a report-hours award seam, and still creates the report", async () => {
+    const awarded: unknown[][] = []
+    const repo = new InMemoryReportRepository()
+    const service = makeReportService({
+      repo,
+      resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
+      presignMedia: fakePresign,
+      awardReportHours: (...args: unknown[]) => {
+        awarded.push(args)
+        return Promise.resolve()
+      },
+    } as unknown as Parameters<typeof makeReportService>[0])
+
+    const dto = await service.createReport(createReq(), { userId: "u1" })
+
+    expect(dto.status).toBe("published")
+    expect(repo.reports.size).toBe(1)
+    expect(awarded).toEqual([])
+  })
+})
+
 describe("getReport: visibility / held hiding", () => {
   it("returns a published+public report to anyone, with mine reflecting ownership", async () => {
     const { repo, service } = makeHarness()

@@ -452,8 +452,10 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
+    // Unfiltered means ITEMISED_SOURCES = ["event", "manual"]: the pre-0065 report row is NOT itemised,
+    // even to its owner, because filing a report is not volunteer service.
     const all = await repo.listEntries({ userId: owner, cursor: null, limit: 50 })
-    expect(all.items.map((e) => e.source)).toEqual(["report", "event"])
+    expect(all.items.map((e) => e.source)).toEqual(["event"])
 
     const eventsOnly = await repo.listEntries({
       userId: owner,
@@ -462,7 +464,55 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       sources: ["event"],
     })
     expect(eventsOnly.items.map((e) => e.hours)).toEqual([3])
-    expect(await repo.reportHoursFor(owner)).toBeCloseTo(0.1, 5)
+
+    // The row is still THERE — it is the DEFAULT source filter that hides it, not its absence. (The
+    // voided event row stays hidden under any source filter.)
+    const reportsOnly = await repo.listEntries({
+      userId: owner,
+      cursor: null,
+      limit: 50,
+      sources: ["report"],
+    })
+    expect(reportsOnly.items.map((e) => e.hours)).toEqual([0.1])
+  })
+
+  /**
+   * The single most important read filter in this feature: a certificate is a signed, publicly verifiable
+   * PDF handed to a school, an employer or a court, and 0064 freezes its totals at issue time — a wrong
+   * one CANNOT be corrected afterwards. So the transcript read excludes `source='report'` in its own
+   * right, without depending on 0065's void having run.
+   */
+  it("entriesForCertificate excludes report rows from BOTH the items and the count", async () => {
+    const owner = await newUser("Certificate Ledger Owner")
+    await insertEntry({
+      id: "1d000000-0000-4000-8000-000000000001",
+      userId: owner,
+      hours: 2.5,
+      source: "event",
+      createdAt: "2026-05-10T12:00:00.000Z",
+    })
+    await insertEntry({
+      id: "1d000000-0000-4000-8000-000000000002",
+      userId: owner,
+      hours: 0.1,
+      source: "report",
+      createdAt: "2026-05-11T12:00:00.000Z",
+      reportId: await newReport(owner),
+    })
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+    const page = await repo.entriesForCertificate({
+      userId: owner,
+      geoid: null,
+      from: null,
+      to: null,
+      limit: 50,
+    })
+    expect(page.items.map((e) => e.source)).toEqual(["event"])
+    // entryCount is the FULL matching count, so it must not count the report row either — otherwise the
+    // document would print "1 of 2 entries" and imply a hidden credit.
+    expect(page.entryCount).toBe(1)
+    expect(page.totalHours).toBe(2.5)
   })
 
   it("listEntries joins out the event title, reference code, jurisdiction name and creditedBy", async () => {
@@ -693,18 +743,23 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const nullUser = await seedHolder(null, "Public Null")
     const nullRes = await service.getPublicHours({ id: nullUser }, viewer)
     expect(nullRes.visible).toBe(true)
+    // 3.1 is the seeded ROLLUP verbatim — these holders are seeded in the pre-0065 shape (an event credit
+    // plus a report credit, both booked into the rollup). This block is about the C18 gates; 0065's
+    // recompute of the rollup is covered in void-report-hours-pg.test.ts.
     expect(nullRes.totalHours).toBe(3.1)
-    expect(nullRes.reportHours).toBeCloseTo(0.1, 5)
+    // A hard 0, no longer a ledger read: report filings are not volunteer service, so there is no honest
+    // aggregate to publish. The wire field stays for shipped clients.
+    expect(nullRes.reportHours).toBe(0)
     expect(nullRes.items).toEqual([])
     expect(nullRes.nextCursor).toBeNull()
 
     const trueUser = await seedHolder(true, "Public True")
     const trueRes = await service.getPublicHours({ id: trueUser }, viewer)
     expect(trueRes.visible).toBe(true)
-    // Only the EVENT row is itemised; the report auto-award is aggregated into reportHours.
+    // Only the EVENT row is itemised; the historical report row is published nowhere at all.
     expect(trueRes.items.map((e) => e.source)).toEqual(["event"])
     expect(trueRes.items[0]?.creditedBy?.id).toBe(host)
-    expect(trueRes.reportHours).toBeCloseTo(0.1, 5)
+    expect(trueRes.reportHours).toBe(0)
 
     const falseUser = await seedHolder(false, "Public False")
     const falseRes = await service.getPublicHours({ id: falseUser }, viewer)

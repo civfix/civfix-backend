@@ -320,11 +320,12 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **65 files**, `0000_extensions.sql` … `0064_service_hours_certificates.sql`. The nine rows
+`drizzle/` holds **66 files**, `0000_extensions.sql` … `0065_void_report_volunteer_hours.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
-later still, with the service-hours feature set, and have their own table in §1a below.) Both backfills live **inside** their own migration file
+later still, with the service-hours feature set, and have their own table in §1a below; `0065` is a DATA
+migration and has §1b to itself.) Both backfills live **inside** their own migration file
 (`0058`'s `sessions.created_at`, `0059`'s follow counters; §2 and §6 below), so there is no separate
 backfill step to remember: the three `db:backfill*` scripts in `services/api/package.json` (report
 jurisdiction geoids, reference codes, ACS population) are boundary/ingest tooling and are not part of this
@@ -363,6 +364,43 @@ schema and the order relative to the image is free.
 | `0062_volunteer_hours_user_created_idx.sql` | index `volunteer_hours (user_id, created_at DESC, id DESC)` for the new keyset ledger reads | Correct but unindexed: every transcript page sorts the user's whole ledger |
 | `0063_cleanup_slots.sql` | `cleanup_slots` + `cleanup_slot_claims` (P9 signup slots). The `(cleanup_id, user_id)` PK **is** the one-slot-per-person rule; the composite FK `(slot_id, cleanup_id)` makes cross-event claims structurally impossible | Every slot read/write fails (42P01, undefined table) |
 | `0064_service_hours_certificates.sql` | `service_hours_certificates`: issued PDF transcripts, `code` = the public verification capability, plus the partial unique on `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` that gives issue idempotency | Issue/list/revoke/verify all fail (42P01); without the partial unique specifically, a double-tap mints two documents |
+
+## 1b. Report volunteer-hours void (`0065`)
+
+Unlike every migration above, this one **changes data**, and it changes data that is PUBLIC: the
+per-jurisdiction leaderboard, the "Total volunteer hours" number on every profile, and the ledger that
+signed PDF service transcripts are built from.
+
+| File | What it does | If skipped |
+|---|---|---|
+| `0065_void_report_volunteer_hours.sql` | (1) sets `voided_at` + an explanatory `note` on every `volunteer_hours` row with `source='report'`; (2) RECOMPUTES `user_jurisdiction_hours.total_hours` as the SUM of each `(user, jurisdiction)`'s non-voided ledger rows | The code stops crediting new report filings, but every historical 0.1h-per-filing credit stays on the public leaderboard, in every profile total and in every newly issued transcript's source ledger |
+
+- **ORDER MATTERS, unlike `0061`–`0064`.** Ship the migration and the image **together**. If the migration
+  lands while the old image is still serving, `createReport` mints fresh `source='report'` rows seconds
+  after the void and the correction is silently undone.
+- **Expect the public numbers to DROP.** Report filings were the only hours most users could accrue (event
+  hours require a verified organizer/cohost to log them, and a host cannot self-credit), so most
+  jurisdiction leaderboards go thin or empty and many profiles fall to 0. That is the correction.
+- **The rollup recompute is AUTHORITATIVE**: any `total_hours` with no backing non-voided ledger row is
+  erased. Safe because `logEventHours` is the only remaining writer of either table and there is no
+  `source='manual'` writer anywhere — but if you have ever hand-run an `UPDATE user_jurisdiction_hours`,
+  it will be lost. Re-applying is a no-op (statement 1 matches nothing; statement 2 is a pure recompute).
+- **Already-issued certificates are NOT corrected and cannot be**: `service_hours_certificates` rows are
+  immutable snapshots and `verify()` reports them verbatim. After applying, list any live certificate that
+  itemised a report row and revoke it through the existing revoke path (reason `ledger_corrected`), notify
+  the holder and let them re-issue — never hand-edit `snapshot`, `total_hours` or `document_sha256`:
+
+  ```sql
+  SELECT id, code, user_id, issued_at, total_hours
+  FROM service_hours_certificates
+  WHERE revoked_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(snapshot->'rows') r
+      WHERE r->>'source' = 'report'
+    );
+  ```
+
+  The window is small: `0064` shipped 2026-07-28.
 
 **No file in `drizzle/` may contain `BEGIN;` / `COMMIT;` / `ROLLBACK;`.** `src/db/migrate.ts:83-97` wraps
 every file in its own transaction on a reserved connection, together with the `_civfix_migrations`

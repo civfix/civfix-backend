@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto"
-import { REPORT_VOLUNTEER_HOURS, avatarGradient } from "@civfix/shared"
+import { avatarGradient } from "@civfix/shared"
 import type {
   LeaderboardEntryDTO,
   MyVolunteerHoursDTO,
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { ITEMISED_SOURCES } from "./volunteer-hours-service.js"
 import type {
   CertificateEntriesPage,
   EntriesForCertificateArgs,
@@ -52,7 +53,7 @@ interface LedgerEntry {
   reportId: string | null
   geoid: string | null
   loggedByUserId: string | null
-  /** Mirrors the dormant `volunteer_hours.voided_at`: nothing writes it in production, reads filter it. */
+  /** Mirrors `volunteer_hours.voided_at` — 0065 writes it for the report credits; every read filters it. */
   voidedAt?: Date
 }
 
@@ -74,7 +75,6 @@ export interface InMemoryVolunteerHoursRepositoryOpts {
  * gates and the B33b `changed[]` pre-image.
  */
 export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepository {
-  private readonly reportLedger = new Set<string>()
   // The prior credit AND the jurisdiction it was booked into. The geoid is stored because an event whose
   // location was edited must MOVE its rollup rather than delta against whichever jurisdiction it happens
   // to be in now — the same rule the Drizzle impl's per-geoid deltas implement. It is ALSO the B33b
@@ -106,28 +106,33 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     this.cleanups.set(cleanupId, meta)
   }
 
-  /** Mark a ledger row void (nothing writes `voided_at` in production yet; the READ filter is live). */
+  /** Mark a ledger row void, the way 0065 voided every report credit. Every read filters these out. */
   voidEntry(entryId: string): void {
     const row = this.entries.find((e) => e.id === entryId)
     if (row) row.voidedAt = this.now()
   }
 
-  awardReportHours(userId: string, reportId: string, geoid: string | null): Promise<void> {
-    if (this.reportLedger.has(reportId)) return Promise.resolve()
-    this.reportLedger.add(reportId)
+  /**
+   * TEST SEAM, not a capability: plant a PRE-0065 `source='report'` row (and, as the old award did, its
+   * rollup contribution) so a test can prove the read filters exclude it. Production has no way to write
+   * one — `awardReportHours` is gone from the interface and both impls, because filing a report is not
+   * volunteer service. Do NOT call this from src/.
+   */
+  seedLegacyReportEntry(userId: string, reportId: string, geoid: string | null, hours = 0.1): string {
+    const id = this.newId()
     this.entries.push({
-      id: this.newId(),
+      id,
       userId,
       source: "report",
-      hours: REPORT_VOLUNTEER_HOURS,
+      hours,
       createdAt: this.now(),
       cleanupId: null,
       reportId,
       geoid,
       loggedByUserId: null,
     })
-    if (geoid !== null) this.addRollup(userId, geoid, REPORT_VOLUNTEER_HOURS)
-    return Promise.resolve()
+    if (geoid !== null) this.addRollup(userId, geoid, hours)
+    return id
   }
 
   logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
@@ -251,13 +256,11 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   listEntries(
     args: ListEntriesArgs,
   ): Promise<{ items: VolunteerHoursEntryView[]; nextCursor: string | null }> {
-    const sources = args.sources
+    // Omitted `sources` means ITEMISED_SOURCES (never 'report'), exactly like the Drizzle default.
+    const sources = args.sources ?? ITEMISED_SOURCES
     const rows = this.entries
       .filter(
-        (e) =>
-          e.userId === args.userId &&
-          e.voidedAt === undefined &&
-          (sources === undefined || sources.includes(e.source)),
+        (e) => e.userId === args.userId && e.voidedAt === undefined && sources.includes(e.source),
       )
       // Newest first on (created_at DESC, id DESC), the same keyset the 0062 index serves.
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
@@ -291,14 +294,6 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     })
   }
 
-  reportHoursFor(userId: string): Promise<number> {
-    let total = 0
-    for (const e of this.entries) {
-      if (e.userId === userId && e.source === "report" && e.voidedAt === undefined) total += e.hours
-    }
-    return Promise.resolve(round2(total))
-  }
-
   /**
    * C18's two gates. An UNSEEDED id reads as the NULL tri-state (never chosen), not as "no users row":
    * `seedUser` here carries display metadata, and the twin has no notion of row existence — the Drizzle
@@ -312,12 +307,14 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     return Promise.resolve({ aggregate: flag !== false, items: flag === true })
   }
 
+  /** Mirrors the Drizzle read INCLUDING its `source <> 'report'` filter — a report never prints. */
   entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage> {
     const matching = this.entries
       .filter(
         (e) =>
           e.userId === args.userId &&
           e.voidedAt === undefined &&
+          e.source !== "report" &&
           (args.geoid === null || e.geoid === args.geoid) &&
           (args.from === null || e.createdAt.getTime() >= args.from.getTime()) &&
           (args.to === null || e.createdAt.getTime() <= args.to.getTime()),
