@@ -23,6 +23,7 @@ import type {
   CancelCleanupOutcome,
   CleanupRecord,
   CleanupRepository,
+  CompleteCleanupOutcome,
   CreateCleanupTxArgs,
   LinkedEventView,
   LinkedReportView,
@@ -601,19 +602,25 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       input: { note: string; body: string; reason: string | null; actorId: string },
     ): Promise<CancelCleanupOutcome> {
       return sql.begin(async (tx) => {
+        // B18: `status <> 'done'` joined the guard. Host completion is forward-only (B17), so cancel is
+        // no longer allowed to walk an event back out of 'done' — that would leave a cancelled event
+        // carrying credited volunteer_hours rows, which nothing downstream can interpret.
         const updated = await tx<{ id: string }[]>`
           UPDATE cleanups SET status = 'cancelled'
-          WHERE id = ${id} AND status <> 'cancelled'
+          WHERE id = ${id} AND status <> 'cancelled' AND status <> 'done'
           RETURNING id
         `
         if (updated.length === 0) {
           // The guarded UPDATE is the concurrency primitive: exactly one of N racing cancels matches a
-          // row, so exactly one caller is told "cancelled" and gets to ring the roster. A miss is either
-          // an already-cancelled event or no event at all, which the caller must tell apart (404 vs 200).
-          const existing = await tx<{ id: string }[]>`
-            SELECT id FROM cleanups WHERE id = ${id} LIMIT 1
+          // row, so exactly one caller is told "cancelled" and gets to ring the roster. A miss is an
+          // already-cancelled event, a COMPLETED one, or no event at all — three different answers
+          // (200 / 409 / 404), so the follow-up read returns the status, not merely existence.
+          const existing = await tx<{ status: CleanupStatus }[]>`
+            SELECT status FROM cleanups WHERE id = ${id} LIMIT 1
           `
-          return existing.length > 0 ? "already_cancelled" : "not_found"
+          const status = existing[0]?.status
+          if (status === undefined) return "not_found"
+          return status === "done" ? "already_completed" : "already_cancelled"
         }
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
@@ -626,6 +633,39 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         // The repo's job ends at the status flip + the timeline row, which is what has to be atomic;
         // a bell is best-effort by design and must never hold a transaction open.
         return "cancelled"
+      })
+    },
+
+    async completeCleanupTx(
+      id: string,
+      input: { note: string; actorId: string; now: Date },
+    ): Promise<CompleteCleanupOutcome> {
+      return sql.begin(async (tx) => {
+        // Lock-then-branch (B16). FOR NO KEY UPDATE is removeMember's lock on this same row, so the
+        // vocabulary stays consistent and two racing completions serialize: the loser reads status
+        // 'done' and returns already_completed, writing nothing. Deliberately NOT the stronger FOR
+        // UPDATE, which also conflicts with the FOR KEY SHARE every FK-referencing insert takes on the
+        // parent row (chat messages, timeline rows, joins) — see removeMember for the same reasoning.
+        const locked = await tx<{ status: CleanupStatus; scheduled_at: Date }[]>`
+          SELECT status, scheduled_at FROM cleanups WHERE id = ${id} LIMIT 1 FOR NO KEY UPDATE
+        `
+        const row = locked[0]
+        if (row === undefined) return "not_found"
+        if (row.status === "cancelled") return "cancelled"
+        // Idempotent: a repeat completion writes NO second timeline row (and the service rings no bell —
+        // B19 rings none at all). The caller still gets its 200 + DTO.
+        if (row.status === "done") return "already_completed"
+        // B14: the time gate is evaluated against the LOCKED scheduled_at, not a value read before the
+        // lock — a concurrent updateCleanup moving the date must either commit before this read or wait.
+        if (row.scheduled_at.getTime() > input.now.getTime()) return "too_early"
+        await tx`UPDATE cleanups SET status = 'done' WHERE id = ${id}`
+        // kind='status' reuses the free-text kind the admin setStatus path already writes (the column has
+        // no enum), so host completion needs no DDL and renders in the same event timeline.
+        await tx`
+          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+          VALUES (${id}, 'status', ${input.note}, ${input.actorId})
+        `
+        return "completed"
       })
     },
 

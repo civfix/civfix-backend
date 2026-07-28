@@ -25,6 +25,7 @@ import type {
   CleanupPersonView,
   CleanupRecord,
   CleanupRepository,
+  CompleteCleanupOutcome,
   CreateCleanupTxArgs,
   LinkedEventView,
   LinkedReportView,
@@ -644,11 +645,15 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const c = this.cleanups.get(id)
     // No such cleanup: the service turns this into a 404 (distinct from a legal repeat cancel).
     if (!c) return Promise.resolve("not_found")
-    // Mirrors the Drizzle impl's guarded `UPDATE ... WHERE id = $1 AND status <> 'cancelled'`: exactly
-    // one caller can make the upcoming->cancelled transition, so only that caller is told "cancelled".
+    // Mirrors the Drizzle impl's guarded
+    // `UPDATE ... WHERE id = $1 AND status <> 'cancelled' AND status <> 'done'`: exactly one caller can
+    // make the upcoming->cancelled transition, so only that caller is told "cancelled".
     // Re-cancelling is a legal no-op that still returns the DTO — but it writes NO second timeline row
     // and earns NO second attendee bell, which is why the outcome has to be observable here.
     if (c.status === "cancelled") return Promise.resolve("already_cancelled")
+    // B18: a COMPLETED event refuses the cancel outright (the service 409s) — completion is forward-only
+    // and a cancelled event carrying credited volunteer_hours rows is uninterpretable.
+    if (c.status === "done") return Promise.resolve("already_completed")
     c.status = "cancelled"
     // Mirror the Drizzle impl's observable timeline write so a service test can assert the 'cancel' row.
     // The notification fan-out is NOT modeled here — post-L24 it no longer lives in the repo at all: the
@@ -656,6 +661,33 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     // cleanup-service.notifyCancellation), so tests observe bells through the notifier, not the fake.
     this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", note: input.note, actorId: input.actorId })
     return Promise.resolve("cancelled")
+  }
+
+  // B16's twin: the same lock-then-branch matrix the Drizzle impl runs, minus the lock (a single-threaded
+  // fake serializes by construction). The ORDER of the branches is load-bearing and must match the SQL:
+  // cancelled before done before the time gate, so a cancelled event never reports "too_early" and an
+  // already-done one is never re-time-gated by a scheduled_at a later edit moved into the future.
+  completeCleanupTx(
+    id: string,
+    input: { note: string; actorId: string; now: Date },
+  ): Promise<CompleteCleanupOutcome> {
+    const c = this.cleanups.get(id)
+    if (!c) return Promise.resolve("not_found")
+    if (c.status === "cancelled") return Promise.resolve("cancelled")
+    // Idempotent repeat: NO second timeline row (the assertion the unit suite makes).
+    if (c.status === "done") return Promise.resolve("already_completed")
+    if (c.scheduledAt.getTime() > input.now.getTime()) return Promise.resolve("too_early")
+    c.status = "done"
+    // Mirror the Drizzle impl's observable timeline write (kind 'status', the free-text kind the admin
+    // setStatus path already uses) so a service test can assert the row and its composed note.
+    this.timeline.push({
+      cleanupId: id,
+      kind: "status",
+      reportId: "",
+      note: input.note,
+      actorId: input.actorId,
+    })
+    return Promise.resolve("completed")
   }
 
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]> {

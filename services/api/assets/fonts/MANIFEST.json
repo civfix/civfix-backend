@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "fonts": [
+    {
+      "file": "Baloo2-ExtraBold.ttf",
+      "family": "Baloo 2",
+      "weight": 800,
+      "license": "OFL-1.1",
+      "sha256": "f9f24a56b1ed9e0a27107f6a25c5ae61875c30bff9f25ee2ec6636763789a420",
+      "source": "https://github.com/google/fonts/tree/main/ofl/baloo2"
+    },
+    {
+      "file": "BricolageGrotesque-SemiBold.ttf",
+      "family": "Bricolage Grotesque",
+      "weight": 600,
+      "license": "OFL-1.1",
+      "sha256": "98b4cb4282c410616eeebd5172bf0104024afebbcfe90a1fe2cd45f4773ca2fe",
+      "source": "https://github.com/google/fonts/tree/main/ofl/bricolagegrotesque"
+    },
+    {
+      "file": "HankenGrotesk-Regular.ttf",
+      "family": "Hanken Grotesk",
+      "weight": 400,
+      "license": "OFL-1.1",
+      "sha256": "315cda587038b4d21cb4899df306fef5c15b34b6b9470352eba9a3dfce72f380",
+      "source": "https://github.com/marcologous/hanken-grotesk"
+    },
+    {
+      "file": "HankenGrotesk-SemiBold.ttf",
+      "family": "Hanken Grotesk",
+      "weight": 600,
+      "license": "OFL-1.1",
+      "sha256": "4f70ae1dd1c951e80603732344f18507d6a6932a3df9f7f6d8a91d4495d41e17",
+      "source": "https://github.com/marcologous/hanken-grotesk"
+    },
+    {
+      "file": "JetBrainsMono-Regular.ttf",
+      "family": "JetBrains Mono",
+      "weight": 400,
+      "license": "OFL-1.1",
+      "sha256": "b6b1ff4ddefe36d7f2a6174e1d001cab374e594519ee9049af028d577b64c5f5",
+      "source": "https://github.com/JetBrains/JetBrainsMono"
+    },
+    {
+      "file": "NotoSansKR-Regular.otf",
+      "family": "Noto Sans KR",
+      "weight": 400,
+      "license": "OFL-1.1",
+      "sha256": "69975a0ac8472717870aefeab0a4d52739308d90856b9955313b2ad5e0148d68",
+      "source": "https://github.com/notofonts/noto-cjk/tree/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/SubsetOTF/KR"
+    }
+  ]
+}

@@ -4,6 +4,7 @@
  *   POST  /cleanups               [auth][csrf]         create a cleanup (organizer auto-joins).
  *   PATCH /cleanups/:id           [auth][csrf]         organizer edit (scalars + linked-report reconcile).
  *   POST  /cleanups/:id/cancel    [auth][csrf]         organizer cancel (notifies attendees).
+ *   POST  /cleanups/:id/complete  [auth][csrf]         host (organizer|cohost) mark completed -> 'done'.
  *   GET   /cleanups               [anon-ok]            list cleanups (when/bbox/near, cursor paged).
  *   GET   /cleanups/:id           [anon-ok]            fetch one cleanup.
  *   POST  /cleanups/:id/join      [auth][csrf]         join (idempotent); returns {joined, going}.
@@ -22,6 +23,7 @@ import {
   CreateCleanupRequestSchema,
   UpdateCleanupRequestSchema,
   CancelCleanupRequestSchema,
+  CompleteCleanupRequestSchema,
   ListCleanupsRequestSchema,
   RequestEventResourcesRequestSchema,
   SetMemberRoleRequestSchema,
@@ -142,6 +144,13 @@ const MEMBER_MANAGEMENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as cons
  */
 const CREATE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
+/**
+ * B21: per-IP cap on host completion, from the MEMBER_MANAGEMENT_RATE_LIMIT family. Completion is
+ * idempotent and rings nobody (B19), but it is the gate that opens hours logging on an event, and every
+ * repeat call still takes a row lock on the cleanups row — so it does not belong at the global 300/min.
+ */
+const COMPLETE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
 export async function registerCleanupRoutes(
   app: FastifyInstance,
   container: Container,
@@ -261,6 +270,18 @@ export async function registerCleanupRoutes(
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(CancelCleanupRequestSchema, { ...(request.body as object), id })
     const dto: GetCleanupResponse = await service().cancelCleanup(id, body.reason ?? null, userId)
+    reply.status(200).send(dto)
+  })
+
+  // Host completion (organizer OR cohost, B13): flips status to 'done', writes a 'status' timeline row
+  // and returns the updated CleanupDTO. The service owns the whole matrix — 403 for a non-host, 404 for
+  // a missing event, 409 for a cancelled one or one that hasn't started yet (B14/B15), and an idempotent
+  // 200 for an already-completed one. No notification (B19).
+  route(app, "completeCleanup", { preHandler: csrfProtect, config: { rateLimit: COMPLETE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const body = parse(CompleteCleanupRequestSchema, { ...(request.body as object), id })
+    const dto: GetCleanupResponse = await service().completeCleanup(id, body.note ?? null, userId)
     reply.status(200).send(dto)
   })
 

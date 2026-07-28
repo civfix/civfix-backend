@@ -242,6 +242,10 @@ export class PgUserStore implements UserStore {
     const set: Partial<typeof users.$inferInsert> = {}
     if (input.allowDirectMessages !== undefined) set.allowDirectMessages = input.allowDirectMessages
     if (input.locale !== undefined) set.locale = input.locale
+    // Only an EXPLICIT boolean is ever written; an omitted field leaves the tri-state alone, so a user
+    // who has never touched the toggle keeps the NULL "never chosen" state through every other settings
+    // write.
+    if (input.showVolunteerHours !== undefined) set.showVolunteerHours = input.showVolunteerHours
     const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.updateSettings: user not found")
@@ -406,6 +410,7 @@ interface UserRowLike {
   avatarUrl: string | null
   profileComplete: boolean
   allowDirectMessages: boolean
+  showVolunteerHours: boolean | null
   locale: string
   createdAt: Date
   deletedAt: Date | null
@@ -423,6 +428,9 @@ function toUserRecord(r: UserRowLike): UserRecord {
     avatarUrl: r.avatarUrl,
     profileComplete: r.profileComplete,
     allowDirectMessages: r.allowDirectMessages,
+    // Carried through as-is: NULL means "never chosen" and must NOT be coerced to a boolean here (see
+    // UserRecord). toUserDTO decides whether to put it on the wire at all.
+    showVolunteerHours: r.showVolunteerHours,
     locale: r.locale,
     createdAt: r.createdAt,
     deletedAt: r.deletedAt,

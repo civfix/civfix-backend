@@ -90,11 +90,16 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
     case "report_chat":
       return prefs.reportUpdates
     // cleanup_role (promoted/demoted/removed, WS4) rides the same "cleanups" pref bucket as the other
-    // cleanup lifecycle bells — there is no dedicated pref field for it.
+    // cleanup lifecycle bells — there is no dedicated pref field for it. So do the two P4 additions:
+    // cleanup_slot (the role you claimed on an event was removed) and hours_logged (a host credited you
+    // service hours) are event-lifecycle bells and ride the cleanups bucket until a dedicated toggle
+    // exists. NotificationPrefsDTO is unchanged by P4, which is why no new pref field is read here.
     case "cleanup_chat":
     case "cleanup_reminder":
     case "cleanup_cancelled":
     case "cleanup_role":
+    case "cleanup_slot":
+    case "hours_logged":
     case "group_chat":
       // group_chat (P4 4.5, plan D8) rides the chat-message pref until a dedicated toggle exists.
       return prefs.cleanupChat

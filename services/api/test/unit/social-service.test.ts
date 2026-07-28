@@ -89,6 +89,7 @@ describe("toPersonDTO", () => {
       avatarR2Key: null,
       avatarUrl: null,
       socialLinks: null,
+      showVolunteerHours: null,
     }
     const dto = toPersonDTO(view, true)
     expect(dto).toEqual({
@@ -117,6 +118,7 @@ describe("toPersonDTO", () => {
       avatarR2Key: null,
       avatarUrl: "https://cdn.example.test/avatars/jane.jpg",
       socialLinks: null,
+      showVolunteerHours: null,
     }
     expect(toPersonDTO(view, false).avatarUrl).toBe("https://cdn.example.test/avatars/jane.jpg")
   })
@@ -458,6 +460,129 @@ describe("getProfile", () => {
     repo.seedUser({ id: A, displayName: "Alice" })
     const { profile } = await service.getProfile(A, { userId: null })
     expect(profile.avatarUrl).toBeUndefined()
+  })
+})
+
+/**
+ * P6 hours privacy — `users.show_volunteer_hours` is a NULLABLE TRI-STATE (C18), not a boolean, and the
+ * profile has to keep all three arms apart:
+ *   null  = never chosen  -> hours visible, flag ABSENT (the response every existing account already gets)
+ *   true  = explicit opt-in  -> hours visible, flag true
+ *   false = explicit opt-out -> hours OMITTED, flag false
+ * The (omitted hours + `showVolunteerHours: false`) PAIR is load-bearing: without the flag a hidden
+ * profile is indistinguishable from someone who genuinely has no hours yet, and emitting `0` would be a
+ * lie. `in` rather than `=== undefined` throughout, because "absent from the payload" is the actual
+ * contract — a present-but-undefined key would serialize differently.
+ */
+describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
+  const HOURS = 12.5
+
+  function makeHoursHarness(): {
+    repo: InMemorySocialRepository
+    service: SocialService
+    /** Every userId `volunteerHoursTotalFor` was asked about — empty means the query never ran. */
+    calls: string[]
+  } {
+    const repo = new InMemorySocialRepository()
+    const calls: string[] = []
+    const service = makeSocialService({
+      repo,
+      volunteerHoursTotalFor: (userId: string) => {
+        calls.push(userId)
+        return Promise.resolve(HOURS)
+      },
+    })
+    return { repo, service, calls }
+  }
+
+  it("NULL (never chosen): hours present, flag ABSENT — byte-identical to the pre-column response", async () => {
+    const { repo, service, calls } = makeHoursHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: C, displayName: "Carol" })
+
+    const { profile } = await service.getProfile(A, { userId: C })
+    expect(profile.volunteerHours).toBe(HOURS)
+    expect("showVolunteerHours" in profile).toBe(false)
+    expect(calls).toEqual([A])
+  })
+
+  it("TRUE (explicit opt-in): hours present AND the flag emitted true", async () => {
+    const { repo, service, calls } = makeHoursHarness()
+    repo.seedUser({ id: A, displayName: "Alice", showVolunteerHours: true })
+    repo.seedUser({ id: C, displayName: "Carol" })
+
+    const { profile } = await service.getProfile(A, { userId: C })
+    expect(profile.volunteerHours).toBe(HOURS)
+    expect(profile.showVolunteerHours).toBe(true)
+    expect(calls).toEqual([A])
+  })
+
+  it("FALSE (explicit opt-out) on ANOTHER user's profile: hours OMITTED, flag false, total never queried", async () => {
+    const { repo, service, calls } = makeHoursHarness()
+    repo.seedUser({ id: A, displayName: "Alice", showVolunteerHours: false })
+    repo.seedUser({ id: C, displayName: "Carol" })
+
+    const { profile } = await service.getProfile(A, { userId: C })
+    expect("volunteerHours" in profile).toBe(false)
+    expect(profile.showVolunteerHours).toBe(false)
+    // Not merely stripped from the response — the read is skipped entirely.
+    expect(calls).toEqual([])
+  })
+
+  it("an ANONYMOUS viewer is gated exactly like a signed-in stranger", async () => {
+    const { repo, service, calls } = makeHoursHarness()
+    repo.seedUser({ id: A, displayName: "Alice", showVolunteerHours: false })
+
+    const { profile } = await service.getProfile(A, { userId: null })
+    expect("volunteerHours" in profile).toBe(false)
+    expect(profile.showVolunteerHours).toBe(false)
+    expect(calls).toEqual([])
+  })
+
+  it("isSelf BYPASSES the flag: an opted-out user still sees their OWN hours, flag and all", async () => {
+    const { repo, service, calls } = makeHoursHarness()
+    repo.seedUser({ id: A, displayName: "Alice", showVolunteerHours: false })
+
+    const own = await service.getProfile(A, { userId: A })
+    expect(own.profile.volunteerHours).toBe(HOURS)
+    // The RAW tri-state rides along so the settings toggle renders the honest position.
+    expect(own.profile.showVolunteerHours).toBe(false)
+
+    const mine = await service.getMyProfile(A)
+    expect(mine.profile.volunteerHours).toBe(HOURS)
+    expect(mine.profile.showVolunteerHours).toBe(false)
+    expect(calls).toEqual([A, A])
+  })
+
+  it("isSelf with the flag never chosen still omits it (absent means 'never chosen' on your own DTO too)", async () => {
+    const { repo, service } = makeHoursHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+
+    const { profile } = await service.getMyProfile(A)
+    expect(profile.volunteerHours).toBe(HOURS)
+    expect("showVolunteerHours" in profile).toBe(false)
+  })
+
+  it("resolves the same three arms through getProfileByHandle", async () => {
+    const { repo, service } = makeHoursHarness()
+    repo.seedUser({ id: A, displayName: "Alice", handle: "alice", showVolunteerHours: false })
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob", showVolunteerHours: true })
+
+    const hidden = await service.getProfileByHandle("alice", { userId: C })
+    expect("volunteerHours" in hidden.profile).toBe(false)
+    expect(hidden.profile.showVolunteerHours).toBe(false)
+
+    const shown = await service.getProfileByHandle("bob", { userId: C })
+    expect(shown.profile.volunteerHours).toBe(HOURS)
+    expect(shown.profile.showVolunteerHours).toBe(true)
+  })
+
+  it("with NO volunteerHoursTotalFor wired, an opted-in profile still carries the flag and no hours", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice", showVolunteerHours: true })
+    const { profile } = await service.getProfile(A, { userId: C })
+    expect("volunteerHours" in profile).toBe(false)
+    expect(profile.showVolunteerHours).toBe(true)
   })
 })
 

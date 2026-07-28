@@ -149,7 +149,28 @@ export interface UpdateCleanupPatch {
 // The outcome of a cancel attempt. "already_cancelled" is NOT an error (cancelling twice is a legal
 // no-op that still returns the DTO) but it must be distinguishable from a fresh transition, because the
 // attendee bell fan-out may only fire once — see cancelCleanupTx / cleanup-service.cancelCleanup.
-export type CancelCleanupOutcome = "cancelled" | "already_cancelled" | "not_found"
+//
+// B18: "already_completed" IS an error (409). Host completion is forward-only (B17), so cancel must not
+// become a back door out of it — a `cancelled` event still carrying credited volunteer_hours rows is a
+// state nothing in the system can interpret.
+export type CancelCleanupOutcome =
+  | "cancelled"
+  | "already_cancelled"
+  | "already_completed"
+  | "not_found"
+
+// The outcome of a HOST completion attempt (B15's status matrix, resolved under the row lock):
+//   "completed"         upcoming/active and now >= scheduled_at -> flipped to 'done' + a timeline row
+//   "already_completed" the event is already 'done' -> idempotent no-op (NO second timeline row)
+//   "cancelled"         a cancelled event can never be completed -> the service 409s
+//   "too_early"         now < scheduled_at -> the service 409s (B14: hours need a real-world anchor)
+//   "not_found"         no such cleanup -> the service 404s
+export type CompleteCleanupOutcome =
+  | "completed"
+  | "already_completed"
+  | "cancelled"
+  | "too_early"
+  | "not_found"
 
 // A point the caller can sort/measure distance from (for `near` listings).
 export interface NearPoint {
@@ -291,6 +312,18 @@ export interface CleanupRepository {
     id: string,
     input: { note: string; body: string; reason: string | null; actorId: string },
   ): Promise<CancelCleanupOutcome>
+  // Mark a cleanup completed atomically (B16): lock the row (FOR NO KEY UPDATE, the SAME lock vocabulary
+  // removeMember takes), branch on B15's status matrix against the LOCKED row, then UPDATE status='done'
+  // + INSERT a `kind='status'` cleanup_timeline row. Only the "completed" outcome writes anything.
+  //
+  // The time gate lives inside the transaction on purpose: a concurrent updateCleanup can move
+  // scheduled_at, so reading it before the lock would let a host slide an event's date past the check.
+  // `now` is supplied by the SERVICE (the repo owns no clock), and the `note` arrives already composed —
+  // the same layer split cancelCleanupTx documents: the service writes copy, the repo persists.
+  completeCleanupTx(
+    id: string,
+    input: { note: string; actorId: string; now: Date },
+  ): Promise<CompleteCleanupOutcome>
   // The attendee roster: cleanup_members joined to their (non-deleted) user, with the viewer's
   // `isFollowing` per row. Ordered organizer-first then by join time. `onlyFollowed` restricts the roster.
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>

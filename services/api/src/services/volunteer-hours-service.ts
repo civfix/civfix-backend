@@ -1,14 +1,24 @@
-import { AppError, MAX_EVENT_HOURS } from "@civfix/shared"
+import { AppError, MAX_EVENT_HOURS, MAX_EVENT_HOURS_ENTRIES } from "@civfix/shared"
 import type {
   CleanupMemberRole,
   CleanupStatus,
   EventHoursEntry,
+  EventHoursResponse,
   LeaderboardEntryDTO,
   LeaderboardQuery,
   LeaderboardResponse,
   LogEventHoursResponse,
   MyVolunteerHoursDTO,
+  MyVolunteerHoursEntriesQuery,
+  MyVolunteerHoursEntriesResponse,
+  PublicVolunteerHoursQuery,
+  PublicVolunteerHoursResponse,
+  VolunteerHoursEntryDTO,
+  VolunteerHoursSource,
 } from "@civfix/shared"
+import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
+import { mapWithLimit } from "./media-presign.js"
+import type { NotificationService } from "./notification-service.js"
 
 export const LEADERBOARD_DEFAULT_LIMIT = 20
 export const LEADERBOARD_MAX_LIMIT = 50
@@ -16,15 +26,33 @@ export const LEADERBOARD_MAX_OFFSET = 500
 export const EVENT_HOURS_MEMBER_CAP = 2000
 
 /**
- * L23 — `entries` is an unbounded array in the frozen shared wire schema (no `.max()`), capped only by
- * the 256 KB body limit, which admits roughly 6000 entries in one request. Every entry becomes a row in
- * a single advisory-locked transaction, so the array length is a direct lever on how long that lock is
- * held. Clamped here exactly as cleanup-service's clampLinkIds / MAX_LINKED_REPORTS clamps its arrays.
- * The cap is the member cap, because an entry that is not a current member is rejected anyway.
- * FOLLOW-UP: the real fix is `.max()` on LogEventHoursRequestSchema in @civfix/shared, which this repo
- * cannot edit.
+ * L23 (CLOSED) — `entries` used to be an unbounded array in the shared wire schema, so this file carried
+ * its own cap. `LogEventHoursRequestSchema` now declares `.max(MAX_EVENT_HOURS_ENTRIES)` in
+ * @civfix/shared, so the cap has exactly ONE source of truth and this module re-exports it rather than
+ * re-declaring it (a second `export const` here would make importing the shared name a duplicate
+ * identifier). The service still re-checks it below so it stays safe under direct construction.
  */
-export const MAX_EVENT_HOURS_ENTRIES = EVENT_HOURS_MEMBER_CAP
+export { MAX_EVENT_HOURS_ENTRIES } from "@civfix/shared"
+
+/**
+ * Paging bounds for the itemised ledger reads (`/me/volunteer-hours/entries`,
+ * `/people/:id/volunteer-hours`). The shared query schemas already cap `limit` at 50; these clamp a
+ * directly-constructed service call the same way `clampLimit` does for the leaderboard.
+ */
+export const HOURS_ENTRIES_DEFAULT_LIMIT = 20
+export const HOURS_ENTRIES_MAX_LIMIT = 50
+
+/**
+ * The leaderboard's `viewerRank` / `viewerHours` / `participantCount` cost two extra queries, and the
+ * Discovery preview asks for `limit: 3` and renders none of them. Gate the extra work on the request
+ * actually wanting it so the hot anon preview stays a single indexed read (and can keep the shared
+ * `public, max-age=60` cache branch). The full board pages at 50; anything below this threshold is a
+ * preview.
+ */
+export const LEADERBOARD_EXTRAS_MIN_LIMIT = 25
+
+/** Fan-out concurrency for the hours_logged bell. Mirrors cleanup-service's cancellation fan-out. */
+export const HOURS_NOTIFY_CONCURRENCY = 8
 
 // WS5 per-attendee shape: one {userId, hours} entry per credited attendee, upserted per row on the
 // (cleanup_id, user_id) WHERE source='event' partial-unique index. `actorId` is the logging host
@@ -36,24 +64,139 @@ export interface LogEventHoursArgs {
   entries: EventHoursEntry[]
 }
 
+/**
+ * B33b — the repo threads the audit INSERT's pre-image back out so the service can ring the bell ONLY for
+ * a credit that is new or has increased. `previousHours === null` means no prior credit existed, which is
+ * deliberately distinct from a stored 0 (the same distinction volunteer_hours_audit.previous_hours makes).
+ */
+export interface LogEventHoursResult {
+  /** Distinct attendees credited — unchanged semantics, this is the wire `credited`. */
+  credited: number
+  changed: { userId: string; hours: number; previousHours: number | null }[]
+}
+
+/** One ledger row, joined out to everything the transcript DTO prints. */
+export interface VolunteerHoursEntryView {
+  id: string
+  source: VolunteerHoursSource
+  hours: number
+  /** When the credit was written. Drives the keyset cursor. */
+  createdAt: Date
+  /** When the service happened: the event's scheduledAt, falling back to createdAt. */
+  occurredAt: Date
+  cleanupId: string | null
+  cleanupTitle: string | null
+  cleanupReferenceCode: string | null
+  reportId: string | null
+  jurisdictionGeoid: string | null
+  jurisdictionName: string | null
+  creditedBy: { id: string; name: string; handle: string | null; verified: boolean } | null
+}
+
+/** A row of the per-EVENT hours read-back (C10). */
+export interface EventHoursLedgerEntry {
+  userId: string
+  hours: number
+  loggedAt: Date
+}
+
+export interface EventHoursLedger {
+  entries: EventHoursLedgerEntry[]
+  /**
+   * Whether the host has logged ANY hours for this event, independent of the filter applied to
+   * `entries`. This is the whole reason the attendee receipt can say "not credited" instead of sitting
+   * on "the host hasn't logged yet" forever (C10 / WP09 hoursReceiptState).
+   */
+  anyLogged: boolean
+}
+
+/**
+ * C18 — the tri-state privacy column has TWO predicates, not one, and they gate different things:
+ *   - `aggregate` = `show_volunteer_hours IS NOT FALSE AND deleted_at IS NULL` — governs `visible`,
+ *     `totalHours`, `byJurisdiction` and `reportHours`. NULL (never chosen) stays visible, which is
+ *     byte-identical to today's `volunteerHours` scalar.
+ *   - `items` = `show_volunteer_hours IS TRUE` — governs `items[]` alone. Publishing where a named person
+ *     physically was, on which dates, requires an explicit opt-in.
+ * Both come from ONE row read, because both read the same column on the same user.
+ */
+export interface HoursVisibility {
+  aggregate: boolean
+  items: boolean
+}
+
 export interface LeaderboardPage {
   jurisdictionName: string | null
   entries: LeaderboardEntryDTO[]
   nextOffset: number | null
+  /** DB B48: computed on the FIRST page only (offset 0) and only when extras were requested. */
+  participantCount: number | null
+  /** Null when the viewer has no hours here (or is anonymous / extras were not requested). */
+  viewerRank: number | null
+  viewerHours: number | null
+}
+
+export interface ListEntriesArgs {
+  userId: string
+  cursor: TimeCursor | null
+  limit: number
+  /** The public projection passes ["event"] — report auto-awards are aggregated, never itemised. */
+  sources?: VolunteerHoursSource[]
+}
+
+/**
+ * The certificate read (DP §4.3 / WP21): the same ledger, filtered and ordered for printing rather than
+ * paged. Lives on this repo because it reads `volunteer_hours`; the certificate repo owns only the
+ * certificate rows themselves.
+ */
+export interface EntriesForCertificateArgs {
+  userId: string
+  geoid: string | null
+  from: Date | null
+  to: Date | null
+  limit: number
+}
+
+export interface CertificateEntriesPage {
+  items: VolunteerHoursEntryView[]
+  /** Sum of the RETURNED rows (B40b: a printed total must equal the sum of the printed lines). */
+  totalHours: number
+  /** The full matching count, even when `items` was truncated at `limit`. */
+  entryCount: number
 }
 
 export interface VolunteerHoursRepository {
   awardReportHours(userId: string, reportId: string, geoid: string | null): Promise<void>
-  logEventHours(args: LogEventHoursArgs): Promise<number>
+  logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult>
   totalsFor(userId: string): Promise<MyVolunteerHoursDTO>
   totalHoursFor(userId: string): Promise<number>
-  leaderboard(geoid: string, limit: number, offset: number): Promise<LeaderboardPage>
+  /**
+   * `withExtras` gates the two supplementary queries (viewer standing + participant count). `viewerId`
+   * null means anonymous, in which case there is no viewer standing to compute at all.
+   */
+  leaderboard(
+    geoid: string,
+    limit: number,
+    offset: number,
+    viewerId: string | null,
+    withExtras: boolean,
+  ): Promise<LeaderboardPage>
+  listEntries(
+    args: ListEntriesArgs,
+  ): Promise<{ items: VolunteerHoursEntryView[]; nextCursor: string | null }>
+  /** `viewerId` null = no per-user filter (the acting-host `scope: "all"` read). */
+  listEventHours(cleanupId: string, viewerId: string | null): Promise<EventHoursLedger>
+  /** Total of source='report' credits — the public projection's aggregated `reportHours`. */
+  reportHoursFor(userId: string): Promise<number>
+  hoursVisibilityFor(userId: string): Promise<HoursVisibility>
+  entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage>
 }
 
 export interface CleanupHoursView {
   organizerUserId: string
   status: CleanupStatus
   jurisdictionGeoid: string | null
+  /** Needed by the hours_logged bell body ("{{hours}} hours were credited for {{title}}."). */
+  title: string
 }
 
 export interface CleanupHoursLookup {
@@ -68,17 +211,32 @@ export interface VolunteerHoursServiceDeps {
   repo: VolunteerHoursRepository
   cleanups: CleanupHoursLookup
   isVerified: (userId: string) => Promise<boolean>
+  /** Optional so an offline test can run without the notification pipeline — no notifier means no bells. */
+  notifier?: Pick<NotificationService, "createNotification">
   logger?: { warn(obj: unknown, msg?: string): void }
 }
 
 export interface VolunteerHoursService {
   getMyHours(userId: string): Promise<MyVolunteerHoursDTO>
+  getMyHoursEntries(
+    userId: string,
+    query: MyVolunteerHoursEntriesQuery,
+  ): Promise<MyVolunteerHoursEntriesResponse>
+  getPublicHours(
+    query: PublicVolunteerHoursQuery,
+    viewerId: string | null,
+  ): Promise<PublicVolunteerHoursResponse>
+  getEventHours(cleanupId: string, viewerId: string): Promise<EventHoursResponse>
   logEventHours(input: {
     cleanupId: string
     actorId: string
     entries: EventHoursEntry[]
   }): Promise<LogEventHoursResponse>
-  leaderboard(geoid: string, query: LeaderboardQuery): Promise<LeaderboardResponse>
+  leaderboard(
+    geoid: string,
+    query: LeaderboardQuery,
+    viewerId?: string | null,
+  ): Promise<LeaderboardResponse>
 }
 
 function clampLimit(limit: number | undefined): number {
@@ -91,10 +249,220 @@ function clampOffset(offset: number | undefined): number {
   return Math.min(Math.max(0, Math.floor(offset)), LEADERBOARD_MAX_OFFSET)
 }
 
+function clampEntriesLimit(limit: number | undefined): number {
+  if (limit === undefined) return HOURS_ENTRIES_DEFAULT_LIMIT
+  return Math.min(Math.max(1, Math.floor(limit)), HOURS_ENTRIES_MAX_LIMIT)
+}
+
+/** Round to the same 2 decimals the numeric(6,2) ledger column stores, killing float8 read noise. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
+/**
+ * A ledger row on the wire. Every join-derived field is nullable in the view and `.optional()` on the
+ * DTO, so a null is OMITTED rather than sent as `null` — the same "absent means we have nothing" idiom
+ * the cleanup and report DTOs use.
+ */
+export function toVolunteerHoursEntryDTO(view: VolunteerHoursEntryView): VolunteerHoursEntryDTO {
+  return {
+    id: view.id,
+    source: view.source,
+    hours: round2(view.hours),
+    occurredAt: view.occurredAt.toISOString(),
+    creditedAt: view.createdAt.toISOString(),
+    ...(view.cleanupId !== null ? { eventId: view.cleanupId } : {}),
+    ...(view.cleanupTitle !== null ? { eventTitle: view.cleanupTitle } : {}),
+    ...(view.cleanupReferenceCode !== null
+      ? { eventReferenceCode: view.cleanupReferenceCode }
+      : {}),
+    ...(view.reportId !== null ? { reportId: view.reportId } : {}),
+    ...(view.jurisdictionGeoid !== null ? { jurisdictionGeoid: view.jurisdictionGeoid } : {}),
+    ...(view.jurisdictionName !== null ? { jurisdictionName: view.jurisdictionName } : {}),
+    ...(view.creditedBy !== null
+      ? {
+          creditedBy: {
+            id: view.creditedBy.id,
+            name: view.creditedBy.name,
+            ...(view.creditedBy.handle !== null ? { handle: view.creditedBy.handle } : {}),
+            verified: view.creditedBy.verified,
+          },
+        }
+      : {}),
+  }
+}
+
+function toEventHoursRow(entry: EventHoursLedgerEntry): {
+  userId: string
+  hours: number
+  loggedAt: string
+} {
+  return {
+    userId: entry.userId,
+    hours: round2(entry.hours),
+    loggedAt: entry.loggedAt.toISOString(),
+  }
+}
+
 export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): VolunteerHoursService {
+  /**
+   * B33 — the hours-credited receipt. Fired AFTER the repo write, best-effort, and best-effort PER
+   * RECIPIENT (`mapWithLimit(recipients, 8, …)`), which is the exact shape of cleanup-service's
+   * `notifyCancellation`: one try/catch around the whole loop would let a single bad prefs row abandon
+   * every remaining attendee silently.
+   *
+   * B33b — only a NEW or INCREASED credit rings. Re-logging is how a host corrects a typo, and the upsert
+   * re-writes every row in the batch, so notifying on every write would ring up to 2000 lock screens per
+   * correction: the bell-bombing class M18's role-flip cooldown exists to prevent. A DOWNWARD correction
+   * is deliberately silent — it is visible in the ledger, and a "your hours were reduced" push invites a
+   * conflict the app has no channel to resolve.
+   */
+  async function notifyHoursLogged(
+    cleanup: { id: string; title: string },
+    changed: LogEventHoursResult["changed"],
+    actorId: string,
+  ): Promise<void> {
+    const notifier = deps.notifier
+    if (notifier === undefined) return
+    const recipients = changed.filter(
+      (c) =>
+        c.userId !== actorId && (c.previousHours === null || c.hours > c.previousHours),
+    )
+    await mapWithLimit(recipients, HOURS_NOTIFY_CONCURRENCY, async (c) => {
+      try {
+        await notifier.createNotification(c.userId, {
+          type: "hours_logged",
+          titleKey: "notification.hours_logged.title",
+          bodyKey: "notification.hours_logged.body",
+          vars: { hours: round2(c.hours), title: cleanup.title },
+          link: `/cleanups/${cleanup.id}`,
+        })
+      } catch (err) {
+        deps.logger?.warn(
+          { err, cleanupId: cleanup.id, userId: c.userId },
+          "hours_logged notification failed (suppressed)",
+        )
+      }
+    })
+  }
+
   return {
     getMyHours(userId: string): Promise<MyVolunteerHoursDTO> {
       return deps.repo.totalsFor(userId)
+    },
+
+    /**
+     * B30a — the owner's own itemised transcript. Itemises EVERY source (it is their own data), and
+     * `totalHours` comes from the `totalHoursFor` ROLLUP rather than the page, so the header total does
+     * not change as the reader scrolls.
+     */
+    async getMyHoursEntries(
+      userId: string,
+      query: MyVolunteerHoursEntriesQuery,
+    ): Promise<MyVolunteerHoursEntriesResponse> {
+      const limit = clampEntriesLimit(query.limit)
+      const [page, totalHours] = await Promise.all([
+        deps.repo.listEntries({ userId, cursor: parseTimeCursor(query.cursor), limit }),
+        deps.repo.totalHoursFor(userId),
+      ])
+      return {
+        items: page.items.map(toVolunteerHoursEntryDTO),
+        nextCursor: page.nextCursor,
+        totalHours,
+      }
+    },
+
+    /**
+     * B30c / C18 — someone else's public hours, behind TWO predicates.
+     *
+     * Hidden is reported HONESTLY at 200 (`visible: false`) rather than as a 403, which would be an
+     * oracle, and rather than as "0 hours", which would be a lie about somebody who simply opted out.
+     * A never-chosen (NULL) user is `visible: true` with `items: []` and a truthful `nextCursor: null`:
+     * the aggregate is byte-identical to what their profile already published, while the per-event list
+     * — where they physically were, on which dates, credited by whom — stays closed until they opt in.
+     *
+     * `isSelf` bypasses both gates (P4): your own data is always visible to you, and this endpoint is
+     * `auth: "optional"`, so a signed-in owner hitting their own public URL must not see themselves
+     * hidden.
+     */
+    async getPublicHours(
+      query: PublicVolunteerHoursQuery,
+      viewerId: string | null,
+    ): Promise<PublicVolunteerHoursResponse> {
+      const userId = query.id
+      const isSelf = viewerId !== null && viewerId === userId
+      const visibility = isSelf
+        ? { aggregate: true, items: true }
+        : await deps.repo.hoursVisibilityFor(userId)
+
+      if (!visibility.aggregate) {
+        return {
+          visible: false,
+          totalHours: 0,
+          byJurisdiction: [],
+          items: [],
+          reportHours: 0,
+          nextCursor: null,
+        }
+      }
+
+      const limit = clampEntriesLimit(query.limit)
+      const [totals, reportHours, page] = await Promise.all([
+        deps.repo.totalsFor(userId),
+        deps.repo.reportHoursFor(userId),
+        visibility.items
+          ? deps.repo.listEntries({
+              userId,
+              cursor: parseTimeCursor(query.cursor),
+              limit,
+              sources: ["event"],
+            })
+          : Promise.resolve({ items: [], nextCursor: null }),
+      ])
+
+      return {
+        visible: true,
+        totalHours: totals.totalHours,
+        byJurisdiction: totals.byJurisdiction,
+        items: page.items.map(toVolunteerHoursEntryDTO),
+        reportHours,
+        nextCursor: page.nextCursor,
+      }
+    },
+
+    /**
+     * C10 — the read-back of what has already been logged for one event.
+     *
+     * An acting host (organizer|cohost) gets `scope: "all"` so the log form is prefilled instead of
+     * double-crediting. Anyone else gets `scope: "self"` and at most their own row — plus `anyLogged`,
+     * which is what lets the attendee receipt distinguish "the host hasn't logged yet" (pending) from
+     * "the host logged and did not credit me" (not-credited). A NON-member gets an empty `scope: "self"`
+     * with NO `anyLogged`: they have no receipt to render and telling them whether a private event's
+     * hours exist is a disclosure with no reader.
+     */
+    async getEventHours(cleanupId: string, viewerId: string): Promise<EventHoursResponse> {
+      const cleanup = await deps.cleanups.load(cleanupId)
+      if (cleanup === null) throw AppError.notFound("Event not found")
+
+      const role = await deps.cleanups.roleOf(cleanupId, viewerId)
+      if (role === null) return { scope: "self", entries: [] }
+
+      if (role === "organizer" || role === "cohost") {
+        const ledger = await deps.repo.listEventHours(cleanupId, null)
+        return {
+          scope: "all",
+          entries: ledger.entries.map(toEventHoursRow),
+          // Derivable from `entries` on this branch; set anyway so both branches carry the field.
+          anyLogged: ledger.entries.length > 0,
+        }
+      }
+
+      const ledger = await deps.repo.listEventHours(cleanupId, viewerId)
+      return {
+        scope: "self",
+        entries: ledger.entries.map(toEventHoursRow),
+        anyLogged: ledger.anyLogged,
+      }
     },
 
     async logEventHours(input: {
@@ -126,7 +494,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       // service is safe under direct construction): hours in (0, MAX_EVENT_HOURS], no duplicate
       // userIds (a duplicate would also break the single-statement per-row upsert), and every entry
       // must be a CURRENT member of the cleanup.
-      // L23: bound the unbounded shared array before doing any per-entry work.
+      // L23: bound the array before doing any per-entry work (the shared schema now caps it too).
       if (input.entries.length > MAX_EVENT_HOURS_ENTRIES) {
         throw AppError.validation({
           entries: `at most ${MAX_EVENT_HOURS_ENTRIES} attendees may be credited in one request`,
@@ -166,24 +534,41 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         })
       }
 
-      const credited = await deps.repo.logEventHours({
+      const result = await deps.repo.logEventHours({
         actorId: input.actorId,
         cleanupId: input.cleanupId,
         geoid: cleanup.jurisdictionGeoid,
         entries: input.entries,
       })
-      return { credited }
+      await notifyHoursLogged(
+        { id: input.cleanupId, title: cleanup.title },
+        result.changed,
+        input.actorId,
+      )
+      return { credited: result.credited }
     },
 
-    async leaderboard(geoid: string, query: LeaderboardQuery): Promise<LeaderboardResponse> {
+    async leaderboard(
+      geoid: string,
+      query: LeaderboardQuery,
+      viewerId: string | null = null,
+    ): Promise<LeaderboardResponse> {
       const limit = clampLimit(query.limit)
       const offset = clampOffset(query.offset)
-      const page = await deps.repo.leaderboard(geoid, limit, offset)
+      const withExtras = limit >= LEADERBOARD_EXTRAS_MIN_LIMIT
+      const page = await deps.repo.leaderboard(geoid, limit, offset, viewerId, withExtras)
       return {
         geoid,
         jurisdictionName: page.jurisdictionName,
         entries: page.entries,
         nextOffset: page.nextOffset,
+        // Absent on deep pages (DB B48) and on the preview, rather than sent as a misleading null.
+        ...(page.participantCount !== null ? { participantCount: page.participantCount } : {}),
+        // Absent for anonymous viewers and for the preview; NULL (present) means "you are not ranked
+        // here", which is a different statement the client renders differently.
+        ...(viewerId !== null && withExtras
+          ? { viewerRank: page.viewerRank, viewerHours: page.viewerHours }
+          : {}),
       }
     },
   }

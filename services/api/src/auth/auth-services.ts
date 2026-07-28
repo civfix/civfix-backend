@@ -175,6 +175,10 @@ export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
     avatarUrl: user.avatarUrl,
     profileComplete: user.profileComplete === true,
     allowDirectMessages: user.allowDirectMessages,
+    // P6 tri-state (C18): emitted ONLY when the column is non-null, so an ABSENT field means "never
+    // chosen" — which is exactly what the settings toggle needs to render OFF without claiming the user
+    // opted out. `showVolunteerHours: false` on the wire is an explicit opt-out and nothing else.
+    ...(user.showVolunteerHours !== null ? { showVolunteerHours: user.showVolunteerHours } : {}),
     role: user.role,
     createdAt: user.createdAt.toISOString(),
     locale: resolveLocale(user.locale),

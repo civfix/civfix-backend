@@ -56,6 +56,12 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_cancelled.body_reason":
     "Dieses Event wurde vom Host abgesagt. Grund: {{reason}}",
 
+  "notification.hours_logged.title": "Ehrenamtsstunden gutgeschrieben",
+  "notification.hours_logged.body": "Für {{title}} wurden dir {{hours}} Stunden gutgeschrieben.",
+
+  "notification.cleanup_slot.removed.title": "Deine Rolle im Event hat sich geändert",
+  "notification.cleanup_slot.removed.body": 'Die Rolle "{{slot}}" wurde aus {{title}} entfernt.',
+
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Dein civfix-Anmeldecode",
   "email.otp.body_line1": "Dein civfix-Anmeldecode lautet {{code}}.",

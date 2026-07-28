@@ -1,10 +1,22 @@
 import { REPORT_VOLUNTEER_HOURS, avatarGradient } from "@civfix/shared"
-import type { LeaderboardEntryDTO, MyVolunteerHoursDTO } from "@civfix/shared"
-import type { Sql } from "../db/client.js"
-import { pageWith } from "../db/cursor-helpers.js"
 import type {
+  LeaderboardEntryDTO,
+  MyVolunteerHoursDTO,
+  VolunteerHoursSource,
+} from "@civfix/shared"
+import type { Sql } from "../db/client.js"
+import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { EVENT_HOURS_MEMBER_CAP } from "./volunteer-hours-service.js"
+import type {
+  CertificateEntriesPage,
+  EntriesForCertificateArgs,
+  EventHoursLedger,
+  HoursVisibility,
   LeaderboardPage,
+  ListEntriesArgs,
   LogEventHoursArgs,
+  LogEventHoursResult,
+  VolunteerHoursEntryView,
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
 
@@ -13,6 +25,55 @@ import type {
  * the "there is another page" marker its boolean has-more collapses into. Never leaves this module.
  */
 const MORE_PAGES = "more"
+
+/** Every source, i.e. "do not filter" — the owner's own transcript itemises all three. */
+const ALL_SOURCES: readonly VolunteerHoursSource[] = ["report", "event", "manual"]
+
+/** The shape every ledger read below selects, so the row -> view mapping has ONE implementation. */
+interface LedgerRow {
+  id: string
+  source: VolunteerHoursSource
+  hours: number
+  created_at: Date
+  scheduled_at: Date | null
+  cleanup_id: string | null
+  cleanup_title: string | null
+  reference_code: string | null
+  report_id: string | null
+  jurisdiction_geoid: string | null
+  jurisdiction_name: string | null
+  creditor_id: string | null
+  creditor_name: string | null
+  creditor_handle: string | null
+  creditor_verified: boolean | null
+}
+
+function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
+  return {
+    id: r.id,
+    source: r.source,
+    hours: r.hours,
+    createdAt: r.created_at,
+    // `occurredAt` is when the SERVICE happened, which for an event is the day it was scheduled, not the
+    // day a host got round to logging it. Report/manual credits have no such date, so they fall back.
+    occurredAt: r.scheduled_at ?? r.created_at,
+    cleanupId: r.cleanup_id,
+    cleanupTitle: r.cleanup_title,
+    cleanupReferenceCode: r.reference_code,
+    reportId: r.report_id,
+    jurisdictionGeoid: r.jurisdiction_geoid,
+    jurisdictionName: r.jurisdiction_name,
+    creditedBy:
+      r.creditor_id !== null
+        ? {
+            id: r.creditor_id,
+            name: r.creditor_name ?? "",
+            handle: r.creditor_handle,
+            verified: r.creditor_verified ?? false,
+          }
+        : null,
+  }
+}
 
 export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
   return {
@@ -35,8 +96,8 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       })
     },
 
-    async logEventHours(args: LogEventHoursArgs): Promise<number> {
-      if (args.entries.length === 0) return 0
+    async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
+      if (args.entries.length === 0) return { credited: 0, changed: [] }
       // Parallel arrays for the set-based per-row upsert: unnest(uuid[], float8[]) pairs them up
       // positionally, so each attendee gets THEIR OWN hours (WS5 per-attendee shape).
       const userIds = args.entries.map((e) => e.userId)
@@ -55,7 +116,14 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         // This runs BEFORE the upsert and in the SAME transaction: an audit row written afterwards
         // could be lost to a crash while the mutation committed, which is the one ordering that must
         // never happen for a journal.
-        await tx`
+        //
+        // B33b: the same statement is ALSO the pre-image source for the hours_logged bell. It already
+        // computes exactly "what this attendee had before, and what they have now" under the advisory
+        // lock, so RETURNING it costs nothing and there is no second read that could disagree with the
+        // journal. The service rings only where previous_hours IS NULL (a new credit) or new > previous.
+        const audit = await tx<
+          { user_id: string; previous_hours: number | null; new_hours: number }[]
+        >`
           INSERT INTO volunteer_hours_audit
             (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
           SELECT
@@ -65,7 +133,16 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             ON prev.cleanup_id = ${args.cleanupId}
            AND prev.source = 'event'
            AND prev.user_id = t.u
+          RETURNING
+            user_id,
+            previous_hours::float8 AS previous_hours,
+            new_hours::float8 AS new_hours
         `
+        const changed = audit.map((r) => ({
+          userId: r.user_id,
+          hours: r.new_hours,
+          previousHours: r.previous_hours,
+        }))
 
         // The event has NO jurisdiction (a host moved it outside all coverage, or it never had one). The
         // ledger row is still written/updated, with jurisdiction_geoid NULL — and any PRIOR credit that
@@ -109,7 +186,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           `
           // `reversal` is a data-modifying CTE: Postgres runs it to completion whether or not the main
           // query reads it, so the count below stays "attendees credited" (one row per input attendee).
-          return upserted.length
+          return { credited: upserted.length, changed }
         }
         // Same delta-based rollup maintenance as before, now per row: each attendee's rollup moves by
         // (their new hours - their previous event credit), so a re-log overwrites without double-count.
@@ -165,7 +242,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         `
         // Rows credited, NOT rows written: the reversal branch can emit a second row for the same
         // attendee, and the caller's `credited` count is per attendee.
-        return new Set(upserted.map((r) => r.user_id)).size
+        return { credited: new Set(upserted.map((r) => r.user_id)).size, changed }
       })
     },
 
@@ -194,7 +271,23 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       return rows[0]?.total ?? 0
     },
 
-    async leaderboard(geoid: string, limit: number, offset: number): Promise<LeaderboardPage> {
+    /**
+     * B49 / C18 — the privacy filter is `AND u.show_volunteer_hours IS NOT FALSE`, in the main query AND
+     * in both supplementary queries below. It is deliberately NOT `AND u.show_volunteer_hours`: the
+     * column is a nullable tri-state and every account that exists today holds NULL, so a bare truth test
+     * is three-valued and would return the empty set — an empty leaderboard on deploy day, everywhere.
+     *
+     * `withExtras` gates the two supplementary queries. The Discovery preview reads `limit: 3` and
+     * renders neither a viewer rank nor a participant count, so making it pay for them would triple the
+     * cost of the hottest anonymous read this feature adds.
+     */
+    async leaderboard(
+      geoid: string,
+      limit: number,
+      offset: number,
+      viewerId: string | null,
+      withExtras: boolean,
+    ): Promise<LeaderboardPage> {
       const jurRows = await sql<{ name: string }[]>`
         SELECT name FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1
       `
@@ -225,9 +318,60 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         WHERE ujh.jurisdiction_geoid = ${geoid}
           AND ujh.total_hours > 0
           AND u.deleted_at IS NULL
+          AND u.show_volunteer_hours IS NOT FALSE
         ORDER BY ujh.total_hours DESC, ujh.user_id
         LIMIT ${limit + 1} OFFSET ${offset}
       `
+
+      // DB B48 — the viewer's own standing, even when they are past the fetched page. Only for a signed-in
+      // viewer, and only when the caller wants it. A viewer with show_volunteer_hours = false is not on
+      // the board at all, so `me` is empty and both fields come back null.
+      let viewerRank: number | null = null
+      let viewerHours: number | null = null
+      if (withExtras && viewerId !== null) {
+        const meRows = await sql<{ hours: number | null; rank: number | null }[]>`
+          WITH me AS (
+            SELECT ujh.total_hours
+            FROM user_jurisdiction_hours ujh
+            JOIN users u ON u.id = ujh.user_id
+            WHERE ujh.user_id = ${viewerId}
+              AND ujh.jurisdiction_geoid = ${geoid}
+              AND ujh.total_hours > 0
+              AND u.deleted_at IS NULL
+              AND u.show_volunteer_hours IS NOT FALSE
+          )
+          SELECT
+            (SELECT total_hours::float8 FROM me) AS hours,
+            CASE WHEN EXISTS (SELECT 1 FROM me) THEN (
+              SELECT count(*)::int + 1
+              FROM user_jurisdiction_hours o
+              JOIN users ou ON ou.id = o.user_id
+              WHERE o.jurisdiction_geoid = ${geoid}
+                AND o.total_hours > (SELECT total_hours FROM me)
+                AND o.total_hours > 0
+                AND ou.deleted_at IS NULL
+                AND ou.show_volunteer_hours IS NOT FALSE
+            ) END AS rank
+        `
+        viewerHours = meRows[0]?.hours ?? null
+        viewerRank = meRows[0]?.rank ?? null
+      }
+
+      // Only on the FIRST page: a deep page must not pay for a count, and the number exists so a thin or
+      // empty board reads as "be the first" rather than broken.
+      let participantCount: number | null = null
+      if (withExtras && offset === 0) {
+        const countRows = await sql<{ count: number }[]>`
+          SELECT count(*)::int AS count
+          FROM user_jurisdiction_hours ujh
+          JOIN users u ON u.id = ujh.user_id
+          WHERE ujh.jurisdiction_geoid = ${geoid}
+            AND ujh.total_hours > 0
+            AND u.deleted_at IS NULL
+            AND u.show_volunteer_hours IS NOT FALSE
+        `
+        participantCount = countRows[0]?.count ?? 0
+      }
 
       // OFFSET paging, not a keyset: the contract carries `nextOffset` because a leaderboard row's
       // sort key (total_hours) moves under the reader. So only the has-more SPLIT is shared with the
@@ -250,6 +394,199 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         jurisdictionName,
         entries,
         nextOffset: more === null ? null : offset + limit,
+        participantCount,
+        viewerRank,
+        viewerHours,
+      }
+    },
+
+    /**
+     * B30a — the itemised ledger, newest-first on the house keyset `(created_at DESC, id DESC)`, backed
+     * by 0062's `volunteer_hours (user_id, created_at DESC, id DESC)` index so the row-value comparison
+     * needs no sort. A malformed cursor arrives here as `null` from `parseTimeCursor` and degrades to
+     * "from the start" rather than raising a 22P02 on the `::uuid` cast.
+     *
+     * `voided_at IS NULL` is filtered from day one (B30b): nothing writes that column yet, so the
+     * predicate is a no-op today and a future void/revoke path needs no read change and no backfill.
+     */
+    async listEntries(
+      args: ListEntriesArgs,
+    ): Promise<{ items: VolunteerHoursEntryView[]; nextCursor: string | null }> {
+      const sources = args.sources ?? ALL_SOURCES
+      // House idiom (post-/report-/notification-repository): the keyset predicate is a CONDITIONAL
+      // fragment rather than a `$1 IS NULL OR …`, so page 1 plans without a dead comparison.
+      const keyset =
+        args.cursor !== null
+          ? sql`AND (vh.created_at, vh.id) < (${args.cursor.at}, ${args.cursor.id}::uuid)`
+          : sql``
+      const rows = await sql<LedgerRow[]>`
+        SELECT
+          vh.id,
+          vh.source,
+          vh.hours::float8 AS hours,
+          vh.created_at,
+          c.scheduled_at,
+          vh.cleanup_id,
+          c.title AS cleanup_title,
+          c.reference_code,
+          vh.report_id,
+          vh.jurisdiction_geoid,
+          j.name AS jurisdiction_name,
+          lb.id AS creditor_id,
+          lb.display_name AS creditor_name,
+          lb.handle AS creditor_handle,
+          EXISTS (
+            SELECT 1 FROM user_verification uv
+            WHERE uv.user_id = lb.id AND uv.status = 'verified'
+          ) AS creditor_verified
+        FROM volunteer_hours vh
+        LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
+        LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
+        LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
+        WHERE vh.user_id = ${args.userId}
+          AND vh.voided_at IS NULL
+          AND vh.source = ANY(${sources as string[]}::text[])
+          ${keyset}
+        ORDER BY vh.created_at DESC, vh.id DESC
+        LIMIT ${args.limit + 1}
+      `
+      const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
+        encodeTimeCursor({ at: last.created_at, id: last.id }),
+      )
+      return { items: items.map(toEntryView), nextCursor }
+    },
+
+    /**
+     * C10 — what has already been logged for one event. `viewerId === null` is the acting-host read (no
+     * per-user filter); a non-null id restricts `entries` to that one attendee. `anyLogged` is computed
+     * from the SAME index either way, so the attendee branch can tell "the host has not logged yet" from
+     * "the host logged and did not credit me" without seeing anybody else's row.
+     *
+     * Deliberately NOT joined to `cleanup_members`: an attendee removed after being credited still holds
+     * their credit, and dropping their row here would make the host's summary silently under-count. The
+     * membership gate lives in the service (`CleanupHoursLookup.roleOf`), where it decides SCOPE.
+     */
+    async listEventHours(cleanupId: string, viewerId: string | null): Promise<EventHoursLedger> {
+      const mine = viewerId !== null ? sql`AND vh.user_id = ${viewerId}::uuid` : sql``
+      const rows = await sql<{ user_id: string; hours: number; created_at: Date }[]>`
+        SELECT vh.user_id, vh.hours::float8 AS hours, vh.created_at
+        FROM volunteer_hours vh
+        WHERE vh.cleanup_id = ${cleanupId}
+          AND vh.source = 'event'
+          AND vh.voided_at IS NULL
+          ${mine}
+        ORDER BY vh.created_at DESC, vh.id DESC
+        LIMIT ${EVENT_HOURS_MEMBER_CAP}
+      `
+      const entries = rows.map((r) => ({
+        userId: r.user_id,
+        hours: r.hours,
+        loggedAt: r.created_at,
+      }))
+      // The unfiltered read already answers "has anything been logged", so the probe runs ONLY on the
+      // filtered (attendee) path — where an empty `entries` is exactly the ambiguous case it resolves.
+      if (viewerId === null) return { entries, anyLogged: entries.length > 0 }
+      const probe = await sql<{ any_logged: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM volunteer_hours
+          WHERE cleanup_id = ${cleanupId} AND source = 'event' AND voided_at IS NULL
+        ) AS any_logged
+      `
+      return { entries, anyLogged: probe[0]?.any_logged ?? false }
+    },
+
+    /**
+     * The public projection's aggregated `reportHours`: report auto-awards are summed, never itemised,
+     * because a public list of every report a user filed is a privacy leak (reports can be held, unlisted
+     * or sensitive) and the id deep-links into them.
+     */
+    async reportHoursFor(userId: string): Promise<number> {
+      const rows = await sql<{ total: number }[]>`
+        SELECT COALESCE(SUM(hours), 0)::float8 AS total
+        FROM volunteer_hours
+        WHERE user_id = ${userId} AND source = 'report' AND voided_at IS NULL
+      `
+      return rows[0]?.total ?? 0
+    },
+
+    /**
+     * C18's two predicates, from ONE row read. `aggregate` is `IS NOT FALSE` (NULL — every account that
+     * exists today — stays visible, byte-identical to the `volunteerHours` scalar their profile already
+     * publishes); `items` is `IS TRUE` (the per-event list with dates and crediting hosts is new
+     * disclosure and needs an explicit opt-in). A missing row (or a tombstoned account) is hidden on both.
+     */
+    async hoursVisibilityFor(userId: string): Promise<HoursVisibility> {
+      const rows = await sql<{ aggregate: boolean; items: boolean }[]>`
+        SELECT
+          (show_volunteer_hours IS NOT FALSE) AS aggregate,
+          (show_volunteer_hours IS TRUE) AS items
+        FROM users
+        WHERE id = ${userId} AND deleted_at IS NULL
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (row === undefined) return { aggregate: false, items: false }
+      return { aggregate: row.aggregate, items: row.items }
+    },
+
+    /**
+     * The certificate transcript read (WP21). Same ledger, same `voided_at IS NULL` filter, but ordered
+     * ASCENDING (a printed transcript reads oldest-first) and bounded by `limit`. `entryCount` is the
+     * FULL matching count even when `items` was truncated, so the document can say so honestly, while
+     * `totalHours` sums only the returned rows — B40b: a printed total that does not equal the sum of the
+     * printed lines is a self-contradicting document.
+     */
+    async entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage> {
+      const geoidFilter =
+        args.geoid !== null ? sql`AND vh.jurisdiction_geoid = ${args.geoid}` : sql``
+      const fromFilter = args.from !== null ? sql`AND vh.created_at >= ${args.from}` : sql``
+      const toFilter = args.to !== null ? sql`AND vh.created_at <= ${args.to}` : sql``
+      const rows = await sql<LedgerRow[]>`
+        SELECT
+          vh.id,
+          vh.source,
+          vh.hours::float8 AS hours,
+          vh.created_at,
+          c.scheduled_at,
+          vh.cleanup_id,
+          c.title AS cleanup_title,
+          c.reference_code,
+          vh.report_id,
+          vh.jurisdiction_geoid,
+          j.name AS jurisdiction_name,
+          lb.id AS creditor_id,
+          lb.display_name AS creditor_name,
+          lb.handle AS creditor_handle,
+          EXISTS (
+            SELECT 1 FROM user_verification uv
+            WHERE uv.user_id = lb.id AND uv.status = 'verified'
+          ) AS creditor_verified
+        FROM volunteer_hours vh
+        LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
+        LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
+        LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
+        WHERE vh.user_id = ${args.userId}
+          AND vh.voided_at IS NULL
+          ${geoidFilter}
+          ${fromFilter}
+          ${toFilter}
+        ORDER BY vh.created_at ASC, vh.id ASC
+        LIMIT ${args.limit}
+      `
+      const countRows = await sql<{ count: number }[]>`
+        SELECT count(*)::int AS count
+        FROM volunteer_hours vh
+        WHERE vh.user_id = ${args.userId}
+          AND vh.voided_at IS NULL
+          ${geoidFilter}
+          ${fromFilter}
+          ${toFilter}
+      `
+      const items = rows.map(toEntryView)
+      return {
+        items,
+        totalHours: Math.round(items.reduce((sum, r) => sum + r.hours, 0) * 100) / 100,
+        entryCount: countRows[0]?.count ?? items.length,
       }
     },
   }

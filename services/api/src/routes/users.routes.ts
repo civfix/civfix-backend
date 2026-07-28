@@ -180,6 +180,12 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
         ? { allowDirectMessages: body.allowDirectMessages }
         : {}),
       ...(locale !== undefined ? { locale } : {}),
+      // P6 hours privacy. Omitted => no change, so a client that predates the field never disturbs the
+      // stored tri-state; a present value is always an explicit true/false (the "never chosen" null arm
+      // is unreachable from here by design).
+      ...(body.showVolunteerHours !== undefined
+        ? { showVolunteerHours: body.showVolunteerHours }
+        : {}),
     })
     const payload: UpdateSettingsResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)

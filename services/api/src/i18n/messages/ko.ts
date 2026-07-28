@@ -55,6 +55,12 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_cancelled.body": "주최자가 이 이벤트를 취소했어요.",
   "notification.cleanup_cancelled.body_reason": "주최자가 이 이벤트를 취소했어요. 사유: {{reason}}",
 
+  "notification.hours_logged.title": "봉사 시간이 인정되었어요",
+  "notification.hours_logged.body": "{{title}} 활동으로 {{hours}}시간이 인정되었어요.",
+
+  "notification.cleanup_slot.removed.title": "이벤트 역할이 변경되었어요",
+  "notification.cleanup_slot.removed.body": '{{title}}에서 "{{slot}}" 역할이 삭제되었어요.',
+
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",
   "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",

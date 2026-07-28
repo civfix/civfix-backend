@@ -1,6 +1,6 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, MAX_BRING_ITEMS } from "@civfix/shared"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../abuse/counter-store.js"
@@ -100,13 +100,14 @@ export const ROLE_CHANGES_PER_TARGET_PER_WINDOW = 6
 const ROLE_CHANGE_WINDOW_SEC = 60 * 60
 
 /**
- * L23 — `bring` is an unbounded array in the frozen shared wire schema (no `.max()`), capped only by the
- * 256 KB body limit, which admits thousands of entries that are then rendered to every attendee. Clamped
- * here exactly as MAX_LINKED_REPORTS / clampLinkIds already clamps `linkedReportIds`. FOLLOW-UP: the
- * real fix is `.max(MAX_BRING_ITEMS)` on CreateCleanupRequestSchema/UpdateCleanupRequestSchema in
- * @civfix/shared, which this repo cannot edit.
+ * L23 — the `bring` cap. This WAS a local `= 30` literal alongside a FOLLOW-UP note asking for
+ * `.max(MAX_BRING_ITEMS)` on CreateCleanupRequestSchema/UpdateCleanupRequestSchema; the shared schemas
+ * now carry it, so the literal is gone and the cap is re-exported from the contract. Two sources of
+ * truth for one cap is how the wire schema and the service clamp drift apart by a deploy.
+ * Re-exported (rather than merely imported) because test/unit/cleanup-service.test.ts and any other
+ * consumer import it from THIS module.
  */
-export const MAX_BRING_ITEMS = 30
+export { MAX_BRING_ITEMS }
 
 /**
  * Fan-out bound for the cancellation bell (L24). The old raw SQL was a single set-based INSERT with no
@@ -160,6 +161,10 @@ export interface CleanupService {
     requesterUserId: string,
   ): Promise<CleanupDTO>
   cancelCleanup(id: string, reason: string | null, requesterUserId: string): Promise<CleanupDTO>
+  // B12: a HOST (organizer OR cohost, B13) marks their own event completed — the state logEventHours
+  // requires, which until now only an OPERATOR could reach. Returns the refreshed DTO, symmetric with
+  // cancelCleanup so the client's cache update is identical. Forward-only (B17): there is no un-complete.
+  completeCleanup(id: string, note: string | null, requesterUserId: string): Promise<CleanupDTO>
   listCleanups(
     req: ListCleanupsRequest,
     viewer: CleanupViewer,
@@ -525,6 +530,12 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         actorId: requesterUserId,
       })
       if (outcome === "not_found") notFoundCleanup()
+      // B18: cancel is not a back door out of B17's forward-only completion. A cancelled event that
+      // still carries credited volunteer_hours rows is a state nothing downstream can interpret, so a
+      // completed event refuses the transition outright (409) instead of silently no-op'ing.
+      if (outcome === "already_completed") {
+        throw AppError.conflict("A completed event can't be cancelled.")
+      }
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
@@ -536,6 +547,68 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const linkedReports = await hydrateLinkedReports(id, record.eventKind)
       // The canceller passed the organizer-only gate above, so their role is organizer by definition.
       return toCleanupDTO(record, true, linkedReports, "organizer")
+    },
+
+    /**
+     * B12 — the host closes their own event.
+     *
+     * Until this existed only an operator could move an event to 'done' (the admin event-status route),
+     * and 'done' is what logEventHours hard-requires — so a host could never credit a single attendee
+     * without asking support. The gate is organizer OR COHOST (B13), unlike cancel's organizer-only:
+     * cancel is destructive and rings every attendee's lock screen, completion is forward and silent
+     * (B19 — no bell; the actionable moment is hours_logged), and the cohost is exactly the person who
+     * then logs the hours. Same gate as updateCleanup, so the host mental model stays "hosts edit and
+     * close; the organizer cancels".
+     *
+     * Everything else — the status matrix, the time gate, the timeline row — happens in ONE transaction
+     * against the LOCKED row (B15/B16), because a concurrent updateCleanup can move scheduled_at and a
+     * concurrent completion must not write two timeline rows.
+     */
+    async completeCleanup(
+      id: string,
+      note: string | null,
+      requesterUserId: string,
+    ): Promise<CleanupDTO> {
+      const organizerId = await deps.repo.organizerOf(id)
+      if (organizerId === null) notFoundCleanup()
+      const requesterRole = await deps.repo.roleOf(id, requesterUserId)
+      if (requesterRole !== "organizer" && requesterRole !== "cohost") {
+        throw AppError.forbidden("Only the event hosts can complete this event.")
+      }
+      const trimmed = note?.trim()
+      const cleanNote = trimmed && trimmed.length > 0 ? trimmed : null
+      // M19/gotcha #14: every host-authored free text gets the same gate. This one lands in the public
+      // event timeline, so it is held to exactly the standard the cancellation reason is.
+      assertNoSlur(cleanNote, "note")
+      // The SERVICE composes the copy and the repo only persists — the layer split cancelCleanupTx
+      // already documents.
+      const timelineNote =
+        cleanNote !== null ? `Event marked complete: ${cleanNote}` : "Event marked complete"
+      const outcome = await deps.repo.completeCleanupTx(id, {
+        note: timelineNote,
+        actorId: requesterUserId,
+        now: new Date(),
+      })
+      if (outcome === "not_found") notFoundCleanup()
+      if (outcome === "cancelled") {
+        throw AppError.conflict("A cancelled event can't be marked complete.")
+      }
+      if (outcome === "too_early") {
+        // B14: hours are a falsifiable public record. Without a time anchor a host could date an event
+        // next year, mark it done, and credit hours for something that has not happened. scheduled_at is
+        // the only real-world anchor on the row (there is no endsAt column), so completion opens at the
+        // event's START — early enough to close out a short event the moment it wraps.
+        throw AppError.conflict(
+          "This event hasn't started yet — you can mark it complete once it begins.",
+        )
+      }
+      // "already_completed" falls through: a repeat call is an idempotent 200 + DTO (no second timeline
+      // row was written, and there is no bell to suppress).
+
+      const record = await deps.repo.findCleanupById(id, null)
+      if (!record) notFoundCleanup()
+      const linkedReports = await hydrateLinkedReports(id, record.eventKind)
+      return toCleanupDTO(record, true, linkedReports, requesterRole)
     },
 
     async listCleanups(

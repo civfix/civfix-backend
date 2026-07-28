@@ -80,6 +80,20 @@ export const en = {
   "notification.cleanup_cancelled.body_reason":
     "This event has been cancelled by the host. Reason: {{reason}}",
 
+  // Service-hours credit bell (P4/B33, type 'hours_logged'): a verified host logged hours for a completed
+  // event and you were credited. Fired by volunteer-hours-service.logEventHours ONLY when the credit is
+  // NEW or has INCREASED — re-logging is how a host fixes a typo, and a downward correction is
+  // deliberately silent. {{hours}} = the credited amount, {{title}} = the event title.
+  "notification.hours_logged.title": "Service hours credited",
+  "notification.hours_logged.body": "{{hours}} hours were credited for {{title}}.",
+
+  // Event-slot bell (P4/B34, type 'cleanup_slot'): the host edited the event's roles and the one you had
+  // claimed no longer exists, so you are back in the crew with no role. Fired by cleanup-service's slot
+  // reconciliation; the actor is excluded. {{slot}} = the removed role's title, {{title}} = the event.
+  // (There is deliberately NO "slot claimed" bell to the host — see B35.)
+  "notification.cleanup_slot.removed.title": "Your event role changed",
+  "notification.cleanup_slot.removed.body": 'The "{{slot}}" role was removed from {{title}}.',
+
   // ---- Account / OTP emails (backend-emails) -----------------------------------------------------
   // Sign-in passcode email. {{code}} = the numeric OTP.
   "email.otp.subject": "Your civfix sign-in code",

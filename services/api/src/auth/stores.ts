@@ -104,6 +104,15 @@ export interface UserRecord {
   avatarUrl: string | null
   profileComplete: boolean
   allowDirectMessages: boolean
+  /**
+   * P6 hours privacy — a NULLABLE TRI-STATE mirroring `users.show_volunteer_hours`
+   * (0061_users_show_volunteer_hours.sql), NOT a plain boolean:
+   *   null  = never chosen (every account that predates the column) -> the aggregate hours stay
+   *           visible exactly as they were, and `UserDTO.showVolunteerHours` is OMITTED
+   *   true  = explicit opt-in    false = explicit opt-out
+   * The WRITE is always an explicit boolean (see UpdateSettingsInput); only the stored value is nullable.
+   */
+  showVolunteerHours: boolean | null
   locale: string
   createdAt: Date
   deletedAt: Date | null
@@ -141,6 +150,12 @@ export interface UserStore {
 export interface UpdateSettingsInput {
   allowDirectMessages?: boolean
   locale?: string
+  /**
+   * Omitted = no change (the stored value keeps whatever it is, including "never chosen"). A PRESENT
+   * value is always an explicit boolean: the tri-state's null arm is only ever reached by never having
+   * written the column, never by writing one.
+   */
+  showVolunteerHours?: boolean
 }
 
 export class InMemoryUserStore implements UserStore {
@@ -187,6 +202,9 @@ export class InMemoryUserStore implements UserStore {
       avatarUrl: input.avatarUrl ?? null,
       profileComplete: input.profileComplete ?? false,
       allowDirectMessages: true,
+      // NULL, not true: a new account has NEVER CHOSEN. The column has no DB default for the same
+      // reason (0061) — "never chosen" is a distinct state from "opted in".
+      showVolunteerHours: null,
       locale: "en",
       createdAt: new Date(),
       deletedAt: null,
@@ -253,6 +271,9 @@ export class InMemoryUserStore implements UserStore {
         ? { allowDirectMessages: input.allowDirectMessages }
         : {}),
       ...(input.locale !== undefined ? { locale: input.locale } : {}),
+      ...(input.showVolunteerHours !== undefined
+        ? { showVolunteerHours: input.showVolunteerHours }
+        : {}),
     }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })

@@ -55,6 +55,12 @@ export const es: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_cancelled.body_reason":
     "Este evento ha sido cancelado por el anfitrión. Motivo: {{reason}}",
 
+  "notification.hours_logged.title": "Horas de servicio acreditadas",
+  "notification.hours_logged.body": "Se acreditaron {{hours}} horas por {{title}}.",
+
+  "notification.cleanup_slot.removed.title": "Tu rol en el evento cambió",
+  "notification.cleanup_slot.removed.body": 'Se eliminó el rol "{{slot}}" de {{title}}.',
+
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Tu código de acceso a civfix",
   "email.otp.body_line1": "Tu código de acceso a civfix es {{code}}.",

@@ -27,10 +27,11 @@ export const ATTENDEES_DEFAULT_LIMIT = 50
 // defensive bound so a pathologically large cleanup cannot emit an unbounded set of PUBLISHes per send.
 export const THREAD_SIGNAL_MEMBER_CAP = 500
 
-// Backend-side cap on reports linked in one create/reconcile call. The shared schema does not (yet)
-// advertise a `.max()`, so the service clamps abusive input before it reaches the per-id-in-one-tx repo
-// path (otherwise thousands of ids would pin one connection + open tx). Realistically never hit.
-export const MAX_LINKED_REPORTS = 200
+// Cap on reports linked in one create/reconcile call, RE-EXPORTED from the contract rather than
+// re-declared here (L23). CreateCleanupRequestSchema/UpdateCleanupRequestSchema now carry
+// `.max(MAX_LINKED_REPORTS)` themselves, so the service's clamp and the wire schema are the same number
+// by construction; a second local literal is exactly the drift this re-export exists to prevent.
+export { MAX_LINKED_REPORTS } from "@civfix/shared"
 
 // avatarGradient is the shared deterministic helper. It previously had a DIVERGENT local HSL impl here,
 // which made the organizer/chat avatar differ from the people-list/profile avatar for the SAME user.

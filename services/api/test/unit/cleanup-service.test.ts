@@ -17,6 +17,9 @@ const ORG = "11111111-1111-1111-1111-111111111111"
 const ALICE = "22222222-2222-2222-2222-222222222222"
 const BOB = "33333333-3333-3333-3333-333333333333"
 
+// An already-started event: the only kind a host may mark complete (B14's time gate).
+const PAST = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+
 let repo: InMemoryCleanupRepository
 let service: CleanupService
 
@@ -163,6 +166,20 @@ describe("cancelCleanup", () => {
     await expect(
       service.cancelCleanup("00000000-0000-0000-0000-000000000000", null, ORG),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("B18: 409s cancelling an event the host has already COMPLETED, and writes nothing", async () => {
+    // Host completion is forward-only (B17 — there is no un-complete), so cancel must not become a back
+    // door out of it: a 'cancelled' event still carrying credited volunteer_hours rows is a state nothing
+    // downstream can interpret. An operator can still flip the status via the admin route.
+    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    await service.completeCleanup(created.id, null, ORG)
+
+    await expect(service.cancelCleanup(created.id, "changed my mind", ORG)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(repo.cleanups.get(created.id)?.status).toBe("done")
+    expect(repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel")).toEqual([])
   })
 })
 

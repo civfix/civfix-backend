@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest"
+import { afterEach, describe, it, expect } from "vitest"
+import type { FastifyInstance } from "fastify"
 import { REPORT_VOLUNTEER_HOURS } from "@civfix/shared"
+import { FakeMailer } from "@civfix/shared/fakes"
 import {
   makeVolunteerHoursService,
   type CleanupHoursLookup,
@@ -7,6 +9,14 @@ import {
   type VolunteerHoursService,
 } from "../../src/services/volunteer-hours-service.js"
 import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import type { NotificationService } from "../../src/services/notification-service.js"
+import { buildServer } from "../../src/server.js"
+import { buildContainer } from "../../src/di.js"
+import { loadEnv } from "../../src/env.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
+import { makeInMemoryStores } from "../../src/auth/stores.js"
+import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { StubJwksVerifier } from "../helpers/auth.js"
 
 const HOST = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -36,6 +46,28 @@ function makeCleanups(
   }
 }
 
+/** Records every bell the service rings, and can be told to throw for one specific recipient. */
+interface RecordingNotifier extends Pick<NotificationService, "createNotification"> {
+  sent: { userId: string; type: string; vars: Record<string, string | number> }[]
+}
+
+function makeNotifier(throwFor?: string): RecordingNotifier {
+  const sent: RecordingNotifier["sent"] = []
+  return {
+    sent,
+    createNotification: (userId, input) => {
+      if (userId === throwFor) return Promise.reject(new Error("prefs row is broken"))
+      sent.push({
+        userId,
+        type: input.type,
+        vars: (input.vars ?? {}) as Record<string, string | number>,
+      })
+      // The service ignores the return value; a cast keeps the fake from restating the whole DTO.
+      return Promise.resolve({} as Awaited<ReturnType<NotificationService["createNotification"]>>)
+    },
+  }
+}
+
 function makeService(opts: {
   repo: InMemoryVolunteerHoursRepository
   view: CleanupHoursView | null
@@ -43,6 +75,7 @@ function makeService(opts: {
   cohosts?: string[]
   // Per-user verification map; a plain boolean applies to every caller (default: verified).
   verified?: boolean | Record<string, boolean>
+  notifier?: Pick<NotificationService, "createNotification">
 }): VolunteerHoursService {
   const verified = opts.verified ?? true
   return makeVolunteerHoursService({
@@ -50,6 +83,7 @@ function makeService(opts: {
     cleanups: makeCleanups(opts.view, opts.members ?? [], opts.cohosts ?? []),
     isVerified: (userId: string) =>
       Promise.resolve(typeof verified === "boolean" ? verified : (verified[userId] ?? false)),
+    ...(opts.notifier !== undefined ? { notifier: opts.notifier } : {}),
   })
 }
 
@@ -88,6 +122,7 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     organizerUserId: HOST,
     status: "done",
     jurisdictionGeoid: GEOID_A,
+    title: "Ocean Beach sweep",
   }
 
   it("credits each listed attendee their OWN hours and reports the row count", async () => {
@@ -284,7 +319,12 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({
       repo,
-      view: { organizerUserId: HOST, status: "upcoming", jurisdictionGeoid: GEOID_A },
+      view: {
+        organizerUserId: HOST,
+        status: "upcoming",
+        jurisdictionGeoid: GEOID_A,
+        title: "Ocean Beach sweep",
+      },
       members: [HOST],
     })
     await expect(
@@ -365,6 +405,382 @@ describe("volunteer hours: leaderboard", () => {
     expect(second.entries).toHaveLength(1)
     expect(second.nextOffset).toBeNull()
     expect(second.entries[0]?.rank).toBe(3)
+  })
+
+  /**
+   * C18 — the leaderboard filter is `show_volunteer_hours IS NOT FALSE`, never a bare truth test. This is
+   * the tripwire for the deploy-day failure: every account that exists today holds NULL, so a
+   * three-valued `AND u.show_volunteer_hours` returns the empty set and the board is blank everywhere.
+   */
+  it("C18: excludes an explicit opt-OUT and keeps a never-chosen (NULL) user on the board", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    // NULL = never chosen (every existing account). Stays visible.
+    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null, verified: false })
+    // Explicit opt-in.
+    repo.seedUser(BOB, {
+      name: "Bob",
+      handle: null,
+      avatarUrl: null,
+      verified: false,
+      showVolunteerHours: true,
+    })
+    // Explicit opt-out: off the board entirely.
+    repo.seedUser(CAROL, {
+      name: "Carol",
+      handle: null,
+      avatarUrl: null,
+      verified: false,
+      showVolunteerHours: false,
+    })
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: [
+        { userId: HOST, hours: 3 },
+        { userId: BOB, hours: 2 },
+        { userId: CAROL, hours: 9 },
+      ],
+    })
+
+    const service = makeService({ repo, view: null })
+    const page = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25 })
+    expect(page.entries.map((e) => e.userId)).toEqual([HOST, BOB])
+    // Ranks are computed over the FILTERED set, so the opt-out does not leave a gap at #1.
+    expect(page.entries.map((e) => e.rank)).toEqual([1, 2])
+    expect(page.participantCount).toBe(2)
+  })
+
+  it("B48: viewerRank/viewerHours/participantCount only on the full page, count only at offset 0", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    for (const [id, name] of [
+      [HOST, "Ann"],
+      [BOB, "Bob"],
+      [CAROL, "Carol"],
+    ] as const) {
+      repo.seedUser(id, { name, handle: null, avatarUrl: null, verified: false })
+    }
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: [
+        { userId: HOST, hours: 5 },
+        { userId: BOB, hours: 3 },
+        { userId: CAROL, hours: 1 },
+      ],
+    })
+    const service = makeService({ repo, view: null })
+
+    const full = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25 }, BOB)
+    expect(full.participantCount).toBe(3)
+    expect(full.viewerRank).toBe(2)
+    expect(full.viewerHours).toBe(3)
+
+    // Deep page: the count is not recomputed (absent), the viewer standing still is.
+    const deep = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25, offset: 25 }, BOB)
+    expect(deep.participantCount).toBeUndefined()
+    expect(deep.viewerRank).toBe(2)
+
+    // Anonymous: viewer fields are ABSENT (not null) — null would mean "you are not ranked here".
+    const anon = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25 })
+    expect(anon.participantCount).toBe(3)
+    expect(anon.viewerRank).toBeUndefined()
+    expect(anon.viewerHours).toBeUndefined()
+
+    // A signed-in viewer with no hours here IS ranked-absent: null, present, and distinguishable.
+    const stranger = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25 }, DAVE)
+    expect(stranger.viewerRank).toBeNull()
+    expect(stranger.viewerHours).toBeNull()
+  })
+
+  it("the 3-row Discovery preview pays for NO extras (limit below the threshold)", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null, verified: false })
+    await repo.logEventHours({
+      actorId: BOB,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: [{ userId: HOST, hours: 4 }],
+    })
+    const service = makeService({ repo, view: null })
+    const preview = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 3 }, HOST)
+    expect(preview.entries).toHaveLength(1)
+    expect(preview.participantCount).toBeUndefined()
+    expect(preview.viewerRank).toBeUndefined()
+    expect(preview.viewerHours).toBeUndefined()
+  })
+})
+
+/**
+ * B33b — the hours_logged bell. The rule is narrow on purpose: a host re-logs to FIX a typo, and the
+ * upsert re-writes every row in the batch, so notifying on every write rings up to 2000 lock screens per
+ * correction. Only a NEW or INCREASED credit rings; a downward correction is deliberately silent.
+ */
+describe("volunteer hours: hours_logged notifications", () => {
+  const doneEvent: CleanupHoursView = {
+    organizerUserId: HOST,
+    status: "done",
+    jurisdictionGeoid: GEOID_A,
+    title: "Ocean Beach sweep",
+  }
+
+  it("the repo returns the changed[] pre-image (null previous = a first credit)", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const first = await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: [
+        { userId: BOB, hours: 2 },
+        { userId: CAROL, hours: 1 },
+      ],
+    })
+    expect(first.credited).toBe(2)
+    expect(first.changed).toEqual([
+      { userId: BOB, hours: 2, previousHours: null },
+      { userId: CAROL, hours: 1, previousHours: null },
+    ])
+
+    const second = await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: [{ userId: BOB, hours: 5 }],
+    })
+    expect(second.changed).toEqual([{ userId: BOB, hours: 5, previousHours: 2 }])
+  })
+
+  it("rings every newly-credited attendee, with the hours and the event title", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const notifier = makeNotifier()
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB, CAROL],
+      notifier,
+    })
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [
+        { userId: BOB, hours: 2 },
+        { userId: CAROL, hours: 1.5 },
+      ],
+    })
+    expect(notifier.sent.map((s) => s.userId).sort()).toEqual([BOB, CAROL].sort())
+    expect(notifier.sent.every((s) => s.type === "hours_logged")).toBe(true)
+    expect(notifier.sent.find((s) => s.userId === CAROL)?.vars).toEqual({
+      hours: 1.5,
+      title: "Ocean Beach sweep",
+    })
+  })
+
+  it("does NOT ring on an unchanged re-log or on a downward correction", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const notifier = makeNotifier()
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB, CAROL],
+      notifier,
+    })
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [
+        { userId: BOB, hours: 4 },
+        { userId: CAROL, hours: 4 },
+      ],
+    })
+    expect(notifier.sent).toHaveLength(2)
+    notifier.sent.length = 0
+
+    // BOB unchanged, CAROL corrected DOWN: neither is a new or increased credit.
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [
+        { userId: BOB, hours: 4 },
+        { userId: CAROL, hours: 2 },
+      ],
+    })
+    expect(notifier.sent).toEqual([])
+
+    // ...but an INCREASE does ring, and only for the attendee whose credit went up.
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [
+        { userId: BOB, hours: 4 },
+        { userId: CAROL, hours: 6 },
+      ],
+    })
+    expect(notifier.sent.map((s) => s.userId)).toEqual([CAROL])
+  })
+
+  // One throwing prefs row must not abandon the rest of the roster — the exact bug the L24 cancellation
+  // fan-out had (a single try/catch around the whole loop).
+  it("is best-effort PER RECIPIENT: one failure does not abandon the others", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const notifier = makeNotifier(BOB)
+    const warnings: unknown[] = []
+    const service = makeVolunteerHoursService({
+      repo,
+      cleanups: makeCleanups(doneEvent, [HOST, BOB, CAROL, DAVE]),
+      isVerified: () => Promise.resolve(true),
+      notifier,
+      logger: { warn: (obj) => warnings.push(obj) },
+    })
+
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [
+        { userId: BOB, hours: 1 },
+        { userId: CAROL, hours: 1 },
+        { userId: DAVE, hours: 1 },
+      ],
+    })
+    // The mutation itself is unaffected...
+    expect(result.credited).toBe(3)
+    // ...and the two healthy recipients still got their bell.
+    expect(notifier.sent.map((s) => s.userId).sort()).toEqual([CAROL, DAVE].sort())
+    expect(warnings).toHaveLength(1)
+  })
+
+  it("never rings the acting host", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const notifier = makeNotifier()
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB],
+      cohosts: [BOB],
+      notifier,
+    })
+    // BOB (a verified cohost) credits the organizer; the bell goes to HOST, never back to BOB.
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: BOB,
+      entries: [{ userId: HOST, hours: 3 }],
+    })
+    expect(notifier.sent.map((s) => s.userId)).toEqual([HOST])
+  })
+})
+
+/**
+ * Route-level regression tripwires for the leaderboard, run with NO database: the in-memory repo is
+ * injected via buildServer(volunteerOverrides) and driven through app.inject.
+ *
+ * These two ship together on purpose. T1 is the line that 422s EVERY leaderboard request the moment
+ * `geoid` became required on LeaderboardQuerySchema; T4 is what stops the cache split from serving one
+ * signed-in user's rank to every anonymous reader.
+ */
+describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
+  let app: FastifyInstance | undefined
+
+  afterEach(async () => {
+    await app?.close()
+    app = undefined
+  })
+
+  async function makeApp(): Promise<{ app: FastifyInstance; token: string; userId: string }> {
+    // A real WEB_ORIGINS allowlist so @fastify/cors emits its own `Vary: Origin` — the header the route
+    // must MERGE with rather than overwrite.
+    const env = loadEnv({ NODE_ENV: "test", WEB_ORIGINS: "https://civfix.org" })
+    const stores = makeInMemoryStores()
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const mailer = new FakeMailer()
+    const authServices = buildAuthServices({
+      stores,
+      cache,
+      mailer,
+      oauthConfig: {},
+      verifier: new StubJwksVerifier(),
+      now: () => Date.now(),
+    })
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    const built = await buildServer({
+      env,
+      container: buildContainer(env),
+      authServices,
+      volunteerOverrides: { repo },
+    })
+    app = built
+
+    const email = "leaderboard-viewer@example.com"
+    await built.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
+    const verify = await built.inject({
+      method: "POST",
+      url: "/v1/auth/otp/verify",
+      headers: { "x-client": "mobile" },
+      payload: { email, code: mailer.lastOtpFor(email)! },
+    })
+    const body = verify.json() as { token: string; user: { id: string } }
+    return { app: built, token: body.token, userId: body.user.id }
+  }
+
+  /**
+   * T1 — `request.query` NEVER carries `geoid`; it is a PATH param the client already consumed. Parsing
+   * the bare query object against a schema that now REQUIRES geoid 422s every request, including this
+   * one, which is exactly what the shipped client sends. If this test goes red the leaderboard is dead.
+   */
+  it("T1: an EMPTY query string returns 200, not 422", async () => {
+    const { app: built } = await makeApp()
+    const res = await built.inject({
+      method: "GET",
+      url: `/v1/jurisdictions/${GEOID_A}/leaderboard`,
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { geoid: string; entries: unknown[] }
+    expect(body.geoid).toBe(GEOID_A)
+    expect(body.entries).toEqual([])
+  })
+
+  it("T4: anon gets a SHARED cache TTL and authed gets no-store — both carrying Vary", async () => {
+    const { app: built, token } = await makeApp()
+
+    const anon = await built.inject({
+      method: "GET",
+      url: `/v1/jurisdictions/${GEOID_A}/leaderboard`,
+    })
+    expect(anon.statusCode).toBe(200)
+    expect(anon.headers["cache-control"]).toBe("public, max-age=60")
+    expect(anon.headers["vary"]).toContain("Cookie")
+    expect(anon.headers["vary"]).toContain("Authorization")
+
+    const authed = await built.inject({
+      method: "GET",
+      url: `/v1/jurisdictions/${GEOID_A}/leaderboard`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(authed.statusCode).toBe(200)
+    expect(authed.headers["cache-control"]).toBe("private, max-age=0, no-store")
+    // Vary ships on BOTH branches: without it nothing tells a shared cache why one URL has two bodies.
+    expect(authed.headers["vary"]).toContain("Cookie")
+    expect(authed.headers["vary"]).toContain("Authorization")
+  })
+
+  /**
+   * `@fastify/cors` sets its OWN `Vary: Origin` before the handler runs (its allowlist reflects the
+   * request's Origin, so the response really does vary by it) and `reply.header()` overwrites. Setting
+   * Vary bare here would drop `Origin` from precisely the response we are inviting a shared cache to
+   * store — which is how one origin's Access-Control-Allow-Origin gets served to another.
+   */
+  it("T4: the Vary the route adds MERGES with the Origin @fastify/cors already set", async () => {
+    const { app: built } = await makeApp()
+    const res = await built.inject({
+      method: "GET",
+      url: `/v1/jurisdictions/${GEOID_A}/leaderboard`,
+      headers: { origin: "https://civfix.org" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers["vary"]).toBe("Origin, Cookie, Authorization")
   })
 })
 

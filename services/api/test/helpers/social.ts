@@ -15,6 +15,12 @@ interface StoredUser {
   deletedAt: Date | null
   verified?: boolean
   avatarUrl?: string | null
+  /**
+   * P6 hours privacy — the users.show_volunteer_hours TRI-STATE (C18). Seeds as `null` ("never chosen"),
+   * which is what every account that predates the column has, so the default fixture reproduces the
+   * pre-column response shape rather than an opted-in one.
+   */
+  showVolunteerHours?: boolean | null
 }
 
 interface StoredFollow {
@@ -52,6 +58,7 @@ export class InMemorySocialRepository implements SocialRepository {
       handle: over.handle ?? null,
       bio: over.bio ?? null,
       deletedAt: over.deletedAt ?? null,
+      showVolunteerHours: over.showVolunteerHours ?? null,
       ...(over.verified !== undefined ? { verified: over.verified } : {}),
       ...(over.avatarUrl !== undefined ? { avatarUrl: over.avatarUrl } : {}),
     }
@@ -96,6 +103,7 @@ export class InMemorySocialRepository implements SocialRepository {
       avatarR2Key: null,
       avatarUrl: u.avatarUrl ?? null,
       socialLinks: null,
+      showVolunteerHours: u.showVolunteerHours ?? null,
     }
   }
 
