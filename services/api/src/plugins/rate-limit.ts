@@ -59,6 +59,18 @@ export const SENSITIVE_RATE_LIMIT_PREFIXES: readonly string[] = [
   // Enumerated by the original H4 finding as a bucket that vanishes on a store error: one call assembles
   // and mails a full personal-data archive.
   "/v1/me/data-export",
+  // Mints a durable, publicly-verifiable artifact from personal data and hands back a capability URL —
+  // squarely in this list's stated scope. `isSensitivePath` matches `path === p || startsWith(p + "/")`,
+  // so the plain `GET /v1/me/volunteer-hours` read is NOT dragged into this fail-closed bucket.
+  //
+  // ⚠ "/v1/service-hours/verify" must NOT be added here (C3). This bucket is fail-CLOSED
+  // (skipOnError: false, below), so a Redis blip would 429 the PUBLIC verification read — the school
+  // registrar holding a printed transcript is the one audience this feature exists for. A read-only
+  // lookup mints nothing, consumes no one-shot secret and hands out no upload URL; it keeps the
+  // fail-OPEN global bucket plus its own 60/min route limit. A negative case in
+  // test/unit/rate-limit-plugin.test.ts pins this so a later "tighten the limits" pass cannot quietly
+  // re-add it.
+  "/v1/me/volunteer-hours/certificates",
   "/forms",
 ]
 

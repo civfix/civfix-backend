@@ -21,15 +21,19 @@ import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
+  ClaimSlotOutcome,
   CleanupRecord,
   CleanupRepository,
   CompleteCleanupOutcome,
   CreateCleanupTxArgs,
+  DesiredSlot,
+  EventSlotView,
   LinkedEventView,
   LinkedReportView,
   ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
+  SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
 import {
@@ -99,6 +103,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
         await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
+        // B22: the slots land in this SAME transaction, LAST — the lock order is
+        // reference_counters -> cleanups -> cleanup_members -> cleanup_reports -> cleanup_slots, and
+        // allocateEventReferenceCode staying FIRST is the documented D4 contract (violating it
+        // reintroduces ABBA deadlocks across the create paths). Every entry is an insert: on create
+        // there is no existing slot to edit, so the service strips any client-supplied `id`.
+        await insertSlotsInTx(tx, args.cleanupId, args.slots)
 
         const created = await readById(tx, args.cleanupId, null)
         if (!created) throw AppError.internal()
@@ -501,6 +511,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             VALUES (${cleanupId}, ${userId}, ${actorId})
             ON CONFLICT (cleanup_id, user_id) DO NOTHING
           `
+          // B28d: free the seat in the SAME transaction. A removed attendee who kept their claim would
+          // occupy a slot forever — a phantom-full row nobody can free and no host can attribute.
+          await tx`
+            DELETE FROM cleanup_slot_claims
+            WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+          `
         }
         const counted = await tx<{ count: number }[]>`
           SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
@@ -591,9 +607,17 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         SELECT 1 AS one FROM cleanups WHERE id = ${cleanupId} LIMIT 1
       `
       if (exists.length === 0) return false
-      await sql`
-        DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
-      `
+      // B28d: the membership delete and the claim delete travel together (one transaction), in the
+      // documented lock order cleanup_members -> cleanup_slot_claims. Leaving must free the seat;
+      // otherwise a departed attendee holds a shift on a roster they are no longer on.
+      await sql.begin(async (tx) => {
+        await tx`
+          DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        `
+        await tx`
+          DELETE FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        `
+      })
       return true
     },
 
@@ -680,16 +704,24 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ? sql`AND EXISTS (SELECT 1 FROM follows_people f2 WHERE f2.follower_id = ${viewerId} AND f2.followee_id = u.id)`
           : sql`AND FALSE`
         : sql``
-      const rows = await sql<AttendeeRowSelect[]>`
+      // B29b: the two LEFT JOINs are the whole "per-slot roster" feature — no second endpoint, no extra
+      // visibility rule. The roster is already role-scoped (onlyFollowed for non-members), so the slot
+      // field inherits exactly that gating.
+      const rows = await sql<(AttendeeRowSelect & { slot_id: string | null; slot_title: string | null })[]>`
         SELECT
           u.id,
           u.display_name,
           u.handle,
           u.bio,
           m.role,
-          ${followingExpr} AS is_following
+          ${followingExpr} AS is_following,
+          cs.id AS slot_id,
+          cs.title AS slot_title
         FROM cleanup_members m
         JOIN users u ON u.id = m.user_id
+        LEFT JOIN cleanup_slot_claims csc
+          ON csc.cleanup_id = m.cleanup_id AND csc.user_id = m.user_id
+        LEFT JOIN cleanup_slots cs ON cs.id = csc.slot_id
         WHERE m.cleanup_id = ${cleanupId}
           AND u.deleted_at IS NULL
           ${onlyFollowedFilter}
@@ -703,7 +735,220 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         bio: r.bio,
         role: r.role,
         isFollowing: r.is_following,
+        slot: r.slot_id !== null && r.slot_title !== null
+          ? { id: r.slot_id, title: r.slot_title }
+          : null,
       }))
+    },
+
+    async listSlots(cleanupId: string, viewerId: string | null): Promise<EventSlotView[]> {
+      const grouped = await loadSlots(sql, [cleanupId], viewerId)
+      return grouped.get(cleanupId) ?? []
+    },
+
+    async loadSlotsForCleanups(
+      cleanupIds: string[],
+      viewerId: string | null,
+    ): Promise<Map<string, EventSlotView[]>> {
+      return loadSlots(sql, cleanupIds, viewerId)
+    },
+
+    async slotCountsFor(cleanupIds: string[]): Promise<Map<string, number>> {
+      // The empty guard loadLinkedReportsForCleanups already uses: a page with no cleanups issues no
+      // query at all, which matters because this runs on the hottest list read.
+      if (cleanupIds.length === 0) return new Map()
+      const rows = await sql<{ cleanup_id: string; n: number }[]>`
+        SELECT cleanup_id, count(*)::int AS n
+        FROM cleanup_slots
+        WHERE cleanup_id = ANY(${cleanupIds}::uuid[])
+        GROUP BY cleanup_id
+      `
+      return new Map(rows.map((r) => [r.cleanup_id, r.n]))
+    },
+
+    async reconcileSlots(
+      cleanupId: string,
+      desired: DesiredSlot[],
+      actorId: string | null,
+    ): Promise<SlotReconcileResult> {
+      return sql.begin(async (tx) => {
+        const existing = await tx<{ id: string; title: string }[]>`
+          SELECT id, title FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
+        `
+        const have = new Map(existing.map((r) => [r.id, r.title]))
+
+        // B23: an id that is not on THIS cleanup is a hard 422, never a silent insert — an id from
+        // another event must be a hard error, not a quiet re-parent. Checked BEFORE any write so the
+        // whole reconcile is all-or-nothing (the throw rolls this transaction back regardless).
+        for (const slot of desired) {
+          if (slot.id !== undefined && !have.has(slot.id)) {
+            throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
+          }
+        }
+
+        const added: string[] = []
+        const updated: string[] = []
+        for (const slot of desired) {
+          if (slot.id !== undefined) {
+            await tx`
+              UPDATE cleanup_slots SET
+                title = ${slot.title},
+                description = ${slot.description},
+                capacity = ${slot.capacity},
+                sort_order = ${slot.sortOrder}
+              WHERE id = ${slot.id} AND cleanup_id = ${cleanupId}
+            `
+            updated.push(slot.id)
+          } else {
+            const [row] = await tx<{ id: string }[]>`
+              INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, sort_order)
+              VALUES (${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity}, ${slot.sortOrder})
+              RETURNING id
+            `
+            if (row) added.push(row.id)
+          }
+        }
+
+        const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
+        const toRemove = [...have.keys()].filter((id) => !keep.has(id))
+        const removed: SlotReconcileResult["removed"] = []
+        if (toRemove.length > 0) {
+          // B23/B34: the claimants are read BEFORE the delete, inside this transaction — after the
+          // DELETE the cascade has taken the claim rows and there is nobody left to ring.
+          const claimants = await tx<{ slot_id: string; user_id: string }[]>`
+            SELECT slot_id, user_id FROM cleanup_slot_claims
+            WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${toRemove}::uuid[])
+          `
+          const bySlot = new Map<string, string[]>()
+          for (const c of claimants) {
+            const list = bySlot.get(c.slot_id)
+            if (list) list.push(c.user_id)
+            else bySlot.set(c.slot_id, [c.user_id])
+          }
+          // B24: deleting a claimed slot silently drops its claimants and that is ALLOWED — it is the
+          // host's roster and a cancelled role is a legitimate edit. The bell is the mitigation.
+          await tx`
+            DELETE FROM cleanup_slots
+            WHERE cleanup_id = ${cleanupId} AND id = ANY(${toRemove}::uuid[])
+          `
+          for (const slotId of toRemove) {
+            removed.push({
+              slotId,
+              title: have.get(slotId) ?? "",
+              claimantUserIds: (bySlot.get(slotId) ?? []).filter((u) => u !== actorId),
+            })
+          }
+        }
+        return { added, updated, removed }
+      })
+    },
+
+    async claimSlot(
+      cleanupId: string,
+      userId: string,
+      slotId: string,
+    ): Promise<ClaimSlotOutcome> {
+      return sql.begin(async (tx) => {
+        // Statement ORDER here is the B28 contract, not a style choice.
+        //
+        // FOR SHARE on the cleanups row FIRST mirrors joinCleanupTx exactly and establishes the lock
+        // order against removeMember's FOR NO KEY UPDATE on the same row: without it, claim-vs-remove
+        // deadlocks ABBA (removal locks cleanups then cleanup_slot_claims; we would lock the slot then
+        // block on cleanups). It is also what makes the ban probe below race-safe — a plain SELECT on
+        // cleanup_bans locks nothing.
+        const locked = await tx<{ status: CleanupStatus }[]>`
+          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
+        `
+        const cleanup = locked[0]
+        if (cleanup === undefined) return { kind: "not_found" }
+        // B28e: a completed or cancelled event's roster is the basis for hours attestation, and the
+        // auto-RSVP below would hand membership to anyone who showed up afterwards — logEventHours
+        // requires current membership, so this would be a credit-laundering path.
+        if (cleanup.status === "done" || cleanup.status === "cancelled") return { kind: "closed" }
+
+        const banned = await tx<{ one: number }[]>`
+          SELECT 1 AS one FROM cleanup_bans
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+          LIMIT 1
+        `
+        if (banned.length > 0) return { kind: "banned" }
+
+        // B28b: picking a shift IS an RSVP. The ban probe ran first, so a removed user cannot re-enter
+        // through the slot door (M17's whole point).
+        await tx`
+          INSERT INTO cleanup_members (cleanup_id, user_id, role)
+          VALUES (${cleanupId}, ${userId}, 'member')
+          ON CONFLICT (cleanup_id, user_id) DO NOTHING
+        `
+
+        const mine = await tx<{ slot_id: string }[]>`
+          SELECT slot_id FROM cleanup_slot_claims
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+          LIMIT 1
+        `
+        const currentSlotId = mine[0]?.slot_id ?? null
+
+        // The FOR UPDATE on the SLOT row is what makes count-then-insert safe: two clients racing for
+        // the last seat serialize on this lock and the loser's count(*) below sees the winner's row.
+        // Moving A -> B needs no lock on A — only B's capacity can be invalidated, and A's count only
+        // decreases, which can never falsify anyone else's check.
+        const slotRows = await tx<{ capacity: number | null }[]>`
+          SELECT capacity FROM cleanup_slots
+          WHERE id = ${slotId} AND cleanup_id = ${cleanupId}
+          LIMIT 1
+          FOR UPDATE
+        `
+        const slot = slotRows[0]
+        if (slot === undefined) return { kind: "slot_not_found" }
+
+        // An idempotent re-claim of the slot the viewer already holds must NOT run the capacity check,
+        // or it 409s on a full slot the user is already sitting in.
+        if (currentSlotId === slotId) return { kind: "claimed", slotId }
+
+        if (slot.capacity !== null) {
+          const counted = await tx<{ n: number }[]>`
+            SELECT count(*)::int AS n FROM cleanup_slot_claims WHERE slot_id = ${slotId}
+          `
+          if ((counted[0]?.n ?? 0) >= slot.capacity) return { kind: "full" }
+        }
+
+        // The (cleanup_id, user_id) PK IS the one-slot-per-person rule, so a MOVE is an upsert of
+        // slot_id — never a second row, and it releases the old seat in the same statement.
+        await tx`
+          INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
+          VALUES (${cleanupId}, ${userId}, ${slotId})
+          ON CONFLICT (cleanup_id, user_id)
+          DO UPDATE SET slot_id = EXCLUDED.slot_id, claimed_at = now()
+        `
+        return { kind: "claimed", slotId }
+      })
+    },
+
+    async releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome> {
+      // Releasing does NOT leave the event (B28b): the membership row is untouched and you keep your
+      // RSVP. Asymmetric with claiming on purpose.
+      const rows = await sql<{ status: CleanupStatus }[]>`
+        SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1
+      `
+      const status = rows[0]?.status
+      if (status === undefined) return { kind: "not_found" }
+      // Same attestation argument as B28e/B26: after completion the slot roster is the record the
+      // credited hours were attested against, so it stops moving in BOTH directions.
+      if (status === "done" || status === "cancelled") return { kind: "closed" }
+      await sql`
+        DELETE FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+      `
+      // Idempotent: released whether or not a claim existed (B28c).
+      return { kind: "released" }
+    },
+
+    async slotOf(cleanupId: string, userId: string): Promise<string | null> {
+      const rows = await sql<{ slot_id: string }[]>`
+        SELECT slot_id FROM cleanup_slot_claims
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows[0]?.slot_id ?? null
     },
 
     async resolveJurisdictionContact(
@@ -763,6 +1008,82 @@ async function linkReportsInTx(
     `
   }
   return newlyLinked
+}
+
+/**
+ * Insert a create-time slot set (B22). Shared by createCleanupTx so the INSERT column list lives in one
+ * place. Deliberately takes a Queryable: it only ever runs inside the caller's transaction.
+ */
+async function insertSlotsInTx(
+  tx: Queryable,
+  cleanupId: string,
+  slots: DesiredSlot[],
+): Promise<void> {
+  if (slots.length === 0) return
+  for (const slot of slots) {
+    await tx`
+      INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, sort_order)
+      VALUES (${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity}, ${slot.sortOrder})
+    `
+  }
+}
+
+/**
+ * The batched slot hydration (B29a) — ONE query for a whole page of cleanups, exactly the shape
+ * loadLinkedReportsForCleanups has. `claimed` comes from a grouped sub-select over the claims table and
+ * `mine` from a LEFT JOIN on the viewer's own claim; a NULL viewerId makes `mine` false for every row
+ * (NULL never equals anything), which is the right anonymous answer rather than a special case.
+ */
+async function loadSlots(
+  tag: Sql,
+  cleanupIds: string[],
+  viewerId: string | null,
+): Promise<Map<string, EventSlotView[]>> {
+  const grouped = new Map<string, EventSlotView[]>()
+  if (cleanupIds.length === 0) return grouped
+  const rows = await tag<
+    {
+      cleanup_id: string
+      id: string
+      title: string
+      description: string | null
+      capacity: number | null
+      sort_order: number
+      claimed: number
+      mine: boolean
+    }[]
+  >`
+    SELECT s.cleanup_id, s.id, s.title, s.description, s.capacity, s.sort_order,
+           COALESCE(c.n, 0)::int AS claimed,
+           (mine.user_id IS NOT NULL) AS mine
+    FROM cleanup_slots s
+    LEFT JOIN (
+      SELECT cl.slot_id, count(*) AS n
+      FROM cleanup_slot_claims cl
+      WHERE cl.cleanup_id = ANY(${cleanupIds}::uuid[])
+      GROUP BY cl.slot_id
+    ) c ON c.slot_id = s.id
+    LEFT JOIN cleanup_slot_claims mine
+      ON mine.slot_id = s.id AND mine.user_id = ${viewerId}
+    WHERE s.cleanup_id = ANY(${cleanupIds}::uuid[])
+    ORDER BY s.cleanup_id, s.sort_order, s.id
+  `
+  for (const r of rows) {
+    const view: EventSlotView = {
+      cleanupId: r.cleanup_id,
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      capacity: r.capacity,
+      sortOrder: r.sort_order,
+      claimed: r.claimed,
+      mine: r.mine,
+    }
+    const list = grouped.get(r.cleanup_id)
+    if (list) list.push(view)
+    else grouped.set(r.cleanup_id, [view])
+  }
+  return grouped
 }
 
 /**

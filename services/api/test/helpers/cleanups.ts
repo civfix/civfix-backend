@@ -18,20 +18,25 @@
  */
 
 import { randomUUID } from "node:crypto"
+import { AppError } from "@civfix/shared"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
+  ClaimSlotOutcome,
   CleanupBBox,
   CleanupPersonView,
   CleanupRecord,
   CleanupRepository,
   CompleteCleanupOutcome,
   CreateCleanupTxArgs,
+  DesiredSlot,
+  EventSlotView,
   LinkedEventView,
   LinkedReportView,
   ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
+  SlotReconcileResult,
   UpdateCleanupPatch,
 } from "../../src/services/cleanup-service.js"
 import type { CleanupMemberRole, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
@@ -113,6 +118,27 @@ interface StoredLink {
   linkedAt: Date
 }
 
+/** A stored cleanup_slots row (P9). Identity is `id`; `sortOrder` is presentational only. */
+interface StoredSlot {
+  id: string
+  cleanupId: string
+  title: string
+  description: string | null
+  capacity: number | null
+  sortOrder: number
+}
+
+/**
+ * A stored cleanup_slot_claims row. The (cleanupId, userId) pair is the PK — modeled here by the
+ * single-row lookup every writer below does before inserting, which is what the composite PK enforces
+ * in the real schema ("one slot per person per event", so a move is an UPDATE and never a second row).
+ */
+interface StoredSlotClaim {
+  cleanupId: string
+  userId: string
+  slotId: string
+}
+
 /**
  * Great-circle distance in metres between two lat/lng points (haversine). Used to mirror the Drizzle
  * impl's ST_Distance(geography) ordering for `near` listings closely enough for deterministic tests.
@@ -142,6 +168,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   readonly reports = new Map<string, StoredReport>()
   /** cleanup_reports junction rows. */
   readonly links: StoredLink[] = []
+  /** cleanup_slots rows (P9), inspectable by tests. */
+  readonly slots: StoredSlot[] = []
+  /** cleanup_slot_claims rows (P9), inspectable by tests. */
+  readonly slotClaims: StoredSlotClaim[] = []
   /** cleanup_timeline rows appended by link/unlink/cancel/resource_request (kind + reportId + note +
    *  actor), inspectable by tests. `reportId` is "" for non-link rows; `note` carries free-text entries. */
   readonly timeline: {
@@ -328,7 +358,38 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     // Link the initial reports + record the 'report_linked' timeline rows (mirrors linkReportsInTx).
     this.linkInner(cleanup.id, args.linkedReportIds, args.organizerUserId)
+    // B22: the create-time slot set lands in the same "transaction". Every entry inserts — the service
+    // strips any client-supplied id before it reaches the repo, because on create nothing exists to edit.
+    for (const slot of args.slots) this.insertSlot(cleanup.id, slot)
     return Promise.resolve(this.toRecord(cleanup, null))
+  }
+
+  /** Insert one cleanup_slots row (shared by create + reconcile). Returns the new id. */
+  private insertSlot(cleanupId: string, slot: DesiredSlot): string {
+    const id = randomUUID()
+    this.slots.push({
+      id,
+      cleanupId,
+      title: slot.title,
+      description: slot.description,
+      capacity: slot.capacity,
+      sortOrder: slot.sortOrder,
+    })
+    return id
+  }
+
+  /** Test helper: seed a slot directly (bypassing create/reconcile). Returns the stored row. */
+  seedSlot(over: Partial<StoredSlot> & { cleanupId: string }): StoredSlot {
+    const slot: StoredSlot = {
+      id: over.id ?? randomUUID(),
+      cleanupId: over.cleanupId,
+      title: over.title ?? "Registration table",
+      description: over.description ?? null,
+      capacity: over.capacity ?? null,
+      sortOrder: over.sortOrder ?? 0,
+    }
+    this.slots.push(slot)
+    return slot
   }
 
   findCleanupById(id: string, near: NearPoint | null): Promise<CleanupRecord | null> {
@@ -587,6 +648,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       if (!this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
         this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
       }
+      // B28d: the claim dies with the membership, in the same operation the Drizzle impl does both in.
+      // A removed attendee who kept their seat would leave a phantom-full slot nobody can free.
+      this.deleteClaim(cleanupId, userId)
     }
     return Promise.resolve({ removed: idx >= 0, going: this.memberCountOf(cleanupId) })
   }
@@ -635,7 +699,19 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!this.cleanups.has(cleanupId)) return Promise.resolve(false)
     const idx = this.members.findIndex((m) => m.cleanupId === cleanupId && m.userId === userId)
     if (idx >= 0) this.members.splice(idx, 1)
+    // B28d: leaving frees the seat too — the Drizzle twin deletes both rows in one transaction.
+    this.deleteClaim(cleanupId, userId)
     return Promise.resolve(true)
+  }
+
+  /** Delete the (cleanupId, userId) claim row if present. Returns the freed slot id, or null. */
+  private deleteClaim(cleanupId: string, userId: string): string | null {
+    const idx = this.slotClaims.findIndex(
+      (c) => c.cleanupId === cleanupId && c.userId === userId,
+    )
+    if (idx < 0) return null
+    const [claim] = this.slotClaims.splice(idx, 1)
+    return claim?.slotId ?? null
   }
 
   cancelCleanupTx(
@@ -711,10 +787,185 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
     let views: AttendeeView[] = ordered.map((x) => {
       const view = this.personView(x.m.userId)
-      return { ...view, isFollowing: follows(x.m.userId), role: x.m.role }
+      // B29b: the roster carries each attendee's claimed slot (or null) — the Drizzle twin's two LEFT
+      // JOINs. This is the whole "per-slot roster" feature; there is no second endpoint.
+      const claim = this.slotClaims.find(
+        (c) => c.cleanupId === cleanupId && c.userId === x.m.userId,
+      )
+      const slot = claim ? this.slots.find((s) => s.id === claim.slotId) : undefined
+      return {
+        ...view,
+        isFollowing: follows(x.m.userId),
+        role: x.m.role,
+        slot: slot ? { id: slot.id, title: slot.title } : null,
+      }
     })
     if (onlyFollowed) views = views.filter((v) => v.isFollowing)
     return Promise.resolve(views.slice(0, limit))
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // P9 signup slots. The unit suite is the ONLY place these rules run without Docker, so the twin
+  // models every one of them: the capacity check, the one-slot-per-person PK, the auto-RSVP, the
+  // closed-event refusal, the composite-FK rejection of a foreign slotId, and the leave/remove cleanup.
+  // ---------------------------------------------------------------------------------------------
+
+  /** Ordered slot board for one cleanup + the viewer's own claim per row (mirrors the batched SQL). */
+  private slotViews(cleanupId: string, viewerId: string | null): EventSlotView[] {
+    return this.slots
+      .filter((s) => s.cleanupId === cleanupId)
+      .sort((a, b) => (a.sortOrder !== b.sortOrder ? a.sortOrder - b.sortOrder : a.id < b.id ? -1 : 1))
+      .map((s) => ({
+        cleanupId: s.cleanupId,
+        id: s.id,
+        title: s.title,
+        description: s.description,
+        capacity: s.capacity,
+        sortOrder: s.sortOrder,
+        claimed: this.slotClaims.filter((c) => c.slotId === s.id).length,
+        // A null viewerId makes `mine` false for every row — the SQL gets the same answer from the NULL
+        // comparison, not from a special case.
+        mine: viewerId !== null
+          && this.slotClaims.some((c) => c.slotId === s.id && c.userId === viewerId),
+      }))
+  }
+
+  listSlots(cleanupId: string, viewerId: string | null): Promise<EventSlotView[]> {
+    return Promise.resolve(this.slotViews(cleanupId, viewerId))
+  }
+
+  loadSlotsForCleanups(
+    cleanupIds: string[],
+    viewerId: string | null,
+  ): Promise<Map<string, EventSlotView[]>> {
+    const grouped = new Map<string, EventSlotView[]>()
+    for (const cleanupId of cleanupIds) {
+      const views = this.slotViews(cleanupId, viewerId)
+      if (views.length > 0) grouped.set(cleanupId, views)
+    }
+    return Promise.resolve(grouped)
+  }
+
+  slotCountsFor(cleanupIds: string[]): Promise<Map<string, number>> {
+    const ids = new Set(cleanupIds)
+    const counts = new Map<string, number>()
+    for (const s of this.slots) {
+      if (!ids.has(s.cleanupId)) continue
+      counts.set(s.cleanupId, (counts.get(s.cleanupId) ?? 0) + 1)
+    }
+    return Promise.resolve(counts)
+  }
+
+  reconcileSlots(
+    cleanupId: string,
+    desired: DesiredSlot[],
+    actorId: string | null,
+  ): Promise<SlotReconcileResult> {
+    const have = this.slots.filter((s) => s.cleanupId === cleanupId)
+    const haveIds = new Set(have.map((s) => s.id))
+
+    // B23: an id NOT on THIS cleanup is a hard 422 — never a silent insert, never a quiet re-parent.
+    // Checked before ANY mutation so the reconcile is all-or-nothing, exactly like the SQL transaction.
+    for (const slot of desired) {
+      if (slot.id !== undefined && !haveIds.has(slot.id)) {
+        throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
+      }
+    }
+
+    const added: string[] = []
+    const updated: string[] = []
+    for (const slot of desired) {
+      if (slot.id !== undefined) {
+        const row = this.slots.find((s) => s.id === slot.id && s.cleanupId === cleanupId)
+        if (row) {
+          row.title = slot.title
+          row.description = slot.description
+          row.capacity = slot.capacity
+          row.sortOrder = slot.sortOrder
+          updated.push(row.id)
+        }
+      } else {
+        added.push(this.insertSlot(cleanupId, slot))
+      }
+    }
+
+    const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
+    const removed: SlotReconcileResult["removed"] = []
+    for (const row of have) {
+      if (keep.has(row.id)) continue
+      // The claimants are read BEFORE the delete — after it, the cascade has taken the claim rows and
+      // there is nobody left to ring (B34).
+      const claimantUserIds = this.slotClaims
+        .filter((c) => c.slotId === row.id)
+        .map((c) => c.userId)
+        .filter((u) => u !== actorId)
+      // B24: dropping a claimed slot drops its claimants. Allowed — the bell is the mitigation. (The
+      // real schema does it with ON DELETE CASCADE on the composite FK.)
+      for (let i = this.slotClaims.length - 1; i >= 0; i--) {
+        if (this.slotClaims[i]!.slotId === row.id) this.slotClaims.splice(i, 1)
+      }
+      const idx = this.slots.findIndex((s) => s.id === row.id)
+      if (idx >= 0) this.slots.splice(idx, 1)
+      removed.push({ slotId: row.id, title: row.title, claimantUserIds })
+    }
+    return Promise.resolve({ added, updated, removed })
+  }
+
+  claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome> {
+    // The branch ORDER mirrors the SQL statement order in claimSlot, and it is load-bearing: the ban
+    // probe must precede the auto-RSVP (or a removed user re-enters through the slot door), and the
+    // already-holds check must precede the capacity check (or an idempotent re-claim 409s on a full
+    // slot the user is already in).
+    const cleanup = this.cleanups.get(cleanupId)
+    if (!cleanup) return Promise.resolve({ kind: "not_found" })
+    // B28e: a completed/cancelled event's roster is what hours were attested against, and the auto-RSVP
+    // below would otherwise hand membership to anyone claiming after the fact.
+    if (cleanup.status === "done" || cleanup.status === "cancelled") {
+      return Promise.resolve({ kind: "closed" })
+    }
+    if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
+      return Promise.resolve({ kind: "banned" })
+    }
+    // B28b: picking a shift IS an RSVP.
+    if (!this.members.some((m) => m.cleanupId === cleanupId && m.userId === userId)) {
+      this.members.push({ cleanupId, userId, role: "member" })
+      if (!this.users.has(userId)) this.seedUser({ id: userId })
+    }
+
+    const current = this.slotClaims.find((c) => c.cleanupId === cleanupId && c.userId === userId)
+    // The composite FK (slot_id, cleanup_id) makes a slot from ANOTHER event structurally unclaimable;
+    // here that is the `s.cleanupId === cleanupId` half of the lookup.
+    const slot = this.slots.find((s) => s.id === slotId && s.cleanupId === cleanupId)
+    if (!slot) return Promise.resolve({ kind: "slot_not_found" })
+
+    // Idempotent re-claim: no capacity check (see above).
+    if (current?.slotId === slotId) return Promise.resolve({ kind: "claimed", slotId })
+
+    if (slot.capacity !== null) {
+      const claimed = this.slotClaims.filter((c) => c.slotId === slotId).length
+      if (claimed >= slot.capacity) return Promise.resolve({ kind: "full" })
+    }
+    // The (cleanupId, userId) PK: a MOVE overwrites slot_id and frees the old seat in the same step,
+    // never a second row.
+    if (current) current.slotId = slotId
+    else this.slotClaims.push({ cleanupId, userId, slotId })
+    return Promise.resolve({ kind: "claimed", slotId })
+  }
+
+  releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome> {
+    const cleanup = this.cleanups.get(cleanupId)
+    if (!cleanup) return Promise.resolve({ kind: "not_found" })
+    if (cleanup.status === "done" || cleanup.status === "cancelled") {
+      return Promise.resolve({ kind: "closed" })
+    }
+    this.deleteClaim(cleanupId, userId)
+    // Idempotent (B28c) — and releasing does NOT leave the event: the membership row is untouched.
+    return Promise.resolve({ kind: "released" })
+  }
+
+  slotOf(cleanupId: string, userId: string): Promise<string | null> {
+    const claim = this.slotClaims.find((c) => c.cleanupId === cleanupId && c.userId === userId)
+    return Promise.resolve(claim?.slotId ?? null)
   }
 
   resolveJurisdictionContact(

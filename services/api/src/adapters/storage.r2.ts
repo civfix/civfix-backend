@@ -125,7 +125,14 @@ export class R2Storage implements Storage {
     }
   }
 
-  /** HEAD `key`: returns {size, contentType} or null when the object does not exist. */
+  /**
+   * HEAD `key`: returns {size, contentType, contentDisposition?} or null when the object does not exist.
+   *
+   * `ContentDisposition` is mapped through so this adapter and `FakeStorage` agree: a test asserting that
+   * a stored object carries `inline; filename="…"` (the service-hours transcript) must mean the same
+   * thing offline and in production, or the assertion is vacuous where it runs and unverified where it
+   * matters.
+   */
   async head(key: string): Promise<StorageHead | null> {
     const { HeadObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
@@ -136,6 +143,9 @@ export class R2Storage implements Storage {
       return {
         size: typeof res.ContentLength === "number" ? res.ContentLength : 0,
         contentType: res.ContentType ?? "application/octet-stream",
+        ...(typeof res.ContentDisposition === "string"
+          ? { contentDisposition: res.ContentDisposition }
+          : {}),
       }
     } catch (err) {
       if (isNotFound(err)) return null
@@ -154,7 +164,15 @@ export class R2Storage implements Storage {
     }
   }
 
-  /** PUT `body` at `key` from the server side (used by the worker for thumbnails / transcodes). */
+  /**
+   * PUT `body` at `key` from the server side (the worker's thumbnails / transcodes, and the rendered
+   * service-hours transcript).
+   *
+   * `meta.contentDisposition` is stored ON THE OBJECT, and R2 replays it on every presigned GET. That is
+   * the only mechanism that gives the downloaded file a real name: the key is an opaque UUID, and on the
+   * web `<a download>` is ignored cross-origin while a `fetch`-to-blob is blocked because R2 presigned
+   * GETs carry no CORS headers.
+   */
   async put(key: string, body: Uint8Array | Buffer, meta?: StoragePutMeta): Promise<void> {
     const { PutObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
@@ -165,6 +183,9 @@ export class R2Storage implements Storage {
           Key: key,
           Body: body,
           ...(meta?.contentType !== undefined ? { ContentType: meta.contentType } : {}),
+          ...(meta?.contentDisposition !== undefined
+            ? { ContentDisposition: meta.contentDisposition }
+            : {}),
         }),
       )
     } catch (err) {

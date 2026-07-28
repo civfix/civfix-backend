@@ -19,6 +19,7 @@ import { registerReportContentRoutes } from "./report-content.routes.js"
 import { registerSocialRoutes } from "./social.routes.js"
 import { registerPostRoutes } from "./posts.routes.js"
 import { registerVolunteerHoursRoutes } from "./volunteer-hours.routes.js"
+import { registerServiceHoursCertificateRoutes } from "./service-hours-certificates.routes.js"
 import { registerVerificationRoutes } from "./verification.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
 import { registerConversationRoutes } from "./conversations.routes.js"
@@ -57,6 +58,9 @@ export async function registerRoutes(
   await registerSocialRoutes(app, container)
   await registerPostRoutes(app, container)
   await registerVolunteerHoursRoutes(app, container)
+  // After the hours router: the certificate endpoints sit under the same /me/volunteer-hours prefix and
+  // read the same ledger, plus the one PUBLIC /service-hours/verify/:code lookup.
+  await registerServiceHoursCertificateRoutes(app, container)
   await registerVerificationRoutes(app, container)
   await registerNotificationRoutes(app, container)
 

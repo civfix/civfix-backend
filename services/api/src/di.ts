@@ -54,6 +54,8 @@ import {
 } from "./services/blocks-repository.drizzle.js"
 import { makeDrizzleVolunteerHoursRepository } from "./services/volunteer-hours-repository.drizzle.js"
 import type { VolunteerHoursRepository } from "./services/volunteer-hours-service.js"
+import { makeDrizzleCertificateRepository } from "./services/certificate-repository.drizzle.js"
+import type { CertificateRepository } from "./services/certificate-service.js"
 import {
   makeDrizzlePostRepository,
   type PostRepository,
@@ -107,6 +109,7 @@ export interface Container {
   getDmRepo(): DmRepository
   getBlocksRepo(): BlocksRepository
   getVolunteerHoursRepo(): VolunteerHoursRepository
+  getCertificateRepo(): CertificateRepository
   getPostRepo(): PostRepository
   getPostService(): PostService
   getNotificationService(logger?: NotificationLogger): NotificationService
@@ -143,6 +146,14 @@ export function buildContainer(env: Env): Container {
       volunteerHoursRepo = makeDrizzleVolunteerHoursRepository(getDb().sql)
     }
     return volunteerHoursRepo
+  }
+  let certificateRepo: CertificateRepository | undefined
+  /** Lazy + memoized, exactly like getVolunteerHoursRepo: `getDb()` must never run at mount time. */
+  function getCertificateRepo(): CertificateRepository {
+    if (!certificateRepo) {
+      certificateRepo = makeDrizzleCertificateRepository(getDb().sql)
+    }
+    return certificateRepo
   }
   function getBlocksRepo(): BlocksRepository {
     if (!blocksRepo) {
@@ -434,6 +445,7 @@ export function buildContainer(env: Env): Container {
     getDmRepo,
     getBlocksRepo,
     getVolunteerHoursRepo,
+    getCertificateRepo,
     getPostRepo,
     getPostService,
     getNotificationService,
