@@ -279,6 +279,13 @@ export class InMemoryUserStore implements UserStore {
     return Promise.resolve({ ...next })
   }
 
+  /**
+   * The USERS-ROW half only. PgUserStore additionally performs cross-table erasure in the same
+   * transaction — hides the user's public reports, cancels their upcoming/active events, and revokes +
+   * scrubs their service-hours certificates (docs/erasure-behavior.md). This twin holds no such tables,
+   * so that half is covered by `test/integration/account-deletion-cascade-pg.test.ts` against real
+   * Postgres, not here.
+   */
   softDeleteAndAnonymize(id: string): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.softDeleteAndAnonymize: user not found")

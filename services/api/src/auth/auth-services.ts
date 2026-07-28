@@ -85,7 +85,13 @@ export function buildAuthServicesFromContainer(
   container: Container,
   opts: { logger?: OtpLogger } = {},
 ): AuthServices {
-  const stores = new PgAuthStores(container.getDb().db)
+  // `certificateObjects` is what lets account erasure reach the certificate PDFs in R2 (the rendered
+  // documents print the holder's legal name). Without it PgUserStore still scrubs the rows and logs the
+  // skipped objects — see docs/erasure-behavior.md.
+  const stores = new PgAuthStores(container.getDb().db, {
+    certificateObjects: container.storage,
+    ...(opts.logger ? { logger: opts.logger } : {}),
+  })
   const cache = new RedisCacheClient(container.getRedis())
   const reviewerConfig = reviewerOtpConfigFromEnv(container.env)
   return buildAuthServices({

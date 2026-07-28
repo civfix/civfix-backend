@@ -8,6 +8,10 @@ import {
   type PersonView,
 } from "../../src/services/social-service.js"
 import {
+  toPersonView,
+  type PersonRowSelect,
+} from "../../src/services/social-repository.drizzle.js"
+import {
   InMemorySocialRepository,
   makeCleanupRecord,
 } from "../helpers/social.js"
@@ -583,6 +587,60 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
     const { profile } = await service.getProfile(A, { userId: C })
     expect("volunteerHours" in profile).toBe(false)
     expect(profile.showVolunteerHours).toBe(true)
+  })
+
+  /**
+   * FAIL-CLOSED on a projection that FORGOT the column.
+   *
+   * The four PersonView-producing reads in social-repository.drizzle.ts are raw postgres.js templates
+   * typed by `sql<PersonRowSelect[]>` — an UNCHECKED assertion. A projection that drops
+   * `u.show_volunteer_hours` therefore typechecks and yields `undefined` at runtime, and `undefined`
+   * would sail through `view.showVolunteerHours === false`, publishing the hours of a user who
+   * explicitly hid them. `toPersonView` coerces that `undefined` to an explicit opt-out.
+   */
+  describe("toPersonView: a projection missing show_volunteer_hours fails CLOSED", () => {
+    /** Exactly what postgres.js hands back when the SELECT list omits the column: no such key. */
+    function rowWithoutTheColumn(): PersonRowSelect {
+      return {
+        id: A,
+        display_name: "Alice",
+        handle: "alice",
+        bio: null,
+        followers: 0,
+        following: 0,
+        verified: false,
+        avatar_r2_key: null,
+        avatar_url: null,
+        social_links: null,
+      } as unknown as PersonRowSelect
+    }
+
+    it("maps a missing column to false (an explicit opt-out), not undefined", () => {
+      const row = rowWithoutTheColumn()
+      expect("show_volunteer_hours" in row).toBe(false)
+      expect(toPersonView(row).showVolunteerHours).toBe(false)
+    })
+
+    it("still passes the real tri-state through verbatim — null must NOT collapse to false", () => {
+      const nullArm = { ...rowWithoutTheColumn(), show_volunteer_hours: null } as PersonRowSelect
+      const trueArm = { ...rowWithoutTheColumn(), show_volunteer_hours: true } as PersonRowSelect
+      const falseArm = { ...rowWithoutTheColumn(), show_volunteer_hours: false } as PersonRowSelect
+      expect(toPersonView(nullArm).showVolunteerHours).toBeNull()
+      expect(toPersonView(trueArm).showVolunteerHours).toBe(true)
+      expect(toPersonView(falseArm).showVolunteerHours).toBe(false)
+    })
+
+    it("end to end: the coerced view HIDES the hours instead of disclosing them", async () => {
+      const { repo, service, calls } = makeHoursHarness()
+      const view = toPersonView(rowWithoutTheColumn())
+      repo.seedUser({ id: A, displayName: "Alice", showVolunteerHours: view.showVolunteerHours })
+      repo.seedUser({ id: C, displayName: "Carol" })
+
+      const { profile } = await service.getProfile(A, { userId: C })
+      expect("volunteerHours" in profile).toBe(false)
+      // ...and the total is never even queried, the same as a genuine opt-out.
+      expect(calls).toEqual([])
+    })
   })
 })
 

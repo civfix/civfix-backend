@@ -513,6 +513,49 @@ describe("volunteer hours: leaderboard", () => {
     expect(preview.viewerRank).toBeUndefined()
     expect(preview.viewerHours).toBeUndefined()
   })
+
+  /**
+   * The other side of the same threshold, and the one that shipped broken: `LeaderboardQuerySchema.limit`
+   * is `.optional()` with NO default, so the full-board request every shipped client sends carries no
+   * `limit` at all. Gating the extras on the CLAMPED limit (LEADERBOARD_DEFAULT_LIMIT = 20, below the
+   * threshold of 25) turned B48 off for exactly that request — participantCount, viewerRank and
+   * viewerHours all silently absent unless a caller hand-wrote `?limit=25`. An ABSENT limit is the full
+   * board and opts IN; only an explicit preview limit opts out (the test above).
+   */
+  it("B48: an OMITTED limit is the full board and still pays for the extras", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    for (const [id, name] of [
+      [HOST, "Ann"],
+      [BOB, "Bob"],
+      [CAROL, "Carol"],
+    ] as const) {
+      repo.seedUser(id, { name, handle: null, avatarUrl: null, verified: false })
+    }
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: [
+        { userId: HOST, hours: 5 },
+        { userId: BOB, hours: 3 },
+        { userId: CAROL, hours: 1 },
+      ],
+    })
+    const service = makeService({ repo, view: null })
+
+    // No `limit` key at all — byte-identical to what the route parses from an empty query string.
+    const board = await service.leaderboard(GEOID_A, { geoid: GEOID_A }, BOB)
+    expect(board.participantCount).toBe(3)
+    expect(board.viewerRank).toBe(2)
+    expect(board.viewerHours).toBe(3)
+
+    // Anonymous on the same omitted-limit request: the count is still there, the viewer fields absent.
+    const anon = await service.leaderboard(GEOID_A, { geoid: GEOID_A })
+    expect(anon.participantCount).toBe(3)
+    expect(anon.viewerRank).toBeUndefined()
+    expect(anon.viewerHours).toBeUndefined()
+  })
 })
 
 /**
@@ -673,12 +716,15 @@ describe("volunteer hours: hours_logged notifications", () => {
 })
 
 /**
- * Route-level regression tripwires for the leaderboard, run with NO database: the in-memory repo is
- * injected via buildServer(volunteerOverrides) and driven through app.inject.
+ * Route-level regression tripwires for the two VIEWER-DEPENDENT reads in volunteer-hours.routes.ts, run
+ * with NO database: the in-memory repo is injected via buildServer(volunteerOverrides) and driven through
+ * app.inject.
  *
- * These two ship together on purpose. T1 is the line that 422s EVERY leaderboard request the moment
- * `geoid` became required on LeaderboardQuerySchema; T4 is what stops the cache split from serving one
- * signed-in user's rank to every anonymous reader.
+ * These ship together on purpose. T1 is the line that 422s EVERY leaderboard request the moment `geoid`
+ * became required on LeaderboardQuerySchema; T4 is what stops the cache split from serving one signed-in
+ * user's rank — or one owner's itemised ledger — to every anonymous reader. Both routes answer ONE url
+ * with TWO bodies, so both carry the same `Vary` + `Cache-Control` pair; asserting them side by side is
+ * what keeps a third such read from landing silent.
  */
 describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
   let app: FastifyInstance | undefined
@@ -777,6 +823,48 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     const res = await built.inject({
       method: "GET",
       url: `/v1/jurisdictions/${GEOID_A}/leaderboard`,
+      headers: { origin: "https://civfix.org" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers["vary"]).toBe("Origin, Cookie, Authorization")
+  })
+
+  /**
+   * The SAME split on `GET /v1/people/:id/volunteer-hours`, which is the more privacy-sensitive of the
+   * two: `isSelf` bypasses both C18 gates, so the owner's own request to this url returns the full
+   * itemised ledger — event titles, dates, crediting hosts — where every other viewer gets
+   * `{visible:false|true, items: []}`. A shared cache told nothing about that is a cache that can serve
+   * one person's movement history to the next reader of the same url.
+   */
+  it("T4: getPublicVolunteerHours splits its cache the same way the leaderboard does", async () => {
+    const { app: built, token } = await makeApp()
+
+    const anon = await built.inject({
+      method: "GET",
+      url: `/v1/people/${HOST}/volunteer-hours`,
+    })
+    expect(anon.statusCode).toBe(200)
+    expect(anon.headers["cache-control"]).toBe("public, max-age=60")
+    expect(anon.headers["vary"]).toContain("Cookie")
+    expect(anon.headers["vary"]).toContain("Authorization")
+
+    const authed = await built.inject({
+      method: "GET",
+      url: `/v1/people/${HOST}/volunteer-hours`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(authed.statusCode).toBe(200)
+    expect(authed.headers["cache-control"]).toBe("private, max-age=0, no-store")
+    expect(authed.headers["vary"]).toContain("Cookie")
+    expect(authed.headers["vary"]).toContain("Authorization")
+  })
+
+  /** Same merge rule as the leaderboard: `Vary` is APPENDED to the one @fastify/cors already set. */
+  it("T4: getPublicVolunteerHours also MERGES its Vary with the CORS Origin", async () => {
+    const { app: built } = await makeApp()
+    const res = await built.inject({
+      method: "GET",
+      url: `/v1/people/${HOST}/volunteer-hours`,
       headers: { origin: "https://civfix.org" },
     })
     expect(res.statusCode).toBe(200)

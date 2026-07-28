@@ -163,6 +163,47 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         SELECT status, applied_at FROM user_verification WHERE user_id = ${userId} LIMIT 1
       `
 
+      /**
+       * Issued service-hours transcripts (P5). These are personal data twice over — a frozen copy of the
+       * holder's name and an itemised record of where they volunteered — so a DSAR that omitted them
+       * would be incomplete.
+       *
+       * TWO COLUMNS ARE DELIBERATELY EXCLUDED:
+       *   - `snapshot`: the exact rendered model, ~200 KB of TOASTed jsonb per row at the 1000-entry cap.
+       *     Including it would put tens of megabytes into an EMAIL ATTACHMENT and detoast on every
+       *     export. It is not withheld data — it is the content of the PDF the holder already has, and
+       *     the same entries are re-derivable from the ledger.
+       *   - `r2_key`: an internal object key, useless without a signed URL and never disclosed anywhere
+       *     else (see the verify projection's rule in certificate-service.ts). The holder fetches the
+       *     document itself from `GET /me/service-hours/certificates`.
+       * `code` IS included: it is printed on the document the holder is carrying, not a secret from them.
+       */
+      const certificates = sql<
+        {
+          code: string
+          locale: string
+          holder_name: string
+          holder_handle: string | null
+          total_hours: number
+          entry_count: number
+          period_start: Date | null
+          period_end: Date | null
+          document_sha256: string
+          byte_size: number
+          issued_at: Date
+          revoked_at: Date | null
+          revoked_reason: string | null
+        }[]
+      >`
+        SELECT
+          code, locale, holder_name, holder_handle, total_hours::float8 AS total_hours, entry_count,
+          period_start, period_end, document_sha256, byte_size, issued_at, revoked_at, revoked_reason
+        FROM service_hours_certificates
+        WHERE user_id = ${userId}
+        ORDER BY issued_at DESC
+        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+      `
+
       const [
         reportRows,
         commentRows,
@@ -176,6 +217,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         notificationPrefRows,
         pushTokenRows,
         verificationRows,
+        certificateRows,
       ] = await Promise.all([
         reports,
         comments,
@@ -189,6 +231,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         notificationPrefs,
         pushTokenRowsQuery,
         verification,
+        certificates,
       ])
 
       const profile = profileRows[0] ?? null
@@ -226,6 +269,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
           revokedAt: t.revoked_at,
         })),
         verification: verificationRows[0] ?? null,
+        certificates: clip("certificates", certificateRows),
         truncated:
           truncatedSections.length > 0
             ? {
@@ -242,8 +286,8 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
       const text =
         "Attached is a copy of your civfix data (JSON). It includes your profile, reports, comments, " +
-        "messages, events, and connections. Secrets (login codes, session tokens, raw device tokens) " +
-        "are intentionally excluded." +
+        "messages, events, connections, and your issued service-hours transcripts. Secrets (login " +
+        "codes, session tokens, raw device tokens) are intentionally excluded." +
         (truncatedSections.length > 0
           ? `\n\nNote: some sections (${truncatedSections.join(", ")}) were very large and this export ` +
             `contains only your most recent ${DATA_EXPORT_MAX_ROWS} entries per section. Reply to this ` +

@@ -23,7 +23,7 @@ export {
 /** "In the viewer's area" radius for follow suggestions (~25 km). */
 const SUGGEST_NEARBY_METERS = 25_000
 
-interface PersonRowSelect {
+export interface PersonRowSelect {
   id: string
   display_name: string
   handle: string | null
@@ -35,9 +35,18 @@ interface PersonRowSelect {
   avatar_url: string | null
   social_links?: SocialLinks | null
   /**
-   * P6 hours privacy (0061). REQUIRED on this row shape, not optional like `social_links`: PersonView
-   * carries the tri-state and every projection below selects `u.show_volunteer_hours`, so a new
-   * projection that forgets it is a compile error rather than a silently `undefined` privacy flag.
+   * P6 hours privacy (0061). Declared REQUIRED (not optional like `social_links`) as DOCUMENTATION of
+   * what every projection below owes this shape — it is NOT a compile-time guarantee.
+   *
+   * ⚠ postgres.js's `sql<PersonRowSelect[]>` is an UNCHECKED TYPE ASSERTION over a template literal:
+   * TypeScript never inspects the SQL column list, so a projection that forgets
+   * `u.show_volunteer_hours` typechecks fine and yields `undefined` at runtime — and `undefined` would
+   * slip through the consumer's `=== false` opt-out gate (social-service.ts buildProfile), publishing
+   * the hours of a user who explicitly hid them.
+   *
+   * `toPersonView` therefore coerces `undefined` to `false`: a forgotten column FAILS CLOSED (hours
+   * hidden, which is merely wrong-looking) instead of failing open (hours disclosed, which is the
+   * disclosure 0061 exists to prevent).
    */
   show_volunteer_hours: boolean | null
 }
@@ -46,7 +55,12 @@ interface PersonRowSelectWithFollow extends PersonRowSelect {
   is_following: boolean
 }
 
-function toPersonView(r: PersonRowSelect): PersonView {
+/**
+ * Exported for `test/unit/social-service.test.ts`, which feeds it a row literal with the
+ * `show_volunteer_hours` column MISSING — the exact runtime shape a forgotten column produces, and the
+ * one thing no typecheck can catch (see the field's doc comment).
+ */
+export function toPersonView(r: PersonRowSelect): PersonView {
   return {
     id: r.id,
     displayName: r.display_name,
@@ -58,7 +72,11 @@ function toPersonView(r: PersonRowSelect): PersonView {
     avatarR2Key: r.avatar_r2_key,
     avatarUrl: r.avatar_url,
     socialLinks: r.social_links ?? null,
-    showVolunteerHours: r.show_volunteer_hours,
+    // FAIL CLOSED, and note this is NOT `?? false`: `null` is the meaningful "never chosen" arm of the
+    // tri-state and must survive verbatim (it is what keeps the flag off the DTO). Only `undefined` —
+    // which the database cannot produce, so it means the projection omitted the column — collapses to an
+    // explicit opt-out.
+    showVolunteerHours: r.show_volunteer_hours === undefined ? false : r.show_volunteer_hours,
   }
 }
 

@@ -213,12 +213,117 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
     expect(repo.slots.filter((s) => s.cleanupId === id).map((s) => s.title)).toEqual(["Mine"])
   })
 
+  it("SWAPS two slot titles in one save (the write order, not just the final state)", async () => {
+    const id = seedEvent()
+    const reg = repo.seedSlot({ cleanupId: id, title: "Registration", sortOrder: 0 })
+    const grill = repo.seedSlot({ cleanupId: id, title: "Grill", sortOrder: 1 })
+
+    const dto = await service.updateCleanup(
+      id,
+      {
+        slots: [
+          { id: reg.id, title: "Grill", sortOrder: 0 },
+          { id: grill.id, title: "Registration", sortOrder: 1 },
+        ],
+      },
+      ORG,
+    )
+
+    // (cleanup_id, lower(title)) is an IMMEDIATELY-checked unique index, so the first UPDATE of a naive
+    // swap writes a title the second row still holds — a raw 23505, i.e. a 500 on an ordinary edit. The
+    // repo parks renamed rows on sentinel titles first; both slots keep their identity through it.
+    expect(dto.slots.map((s) => [s.id, s.title])).toEqual([
+      [reg.id, "Grill"],
+      [grill.id, "Registration"],
+    ])
+  })
+
+  it("REMOVES a slot and re-adds one with the SAME title in one save", async () => {
+    const id = seedEvent()
+    const old = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 2 })
+
+    // The other half of the same ordering bug: written before the delete, this INSERT collides with the
+    // row it is replacing. The removal has to land first.
+    const dto = await service.updateCleanup(id, { slots: [{ title: "Grill", capacity: 5 }] }, ORG)
+
+    expect(dto.slots.map((s) => [s.title, s.capacity])).toEqual([["Grill", 5]])
+    // A genuinely NEW row — dropping the id is how a host resets a slot's claimants.
+    expect(dto.slots[0]?.id).not.toBe(old.id)
+    expect(repo.slots.filter((s) => s.cleanupId === id)).toHaveLength(1)
+  })
+
+  it("RENAMES a kept slot onto the title of a slot being removed in the same save", async () => {
+    const id = seedEvent()
+    const keep = repo.seedSlot({ cleanupId: id, title: "Grill", sortOrder: 0 })
+    repo.seedSlot({ cleanupId: id, title: "Registration", sortOrder: 1 })
+
+    const dto = await service.updateCleanup(
+      id,
+      { slots: [{ id: keep.id, title: "Registration", sortOrder: 0 }] },
+      ORG,
+    )
+
+    expect(dto.slots.map((s) => [s.id, s.title])).toEqual([[keep.id, "Registration"]])
+  })
+
+  it("the repo itself 422s a duplicate title rather than leaking the unique violation", async () => {
+    // The service refuses duplicates within the payload first, so this is the repo contract on its own:
+    // whatever reaches cleanup_slots_cleanup_title_uidx comes back as a NAMED validation error, never
+    // the raw 23505 that http-mapper turns into an unactionable 500.
+    const id = seedEvent()
+    // Called through an async wrapper because the in-memory twin throws SYNCHRONOUSLY where the drizzle
+    // repo rejects its promise; this asserts the error either way.
+    await expect(
+      (async () =>
+        repo.reconcileSlots(
+          id,
+          [
+            { title: "Grill", description: null, capacity: null, sortOrder: 0 },
+            { title: "GRILL", description: null, capacity: null, sortOrder: 1 },
+          ],
+          ORG,
+        ))(),
+    ).rejects.toSatisfy((err: unknown) => fieldsOf(err).slots === "duplicate slot title")
+  })
+
   it("names the unknown id in the 422 payload", async () => {
     const id = seedEvent()
     const unknown = "55555555-5555-5555-5555-555555555555"
     await expect(
       service.updateCleanup(id, { slots: [{ id: unknown, title: "Ghost" }] }, ORG),
     ).rejects.toSatisfy((err: unknown) => fieldsOf(err).slots === `unknown slot: ${unknown}`)
+  })
+
+  it("a foreign slot id 422s the WHOLE patch — the scalar fields are not written either", async () => {
+    const id = seedEvent()
+    seedEvent(OTHER_CLEANUP_ID)
+    const foreign = repo.seedSlot({ cleanupId: OTHER_CLEANUP_ID, title: "Someone else's grill" })
+    const before = repo.cleanups.get(id)!
+    const originalTitle = before.title
+    const originalScheduledAt = before.scheduledAt
+    const later = new Date(FUTURE.getTime() + 86_400_000)
+
+    await expect(
+      service.updateCleanup(
+        id,
+        {
+          title: "Moved and renamed",
+          description: "New plan",
+          scheduledAt: later.toISOString(),
+          slots: [{ id: foreign.id, title: "Stolen" }],
+        },
+        ORG,
+      ),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+
+    // The reconcile's own refusal fires inside a transaction opened AFTER the scalar UPDATE commits, so
+    // without the pre-check the host got a 422 for a save whose title/description/scheduledAt had
+    // ALREADY been applied — a half-written PATCH behind an error response. `slots` is validated
+    // against the CURRENT board before anything is written.
+    const after = repo.cleanups.get(id)!
+    expect(after.title).toBe(originalTitle)
+    expect(after.description).toBeNull()
+    expect(after.scheduledAt).toEqual(originalScheduledAt)
   })
 
   it("a cohost may edit the board (same gate as the rest of updateCleanup)", async () => {

@@ -55,6 +55,28 @@ import type {
   ReportType,
 } from "@civfix/shared"
 
+const PG_UNIQUE_VIOLATION = "23505"
+
+/** The `(cleanup_id, lower(title))` unique index on cleanup_slots (0063). */
+const SLOT_TITLE_INDEX = "cleanup_slots_cleanup_title_uidx"
+
+/**
+ * Is this a duplicate-slot-title violation? Same shape as certificate-repository.drizzle.ts'
+ * `conflictKind`: postgres.js surfaces the violated index on `constraint_name`, and the `detail`
+ * fallback ("Key (cleanup_id, lower(title))=…") is belt-and-braces for a driver that ever stops
+ * populating it. Narrow on PURPOSE — reconcileSlots also writes rows guarded by
+ * cleanup_slots_id_cleanup_uidx, and re-labelling one of those as "duplicate slot title" would hand
+ * the host a 422 naming a field that is not the problem.
+ */
+function isSlotTitleConflict(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false
+  const e = err as { code?: unknown; constraint_name?: unknown; detail?: unknown }
+  if (e.code !== PG_UNIQUE_VIOLATION) return false
+  const constraint = typeof e.constraint_name === "string" ? e.constraint_name : ""
+  const detail = typeof e.detail === "string" ? e.detail : ""
+  return constraint === SLOT_TITLE_INDEX || detail.includes("lower(title)")
+}
+
 export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
   async function readById(
     tag: Queryable,
@@ -771,76 +793,124 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       desired: DesiredSlot[],
       actorId: string | null,
     ): Promise<SlotReconcileResult> {
-      return sql.begin(async (tx) => {
-        const existing = await tx<{ id: string; title: string }[]>`
-          SELECT id, title FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
-        `
-        const have = new Map(existing.map((r) => [r.id, r.title]))
+      try {
+        return await sql.begin(async (tx) => {
+          const existing = await tx<{ id: string; title: string }[]>`
+            SELECT id, title FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
+          `
+          const have = new Map(existing.map((r) => [r.id, r.title]))
 
-        // B23: an id that is not on THIS cleanup is a hard 422, never a silent insert — an id from
-        // another event must be a hard error, not a quiet re-parent. Checked BEFORE any write so the
-        // whole reconcile is all-or-nothing (the throw rolls this transaction back regardless).
-        for (const slot of desired) {
-          if (slot.id !== undefined && !have.has(slot.id)) {
-            throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
+          // B23: an id that is not on THIS cleanup is a hard 422, never a silent insert — an id from
+          // another event must be a hard error, not a quiet re-parent. Checked BEFORE any write so the
+          // whole reconcile is all-or-nothing (the throw rolls this transaction back regardless).
+          for (const slot of desired) {
+            if (slot.id !== undefined && !have.has(slot.id)) {
+              throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
+            }
           }
-        }
 
-        const added: string[] = []
-        const updated: string[] = []
-        for (const slot of desired) {
-          if (slot.id !== undefined) {
+          // ---------------------------------------------------------------------------------------
+          // WRITE ORDER IS THE WHOLE POINT OF THIS TRANSACTION.
+          //
+          // cleanup_slots_cleanup_title_uidx (cleanup_id, lower(title)) is a plain, IMMEDIATELY
+          // checked unique index — Postgres has no deferrable unique INDEX, only a deferrable unique
+          // CONSTRAINT, and 0063 declares an index. So every INTERMEDIATE state inside this
+          // transaction must already satisfy it, not just the final one. Two perfectly ordinary host
+          // edits break that if the diff is applied naively:
+          //
+          //   (a) remove "Grill" and add a new "Grill" in the same save — the INSERT lands while the
+          //       old row is still there;
+          //   (b) swap two slots' titles — the first UPDATE writes a title the second row still holds.
+          //
+          // Both raise a raw 23505 that surfaces as a 500 on a legitimate edit. The order below makes
+          // every intermediate state legal: DELETE the removed rows first (their titles are freed),
+          // then park every RENAMED row on a sentinel title that no host can be holding (its own
+          // id::text, unique by construction and unique across the parked set), then write the real
+          // titles and the inserts into a board whose remaining keys are exactly those of the rows
+          // that legitimately keep them. The only collision left is a genuine duplicate WITHIN
+          // `desired`, which the catch below turns into a named 422 instead of a 500.
+          // ---------------------------------------------------------------------------------------
+
+          const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
+          const toRemove = [...have.keys()].filter((id) => !keep.has(id))
+          const removed: SlotReconcileResult["removed"] = []
+          if (toRemove.length > 0) {
+            // B23/B34: the claimants are read BEFORE the delete, inside this transaction — after the
+            // DELETE the cascade has taken the claim rows and there is nobody left to ring. The read
+            // travels WITH the delete, which is why this whole block moves as a unit.
+            const claimants = await tx<{ slot_id: string; user_id: string }[]>`
+              SELECT slot_id, user_id FROM cleanup_slot_claims
+              WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${toRemove}::uuid[])
+            `
+            const bySlot = new Map<string, string[]>()
+            for (const c of claimants) {
+              const list = bySlot.get(c.slot_id)
+              if (list) list.push(c.user_id)
+              else bySlot.set(c.slot_id, [c.user_id])
+            }
+            // B24: deleting a claimed slot silently drops its claimants and that is ALLOWED — it is
+            // the host's roster and a cancelled role is a legitimate edit. The bell is the mitigation.
             await tx`
-              UPDATE cleanup_slots SET
-                title = ${slot.title},
-                description = ${slot.description},
-                capacity = ${slot.capacity},
-                sort_order = ${slot.sortOrder}
-              WHERE id = ${slot.id} AND cleanup_id = ${cleanupId}
+              DELETE FROM cleanup_slots
+              WHERE cleanup_id = ${cleanupId} AND id = ANY(${toRemove}::uuid[])
             `
-            updated.push(slot.id)
-          } else {
-            const [row] = await tx<{ id: string }[]>`
-              INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, sort_order)
-              VALUES (${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity}, ${slot.sortOrder})
-              RETURNING id
-            `
-            if (row) added.push(row.id)
+            for (const slotId of toRemove) {
+              removed.push({
+                slotId,
+                title: have.get(slotId) ?? "",
+                claimantUserIds: (bySlot.get(slotId) ?? []).filter((u) => u !== actorId),
+              })
+            }
           }
-        }
 
-        const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
-        const toRemove = [...have.keys()].filter((id) => !keep.has(id))
-        const removed: SlotReconcileResult["removed"] = []
-        if (toRemove.length > 0) {
-          // B23/B34: the claimants are read BEFORE the delete, inside this transaction — after the
-          // DELETE the cascade has taken the claim rows and there is nobody left to ring.
-          const claimants = await tx<{ slot_id: string; user_id: string }[]>`
-            SELECT slot_id, user_id FROM cleanup_slot_claims
-            WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${toRemove}::uuid[])
-          `
-          const bySlot = new Map<string, string[]>()
-          for (const c of claimants) {
-            const list = bySlot.get(c.slot_id)
-            if (list) list.push(c.user_id)
-            else bySlot.set(c.slot_id, [c.user_id])
+          // Park the renames. Compared on the RAW title rather than a JS-lowercased one on purpose:
+          // parking a row whose lower(title) did not actually change is a harmless extra write, while
+          // JS's toLowerCase() disagreeing with Postgres' locale-aware lower() on some exotic
+          // character would not be harmless at all.
+          const renaming = desired
+            .filter((s): s is DesiredSlot & { id: string } => s.id !== undefined)
+            .filter((s) => have.get(s.id) !== s.title)
+            .map((s) => s.id)
+          if (renaming.length > 0) {
+            await tx`
+              UPDATE cleanup_slots SET title = id::text
+              WHERE cleanup_id = ${cleanupId} AND id = ANY(${renaming}::uuid[])
+            `
           }
-          // B24: deleting a claimed slot silently drops its claimants and that is ALLOWED — it is the
-          // host's roster and a cancelled role is a legitimate edit. The bell is the mitigation.
-          await tx`
-            DELETE FROM cleanup_slots
-            WHERE cleanup_id = ${cleanupId} AND id = ANY(${toRemove}::uuid[])
-          `
-          for (const slotId of toRemove) {
-            removed.push({
-              slotId,
-              title: have.get(slotId) ?? "",
-              claimantUserIds: (bySlot.get(slotId) ?? []).filter((u) => u !== actorId),
-            })
+
+          const added: string[] = []
+          const updated: string[] = []
+          for (const slot of desired) {
+            if (slot.id !== undefined) {
+              await tx`
+                UPDATE cleanup_slots SET
+                  title = ${slot.title},
+                  description = ${slot.description},
+                  capacity = ${slot.capacity},
+                  sort_order = ${slot.sortOrder}
+                WHERE id = ${slot.id} AND cleanup_id = ${cleanupId}
+              `
+              updated.push(slot.id)
+            } else {
+              const [row] = await tx<{ id: string }[]>`
+                INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, sort_order)
+                VALUES (${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity}, ${slot.sortOrder})
+                RETURNING id
+              `
+              if (row) added.push(row.id)
+            }
           }
+          return { added, updated, removed }
+        })
+      } catch (err) {
+        // Belt-and-braces behind the ordering above: a residual title collision (a duplicate inside
+        // `desired` that reached the repo directly, or a concurrent reconcile of the same board) is a
+        // NAMED 422 the host can act on, never the unactionable 500 a leaked driver error becomes.
+        if (isSlotTitleConflict(err)) {
+          throw AppError.validation({ slots: "duplicate slot title" })
         }
-        return { added, updated, removed }
-      })
+        throw err
+      }
     },
 
     async claimSlot(
@@ -873,14 +943,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         `
         if (banned.length > 0) return { kind: "banned" }
 
-        // B28b: picking a shift IS an RSVP. The ban probe ran first, so a removed user cannot re-enter
-        // through the slot door (M17's whole point).
-        await tx`
-          INSERT INTO cleanup_members (cleanup_id, user_id, role)
-          VALUES (${cleanupId}, ${userId}, 'member')
-          ON CONFLICT (cleanup_id, user_id) DO NOTHING
-        `
-
         const mine = await tx<{ slot_id: string }[]>`
           SELECT slot_id FROM cleanup_slot_claims
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
@@ -911,6 +973,31 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           `
           if ((counted[0]?.n ?? 0) >= slot.capacity) return { kind: "full" }
         }
+
+        // B28b: picking a shift IS an RSVP. The ban probe ran first, so a removed user cannot re-enter
+        // through the slot door (M17's whole point).
+        //
+        // WHY IT SITS HERE AND NOT ABOVE: sql.begin COMMITS on a normal return, and every refusal in
+        // this transaction is a normal return, not a throw. Written before the slot lookup, a
+        // `slot_not_found` or `full` outcome still committed this row — the caller got a 404/409 while
+        // the user had silently been made a member: counted in `going`, on the roster, receiving the
+        // event's lifecycle bells and admitted to the private event group chat (cleanup_members.role is
+        // the chat gate, chat-room-roles.ts `cleanupRoleOf`), with a client cache that still says
+        // not-joined. Only the outcomes that actually seat someone may write it.
+        //
+        // LOCK ORDER: this makes the claim path take cleanups -> cleanup_slots -> cleanup_members ->
+        // cleanup_slot_claims, i.e. members AFTER slots rather than before. That introduces no cycle:
+        // no other writer takes a cleanup_slots row lock at all except reconcileSlots (which takes no
+        // cleanup_members lock), and the only path that touches cleanup_members before cleanup_slots is
+        // createCleanupTx — whose rows are all brand new and therefore unlockable by anyone else until
+        // it commits. removeMember/joinCleanupTx, the two writers we can genuinely contend with, are
+        // still serialized against us by the FOR SHARE on the cleanups row taken as the FIRST
+        // statement above, which is what the ABBA argument in that comment rests on and is unchanged.
+        await tx`
+          INSERT INTO cleanup_members (cleanup_id, user_id, role)
+          VALUES (${cleanupId}, ${userId}, 'member')
+          ON CONFLICT (cleanup_id, user_id) DO NOTHING
+        `
 
         // The (cleanup_id, user_id) PK IS the one-slot-per-person rule, so a MOVE is an upsert of
         // slot_id — never a second row, and it releases the old seat in the same statement.

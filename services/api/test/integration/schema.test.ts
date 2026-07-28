@@ -531,6 +531,62 @@ describe.skipIf(!pg)("schema (Phase 2): admin migration 0007 produces the expect
 })
 
 /**
+ * 0061 (hours privacy) column-shape drift guard.
+ *
+ * `users.show_volunteer_hours` is a NULLABLE TRI-STATE with NO column default, and 0061's banner says in
+ * so many words "do not 'fix' this back": NULL = never chosen (aggregate + leaderboard stay visible,
+ * itemised ledger empty), TRUE = itemised public ledger opted in, FALSE = hidden everywhere public.
+ *
+ * The behavioural suite only half-covers this. A future `NOT NULL` fails loudly (volunteer-hours-pg.test
+ * inserts the column as `null` outright), but a future `DEFAULT true` — the shape a well-meaning
+ * "consistency with allow_direct_messages" cleanup reaches for — leaves EVERY existing test green while
+ * PG11+ backfills every row that exists today, retroactively opting every account into a NEW, public,
+ * paginated record of where a named person physically was and on which dates. That is the regression this
+ * block exists to catch, so it pins `column_default` as hard as the type and the nullability.
+ *
+ * Modelled on the users.allow_direct_messages block above, which pins the OPPOSITE invariant (NOT NULL
+ * DEFAULT true) for the DM flag — the two together document that the difference is deliberate.
+ */
+describe.skipIf(!pg)("schema (0061): users.show_volunteer_hours is a NULLable tri-state", () => {
+  const h = pg as PgHarness
+
+  it("is boolean, NULLable, and carries NO column default", async () => {
+    const rows = await h.sql<{ data_type: string; is_nullable: string; column_default: string | null }[]>`
+      SELECT data_type, is_nullable, column_default FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'show_volunteer_hours'
+    `
+    expect(rows.length).toBe(1)
+    expect(rows[0]?.data_type).toBe("boolean")
+    // NOT NULL would destroy the "never chosen" state the C18 predicates are built on.
+    expect(rows[0]?.is_nullable).toBe("YES")
+    // ANY default is wrong here, and `DEFAULT true` is the specific one 0061 forbids by name.
+    expect(rows[0]?.column_default).toBeNull()
+  })
+
+  it("a fresh user reads the column back as NULL (never chosen), not as a default", async () => {
+    const ins = await h.sql<{ show_volunteer_hours: boolean | null }[]>`
+      INSERT INTO users (display_name) VALUES ('Hours Tri-State Check')
+      RETURNING show_volunteer_hours
+    `
+    expect(ins.length).toBe(1)
+    // The round-trip is the half the introspection cannot state: a default added by any route (column
+    // default, trigger, rule) shows up here as a non-null read.
+    expect(ins[0]?.show_volunteer_hours).toBeNull()
+  })
+
+  it("stores all THREE states, so the tri-state is real and not a boolean in disguise", async () => {
+    for (const flag of [true, false, null]) {
+      const rows = await h.sql<{ show_volunteer_hours: boolean | null }[]>`
+        INSERT INTO users (display_name, show_volunteer_hours)
+        VALUES (${`Hours Tri-State ${String(flag)}`}, ${flag})
+        RETURNING show_volunteer_hours
+      `
+      expect(rows[0]?.show_volunteer_hours).toBe(flag)
+    }
+  })
+})
+
+/**
  * Mirror <-> DDL drift guard for enum VALUE SETS (audit 2026-07-24, db CROSS-CUTTING).
  *
  * The subsystem has three parallel sources of truth: the hand SQL in drizzle/ (canonical), the Drizzle

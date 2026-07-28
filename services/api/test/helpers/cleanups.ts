@@ -872,23 +872,21 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       }
     }
 
-    const added: string[] = []
-    const updated: string[] = []
+    // cleanup_slots_cleanup_title_uidx (cleanup_id, lower(title)), mirrored. `desired` IS the full
+    // final board, so after the drizzle repo's DELETE-first + park-the-renames ordering the ONLY
+    // collision it can still raise is a duplicate WITHIN this set — which it catches as a 23505 and
+    // rethrows as exactly this named 422. Without this the twin would happily build a board the real
+    // database refuses.
+    const seenTitles = new Set<string>()
     for (const slot of desired) {
-      if (slot.id !== undefined) {
-        const row = this.slots.find((s) => s.id === slot.id && s.cleanupId === cleanupId)
-        if (row) {
-          row.title = slot.title
-          row.description = slot.description
-          row.capacity = slot.capacity
-          row.sortOrder = slot.sortOrder
-          updated.push(row.id)
-        }
-      } else {
-        added.push(this.insertSlot(cleanupId, slot))
-      }
+      const key = slot.title.toLowerCase()
+      if (seenTitles.has(key)) throw AppError.validation({ slots: "duplicate slot title" })
+      seenTitles.add(key)
     }
 
+    // REMOVALS FIRST, exactly like the SQL: the unique index above is checked immediately, so a save
+    // that removes "Grill" and adds a new "Grill" only works if the old row is gone before the new one
+    // lands. (The rename-parking half of the SQL has no twin: nothing here holds an index.)
     const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
     const removed: SlotReconcileResult["removed"] = []
     for (const row of have) {
@@ -908,14 +906,34 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       if (idx >= 0) this.slots.splice(idx, 1)
       removed.push({ slotId: row.id, title: row.title, claimantUserIds })
     }
+
+    const added: string[] = []
+    const updated: string[] = []
+    for (const slot of desired) {
+      if (slot.id !== undefined) {
+        const row = this.slots.find((s) => s.id === slot.id && s.cleanupId === cleanupId)
+        if (row) {
+          row.title = slot.title
+          row.description = slot.description
+          row.capacity = slot.capacity
+          row.sortOrder = slot.sortOrder
+          updated.push(row.id)
+        }
+      } else {
+        added.push(this.insertSlot(cleanupId, slot))
+      }
+    }
     return Promise.resolve({ added, updated, removed })
   }
 
   claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome> {
     // The branch ORDER mirrors the SQL statement order in claimSlot, and it is load-bearing: the ban
-    // probe must precede the auto-RSVP (or a removed user re-enters through the slot door), and the
+    // probe must precede the auto-RSVP (or a removed user re-enters through the slot door), the
     // already-holds check must precede the capacity check (or an idempotent re-claim 409s on a full
-    // slot the user is already in).
+    // slot the user is already in), and the auto-RSVP must come AFTER both the slot lookup and the
+    // capacity check — every refusal in the SQL is a normal return, which COMMITS, so a
+    // `slot_not_found`/`full` outcome that had already written the membership row would make a
+    // non-member into an attendee (roster, `going`, event group chat) behind a 404/409.
     const cleanup = this.cleanups.get(cleanupId)
     if (!cleanup) return Promise.resolve({ kind: "not_found" })
     // B28e: a completed/cancelled event's roster is what hours were attested against, and the auto-RSVP
@@ -925,11 +943,6 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
       return Promise.resolve({ kind: "banned" })
-    }
-    // B28b: picking a shift IS an RSVP.
-    if (!this.members.some((m) => m.cleanupId === cleanupId && m.userId === userId)) {
-      this.members.push({ cleanupId, userId, role: "member" })
-      if (!this.users.has(userId)) this.seedUser({ id: userId })
     }
 
     const current = this.slotClaims.find((c) => c.cleanupId === cleanupId && c.userId === userId)
@@ -944,6 +957,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (slot.capacity !== null) {
       const claimed = this.slotClaims.filter((c) => c.slotId === slotId).length
       if (claimed >= slot.capacity) return Promise.resolve({ kind: "full" })
+    }
+    // B28b: picking a shift IS an RSVP — written only once this claim is actually going to be seated.
+    if (!this.members.some((m) => m.cleanupId === cleanupId && m.userId === userId)) {
+      this.members.push({ cleanupId, userId, role: "member" })
+      if (!this.users.has(userId)) this.seedUser({ id: userId })
     }
     // The (cleanupId, userId) PK: a MOVE overwrites slot_id and frees the old seat in the same step,
     // never a second row.

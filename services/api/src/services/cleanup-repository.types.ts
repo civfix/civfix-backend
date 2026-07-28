@@ -403,6 +403,8 @@ export interface CleanupRepository {
   // ---------------------------------------------------------------------------------------------
   // P9 signup slots (B22–B29). LOCK ORDER on every writer below:
   //   cleanups -> cleanup_members -> cleanup_slots -> cleanup_slot_claims
+  // with ONE documented exception: claimSlot locks the slot row BEFORE its auto-RSVP insert, so that a
+  // refused claim commits no membership (see its own comment for the no-cycle argument).
   // ---------------------------------------------------------------------------------------------
 
   // One event's ordered slot board, with the live claim count and the viewer's own claim per row.
@@ -424,17 +426,23 @@ export interface CleanupRepository {
   // UPDATE, id-NOT-on-this-cleanup ⇒ THROWS AppError.validation (422 — never a silent re-parent), no id
   // ⇒ INSERT, existing slot missing from the desired set ⇒ DELETE (its claims cascade). The removed
   // rows' claimants are read BEFORE the delete inside the same transaction so the caller can ring them.
+  // WRITE ORDER is part of the contract, because (cleanup_id, lower(title)) is an immediately-checked
+  // unique index: DELETE the removed rows, park the renamed rows on sentinel titles, THEN apply the
+  // updates and inserts — so a title swap, or removing and re-adding the same title in one save, does
+  // not transiently duplicate a title. A residual collision (a duplicate inside `desired`) is a named
+  // AppError.validation, never a leaked 23505.
   reconcileSlots(
     cleanupId: string,
     desired: DesiredSlot[],
     actorId: string | null,
   ): Promise<SlotReconcileResult>
   // Claim (or MOVE to) `slotId` (B28). One transaction: FOR SHARE on the cleanups row -> ban probe ->
-  // auto-RSVP insert -> read the current claim -> FOR UPDATE on the target slot row -> count -> upsert
+  // read the current claim -> FOR UPDATE on the target slot row -> count -> auto-RSVP insert -> upsert
   // on the (cleanup_id, user_id) PK. The slot-row lock is what makes count-then-insert safe: two clients
   // racing for the last seat serialize on it and the loser's count sees the winner's row. Re-claiming a
   // slot the viewer ALREADY holds skips the capacity check (an idempotent re-claim must not 409 on a
-  // full slot the user is already in).
+  // full slot the user is already in). The auto-RSVP is LAST-BUT-ONE on purpose: every refusal here is a
+  // normal return, which COMMITS, so a `slot_not_found` or `full` outcome must leave no membership row.
   claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome>
   // Release the viewer's claim on this event (B28c) — idempotent, `{ kind: "released" }` whether or not
   // a claim existed. Releasing does NOT leave the event: you keep your RSVP. Asymmetric on purpose.

@@ -607,6 +607,23 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           ? toDesiredSlots(patch.slots, current.status, { keepIds: true })
           : null
 
+      // B23's foreign/unknown-id refusal fires inside reconcileSlots' transaction — which is opened
+      // AFTER the scalar patch below has already committed. A stale slot id (two co-hosts editing at
+      // once, or the same host in two tabs) would therefore 422 a request whose title, scheduledAt,
+      // location and jurisdiction re-resolve had ALREADY been written: an error response for a PATCH
+      // that half-applied. The ids are checked against the event's CURRENT board here, before any
+      // write, so the whole request is all-or-nothing and not merely the slot board. The
+      // in-transaction check STAYS as the race backstop (a slot deleted between this read and the
+      // reconcile) and as the guarantee for any other caller of the repo.
+      if (desiredSlots !== null) {
+        const existingSlotIds = new Set((await deps.repo.listSlots(id, null)).map((s) => s.id))
+        for (const slot of desiredSlots) {
+          if (slot.id !== undefined && !existingSlotIds.has(slot.id)) {
+            throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
+          }
+        }
+      }
+
       // A moved event belongs to a DIFFERENT government. cleanups.jurisdiction_geoid routes
       // requestResources' municipal email (resolveJurisdictionContact) and buckets the event's
       // volunteer-hours rollup, so it is re-resolved with the geometry instead of being left pointing at

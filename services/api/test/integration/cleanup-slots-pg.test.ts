@@ -12,7 +12,11 @@
  *   - the (cleanup_id, user_id) PK makes a second slot for the same person impossible;
  *   - the composite FK (slot_id, cleanup_id) rejects a slotId from ANOTHER cleanup;
  *   - the lower(title) unique index rejects a duplicate title (the backstop behind the service's
- *     deterministic 422);
+ *     deterministic 422) — and, because that index is checked IMMEDIATELY rather than at commit, that a
+ *     reconcile which swaps two titles, re-adds a removed title, or renames a kept slot onto a removed
+ *     one still succeeds (the twin holds no index, so it cannot fail any of these);
+ *   - a REFUSED claim (`slot_not_found`, `full`) commits no cleanup_members row — sql.begin commits on
+ *     a normal return, and every refusal here is a normal return;
  *   - deleting a slot cascades its claims, and deleting the cleanup cascades both;
  *   - leaveCleanup and removeMember free the seat (B28d) in their existing transactions.
  *
@@ -92,6 +96,21 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       SELECT count(*)::int AS n FROM cleanup_slot_claims WHERE slot_id = ${slotId}
     `
     return rows[0]!.n
+  }
+
+  /** Membership rows for one person on one event — 0 or 1, straight from the table. */
+  async function membershipCount(cleanupId: string, userId: string): Promise<number> {
+    const rows = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM cleanup_members
+      WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+    `
+    return rows[0]!.n
+  }
+
+  /** The board as (id, title) pairs in board order — the shape every reconcile assertion needs. */
+  async function titlesOf(cleanupId: string): Promise<[string, string][]> {
+    const board = await repo.listSlots(cleanupId, null)
+    return board.map((s) => [s.id, s.title])
   }
 
   function slot(over: Partial<DesiredSlot> = {}): DesiredSlot {
@@ -396,6 +415,172 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       SELECT cleanup_id, title FROM cleanup_slots WHERE id = ${foreign}
     `
     expect(foreignRow[0]).toEqual({ cleanup_id: theirs, title: "Theirs" })
+  })
+
+  // ---------------------------------------------------------------------------------------------
+  // The reconcile WRITE ORDER (cleanup_slots_cleanup_title_uidx is checked IMMEDIATELY).
+  //
+  // Postgres has no deferrable unique INDEX — only a deferrable unique CONSTRAINT — and 0063 declares
+  // an index, so every intermediate state inside the reconcile transaction has to satisfy
+  // (cleanup_id, lower(title)) on its own. These three saves are the ordinary host edits that a naive
+  // "update and insert, then delete" order breaks with a raw 23505 → 500, and none of them can be seen
+  // against the in-memory twin, which holds no index at all. They are exactly the cases that were
+  // reproduced against a live container before the write order was changed.
+  // ---------------------------------------------------------------------------------------------
+
+  it("reconcileSlots SWAPS two slot titles in one save", async () => {
+    const org = await newUser("Swap Host")
+    const cleanupId = await newCleanup(org)
+    const reg = await newSlot(cleanupId, { title: "Registration", sortOrder: 0 })
+    const grill = await newSlot(cleanupId, { title: "Grill", sortOrder: 1 })
+
+    // Naively this is `UPDATE ... SET title='Grill' WHERE id=reg` while `grill` still holds "Grill":
+    // duplicate key value violates unique constraint "cleanup_slots_cleanup_title_uidx".
+    const result = await repo.reconcileSlots(
+      cleanupId,
+      [
+        slot({ id: reg, title: "Grill", sortOrder: 0 }),
+        slot({ id: grill, title: "Registration", sortOrder: 1 }),
+      ],
+      org,
+    )
+
+    expect(result.updated.sort()).toEqual([reg, grill].sort())
+    expect(result.removed).toEqual([])
+    // Both rows keep their IDENTITY through the swap, which is the whole reason slots carry a uuid.
+    expect(await titlesOf(cleanupId)).toEqual([
+      [reg, "Grill"],
+      [grill, "Registration"],
+    ])
+  })
+
+  it("reconcileSlots REMOVES a slot and re-adds the SAME title in one save", async () => {
+    const org = await newUser("Readd Host")
+    const cleanupId = await newCleanup(org)
+    const old = await newSlot(cleanupId, { title: "Grill" })
+    const claimant = await newUser("Readd claimant")
+    await repo.claimSlot(cleanupId, claimant, old)
+
+    // The insert has to wait for the delete: the old "Grill" row is still there until it lands.
+    const result = await repo.reconcileSlots(
+      cleanupId,
+      [slot({ title: "Grill", capacity: 5 })],
+      org,
+    )
+
+    expect(result.added).toHaveLength(1)
+    expect(result.removed).toEqual([
+      { slotId: old, title: "Grill", claimantUserIds: [claimant] },
+    ])
+    const board = await repo.listSlots(cleanupId, null)
+    expect(board.map((s) => [s.title, s.capacity])).toEqual([["Grill", 5]])
+    // A genuinely NEW row: dropping the id is how a host resets a slot's claimants, and the dropped
+    // claim went with the old row rather than following the title.
+    expect(board[0]!.id).not.toBe(old)
+    expect(await repo.slotOf(cleanupId, claimant)).toBeNull()
+  })
+
+  it("reconcileSlots RENAMES a kept slot onto the title of a slot it is removing", async () => {
+    const org = await newUser("Rename Host")
+    const cleanupId = await newCleanup(org)
+    const keep = await newSlot(cleanupId, { title: "Grill", sortOrder: 0 })
+    const drop = await newSlot(cleanupId, { title: "Registration", sortOrder: 1 })
+
+    const result = await repo.reconcileSlots(
+      cleanupId,
+      [slot({ id: keep, title: "Registration", sortOrder: 0 })],
+      org,
+    )
+
+    expect(result.removed.map((r) => r.slotId)).toEqual([drop])
+    expect(await titlesOf(cleanupId)).toEqual([[keep, "Registration"]])
+  })
+
+  it("a duplicate title inside the desired set is a NAMED 422, never a leaked 23505", async () => {
+    const org = await newUser("Dup Host")
+    const cleanupId = await newCleanup(org)
+    const existing = await newSlot(cleanupId, { title: "Grill" })
+
+    // The service refuses this deterministically before the repo is reached; this asserts the repo's
+    // own backstop, because a raw driver error reaches the client as an unactionable 500 and the
+    // ordering above cannot fix a set that is duplicated in itself.
+    await expect(
+      repo.reconcileSlots(
+        cleanupId,
+        [slot({ title: "Grill", sortOrder: 0 }), slot({ title: "GRILL", sortOrder: 1 })],
+        org,
+      ),
+    ).rejects.toMatchObject({ code: "VALIDATION", fields: { slots: "duplicate slot title" } })
+    // ...and the whole transaction rolled back, so the board is exactly as it was.
+    expect(await titlesOf(cleanupId)).toEqual([[existing, "Grill"]])
+  })
+
+  // ---------------------------------------------------------------------------------------------
+  // The auto-RSVP must not survive a REFUSED claim. sql.begin COMMITS on a normal return and every
+  // refusal below is a normal return, so a membership insert written before the slot lookup commits
+  // with the 404/409 — the caller sees an error while the user is silently on the roster, counted in
+  // `going`, and inside the private event group chat (cleanup_members.role is the chat gate).
+  // ---------------------------------------------------------------------------------------------
+
+  it("a `slot_not_found` claim commits NO cleanup_members row", async () => {
+    const org = await newUser("No-RSVP Host")
+    const cleanupId = await newCleanup(org)
+    await newSlot(cleanupId, { title: "Grill" })
+    const stranger = await newUser("Stranger")
+
+    expect(await repo.claimSlot(cleanupId, stranger, randomUUID())).toEqual({
+      kind: "slot_not_found",
+    })
+
+    expect(await membershipCount(cleanupId, stranger)).toBe(0)
+    expect(await repo.isMember(cleanupId, stranger)).toBe(false)
+  })
+
+  it("a `full` claim commits NO cleanup_members row", async () => {
+    const org = await newUser("Full Host")
+    const cleanupId = await newCleanup(org)
+    const slotId = await newSlot(cleanupId, { title: "Grill", capacity: 1 })
+    const winner = await newUser("Seat winner")
+    const loser = await newUser("Seat loser")
+    await repo.claimSlot(cleanupId, winner, slotId)
+    const going = await repo.memberCount(cleanupId)
+
+    expect(await repo.claimSlot(cleanupId, loser, slotId)).toEqual({ kind: "full" })
+
+    expect(await membershipCount(cleanupId, loser)).toBe(0)
+    expect(await repo.memberCount(cleanupId)).toBe(going)
+    // The winner's own auto-RSVP still happened — the fix is about WHICH outcomes write it.
+    expect(await repo.isMember(cleanupId, winner)).toBe(true)
+  })
+
+  it("a foreign slot id commits NO cleanup_members row on EITHER event", async () => {
+    const org = await newUser("Foreign RSVP Host")
+    const mine = await newCleanup(org)
+    const theirs = await newCleanup(await newUser("Foreign RSVP Other"))
+    const foreignSlot = await newSlot(theirs, { title: "Their grill" })
+    const stranger = await newUser("Foreign RSVP Stranger")
+
+    expect(await repo.claimSlot(mine, stranger, foreignSlot)).toEqual({ kind: "slot_not_found" })
+
+    expect(await membershipCount(mine, stranger)).toBe(0)
+    expect(await membershipCount(theirs, stranger)).toBe(0)
+  })
+
+  it("a MOVE refused as `full` keeps the mover's membership and original seat", async () => {
+    const org = await newUser("Move Full Host")
+    const cleanupId = await newCleanup(org)
+    const a = await newSlot(cleanupId, { title: "Grill", capacity: 1, sortOrder: 0 })
+    const b = await newSlot(cleanupId, { title: "Sign-in", capacity: 1, sortOrder: 1 })
+    const mover = await newUser("Blocked mover")
+    const holder = await newUser("Seat holder")
+    await repo.claimSlot(cleanupId, mover, a)
+    await repo.claimSlot(cleanupId, holder, b)
+
+    expect(await repo.claimSlot(cleanupId, mover, b)).toEqual({ kind: "full" })
+
+    // Deferring the auto-RSVP must not COST an existing member their membership either.
+    expect(await membershipCount(cleanupId, mover)).toBe(1)
+    expect(await repo.slotOf(cleanupId, mover)).toBe(a)
   })
 
   it("listAttendees carries each attendee's slot, and slotCountsFor batches the list read", async () => {

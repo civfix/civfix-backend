@@ -48,6 +48,13 @@ export const HOURS_ENTRIES_MAX_LIMIT = 50
  * actually wanting it so the hot anon preview stays a single indexed read (and can keep the shared
  * `public, max-age=60` cache branch). The full board pages at 50; anything below this threshold is a
  * preview.
+ *
+ * *** COMPARE THE REQUEST'S `limit`, NEVER THE CLAMPED ONE. *** `LeaderboardQuerySchema.limit` is
+ * `.optional()` with no default, so the shipped clients send NO limit at all for the full board;
+ * `clampLimit(undefined)` then returns LEADERBOARD_DEFAULT_LIMIT (20), which is BELOW this threshold.
+ * Testing the clamped value therefore turned the extras off for exactly the request that wants them —
+ * the full board — and left them on only for a hand-written `?limit=25`. An ABSENT limit means "the full
+ * board", so it opts IN; only an explicitly small preview limit opts out.
  */
 export const LEADERBOARD_EXTRAS_MIN_LIMIT = 25
 
@@ -555,7 +562,10 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     ): Promise<LeaderboardResponse> {
       const limit = clampLimit(query.limit)
       const offset = clampOffset(query.offset)
-      const withExtras = limit >= LEADERBOARD_EXTRAS_MIN_LIMIT
+      // An OMITTED limit is the full board (what every shipped client sends), so it gets the extras;
+      // an explicit limit only does when it asks for at least a full board's worth. See the threshold's
+      // banner — comparing the CLAMPED limit here silently disabled B48 for the default request.
+      const withExtras = query.limit === undefined || limit >= LEADERBOARD_EXTRAS_MIN_LIMIT
       const page = await deps.repo.leaderboard(geoid, limit, offset, viewerId, withExtras)
       return {
         geoid,

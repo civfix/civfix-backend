@@ -180,6 +180,18 @@ export async function registerVolunteerHoursRoutes(
       })
       const viewerId = request.auth?.userId ?? null
       const payload: PublicVolunteerHoursResponse = await service().getPublicHours(query, viewerId)
+
+      // T4, same rule as the leaderboard below and for a stronger reason: this URL serves TWO bodies
+      // too. `isSelf` bypasses BOTH C18 gates, so the owner's own request returns the full itemised
+      // ledger (event titles, dates, crediting hosts) at the very URL that answers
+      // `{visible: false, items: []}` to everyone else — including for a user who explicitly set
+      // `show_volunteer_hours = false`. Without `Vary` nothing tells a shared cache why, and without the
+      // authed `no-store` branch that owner-only body is a candidate for storage.
+      appendVary(reply, "Cookie", "Authorization")
+      reply.header(
+        "Cache-Control",
+        viewerId === null ? "public, max-age=60" : "private, max-age=0, no-store",
+      )
       reply.status(200).send(payload)
     },
   )

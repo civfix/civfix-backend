@@ -506,14 +506,20 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
 
     if (row.holderDeleted) {
       // A tombstoned holder (docs/erasure-behavior.md). The document stops being good, and the identity
-      // fields are omitted entirely rather than echoing a name the account has erased.
+      // fields are omitted entirely rather than echoing a name the account has erased — which is now
+      // belt-and-braces, because erasure also BLANKS `holder_name`/`holder_handle`/`snapshot` on the row
+      // (softDeleteAndAnonymize) and deletes the object.
       return {
         ...facts,
         status: "revoked",
-        // Null unless the holder had ALSO revoked it explicitly: the tombstone is what invalidates the
-        // document here, and this projection does not read `users.deleted_at`'s timestamp — inventing
-        // one (e.g. echoing issuedAt) would put a false date in front of a verifier.
+        // Erasure stamps `revoked_at` (reason `account_closed`), so this is normally the closure time —
+        // or the holder's own earlier revocation, which COALESCE preserves. It stays NULLABLE for rows
+        // tombstoned before that scrub existed: this projection does not read `users.deleted_at`'s
+        // timestamp, and inventing one (e.g. echoing issuedAt) would put a false date in front of a
+        // verifier.
         revokedAt: row.revokedAt?.toISOString() ?? null,
+        // Hardcoded rather than echoing `row.revokedReason`: the tombstone is the authoritative answer
+        // even for a row the holder had already revoked for their own reason.
         revokedReason: "account_closed",
       }
     }

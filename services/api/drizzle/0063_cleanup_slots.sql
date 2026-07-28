@@ -35,6 +35,23 @@
 -- cleanup_slots -> cleanup_slot_claims. joinCleanupTx already takes FOR SHARE on
 -- cleanups first and removeMember FOR NO KEY UPDATE; the claim transaction must
 -- start at cleanups too or the two can deadlock ABBA.
+--   ONE documented exception: claimSlot takes cleanup_slots BEFORE its auto-RSVP
+--   insert into cleanup_members, because that insert must not commit on a
+--   `slot_not_found`/`full` outcome (sql.begin commits on a normal return, so a
+--   refusal that has already written the membership row makes a non-member into
+--   an attendee behind a 404/409). No cycle: the only writer taking
+--   cleanup_members before cleanup_slots is createCleanupTx, whose rows are all
+--   brand new and unlockable by anyone else until it commits, and the two
+--   writers claimSlot genuinely contends with (removeMember, joinCleanupTx) are
+--   still serialized against it by the cleanups row lock it takes FIRST.
+--
+-- TITLE UNIQUENESS IS IMMEDIATE, NOT DEFERRED: a unique INDEX cannot be
+-- deferrable in Postgres (only a unique CONSTRAINT can), so every INTERMEDIATE
+-- state inside a reconcile must already satisfy
+-- cleanup_slots_cleanup_title_uidx. reconcileSlots therefore deletes removed
+-- rows FIRST and parks renamed rows on sentinel titles before writing the real
+-- ones; a naive update-then-delete raises 23505 on an ordinary title swap or a
+-- remove-and-re-add-the-same-title save.
 --
 -- CANONICAL DDL: this hand-authored SQL is the source of truth. The Drizzle
 -- mirror lives at src/db/schema/cleanup_slots.ts (both tables).

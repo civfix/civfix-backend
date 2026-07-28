@@ -234,6 +234,67 @@ describe("auto-RSVP (B28b)", () => {
     expect(dto.myRole).toBe("member")
   })
 
+  it("a FULL slot commits NO membership row (the RSVP follows the seat, not the attempt)", async () => {
+    const id = seedEvent()
+    const slot = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 1 })
+    await service.claimEventSlot(id, MEMBER, slot.id)
+    const before = await repo.memberCount(id)
+
+    await expect(service.claimEventSlot(id, OUTSIDER, slot.id)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+
+    // The auto-RSVP is written only once the claim is actually going to be seated. Written earlier it
+    // would COMMIT with the refusal (sql.begin commits on a normal return): the caller gets "That slot
+    // is already full" and a cache that says not-joined, while the user is silently on the roster,
+    // counted in `going`, ringing on every event bell and inside the private event group chat.
+    expect(await repo.isMember(id, OUTSIDER)).toBe(false)
+    expect(await repo.memberCount(id)).toBe(before)
+  })
+
+  it("an unknown slot id commits NO membership row either", async () => {
+    const id = seedEvent()
+    repo.seedSlot({ cleanupId: id, title: "Grill" })
+
+    await expect(service.claimEventSlot(id, OUTSIDER, MISSING)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+
+    expect(await repo.isMember(id, OUTSIDER)).toBe(false)
+    expect(repo.slotClaims).toEqual([])
+  })
+
+  it("a slot from ANOTHER event commits NO membership row on THIS one", async () => {
+    const id = seedEvent()
+    seedEvent(OTHER_CLEANUP_ID)
+    const foreign = repo.seedSlot({ cleanupId: OTHER_CLEANUP_ID, title: "Their grill" })
+
+    await expect(service.claimEventSlot(id, OUTSIDER, foreign.id)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+
+    // The nastiest shape of the bug: a mistyped or stale slot id would have joined the caller to an
+    // event they never RSVP'd to, behind a 404.
+    expect(await repo.isMember(id, OUTSIDER)).toBe(false)
+    expect(await repo.isMember(OTHER_CLEANUP_ID, OUTSIDER)).toBe(false)
+  })
+
+  it("a move to a FULL slot leaves the mover's membership AND original claim intact", async () => {
+    const id = seedEvent()
+    const a = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 1, sortOrder: 0 })
+    const b = repo.seedSlot({ cleanupId: id, title: "Sign-in", capacity: 1, sortOrder: 1 })
+    await service.claimEventSlot(id, OUTSIDER, a.id)
+    await service.claimEventSlot(id, COHOST, b.id)
+
+    await expect(service.claimEventSlot(id, OUTSIDER, b.id)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+
+    // Moving the auto-RSVP later must not COST an existing member their membership either.
+    expect(await repo.isMember(id, OUTSIDER)).toBe(true)
+    expect(await repo.slotOf(id, OUTSIDER)).toBe(a.id)
+  })
+
   it("403s a REMOVED (banned) attendee — the ban probe runs BEFORE the auto-RSVP", async () => {
     const id = seedEvent()
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
