@@ -8,6 +8,7 @@ import {
   mediaAssets,
   oauthIdentities,
   reports,
+  serviceHoursCertificates,
   sessions,
   users,
 } from "../db/schema/index.js"
@@ -104,14 +105,43 @@ export class PgSessionStore implements SessionStore {
   }
 }
 
+/**
+ * Structural slice of the storage adapter, declared locally so the auth layer never imports a service
+ * (the same posture `CertificateStorage` takes in certificate-service.ts). Account erasure needs exactly
+ * one verb: drop the rendered certificate PDF that prints the erased holder's legal name.
+ */
+export interface ErasureObjectStore {
+  delete(key: string): Promise<void>
+}
+
+/** Same shape as `OtpLogger`; re-declared rather than imported for the same reason. */
+export interface ErasureLogger {
+  warn(obj: unknown, msg?: string): void
+}
+
+export interface PgUserStoreOptions {
+  now?: () => Date
+  /**
+   * Wired in production by `buildAuthServicesFromContainer`. When ABSENT the row-level scrub still runs
+   * (it is transactional with the tombstone); only the best-effort object delete is skipped, and that
+   * skip is LOGGED rather than silent — an unwired deleter means erased holders' PDFs accumulate in R2.
+   */
+  certificateObjects?: ErasureObjectStore
+  logger?: ErasureLogger
+}
+
 export class PgUserStore implements UserStore {
   private readonly now: () => Date
+  private readonly certificateObjects: ErasureObjectStore | undefined
+  private readonly logger: ErasureLogger | undefined
 
   constructor(
     private readonly db: Db,
-    opts: { now?: () => Date } = {},
+    opts: PgUserStoreOptions = {},
   ) {
     this.now = opts.now ?? (() => new Date())
+    this.certificateObjects = opts.certificateObjects
+    this.logger = opts.logger
   }
 
   async findById(id: string): Promise<UserRecord | null> {
@@ -242,14 +272,27 @@ export class PgUserStore implements UserStore {
     const set: Partial<typeof users.$inferInsert> = {}
     if (input.allowDirectMessages !== undefined) set.allowDirectMessages = input.allowDirectMessages
     if (input.locale !== undefined) set.locale = input.locale
+    // Only an EXPLICIT boolean is ever written; an omitted field leaves the tri-state alone, so a user
+    // who has never touched the toggle keeps the NULL "never chosen" state through every other settings
+    // write.
+    if (input.showVolunteerHours !== undefined) set.showVolunteerHours = input.showVolunteerHours
     const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.updateSettings: user not found")
     return toUserRecord(r)
   }
 
+  /**
+   * SOFT delete + anonymize (docs/erasure-behavior.md is the source of record).
+   *
+   * The `users` scrub, the content de-listing and the CERTIFICATE scrub all commit together: a partial
+   * erasure that tombstones the account but leaves the one unscrubbed copy of the erased legal name
+   * behind is exactly the failure this transaction exists to prevent. The R2 objects are dropped AFTER
+   * the commit (best-effort) — deleting them inside would destroy live documents if the transaction then
+   * rolled back.
+   */
   async softDeleteAndAnonymize(id: string): Promise<UserRecord> {
-    return this.db.transaction(async (tx) => {
+    const { record, certificateKeys } = await this.db.transaction(async (tx) => {
       const updated = await tx
         .update(users)
         .set({
@@ -276,8 +319,60 @@ export class PgUserStore implements UserStore {
         .update(cleanups)
         .set({ status: "cancelled" })
         .where(and(eq(cleanups.organizerUserId, id), inArray(cleanups.status, ["upcoming", "active"])))
-      return toUserRecord(r)
+
+      /**
+       * `service_hours_certificates` is the ONLY table that keeps a FROZEN COPY of the holder's legal
+       * name (`holder_name`/`holder_handle`) plus an itemised record of where they were and when
+       * (`snapshot` — the whole rendered TranscriptModel: per-event titles, jurisdictions, credited-by
+       * names). Nulling `users.display_name` does not reach it, so an erased account used to leave its
+       * one unscrubbed identity copy here.
+       *
+       * REVOKE rather than DELETE the rows (0064's banner rule): the code must keep answering "issued,
+       * then revoked" instead of "no such code" for whoever is holding the paper. `code`, `issued_at`,
+       * the totals and `document_sha256` are KEPT so `verify` can still answer; everything that names
+       * the person is blanked. `revoked_reason = 'account_closed'` is the exact reason the verify
+       * projection already synthesises for a tombstoned holder, so the stored row and the wire answer
+       * now agree.
+       *
+       * COALESCE keeps it idempotent (a repeat delete does not move an existing revocation timestamp)
+       * and preserves a holder's own earlier "holder" revocation reason. Already-revoked rows are
+       * included on purpose: their PII is just as much PII, and their object may still exist if the
+       * best-effort delete at revoke time failed.
+       */
+      const certificates = await tx
+        .update(serviceHoursCertificates)
+        .set({
+          revokedAt: sql`COALESCE(${serviceHoursCertificates.revokedAt}, now())`,
+          revokedReason: sql`COALESCE(${serviceHoursCertificates.revokedReason}, 'account_closed')`,
+          // NOT NULL, so it takes the same tombstone label the users row does rather than an empty string.
+          holderName: DELETED_USER_LABEL,
+          holderHandle: null,
+          snapshot: {},
+        })
+        .where(eq(serviceHoursCertificates.userId, id))
+        .returning({ r2Key: serviceHoursCertificates.r2Key })
+
+      return { record: toUserRecord(r), certificateKeys: certificates.map((c) => c.r2Key) }
     })
+
+    // Post-commit and best-effort, mirroring CertificateService.revoke's own delete: an orphaned 40 KB
+    // PDF is a rounding error, but a throw here would turn a COMPLETED erasure into a 500 the client
+    // reads as "deletion failed" (users.routes' deleteAccount makes the same trade for its cleanups).
+    for (const key of certificateKeys) {
+      if (this.certificateObjects === undefined) {
+        this.logger?.warn(
+          { userId: id, key },
+          "certificate object not deleted on account erasure: no object store wired",
+        )
+        continue
+      }
+      try {
+        await this.certificateObjects.delete(key)
+      } catch (err) {
+        this.logger?.warn({ err, userId: id, key }, "certificate object delete failed on erasure")
+      }
+    }
+    return record
   }
 }
 
@@ -387,9 +482,13 @@ export class PgAuthStores implements AuthStores {
   readonly oauth: OAuthIdentityStore
   readonly otps: OtpStore
 
-  constructor(db: Db) {
+  /**
+   * `opts` is forwarded to `PgUserStore` only. It carries the erasure object store (the certificate PDF
+   * deleter) so account deletion can reach R2; omitting it degrades to a row-only scrub with a warning.
+   */
+  constructor(db: Db, opts: PgUserStoreOptions = {}) {
     this.sessions = new PgSessionStore(db)
-    this.users = new PgUserStore(db)
+    this.users = new PgUserStore(db, opts)
     this.oauth = new PgOAuthIdentityStore(db)
     this.otps = new PgOtpStore(db)
   }
@@ -406,6 +505,7 @@ interface UserRowLike {
   avatarUrl: string | null
   profileComplete: boolean
   allowDirectMessages: boolean
+  showVolunteerHours: boolean | null
   locale: string
   createdAt: Date
   deletedAt: Date | null
@@ -423,6 +523,9 @@ function toUserRecord(r: UserRowLike): UserRecord {
     avatarUrl: r.avatarUrl,
     profileComplete: r.profileComplete,
     allowDirectMessages: r.allowDirectMessages,
+    // Carried through as-is: NULL means "never chosen" and must NOT be coerced to a boolean here (see
+    // UserRecord). toUserDTO decides whether to put it on the wire at all.
+    showVolunteerHours: r.showVolunteerHours,
     locale: r.locale,
     createdAt: r.createdAt,
     deletedAt: r.deletedAt,

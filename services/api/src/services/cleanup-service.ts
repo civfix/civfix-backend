@@ -1,6 +1,6 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, MAX_BRING_ITEMS, MAX_EVENT_SLOTS } from "@civfix/shared"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../abuse/counter-store.js"
@@ -8,8 +8,11 @@ import type {
   CleanupAttendeesResponse,
   CleanupDTO,
   CleanupMemberRole,
+  CleanupStatus,
   CreateCleanupRequest,
   EventKind,
+  EventSlotDTO,
+  EventSlotInput,
   LinkedReportRef,
   ListCleanupsRequest,
   RemoveMemberResponse,
@@ -28,12 +31,15 @@ import {
   MAX_LINKED_REPORTS,
   toAttendeeDTO,
   toCleanupDTO,
+  toEventSlotDTO,
   toLinkedReportRef,
 } from "./cleanup-dto.js"
 import type {
   CleanupRepository,
+  DesiredSlot,
   LinkedReportView,
   ListCleanupsFilters,
+  SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
 
@@ -47,6 +53,7 @@ export {
   toAttendeePersonDTO,
   toOrganizerPerson,
   toCleanupDTO,
+  toEventSlotDTO,
   toLinkedReportRef,
   toLinkedEventRef,
 } from "./cleanup-dto.js"
@@ -100,13 +107,36 @@ export const ROLE_CHANGES_PER_TARGET_PER_WINDOW = 6
 const ROLE_CHANGE_WINDOW_SEC = 60 * 60
 
 /**
- * L23 — `bring` is an unbounded array in the frozen shared wire schema (no `.max()`), capped only by the
- * 256 KB body limit, which admits thousands of entries that are then rendered to every attendee. Clamped
- * here exactly as MAX_LINKED_REPORTS / clampLinkIds already clamps `linkedReportIds`. FOLLOW-UP: the
- * real fix is `.max(MAX_BRING_ITEMS)` on CreateCleanupRequestSchema/UpdateCleanupRequestSchema in
- * @civfix/shared, which this repo cannot edit.
+ * L23 — the `bring` cap. This WAS a local `= 30` literal alongside a FOLLOW-UP note asking for
+ * `.max(MAX_BRING_ITEMS)` on CreateCleanupRequestSchema/UpdateCleanupRequestSchema; the shared schemas
+ * now carry it, so the literal is gone and the cap is re-exported from the contract. Two sources of
+ * truth for one cap is how the wire schema and the service clamp drift apart by a deploy.
+ * Re-exported (rather than merely imported) because test/unit/cleanup-service.test.ts and any other
+ * consumer import it from THIS module.
  */
-export const MAX_BRING_ITEMS = 30
+export { MAX_BRING_ITEMS }
+
+/**
+ * P9 — the slot-set cap, RE-EXPORTED from the contract for exactly the reason MAX_BRING_ITEMS is: the
+ * wire schema (`CreateCleanupRequestSchema.slots.max(MAX_EVENT_SLOTS)`) and the service clamp must be
+ * the same number by construction, and the slot EDITOR enforces it client-side too. A second local
+ * literal is how those three drift apart by a deploy.
+ *
+ * The service clamp is not redundant with the schema: a service-level caller (and the unit suite) never
+ * goes through the wire schema, and B26 requires the refusal to be deterministic and named.
+ */
+export { MAX_EVENT_SLOTS }
+
+/**
+ * B29c — slot flapping.
+ *
+ * The route-level 30/min limit is per-IP and therefore evadable by rotating exits; this is the inner,
+ * non-evadable layer, counted per (event, user) in the SHARED store — the same two-layer shape M18's
+ * role-change cooldown established. Flapping is not merely noisy: every flip takes a `FOR UPDATE` on a
+ * contended slot row, so a loop can stall every other claimant on a popular event.
+ */
+export const SLOT_FLIPS_PER_EVENT_PER_WINDOW = 20
+const SLOT_FLIP_WINDOW_SEC = 60 * 60
 
 /**
  * Fan-out bound for the cancellation bell (L24). The old raw SQL was a single set-based INSERT with no
@@ -160,6 +190,10 @@ export interface CleanupService {
     requesterUserId: string,
   ): Promise<CleanupDTO>
   cancelCleanup(id: string, reason: string | null, requesterUserId: string): Promise<CleanupDTO>
+  // B12: a HOST (organizer OR cohost, B13) marks their own event completed — the state logEventHours
+  // requires, which until now only an OPERATOR could reach. Returns the refreshed DTO, symmetric with
+  // cancelCleanup so the client's cache update is identical. Forward-only (B17): there is no un-complete.
+  completeCleanup(id: string, note: string | null, requesterUserId: string): Promise<CleanupDTO>
   listCleanups(
     req: ListCleanupsRequest,
     viewer: CleanupViewer,
@@ -179,6 +213,12 @@ export interface CleanupService {
   // WS4 (D3): remove an attendee. Organizer removes cohosts+members; a cohost removes plain members
   // only; nobody removes the organizer. Row delete cascades chat access (cleanup_members gates chat).
   removeMember(id: string, actorId: string, targetUserId: string): Promise<RemoveMemberResponse>
+  // P9 (B27/B28): PUT the viewer's slot on this event. `slotId` non-null claims (or MOVES, atomically);
+  // `slotId: null` releases. One endpoint, not a claim/release pair — the v1 rule is exactly one slot
+  // per person per event, so "my slot on this event" is a singular resource and a PUT of its value is
+  // the honest shape (a release+claim pair could release, then find the target full, leaving the user
+  // with nothing). Returns the refreshed DETAIL DTO, so the client needs no refetch.
+  claimEventSlot(id: string, userId: string, slotId: string | null): Promise<CleanupDTO>
   requestResources(input: {
     cleanupId: string
     message: string
@@ -373,6 +413,107 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return ids
   }
 
+  /**
+   * B26 — everything the slot payload must survive BEFORE a single row is touched, mirroring
+   * clampLinkIds / clampBring. Returns the repo-shaped desired set (array position becomes the default
+   * sort_order, because the host's list order IS the board order).
+   *
+   * `status` is the event's CURRENT lifecycle state, or null on create.
+   *
+   * Deliberately NOT gated on eventKind: unlike linkedReportIds (cleanup-only), slots are legal on BOTH
+   * kinds — an `other_volunteer` event (a food-bank shift, a phone bank) is precisely the kind with
+   * named roles.
+   */
+  function toDesiredSlots(
+    slots: EventSlotInput[],
+    status: CleanupStatus | null,
+    opts: { keepIds: boolean },
+  ): DesiredSlot[] {
+    // Slot reconciliation is refused on a done/cancelled event: deleting or renaming a slot after
+    // completion rewrites the roster the credited hours were attested against. (The REST of
+    // updateCleanup stays ungated on status, exactly as it is today.)
+    if (status === "done" || status === "cancelled") {
+      throw AppError.validation({ slots: "slots can't be changed after an event is completed" })
+    }
+    if (slots.length > MAX_EVENT_SLOTS) {
+      throw AppError.validation({ slots: `at most ${MAX_EVENT_SLOTS} slots may be listed` })
+    }
+    // Case-insensitively duplicate titles are rejected HERE, deterministically, rather than being left
+    // to cleanup_slots_cleanup_title_uidx — a raw constraint violation would surface as a 500 and name
+    // nothing the host can act on.
+    const seen = new Set<string>()
+    for (const slot of slots) {
+      const key = slot.title.trim().toLowerCase()
+      if (seen.has(key)) {
+        throw AppError.validation({ slots: `duplicate slot title: ${slot.title}` })
+      }
+      seen.add(key)
+      // gotcha #14: slot text is host-authored free text rendered to every attendee, exactly like
+      // title / bring / reason — so it gets exactly their gate.
+      assertNoSlur(slot.title, "slots")
+      assertNoSlur(slot.description ?? null, "slots")
+    }
+    return slots.map((slot, index) => ({
+      // On CREATE an `id` is meaningless — there is no existing slot to edit — so it is dropped and
+      // every entry inserts. On UPDATE it is kept, and the repo hard-422s an id that belongs to a
+      // different event rather than quietly re-parenting it (B23).
+      ...(opts.keepIds && slot.id !== undefined ? { id: slot.id } : {}),
+      title: slot.title,
+      description: slot.description ?? null,
+      capacity: slot.capacity ?? null,
+      sortOrder: slot.sortOrder ?? index,
+    }))
+  }
+
+  /** The DETAIL-shaped slot board for one cleanup (B29a). */
+  async function hydrateSlots(cleanupId: string, viewerId: string | null): Promise<EventSlotDTO[]> {
+    const views = await deps.repo.listSlots(cleanupId, viewerId)
+    return views.map(toEventSlotDTO)
+  }
+
+  /**
+   * B34 — "your claimed slot was removed".
+   *
+   * Fired from updateCleanup off reconcileSlots' removed[].claimantUserIds (the actor is already
+   * excluded by the repo). Same fan-out bound, concurrency and best-effort-PER-RECIPIENT shape as the
+   * cancellation notifier: the edit is already committed, so a bell failure is logged and suppressed,
+   * and one bad prefs row must not abandon the remaining claimants.
+   *
+   * There is deliberately NO counterpart bell to the HOST when someone CLAIMS a slot (B35): a popular
+   * event would ring the organizer once per RSVP for information they can see on their own roster, and
+   * coordination already has the event group chat.
+   */
+  async function notifySlotRemoved(
+    cleanup: { id: string; title: string },
+    removed: SlotReconcileResult["removed"],
+  ): Promise<void> {
+    const notifier = deps.notifier
+    if (notifier === undefined) return
+    const targets: { userId: string; slot: string }[] = []
+    for (const entry of removed) {
+      for (const userId of entry.claimantUserIds) {
+        if (targets.length >= CANCEL_FANOUT_MEMBER_CAP) break
+        targets.push({ userId, slot: entry.title })
+      }
+    }
+    await mapWithLimit(targets, CANCEL_FANOUT_CONCURRENCY, async ({ userId, slot }) => {
+      try {
+        await notifier.createNotification(userId, {
+          type: "cleanup_slot",
+          titleKey: "notification.cleanup_slot.removed.title",
+          bodyKey: "notification.cleanup_slot.removed.body",
+          vars: { slot, title: cleanup.title },
+          link: `/cleanups/${cleanup.id}`,
+        })
+      } catch (err) {
+        deps.logger?.warn(
+          { err, cleanupId: cleanup.id, userId },
+          "cleanup_slot notification failed (suppressed)",
+        )
+      }
+    })
+  }
+
   return {
     async createCleanup(
       input: CreateCleanupRequest,
@@ -385,6 +526,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
       }
       await assertReportsLinkable(linkedReportIds)
+      // B22/B26: validated (cap, duplicate titles, slur gate) BEFORE anything is written, then inserted
+      // inside the create transaction itself. A brand-new event is 'upcoming', so the done/cancelled
+      // refusal cannot fire here — `null` says "no current status to refuse".
+      const slots = toDesiredSlots(input.slots ?? [], null, { keepIds: false })
 
       const jurisdictionGeoid =
         deps.resolveJurisdictionGeoid !== undefined
@@ -412,9 +557,13 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         jurisdictionGeoid,
         jurCode,
         linkedReportIds,
+        slots,
       })
-      const linkedReports = await hydrateLinkedReports(cleanupId, record.eventKind)
-      return toCleanupDTO(record, true, linkedReports, "organizer")
+      const [linkedReports, slotBoard] = await Promise.all([
+        hydrateLinkedReports(cleanupId, record.eventKind),
+        hydrateSlots(cleanupId, organizerUserId),
+      ])
+      return toCleanupDTO(record, true, linkedReports, "organizer", { slots: slotBoard })
     },
 
     async updateCleanup(
@@ -448,6 +597,31 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
       if (desiredLinks !== null && desiredLinks.length > 0) {
         await assertReportsLinkable(desiredLinks)
+      }
+
+      // B23: `slots` is the FULL desired set. Omitting the key leaves the board untouched; sending []
+      // deletes every slot. Validated (B26) against the event's CURRENT status before any write — the
+      // rest of the patch stays ungated on status, as it is today.
+      const desiredSlots =
+        patch.slots !== undefined
+          ? toDesiredSlots(patch.slots, current.status, { keepIds: true })
+          : null
+
+      // B23's foreign/unknown-id refusal fires inside reconcileSlots' transaction — which is opened
+      // AFTER the scalar patch below has already committed. A stale slot id (two co-hosts editing at
+      // once, or the same host in two tabs) would therefore 422 a request whose title, scheduledAt,
+      // location and jurisdiction re-resolve had ALREADY been written: an error response for a PATCH
+      // that half-applied. The ids are checked against the event's CURRENT board here, before any
+      // write, so the whole request is all-or-nothing and not merely the slot board. The
+      // in-transaction check STAYS as the race backstop (a slot deleted between this read and the
+      // reconcile) and as the guarantee for any other caller of the repo.
+      if (desiredSlots !== null) {
+        const existingSlotIds = new Set((await deps.repo.listSlots(id, null)).map((s) => s.id))
+        for (const slot of desiredSlots) {
+          if (slot.id !== undefined && !existingSlotIds.has(slot.id)) {
+            throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
+          }
+        }
       }
 
       // A moved event belongs to a DIFFERENT government. cleanups.jurisdiction_geoid routes
@@ -487,11 +661,24 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (desiredLinks !== null) {
         await deps.repo.reconcileLinkedReports(id, desiredLinks, requesterUserId)
       }
+      const slotDiff =
+        desiredSlots !== null
+          ? await deps.repo.reconcileSlots(id, desiredSlots, requesterUserId)
+          : null
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
-      const linkedReports = await hydrateLinkedReports(id, record.eventKind)
-      return toCleanupDTO(record, true, linkedReports, requesterRole)
+      // B24/B34: deleting a claimed slot drops its claimants silently — legitimate, and the bell is the
+      // mitigation. Fired AFTER the reconcile commits, best-effort, and only for slots that actually
+      // went away (an edit that renames or adds rings nobody).
+      if (slotDiff !== null && slotDiff.removed.length > 0) {
+        await notifySlotRemoved(record, slotDiff.removed)
+      }
+      const [linkedReports, slotBoard] = await Promise.all([
+        hydrateLinkedReports(id, record.eventKind),
+        hydrateSlots(id, requesterUserId),
+      ])
+      return toCleanupDTO(record, true, linkedReports, requesterRole, { slots: slotBoard })
     },
 
     async cancelCleanup(
@@ -525,6 +712,12 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         actorId: requesterUserId,
       })
       if (outcome === "not_found") notFoundCleanup()
+      // B18: cancel is not a back door out of B17's forward-only completion. A cancelled event that
+      // still carries credited volunteer_hours rows is a state nothing downstream can interpret, so a
+      // completed event refuses the transition outright (409) instead of silently no-op'ing.
+      if (outcome === "already_completed") {
+        throw AppError.conflict("A completed event can't be cancelled.")
+      }
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
@@ -533,9 +726,77 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       // fresh one rings the roster. Without this an organizer (or a retrying client) could loop
       // /cancel and push every attendee's lock screen on each pass.
       if (outcome === "cancelled") await notifyCancellation(record, cleanReason, requesterUserId)
-      const linkedReports = await hydrateLinkedReports(id, record.eventKind)
+      const [linkedReports, slotBoard] = await Promise.all([
+        hydrateLinkedReports(id, record.eventKind),
+        hydrateSlots(id, requesterUserId),
+      ])
       // The canceller passed the organizer-only gate above, so their role is organizer by definition.
-      return toCleanupDTO(record, true, linkedReports, "organizer")
+      return toCleanupDTO(record, true, linkedReports, "organizer", { slots: slotBoard })
+    },
+
+    /**
+     * B12 — the host closes their own event.
+     *
+     * Until this existed only an operator could move an event to 'done' (the admin event-status route),
+     * and 'done' is what logEventHours hard-requires — so a host could never credit a single attendee
+     * without asking support. The gate is organizer OR COHOST (B13), unlike cancel's organizer-only:
+     * cancel is destructive and rings every attendee's lock screen, completion is forward and silent
+     * (B19 — no bell; the actionable moment is hours_logged), and the cohost is exactly the person who
+     * then logs the hours. Same gate as updateCleanup, so the host mental model stays "hosts edit and
+     * close; the organizer cancels".
+     *
+     * Everything else — the status matrix, the time gate, the timeline row — happens in ONE transaction
+     * against the LOCKED row (B15/B16), because a concurrent updateCleanup can move scheduled_at and a
+     * concurrent completion must not write two timeline rows.
+     */
+    async completeCleanup(
+      id: string,
+      note: string | null,
+      requesterUserId: string,
+    ): Promise<CleanupDTO> {
+      const organizerId = await deps.repo.organizerOf(id)
+      if (organizerId === null) notFoundCleanup()
+      const requesterRole = await deps.repo.roleOf(id, requesterUserId)
+      if (requesterRole !== "organizer" && requesterRole !== "cohost") {
+        throw AppError.forbidden("Only the event hosts can complete this event.")
+      }
+      const trimmed = note?.trim()
+      const cleanNote = trimmed && trimmed.length > 0 ? trimmed : null
+      // M19/gotcha #14: every host-authored free text gets the same gate. This one lands in the public
+      // event timeline, so it is held to exactly the standard the cancellation reason is.
+      assertNoSlur(cleanNote, "note")
+      // The SERVICE composes the copy and the repo only persists — the layer split cancelCleanupTx
+      // already documents.
+      const timelineNote =
+        cleanNote !== null ? `Event marked complete: ${cleanNote}` : "Event marked complete"
+      const outcome = await deps.repo.completeCleanupTx(id, {
+        note: timelineNote,
+        actorId: requesterUserId,
+        now: new Date(),
+      })
+      if (outcome === "not_found") notFoundCleanup()
+      if (outcome === "cancelled") {
+        throw AppError.conflict("A cancelled event can't be marked complete.")
+      }
+      if (outcome === "too_early") {
+        // B14: hours are a falsifiable public record. Without a time anchor a host could date an event
+        // next year, mark it done, and credit hours for something that has not happened. scheduled_at is
+        // the only real-world anchor on the row (there is no endsAt column), so completion opens at the
+        // event's START — early enough to close out a short event the moment it wraps.
+        throw AppError.conflict(
+          "This event hasn't started yet — you can mark it complete once it begins.",
+        )
+      }
+      // "already_completed" falls through: a repeat call is an idempotent 200 + DTO (no second timeline
+      // row was written, and there is no bell to suppress).
+
+      const record = await deps.repo.findCleanupById(id, null)
+      if (!record) notFoundCleanup()
+      const [linkedReports, slotBoard] = await Promise.all([
+        hydrateLinkedReports(id, record.eventKind),
+        hydrateSlots(id, requesterUserId),
+      ])
+      return toCleanupDTO(record, true, linkedReports, requesterRole, { slots: slotBoard })
     },
 
     async listCleanups(
@@ -560,12 +821,17 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           ? await deps.repo.rolesOf(records.map((r) => r.id), viewer.userId)
           : new Map<string, CleanupMemberRole>()
       const linkedByCleanup = await hydrateLinkedReportsForMany(records)
+      // B29a: a feed card does not render a slot board, so the list read pays for ONE aggregate instead
+      // of a per-page join, and `slots` stays empty. `slotCount` is what removes the "[] means no slots
+      // or not hydrated?" ambiguity for the card.
+      const slotCounts = await deps.repo.slotCountsFor(records.map((r) => r.id))
       const items = records.map((record) =>
         toCleanupDTO(
           record,
           rolesById.has(record.id),
           linkedByCleanup.get(record.id) ?? [],
           rolesById.get(record.id) ?? null,
+          { slotCount: slotCounts.get(record.id) ?? 0 },
         ),
       )
       return { items, nextCursor }
@@ -576,11 +842,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         ? await deps.repo.findCleanupById(id, null)
         : await deps.repo.findCleanupByReferenceCode(id)
       if (!record) notFoundCleanup()
-      const [role, linkedReports] = await Promise.all([
+      const [role, linkedReports, slotBoard] = await Promise.all([
         viewerRole(record.id, viewer),
         hydrateLinkedReports(record.id, record.eventKind),
+        // The resolve-either path means the URL id may be a reference code, so the hydration keys off
+        // the RESOLVED record id, never the raw path segment.
+        hydrateSlots(record.id, viewer.userId),
       ])
-      return toCleanupDTO(record, role !== null, linkedReports, role)
+      return toCleanupDTO(record, role !== null, linkedReports, role, { slots: slotBoard })
     },
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
@@ -730,6 +999,63 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
       await notifyRoleChange(targetUserId, "removed", { id: record.id, title: record.title })
       return { ok: true, going }
+    },
+
+    /**
+     * P9 — the attendee picks, moves or drops a shift (B27/B28).
+     *
+     * All the concurrency lives in the repository transaction; this method owns the budget, the outcome
+     * -> HTTP mapping, and the refreshed DTO. Note what is NOT here: a membership gate. Claiming
+     * auto-RSVPs (B28b) because picking a shift IS an RSVP, and making a non-member fail with
+     * `not_member` and retry would be both worse UX and a worse race. The ban probe runs first inside
+     * the transaction, so a removed attendee cannot re-enter through the slot door.
+     */
+    async claimEventSlot(
+      id: string,
+      userId: string,
+      slotId: string | null,
+    ): Promise<CleanupDTO> {
+      // B29c: charged on every attempt, BEFORE the transaction — the point is to keep a flapper off the
+      // contended slot row, so a refused attempt must still cost. Counted per (event, user) in the
+      // shared store so rotating IPs (which evades the per-route limiter) buys nothing.
+      const flips = await counters.incr(`cleanup:slot:${id}:${userId}`, SLOT_FLIP_WINDOW_SEC)
+      if (flips > SLOT_FLIPS_PER_EVENT_PER_WINDOW) {
+        throw AppError.rateLimited(
+          "You've changed your slot too many times recently. Please try again later.",
+        )
+      }
+
+      const outcome =
+        slotId === null
+          ? await deps.repo.releaseSlot(id, userId)
+          : await deps.repo.claimSlot(id, userId, slotId)
+
+      if (outcome.kind === "not_found") notFoundCleanup()
+      if (outcome.kind === "slot_not_found") {
+        // 404 and not 422: the slot is addressed as a sub-resource of the event, and "no such slot on
+        // this event" is exactly the not-found answer. It is also the answer for a slotId belonging to
+        // ANOTHER event, which the composite FK makes structurally impossible to claim anyway.
+        throw AppError.notFound("That slot no longer exists.")
+      }
+      // Reuses joinCleanup's copy verbatim — same situation, same sentence.
+      if (outcome.kind === "banned") {
+        throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
+      }
+      if (outcome.kind === "closed") throw AppError.conflict("This event is closed.")
+      if (outcome.kind === "full") throw AppError.conflict("That slot is already full.")
+
+      const record = await deps.repo.findCleanupById(id, null)
+      if (!record) notFoundCleanup()
+      // The response is the DETAIL DTO (C5): it already carries `slots` (with the refreshed `claimed`
+      // and `mine`), `joined` and `going`, so the client needs no bespoke shape and no refetch. `joined`
+      // is read back from the repo rather than assumed, because a release leaves membership alone while
+      // a claim may have just created it.
+      const role = await deps.repo.roleOf(id, userId)
+      const [linkedReports, slotBoard] = await Promise.all([
+        hydrateLinkedReports(id, record.eventKind),
+        hydrateSlots(id, userId),
+      ])
+      return toCleanupDTO(record, role !== null, linkedReports, role, { slots: slotBoard })
     },
 
     async requestResources(input: {

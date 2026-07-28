@@ -130,6 +130,43 @@ describe("catalog integrity", () => {
     }
   })
 
+  /**
+   * The service-hours transcript is a PDF handed to a school or a court, and every chrome string on it
+   * comes from these catalogs. A missing overlay key falls back to English SILENTLY, so a ko transcript
+   * would ship half in English and look forged. The generic gap check below would catch it too, but this
+   * block names the feature so the failure message says which document broke.
+   */
+  it("every certificate.* key has a real es/de/ko translation (the PDF must not ship half-English)", () => {
+    const certificateKeys = (Object.keys(en) as MessageKey[]).filter((k) =>
+      k.startsWith("certificate."),
+    )
+    expect(certificateKeys.length).toBeGreaterThan(25)
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      for (const key of certificateKeys) {
+        const translated = catalog[key]
+        expect(typeof translated, `${locale}: missing ${key}`).toBe("string")
+        expect((translated ?? "").trim().length, `${locale}: empty ${key}`).toBeGreaterThan(0)
+      }
+      // Presence alone cannot tell a translation from a copy-paste, and short labels legitimately
+      // collide across languages ("Total" is "Total" in Spanish). The PROSE keys are where an
+      // untranslated overlay is actually visible to the reader, so those must genuinely differ.
+      for (const key of [
+        "certificate.attestation.body",
+        "certificate.table.truncated",
+        "certificate.error.no_hours",
+        "certificate.holder.verified",
+      ] as const satisfies readonly MessageKey[]) {
+        expect(catalog[key], `${locale}: ${key} is a verbatim copy of the English source`).not.toBe(
+          en[key],
+        )
+      }
+    }
+    expect(
+      INTENTIONALLY_UNTRANSLATED.filter((k) => k.startsWith("certificate.")),
+      "no certificate.* key may be declared intentionally untranslated",
+    ).toEqual([])
+  })
+
   it("the only untranslated English keys are the ones declared intentional", () => {
     const gaps = (Object.keys(en) as MessageKey[]).filter((key) =>
       Object.values(CATALOGS).some((catalog) => catalog[key] === undefined),

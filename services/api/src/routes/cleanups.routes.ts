@@ -4,6 +4,8 @@
  *   POST  /cleanups               [auth][csrf]         create a cleanup (organizer auto-joins).
  *   PATCH /cleanups/:id           [auth][csrf]         organizer edit (scalars + linked-report reconcile).
  *   POST  /cleanups/:id/cancel    [auth][csrf]         organizer cancel (notifies attendees).
+ *   POST  /cleanups/:id/complete  [auth][csrf]         host (organizer|cohost) mark completed -> 'done'.
+ *   PUT   /cleanups/:id/slot      [auth][csrf]         claim / move / release the viewer's signup slot.
  *   GET   /cleanups               [anon-ok]            list cleanups (when/bbox/near, cursor paged).
  *   GET   /cleanups/:id           [anon-ok]            fetch one cleanup.
  *   POST  /cleanups/:id/join      [auth][csrf]         join (idempotent); returns {joined, going}.
@@ -22,6 +24,8 @@ import {
   CreateCleanupRequestSchema,
   UpdateCleanupRequestSchema,
   CancelCleanupRequestSchema,
+  ClaimEventSlotRequestSchema,
+  CompleteCleanupRequestSchema,
   ListCleanupsRequestSchema,
   RequestEventResourcesRequestSchema,
   SetMemberRoleRequestSchema,
@@ -142,6 +146,25 @@ const MEMBER_MANAGEMENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as cons
  */
 const CREATE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
+/**
+ * B21: per-IP cap on host completion, from the MEMBER_MANAGEMENT_RATE_LIMIT family. Completion is
+ * idempotent and rings nobody (B19), but it is the gate that opens hours logging on an event, and every
+ * repeat call still takes a row lock on the cleanups row — so it does not belong at the global 300/min.
+ */
+const COMPLETE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
+/**
+ * B29c: per-IP cap on slot claim/move/release. Slightly looser than the member-management family
+ * because a legitimate attendee genuinely does tap through a slot board — but it is nowhere near the
+ * global 300/min, because every flip takes a `FOR UPDATE` on a contended slot row and a loop can stall
+ * everyone else competing for the last seat on a popular event.
+ *
+ * This is the OUTER of two layers and is per-IP, therefore evadable by rotating exits. The inner,
+ * non-evadable one is the per-(event, user) flip budget in cleanup-service.ts, counted in the shared
+ * store — the same shape M18's role-change cooldown established.
+ */
+const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+
 export async function registerCleanupRoutes(
   app: FastifyInstance,
   container: Container,
@@ -261,6 +284,32 @@ export async function registerCleanupRoutes(
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(CancelCleanupRequestSchema, { ...(request.body as object), id })
     const dto: GetCleanupResponse = await service().cancelCleanup(id, body.reason ?? null, userId)
+    reply.status(200).send(dto)
+  })
+
+  // Host completion (organizer OR cohost, B13): flips status to 'done', writes a 'status' timeline row
+  // and returns the updated CleanupDTO. The service owns the whole matrix — 403 for a non-host, 404 for
+  // a missing event, 409 for a cancelled one or one that hasn't started yet (B14/B15), and an idempotent
+  // 200 for an already-completed one. No notification (B19).
+  route(app, "completeCleanup", { preHandler: csrfProtect, config: { rateLimit: COMPLETE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const body = parse(CompleteCleanupRequestSchema, { ...(request.body as object), id })
+    const dto: GetCleanupResponse = await service().completeCleanup(id, body.note ?? null, userId)
+    reply.status(200).send(dto)
+  })
+
+  // P9 (B27): PUT /cleanups/:id/slot — the viewer's slot on this event is a SINGULAR resource (one slot
+  // per person per event), so claiming, MOVING and releasing are all one idempotent PUT of its value;
+  // `slotId: null` releases. Same path-param merge as cancel/complete. The service owns the whole
+  // matrix — 404 for a missing event or slot, 403 for a removed (banned) attendee, 409 for a closed
+  // event or a full slot, 429 for flapping — and returns the refreshed CleanupDTO (C5), whose `slots`
+  // already carry the new `claimed`/`mine`, so the client needs no refetch.
+  route(app, "claimEventSlot", { preHandler: csrfProtect, config: { rateLimit: CLAIM_SLOT_RATE_LIMIT } }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const body = parse(ClaimEventSlotRequestSchema, { ...(request.body as object), id })
+    const dto: GetCleanupResponse = await service().claimEventSlot(id, userId, body.slotId)
     reply.status(200).send(dto)
   })
 

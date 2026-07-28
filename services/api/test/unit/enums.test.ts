@@ -141,8 +141,11 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     expect([...POST_KIND_VALUES]).toEqual(["post", "repost", "quote", "reply"])
   })
 
-  it("NotificationType carries the five social-feed post interaction values (LAST, in order)", () => {
-    expect(NOTIFICATION_TYPE_VALUES.slice(-5)).toEqual([
+  it("NotificationType carries the five social-feed post interaction values (in order)", () => {
+    // These used to be the LAST five; the service-hours pair below now sits after them, hence
+    // slice(-7, -2) rather than slice(-5). The positional assertion is the point — appending in a
+    // different order to either file is exactly the drift this guards.
+    expect(NOTIFICATION_TYPE_VALUES.slice(-7, -2)).toEqual([
       "post_like",
       "post_repost",
       "post_reply",
@@ -151,6 +154,16 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ])
     // Every one is also present in the shared enum (they are not backend-ahead).
     for (const t of ["post_like", "post_repost", "post_reply", "post_quote", "post_mention"]) {
+      expect(NotificationTypeSchema.options).toContain(t)
+    }
+  })
+
+  it("NotificationType carries the two service-hours values (LAST, in order)", () => {
+    // cleanup_slot = "a host changed / assigned your signup slot"; hours_logged = "a host credited you
+    // service hours". Appended in this order to BOTH src/db/schema/types.ts and the shared
+    // NotificationTypeSchema, so two implementers cannot diverge on the order.
+    expect(NOTIFICATION_TYPE_VALUES.slice(-2)).toEqual(["cleanup_slot", "hours_logged"])
+    for (const t of ["cleanup_slot", "hours_logged"]) {
       expect(NotificationTypeSchema.options).toContain(t)
     }
   })

@@ -445,15 +445,19 @@ const MUTATIONS = (id: string): ReadonlyArray<{
   { method: "DELETE", url: `/v1/posts/${id}/save` },
 ]
 
-const READS = (id: string, authorId: string): ReadonlyArray<{ method: "GET"; url: string }> => [
+/**
+ * The auth-REQUIRED reads only. `homeFeed` and `listUserPosts` are both `auth: "optional"` in the shared
+ * registry — a public profile has to be readable signed-out (P10), so its "Posts" tab does too — and each
+ * has its own signed-out test below.
+ */
+const READS = (id: string, _authorId: string): ReadonlyArray<{ method: "GET"; url: string }> => [
   { method: "GET", url: `/v1/posts/${id}` },
   { method: "GET", url: `/v1/posts/${id}/replies` },
-  { method: "GET", url: `/v1/people/${authorId}/posts` },
   { method: "GET", url: "/v1/me/saves" },
 ]
 
 describe("posts routes: auth", () => {
-  it("401s every auth-required post endpoint anonymously (12 of 13)", async () => {
+  it("401s every auth-required post endpoint anonymously (11 of 13)", async () => {
     const h = await makeHarness()
     const id = h.repo.seed({ authorId: UNKNOWN_ID })
     for (const r of [...MUTATIONS(id), ...READS(id, UNKNOWN_ID)]) {
@@ -467,7 +471,46 @@ describe("posts routes: auth", () => {
     }
   })
 
-  it("serves GET /feed/home to a SIGNED-OUT reader (the one auth:optional endpoint)", async () => {
+  /**
+   * P10: a public profile is readable signed-out, so its "Posts" tab must be too. The signed-out reader
+   * is hydrated against the NIL viewer, so every VIEWER flag comes back false while the public counts
+   * stay real — the same substitution the public feed makes. A 401 here would have made the whole
+   * signed-out profile page a dead end.
+   */
+  it("serves GET /people/:id/posts to a SIGNED-OUT reader (auth: optional)", async () => {
+    const h = await makeHarness()
+    const author = await h.signIn("public-author@example.com", "PublicAuthor")
+    const postId = h.repo.seed({ authorId: author.userId, body: "public" })
+    h.repo.posts.get(postId)!.likes.add(author.userId)
+    h.repo.posts.get(postId)!.saves.add(author.userId)
+
+    const res = await h.app.inject({ method: "GET", url: `/v1/people/${author.userId}/posts` })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.items.map((p: PostDTO) => p.id)).toEqual([postId])
+    const dto = body.items.find((p: PostDTO) => p.id === postId)!
+    expect(dto.viewer).toEqual({ liked: false, reposted: false, saved: false })
+    expect(dto.counts.likes).toBe(1)
+    expect(body.nextCursor).toBeNull()
+  })
+
+  it("still scopes the viewer flags to a SIGNED-IN reader of someone else's posts tab", async () => {
+    const h = await makeHarness()
+    const author = await h.signIn("flagged-author@example.com", "FlaggedAuthor")
+    const reader = await h.signIn("flagged-reader@example.com", "FlaggedReader")
+    const postId = h.repo.seed({ authorId: author.userId, body: "public" })
+    h.repo.posts.get(postId)!.likes.add(reader.userId)
+
+    const res = await h.app.inject({
+      method: "GET",
+      url: `/v1/people/${author.userId}/posts`,
+      headers: bearer(reader),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().items.find((p: PostDTO) => p.id === postId)!.viewer.liked).toBe(true)
+  })
+
+  it("serves GET /feed/home to a SIGNED-OUT reader (auth: optional)", async () => {
     const h = await makeHarness()
     const author = await h.signIn("author@example.com", "Author")
     const postId = h.repo.seed({ authorId: author.userId, body: "public" })

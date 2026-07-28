@@ -513,6 +513,83 @@ describe("PUT /me/settings", () => {
     expect(noop.json().user).toMatchObject({ allowDirectMessages: false, locale: "ko" })
   })
 
+  /**
+   * P6 hours privacy. `users.show_volunteer_hours` is a NULLABLE TRI-STATE (C18): NULL = never chosen,
+   * and only an explicit boolean is ever written. So the DTO field must be ABSENT before the first
+   * interaction — a default `true` on the wire would tell the settings toggle the user opted in when
+   * they have never been asked, and a default `false` would claim an opt-out nobody made.
+   */
+  it("showVolunteerHours is ABSENT until chosen, then round-trips true and false", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("hours@example.com", "Hours")
+
+    // Never chosen: the key is not on the payload at all, on the settings write OR the session view.
+    const noop = await h.app.inject({
+      method: "PUT",
+      url: "/v1/me/settings",
+      headers: bearer(me),
+      payload: {},
+    })
+    expect(noop.statusCode).toBe(200)
+    expect("showVolunteerHours" in noop.json().user).toBe(false)
+    expect((await h.stores.users.findById(me.userId))!.showVolunteerHours).toBeNull()
+    const before = await h.app.inject({
+      method: "GET",
+      url: "/v1/auth/session",
+      headers: bearer(me),
+    })
+    expect("showVolunteerHours" in before.json().user).toBe(false)
+
+    const off = await h.app.inject({
+      method: "PUT",
+      url: "/v1/me/settings",
+      headers: bearer(me),
+      payload: { showVolunteerHours: false },
+    })
+    expect(off.statusCode).toBe(200)
+    expect(off.json().user.showVolunteerHours).toBe(false)
+    // Persisted, not just echoed — and `false` is a REAL stored value, not the null it started at.
+    expect((await h.stores.users.findById(me.userId))!.showVolunteerHours).toBe(false)
+    const session = await h.app.inject({
+      method: "GET",
+      url: "/v1/auth/session",
+      headers: bearer(me),
+    })
+    expect(session.json().user.showVolunteerHours).toBe(false)
+
+    const on = await h.app.inject({
+      method: "PUT",
+      url: "/v1/me/settings",
+      headers: bearer(me),
+      payload: { showVolunteerHours: true },
+    })
+    expect(on.statusCode).toBe(200)
+    expect(on.json().user.showVolunteerHours).toBe(true)
+    expect((await h.stores.users.findById(me.userId))!.showVolunteerHours).toBe(true)
+  })
+
+  it("a settings write that omits showVolunteerHours leaves the stored tri-state alone", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("hours-keep@example.com", "Keep")
+
+    await h.app.inject({
+      method: "PUT",
+      url: "/v1/me/settings",
+      headers: bearer(me),
+      payload: { showVolunteerHours: false },
+    })
+    // A locale-only patch must not resurrect the flag to its default.
+    const later = await h.app.inject({
+      method: "PUT",
+      url: "/v1/me/settings",
+      headers: bearer(me),
+      payload: { locale: "de" },
+    })
+    expect(later.statusCode).toBe(200)
+    expect(later.json().user).toMatchObject({ locale: "de", showVolunteerHours: false })
+    expect((await h.stores.users.findById(me.userId))!.showVolunteerHours).toBe(false)
+  })
+
   it("422s an unknown key (strict schema) and leaves settings unchanged", async () => {
     const h = await makeHarness()
     const me = await h.signIn("strict@example.com", "Strict")

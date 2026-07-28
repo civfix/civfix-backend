@@ -320,10 +320,11 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **61 files**, `0000_extensions.sql` … `0060_moderation_subject_post.sql`. The nine rows
+`drizzle/` holds **65 files**, `0000_extensions.sql` … `0064_service_hours_certificates.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
-redesign; it is listed here because this table is the single operator runbook.) Both backfills live **inside** their own migration file
+redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
+later still, with the service-hours feature set, and have their own table in §1a below.) Both backfills live **inside** their own migration file
 (`0058`'s `sessions.created_at`, `0059`'s follow counters; §2 and §6 below), so there is no separate
 backfill step to remember: the three `db:backfill*` scripts in `services/api/package.json` (report
 jurisdiction geoids, reference codes, ACS population) are boundary/ingest tooling and are not part of this
@@ -347,6 +348,28 @@ deploy.
 - **Old worker, migration applied:** a *retried* job re-inserting the same open flag now raises `23505` instead of quietly duplicating. Bounded (it only happens to a job whose persist already failed once) and it self-heals the moment the new image lands.
 
 The migration is safe to apply on a live DB: the collapse `DELETE` only touches OPEN rows with `source='worker'` (admin/API flags are untouched — the discovery "start task" path inserts `('report', …, 'manual', 'api')` with no guard and must keep working), and the index is built inside the migration's transaction, so `abuse_flags` is briefly write-locked. Executed against a throwaway `postgis/postgis:16-3.4` (both files applied and re-applied in one transaction each, then the real `makeDrizzleMediaWorkerRepo` driven against them): the collapse removes timestamped *and* `NULL`-`created_at` duplicates while leaving resolved rows, `source='api'` duplicates and other reasons alone; `insertAbuseFlag`'s arbiter is inferred (the retry is a no-op, an `'api'` flag still duplicates freely, and a moderator-cleared flag can be re-raised); and the `media_reap_tombstones` round trip (record → bump → list-under-cap → clear) behaves as documented. The one other ON CONFLICT the worker uses — `enqueueHeldModerationItem` against `0038_moderation_open_unique.sql` — was checked by inspection only: same target columns, same `WHERE status = 'open'` predicate.
+
+## 1a. Service-hours feature set (`0061`–`0064`)
+
+A later change set than the `0052`–`0060` block above; listed here because this table is the single
+operator runbook. All four are **additive-only** — `ADD COLUMN` (nullable, no default), `CREATE TABLE
+IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`. No rename, no drop, no narrowed CHECK, no `NOT NULL`
+without a default, and **no backfill `UPDATE`** — so the old code keeps serving correctly against the new
+schema and the order relative to the image is free.
+
+| File | What it does | If skipped |
+|---|---|---|
+| `0061_users_show_volunteer_hours.sql` | adds `users.show_volunteer_hours boolean` — a **nullable tri-state**, deliberately not `NOT NULL DEFAULT true` (NULL = never chosen ⇒ aggregate visible, itemised ledger empty; TRUE = itemised opted in; FALSE = hidden) | The privacy toggle and both hours projections fail (42703, undefined column) |
+| `0062_volunteer_hours_user_created_idx.sql` | index `volunteer_hours (user_id, created_at DESC, id DESC)` for the new keyset ledger reads | Correct but unindexed: every transcript page sorts the user's whole ledger |
+| `0063_cleanup_slots.sql` | `cleanup_slots` + `cleanup_slot_claims` (P9 signup slots). The `(cleanup_id, user_id)` PK **is** the one-slot-per-person rule; the composite FK `(slot_id, cleanup_id)` makes cross-event claims structurally impossible | Every slot read/write fails (42P01, undefined table) |
+| `0064_service_hours_certificates.sql` | `service_hours_certificates`: issued PDF transcripts, `code` = the public verification capability, plus the partial unique on `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` that gives issue idempotency | Issue/list/revoke/verify all fail (42P01); without the partial unique specifically, a double-tap mints two documents |
+
+**No file in `drizzle/` may contain `BEGIN;` / `COMMIT;` / `ROLLBACK;`.** `src/db/migrate.ts:83-97` wraps
+every file in its own transaction on a reserved connection, together with the `_civfix_migrations`
+bookkeeping INSERT. A file that opens its own ends the runner's mid-flight: the bookkeeping row commits
+separately, the runner's trailing `commit` only warns, and the catch branch's `rollback` becomes a no-op —
+a half-applied file recorded as applied, with no error anywhere.
+`test/unit/migrations-transaction-control.test.ts` asserts this over the real directory.
 
 ## 2. `sessions.created_at` backfill (`0058`, shipped in wave 3)
 

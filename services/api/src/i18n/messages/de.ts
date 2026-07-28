@@ -56,6 +56,12 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_cancelled.body_reason":
     "Dieses Event wurde vom Host abgesagt. Grund: {{reason}}",
 
+  "notification.hours_logged.title": "Ehrenamtsstunden gutgeschrieben",
+  "notification.hours_logged.body": "Für {{title}} wurden dir {{hours}} Stunden gutgeschrieben.",
+
+  "notification.cleanup_slot.removed.title": "Deine Rolle im Event hat sich geändert",
+  "notification.cleanup_slot.removed.body": 'Die Rolle "{{slot}}" wurde aus {{title}} entfernt.',
+
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Dein civfix-Anmeldecode",
   "email.otp.body_line1": "Dein civfix-Anmeldecode lautet {{code}}.",
@@ -68,4 +74,37 @@ export const de: Partial<Record<MessageKey, string>> = {
 
   "email.generic.subject": "Eine civfix-Benachrichtigung",
   "email.generic.body": "Du hast eine neue civfix-Benachrichtigung.",
+  // ---- Nachweis über ehrenamtliche Arbeit (PDF, P5) -----------------------------------------------
+  "certificate.doc.title": "Nachweis über ehrenamtliche Arbeit",
+  "certificate.doc.pdf_title": "civfix-Einsatzstunden — {{name}} — {{code}}",
+  "certificate.header.number": "Zertifikatsnr.",
+  "certificate.holder.eyebrow": "Ausgestellt für",
+  "certificate.holder.verified": "Community-Mitglied mit verifizierter Identität",
+  "certificate.holder.period": "Einsatzzeitraum",
+  "certificate.holder.issued": "Ausgestellt",
+  "certificate.summary.total_hours": "Stunden gesamt",
+  "certificate.summary.activities": "Aktivitäten",
+  "certificate.summary.communities": "Gemeinden",
+  "certificate.summary.more": "+{{count}} weitere",
+  "certificate.table.date": "Datum",
+  "certificate.table.activity": "Aktivität",
+  "certificate.table.community": "Gemeinde",
+  "certificate.table.hours": "Stunden",
+  "certificate.table.credited_by": "Gutgeschrieben von",
+  "certificate.table.total": "Gesamt",
+  "certificate.table.truncated":
+    "Angezeigt werden die {{shown}} neuesten von {{total}} Aktivitäten. Die Summe oben ist die Summe der {{shown}} aufgeführten.",
+  "certificate.credited_by.automatic": "Automatisch (Meldung verifiziert)",
+  "certificate.activity.report": "Verifizierte Meldung {{ref}}",
+  "certificate.activity.manual": "Korrektur",
+  "certificate.attestation.body":
+    "Dieser Nachweis wurde von civfix aus dem Einsatzstunden-Register erstellt. Die Stunden für eine Veranstaltung trägt deren gastgebende Person ein, die eine Organisatorin mit verifizierter Identität sein muss und sich selbst keine Stunden gutschreiben kann. Stunden aus der Meldungsverifizierung vergibt die Plattform automatisch. Maßgeblich ist der bei civfix geführte Datensatz; bestätige dieses Dokument unter der unten genannten Adresse.",
+  "certificate.seal.line": "Verifizierter Nachweis",
+  "certificate.issuer.line": "Ausgestellt von civfix · civfix.org",
+  "certificate.issuer.generated": "Erstellt {{timestamp}}",
+  "certificate.verify.prompt": "Diesen Nachweis auf civfix.org/service-record prüfen",
+  "certificate.verify.fingerprint": "Dokument-Fingerabdruck",
+  "certificate.footer.page": "Seite {{page}} von {{total}}",
+  "certificate.footer.timezone": "Datumsangaben in Pazifikzeit (America/Los_Angeles).",
+  "certificate.error.no_hours": "Du hast noch keine erfassten Einsatzstunden.",
 }

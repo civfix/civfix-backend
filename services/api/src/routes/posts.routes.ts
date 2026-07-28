@@ -1,8 +1,9 @@
 /**
  * Social-feed post routes. Registers the 13 post endpoints from the shared registry (createPost,
  * getPost, deletePost, listReplies, repostPost, unrepostPost, likePost, unlikePost, savePost,
- * unsavePost, homeFeed, listUserPosts, listSaves). All require auth (all users can post — no role gate,
- * like createReport / followPerson); mutations carry csrfProtect. The `:id` path param is validated
+ * unsavePost, homeFeed, listUserPosts, listSaves). All but the two READ feeds — `homeFeed` and
+ * `listUserPosts`, both `auth: "optional"` — require auth (all users can post, no role gate, like
+ * createReport / followPerson); mutations carry csrfProtect. The `:id` path param is validated
  * separately from the shared request schema (which is `PaginationQuerySchema` / `null`), matching how
  * report-chat / social routes wire `:id` from params + pagination from query.
  *
@@ -14,6 +15,7 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
+import { NIL_VIEWER_ID } from "../services/post-repository.drizzle.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
@@ -118,8 +120,14 @@ export async function registerPostRoutes(app: FastifyInstance, container: Contai
       .send(userId ? await service().homeFeed(userId, query) : await service().publicFeed(query))
   })
 
+  // OPTIONAL auth (P10): a public profile must be readable signed-out, so the "Posts" tab is too — the
+  // shared registry now carries `auth: "optional"` for this endpoint. A signed-out reader is hydrated
+  // against the NIL viewer, which matches no like/save/repost row, so every viewer flag comes back false
+  // and no block edge applies (there is no viewer to have blocked anyone) — the same substitution
+  // publicFeed makes for the signed-out timeline. Relaxing an auth level is backward compatible in both
+  // directions: an existing client still sends its credentials and still gets its own viewer flags.
   route(app, "listUserPosts", async (request, reply) => {
-    const userId = requireAuth(request)
+    const userId = request.auth.userId ?? NIL_VIEWER_ID
     const { id } = parse(PostIdParamsSchema, request.params)
     const pagination = parse(PaginationQuerySchema, request.query)
     reply.status(200).send(await service().listUserPosts(id, userId, pagination))

@@ -13,7 +13,14 @@
     "DOCKER_CERT_PATH",
     "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE",
     "TESTCONTAINERS_HOST_OVERRIDE",
-    "TESTCONTAINERS_RYUK_DISABLED"
+    "TESTCONTAINERS_RYUK_DISABLED",
+    // The two guards that turn the silent skip above into a LOUD failure (test/helpers/pg.ts).
+    // CIVFIX_REQUIRE_PG=1 makes a Docker-less run fail instead of skipping; CIVFIX_ALLOW_PG_SKIP is the
+    // deliberate opt-out. Both were being stripped by turbo's strict env, so `CIVFIX_REQUIRE_PG=1 pnpm
+    // test` at the repo root did nothing at all — the guard against the silent 381-test skip could not
+    // fire through the only command anybody actually runs.
+    "CIVFIX_REQUIRE_PG",
+    "CIVFIX_ALLOW_PG_SKIP"
   ],
   "tasks": {
     "build": {

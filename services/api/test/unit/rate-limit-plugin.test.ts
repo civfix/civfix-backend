@@ -82,10 +82,27 @@ describe("rate limiter: sensitive prefixes fail closed (H4)", () => {
       "/v1/media/presign",
       "/v1/claim/abc",
       "/forms/home-turf",
+      // Mints a durable, publicly-verifiable artifact from personal data and returns a capability URL.
+      "/v1/me/volunteer-hours/certificates",
+      "/v1/me/volunteer-hours/certificates/A1B2C3D4E5F6/revoke",
     ]) {
       expect(isSensitivePath(p)).toBe(true)
     }
-    for (const p of ["/v1/reports", "/healthz", "/readyz", "/v1/authors", "/v1/admin/users"]) {
+    for (const p of [
+      "/v1/reports",
+      "/healthz",
+      "/readyz",
+      "/v1/authors",
+      "/v1/admin/users",
+      // `path === p || startsWith(p + "/")`: the plain hours read must NOT inherit the certificates
+      // prefix and land in the fail-closed bucket.
+      "/v1/me/volunteer-hours",
+      // C3, and this negative is the tripwire: the PUBLIC verification read must stay OUT of the
+      // fail-closed bucket. It is a read-only lookup that mints nothing, consumes no one-shot secret and
+      // hands out no upload URL — and a Redis blip here would 429 the school registrar holding a printed
+      // transcript, who is the one audience this feature exists for.
+      "/v1/service-hours/verify/A1B2C3D4E5F6",
+    ]) {
       expect(isSensitivePath(p)).toBe(false)
     }
   })

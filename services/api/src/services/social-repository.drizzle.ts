@@ -23,7 +23,7 @@ export {
 /** "In the viewer's area" radius for follow suggestions (~25 km). */
 const SUGGEST_NEARBY_METERS = 25_000
 
-interface PersonRowSelect {
+export interface PersonRowSelect {
   id: string
   display_name: string
   handle: string | null
@@ -34,13 +34,33 @@ interface PersonRowSelect {
   avatar_r2_key: string | null
   avatar_url: string | null
   social_links?: SocialLinks | null
+  /**
+   * P6 hours privacy (0061). Declared REQUIRED (not optional like `social_links`) as DOCUMENTATION of
+   * what every projection below owes this shape — it is NOT a compile-time guarantee.
+   *
+   * ⚠ postgres.js's `sql<PersonRowSelect[]>` is an UNCHECKED TYPE ASSERTION over a template literal:
+   * TypeScript never inspects the SQL column list, so a projection that forgets
+   * `u.show_volunteer_hours` typechecks fine and yields `undefined` at runtime — and `undefined` would
+   * slip through the consumer's `=== false` opt-out gate (social-service.ts buildProfile), publishing
+   * the hours of a user who explicitly hid them.
+   *
+   * `toPersonView` therefore coerces `undefined` to `false`: a forgotten column FAILS CLOSED (hours
+   * hidden, which is merely wrong-looking) instead of failing open (hours disclosed, which is the
+   * disclosure 0061 exists to prevent).
+   */
+  show_volunteer_hours: boolean | null
 }
 
 interface PersonRowSelectWithFollow extends PersonRowSelect {
   is_following: boolean
 }
 
-function toPersonView(r: PersonRowSelect): PersonView {
+/**
+ * Exported for `test/unit/social-service.test.ts`, which feeds it a row literal with the
+ * `show_volunteer_hours` column MISSING — the exact runtime shape a forgotten column produces, and the
+ * one thing no typecheck can catch (see the field's doc comment).
+ */
+export function toPersonView(r: PersonRowSelect): PersonView {
   return {
     id: r.id,
     displayName: r.display_name,
@@ -52,6 +72,11 @@ function toPersonView(r: PersonRowSelect): PersonView {
     avatarR2Key: r.avatar_r2_key,
     avatarUrl: r.avatar_url,
     socialLinks: r.social_links ?? null,
+    // FAIL CLOSED, and note this is NOT `?? false`: `null` is the meaningful "never chosen" arm of the
+    // tri-state and must survive verbatim (it is what keeps the flag off the DTO). Only `undefined` —
+    // which the database cannot produce, so it means the projection omitted the column — collapses to an
+    // explicit opt-out.
+    showVolunteerHours: r.show_volunteer_hours === undefined ? false : r.show_volunteer_hours,
   }
 }
 
@@ -168,10 +193,12 @@ async function connectionsPage(
       EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
       am.r2_key AS avatar_r2_key,
       u.avatar_url,
+      u.show_volunteer_hours,
       ${followingExpr} AS is_following
     FROM (
       SELECT
         u.id, u.display_name, u.handle, u.bio, u.avatar_media_id, u.avatar_url,
+        u.show_volunteer_hours,
         u.follower_count, u.following_count
       FROM users u
       JOIN follows_people f ON ${joinPredicate}
@@ -202,7 +229,8 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
         am.r2_key AS avatar_r2_key,
         u.avatar_url,
-        u.social_links
+        u.social_links,
+        u.show_volunteer_hours
       FROM users u
       LEFT JOIN media_assets am ON am.id = u.avatar_media_id
       WHERE ${keyFilter} AND u.deleted_at IS NULL
@@ -265,10 +293,12 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
           am.r2_key AS avatar_r2_key,
           u.avatar_url,
+          u.show_volunteer_hours,
           ${followingExpr} AS is_following
         FROM (
           SELECT
             u.id, u.display_name, u.handle, u.bio, u.avatar_media_id, u.avatar_url,
+            u.show_volunteer_hours,
             u.follower_count, u.following_count
           FROM users u
           WHERE u.deleted_at IS NULL
@@ -330,6 +360,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
             u.bio,
             u.avatar_media_id,
             u.avatar_url,
+            u.show_volunteer_hours,
             u.created_at,
             u.follower_count AS followers,
             u.following_count AS following,
@@ -387,6 +418,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = c.id AND v.status = 'verified') AS verified,
           am.r2_key AS avatar_r2_key,
           c.avatar_url,
+          c.show_volunteer_hours,
           c.is_organizer
         FROM ranked c
         LEFT JOIN media_assets am ON am.id = c.avatar_media_id

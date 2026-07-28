@@ -100,14 +100,20 @@ afterEach(async () => {
 })
 
 const FUTURE = new Date(Date.now() + 7 * 86_400_000).toISOString()
+// An already-started event: the only kind a host may mark complete (B14's time gate).
+const PAST = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
 
-/** Create a cleanup as the organizer and return its id. */
-async function createCleanup(app: FastifyInstance, token: string): Promise<string> {
+/** Create a cleanup as the organizer and return its id. Defaults to a future date. */
+async function createCleanup(
+  app: FastifyInstance,
+  token: string,
+  scheduledAt: string = FUTURE,
+): Promise<string> {
   const res = await app.inject({
     method: "POST",
     url: "/v1/cleanups",
     headers: auth(token),
-    payload: { title: "Sweep", type: "site", lat: 34, lng: -118.49, scheduledAt: FUTURE },
+    payload: { title: "Sweep", type: "site", lat: 34, lng: -118.49, scheduledAt },
   })
   return res.json().id
 }
@@ -450,6 +456,159 @@ describe("POST /cleanups/:id/cancel (host cancel)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(token),
+      payload: { nope: "x" },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+})
+
+describe("POST /cleanups/:id/complete (host completion)", () => {
+  it("the organizer completes an already-started event: 200 with status 'done'", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(token),
+      payload: { note: "42 bags off the creek" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().status).toBe("done")
+  })
+
+  it("completes with no note (empty body) -> 200, and a repeat is idempotent", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(first.statusCode).toBe(200)
+
+    const second = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(second.statusCode).toBe(200)
+    expect(second.json().status).toBe("done")
+  })
+
+  it("a COHOST can complete (B13) while a plain member gets 403", async () => {
+    const { app, token, mailer, repo } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+    const cohost = await signIn(app, mailer, "closer@example.com")
+    const member = await signIn(app, mailer, "attendee@example.com")
+    repo.seedUser({ id: cohost.userId, displayName: "Cory" })
+    repo.seedUser({ id: member.userId, displayName: "Mel" })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
+    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${cohost.userId}`,
+      headers: auth(token),
+      payload: { role: "cohost" },
+    })
+
+    const asMember = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(member.token),
+      payload: {},
+    })
+    expect(asMember.statusCode).toBe(403)
+
+    // Unlike cancel (organizer-only), completion is open to the cohost — the person who then logs hours.
+    const asCohost = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(cohost.token),
+      payload: {},
+    })
+    expect(asCohost.statusCode).toBe(200)
+    expect(asCohost.json().status).toBe("done")
+  })
+
+  it("409s an event that hasn't started yet (B14's time anchor)", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe("CONFLICT")
+  })
+
+  it("409s completing a CANCELLED event, and 409s cancelling a COMPLETED one (B18)", async () => {
+    const { app, token } = await makeHarness()
+    const cancelled = await createCleanup(app, token, PAST)
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${cancelled}/cancel`,
+      headers: auth(token),
+      payload: {},
+    })
+    const completeCancelled = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${cancelled}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(completeCancelled.statusCode).toBe(409)
+
+    // The other direction: host completion is forward-only, so cancel is not a way back out of it.
+    const completed = await createCleanup(app, token, PAST)
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${completed}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    const cancelCompleted = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${completed}/cancel`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(cancelCompleted.statusCode).toBe(409)
+    expect(cancelCompleted.json().code).toBe("CONFLICT")
+  })
+
+  it("401s an anonymous completion", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+    const res = await app.inject({ method: "POST", url: `/v1/cleanups/${id}/complete`, payload: {} })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it("404s completing a missing cleanup", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups/00000000-0000-0000-0000-000000000000/complete",
+      headers: auth(token),
+      payload: {},
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("422s an unknown body key (strict schema)", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
       headers: auth(token),
       payload: { nope: "x" },
     })

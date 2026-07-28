@@ -3,6 +3,7 @@ import type {
   AttendeeDTO,
   CleanupDTO,
   CleanupMemberRole,
+  EventSlotDTO,
   LinkedEventRef,
   LinkedReportRef,
   PersonDTO,
@@ -11,6 +12,7 @@ import type {
   AttendeeView,
   CleanupPersonView,
   CleanupRecord,
+  EventSlotView,
   LinkedEventView,
   LinkedReportView,
 } from "./cleanup-repository.types.js"
@@ -27,10 +29,11 @@ export const ATTENDEES_DEFAULT_LIMIT = 50
 // defensive bound so a pathologically large cleanup cannot emit an unbounded set of PUBLISHes per send.
 export const THREAD_SIGNAL_MEMBER_CAP = 500
 
-// Backend-side cap on reports linked in one create/reconcile call. The shared schema does not (yet)
-// advertise a `.max()`, so the service clamps abusive input before it reaches the per-id-in-one-tx repo
-// path (otherwise thousands of ids would pin one connection + open tx). Realistically never hit.
-export const MAX_LINKED_REPORTS = 200
+// Cap on reports linked in one create/reconcile call, RE-EXPORTED from the contract rather than
+// re-declared here (L23). CreateCleanupRequestSchema/UpdateCleanupRequestSchema now carry
+// `.max(MAX_LINKED_REPORTS)` themselves, so the service's clamp and the wire schema are the same number
+// by construction; a second local literal is exactly the drift this re-export exists to prevent.
+export { MAX_LINKED_REPORTS } from "@civfix/shared"
 
 // avatarGradient is the shared deterministic helper. It previously had a DIVERGENT local HSL impl here,
 // which made the organizer/chat avatar differ from the people-list/profile avatar for the SAME user.
@@ -56,9 +59,31 @@ export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
 }
 
 // An attendees-roster row: the PersonDTO plus the attendee's cleanup_members role (WS4 — drives the
-// co-host badge + the permission-aware kebab in the roster UI).
+// co-host badge + the permission-aware kebab in the roster UI) and, P9/B29b, the signup slot they
+// claimed. `slot` is emitted whenever the read resolved it (including as an explicit null, which means
+// "RSVP'd without a slot") and omitted entirely when the read did not join the claims table — that is
+// the difference between "no slot" and "this server didn't look", and the client renders both as none.
 export function toAttendeeDTO(view: AttendeeView, isFollowing: boolean): AttendeeDTO {
-  return { ...toAttendeePersonDTO(view, isFollowing), role: view.role }
+  return {
+    ...toAttendeePersonDTO(view, isFollowing),
+    role: view.role,
+    ...(view.slot !== undefined ? { slot: view.slot } : {}),
+  }
+}
+
+// One slot row of the event's signup board. `claimed` is passed through UNCLAMPED on purpose: lowering
+// a capacity below the current claim count is legal and evicts nobody (B25), so the UI renders "6/4"
+// honestly rather than pretending the slot is exactly full.
+export function toEventSlotDTO(view: EventSlotView): EventSlotDTO {
+  return {
+    id: view.id,
+    title: view.title,
+    ...(view.description !== null ? { description: view.description } : {}),
+    ...(view.capacity !== null ? { capacity: view.capacity } : {}),
+    claimed: view.claimed,
+    sortOrder: view.sortOrder,
+    ...(view.mine ? { mine: true } : {}),
+  }
 }
 
 export function toCleanupDTO(
@@ -68,6 +93,11 @@ export function toCleanupDTO(
   // The VIEWER's membership role (WS4): null/omitted when the viewer is not a member (incl. anonymous)
   // or when a call site has no viewer context (the DTO field is optional in the shared contract).
   myRole: CleanupMemberRole | null = null,
+  // P9 (B29a). `slots` is the FULL board and is populated on the DETAIL-shaped responses only
+  // (getCleanup / create / update / complete / claim). A list read leaves it empty and passes
+  // `slotCount` instead, so an empty `slots` is never ambiguous between "no slots" and "not hydrated".
+  // An options object rather than two more positional parameters: this function already takes four.
+  slotting: { slots?: EventSlotDTO[]; slotCount?: number } = {},
 ): CleanupDTO {
   return {
     id: record.id,
@@ -91,6 +121,12 @@ export function toCleanupDTO(
     ...(record.jurisdictionGeoid !== null ? { jurisdictionGeoid: record.jurisdictionGeoid } : {}),
     ...(record.referenceCode !== null ? { referenceCode: record.referenceCode } : {}),
     linkedReports,
+    // CleanupDTOSchema.slots is a `.default([])` field, so `slots` is REQUIRED on the inferred output
+    // type and this explicitly-annotated `: CleanupDTO` literal — the sole construction point for every
+    // call site — must supply it, exactly like `linkedReports` above. A caller that hydrates passes the
+    // board; every other caller keeps the empty default.
+    slots: slotting.slots ?? [],
+    ...(slotting.slotCount !== undefined ? { slotCount: slotting.slotCount } : {}),
   }
 }
 

@@ -134,8 +134,12 @@ export const CHAT_MESSAGE_KIND_VALUES = [
 
 /**
  * notifications.type. Mirrors shared NotificationTypeSchema byte-for-byte (drift-guarded by
- * test/unit/enums.test.ts). The trailing five (post_like … post_mention) are the social-feed post
- * interactions; they are present in the shared enum too, so this stays at exact equality.
+ * test/unit/enums.test.ts). post_like … post_mention are the social-feed post interactions; the trailing
+ * two (cleanup_slot, hours_logged) are the service-hours feature set's bells. All are present in the
+ * shared enum, so this stays at exact equality.
+ *
+ * No migration is needed to add a value: notifications.type is a plain `text NOT NULL` with NO CHECK
+ * constraint (drizzle/0001_core.sql), unlike media_assets.purpose (which is why 0054 existed).
  */
 export const NOTIFICATION_TYPE_VALUES = [
   "report_update",
@@ -154,6 +158,8 @@ export const NOTIFICATION_TYPE_VALUES = [
   "post_reply",
   "post_quote",
   "post_mention",
+  "cleanup_slot",
+  "hours_logged",
 ] as const
 
 /**

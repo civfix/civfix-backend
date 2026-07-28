@@ -90,7 +90,66 @@ export interface CleanupPersonView {
 export interface AttendeeView extends CleanupPersonView {
   isFollowing: boolean
   role: CleanupMemberRole
+  // P9 (B29b): the signup slot this attendee claimed on the event, or null when they RSVP'd without
+  // one. The host's per-slot roster needs NO new endpoint — this field plus CleanupDTO.slots[] is
+  // enough and the UI groups client-side. The roster read is already role-scoped (`following` for a
+  // non-member, `all` for members), so the slot inherits that gating; no extra visibility rule exists.
+  // Optional so a read that does not join the claims table simply omits it (rendered as no slot).
+  slot?: { id: string; title: string } | null
 }
+
+// One signup slot as the DETAIL reads project it (B29a). `claimed` is the live claim count and MAY
+// EXCEED `capacity` — lowering a capacity below the current count is allowed and evicts nobody (B25),
+// so the DTO carries both numbers honestly ("6/4") rather than clamping. `mine` is the VIEWER's own
+// claim; a null viewerId makes it false for every row, which is the right anonymous answer.
+export interface EventSlotView {
+  cleanupId: string
+  id: string
+  title: string
+  description: string | null
+  capacity: number | null
+  sortOrder: number
+  claimed: number
+  mine: boolean
+}
+
+// One entry of the host's desired slot set (create + reconcile). `id` present = edit THAT slot on THIS
+// cleanup; `id` absent = insert. An id belonging to a DIFFERENT cleanup is a hard 422 from the repo,
+// never a silent re-parent (B23). `sortOrder` is presentational only — identity is the uuid.
+export interface DesiredSlot {
+  id?: string
+  title: string
+  description: string | null
+  capacity: number | null
+  sortOrder: number
+}
+
+// The applied slot diff (B23). `removed[].claimantUserIds` is collected BEFORE the delete, inside the
+// same transaction — those ids feed the `cleanup_slot` bell (B34). Deleting a claimed slot silently
+// drops its claimants and that is allowed (B24): it is the host's roster and a cancelled role is a
+// legitimate edit; refusing (409) was considered and rejected as too rigid. The bell is the mitigation.
+export interface SlotReconcileResult {
+  added: string[]
+  updated: string[]
+  removed: { slotId: string; title: string; claimantUserIds: string[] }[]
+}
+
+// The outcome of a claim/move/release attempt (B28). One endpoint covers all three because the v1 rule
+// is exactly one slot per person per event, so "my slot on this event" is a SINGULAR resource.
+export type ClaimSlotOutcome =
+  | { kind: "claimed"; slotId: string }
+  | { kind: "released" }
+  // 404 — no such cleanup.
+  | { kind: "not_found" }
+  // 404 — no such slot ON THIS CLEANUP (a slotId from another event lands here, and the composite FK
+  // (slot_id, cleanup_id) makes it structurally impossible even if the predicate were ever dropped).
+  | { kind: "slot_not_found" }
+  // 403 — a cleanup_bans row exists; reuses joinCleanup's copy verbatim.
+  | { kind: "banned" }
+  // 409 — the event is 'done' or 'cancelled'.
+  | { kind: "closed" }
+  // 409 — capacity is not null and the live claim count already reached it.
+  | { kind: "full" }
 
 // Arguments for the attendee roster read (the service resolves `onlyFollowed`/`limit` from the viewer).
 export interface ListAttendeesArgs {
@@ -125,6 +184,11 @@ export interface CreateCleanupTxArgs {
   // Report ids to link in the SAME create tx (filtered to ids that exist; visibility checked by the
   // service). Empty array = no links. Never set for a non-cleanup eventKind.
   linkedReportIds: string[]
+  // P9 signup slots created with the event (B22), inserted inside this SAME transaction. Empty array =
+  // no slots. Unlike linkedReportIds these are legal on BOTH eventKind values — an `other_volunteer`
+  // event (a food-bank shift, a phone bank) is precisely the kind with named roles. Every entry is an
+  // INSERT: the service strips any `id` before it gets here, because on create there is nothing to edit.
+  slots: DesiredSlot[]
 }
 
 // A scalar PATCH of an existing cleanup (only the supplied fields change). Geometry via lat+lng pair.
@@ -149,7 +213,28 @@ export interface UpdateCleanupPatch {
 // The outcome of a cancel attempt. "already_cancelled" is NOT an error (cancelling twice is a legal
 // no-op that still returns the DTO) but it must be distinguishable from a fresh transition, because the
 // attendee bell fan-out may only fire once — see cancelCleanupTx / cleanup-service.cancelCleanup.
-export type CancelCleanupOutcome = "cancelled" | "already_cancelled" | "not_found"
+//
+// B18: "already_completed" IS an error (409). Host completion is forward-only (B17), so cancel must not
+// become a back door out of it — a `cancelled` event still carrying credited volunteer_hours rows is a
+// state nothing in the system can interpret.
+export type CancelCleanupOutcome =
+  | "cancelled"
+  | "already_cancelled"
+  | "already_completed"
+  | "not_found"
+
+// The outcome of a HOST completion attempt (B15's status matrix, resolved under the row lock):
+//   "completed"         upcoming/active and now >= scheduled_at -> flipped to 'done' + a timeline row
+//   "already_completed" the event is already 'done' -> idempotent no-op (NO second timeline row)
+//   "cancelled"         a cancelled event can never be completed -> the service 409s
+//   "too_early"         now < scheduled_at -> the service 409s (B14: hours need a real-world anchor)
+//   "not_found"         no such cleanup -> the service 404s
+export type CompleteCleanupOutcome =
+  | "completed"
+  | "already_completed"
+  | "cancelled"
+  | "too_early"
+  | "not_found"
 
 // A point the caller can sort/measure distance from (for `near` listings).
 export interface NearPoint {
@@ -240,6 +325,8 @@ export interface CleanupRepository {
   // join, so the removed user re-joined instantly and in a loop. `actorId` is the removing host,
   // recorded on the ban row. Same-transaction is load-bearing: a ban written afterwards would leave a
   // window in which the target could re-join.
+  //
+  // B28d: the same transaction also deletes the target's cleanup_slot_claims row — see leaveCleanup.
   removeMember(
     cleanupId: string,
     userId: string,
@@ -272,6 +359,10 @@ export interface CleanupRepository {
   joinCleanupTx(cleanupId: string, userId: string): Promise<"joined" | "not_found" | "banned">
   // Delete a cleanup_members row. Returns true when the cleanup exists. Deleting a non-existent membership
   // on an existing cleanup is an idempotent no-op that still returns true.
+  //
+  // B28d: this ALSO deletes the departing attendee's cleanup_slot_claims row, in the same operation.
+  // Without it a person who leaves keeps occupying a seat forever — a phantom-full slot nobody can free
+  // and no host can see the owner of.
   leaveCleanup(cleanupId: string, userId: string): Promise<boolean>
   // Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a 'cancel' cleanup_timeline row.
   // The service composes ALL user-facing copy — the timeline `note` and the notification `body` — and
@@ -291,9 +382,74 @@ export interface CleanupRepository {
     id: string,
     input: { note: string; body: string; reason: string | null; actorId: string },
   ): Promise<CancelCleanupOutcome>
+  // Mark a cleanup completed atomically (B16): lock the row (FOR NO KEY UPDATE, the SAME lock vocabulary
+  // removeMember takes), branch on B15's status matrix against the LOCKED row, then UPDATE status='done'
+  // + INSERT a `kind='status'` cleanup_timeline row. Only the "completed" outcome writes anything.
+  //
+  // The time gate lives inside the transaction on purpose: a concurrent updateCleanup can move
+  // scheduled_at, so reading it before the lock would let a host slide an event's date past the check.
+  // `now` is supplied by the SERVICE (the repo owns no clock), and the `note` arrives already composed —
+  // the same layer split cancelCleanupTx documents: the service writes copy, the repo persists.
+  completeCleanupTx(
+    id: string,
+    input: { note: string; actorId: string; now: Date },
+  ): Promise<CompleteCleanupOutcome>
   // The attendee roster: cleanup_members joined to their (non-deleted) user, with the viewer's
   // `isFollowing` per row. Ordered organizer-first then by join time. `onlyFollowed` restricts the roster.
+  // B29b: each row also carries the slot that attendee claimed (or null), so the host's per-slot roster
+  // needs no second endpoint.
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>
+
+  // ---------------------------------------------------------------------------------------------
+  // P9 signup slots (B22–B29). LOCK ORDER on every writer below:
+  //   cleanups -> cleanup_members -> cleanup_slots -> cleanup_slot_claims
+  // with ONE documented exception: claimSlot locks the slot row BEFORE its auto-RSVP insert, so that a
+  // refused claim commits no membership (see its own comment for the no-cycle argument).
+  // ---------------------------------------------------------------------------------------------
+
+  // One event's ordered slot board, with the live claim count and the viewer's own claim per row.
+  // A null viewerId (anonymous) makes `mine` false everywhere.
+  listSlots(cleanupId: string, viewerId: string | null): Promise<EventSlotView[]>
+  // Batched slot hydration for a set of cleanups, grouped by cleanup id — the exact shape
+  // loadLinkedReportsForCleanups has, and used ONLY by the DETAIL-shaped reads (B29a). Empty input ⇒
+  // empty map (no query).
+  loadSlotsForCleanups(
+    cleanupIds: string[],
+    viewerId: string | null,
+  ): Promise<Map<string, EventSlotView[]>>
+  // The CHEAP list-read companion (B29a): how many slots each cleanup defines, from one aggregate over
+  // cleanup_slots_cleanup_idx. A feed card does not render a slot board, so listCleanups populates this
+  // instead of hydrating — and it removes the "`[]` means no slots or not hydrated?" ambiguity. Empty
+  // input ⇒ empty map (no query).
+  slotCountsFor(cleanupIds: string[]): Promise<Map<string, number>>
+  // Reconcile a cleanup's slots to EXACTLY `desired` (B23), in ONE transaction: id-on-this-cleanup ⇒
+  // UPDATE, id-NOT-on-this-cleanup ⇒ THROWS AppError.validation (422 — never a silent re-parent), no id
+  // ⇒ INSERT, existing slot missing from the desired set ⇒ DELETE (its claims cascade). The removed
+  // rows' claimants are read BEFORE the delete inside the same transaction so the caller can ring them.
+  // WRITE ORDER is part of the contract, because (cleanup_id, lower(title)) is an immediately-checked
+  // unique index: DELETE the removed rows, park the renamed rows on sentinel titles, THEN apply the
+  // updates and inserts — so a title swap, or removing and re-adding the same title in one save, does
+  // not transiently duplicate a title. A residual collision (a duplicate inside `desired`) is a named
+  // AppError.validation, never a leaked 23505.
+  reconcileSlots(
+    cleanupId: string,
+    desired: DesiredSlot[],
+    actorId: string | null,
+  ): Promise<SlotReconcileResult>
+  // Claim (or MOVE to) `slotId` (B28). One transaction: FOR SHARE on the cleanups row -> ban probe ->
+  // read the current claim -> FOR UPDATE on the target slot row -> count -> auto-RSVP insert -> upsert
+  // on the (cleanup_id, user_id) PK. The slot-row lock is what makes count-then-insert safe: two clients
+  // racing for the last seat serialize on it and the loser's count sees the winner's row. Re-claiming a
+  // slot the viewer ALREADY holds skips the capacity check (an idempotent re-claim must not 409 on a
+  // full slot the user is already in). The auto-RSVP is LAST-BUT-ONE on purpose: every refusal here is a
+  // normal return, which COMMITS, so a `slot_not_found` or `full` outcome must leave no membership row.
+  claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome>
+  // Release the viewer's claim on this event (B28c) — idempotent, `{ kind: "released" }` whether or not
+  // a claim existed. Releasing does NOT leave the event: you keep your RSVP. Asymmetric on purpose.
+  releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome>
+  // The slot id `userId` currently holds on `cleanupId`, or null. Read-only probe for tests + callers
+  // that need the current claim without the whole board.
+  slotOf(cleanupId: string, userId: string): Promise<string | null>
   // Resolve a jurisdiction's routing contact by GEOID for an event resource request (#56 / D19), using the
   // SAME precedence reports use: a default (category NULL) jurisdiction_contacts row -> the legacy
   // contact_emails[]. Returns the contact + jurisdiction display name, or null when no usable contact. A
