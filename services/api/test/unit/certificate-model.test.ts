@@ -3,6 +3,10 @@
  *
  * Every test injects its own translator, so the assertions describe DERIVATION (which label a row gets,
  * what the totals cover) and never the English copy, which lands with the i18n block in WP21.
+ *
+ * ONE DELIBERATE EXCEPTION, at the bottom: the attestation paragraph. That string is the document's legal
+ * boilerplate, so what it CLAIMS is a correctness property of this feature, not chrome — see the block
+ * comment there.
  */
 
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
@@ -373,5 +377,52 @@ describe("ledgerFingerprint", () => {
       ],
     })
     expect(ledgerFingerprint(relabelled)).toBe(ledgerFingerprint(base()))
+  })
+})
+
+/**
+ * THE ATTESTATION MAY NOT CLAIM AN AUTOMATIC / REPORT-DERIVED AWARD.
+ *
+ * This is the one place the real catalog copy is asserted, and it is asserted through
+ * `certificateTranslator` — the exact resolution the renderer uses (certificate-pdf.ts:drawIssuerBlock)
+ * — so a locale that silently falls back to English is covered too.
+ *
+ * WHY IT IS A TEST AND NOT A REVIEW HABIT: migration 0065 retired the report auto-award, so
+ * `logEventHours` is the only writer of credited hours and the certificate queries exclude
+ * `source = 'report'` outright. A sentence saying the platform awards report-verification hours
+ * automatically is therefore FALSE about the very document it is printed on — and unfixable per holder
+ * once issued, because `ledgerFingerprint` hashes only holder + totals + rows, so `issue()` returns the
+ * stored PDF (`reused: true`) forever rather than re-rendering corrected copy.
+ *
+ * The word lists are per-language on purpose: an English-only regex would pass a German catalog that
+ * still says "vergibt die Plattform automatisch".
+ */
+describe("certificate.attestation.body (real catalog copy)", () => {
+  const FORBIDDEN: Record<string, readonly RegExp[]> = {
+    // "automatic(ally)" / "report" — either word in this paragraph means the retired award is back.
+    en: [/automatic/i, /\breports?\b/i],
+    es: [/autom[aá]tic/i, /reporte/i],
+    de: [/automatisch/i, /meldung/i],
+    ko: [/자동/, /제보/],
+  }
+
+  for (const [locale, patterns] of Object.entries(FORBIDDEN)) {
+    it(`${locale}: says nothing about an automatic or report-derived award`, () => {
+      const body = certificateTranslator(locale)("certificate.attestation.body")
+      // Guards against a vacuous pass if the key is ever renamed away: renderMessage would return the
+      // literal key, which matches none of the patterns above.
+      expect(body).not.toBe("certificate.attestation.body")
+      expect(body.length).toBeGreaterThan(80)
+      for (const pattern of patterns) {
+        expect(pattern.test(body), `${locale}: attestation still matches ${String(pattern)}`).toBe(
+          false,
+        )
+      }
+    })
+  }
+
+  it("still attests the rules that DO ship (event hours, entered by a verified host)", () => {
+    // The paragraph must not be emptied into a content-free blurb by the deletion above.
+    expect(certificateTranslator("en")("certificate.attestation.body")).toContain("host")
   })
 })

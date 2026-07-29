@@ -97,7 +97,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "certificate.activity.report": "Reporte verificado {{ref}}",
   "certificate.activity.manual": "Ajuste",
   "certificate.attestation.body":
-    "Este registro fue generado por civfix a partir de su libro de servicio voluntario. Las horas de un evento las registra la persona anfitriona de ese evento, que debe ser una organizadora con identidad verificada y no puede acreditarse horas a sí misma. Las horas por verificación de reportes las otorga la plataforma de forma automática. El registro autoritativo es el que conserva civfix; confirma este documento en la dirección indicada abajo.",
+    "Este registro fue generado por civfix a partir de su libro de servicio voluntario. Las horas de un evento las registra la persona anfitriona de ese evento, que debe ser una organizadora con identidad verificada y no puede acreditarse horas a sí misma. El registro autoritativo es el que conserva civfix; confirma este documento en la dirección indicada abajo.",
   "certificate.seal.line": "Registro verificado",
   "certificate.issuer.line": "Emitido por civfix · civfix.org",
   "certificate.issuer.generated": "Generado {{timestamp}}",

@@ -37,6 +37,7 @@
     "db:backfill": "tsx src/db/backfill-jurisdictions.ts",
     "db:backfill:reference-codes": "tsx src/db/backfill-reference-codes.ts",
     "db:backfill-population": "tsx src/db/backfill-population.ts",
+    "db:certificate:revoke": "tsx scripts/revoke-certificate.ts",
     "db:prepare-boundaries": "tsx scripts/prepare-boundaries.ts",
     "db:boundaries:refresh": "tsx scripts/refresh-boundaries.ts",
     "clean": "rimraf dist .turbo *.tsbuildinfo"

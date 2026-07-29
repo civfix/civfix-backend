@@ -16,7 +16,8 @@
  * would be a fabricated attestation. The seal plus the platform issuer identity is the honest equivalent,
  * and is what platform-issued credentials actually do. The attestation paragraph is true of the shipped
  * rules in `volunteer-hours-service.ts` (organizer/cohost gate, actor-must-be-verified, self-credit
- * block, the automatic report award) — do not soften or embellish it.
+ * block) — do not soften or embellish it. It says NOTHING about an automatic report award because 0065
+ * retired that write path: `logEventHours` is now the only writer of credited hours.
  */
 
 import { formatCertificateCode } from "@civfix/shared"

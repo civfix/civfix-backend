@@ -57,9 +57,18 @@
 --
 -- (valid because TranscriptModelRow carries `source` — certificate-model.ts). The
 -- window is tiny: 0064 shipped 2026-07-28. Remedy per row is operational, NOT part
--- of this migration: revoke through the existing revoke path with reason
--- `ledger_corrected`, notify the holder, let them re-issue. After this void the
--- ledger fingerprint changes, so re-issue is not blocked by the
+-- of this migration — run, per code:
+--
+--   pnpm --filter @civfix/api db:certificate:revoke <code> --dry-run
+--   pnpm --filter @civfix/api db:certificate:revoke <code>
+--
+-- (scripts/revoke-certificate.ts; DATABASE_URL, plus R2_* to also delete the PDF
+-- object). Then notify the holder and let them re-issue. Do NOT tell an operator to
+-- "use the existing revoke path": that one is holder-gated, scopes its UPDATE by the
+-- SESSION's user_id and hardcodes the reason `holder`, which would publicly report
+-- that the VOLUNTEER withdrew their own record rather than that civfix corrected the
+-- ledger. The script writes `ledger_corrected`, which verify() echoes verbatim.
+-- After this void the ledger fingerprint changes, so re-issue is not blocked by the
 -- (user_id, ledger_fingerprint) WHERE revoked_at IS NULL idempotency index.
 --
 -- GOTCHA for anyone tempted to bring report crediting back: the 0035 partial index
@@ -72,12 +81,53 @@
 -- own begin/commit on a reserved connection together with the _civfix_migrations
 -- bookkeeping INSERT; a file that opens its own transaction ends the runner's one
 -- mid-flight. test/unit/migrations-transaction-control.test.ts keeps it that way.
+-- `LOCK TABLE` (statement 0) is NOT transaction control — it is a plain statement
+-- that joins the runner's transaction and is released by the runner's COMMIT.
+--
+-- WHY STATEMENT 0 LOCKS. The runner's transaction is READ COMMITTED (migrate.ts
+-- sets no isolation level) and the API may still be serving. Under READ COMMITTED
+-- an UPDATE that collides with a concurrently-committed row re-evaluates against
+-- the NEW version of that row but keeps its ORIGINAL snapshot for every OTHER
+-- table — so statement 2's correlated SUM over `volunteer_hours` cannot see a
+-- ledger row committed after the statement began. A verified host calling
+-- `logEventHours` in that window inserts its ledger row and adds its delta to
+-- `user_jurisdiction_hours`; statement 2 then overwrites that rollup with a total
+-- computed from a snapshot the new row is missing from, silently discarding the
+-- credit. It never heals: `logEventHours` maintains the rollup by DELTA, every
+-- read trusts the rollup, and `_civfix_migrations` guarantees 0065 never re-runs,
+-- so the ledger (certificates) and the rollup (profile totals, public
+-- leaderboard) disagree forever. `logEventHours`'s per-event
+-- `pg_advisory_xact_lock` does not exclude this migration, and migrate.ts's
+-- advisory lock only excludes a second migration RUNNER.
+--
+-- SHARE ROW EXCLUSIVE is the narrowest mode that conflicts with the ROW EXCLUSIVE
+-- that any INSERT/UPDATE takes, so concurrent writers QUEUE behind the migration
+-- instead of clobbering it, while plain SELECTs (ACCESS SHARE) are unaffected.
+-- Both tables are small and 0035's `volunteer_hours_user_idx` backs the correlated
+-- subquery, so the hold is milliseconds.
+--
+-- LOCK ORDER IS `volunteer_hours` THEN `user_jurisdiction_hours`, DELIBERATELY.
+-- `LOCK TABLE a, b` takes the locks one at a time, left to right, so the order has
+-- to match the writer's or the two can deadlock. `logEventHours` reaches both
+-- tables inside ONE data-modifying CTE whose WITH clause reads/writes
+-- `volunteer_hours` before the final `INSERT INTO user_jurisdiction_hours`, so it
+-- locks volunteer_hours first. With the reverse order here, a writer that had
+-- already taken ROW EXCLUSIVE on volunteer_hours and was blocked on
+-- user_jurisdiction_hours would deadlock against this statement and abort the
+-- migration mid-deploy. Locking volunteer_hours first makes the writer block
+-- before it holds anything this transaction wants. KEEP THIS ORDER, and if a new
+-- writer of either table ever appears, make it take them in this order too.
 --
 -- Forward-only, and SAFE TO RE-APPLY: statement 1 matches nothing once every
 -- report row is voided, and statement 2 is a pure recompute.
 --
 -- Ordering rules: requires 0035_volunteer_hours.sql (both tables).
 -- =============================================================================
+
+-- 0. Serialize against live `logEventHours` writers for the rest of this
+--    transaction. See "WHY STATEMENT 0 LOCKS" above — without it statement 2 is a
+--    READ COMMITTED lost update.
+LOCK TABLE volunteer_hours, user_jurisdiction_hours IN SHARE ROW EXCLUSIVE MODE;
 
 -- 1. Void every report-derived credit. `voided_at IS NULL` keeps the note of an
 --    already-voided row intact; COALESCE never overwrites an existing note.

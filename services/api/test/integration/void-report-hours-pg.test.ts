@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
+import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 
 const GEOID = LA_CITY.geoid
 
@@ -27,6 +28,12 @@ const pg = await withPg()
 const MIGRATION = fileURLToPath(
   new URL("../../drizzle/0065_void_report_volunteer_hours.sql", import.meta.url),
 )
+
+/**
+ * Statement 0, matched at the START of a line so the banner paragraphs that TALK about the lock cannot
+ * satisfy (or be stripped by) this. `m` + `[^;]*;` spans the one statement only.
+ */
+const LOCK_STATEMENT = /^LOCK TABLE[^;]*;/m
 
 describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
   let h: PgHarness
@@ -38,6 +45,7 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     // Fail loudly rather than silently testing nothing if the migration is ever restructured.
     expect(migration).toContain("UPDATE volunteer_hours")
     expect(migration).toContain("UPDATE user_jurisdiction_hours")
+    expect(migration).toMatch(LOCK_STATEMENT)
   })
 
   afterAll(async () => {
@@ -222,6 +230,118 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     // ...and statement 2 is a pure recompute, so a replay converges on the same number.
     expect(await rollupFor(dave)).toBe(1.5)
     expect(await drift()).toEqual([])
+  })
+
+  /**
+   * STATEMENT 0'S LOCK IS LOAD-BEARING, and this proves it is actually taken.
+   *
+   * The runner's transaction is READ COMMITTED (migrate.ts sets no isolation level) and the API may still
+   * be serving. Under READ COMMITTED the recompute's correlated SUM over `volunteer_hours` keeps its
+   * ORIGINAL statement snapshot for that table, so a ledger row a live `logEventHours` commits mid-flight
+   * is invisible to it — and the rollup it then writes silently discards that credit, permanently (the
+   * rollup is maintained by DELTA afterwards, every read trusts it, and `_civfix_migrations` guarantees
+   * 0065 never re-runs).
+   *
+   * The fixture is a user with NO ledger and NO rollup row, deliberately: statement 1 row-locks only
+   * report rows and statement 2 row-locks only rollup rows that already exist, so WITHOUT statement 0
+   * nothing in this transaction conflicts with crediting this user — which is exactly what the second
+   * half asserts. The only thing that can make the credit queue is the table lock.
+   */
+  describe("statement 0 (LOCK TABLE)", () => {
+    /** How many backends in this database are parked waiting on a lock. */
+    async function waitingOnLock(): Promise<number> {
+      const [r] = await h.sql<{ n: number }[]>`
+        SELECT count(*)::int AS n
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND wait_event_type = 'Lock'
+          AND pid <> pg_backend_pid()
+      `
+      return r!.n
+    }
+
+    async function pollUntilBlocked(ms: number): Promise<boolean> {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) {
+        if ((await waitingOnLock()) > 0) return true
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      return false
+    }
+
+    /** A live host crediting an attendee, through the REAL repository — the writer the lock exists for. */
+    async function creditThroughRepository(
+      host: string,
+      userId: string,
+      cleanupId: string,
+      hours: number,
+    ): Promise<void> {
+      await makeDrizzleVolunteerHoursRepository(h.sql).logEventHours({
+        actorId: host,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId, hours }],
+      })
+    }
+
+    it("makes a concurrent logEventHours QUEUE until the migration commits, with no drift after", async () => {
+      const host = await newUser("Lock Host")
+      const erin = await newUser("Lock Erin")
+      const cleanupId = await newCleanup(host)
+
+      const reserved = await h.sql.reserve()
+      let settled = false
+      let writer: Promise<void> | undefined
+      try {
+        // Exactly how src/db/migrate.ts drives a file: explicit begin, the whole file in one unsafe().
+        await reserved.unsafe("begin")
+        await reserved.unsafe(migration)
+
+        writer = creditThroughRepository(host, erin, cleanupId, 4).then(() => {
+          settled = true
+        })
+
+        expect(await pollUntilBlocked(5000)).toBe(true)
+        expect(settled).toBe(false)
+
+        await reserved.unsafe("commit")
+      } catch (err) {
+        await reserved.unsafe("rollback").catch(() => {})
+        throw err
+      } finally {
+        if (writer) await writer
+        reserved.release()
+      }
+
+      // The credit landed AFTER the recompute rather than being erased by it.
+      expect(await rollupFor(erin)).toBe(4)
+      expect(await drift()).toEqual([])
+    })
+
+    it("is the ONLY reason it queues: with statement 0 stripped, the same credit sails through", async () => {
+      const host = await newUser("Unlocked Host")
+      const frank = await newUser("Unlocked Frank")
+      const cleanupId = await newCleanup(host)
+
+      const unlocked = migration.replace(LOCK_STATEMENT, "")
+      expect(unlocked).not.toMatch(LOCK_STATEMENT)
+
+      const reserved = await h.sql.reserve()
+      try {
+        await reserved.unsafe("begin")
+        await reserved.unsafe(unlocked)
+        // No table lock and nothing of Frank's is row-locked, so this commits WHILE the migration's
+        // transaction is still open — the window in which the recompute's snapshot can miss it.
+        await creditThroughRepository(host, frank, cleanupId, 4)
+        expect(await rollupFor(frank)).toBe(4)
+      } finally {
+        // Roll the stripped run back: it is a demonstration, not a state change the file should keep.
+        await reserved.unsafe("rollback").catch(() => {})
+        reserved.release()
+      }
+
+      expect(await drift()).toEqual([])
+    })
   })
 
   /**

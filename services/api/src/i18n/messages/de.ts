@@ -98,7 +98,7 @@ export const de: Partial<Record<MessageKey, string>> = {
   "certificate.activity.report": "Verifizierte Meldung {{ref}}",
   "certificate.activity.manual": "Korrektur",
   "certificate.attestation.body":
-    "Dieser Nachweis wurde von civfix aus dem Einsatzstunden-Register erstellt. Die Stunden für eine Veranstaltung trägt deren gastgebende Person ein, die eine Organisatorin mit verifizierter Identität sein muss und sich selbst keine Stunden gutschreiben kann. Stunden aus der Meldungsverifizierung vergibt die Plattform automatisch. Maßgeblich ist der bei civfix geführte Datensatz; bestätige dieses Dokument unter der unten genannten Adresse.",
+    "Dieser Nachweis wurde von civfix aus dem Einsatzstunden-Register erstellt. Die Stunden für eine Veranstaltung trägt deren gastgebende Person ein, die eine Organisatorin mit verifizierter Identität sein muss und sich selbst keine Stunden gutschreiben kann. Maßgeblich ist der bei civfix geführte Datensatz; bestätige dieses Dokument unter der unten genannten Adresse.",
   "certificate.seal.line": "Verifizierter Nachweis",
   "certificate.issuer.line": "Ausgestellt von civfix · civfix.org",
   "certificate.issuer.generated": "Erstellt {{timestamp}}",

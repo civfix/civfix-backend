@@ -214,6 +214,49 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     expect(rows.find((r) => r.code === second.certificate.code)!.revoked_at).toBeNull()
   })
 
+  /**
+   * THE OPERATOR REMEDY, end to end — `scripts/revoke-certificate.ts` (`pnpm db:certificate:revoke`).
+   *
+   * The product's revoke is holder-gated and hardcodes the reason `"holder"`, which would publicly blame
+   * the volunteer for a correction civfix made. The operator path is the SAME repository call with an
+   * operator reason, and it is the remedy `drizzle/0065_void_report_volunteer_hours.sql` and the runbook's
+   * §1b point at, so it is pinned here rather than left to a hand-written UPDATE: the reason must reach
+   * the PUBLIC verify projection verbatim, and the revoke must free the partial-index slot so the holder
+   * can re-issue a corrected transcript.
+   */
+  it("an OPERATOR revoke reaches verify() with its own reason and frees the re-issue slot", async () => {
+    const org = await newUser("Operator Org")
+    const holder = await newUser("Operator Holder")
+    await credit(org, holder, 5)
+
+    const { service, storage } = makeService()
+    const issued = await service.issue(holder)
+    expect(storage.objects.size).toBe(1)
+
+    // Exactly what the script does: find the row by its printed code, then revoke it BY THAT ROW'S OWN
+    // user id (the operator is not the holder and has no session), with an operator reason.
+    const repo = makeDrizzleCertificateRepository(h.sql)
+    const found = await repo.findByCode(issued.certificate.code)
+    expect(found?.userId).toBe(holder)
+    const row = await repo.revoke(found!.userId, issued.certificate.code, "ledger_corrected", new Date())
+    expect(row?.revokedReason).toBe("ledger_corrected")
+
+    // The person holding the paper is told WHY, and is not told the volunteer withdrew it.
+    const verified = await service.verify(issued.certificate.code)
+    expect(verified.status).toBe("revoked")
+    expect(verified.revokedReason).toBe("ledger_corrected")
+
+    // Idempotent: a second run never rewrites the first revocation's reason or timestamp.
+    const again = await repo.revoke(holder, issued.certificate.code, "issued_in_error", new Date())
+    expect(again?.revokedReason).toBe("ledger_corrected")
+    expect(again?.revokedAt?.getTime()).toBe(row?.revokedAt?.getTime())
+
+    // The partial unique index is free again, so the holder can re-issue once the ledger is corrected.
+    const reissued = await service.issue(holder)
+    expect(reissued.reused).toBe(false)
+    expect(reissued.certificate.code).not.toBe(issued.certificate.code)
+  })
+
   it("verify reports a valid document, a revoked one, and 404s an unknown code", async () => {
     const org = await newUser("Verify Org")
     const holder = await newUser("Verify Holder")

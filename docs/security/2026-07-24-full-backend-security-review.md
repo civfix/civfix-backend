@@ -385,10 +385,29 @@ signed PDF service transcripts are built from.
   erased. Safe because `logEventHours` is the only remaining writer of either table and there is no
   `source='manual'` writer anywhere — but if you have ever hand-run an `UPDATE user_jurisdiction_hours`,
   it will be lost. Re-applying is a no-op (statement 1 matches nothing; statement 2 is a pure recompute).
+- **Statement 0 takes `LOCK TABLE volunteer_hours, user_jurisdiction_hours IN SHARE ROW EXCLUSIVE MODE`,
+  and it is load-bearing.** The runner's transaction is READ COMMITTED, so without it the recompute's
+  correlated `SUM` cannot see a ledger row a live `logEventHours` committed after the statement began, and
+  the migration would overwrite that attendee's rollup with a total the new credit is missing from — a
+  silent, permanent lost update (the rollup is maintained by delta and `0065` never re-runs). The lock
+  makes concurrent writers queue instead; plain `SELECT`s are unaffected. **Keep the two tables in that
+  order** — it matches the order `logEventHours` takes them, and reversing it can deadlock the migration
+  mid-deploy. If the lock ever appears to hang, something is holding a long write transaction on those
+  tables; find it rather than dropping the lock.
 - **Already-issued certificates are NOT corrected and cannot be**: `service_hours_certificates` rows are
   immutable snapshots and `verify()` reports them verbatim. After applying, list any live certificate that
-  itemised a report row and revoke it through the existing revoke path (reason `ledger_corrected`), notify
-  the holder and let them re-issue — never hand-edit `snapshot`, `total_hours` or `document_sha256`:
+  itemised a report row (query below), revoke each one with
+  `pnpm --filter @civfix/api db:certificate:revoke <code>` (add `--dry-run` first; it needs `DATABASE_URL`,
+  plus `R2_*` if it should also delete the stored PDF), then notify the holder and let them re-issue —
+  never hand-edit `snapshot`, `total_hours` or `document_sha256`.
+
+  **Do not reach for the product's revoke endpoint.** `POST /service-hours/certificates/:code/revoke` is
+  `requireAuth`-gated, scopes its UPDATE by the *session's* `user_id` and hardcodes the reason `holder`, so
+  an operator cannot call it and, if they had the holder call it, `verify()` would publicly report that the
+  *volunteer withdrew their own record* rather than that civfix corrected the ledger.
+  `scripts/revoke-certificate.ts` is the operator seam: same repository call, reason `ledger_corrected`
+  (or `issued_in_error`), plus the same best-effort R2 delete the holder path performs. It is idempotent —
+  `revoked_reason = COALESCE(revoked_reason, …)` never rewrites an earlier revocation.
 
   ```sql
   SELECT id, code, user_id, issued_at, total_hours
