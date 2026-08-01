@@ -8,6 +8,7 @@ import {
   AppError,
   type ChatMessageDTO,
   type ChatHistoryResponse,
+  type ReportChatParticipantsResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
@@ -220,6 +221,26 @@ export async function registerReportChatRoutes(
       reply.status(200).send({ ok: true })
     },
   )
+
+  /**
+   * The report chat's roster, backing the chat-info surface's member list. Auth is REQUIRED even
+   * though this room's message history is auth-optional: the history already names its own authors,
+   * but a membership LIST is a separate disclosure, so only a signed-in viewer who can still see the
+   * report gets one. No membership gate beyond that - the room is view-only-until-you-Join, so a
+   * viewer who can read the messages can see who is in the room they are reading.
+   */
+  route(app, "getReportChatParticipants", async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(ReportChatIdParamsSchema, request.params)
+    await requireVisibleReport(id, userId)
+    const repo = getReportChatRepo()
+    const [participants, total] = await Promise.all([
+      repo.listMembers(id, userId),
+      repo.countMembers(id),
+    ])
+    const payload: ReportChatParticipantsResponse = { participants, total }
+    reply.status(200).send(payload)
+  })
 
   route(
     app,

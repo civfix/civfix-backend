@@ -48,6 +48,7 @@ function makeReportChatSource(
     insertSystemMessage: notImpl("insertSystemMessage") as never,
     listMemberIds: notImpl("listMemberIds") as never,
     countMembers: notImpl("countMembers") as never,
+    listMembers: notImpl("listMembers") as never,
   }
 }
 

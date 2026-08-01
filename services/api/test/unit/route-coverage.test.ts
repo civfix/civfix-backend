@@ -170,13 +170,14 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  // 203 = 181 (Telegram-style chat backend P0–P6 + follow-suggestions/cohort batch) + 13 social-feed
+  // 204 = 181 (Telegram-style chat backend P0–P6 + follow-suggestions/cohort batch) + 13 social-feed
   // post endpoints (createPost / getPost / deletePost / listReplies / repostPost / unrepostPost /
   // likePost / unlikePost / savePost / unsavePost / homeFeed / listUserPosts / listSaves) + 9 from the
   // service-hours release: completeCleanup, setCleanupSlots, claimEventSlot, getMyHoursEntries,
-  // getPublicVolunteerHours, and the four certificate endpoints (issue / list / revoke / public verify).
-  it("covers ALL 203 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(203)
+  // getPublicVolunteerHours, and the four certificate endpoints (issue / list / revoke / public verify)
+  // + 1 for getReportChatParticipants, the report chat's roster behind the chat-info surface.
+  it("covers ALL 204 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(204)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {
