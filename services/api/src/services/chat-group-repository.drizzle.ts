@@ -175,7 +175,8 @@ interface GroupRowSelect {
   avatar_height: number | null
 }
 
-interface MemberRowSelect {
+/** One joined chat_group_members + users row behind the roster query. Exported alongside its mapper. */
+export interface MemberRowSelect {
   user_id: string
   role: GroupMemberRole
   joined_at: Date
@@ -189,7 +190,11 @@ interface MemberRowSelect {
   blocked_pair: boolean
 }
 
-function toMemberView(r: MemberRowSelect): GroupMemberView {
+/**
+ * PURE row -> view mapper for the group roster. Exported for unit tests (the query around it needs a
+ * database; every privacy rule lives here, so this is the layer worth pinning).
+ */
+export function toMemberView(r: MemberRowSelect): GroupMemberView {
   const author = publicAuthorIdentity({
     id: r.user_id,
     displayName: r.display_name ?? "",
@@ -209,7 +214,11 @@ function toMemberView(r: MemberRowSelect): GroupMemberView {
     followers: 0,
     following: 0,
     isFollowing: r.is_following,
-    ...(r.verified && hidden === null ? { verified: true } : {}),
+    // `!author.deleted` matters as much as the hidden check: every other identifying field above
+    // already drops for a tombstoned user (publicAuthorIdentity nulls the handle and avatar, and the
+    // bio is nulled explicitly), so leaving the verified badge on made "Deleted User" the one row
+    // that still carried a live identity signal.
+    ...(r.verified && hidden === null && !author.deleted ? { verified: true } : {}),
     ...(author.deleted ? { deleted: true } : {}),
   }
   return { user, role: r.role, joinedAt: r.joined_at }
