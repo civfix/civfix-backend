@@ -22,9 +22,16 @@
  */
 
 import type { Sql } from "../db/client.js"
-import { ReportStatusSchema, type ChatMessageDTO } from "@civfix/shared"
+import {
+  ReportStatusSchema,
+  type ChatMessageDTO,
+  type PersonDTO,
+  type ReportChatParticipantDTO,
+} from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
+import { publicAuthorIdentity } from "./public-author.js"
+import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 
 /**
  * The strict `system` payload shape from ChatMessageDTO (indexed-access so it stays in lock-step with
@@ -46,6 +53,66 @@ export interface SystemChatRow {
   system_kind: string | null
   system_body: string | null
 }
+
+/**
+ * One joined report_chat_members + users row behind `listMembers`. Mirrors the group repo's
+ * MemberRowSelect column-for-column (minus the group-only 'admin' rank) so the two rosters tombstone,
+ * hide and verify identically.
+ */
+export interface ReportMemberRowSelect {
+  user_id: string
+  role: "owner" | "member"
+  joined_at: string
+  display_name: string | null
+  handle: string | null
+  bio: string | null
+  avatar_url: string | null
+  user_deleted_at: Date | null
+  verified: boolean
+  is_following: boolean
+  blocked_pair: boolean
+}
+
+/**
+ * PURE row -> DTO mapper for the report-chat roster, a direct twin of the group repo's toMemberView:
+ * a soft-deleted user tombstones (no handle/bio/avatar), a blocked pair renders as the shared hidden
+ * identity, and neither carries follower counts (a roster never loads them). Exported for unit tests.
+ */
+export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatParticipantDTO {
+  const author = publicAuthorIdentity({
+    id: r.user_id,
+    displayName: r.display_name ?? "",
+    handle: r.handle,
+    avatarUrl: r.avatar_url,
+    deletedAt: r.user_deleted_at,
+  })
+  const hidden = r.blocked_pair && !author.deleted ? hiddenIdentity(r.user_id) : null
+  const user: PersonDTO = {
+    id: r.user_id,
+    name: hidden?.name ?? author.name,
+    handle: hidden !== null ? null : author.handle,
+    bio: author.deleted || hidden !== null ? null : r.bio,
+    avatar: author.avatar,
+    ...(hidden === null && author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
+    followers: 0,
+    following: 0,
+    isFollowing: r.is_following,
+    // Deliberately STRICTER than the group twin, which gates the badge on `hidden === null` alone and
+    // therefore still emits verified:true for a soft-deleted user. A tombstone must leak nothing, so
+    // deletion clears the badge here too. (The group roster carries the same latent leak; it is a
+    // shipped surface, so it is flagged rather than quietly changed from inside this endpoint's task.)
+    ...(r.verified && hidden === null && !author.deleted ? { verified: true } : {}),
+    ...(author.deleted ? { deleted: true } : {}),
+  }
+  return { user, role: r.role, joinedAt: r.joined_at }
+}
+
+/**
+ * Hard ceiling on one roster read. A report chat is the reporter plus whoever tapped Join, so this is
+ * a runaway guard rather than a paging boundary (the response is a single array by contract) - the
+ * route reports the TRUE member count alongside it via countMembers.
+ */
+export const REPORT_CHAT_ROSTER_CAP = 200
 
 /**
  * PURE row -> ChatMessageDTO mapper for a report SYSTEM message. from:null + kind:"system" + the
@@ -101,6 +168,12 @@ export interface ReportChatRepository {
   listMemberIds(reportId: string): Promise<string[]>
   /** Number of members in a report's chat (D-E3 threads). */
   countMembers(reportId: string): Promise<number>
+  /**
+   * The report chat's roster as DTOs, for the chat-info surface: owner (the reporter) first, then
+   * members oldest-join first. `viewerId` scopes the per-row isFollowing + blocked-pair hiding, the
+   * same way the group roster does. Capped at REPORT_CHAT_ROSTER_CAP rows.
+   */
+  listMembers(reportId: string, viewerId: string): Promise<ReportChatParticipantDTO[]>
 }
 
 export function makeReportChatRepository(
@@ -203,6 +276,35 @@ export function makeReportChatRepository(
         WHERE report_id = ${reportId}
       `
       return rows[0]?.count ?? 0
+    },
+
+    async listMembers(reportId: string, viewerId: string): Promise<ReportChatParticipantDTO[]> {
+      const rows = await sql<ReportMemberRowSelect[]>`
+        SELECT
+          m.user_id,
+          m.role,
+          m.joined_at,
+          u.display_name,
+          u.handle,
+          u.bio,
+          u.avatar_url,
+          u.deleted_at AS user_deleted_at,
+          EXISTS (
+            SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified'
+          ) AS verified,
+          EXISTS (
+            SELECT 1 FROM follows_people f
+            WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
+          ) AS is_following,
+          ${blockedPairExpr(sql, viewerId, sql`u.id`)} AS blocked_pair
+        FROM report_chat_members m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.report_id = ${reportId}
+        ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END ASC,
+                 m.joined_at ASC, m.user_id ASC
+        LIMIT ${REPORT_CHAT_ROSTER_CAP}
+      `
+      return rows.map(toReportParticipantDTO)
     },
   }
 }
