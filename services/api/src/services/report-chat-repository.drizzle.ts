@@ -97,10 +97,9 @@ export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatPart
     followers: 0,
     following: 0,
     isFollowing: r.is_following,
-    // Deliberately STRICTER than the group twin, which gates the badge on `hidden === null` alone and
-    // therefore still emits verified:true for a soft-deleted user. A tombstone must leak nothing, so
-    // deletion clears the badge here too. (The group roster carries the same latent leak; it is a
-    // shipped surface, so it is flagged rather than quietly changed from inside this endpoint's task.)
+    // `!author.deleted` as well as the hidden check: a tombstone must leak nothing, and every other
+    // identifying field above already drops for one. The group twin (chat-group-repository's
+    // toMemberView) gates the badge identically - it briefly did not, which is how this was found.
     ...(r.verified && hidden === null && !author.deleted ? { verified: true } : {}),
     ...(author.deleted ? { deleted: true } : {}),
   }
