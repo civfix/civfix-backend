@@ -31,6 +31,11 @@ import { makeDb, type DbHandle } from "./db/client.js"
 import { makeRedis, type RedisClient } from "./adapters/redis.js"
 
 import { R2Storage } from "./adapters/storage.r2.js"
+import {
+  LOCAL_STORAGE_DEV_SIGNING_KEY,
+  LocalDiskStorage,
+  type LocalStorageNamespace,
+} from "./adapters/storage.local.js"
 import { OciMailer } from "./adapters/mailer.oci.js"
 import { CfInboundMail } from "./adapters/inbound-mail.cf.js"
 import { TigerGeocoder } from "./adapters/geocoder.tiger.js"
@@ -88,6 +93,7 @@ export interface Container {
 
   readonly storage: Storage
   readonly inboundStorage: Storage
+  readonly developmentOnlyLocalObjectStores: readonly LocalDiskStorage[] | undefined
   readonly mailer: Mailer
   readonly inboundMail: InboundMail
   readonly geocoder: Geocoder
@@ -259,15 +265,42 @@ export function buildContainer(env: Env): Container {
     return lazyByteMeter
   }
 
-  const storage: Storage = env.USE_FAKE_STORAGE
-    ? new FakeStorage()
-    : new R2Storage({
-        accountId: env.R2_ACCOUNT_ID,
-        accessKeyId: env.R2_ACCESS_KEY_ID,
-        secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-        bucket: env.R2_BUCKET,
-        ...(env.R2_PUBLIC_BASE !== undefined ? { publicBase: env.R2_PUBLIC_BASE } : {}),
-      })
+  const localStorageDir = env.LOCAL_STORAGE_DIR
+  const usesR2 = localStorageDir === undefined && !env.USE_FAKE_STORAGE
+
+  function makeLocalDiskStorage(
+    rootDirectory: string,
+    namespace: LocalStorageNamespace,
+  ): LocalDiskStorage {
+    return new LocalDiskStorage({
+      rootDirectory,
+      namespace,
+      publicApiUrl: env.PUBLIC_API_URL,
+      signingKey: env.LOCAL_STORAGE_SIGNING_KEY ?? LOCAL_STORAGE_DEV_SIGNING_KEY,
+      nodeEnv: env.NODE_ENV,
+    })
+  }
+
+  const localMediaStore =
+    localStorageDir !== undefined ? makeLocalDiskStorage(localStorageDir, "media") : undefined
+  const localInboundStore =
+    localStorageDir !== undefined ? makeLocalDiskStorage(localStorageDir, "inbound") : undefined
+  const localObjectStores =
+    localMediaStore !== undefined && localInboundStore !== undefined
+      ? ([localMediaStore, localInboundStore] as const)
+      : undefined
+
+  const storage: Storage =
+    localMediaStore ??
+    (env.USE_FAKE_STORAGE
+      ? new FakeStorage()
+      : new R2Storage({
+          accountId: env.R2_ACCOUNT_ID,
+          accessKeyId: env.R2_ACCESS_KEY_ID,
+          secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+          bucket: env.R2_BUCKET,
+          ...(env.R2_PUBLIC_BASE !== undefined ? { publicBase: env.R2_PUBLIC_BASE } : {}),
+        }))
 
   const presignMedia = makeMediaPresigner(storage)
 
@@ -286,20 +319,22 @@ export function buildContainer(env: Env): Container {
   //     never re-route inbound mail into the CDN-published media bucket without someone noticing.
   const inboundBucket =
     env.R2_INBOUND_BUCKET ?? (env.R2_PUBLIC_BASE === undefined ? env.R2_BUCKET : "")
-  if (!env.USE_FAKE_STORAGE && inboundBucket.length === 0) {
+  if (usesR2 && inboundBucket.length === 0) {
     throw new Error(
       "R2_INBOUND_BUCKET is required when R2_PUBLIC_BASE is set: refusing to write raw inbound email " +
         "into the public media bucket. Set a dedicated, non-public inbound bucket.",
     )
   }
-  const inboundStorage: Storage = env.USE_FAKE_STORAGE
-    ? storage
-    : new R2Storage({
-        accountId: env.R2_ACCOUNT_ID,
-        accessKeyId: env.R2_ACCESS_KEY_ID,
-        secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-        bucket: inboundBucket,
-      })
+  const inboundStorage: Storage =
+    localInboundStore ??
+    (usesR2
+      ? new R2Storage({
+          accountId: env.R2_ACCOUNT_ID,
+          accessKeyId: env.R2_ACCESS_KEY_ID,
+          secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+          bucket: inboundBucket,
+        })
+      : storage)
 
   const mailer: Mailer = env.USE_FAKE_MAILER
     ? new FakeMailer()
@@ -423,6 +458,7 @@ export function buildContainer(env: Env): Container {
     csrf,
     storage,
     inboundStorage,
+    developmentOnlyLocalObjectStores: localObjectStores,
     mailer,
     inboundMail,
     geocoder,

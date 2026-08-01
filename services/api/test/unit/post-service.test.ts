@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from "vitest"
 import { AppError } from "@civfix/shared"
-import type { PostDTO } from "@civfix/shared"
+import type { PostComposeInput, PostDTO } from "@civfix/shared"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
 import type {
@@ -264,5 +264,96 @@ describe("PostService notification fan-out", () => {
     expect(spy.replies).toEqual([
       { recipientId: "parentAuthor", actorName: "Actor Zed", postId: "new-post-id" },
     ])
+  })
+})
+
+describe("PostService: replyToId alone makes a reply, whatever `kind` claims", () => {
+  const parentBrief: PostBrief = {
+    id: "parent",
+    authorId: "parentAuthor",
+    kind: "post",
+    replyToId: null,
+    repostOfId: null,
+    deletedAt: null,
+  }
+
+  const kindlessReply = (): PostComposeInput => ({
+    kind: "post",
+    replyToId: "parent",
+    body: "sneaky",
+    mediaUploadIds: [],
+    mentionedUserIds: [],
+  })
+
+  it("rejects a blocked user replying to their blocker's post", async () => {
+    const repo = fakeRepo({ briefs: { parent: parentBrief } })
+    const svc = makePostService({
+      repo,
+      sql: throwingSql,
+      isBlockedEitherWay: () => Promise.resolve(true),
+    })
+    await expect(svc.createPost(kindlessReply(), "blocked")).rejects.toMatchObject({
+      httpStatus: 404,
+    })
+    expect(repo.created).toHaveLength(0)
+  })
+
+  it("rejects a reply to a soft-deleted parent", async () => {
+    const repo = fakeRepo({
+      briefs: { parent: { ...parentBrief, deletedAt: new Date() } },
+    })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(svc.createPost(kindlessReply(), "replier")).rejects.toMatchObject({
+      httpStatus: 404,
+    })
+    expect(repo.created).toHaveLength(0)
+  })
+
+  it("404s an unknown replyToId instead of letting the FK surface as a 500", async () => {
+    const repo = fakeRepo()
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(
+      svc.createPost({ ...kindlessReply(), replyToId: "ghost" }, "replier"),
+    ).rejects.toMatchObject({ httpStatus: 404 })
+    expect(repo.created).toHaveLength(0)
+  })
+
+  it("persists kind 'reply' and notifies the parent's author", async () => {
+    const repo = fakeRepo({ briefs: { parent: parentBrief } })
+    const spy = spyNotifier()
+    const svc = makePostService({ repo, sql: throwingSql, notifier: spy.notifier })
+    await svc.createPost(kindlessReply(), "replier")
+    expect(repo.created[0]).toMatchObject({ kind: "reply", replyToId: "parent" })
+    expect(spy.replies).toEqual([
+      { recipientId: "parentAuthor", actorName: "Actor Zed", postId: "new-post-id" },
+    ])
+  })
+
+  it("persists kind 'quote' when repostOfId is present without kind:'quote'", async () => {
+    const target: PostBrief = { ...parentBrief, id: "target", authorId: "targetAuthor" }
+    const repo = fakeRepo({ briefs: { target } })
+    const spy = spyNotifier()
+    const svc = makePostService({ repo, sql: throwingSql, notifier: spy.notifier })
+    await svc.createPost(
+      {
+        kind: "post",
+        repostOfId: "target",
+        body: "look at this",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
+      "quoter",
+    )
+    expect(repo.created[0]).toMatchObject({ kind: "quote", repostOfId: "target" })
+    expect(spy.quotes).toHaveLength(1)
+  })
+
+  it("422s an input that is both a reply and a quote", async () => {
+    const repo = fakeRepo({ briefs: { parent: parentBrief } })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(
+      svc.createPost({ ...kindlessReply(), repostOfId: "target" }, "replier"),
+    ).rejects.toMatchObject({ httpStatus: 422 })
+    expect(repo.created).toHaveLength(0)
   })
 })

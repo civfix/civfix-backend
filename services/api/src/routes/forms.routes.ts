@@ -31,6 +31,7 @@
 import { AppError } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { honeypotTripped } from "../abuse/honeypot.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
@@ -44,7 +45,7 @@ import { parse } from "./_validate.js"
  * Per-route limit: the route is public + unauthenticated and every accepted submit drives two SMTP
  * sends, so cap it well under the global 300/min. A legitimate coach submits once.
  */
-export const HOME_TURF_RATE_LIMIT = { max: 5, timeWindow: "1 minute" } as const
+export const HOME_TURF_RATE_LIMIT = perHost({ max: 5, timeWindow: "1 minute" })
 
 /** The form is a handful of short strings + a Turnstile token; cap the body far below the global 256 KB. */
 export const HOME_TURF_BODY_LIMIT = 16384

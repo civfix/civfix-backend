@@ -39,7 +39,7 @@ import { makeContainerReportChatEmitter } from "../services/report-chat-emitter.
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import { effectiveJurisdictionHandle } from "../services/discussion-mentions.js"
 import { route } from "../versioning/route.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 import { CappedBBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
 
 const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
@@ -75,6 +75,13 @@ declare module "fastify" {
 }
 
 const ReportIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+export const CreateReportBodySchema = trimTextFields(
+  CreateReportRequestSchema,
+  "title",
+  "description",
+  "addr",
+)
 
 const ReportRefOrIdParamsSchema = z.object({ id: ReportRefOrIdSchema }).strict()
 
@@ -299,7 +306,7 @@ export async function registerReportRoutes(
     { preHandler: csrfProtect, config: { rateLimit: CREATE_REPORT_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(CreateReportRequestSchema, request.body)
+      const body = parse(CreateReportBodySchema, request.body)
       const dto: ReportDTO = await service().createReport(body, { userId })
       reply.status(201).send(dto)
     },

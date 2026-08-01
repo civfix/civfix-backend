@@ -178,8 +178,38 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     const [um] = await h.sql<{ strikes: number; removals: number }[]>`
       SELECT strikes, removals FROM user_moderation WHERE user_id = ${authorId}
     `
+
     expect(um?.strikes).toBe(1)
     expect(um?.removals).toBe(1)
+  })
+
+  it("removing a reported reply decrements its parent's reply_count", async () => {
+    const authorId = await insertUser(h, "replyauthor")
+    const [parent] = await h.sql<{ id: string }[]>`
+      INSERT INTO posts (author_id, kind, body, reply_count)
+      VALUES (${authorId}, 'post', 'the parent', 1)
+      RETURNING id
+    `
+    const parentId = parent!.id
+    const [reply] = await h.sql<{ id: string }[]>`
+      INSERT INTO posts (author_id, kind, body, reply_to_id, thread_root_id)
+      VALUES (${authorId}, 'reply', 'reported reply', ${parentId}, ${parentId})
+      RETURNING id
+    `
+
+    const id = (await repo.createItem({
+      kind: "user_report",
+      subjectType: "post",
+      subjectId: reply!.id,
+      flag: "User report",
+      reason: "harassment",
+    }))!
+    await repo.remove(id, { actorId: null, reason: "harassment" })
+
+    const [counted] = await h.sql<{ reply_count: number }[]>`
+      SELECT reply_count FROM posts WHERE id = ${parentId}
+    `
+    expect(counted?.reply_count).toBe(0)
   })
 
   it("remove strikes the reporter and createItem captures a real user snapshot", async () => {

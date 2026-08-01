@@ -392,11 +392,11 @@ describe("slot validation happens BEFORE the database is touched (B26)", () => {
     expect(repo.slots.filter((s) => s.cleanupId === id)).toHaveLength(1)
   })
 
-  it("422s slot changes on a CANCELLED event", async () => {
+  it("409s any edit (including slots) on a CANCELLED event", async () => {
     const id = seedEvent(CLEANUP_ID, { status: "cancelled" })
     await expect(
       service.updateCleanup(id, { slots: [{ title: "Grill" }] }, ORG),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
   it("the REST of updateCleanup stays ungated on status (only slots are refused)", async () => {

@@ -140,11 +140,16 @@ export async function registerVolunteerHoursRoutes(
 
   function service(): VolunteerHoursService {
     const bells = notifier()
+    const isBlockedEitherWay = app.volunteerOverrides
+      ? undefined
+      : (viewerId: string, targetId: string) =>
+          container.getBlocksRepo().isBlockedEitherWay(viewerId, targetId)
     return makeVolunteerHoursService({
       repo: repo(),
       cleanups: cleanupLookup(),
       isVerified: isVerified(),
       ...(bells !== undefined ? { notifier: bells } : {}),
+      ...(isBlockedEitherWay !== undefined ? { isBlockedEitherWay } : {}),
       logger: app.log,
     })
   }
@@ -165,9 +170,6 @@ export async function registerVolunteerHoursRoutes(
     reply.status(200).send(payload)
   })
 
-  // B30c — someone else's public hours. `auth: "optional"`: a signed-out visitor may read it, and a
-  // hidden transcript is reported honestly as `visible: false` at 200 rather than a 403 (which is an
-  // oracle) or a fabricated "0 hours".
   route(
     app,
     "getPublicVolunteerHours",
@@ -181,12 +183,6 @@ export async function registerVolunteerHoursRoutes(
       const viewerId = request.auth?.userId ?? null
       const payload: PublicVolunteerHoursResponse = await service().getPublicHours(query, viewerId)
 
-      // T4, same rule as the leaderboard below and for a stronger reason: this URL serves TWO bodies
-      // too. `isSelf` bypasses BOTH C18 gates, so the owner's own request returns the full itemised
-      // ledger (event titles, dates, crediting hosts) at the very URL that answers
-      // `{visible: false, items: []}` to everyone else — including for a user who explicitly set
-      // `show_volunteer_hours = false`. Without `Vary` nothing tells a shared cache why, and without the
-      // authed `no-store` branch that owner-only body is a candidate for storage.
       appendVary(reply, "Cookie", "Authorization")
       reply.header(
         "Cache-Control",

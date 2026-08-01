@@ -37,7 +37,7 @@ import {
 } from "../services/cleanup-map-repository.js"
 import { writeAudit } from "../services/admin/audit.js"
 import { CappedBBoxQueryParam } from "./query-encoding.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
 
 export { MAP_CLEANUPS_LIMIT }
@@ -61,13 +61,15 @@ const CleanupsQuerySchema = z.object({
 
 const GeoidParamsSchema = z.object({ geoid: z.string().min(1) }).strict()
 
+export const SuggestPlacesBodySchema = trimTextFields(SuggestPlacesRequestSchema, "q")
+
 // Tight per-IP limit for the public suggest-contact write (mirrors the anon status limiter). Suggestions
 // are operator-reviewed and never auto-route, so a modest cap bounds spam without hurting real reporters.
 const SUGGEST_CONTACT_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 
 // Per-IP cap on the anon-ok geocoder-backed POSTs: each hits the external Census seam + a DB upsert, so a
 // tight per-route limit bounds an unauthenticated client driving hundreds of expensive outbound calls.
-const GEOCODER_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const GEOCODER_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 // M14 parity with reports.routes' MAP_REPORTS_RATE_LIMIT: the cleanup-pin read is equally anon-ok and
 // equally expensive per request, and jittered bounds defeat the 60s Cache-Control. Same 60/min headroom,
@@ -164,7 +166,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     "suggest",
     { config: { rateLimit: GEOCODER_RATE_LIMIT } },
     async (request, reply) => {
-      const { q, proximity, proximityZoom, limit } = parse(SuggestPlacesRequestSchema, request.body)
+      const { q, proximity, proximityZoom, limit } = parse(SuggestPlacesBodySchema, request.body)
       const suggestions = await suggestAddresses(q, {
         ...(proximity ? { proximity } : {}),
         ...(proximityZoom != null ? { proximityZoom } : {}),

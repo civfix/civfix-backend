@@ -621,4 +621,27 @@ describe("GET /service-hours/verify/:code (public)", () => {
     expect(letterO.statusCode).toBe(200)
     expect(letterO.json()).toEqual(canonical)
   })
+
+  it("resolves a valid code typed all-lowercase, undashed, or with I/L for one", async () => {
+    const h = await makeHarness()
+    const code = await seedRow(h, { code: "A1B2C3D4E5F1" })
+    const canonical = (await verifyCode(h, code)).json()
+
+    for (const typed of ["a1b2c3d4e5f1", "A1B2C3D4E5FI", "a1b2c3d4e5fl", "cfx-a1b2-c3d4-e5fi"]) {
+      const res = await verifyCode(h, typed)
+      expect(res.statusCode, `"${typed}" must resolve`).toBe(200)
+      expect(res.json()).toEqual(canonical)
+    }
+  })
+
+  it("still 422s a code outside the alphabet or the wrong length", async () => {
+    const h = await makeHarness()
+    await seedRow(h)
+
+    for (const typed of ["A1B2C3D4E5F", "A1B2C3D4E5F0A", "A1B2-C3D4-E5F", "A1B2C3D4E5F$"]) {
+      const res = await verifyCode(h, typed)
+      expect(res.statusCode, `"${typed}" must be rejected`).toBe(422)
+      expect(res.json().code).toBe("VALIDATION")
+    }
+  })
 })

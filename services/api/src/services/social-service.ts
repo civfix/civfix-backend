@@ -15,6 +15,8 @@ export const PEOPLE_DEFAULT_LIMIT = 20
 
 export const PROFILE_PAST_EVENTS_LIMIT = 20
 
+export type ProfileWithBlock = UserProfileDTO & { blockedByMe?: boolean }
+
 export interface PersonView {
   id: string
   displayName: string
@@ -108,6 +110,10 @@ export interface SocialServiceDeps {
   repo: SocialRepository
   notifier?: SocialNotifier
   isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
+  blockState?: (
+    viewerId: string,
+    targetId: string,
+  ) => Promise<{ blockedByViewer: boolean; blockedByTarget: boolean }>
   presignAvatar?: (avatarKey: string) => Promise<string>
   volunteerHoursTotalFor?: (userId: string) => Promise<number>
   logger?: { warn(obj: unknown, msg: string): void }
@@ -134,9 +140,9 @@ export interface SocialService {
     viewerId: string,
     targetId: string,
   ): Promise<{ isFollowing: boolean; followers: number }>
-  getProfile(id: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }>
-  getProfileByHandle(handle: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }>
-  getMyProfile(viewerId: string): Promise<{ profile: UserProfileDTO }>
+  getProfile(id: string, viewer: SocialViewer): Promise<{ profile: ProfileWithBlock }>
+  getProfileByHandle(handle: string, viewer: SocialViewer): Promise<{ profile: ProfileWithBlock }>
+  getMyProfile(viewerId: string): Promise<{ profile: ProfileWithBlock }>
   resolveHandleToId(handle: string): Promise<string>
 }
 
@@ -174,6 +180,11 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     viewer: SocialViewer,
     req: ConnectionsListQuery,
   ): Promise<ListPeopleResponse> {
+    if (viewer.userId !== null && viewer.userId !== id && deps.blockState) {
+      const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, id)
+      if (blockedByViewer) return { items: [], nextCursor: null }
+      if (blockedByTarget) throw AppError.notFound("Person not found")
+    }
     const { items, nextCursor } = await fn({
       id,
       viewerId: viewer.userId,
@@ -239,6 +250,36 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         ? { showVolunteerHours: view.showVolunteerHours }
         : {}),
     }
+  }
+
+  function blockedProfileShell(view: PersonView): ProfileWithBlock {
+    return {
+      id: view.id,
+      name: view.displayName,
+      handle: view.handle,
+      bio: null,
+      avatar: avatarGradient(view.id),
+      followers: 0,
+      following: 0,
+      isFollowing: false,
+      verified: view.verified,
+      pastEvents: [],
+      stats: { reports: 0, fixed: 0, cleanups: 0 },
+      blockedByMe: true,
+    }
+  }
+
+  async function resolveProfile(
+    view: PersonView,
+    viewer: SocialViewer,
+  ): Promise<ProfileWithBlock> {
+    const isSelf = viewer.userId === view.id
+    if (!isSelf && viewer.userId !== null && deps.blockState) {
+      const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, view.id)
+      if (blockedByViewer) return blockedProfileShell(view)
+      if (blockedByTarget) throw AppError.notFound("Person not found")
+    }
+    return buildProfile(view, viewer, isSelf)
   }
 
   return {
@@ -316,28 +357,31 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       if (viewerId === targetId) {
         throw AppError.validation({ targetId: "You cannot unfollow yourself." })
       }
+      if (deps.blockState && (await deps.blockState(viewerId, targetId)).blockedByTarget) {
+        throw AppError.notFound("Person not found")
+      }
       const { exists } = await deps.repo.removeFollow(viewerId, targetId)
       if (!exists) throw AppError.notFound("Person not found")
       const followers = await deps.repo.followerCount(targetId)
       return { isFollowing: false, followers }
     },
 
-    async getProfile(id: string, viewer: SocialViewer): Promise<{ profile: UserProfileDTO }> {
+    async getProfile(id: string, viewer: SocialViewer): Promise<{ profile: ProfileWithBlock }> {
       const view = await deps.repo.findPersonById(id)
       if (!view) throw AppError.notFound("Person not found")
-      return { profile: await buildProfile(view, viewer, viewer.userId === id) }
+      return { profile: await resolveProfile(view, viewer) }
     },
 
     async getProfileByHandle(
       handle: string,
       viewer: SocialViewer,
-    ): Promise<{ profile: UserProfileDTO }> {
+    ): Promise<{ profile: ProfileWithBlock }> {
       const view = await deps.repo.findPersonByHandle(handle)
       if (!view) throw AppError.notFound("Person not found")
-      return { profile: await buildProfile(view, viewer, viewer.userId === view.id) }
+      return { profile: await resolveProfile(view, viewer) }
     },
 
-    async getMyProfile(viewerId: string): Promise<{ profile: UserProfileDTO }> {
+    async getMyProfile(viewerId: string): Promise<{ profile: ProfileWithBlock }> {
       const view = await deps.repo.findPersonById(viewerId)
       if (!view) throw AppError.notFound("Person not found")
       return { profile: await buildProfile(view, { userId: viewerId }, true) }

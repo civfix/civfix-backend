@@ -5,6 +5,7 @@ import { writeAudit } from "./audit.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { tombstonePostInTx } from "../post-repository.drizzle.js"
 import {
   type CreateModerationItemInput,
   type ListModerationArgs,
@@ -659,12 +660,7 @@ async function tombstoneSubject(
       return rows.length > 0
     }
     case "post": {
-      // Soft delete, matching the user-facing delete: the row survives so replies keep their parent and
-      // `loadRefs` can still render the "no longer available" tombstone instead of a dangling reference.
-      const rows = await tx<{ id: string }[]>`
-        UPDATE posts SET deleted_at = now()
-        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
-      return rows.length > 0
+      return tombstonePostInTx(tx, subjectId)
     }
     case "profile":
     case "user": {

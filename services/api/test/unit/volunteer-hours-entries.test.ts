@@ -279,7 +279,7 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     expect(res.nextCursor).toBeNull()
   })
 
-  it("FALSE (explicit opt-out): visible:false at 200, never a 403 and never a fabricated zero", async () => {
+  it("FALSE (explicit opt-out): the public body is byte-identical to an empty user's (CVX-022)", async () => {
     const repo = makeRepo()
     await seedBob(repo)
     repo.seedUser(BOB, {
@@ -289,11 +289,20 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       verified: false,
       showVolunteerHours: false,
     })
-    // A 403 here would be an oracle (it confirms the account exists and has hours); "0 hours" would be a
-    // lie about somebody who simply opted out. `visible: false` is the honest third answer.
-    const res = await makeService(repo).getPublicHours({ id: BOB }, CAROL)
-    expect(res).toEqual({
-      visible: false,
+    repo.seedUser(DAVE, {
+      name: "Dave",
+      handle: "dave",
+      avatarUrl: null,
+      verified: false,
+      showVolunteerHours: true,
+    })
+
+    const hidden = await makeService(repo).getPublicHours({ id: BOB }, CAROL)
+    const empty = await makeService(repo).getPublicHours({ id: DAVE }, CAROL)
+
+    expect(hidden).toEqual(empty)
+    expect(hidden).toEqual({
+      visible: true,
       totalHours: 0,
       byJurisdiction: [],
       items: [],
@@ -302,7 +311,7 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     })
   })
 
-  it("a soft-deleted account is hidden on both gates", async () => {
+  it("a soft-deleted account is byte-identical to an empty user too", async () => {
     const repo = makeRepo()
     await seedBob(repo)
     repo.seedUser(BOB, {
@@ -313,15 +322,55 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       showVolunteerHours: true,
       deleted: true,
     })
-    const res = await makeService(repo).getPublicHours({ id: BOB }, CAROL)
-    expect(res.visible).toBe(false)
-    expect(res.items).toEqual([])
+    repo.seedUser(DAVE, {
+      name: "Dave",
+      handle: "dave",
+      avatarUrl: null,
+      verified: false,
+      showVolunteerHours: true,
+    })
+
+    const deleted = await makeService(repo).getPublicHours({ id: BOB }, CAROL)
+    const empty = await makeService(repo).getPublicHours({ id: DAVE }, CAROL)
+    expect(deleted).toEqual(empty)
   })
 
-  // NOTE: "an id with no users row at all" is deliberately NOT asserted here — the twin models the FLAG
-  // on a seeded user, and an unseeded id reads as the NULL tri-state. The real repo's
-  // `WHERE id = $1 AND deleted_at IS NULL` miss (which yields visible:false) is pinned in
-  // test/integration/volunteer-hours-pg.test.ts, where the actual WHERE clause runs.
+  it("a viewer blocked either way sees the same empty body a hidden profile returns (CVX-023)", async () => {
+    const repo = makeRepo()
+    await seedBob(repo)
+    repo.seedUser(BOB, {
+      name: "Bob",
+      handle: "bob",
+      avatarUrl: null,
+      verified: false,
+      showVolunteerHours: true,
+    })
+    repo.seedUser(DAVE, {
+      name: "Dave",
+      handle: "dave",
+      avatarUrl: null,
+      verified: false,
+      showVolunteerHours: true,
+    })
+
+    const gatedService = makeVolunteerHoursService({
+      repo,
+      cleanups: makeCleanups(null, []),
+      isVerified: () => Promise.resolve(true),
+      isBlockedEitherWay: (a, b) =>
+        Promise.resolve((a === CAROL && b === BOB) || (a === BOB && b === CAROL)),
+    })
+
+    const blocked = await gatedService.getPublicHours({ id: BOB }, CAROL)
+    const empty = await makeService(repo).getPublicHours({ id: DAVE }, CAROL)
+    expect(blocked).toEqual(empty)
+    expect(blocked.items).toEqual([])
+
+    const ownStillVisible = await gatedService.getPublicHours({ id: BOB }, BOB)
+    expect(ownStillVisible.visible).toBe(true)
+    expect(ownStillVisible.items.map((e) => e.source)).toEqual(["event", "event"])
+  })
+
 
   // P4: your own data is always visible to you, and this endpoint is auth-OPTIONAL, so a signed-in owner
   // hitting their own public URL must not be shown as hidden from themselves.

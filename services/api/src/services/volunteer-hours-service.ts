@@ -230,6 +230,7 @@ export interface VolunteerHoursServiceDeps {
   repo: VolunteerHoursRepository
   cleanups: CleanupHoursLookup
   isVerified: (userId: string) => Promise<boolean>
+  isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
   /** Optional so an offline test can run without the notification pipeline — no notifier means no bells. */
   notifier?: Pick<NotificationService, "createNotification">
   logger?: { warn(obj: unknown, msg?: string): void }
@@ -271,6 +272,17 @@ function clampOffset(offset: number | undefined): number {
 function clampEntriesLimit(limit: number | undefined): number {
   if (limit === undefined) return HOURS_ENTRIES_DEFAULT_LIMIT
   return Math.min(Math.max(1, Math.floor(limit)), HOURS_ENTRIES_MAX_LIMIT)
+}
+
+function neutralPublicHours(): PublicVolunteerHoursResponse {
+  return {
+    visible: true,
+    totalHours: 0,
+    byJurisdiction: [],
+    items: [],
+    reportHours: 0,
+    nextCursor: null,
+  }
 }
 
 /** Round to the same 2 decimals the numeric(6,2) ledger column stores, killing float8 read noise. */
@@ -391,38 +403,24 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       }
     },
 
-    /**
-     * B30c / C18 — someone else's public hours, behind TWO predicates.
-     *
-     * Hidden is reported HONESTLY at 200 (`visible: false`) rather than as a 403, which would be an
-     * oracle, and rather than as "0 hours", which would be a lie about somebody who simply opted out.
-     * A never-chosen (NULL) user is `visible: true` with `items: []` and a truthful `nextCursor: null`:
-     * the aggregate is byte-identical to what their profile already published, while the per-event list
-     * — where they physically were, on which dates, credited by whom — stays closed until they opt in.
-     *
-     * `isSelf` bypasses both gates (P4): your own data is always visible to you, and this endpoint is
-     * `auth: "optional"`, so a signed-in owner hitting their own public URL must not see themselves
-     * hidden.
-     */
     async getPublicHours(
       query: PublicVolunteerHoursQuery,
       viewerId: string | null,
     ): Promise<PublicVolunteerHoursResponse> {
       const userId = query.id
       const isSelf = viewerId !== null && viewerId === userId
-      const visibility = isSelf
-        ? { aggregate: true, items: true }
-        : await deps.repo.hoursVisibilityFor(userId)
 
-      if (!visibility.aggregate) {
-        return {
-          visible: false,
-          totalHours: 0,
-          byJurisdiction: [],
-          items: [],
-          reportHours: 0,
-          nextCursor: null,
-        }
+      const [blockedEitherWay, visibility] = await Promise.all([
+        !isSelf && viewerId !== null && deps.isBlockedEitherWay
+          ? deps.isBlockedEitherWay(viewerId, userId)
+          : Promise.resolve(false),
+        isSelf
+          ? Promise.resolve({ aggregate: true, items: true })
+          : deps.repo.hoursVisibilityFor(userId),
+      ])
+
+      if (blockedEitherWay || !visibility.aggregate) {
+        return neutralPublicHours()
       }
 
       const limit = clampEntriesLimit(query.limit)

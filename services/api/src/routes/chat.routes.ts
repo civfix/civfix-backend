@@ -10,6 +10,7 @@ import {
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { parse } from "./_validate.js"
@@ -88,14 +89,14 @@ declare module "fastify" {
 
 const ThreadMessageParamsSchema = z.object({ cleanupId: IdSchema, messageId: IdSchema }).strict()
 
-const CHAT_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+export const CHAT_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 /**
  * L11: deleting messages is a state change with a broadcast attached and had NO route limit at all
  * (only the global 300/min/IP). 30/min is well above any human moderation session while bounding a
  * scripted delete sweep — the same order of magnitude as the reaction limit above.
  */
-const CHAT_DELETE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const CHAT_DELETE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 export async function registerChatRoutes(app: FastifyInstance, container: Container): Promise<void> {
   const csrfProtect = container.csrf.protect

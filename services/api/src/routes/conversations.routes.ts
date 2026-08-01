@@ -14,6 +14,7 @@
 
 import { ToggleMuteRequestSchema, AppError, type ToggleMuteResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { parse } from "./_validate.js"
@@ -69,7 +70,7 @@ export interface ConversationMutesOverrides {
  *               and joinable, and the client offers mute from the room view)
  *   - group   : a member, or any user for a PUBLIC group (the pre-join readable contract)
  */
-const RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+export const CONVERSATION_MUTE_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -125,7 +126,7 @@ export async function registerConversationRoutes(app: FastifyInstance, container
   route(
     app,
     "toggleConversationMute",
-    { preHandler: csrfProtect, config: { rateLimit: RATE_LIMIT } },
+    { preHandler: csrfProtect, config: { rateLimit: CONVERSATION_MUTE_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
       const body = parse(ToggleMuteRequestSchema, request.body)

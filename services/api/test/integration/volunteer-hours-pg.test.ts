@@ -706,7 +706,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
    * that a NULL user's aggregate is unchanged from today while their itemised list is empty, which is
    * the single behavioural promise migration 0061's banner makes.
    */
-  it("the public projection is aggregate-visible for NULL, itemised for TRUE, hidden for FALSE", async () => {
+  it("the public projection is aggregate-visible for NULL, itemised for TRUE, empty-identical for FALSE", async () => {
     const geoid = GEOID
     const host = await newUser("Public Host")
     const cleanupId = await newCleanup(host)
@@ -764,7 +764,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const falseUser = await seedHolder(false, "Public False")
     const falseRes = await service.getPublicHours({ id: falseUser }, viewer)
     expect(falseRes).toEqual({
-      visible: false,
+      visible: true,
       totalHours: 0,
       byJurisdiction: [],
       items: [],

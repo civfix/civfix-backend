@@ -11,6 +11,7 @@ import {
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { parse } from "./_validate.js"
@@ -53,10 +54,10 @@ const ReportChatMessageParamsSchema = z.object({ id: IdSchema, messageId: IdSche
 const REPORT_CHAT_HISTORY_DEFAULT = 30
 const REPORT_CHAT_HISTORY_MAX = 50
 
-const REPORT_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+export const REPORT_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 /** L11: message deletes are state changes with a broadcast; 30/min matches the cleanup-room delete cap. */
-const REPORT_DELETE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const REPORT_DELETE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 /**
  * L11: report-chat join/leave churn is deliberately bounded TIGHTER than the other chat limits. Each
@@ -64,7 +65,7 @@ const REPORT_DELETE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
  * roster + notification fan-out, so an unbounded loop is both a write amplifier and a roster-flicker
  * nuisance for everyone else. 20/min is far more than any real user (who joins a room once).
  */
-const REPORT_CHAT_MEMBERSHIP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+export const REPORT_CHAT_MEMBERSHIP_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
 
 export async function registerReportChatRoutes(
   app: FastifyInstance,

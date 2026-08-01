@@ -12,6 +12,7 @@
  * user-attributable actions.
  */
 
+import { AppError } from "@civfix/shared"
 import type {
   UserActivityItemDTO,
   UserActivityKind,
@@ -48,10 +49,19 @@ export interface UserActivityRepository {
 
 export interface UserActivityServiceDeps {
   repo: UserActivityRepository
+  blockState?: (
+    viewerId: string,
+    targetId: string,
+  ) => Promise<{ blockedByViewer: boolean; blockedByTarget: boolean }>
 }
 
 export interface UserActivityService {
-  list(userId: string, cursor: string | null, limit: number | undefined): Promise<UserActivityListResponse>
+  list(
+    userId: string,
+    viewerId: string | null,
+    cursor: string | null,
+    limit: number | undefined,
+  ): Promise<UserActivityListResponse>
 }
 
 /** Project a record into the wire DTO (omitting null optionals to keep the payload tidy). */
@@ -71,9 +81,15 @@ export function makeUserActivityService(deps: UserActivityServiceDeps): UserActi
   return {
     async list(
       userId: string,
+      viewerId: string | null,
       cursor: string | null,
       limit: number | undefined,
     ): Promise<UserActivityListResponse> {
+      if (viewerId !== null && viewerId !== userId && deps.blockState) {
+        const { blockedByViewer, blockedByTarget } = await deps.blockState(viewerId, userId)
+        if (blockedByViewer) return { items: [], nextCursor: null }
+        if (blockedByTarget) throw AppError.notFound("Person not found")
+      }
       const n = clampLimit(limit ?? USER_ACTIVITY_DEFAULT_LIMIT)
       // requireUuidId=false: the repo's keyset compares the cursor id against `id::text` (the UNION mixes
       // report/cleanup/person ids), never `::uuid`, so a non-UUID id is safe — do NOT "tidy" this to true.

@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { makeDmService, type DmService, type DmTargetUser } from "../../src/services/dm-service.js"
+import {
+  makeDmService,
+  DM_FORBIDDEN_MESSAGE,
+  type DmService,
+  type DmTargetUser,
+} from "../../src/services/dm-service.js"
 import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
@@ -10,7 +15,7 @@ import type { AppError } from "@civfix/shared"
  * DM service unit tests (no DB): openDm rules.
  *   - disabled target with no existing thread -> 403 (generic message);
  *   - blocked either way -> 403;
- *   - self -> 403; missing target -> 404;
+ *   - self -> 403; missing target -> 403, byte-identical to the blocked one (CVX-032);
  *   - normal -> creates a thread, MessageThreadDTO with kind:"dm", peer, display-name title;
  *   - idempotent: a second openDm returns the SAME thread id;
  *   - DM-disabled but an EXISTING thread still opens (existing threads keep working).
@@ -69,10 +74,25 @@ describe("DmService.openDm", () => {
     expect(b.id).toBe(a.id)
   })
 
-  it("404s a missing target", async () => {
-    await expect(service.openDm(ALICE, "99999999-9999-9999-9999-999999999999")).rejects.toMatchObject({
-      httpStatus: 404,
-    } satisfies Partial<AppError>)
+  it("CVX-032: a MISSING target and a BLOCKED target produce the SAME response", async () => {
+    await blocks.block(BOB, ALICE)
+    const missing = await service
+      .openDm(ALICE, "99999999-9999-9999-9999-999999999999")
+      .then(() => null)
+      .catch((e: AppError) => e)
+    const blocked = await service
+      .openDm(ALICE, BOB)
+      .then(() => null)
+      .catch((e: AppError) => e)
+    expect(missing).not.toBeNull()
+    expect({ status: missing!.httpStatus, message: missing!.message }).toEqual({
+      status: 403,
+      message: DM_FORBIDDEN_MESSAGE,
+    })
+    expect({ status: blocked!.httpStatus, message: blocked!.message }).toEqual({
+      status: missing!.httpStatus,
+      message: missing!.message,
+    })
   })
 
   it("403s a self-DM", async () => {

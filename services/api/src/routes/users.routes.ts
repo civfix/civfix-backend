@@ -43,7 +43,7 @@ import {
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { route } from "../versioning/route.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 import { SUPPORTED_LOCALES } from "../i18n/locales.js"
 
 /** Optional injected data-export service (tests) so the POST /me/data-export flow runs offline. */
@@ -66,6 +66,8 @@ const DATA_EXPORT_RATE_LIMIT = { max: 5, timeWindow: "1 hour" } as const
 
 /** Path param schema for the routes that take a user UUID in the URL. */
 const UserIdParamsSchema = z.object({ id: IdSchema }).strict()
+
+export const MentionSearchQuerySchema = trimTextFields(MentionSearchRequestSchema, "q")
 
 /**
  * Optional `locale` on PUT /me/settings. Parsed separately from the shared UpdateSettingsRequestSchema
@@ -90,6 +92,8 @@ const USER_SEARCH_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
  * a limit no test references is a limit nothing notices losing).
  */
 export const BLOCK_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+
+export const UNBLOCKABLE_MESSAGE = "User not found"
 
 export async function registerUsersRoutes(app: FastifyInstance, container: Container): Promise<void> {
   const csrfProtect = container.csrf.protect
@@ -129,7 +133,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     { config: { rateLimit: USER_SEARCH_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const q = parse(MentionSearchRequestSchema, request.query)
+      const q = parse(MentionSearchQuerySchema, request.query)
       const term = q.q.startsWith("@") ? q.q.slice(1) : q.q
       const results =
         term.length === 0
@@ -144,8 +148,9 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     const userId = requireAuth(request)
     const { id } = parse(UserIdParamsSchema, request.params)
     if (id === userId) throw AppError.validation({ id: "You cannot block yourself." })
-    await assertUserExists(app, id)
-    await blocksRepo().block(userId, id)
+    const blocks = blocksRepo()
+    await assertUserBlockable(app, blocks, userId, id)
+    await blocks.block(userId, id)
     const payload: BlockUserResponse = { blocked: true }
     reply.status(200).send(payload)
   })
@@ -340,10 +345,16 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
   )
 }
 
-/** Reject a block toward a missing/soft-deleted user with a 404 (validate the target exists). */
-async function assertUserExists(app: FastifyInstance, userId: string): Promise<void> {
+async function assertUserBlockable(
+  app: FastifyInstance,
+  blocks: BlocksRepository,
+  viewerId: string,
+  userId: string,
+): Promise<void> {
   const store = app.authServices?.users
   if (!store) throw AppError.unauthorized("Authentication required.")
   const u = await store.findById(userId)
-  if (!u || u.deletedAt !== null) throw AppError.notFound("User not found")
+  if (!u || u.deletedAt !== null) throw AppError.notFound(UNBLOCKABLE_MESSAGE)
+  const { blockedByViewer, blockedByTarget } = await blocks.blockState(viewerId, userId)
+  if (blockedByTarget && !blockedByViewer) throw AppError.notFound(UNBLOCKABLE_MESSAGE)
 }

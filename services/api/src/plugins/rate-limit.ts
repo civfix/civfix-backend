@@ -31,7 +31,12 @@
 
 import fastifyRateLimit from "@fastify/rate-limit"
 import { AppError } from "@civfix/shared"
-import type { FastifyInstance, FastifyRequest, onRequestAsyncHookHandler } from "fastify"
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  onRequestAsyncHookHandler,
+} from "fastify"
 import type { RedisClient } from "../adapters/redis.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 
@@ -109,15 +114,62 @@ export function rateLimitKey(req: FastifyRequest): string {
   return `ip:${normalizeIp(req.ip)}`
 }
 
-/**
- * Key for the sensitive bucket: the authenticated identity when there is one, else the IP. This is the
- * half that answers M22 — an attacker rotating IPs across one account is bounded here, while the global
- * IP bucket above bounds one host rotating accounts. `user:`/`ip:` are namespaced so a user id can never
- * collide with an IP string.
- */
-export function sensitiveRateLimitKey(req: FastifyRequest): string {
+export function identityRateLimitKey(req: FastifyRequest): string {
   const userId = req.auth?.userId
   return userId ? `user:${userId}` : `ip:${normalizeIp(req.ip)}`
+}
+
+export interface RouteRateLimitSpec {
+  max: number
+  timeWindow: string | number
+  hostMax?: number
+  skipOnError?: boolean
+}
+
+const ROUTE_RATE_LIMIT_POLICY: unique symbol = Symbol("civfix.routeRateLimitPolicy")
+
+export type RouteRateLimitPolicy = Readonly<RouteRateLimitSpec> & {
+  readonly keyGenerator?: (req: FastifyRequest) => string
+  readonly [ROUTE_RATE_LIMIT_POLICY]: true
+}
+
+export const HOST_CEILING_MULTIPLIER = 10
+
+const SENSITIVE_BUCKET = "sensitive"
+const WS_UPGRADE_BUCKET = "ws-upgrade"
+const STORE_ERROR_RETRY_AFTER_SECONDS = 5
+
+export function sensitiveRateLimitKey(req: FastifyRequest): string {
+  return `${SENSITIVE_BUCKET}:${identityRateLimitKey(req)}`
+}
+
+export function wsUpgradeRateLimitKey(req: FastifyRequest): string {
+  return `${WS_UPGRADE_BUCKET}:ip:${normalizeIp(req.ip)}`
+}
+
+export function perIdentity(spec: RouteRateLimitSpec): RouteRateLimitPolicy {
+  return Object.freeze({
+    ...spec,
+    keyGenerator: identityRateLimitKey,
+    [ROUTE_RATE_LIMIT_POLICY]: true as const,
+  })
+}
+
+export function perHost(spec: RouteRateLimitSpec): RouteRateLimitPolicy {
+  return Object.freeze({ ...spec, [ROUTE_RATE_LIMIT_POLICY]: true as const })
+}
+
+export interface RateLimitVerdict {
+  max: number
+  remaining: number
+  ttlInSeconds: number
+}
+
+export function applyRateLimitHeaders(reply: FastifyReply, verdict: RateLimitVerdict): void {
+  reply.header("x-ratelimit-limit", verdict.max)
+  reply.header("x-ratelimit-remaining", verdict.remaining)
+  reply.header("x-ratelimit-reset", verdict.ttlInSeconds)
+  reply.header("retry-after", verdict.ttlInSeconds)
 }
 
 export async function registerRateLimit(
@@ -151,17 +203,19 @@ export async function registerRateLimit(
     skipOnError: false,
   })
 
-  const sensitiveHook: onRequestAsyncHookHandler = async (req) => {
+  const sensitiveHook: onRequestAsyncHookHandler = async (req, reply) => {
     let result: Awaited<ReturnType<typeof checkSensitive>>
     try {
       result = await checkSensitive(req)
     } catch (err) {
       // Fail CLOSED: we could not count this request, so we cannot promise it is within the limit.
       req.log.error({ err, path: pathOf(req.url) }, "rate limit store error on a sensitive path")
+      reply.header("retry-after", STORE_ERROR_RETRY_AFTER_SECONDS)
       throw AppError.rateLimited("Rate limiting is temporarily unavailable; please retry shortly.")
     }
     if (!result.isAllowed && result.isExceeded) {
       req.log.warn({ key: result.key, path: pathOf(req.url) }, "sensitive rate limit exceeded")
+      applyRateLimitHeaders(reply, result)
       throw AppError.rateLimited()
     }
   }
@@ -169,14 +223,76 @@ export async function registerRateLimit(
   // Attach per route at registration time (the same mechanism the plugin uses). A route-level onRequest
   // handler runs after the instance-level auth hook, which is what makes the identity-aware key work.
   app.addHook("onRoute", (routeOptions) => {
-    if (!isSensitivePath(pathOf(routeOptions.url))) return
-    const existing = routeOptions.onRequest
-    if (Array.isArray(existing)) {
-      existing.push(sensitiveHook)
-    } else if (typeof existing === "function") {
-      routeOptions.onRequest = [existing, sensitiveHook]
-    } else {
-      routeOptions.onRequest = [sensitiveHook]
+    const hostCeiling = hostCeilingLimitOf(routeOptions.config, routeOptions.url)
+    if (hostCeiling) {
+      appendOnRequestHook(
+        routeOptions,
+        hostCeilingHook(app, `${String(routeOptions.method)}${routeOptions.url}`, hostCeiling),
+      )
     }
+    if (isSensitivePath(pathOf(routeOptions.url))) appendOnRequestHook(routeOptions, sensitiveHook)
   })
+}
+
+function appendOnRequestHook(
+  routeOptions: { onRequest?: unknown },
+  hook: onRequestAsyncHookHandler,
+): void {
+  const existing = routeOptions.onRequest
+  if (Array.isArray(existing)) {
+    existing.push(hook)
+  } else if (typeof existing === "function") {
+    routeOptions.onRequest = [existing, hook]
+  } else {
+    routeOptions.onRequest = [hook]
+  }
+}
+
+function hostCeilingLimitOf(config: unknown, url: string): RouteRateLimitSpec | null {
+  const limit = (config as {
+    rateLimit?: Partial<RouteRateLimitSpec> & {
+      keyGenerator?: unknown
+      [ROUTE_RATE_LIMIT_POLICY]?: unknown
+    }
+  })?.rateLimit
+  if (!limit || typeof limit !== "object") return null
+  if (limit.keyGenerator === undefined) return null
+  if (limit[ROUTE_RATE_LIMIT_POLICY] !== true || limit.keyGenerator !== identityRateLimitKey) {
+    throw new Error(
+      `the rate limit on ${url} sets its own keyGenerator; declare it with perIdentity() or perHost() from plugins/rate-limit.js so it cannot lose its per-host ceiling`,
+    )
+  }
+  const { max, timeWindow, hostMax } = limit
+  if (typeof max !== "number" || (typeof timeWindow !== "string" && typeof timeWindow !== "number")) {
+    throw new Error(
+      `the rate limit on ${url} replaces the per-host key, so it needs a literal max and timeWindow to derive its host ceiling`,
+    )
+  }
+  return hostMax === undefined ? { max, timeWindow } : { max, timeWindow, hostMax }
+}
+
+function hostCeilingHook(
+  app: FastifyInstance,
+  routeId: string,
+  limit: RouteRateLimitSpec,
+): onRequestAsyncHookHandler {
+  const checkHost = app.createRateLimit({
+    max: limit.hostMax ?? limit.max * HOST_CEILING_MULTIPLIER,
+    timeWindow: limit.timeWindow,
+    keyGenerator: (req) => `host:${routeId}:ip:${normalizeIp(req.ip)}`,
+    allowList: () => false,
+    skipOnError: true,
+  })
+  return async (req, reply) => {
+    const result = await checkHost(req)
+    if (!result.isAllowed && result.isExceeded) {
+      req.log.warn(
+        { key: result.key, path: pathOf(req.url), route: routeId },
+        "host ceiling rate limit exceeded",
+      )
+      reply.header("x-ratelimit-reset", result.ttlInSeconds)
+      reply.header("retry-after", result.ttlInSeconds)
+      throw AppError.rateLimited()
+    }
+  }
 }

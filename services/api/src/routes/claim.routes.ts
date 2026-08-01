@@ -21,6 +21,7 @@ import {
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { ANON_COOKIE } from "../auth/transport.js"
@@ -57,7 +58,7 @@ const ClaimNudgeQuerySchema = z.object({ anonToken: z.string().optional() }).str
  * meaningful now that request.ip is the real client). 20 requests / minute / IP is ample for a real
  * client (one nudge poll + one claim) while bounding automated probing.
  */
-const CLAIM_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+export const CLAIM_RATE_LIMIT = perHost({ max: 20, timeWindow: "1 minute" })
 
 export async function registerClaimRoutes(
   app: FastifyInstance,

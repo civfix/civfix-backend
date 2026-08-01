@@ -25,6 +25,7 @@ import type {
   FastifyReply,
   FastifyRequest,
 } from "fastify"
+import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
@@ -57,9 +58,9 @@ import type { UserRecord } from "../auth/stores.js"
 const OAUTH_STATE_COOKIE = "civfix_oauth"
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
 
-const OTP_REQUEST_RATE_LIMIT = { max: 5, timeWindow: "1 minute" } as const
-const OTP_VERIFY_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
-const OAUTH_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+export const OTP_REQUEST_RATE_LIMIT = perHost({ max: 5, timeWindow: "1 minute" })
+export const OTP_VERIFY_RATE_LIMIT = perHost({ max: 10, timeWindow: "1 minute" })
+export const OAUTH_RATE_LIMIT = perHost({ max: 20, timeWindow: "1 minute" })
 
 /**
  * Server-issued sign-in nonces for the NATIVE Apple/Google flows (H1).

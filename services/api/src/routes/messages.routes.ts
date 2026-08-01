@@ -34,10 +34,12 @@ import {
   type ChatMessageDTO,
 } from "@civfix/shared"
 import { randomUUID } from "node:crypto"
+import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { makeChatEditService, type IsRoomMemberFn } from "../services/chat-edit-service.js"
 import {
@@ -70,23 +72,44 @@ import { makeChatPollRepository } from "../services/chat-poll-repository.drizzle
 import { makeChatPollService, type PollRoomKind } from "../services/chat-poll-service.js"
 import { makeContainerPollNotifier } from "../services/chat-poll-notifier.js"
 
+export const EditMessageBodySchema = trimTextFields(EditMessageRequestSchema, "body")
+
+export const CreatePollBodySchema = trimTextFields(
+  CreatePollRequestSchema,
+  "question",
+  "options",
+).superRefine((poll, ctx) => {
+  const seen = new Set<string>()
+  poll.options.forEach((option, index) => {
+    if (seen.has(option)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["options", index],
+        message: "must not repeat an earlier option",
+      })
+      return
+    }
+    seen.add(option)
+  })
+})
+
 /**
  * Tighter per-key limit for edits (reaction-route style): a human edits a handful of messages; 30/min
  * bounds scripted rewrite sweeps while staying ample for normal use.
  */
-export const EDIT_MESSAGE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const EDIT_MESSAGE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 /** Unified reaction toggle: 60/min per key, matching the legacy per-room toggle routes. */
-export const TOGGLE_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+export const TOGGLE_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 /** Poll create (P6): 10/min per key — a poll is a deliberate, heavier action than a chat send. */
-export const CREATE_POLL_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
+export const CREATE_POLL_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
 
 /** Poll vote (P6): 60/min per key — voting/retracting is lightweight and interactive. */
-export const VOTE_POLL_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+export const VOTE_POLL_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 /** Poll close (P6): 30/min per key — a rare author/moderator action. */
-export const CLOSE_POLL_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const CLOSE_POLL_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 export async function registerMessagesRoutes(
   app: FastifyInstance,
@@ -191,7 +214,7 @@ export async function registerMessagesRoutes(
     { preHandler: csrfProtect, config: { rateLimit: EDIT_MESSAGE_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(EditMessageRequestSchema, request.body)
+      const body = parse(EditMessageBodySchema, request.body)
       // Before the service's own ladder: the report must still be visible (the service gates on
       // report-chat membership alone).
       if (body.roomKind === "report") await requireVisibleReport(body.roomId, userId)
@@ -408,7 +431,7 @@ export async function registerMessagesRoutes(
     { preHandler: csrfProtect, config: { rateLimit: CREATE_POLL_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(CreatePollRequestSchema, request.body)
+      const body = parse(CreatePollBodySchema, request.body)
       const created = await getPollService().createPoll({
         roomKind: body.roomKind as PollRoomKind,
         roomId: body.roomId,

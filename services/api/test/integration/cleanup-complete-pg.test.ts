@@ -201,4 +201,39 @@ describe.skipIf(!pg)("host event completion (integration)", () => {
 
     expect(await repo.cancelCleanupTx(randomUUID(), input)).toBe("not_found")
   })
+
+  it("freezes the roster of a DONE event: leave and removeMember both report closed", async () => {
+    const org = await newUser("Frozen Org")
+    const attendee = await newUser("Frozen Attendee")
+    const id = await newCleanup(org, { status: "done" })
+    await h.sql`
+      INSERT INTO cleanup_members (cleanup_id, user_id, role)
+      VALUES (${id}, ${org}, 'organizer'), (${id}, ${attendee}, 'member')
+    `
+
+    expect(await repo.leaveCleanup(id, attendee)).toBe("closed")
+    expect(await repo.removeMember(id, attendee, org)).toEqual({ kind: "closed" })
+
+    expect(await repo.isMember(id, attendee)).toBe(true)
+    expect(await repo.isBanned(id, attendee)).toBe(false)
+  })
+
+  it("still lets an attendee leave (and a host remove) while the event is live", async () => {
+    const org = await newUser("Live Org")
+    const leaver = await newUser("Live Leaver")
+    const removed = await newUser("Live Removed")
+    const id = await newCleanup(org, { scheduledAt: NOT_STARTED })
+    await h.sql`
+      INSERT INTO cleanup_members (cleanup_id, user_id, role)
+      VALUES (${id}, ${org}, 'organizer'), (${id}, ${leaver}, 'member'), (${id}, ${removed}, 'member')
+    `
+
+    expect(await repo.leaveCleanup(id, leaver)).toBe("left")
+    expect(await repo.isMember(id, leaver)).toBe(false)
+
+    expect(await repo.removeMember(id, removed, org)).toEqual({ kind: "removed", going: 1 })
+    expect(await repo.isBanned(id, removed)).toBe(true)
+
+    expect(await repo.leaveCleanup(randomUUID(), leaver)).toBe("not_found")
+  })
 })

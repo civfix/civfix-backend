@@ -123,7 +123,7 @@ export function makeDrizzleMediaViewAuthorizer(
  * Anonymous callers are denied outright: there is no chat surface an anon session can legitimately read,
  * and this is exactly the case H9 called out (a DM attachment fetched with no session at all).
  */
-async function authorizeChatBound(
+export async function authorizeChatBound(
   sql: Sql,
   messageId: string,
   viewerId: string | null,
@@ -194,7 +194,7 @@ async function authorizeChatBound(
 }
 
 /** Post lane: public + not deleted, or the viewer is the author. */
-async function authorizePostBound(
+export async function authorizePostBound(
   sql: Sql,
   postId: string,
   viewerId: string | null,
@@ -215,7 +215,7 @@ async function authorizePostBound(
  * viewer's own). Deliberately the same status set as report-visibility.ts / publicReportFilter: a photo
  * must not vanish from a report the moment the city acknowledges or resolves it.
  */
-async function authorizeReportBound(
+export async function authorizeReportBound(
   sql: Sql,
   reportId: string,
   viewerId: string | null,

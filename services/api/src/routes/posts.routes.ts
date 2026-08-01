@@ -13,6 +13,7 @@
 import { HomeFeedQuerySchema, IdSchema, PaginationQuerySchema, PostComposeInputSchema } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { NIL_VIEWER_ID } from "../services/post-repository.drizzle.js"
@@ -37,7 +38,7 @@ const PostIdParamsSchema = z.object({ id: IdSchema }).strict()
  * who filed exactly one report. 120/min is still 2.5x tighter than the global bucket it replaces, and far
  * above any single-author burst.
  */
-const CREATE_POST_RATE_LIMIT = { max: 120, timeWindow: "1 minute" } as const
+export const CREATE_POST_RATE_LIMIT = perIdentity({ max: 120, timeWindow: "1 minute" })
 
 export async function registerPostRoutes(app: FastifyInstance, container: Container): Promise<void> {
   const csrfProtect = container.csrf.protect

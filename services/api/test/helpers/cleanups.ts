@@ -33,12 +33,15 @@ import type {
   EventSlotView,
   LinkedEventView,
   LinkedReportView,
+  LeaveCleanupOutcome,
   ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
+  RemoveMemberOutcome,
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "../../src/services/cleanup-service.js"
+import { isCleanupTerminal } from "../../src/services/cleanup-service.js"
 import type { CleanupMemberRole, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
 // The CANONICAL keyset primitives cleanup-repository.drizzle.ts uses — imported, never re-implemented, so
@@ -635,11 +638,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
   // M17: removal writes a ban row in the SAME operation as the membership delete (the Drizzle impl
   // does both in one transaction), which is what makes it stick against the self-service join.
-  removeMember(
-    cleanupId: string,
-    userId: string,
-    actorId: string,
-  ): Promise<{ removed: boolean; going: number }> {
+  removeMember(cleanupId: string, userId: string, actorId: string): Promise<RemoveMemberOutcome> {
+    const cleanup = this.cleanups.get(cleanupId)
+    if (cleanup === undefined) return Promise.resolve({ kind: "not_found" })
+    if (isCleanupTerminal(cleanup.status)) return Promise.resolve({ kind: "closed" })
     const idx = this.members.findIndex(
       (m) => m.cleanupId === cleanupId && m.userId === userId && m.role !== "organizer",
     )
@@ -652,7 +654,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       // A removed attendee who kept their seat would leave a phantom-full slot nobody can free.
       this.deleteClaim(cleanupId, userId)
     }
-    return Promise.resolve({ removed: idx >= 0, going: this.memberCountOf(cleanupId) })
+    const going = this.memberCountOf(cleanupId)
+    return Promise.resolve(idx >= 0 ? { kind: "removed", going } : { kind: "not_member", going })
   }
 
   isBanned(cleanupId: string, userId: string): Promise<boolean> {
@@ -683,8 +686,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? c.organizerUserId : null)
   }
 
-  joinCleanupTx(cleanupId: string, userId: string): Promise<"joined" | "not_found" | "banned"> {
-    if (!this.cleanups.has(cleanupId)) return Promise.resolve("not_found")
+  joinCleanupTx(
+    cleanupId: string,
+    userId: string,
+  ): Promise<"joined" | "not_found" | "banned" | "closed"> {
+    const cleanup = this.cleanups.get(cleanupId)
+    if (cleanup === undefined) return Promise.resolve("not_found")
+    if (isCleanupTerminal(cleanup.status)) return Promise.resolve("closed")
     // M17: a removed attendee cannot re-join themselves.
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
       return Promise.resolve("banned")
@@ -695,13 +703,14 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve("joined")
   }
 
-  leaveCleanup(cleanupId: string, userId: string): Promise<boolean> {
-    if (!this.cleanups.has(cleanupId)) return Promise.resolve(false)
+  leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome> {
+    const cleanup = this.cleanups.get(cleanupId)
+    if (cleanup === undefined) return Promise.resolve("not_found")
+    if (isCleanupTerminal(cleanup.status)) return Promise.resolve("closed")
     const idx = this.members.findIndex((m) => m.cleanupId === cleanupId && m.userId === userId)
     if (idx >= 0) this.members.splice(idx, 1)
-    // B28d: leaving frees the seat too — the Drizzle twin deletes both rows in one transaction.
     this.deleteClaim(cleanupId, userId)
-    return Promise.resolve(true)
+    return Promise.resolve("left")
   }
 
   /** Delete the (cleanupId, userId) claim row if present. Returns the freed slot id, or null. */
@@ -938,7 +947,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!cleanup) return Promise.resolve({ kind: "not_found" })
     // B28e: a completed/cancelled event's roster is what hours were attested against, and the auto-RSVP
     // below would otherwise hand membership to anyone claiming after the fact.
-    if (cleanup.status === "done" || cleanup.status === "cancelled") {
+    if (isCleanupTerminal(cleanup.status)) {
       return Promise.resolve({ kind: "closed" })
     }
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
@@ -973,7 +982,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (!cleanup) return Promise.resolve({ kind: "not_found" })
-    if (cleanup.status === "done" || cleanup.status === "cancelled") {
+    if (isCleanupTerminal(cleanup.status)) {
       return Promise.resolve({ kind: "closed" })
     }
     this.deleteClaim(cleanupId, userId)

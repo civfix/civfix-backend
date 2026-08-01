@@ -2,12 +2,12 @@
  * DM service: open (or fetch) the 1:1 thread with a target user and project it as a MessageThreadDTO.
  *
  * LOCKED PRODUCT DECISIONS (implemented exactly):
- *   - 404 when the target is missing or soft-deleted.
+ *   - 403 when the target is missing or soft-deleted.
  *   - 403 when the target is the viewer (no self-DM).
  *   - 403 when either party has blocked the other.
  *   - 403 when the target has allow_direct_messages = false AND no thread exists yet (existing threads
- *     keep working). Block and DM-disabled are deliberately INDISTINGUISHABLE: all of these 403s use a
- *     single generic message so neither state leaks.
+ *     keep working). Missing, blocked and DM-disabled are deliberately INDISTINGUISHABLE: all of these
+ *     403s use a single generic message so none of those states leaks.
  *   - Otherwise openOrCreateThread (idempotent) and build a MessageThreadDTO (kind:"dm", peer, refId =
  *     threadId, title = displayName else @handle, members:2, last/ago/lastFromMe from the last message
  *     when one exists, `unread` from the repo's own inbox definition (countUnread) and `muted` from
@@ -95,12 +95,9 @@ export function makeDmService(deps: DmServiceDeps): DmService {
       // Self-DM is forbidden (generic 403 like every other refusal so nothing distinguishes the cases).
       if (targetUserId === viewerId) throw AppError.forbidden(DM_FORBIDDEN_MESSAGE)
 
-      // 404 when the target is missing or soft-deleted (this is the ONLY non-generic outcome — a missing
-      // user is not a privacy leak the way "blocked vs DM-off" is).
       const target = await deps.loadUser(targetUserId)
-      if (target === null) throw AppError.notFound("User not found")
+      if (target === null) throw AppError.forbidden(DM_FORBIDDEN_MESSAGE)
 
-      // Blocked either way -> generic 403.
       if (await deps.blocks.isBlockedEitherWay(viewerId, targetUserId)) {
         throw AppError.forbidden(DM_FORBIDDEN_MESSAGE)
       }

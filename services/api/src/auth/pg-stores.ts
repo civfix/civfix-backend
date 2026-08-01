@@ -5,7 +5,6 @@ import type { Db } from "../db/client.js"
 import {
   cleanups,
   emailOtps,
-  mediaAssets,
   oauthIdentities,
   reports,
   serviceHoursCertificates,
@@ -14,6 +13,7 @@ import {
 } from "../db/schema/index.js"
 import { AppError, DELETED_USER_LABEL, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/shared"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
+import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
 import {
   generatePlaceholderHandle,
   type AuthStores,
@@ -217,16 +217,10 @@ export class PgUserStore implements UserStore {
     }
     if (input.bio !== undefined) set.bio = input.bio === "" ? null : input.bio
     if (input.avatarUploadId !== undefined) {
-      const media = await this.db
-        .select({ id: mediaAssets.id, r2Key: mediaAssets.r2Key })
-        .from(mediaAssets)
-        .where(eq(mediaAssets.uploadId, input.avatarUploadId))
-        .limit(1)
-      if (media[0]) {
-        set.avatarMediaId = media[0].id
-        if (input.presignAvatar) {
-          set.avatarUrl = await input.presignAvatar(media[0].r2Key)
-        }
+      const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId)
+      set.avatarMediaId = media.id
+      if (input.presignAvatar) {
+        set.avatarUrl = await input.presignAvatar(media.r2Key)
       }
     }
     if (input.socialLinks !== undefined) {

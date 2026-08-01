@@ -22,6 +22,7 @@
 import { createHmac } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
+import { perHost } from "../../plugins/rate-limit.js"
 import type { Container } from "../../di.js"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
 import {
@@ -65,7 +66,7 @@ export const ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE = true
  * the body is buffered + the HMAC computed), so a tight per-IP cap stops an attacker driving buffered-body
  * + HMAC work via the global 300/min. The Worker nudges at most a handful/sec.
  */
-const INBOUND_WEBHOOK_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+export const INBOUND_WEBHOOK_RATE_LIMIT = perHost({ max: 60, timeWindow: "1 minute" })
 
 /**
  * The body is a tiny `{"key":"inbound/pending/<id>.eml"}` JSON object; cap it well under the global

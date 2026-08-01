@@ -14,6 +14,7 @@
     "./anon-hold-release": "./src/services/anon-hold-release.ts",
     "./anon-hold-repo": "./src/services/anon-hold-release-repo.drizzle.ts",
     "./adapters/storage": "./src/adapters/storage.r2.ts",
+    "./adapters/storage-local": "./src/adapters/storage.local.ts",
     "./adapters/abuse-checks": "./src/adapters/abuse-checks.ts",
     "./errors": "./src/errors/glitchtip.ts",
     "./migrate": "./src/db/migrate.ts"

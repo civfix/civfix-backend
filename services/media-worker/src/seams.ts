@@ -29,6 +29,10 @@ import { makeDrizzleMediaWorkerRepo, type MediaWorkerRepo } from "@civfix/api/me
 import { makeDrizzleAnonHoldReleaseRepo } from "@civfix/api/anon-hold-repo"
 import type { AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
 import { R2Storage } from "@civfix/api/adapters/storage"
+import {
+  LOCAL_STORAGE_DEV_SIGNING_KEY,
+  LocalDiskStorage,
+} from "@civfix/api/adapters/storage-local"
 import { captureError, initErrorReporting, flushErrorReporting } from "@civfix/api/errors"
 import { assertRealSeamInProd, loadLimits, parseBool, type WorkerLimits } from "./config.js"
 import { makeDownloader, type DownloadFn } from "./download.js"
@@ -104,14 +108,25 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   // would (a) populate the CDN cache with the EXIF/GPS-laden ORIGINAL at the exact key clients later read
   // the stripped object from, defeating the strip, and (b) let a retry read stale cached bytes rather than
   // the current object. Omitting publicBase keeps every worker GET signed and direct to the bucket.
-  const storage: Storage = fakeStorage
-    ? new FakeStorage()
-    : new R2Storage({
-        accountId: req(source, "R2_ACCOUNT_ID"),
-        accessKeyId: req(source, "R2_ACCESS_KEY_ID"),
-        secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
-        bucket: req(source, "R2_BUCKET"),
-      })
+  const localStorageDir = (source.LOCAL_STORAGE_DIR ?? "").trim()
+  const storage: Storage =
+    localStorageDir.length > 0
+      ? new LocalDiskStorage({
+          rootDirectory: localStorageDir,
+          namespace: "media",
+          publicApiUrl: req(source, "PUBLIC_API_URL"),
+          signingKey:
+            (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim() || LOCAL_STORAGE_DEV_SIGNING_KEY,
+          nodeEnv: source.NODE_ENV ?? "development",
+        })
+      : fakeStorage
+        ? new FakeStorage()
+        : new R2Storage({
+            accountId: req(source, "R2_ACCOUNT_ID"),
+            accessKeyId: req(source, "R2_ACCESS_KEY_ID"),
+            secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
+            bucket: req(source, "R2_BUCKET"),
+          })
 
   // ----- db + repo (only when results must be persisted to a real DB) -----
   // Built BEFORE abuse checks so the near-duplicate lookup can query media_assets phash via the sql tag.

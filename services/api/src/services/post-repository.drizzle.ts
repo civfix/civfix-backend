@@ -223,6 +223,24 @@ function excerptOf(body: string | null, hasEvent: boolean, hasReport: boolean): 
   return ""
 }
 
+export async function tombstonePostInTx(tx: Queryable, postId: string): Promise<boolean> {
+  const rows = await tx<
+    { kind: PostKind; reply_to_id: string | null; repost_of_id: string | null }[]
+  >`
+    UPDATE posts SET deleted_at = now() WHERE id = ${postId} AND deleted_at IS NULL
+    RETURNING kind, reply_to_id, repost_of_id
+  `
+  const row = rows[0]
+  if (!row) return false
+  if (row.reply_to_id !== null) {
+    await tx`UPDATE posts SET reply_count = GREATEST(reply_count - 1, 0) WHERE id = ${row.reply_to_id}`
+  }
+  if (row.kind === "repost" && row.repost_of_id !== null) {
+    await tx`UPDATE posts SET repost_count = GREATEST(repost_count - 1, 0) WHERE id = ${row.repost_of_id}`
+  }
+  return true
+}
+
 export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRepository {
   // -- author PersonDTO ------------------------------------------------------
   async function loadAuthors(
@@ -660,7 +678,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     async createPost(args: CreatePostArgs): Promise<string> {
       return sql.begin(async (tx) => {
         let threadRootId: string | null = null
-        if (args.kind === "reply" && args.replyToId !== null) {
+        if (args.replyToId !== null) {
           const parentRows = await tx<{ id: string; thread_root_id: string | null }[]>`
             SELECT id, thread_root_id FROM posts WHERE id = ${args.replyToId}
           `
@@ -701,7 +719,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
           )
         }
 
-        if (args.kind === "reply" && args.replyToId !== null) {
+        if (args.replyToId !== null) {
           await tx`UPDATE posts SET reply_count = reply_count + 1 WHERE id = ${args.replyToId}`
         }
 
@@ -710,22 +728,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     },
 
     async softDeletePost(postId: string): Promise<void> {
-      await sql.begin(async (tx) => {
-        const rows = await tx<
-          { kind: PostKind; reply_to_id: string | null; repost_of_id: string | null }[]
-        >`
-          UPDATE posts SET deleted_at = now() WHERE id = ${postId} AND deleted_at IS NULL
-          RETURNING kind, reply_to_id, repost_of_id
-        `
-        const row = rows[0]
-        if (!row) return
-        if (row.reply_to_id !== null) {
-          await tx`UPDATE posts SET reply_count = GREATEST(reply_count - 1, 0) WHERE id = ${row.reply_to_id}`
-        }
-        if (row.kind === "repost" && row.repost_of_id !== null) {
-          await tx`UPDATE posts SET repost_count = GREATEST(repost_count - 1, 0) WHERE id = ${row.repost_of_id}`
-        }
-      })
+      await sql.begin((tx) => tombstonePostInTx(tx, postId))
     },
 
     async like(postId: string, userId: string): Promise<boolean> {
@@ -825,11 +828,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     // viewer or anyone they followed wrote arrived as a top-level row. A reply is thread content: out of
     // its thread it reads as a non-sequitur (a bare "count me in" with no referent), it belongs to
     // listReplies() and the thread view, and leaving it here let one chatty conversation bury the feed.
-    // WHY `reply_to_id IS NULL` AND NOT `kind <> 'reply'` (the tempting alternative, which listUserPosts
-    // uses): the two can diverge, because PostComposeInputSchema only requires replyToId WHEN kind is
-    // 'reply' — it does not reject `{kind:"post", replyToId:<parent>}`, and post-service passes replyToId
-    // through regardless of kind. `reply_to_id IS NULL` is the stricter of the two AND it keeps this query
-    // textually identical to publicFeed's, which is what stops the two feeds drifting apart again.
     // REPOSTS AND QUOTES OF A REPLY DO STILL APPEAR, deliberately: repost()/quote rows never set
     // reply_to_id, so their OWN row is top-level and survives this filter. Amplifying is a deliberate act
     // by someone the viewer follows, exactly as on Twitter — see the integration test that pins it.
@@ -937,7 +935,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
           p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
           p.created_at, p.updated_at
         FROM posts p
-        WHERE p.author_id = ${authorId} AND p.deleted_at IS NULL AND p.kind <> 'reply'
+        WHERE p.author_id = ${authorId} AND p.deleted_at IS NULL AND p.reply_to_id IS NULL
           ${cursorFilter}
         ORDER BY p.created_at DESC, p.id DESC
         LIMIT ${args.limit + 1}

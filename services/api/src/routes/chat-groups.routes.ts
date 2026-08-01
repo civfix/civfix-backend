@@ -42,9 +42,10 @@ import {
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { chatHistoryPayload, deleteMessageWithPowers } from "./chat-route-helpers.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
@@ -63,6 +64,17 @@ import {
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
+export const CreateChatGroupBodySchema = trimTextFields(
+  CreateChatGroupRequestSchema,
+  "name",
+  "description",
+)
+export const UpdateChatGroupBodySchema = trimTextFields(
+  UpdateChatGroupRequestSchema,
+  "name",
+  "description",
+)
+
 const GroupIdParamsSchema = z.object({ id: IdSchema }).strict()
 const GroupMemberParamsSchema = z.object({ id: IdSchema, userId: IdSchema }).strict()
 const GroupMessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()
@@ -71,18 +83,18 @@ const GROUP_HISTORY_DEFAULT = 30
 const GROUP_HISTORY_MAX = 50
 
 /** Creating rooms is rare and deliberate; 10/hour bounds scripted room spam per user/IP key. */
-export const CREATE_GROUP_RATE_LIMIT = { max: 10, timeWindow: "1 hour" } as const
+export const CREATE_GROUP_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 hour" })
 /** Bulk invites: bounded so a hijacked session can't blast invite sweeps; ample for normal use. */
-export const ADD_GROUP_MEMBERS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const ADD_GROUP_MEMBERS_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 /** Self-serve join (P5): 20/min bounds scripted join sweeps across public rooms; ample for a real user. */
-export const JOIN_GROUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+export const JOIN_GROUP_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
 /**
  * L11: the remaining state-changing group routes carried no route limit at all (only the global
  * 300/min/IP). Each of these is a moderation action a human performs a handful of times per session,
  * so 30/min is generous while bounding a hijacked session's ability to churn a room's name/roster/roles
  * or sweep its history. Same order of magnitude as ADD_GROUP_MEMBERS_RATE_LIMIT.
  */
-export const GROUP_MODERATION_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const GROUP_MODERATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 export async function registerChatGroupRoutes(
   app: FastifyInstance,
@@ -143,7 +155,7 @@ export async function registerChatGroupRoutes(
     { preHandler: csrfProtect, config: { rateLimit: CREATE_GROUP_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      const body = parse(CreateChatGroupRequestSchema, request.body)
+      const body = parse(CreateChatGroupBodySchema, request.body)
       const dto = await svc().createGroup(userId, body)
       reply.status(201).send(dto)
     },
@@ -162,7 +174,7 @@ export async function registerChatGroupRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id } = parse(GroupIdParamsSchema, request.params)
-      const body = parse(UpdateChatGroupRequestSchema, { ...(request.body as object), id })
+      const body = parse(UpdateChatGroupBodySchema, { ...(request.body as object), id })
       reply.status(200).send(await svc().updateGroup(userId, body))
     },
   )

@@ -26,6 +26,7 @@ import type { NotificationServiceOverrides } from "./routes/notifications.routes
 import type { ConversationMutesOverrides } from "./routes/conversations.routes.js"
 import type { DataExportOverride } from "./routes/users.routes.js"
 import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.js"
+import type { ContentSubjectGate } from "./services/content-report-subject.js"
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
@@ -59,6 +60,7 @@ export interface BuildServerOptions {
   conversationMutesOverrides?: ConversationMutesOverrides
   dataExportOverride?: DataExportOverride
   moderationOverrides?: ModerationRouteOverrides
+  contentSubjectGate?: ContentSubjectGate
 }
 
 const OVERRIDE_KEYS = [
@@ -78,6 +80,7 @@ const OVERRIDE_KEYS = [
   "conversationMutesOverrides",
   "dataExportOverride",
   "moderationOverrides",
+  "contentSubjectGate",
 ] as const satisfies readonly (keyof BuildServerOptions)[]
 
 export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {

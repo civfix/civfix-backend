@@ -12,7 +12,8 @@ import {
   type RouteReportResponse,
   type SetReportVerdictResponse,
 } from "@civfix/shared"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../../plugins/rate-limit.js"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"
 import {
@@ -194,11 +195,9 @@ export async function registerAdminReportsRoutes(
  * silently remove this cap — exactly the anti-exfiltration control it exists to be. `skipOnError: false`
  * makes an uncountable request a 429 instead of an unmetered mail-out.
  */
-const ROUTE_REPORT_RATE_LIMIT = {
+export const ROUTE_REPORT_RATE_LIMIT = perIdentity({
   max: 10,
   timeWindow: "1 minute",
   skipOnError: false,
-  keyGenerator: (request: FastifyRequest): string =>
-    `route-report:${request.auth?.userId ?? request.ip}`,
-} as const
+})
 

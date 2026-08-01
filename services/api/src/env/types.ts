@@ -41,6 +41,9 @@ export interface Env {
   R2_INBOUND_BUCKET?: string
   R2_PUBLIC_BASE?: string
 
+  LOCAL_STORAGE_DIR?: string
+  LOCAL_STORAGE_SIGNING_KEY?: string
+
   // Map basemap tuning (all [OPT]): these only adjust what GET /map/tileinfo advertises; the clients
   // hardcode the CARTO Voyager raster and need no config.
   /** OPTIONAL override of the default CARTO Voyager raster XYZ template advertised by tileinfo. [OPT] */

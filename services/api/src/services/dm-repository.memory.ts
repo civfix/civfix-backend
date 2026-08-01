@@ -29,7 +29,7 @@ import type {
   DmThread,
   DmThreadAggregate,
 } from "./dm-repository.drizzle.js"
-import type { BlocksRepository } from "./blocks-repository.drizzle.js"
+import type { BlockState, BlocksRepository } from "./blocks-repository.drizzle.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
 import type { PersonDTO } from "@civfix/shared"
 
@@ -545,6 +545,13 @@ export class InMemoryBlocksRepository implements BlocksRepository {
     const aBlocksB = this.edges.get(a)?.has(b) ?? false
     const bBlocksA = this.edges.get(b)?.has(a) ?? false
     return Promise.resolve(aBlocksB || bBlocksA)
+  }
+
+  blockState(viewerId: string, targetId: string): Promise<BlockState> {
+    return Promise.resolve({
+      blockedByViewer: this.edges.get(viewerId)?.has(targetId) ?? false,
+      blockedByTarget: this.edges.get(targetId)?.has(viewerId) ?? false,
+    })
   }
 
   listBlocked(blockerId: string): Promise<PersonDTO[]> {

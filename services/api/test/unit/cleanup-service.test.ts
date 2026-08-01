@@ -1265,3 +1265,96 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     expect(dto.status).toBe("cancelled")
   })
 })
+
+describe("cleanup state machine (terminal states)", () => {
+  beforeEach(() => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+  })
+
+  it("409s editing a cancelled event", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    await service.cancelCleanup(created.id, null, ORG)
+    await expect(service.updateCleanup(created.id, { title: "Nope" }, ORG)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+  })
+
+  it("still allows a cosmetic edit on a completed event (roster stays frozen)", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    await service.completeCleanup(created.id, null, ORG)
+    const edited = await service.updateCleanup(created.id, { title: "Renamed" }, ORG)
+    expect(edited.title).toBe("Renamed")
+  })
+
+  it("409s joining a cancelled event", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    await service.cancelCleanup(created.id, null, ORG)
+    await expect(service.joinCleanup(created.id, ALICE)).rejects.toMatchObject({ code: "CONFLICT" })
+  })
+
+  it("409s joining a completed event", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    await service.completeCleanup(created.id, null, ORG)
+    await expect(service.joinCleanup(created.id, ALICE)).rejects.toMatchObject({ code: "CONFLICT" })
+  })
+
+  it("still allows editing and joining an upcoming event", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    const edited = await service.updateCleanup(created.id, { title: "Renamed" }, ORG)
+    expect(edited.title).toBe("Renamed")
+    const joined = await service.joinCleanup(created.id, ALICE)
+    expect(joined).toEqual({ joined: true, going: 2 })
+  })
+})
+
+describe("CVX-006: PATCH cannot backdate an event past the create-time floor", () => {
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
+
+  it("422s moving a live event 30 days into the past", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    const original = repo.cleanups.get(created.id)?.scheduledAt
+
+    await expect(
+      service.updateCleanup(created.id, { scheduledAt: daysAgo(30) }, ORG),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(repo.cleanups.get(created.id)?.scheduledAt).toEqual(original)
+  })
+
+  it("allows a PATCH that echoes the stored past scheduledAt of a completed event", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: daysAgo(30) }), ORG)
+    await service.completeCleanup(created.id, null, ORG)
+    const stored = repo.cleanups.get(created.id)!.scheduledAt.toISOString()
+
+    const edited = await service.updateCleanup(
+      created.id,
+      { scheduledAt: stored, title: "Renamed after the fact" },
+      ORG,
+    )
+    expect(edited.title).toBe("Renamed after the fact")
+    expect(edited.scheduledAt).toBe(stored)
+  })
+
+  it("allows moving a backdated event FORWARD but not further into the past", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: daysAgo(30) }), ORG)
+
+    const laterButStillPast = daysAgo(29)
+    const edited = await service.updateCleanup(
+      created.id,
+      { scheduledAt: laterButStillPast },
+      ORG,
+    )
+    expect(edited.scheduledAt).toBe(laterButStillPast)
+
+    await expect(
+      service.updateCleanup(created.id, { scheduledAt: daysAgo(40) }, ORG),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+  })
+
+  it("accepts a scheduledAt inside the one-day backdate window", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    const justNow = new Date(Date.now() - 60_000).toISOString()
+
+    const edited = await service.updateCleanup(created.id, { scheduledAt: justNow }, ORG)
+    expect(edited.scheduledAt).toBe(justNow)
+  })
+})

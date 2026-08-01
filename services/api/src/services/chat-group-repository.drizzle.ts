@@ -15,13 +15,6 @@
  * the LAST ROW'S user_id; resuming re-resolves that member's (role, joined_at) and keysets on
  * (role_rank, joined_at, user_id). A cursor whose membership row vanished mid-pagination falls back
  * to the first page (same stance as an unknown `before` history cursor).
- *
- * AVATARS: the group avatar is a media_assets row (avatar_media_id, ON DELETE SET NULL). Clients
- * upload via the presign flow and pass avatarUploadId; findMediaIdByUploadId resolves it (the
- * capability model: knowing the unguessable uploadId is the proof — a miss is silently ignored,
- * mirroring the users-avatar finalize in auth/pg-stores). Hydration serves the avatar only once the
- * media worker promoted it to status 'ready' (the EXIF/GPS privacy gate all message attachments
- * respect); a still-validating avatar reads as null until then.
  */
 
 import type { Sql } from "../db/client.js"
@@ -30,6 +23,8 @@ import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat-group
 import type { GROUP_MEMBER_ROLE_VALUES } from "../db/schema/types.js"
 import type { PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
 
@@ -134,8 +129,7 @@ export interface ChatGroupRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
-  /** Resolve a presign-flow uploadId to its media_assets id; null when unknown (silently ignored). */
-  findMediaIdByUploadId(uploadId: string): Promise<string | null>
+  findMediaIdByUploadId(uploadId: string): Promise<string>
   /**
    * The subset of `candidateIds` the actor may actually invite, in input order — ONE round trip
    * (review fix: replaces a per-candidate blocked-pair fan-out). A candidate survives only when it
@@ -192,6 +186,7 @@ interface MemberRowSelect {
   user_deleted_at: Date | null
   verified: boolean
   is_following: boolean
+  blocked_pair: boolean
 }
 
 function toMemberView(r: MemberRowSelect): GroupMemberView {
@@ -202,18 +197,19 @@ function toMemberView(r: MemberRowSelect): GroupMemberView {
     avatarUrl: r.avatar_url,
     deletedAt: r.user_deleted_at,
   })
+  const hidden = r.blocked_pair && !author.deleted ? hiddenIdentity(r.user_id) : null
   const user: PersonDTO = {
     id: r.user_id,
-    name: author.name,
-    handle: author.handle,
-    bio: author.deleted ? null : r.bio,
+    name: hidden?.name ?? author.name,
+    handle: hidden !== null ? null : author.handle,
+    bio: author.deleted || hidden !== null ? null : r.bio,
     avatar: author.avatar,
-    ...(author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
+    ...(hidden === null && author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
     // The roster does not load follower counts (same stance as the cleanup attendee roster).
     followers: 0,
     following: 0,
     isFollowing: r.is_following,
-    ...(r.verified ? { verified: true } : {}),
+    ...(r.verified && hidden === null ? { verified: true } : {}),
     ...(author.deleted ? { deleted: true } : {}),
   }
   return { user, role: r.role, joinedAt: r.joined_at }
@@ -256,6 +252,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       viewerId !== null
         ? sql`EXISTS (SELECT 1 FROM follows_people f WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id)`
         : sql`FALSE`
+    const blockedPair = blockedPairExpr(sql, viewerId, sql`u.id`)
     return sql`
       m.user_id,
       m.role,
@@ -266,7 +263,8 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       u.avatar_url,
       u.deleted_at AS user_deleted_at,
       EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-      ${followingExpr} AS is_following
+      ${followingExpr} AS is_following,
+      ${blockedPair} AS blocked_pair
     `
   }
 
@@ -447,11 +445,9 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       }
     },
 
-    async findMediaIdByUploadId(uploadId: string): Promise<string | null> {
-      const rows = await sql<{ id: string }[]>`
-        SELECT id FROM media_assets WHERE upload_id = ${uploadId} LIMIT 1
-      `
-      return rows[0]?.id ?? null
+    async findMediaIdByUploadId(uploadId: string): Promise<string> {
+      const media = await resolveAvatarMediaOrThrow(sql, uploadId)
+      return media.id
     },
 
     async invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]> {

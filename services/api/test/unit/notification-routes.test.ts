@@ -10,7 +10,11 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
-import type { NotificationServiceOverrides } from "../../src/routes/notifications.routes.js"
+import {
+  MARK_NOTIFICATIONS_READ_MAX_IDS,
+  type NotificationServiceOverrides,
+} from "../../src/routes/notifications.routes.js"
+import { randomUUID } from "node:crypto"
 
 /**
  * Route-level tests for the notifications plugin, run with NO database: an in-memory
@@ -146,6 +150,28 @@ describe("POST /notifications/read", () => {
       payload: { ids: ["not-a-uuid"] },
     })
     expect(res.statusCode).toBe(422)
+  })
+
+  it("accepts a batch at the id cap and 422s one over it", async () => {
+    const { app, token } = await makeHarness()
+    const ids = (count: number): string[] => Array.from({ length: count }, () => randomUUID())
+
+    const atCap = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/read",
+      headers: auth(token),
+      payload: { ids: ids(MARK_NOTIFICATIONS_READ_MAX_IDS) },
+    })
+    expect(atCap.statusCode).toBe(200)
+
+    const overCap = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/read",
+      headers: auth(token),
+      payload: { ids: ids(MARK_NOTIFICATIONS_READ_MAX_IDS + 1) },
+    })
+    expect(overCap.statusCode).toBe(422)
+    expect(overCap.json().code).toBe("VALIDATION")
   })
 })
 

@@ -207,6 +207,67 @@ describe("POST /users/:id/block", () => {
       .toEqual({ blocked: [] })
   })
 
+  it("CVX-033: a user who ALREADY BLOCKED you answers exactly like an unknown user, writing no edge", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("probe@example.com", "Probe")
+    const them = await h.signIn("hidden@example.com", "Hidden")
+    await h.blocks.block(them.userId, me.userId)
+
+    const unknown = await h.app.inject({
+      method: "POST",
+      url: blockUrl(UNKNOWN_ID),
+      headers: bearer(me),
+    })
+    const blockedByThem = await h.app.inject({
+      method: "POST",
+      url: blockUrl(them.userId),
+      headers: bearer(me),
+    })
+
+    const body = (res: { json(): { code: string; message: string } }) => {
+      const { code, message } = res.json()
+      return { code, message }
+    }
+    expect(blockedByThem.statusCode).toBe(unknown.statusCode)
+    expect(body(blockedByThem)).toEqual(body(unknown))
+    expect((await h.blocks.blockState(me.userId, them.userId)).blockedByViewer).toBe(false)
+    expect((await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json())
+      .toEqual({ blocked: [] })
+  })
+
+  it("still 200s a target the VIEWER blocked (their own edge is idempotent, not an oracle)", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("owner@example.com", "Owner")
+    const them = await h.signIn("target@example.com", "Target")
+    await h.blocks.block(me.userId, them.userId)
+
+    const res = await h.app.inject({
+      method: "POST",
+      url: blockUrl(them.userId),
+      headers: bearer(me),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ blocked: true })
+  })
+
+  it("MUTUAL block stays 200: a target already on your OWN blocked list must not 404", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("mutual-a@example.com", "MutualA")
+    const them = await h.signIn("mutual-b@example.com", "MutualB")
+    await h.blocks.block(me.userId, them.userId)
+    await h.blocks.block(them.userId, me.userId)
+
+    const res = await h.app.inject({
+      method: "POST",
+      url: blockUrl(them.userId),
+      headers: bearer(me),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ blocked: true })
+    const list = await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })
+    expect(list.json().blocked.map((p: PersonDTO) => p.id)).toEqual([them.userId])
+  })
+
   it("404s a SOFT-DELETED user (a tombstoned account is not blockable)", async () => {
     const h = await makeHarness()
     const me = await h.signIn("live@example.com", "Live")

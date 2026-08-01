@@ -234,3 +234,36 @@ describe("completeCleanup — B19: completion rings nobody", () => {
     expect(bells).toEqual([])
   })
 })
+
+describe("a terminal event's roster is frozen in BOTH directions", () => {
+  it("409s an attendee leaving a completed event, and keeps their membership", async () => {
+    const id = seedEvent({ status: "done" })
+
+    await expect(service.leaveCleanup(id, MEMBER)).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(await repo.isMember(id, MEMBER)).toBe(true)
+  })
+
+  it("409s a host removing an attendee from a completed event (no delete, no ban)", async () => {
+    const id = seedEvent({ status: "done" })
+
+    await expect(service.removeMember(id, ORG, MEMBER)).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(await repo.isMember(id, MEMBER)).toBe(true)
+    expect(await repo.isBanned(id, MEMBER)).toBe(false)
+  })
+
+  it("409s leave and remove on a CANCELLED event too (joining is already refused)", async () => {
+    const id = seedEvent({ status: "cancelled" })
+
+    await expect(service.leaveCleanup(id, MEMBER)).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(service.removeMember(id, ORG, MEMBER)).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(await repo.isMember(id, MEMBER)).toBe(true)
+  })
+
+  it("still lets an attendee leave (and a host remove) while the event is live", async () => {
+    const id = seedEvent()
+
+    await expect(service.leaveCleanup(id, MEMBER)).resolves.toMatchObject({ joined: false })
+    await expect(service.removeMember(id, ORG, COHOST)).resolves.toMatchObject({ ok: true })
+    expect(await repo.isMember(id, COHOST)).toBe(false)
+  })
+})

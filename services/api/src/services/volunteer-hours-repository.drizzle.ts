@@ -2,6 +2,7 @@ import { avatarGradient } from "@civfix/shared"
 import type { LeaderboardEntryDTO, MyVolunteerHoursDTO, VolunteerHoursSource } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { EVENT_HOURS_MEMBER_CAP, ITEMISED_SOURCES } from "./volunteer-hours-service.js"
 import type {
   CertificateEntriesPage,
@@ -270,6 +271,8 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       `
       const jurisdictionName = jurRows[0]?.name ?? null
 
+      const blockedPair = blockedPairExpr(sql, viewerId, sql`ujh.user_id`)
+
       const rows = await sql<
         {
           user_id: string
@@ -278,6 +281,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           avatar_url: string | null
           verified: boolean
           hours: number
+          blocked_pair: boolean
         }[]
       >`
         SELECT
@@ -289,6 +293,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             SELECT 1 FROM user_verification uv
             WHERE uv.user_id = ujh.user_id AND uv.status = 'verified'
           ) AS verified,
+          ${blockedPair} AS blocked_pair,
           ujh.total_hours::float8 AS hours
         FROM user_jurisdiction_hours ujh
         JOIN users u ON u.id = ujh.user_id
@@ -356,16 +361,21 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       // the offset arithmetic stays here. A `null` marker on a limit-0 page (unreachable: clampLimit
       // floors the limit at 1) correctly ends the page instead of advertising the same offset forever.
       const { items: page, nextCursor: more } = pageWith(rows, limit, () => MORE_PAGES)
-      const entries: LeaderboardEntryDTO[] = page.map((r, i) => ({
-        rank: offset + i + 1,
-        userId: r.user_id,
-        name: r.name,
-        ...(r.handle !== null ? { handle: r.handle } : {}),
-        avatar: avatarGradient(r.user_id),
-        ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-        verified: r.verified,
-        hours: r.hours,
-      }))
+      const entries: LeaderboardEntryDTO[] = page.map((r, i) => {
+        const rankAndHours = { rank: offset + i + 1, userId: r.user_id, hours: r.hours }
+        if (r.blocked_pair) {
+          const hidden = hiddenIdentity(r.user_id)
+          return { ...rankAndHours, name: hidden.name, avatar: hidden.avatar, verified: false }
+        }
+        return {
+          ...rankAndHours,
+          name: r.name,
+          ...(r.handle !== null ? { handle: r.handle } : {}),
+          avatar: avatarGradient(r.user_id),
+          ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+          verified: r.verified,
+        }
+      })
 
       return {
         jurisdictionName,

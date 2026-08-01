@@ -164,7 +164,6 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     }
   }
 
-  /** avatarUploadId -> media_assets id; an unknown uploadId is silently ignored (users-avatar stance). */
   async function resolveAvatar(uploadId: string | undefined): Promise<string | null> {
     if (uploadId === undefined) return null
     return groups.findMediaIdByUploadId(uploadId)
@@ -346,16 +345,15 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       if (req.visibility !== undefined && req.visibility !== view.visibility && role !== "owner") {
         throw forbidden("Only the owner can change this group's visibility.", "visibility_owner_only")
       }
-      const avatarMediaId =
-        req.avatarUploadId !== undefined ? await resolveAvatar(req.avatarUploadId) : null
       await groups.update(req.id, {
         ...(req.name !== undefined ? { name: req.name } : {}),
         // The contract's clear sentinel is "" (no null on the wire) -> stored NULL.
         ...(req.description !== undefined
           ? { description: req.description === "" ? null : req.description }
           : {}),
-        // Only a RESOLVED upload flips the avatar (an unknown uploadId is ignored, never nulls it out).
-        ...(avatarMediaId !== null ? { avatarMediaId } : {}),
+        ...(req.avatarUploadId !== undefined
+          ? { avatarMediaId: await groups.findMediaIdByUploadId(req.avatarUploadId) }
+          : {}),
         ...(req.visibility !== undefined ? { visibility: req.visibility } : {}),
       })
       const updated = await requireGroup(req.id)

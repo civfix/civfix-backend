@@ -45,7 +45,7 @@ import { makeDrizzleAnonReportRepository } from "../services/anon-repository.dri
 import { makeGeoidResolver, makeReverseGeocoder } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { route } from "../versioning/route.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 
 /** Response header carrying a freshly-issued anon token (mobile reads + re-sends it as anonToken). */
 const ANON_TOKEN_HEADER = "x-anon-token"
@@ -69,8 +69,15 @@ declare module "fastify" {
 /** Path param schema for the status route. */
 const AnonReportIdParamsSchema = z.object({ id: IdSchema }).strict()
 
+export const AnonReportBodySchema = trimTextFields(
+  AnonReportRequestSchema,
+  "title",
+  "description",
+  "addr",
+)
+
 /** Per-route caps for the abuse-heavy anon surface (each attempt drives DB/Redis writes). */
-const ANON_CREATE_RATE_LIMIT = { max: 15, timeWindow: "1 minute" } as const
+export const ANON_CREATE_RATE_LIMIT = { max: 15, timeWindow: "1 minute" } as const
 const ANON_STATUS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 // fast-json-stringify response schemas (the 202/200 bodies serialize on the fast path; an undeclared
@@ -139,7 +146,7 @@ export async function registerAnonRoutes(
       schema: { response: { 202: AnonReportResponseJsonSchema } },
     },
     async (request, reply) => {
-      const body = parse(AnonReportRequestSchema, request.body)
+      const body = parse(AnonReportBodySchema, request.body)
 
       // Resolve the presented anon token from the body (mobile echoes it as anonToken) OR, when the body
       // does not carry one, from the readable civfix_anon cookie (web). The browser auto-resends that

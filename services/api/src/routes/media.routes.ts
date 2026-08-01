@@ -73,6 +73,7 @@ import {
 } from "../services/media-authorization.js"
 import { MEDIA_UPLOAD_BYTES_PER_DAY, type ByteMeter } from "../services/media-byte-quota.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
+import { perHost } from "../plugins/rate-limit.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 
@@ -97,7 +98,7 @@ const MediaIdParamsSchema = z.object({ id: IdSchema }).strict()
 // PUTs and finalizeMedia enqueues the untrusted-byte media.checks pipeline, so a tight per-route limit
 // bounds an unauthenticated client minting hundreds of presigns / pipeline jobs per minute. This bounds
 // FREQUENCY only — the cumulative byte quota below bounds VOLUME (M10).
-const MEDIA_WRITE_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const MEDIA_WRITE_RATE_LIMIT = perHost({ max: 30, timeWindow: "1 minute" })
 
 export async function registerMediaRoutes(
   app: FastifyInstance,

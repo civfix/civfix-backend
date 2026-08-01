@@ -145,6 +145,86 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     await expect(svc.getPost(created.id, author)).rejects.toMatchObject({ httpStatus: 404 })
   })
 
+  it("CVX-001: a reply with kind defaulted to 'post' still increments the parent's reply_count", async () => {
+    const svc = makeService()
+    const author = await newUser("Reply Count Author", "rcauthor")
+    const replier = await newUser("Reply Count Replier", "rcreplier")
+
+    const parent = await svc.createPost(
+      { kind: "post", body: "parent post", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect(parent.counts.replies).toBe(0)
+
+    const reply = await svc.createPost(
+      { kind: "post", replyToId: parent.id, body: "count me in", mediaUploadIds: [], mentionedUserIds: [] },
+      replier,
+    )
+    expect(reply.replyToId).toBe(parent.id)
+
+    expect((await svc.getPost(parent.id, author)).counts.replies).toBe(1)
+    const replies = await svc.listReplies(parent.id, author, {})
+    expect(replies.items.map((p) => p.id)).toContain(reply.id)
+
+    const second = await svc.createPost(
+      { kind: "post", replyToId: parent.id, body: "me too", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    expect((await svc.getPost(parent.id, author)).counts.replies).toBe(2)
+
+    await svc.deletePost(second.id, author)
+    expect((await svc.getPost(parent.id, author)).counts.replies).toBe(1)
+
+    await svc.deletePost(reply.id, replier)
+    expect((await svc.getPost(parent.id, author)).counts.replies).toBe(0)
+  })
+
+  it("CVX-001: a nested thread reports each post's OWN direct-child count (4-deep)", async () => {
+    const svc = makeService()
+    const author = await newUser("Nested Author", "nestauth")
+
+    const chain: string[] = []
+    let parentId: string | null = null
+    for (let depth = 0; depth < 5; depth++) {
+      const post = await svc.createPost(
+        parentId === null
+          ? { kind: "post", body: "root", mediaUploadIds: [], mentionedUserIds: [] }
+          : { kind: "post", replyToId: parentId, body: `depth ${depth}`, mediaUploadIds: [], mentionedUserIds: [] },
+        author,
+      )
+      chain.push(post.id)
+      parentId = post.id
+    }
+
+    for (let depth = 0; depth < 4; depth++) {
+      expect((await svc.getPost(chain[depth]!, author)).counts.replies).toBe(1)
+    }
+    expect((await svc.getPost(chain[4]!, author)).counts.replies).toBe(0)
+  })
+
+  it("CVX-001: an explicit kind:'reply' still counts, and cross-author replies count too", async () => {
+    const svc = makeService()
+    const author = await newUser("Explicit Author", "explauth")
+    const other = await newUser("Explicit Other", "explother")
+
+    const parent = await svc.createPost(
+      { kind: "post", body: "topic", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+
+    await svc.createPost(
+      { kind: "reply", replyToId: parent.id, body: "explicit reply", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    await svc.createPost(
+      { kind: "reply", replyToId: parent.id, body: "cross-author reply", mediaUploadIds: [], mentionedUserIds: [] },
+      other,
+    )
+
+    expect((await svc.getPost(parent.id, other)).counts.replies).toBe(2)
+    expect((await svc.listReplies(parent.id, other, {})).items).toHaveLength(2)
+  })
+
   // --- post media: the 0054 CHECK bug + the claim predicate --------------------------------------
   // Every createPost in this file used to pass mediaUploadIds: [], so the claim path
   // (`UPDATE media_assets SET post_id = $1, purpose = 'post'`) was NEVER exercised — and it could not
@@ -434,6 +514,40 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const afterRepost = (await svc.homeFeed(viewer, { filter: "all" })).items.map((p) => p.id)
     expect(afterRepost).toContain(repostRow!.id)
     expect(afterRepost).not.toContain(theirReply.id)
+  })
+
+  it("a reply composed WITHOUT kind:'reply' is stored as one, and never reaches the Posts tab", async () => {
+    const svc = makeService()
+    const author = await newUser("Kindless Author")
+    const replier = await newUser("Kindless Replier")
+
+    const parent = await svc.createPost(
+      { kind: "post", body: "the original thought", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    const reply = await svc.createPost(
+      { kind: "post", replyToId: parent.id, body: "count me in", mediaUploadIds: [], mentionedUserIds: [] },
+      replier,
+    )
+
+    const [stored] = await h.sql<{ kind: string; reply_to_id: string | null }[]>`
+      SELECT kind, reply_to_id FROM posts WHERE id = ${reply.id}
+    `
+    expect(stored).toEqual({ kind: "reply", reply_to_id: parent.id })
+    expect((await svc.getPost(parent.id, author)).counts.replies).toBe(1)
+
+    const profileIds = (await svc.listUserPosts(replier, replier, {})).items.map((p) => p.id)
+    expect(profileIds).not.toContain(reply.id)
+    const threadIds = (await svc.listReplies(parent.id, replier, {})).items.map((p) => p.id)
+    expect(threadIds).toContain(reply.id)
+
+    const [legacy] = await h.sql<{ id: string }[]>`
+      INSERT INTO posts (author_id, kind, body, reply_to_id, thread_root_id)
+      VALUES (${replier}, 'post', 'pre-normalization row', ${parent.id}, ${parent.id})
+      RETURNING id
+    `
+    const withLegacy = (await svc.listUserPosts(replier, replier, {})).items.map((p) => p.id)
+    expect(withLegacy).not.toContain(legacy!.id)
   })
 
   it("attaching an event requires membership (member ok, non-member 403)", async () => {

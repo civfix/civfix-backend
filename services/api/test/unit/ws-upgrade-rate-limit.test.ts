@@ -47,5 +47,19 @@ describe("/ws upgrade rate limit", () => {
     expect(blocked.statusCode).toBe(429)
     expect(blocked.json()).toMatchObject({ code: ErrorCode.RATE_LIMITED })
     expect(blocked.headers["retry-after"]).toBeDefined()
+    expect(blocked.headers["x-ratelimit-limit"]).toBe("60")
+    expect(blocked.headers["x-ratelimit-remaining"]).toBe("0")
+    expect(blocked.headers["x-ratelimit-reset"]).toBeDefined()
+  })
+
+  it("keys the upgrade bucket per IP under its own namespace", async () => {
+    app = await buildApp()
+    const blocked = async (ip: string) => {
+      for (let i = 0; i < 60; i++) await app!.inject({ method: "GET", url: "/ws", remoteAddress: ip })
+      return app!.inject({ method: "GET", url: "/ws", remoteAddress: ip })
+    }
+    expect((await blocked("203.0.113.9")).statusCode).toBe(429)
+    const other = await app.inject({ method: "GET", url: "/ws", remoteAddress: "198.51.100.4" })
+    expect(other.statusCode).toBe(200)
   })
 })

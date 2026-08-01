@@ -8,6 +8,8 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import type { ContentSubjectGate } from "../../src/services/content-report-subject.js"
+import { AppError } from "@civfix/shared"
 
 /**
  * Offline HTTP test for the PUBLIC content-report route (POST /content-reports). The route builds the
@@ -27,7 +29,7 @@ afterEach(async () => {
 
 const SUBJECT = "22222222-2222-2222-2222-222222222222"
 
-async function harness(): Promise<{
+async function harness(gate?: ContentSubjectGate): Promise<{
   app: FastifyInstance
   mailer: FakeMailer
   repo: InMemoryModerationRepository
@@ -45,9 +47,23 @@ async function harness(): Promise<{
     now: () => Date.now(),
   })
   const repo = new InMemoryModerationRepository()
-  const app = await buildServer({ env, authServices, moderationOverrides: { repo } })
+  const app = await buildServer({
+    env,
+    authServices,
+    moderationOverrides: { repo },
+    ...(gate ? { contentSubjectGate: gate } : {}),
+  })
   current = app
   return { app, mailer, repo }
+}
+
+function denyGate(hidden: ReadonlySet<string>): ContentSubjectGate {
+  return {
+    assertReportable(_subjectType, subjectId): Promise<void> {
+      if (hidden.has(subjectId)) throw AppError.notFound("Content not found")
+      return Promise.resolve()
+    },
+  }
 }
 
 async function signIn(
@@ -159,6 +175,36 @@ describe("POST /content-reports", () => {
     expect(item.subjectType).toBe("report")
     expect(item.flag).toBe("User report")
     expect(item.priority).toBe("med")
+  })
+
+  it("404s when the subject gate rejects an invisible or nonexistent subject", async () => {
+    const { app, mailer, repo } = await harness(denyGate(new Set([SUBJECT])))
+    const { token } = await signIn(app, mailer, "reporter@example.com")
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/content-reports",
+      headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      payload: { subjectType: "message", subjectId: SUBJECT, reason: "harassment" },
+    })
+
+    expect(res.statusCode).toBe(404)
+    expect([...repo.items.values()]).toHaveLength(0)
+  })
+
+  it("enqueues once when the gate allows the subject", async () => {
+    const { app, mailer, repo } = await harness(denyGate(new Set()))
+    const { token } = await signIn(app, mailer, "reporter@example.com")
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/content-reports",
+      headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      payload: { subjectType: "post", subjectId: SUBJECT, reason: "spam" },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect([...repo.items.values()]).toHaveLength(1)
   })
 
   it("401s an unauthenticated report", async () => {

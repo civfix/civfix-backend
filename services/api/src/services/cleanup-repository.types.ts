@@ -217,6 +217,14 @@ export interface UpdateCleanupPatch {
 // B18: "already_completed" IS an error (409). Host completion is forward-only (B17), so cancel must not
 // become a back door out of it — a `cancelled` event still carrying credited volunteer_hours rows is a
 // state nothing in the system can interpret.
+export type LeaveCleanupOutcome = "left" | "not_found" | "closed"
+
+export type RemoveMemberOutcome =
+  | { kind: "removed"; going: number }
+  | { kind: "not_member"; going: number }
+  | { kind: "closed" }
+  | { kind: "not_found" }
+
 export type CancelCleanupOutcome =
   | "cancelled"
   | "already_cancelled"
@@ -316,10 +324,6 @@ export interface CleanupRepository {
   // cohost→member). The organizer row is never touched (guarded in SQL as defense-in-depth on top of
   // the service gate). Returns false when no such member row exists (or the target is the organizer).
   setMemberRole(cleanupId: string, userId: string, role: "cohost" | "member"): Promise<boolean>
-  // Remove a NON-organizer member row (the same row that gates chat access, so removal drops the chat
-  // roster too) and return the fresh member count in the SAME transaction. `removed` is false when no
-  // such member row existed (or the target is the organizer — guarded in SQL as defense-in-depth).
-  //
   // SECURITY (M17): the same transaction ALSO writes the cleanup_bans row that makes the removal
   // stick. Before this, removal was a bare membership delete against an unconditional self-service
   // join, so the removed user re-joined instantly and in a loop. `actorId` is the removing host,
@@ -327,11 +331,7 @@ export interface CleanupRepository {
   // window in which the target could re-join.
   //
   // B28d: the same transaction also deletes the target's cleanup_slot_claims row — see leaveCleanup.
-  removeMember(
-    cleanupId: string,
-    userId: string,
-    actorId: string,
-  ): Promise<{ removed: boolean; going: number }>
+  removeMember(cleanupId: string, userId: string, actorId: string): Promise<RemoveMemberOutcome>
   // Whether `userId` is banned from `cleanupId` (M17). Read by the join path; also lets the service
   // distinguish "not attending" from "removed" when an organizer targets a non-member.
   isBanned(cleanupId: string, userId: string): Promise<boolean>
@@ -356,14 +356,14 @@ export interface CleanupRepository {
   // Outcomes: "not_found" (no such cleanup — the route 404s), "banned" (a cleanup_bans row exists — the
   // service 403s and NO membership row is written), "joined" (membership present, whether newly inserted
   // or already there).
-  joinCleanupTx(cleanupId: string, userId: string): Promise<"joined" | "not_found" | "banned">
-  // Delete a cleanup_members row. Returns true when the cleanup exists. Deleting a non-existent membership
-  // on an existing cleanup is an idempotent no-op that still returns true.
-  //
+  joinCleanupTx(
+    cleanupId: string,
+    userId: string,
+  ): Promise<"joined" | "not_found" | "banned" | "closed">
   // B28d: this ALSO deletes the departing attendee's cleanup_slot_claims row, in the same operation.
   // Without it a person who leaves keeps occupying a seat forever — a phantom-full slot nobody can free
   // and no host can see the owner of.
-  leaveCleanup(cleanupId: string, userId: string): Promise<boolean>
+  leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome>
   // Cancel a cleanup atomically: UPDATE status='cancelled' + INSERT a 'cancel' cleanup_timeline row.
   // The service composes ALL user-facing copy — the timeline `note` and the notification `body` — and
   // passes them in; the repo only persists (layer separation). `reason` is the raw operator-supplied

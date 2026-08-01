@@ -14,6 +14,11 @@ import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { PersonDTO } from "@civfix/shared"
 
+export interface BlockState {
+  blockedByViewer: boolean
+  blockedByTarget: boolean
+}
+
 export interface BlocksRepository {
   /** Insert a block edge (blocker -> blocked). Idempotent. */
   block(blockerId: string, blockedId: string): Promise<void>
@@ -21,6 +26,7 @@ export interface BlocksRepository {
   unblock(blockerId: string, blockedId: string): Promise<void>
   /** Whether `a` blocked `b` OR `b` blocked `a`. */
   isBlockedEitherWay(a: string, b: string): Promise<boolean>
+  blockState(viewerId: string, targetId: string): Promise<BlockState>
   /**
    * BATCH form of isBlockedEitherWay: of `candidateIds`, the subset blocked either way with `actorId` —
    * ONE query for a whole room's candidate set instead of one per member. Feeds the room fan-out
@@ -60,6 +66,18 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
         LIMIT 1
       `
       return rows.length > 0
+    },
+
+    async blockState(viewerId: string, targetId: string): Promise<BlockState> {
+      const rows = await sql<{ blocker_id: string }[]>`
+        SELECT blocker_id FROM user_blocks
+        WHERE (blocker_id = ${viewerId} AND blocked_id = ${targetId})
+           OR (blocker_id = ${targetId} AND blocked_id = ${viewerId})
+      `
+      return {
+        blockedByViewer: rows.some((r) => r.blocker_id === viewerId),
+        blockedByTarget: rows.some((r) => r.blocker_id === targetId),
+      }
     },
 
     async blockedIdsAmong(actorId: string, candidateIds: string[]): Promise<Set<string>> {

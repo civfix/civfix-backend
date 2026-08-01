@@ -91,6 +91,10 @@ export async function registerSocialRoutes(
       ? undefined
       : (viewerId: string, targetId: string) =>
           container.getBlocksRepo().isBlockedEitherWay(viewerId, targetId)
+    const blockState = app.socialOverrides
+      ? undefined
+      : (viewerId: string, targetId: string) =>
+          container.getBlocksRepo().blockState(viewerId, targetId)
     return makeSocialService({
       repo: repo(),
       logger: app.log,
@@ -98,6 +102,7 @@ export async function registerSocialRoutes(
       ...(presignAvatar !== undefined ? { presignAvatar } : {}),
       ...(volunteerHoursTotalFor !== undefined ? { volunteerHoursTotalFor } : {}),
       ...(isBlockedEitherWay !== undefined ? { isBlockedEitherWay } : {}),
+      ...(blockState !== undefined ? { blockState } : {}),
     })
   }
 
@@ -187,9 +192,17 @@ export async function registerSocialRoutes(
   route(app, "listUserActivity", async (request, reply) => {
     const input = mergeIdParam(UserActivityListQuerySchema, request)
     const userId = await resolvePersonId(input.id)
-    const activity = makeUserActivityService({ repo: userActivityRepo() })
+    const blockState = app.userActivityOverride
+      ? undefined
+      : (viewerId: string, targetId: string) =>
+          container.getBlocksRepo().blockState(viewerId, targetId)
+    const activity = makeUserActivityService({
+      repo: userActivityRepo(),
+      ...(blockState !== undefined ? { blockState } : {}),
+    })
     const payload: UserActivityListResponse = await activity.list(
       userId,
+      request.auth?.userId ?? null,
       input.cursor ?? null,
       input.limit,
     )

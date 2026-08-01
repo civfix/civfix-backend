@@ -24,6 +24,12 @@ import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
+export const MARK_NOTIFICATIONS_READ_MAX_IDS = 200
+
+export const MarkNotificationsReadBodySchema = MarkReadRequestSchema.extend({
+  ids: MarkReadRequestSchema.shape.ids.max(MARK_NOTIFICATIONS_READ_MAX_IDS),
+})
+
 const ListNotificationsResponseJsonSchema = {
   type: "object",
   properties: {
@@ -96,7 +102,7 @@ export async function registerNotificationRoutes(
 
   route(app, "markNotificationsRead", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
-    const body = parse(MarkReadRequestSchema, request.body)
+    const body = parse(MarkNotificationsReadBodySchema, request.body)
     const payload: MarkReadResponse = await service().markRead(userId, body.ids)
     reply.status(200).send(payload)
   })

@@ -31,11 +31,15 @@ import type {
   LinkedEventView,
   LinkedReportView,
   ListAttendeesArgs,
+  LeaveCleanupOutcome,
   ListCleanupsFilters,
   NearPoint,
+  RemoveMemberOutcome,
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
+import { isCleanupTerminal } from "./cleanup-rules.js"
+import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import {
   buildBboxFilter,
   buildMembershipFilter,
@@ -505,7 +509,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       cleanupId: string,
       userId: string,
       actorId: string,
-    ): Promise<{ removed: boolean; going: number }> {
+    ): Promise<RemoveMemberOutcome> {
       // Ban + delete + fresh count in ONE transaction so the returned `going` is consistent with the
       // delete AND there is no window between the two writes. Deleting the cleanup_members row drops
       // the target from the event group chat (the same row gates isMember); the cleanup_bans row is
@@ -521,7 +525,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       // people's joins) for the length of this transaction. FOR NO KEY UPDATE excludes the join and
       // nothing else. Same reason the join side takes SHARE and not UPDATE.
       return sql.begin(async (tx) => {
-        await tx`SELECT 1 FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR NO KEY UPDATE`
+        const locked = await tx<{ status: CleanupStatus }[]>`
+          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR NO KEY UPDATE
+        `
+        const cleanup = locked[0]
+        if (cleanup === undefined) return { kind: "not_found" }
+        if (isCleanupTerminal(cleanup.status)) return { kind: "closed" }
         const deleted = await tx<{ user_id: string }[]>`
           DELETE FROM cleanup_members
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
@@ -543,7 +552,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         const counted = await tx<{ count: number }[]>`
           SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
         `
-        return { removed: deleted.length > 0, going: counted[0]?.count ?? 0 }
+        const going = counted[0]?.count ?? 0
+        return deleted.length > 0 ? { kind: "removed", going } : { kind: "not_member", going }
       })
     },
 
@@ -592,7 +602,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     async joinCleanupTx(
       cleanupId: string,
       userId: string,
-    ): Promise<"joined" | "not_found" | "banned"> {
+    ): Promise<"joined" | "not_found" | "banned" | "closed"> {
       return sql.begin(async (tx) => {
         // FOR SHARE is what makes the ban probe below race-safe, and it is why the existence probe is
         // also the lock: removeMember takes the conflicting FOR NO KEY UPDATE on this same cleanups row,
@@ -600,10 +610,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         // our insert (its delete then removes the membership we just wrote). SHARE rather than an
         // exclusive mode because concurrent joins touch disjoint cleanup_members rows and must not
         // queue behind each other.
-        const exists = await tx<{ one: number }[]>`
-          SELECT 1 AS one FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
+        const locked = await tx<{ status: CleanupStatus }[]>`
+          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
-        if (exists.length === 0) return "not_found"
+        const cleanup = locked[0]
+        if (cleanup === undefined) return "not_found"
+        if (isCleanupTerminal(cleanup.status)) return "closed"
         // M17: joining was an unconditional self-service INSERT, which made attendee removal a
         // no-op the target could undo instantly. The ban probe runs INSIDE the join transaction, under
         // the row lock above — a bare transaction was NOT sufficient, because a plain SELECT on
@@ -624,23 +636,22 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       })
     },
 
-    async leaveCleanup(cleanupId: string, userId: string): Promise<boolean> {
-      const exists = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM cleanups WHERE id = ${cleanupId} LIMIT 1
-      `
-      if (exists.length === 0) return false
-      // B28d: the membership delete and the claim delete travel together (one transaction), in the
-      // documented lock order cleanup_members -> cleanup_slot_claims. Leaving must free the seat;
-      // otherwise a departed attendee holds a shift on a roster they are no longer on.
-      await sql.begin(async (tx) => {
+    async leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome> {
+      return sql.begin(async (tx) => {
+        const locked = await tx<{ status: CleanupStatus }[]>`
+          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
+        `
+        const cleanup = locked[0]
+        if (cleanup === undefined) return "not_found"
+        if (isCleanupTerminal(cleanup.status)) return "closed"
         await tx`
           DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
         `
         await tx`
           DELETE FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
         `
+        return "left"
       })
-      return true
     },
 
     async cancelCleanupTx(
@@ -726,10 +737,17 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ? sql`AND EXISTS (SELECT 1 FROM follows_people f2 WHERE f2.follower_id = ${viewerId} AND f2.followee_id = u.id)`
           : sql`AND FALSE`
         : sql``
+      const blockedPair = blockedPairExpr(sql, viewerId, sql`u.id`)
       // B29b: the two LEFT JOINs are the whole "per-slot roster" feature — no second endpoint, no extra
       // visibility rule. The roster is already role-scoped (onlyFollowed for non-members), so the slot
       // field inherits exactly that gating.
-      const rows = await sql<(AttendeeRowSelect & { slot_id: string | null; slot_title: string | null })[]>`
+      const rows = await sql<
+        (AttendeeRowSelect & {
+          slot_id: string | null
+          slot_title: string | null
+          blocked_pair: boolean
+        })[]
+      >`
         SELECT
           u.id,
           u.display_name,
@@ -737,6 +755,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           u.bio,
           m.role,
           ${followingExpr} AS is_following,
+          ${blockedPair} AS blocked_pair,
           cs.id AS slot_id,
           cs.title AS slot_title
         FROM cleanup_members m
@@ -750,17 +769,21 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         ORDER BY (m.role = 'organizer') DESC, (m.role = 'cohost') DESC, m.joined_at ASC, u.id ASC
         LIMIT ${limit}
       `
-      return rows.map((r) => ({
-        id: r.id,
-        displayName: r.display_name,
-        handle: r.handle,
-        bio: r.bio,
-        role: r.role,
-        isFollowing: r.is_following,
-        slot: r.slot_id !== null && r.slot_title !== null
-          ? { id: r.slot_id, title: r.slot_title }
-          : null,
-      }))
+      return rows.map((r) => {
+        const hidden = r.blocked_pair ? hiddenIdentity(r.id) : null
+        return {
+          id: r.id,
+          displayName: hidden?.name ?? r.display_name,
+          handle: hidden !== null ? null : r.handle,
+          bio: hidden !== null ? null : r.bio,
+          role: r.role,
+          isFollowing: r.is_following,
+          slot:
+            r.slot_id !== null && r.slot_title !== null
+              ? { id: r.slot_id, title: r.slot_title }
+              : null,
+        }
+      })
     },
 
     async listSlots(cleanupId: string, viewerId: string | null): Promise<EventSlotView[]> {
@@ -934,7 +957,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         // B28e: a completed or cancelled event's roster is the basis for hours attestation, and the
         // auto-RSVP below would hand membership to anyone who showed up afterwards — logEventHours
         // requires current membership, so this would be a credit-laundering path.
-        if (cleanup.status === "done" || cleanup.status === "cancelled") return { kind: "closed" }
+        if (isCleanupTerminal(cleanup.status)) return { kind: "closed" }
 
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
@@ -1021,7 +1044,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       if (status === undefined) return { kind: "not_found" }
       // Same attestation argument as B28e/B26: after completion the slot roster is the record the
       // credited hours were attested against, so it stops moving in BOTH directions.
-      if (status === "done" || status === "cancelled") return { kind: "closed" }
+      if (isCleanupTerminal(status)) return { kind: "closed" }
       await sql`
         DELETE FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
       `

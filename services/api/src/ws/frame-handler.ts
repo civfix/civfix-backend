@@ -308,6 +308,13 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     sendError(conn, "BLOCKED", "This contains language that isn't allowed.", { kind, id })
     return
   }
+  const body = frame.body.trim()
+  const carriesMedia = (frame.mediaUploadIds?.length ?? 0) > 0
+  const isTextFrame = frame.kind === undefined || frame.kind === "text"
+  if (body.length === 0 && !carriesMedia && isTextFrame) {
+    sendError(conn, "BAD_FRAME", "A message needs text or an attachment.", { kind, id })
+    return
+  }
   const roomKey = roomKeyFor(kind, id)
   if (deps.reportSendLimiter && !deps.reportSendLimiter.tryConsume(`${userId}:${roomKey}`)) {
     sendError(conn, "RATE_LIMITED", "You're sending messages too fast. Please slow down.", { kind, id })
@@ -325,7 +332,7 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
       message = await deps.dm!.persist({
         threadId: id,
         senderId: userId,
-        body: frame.body,
+        body,
         ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
         clientId: frame.clientId,
         ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
@@ -336,7 +343,7 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
         cleanupId: id,
         roomKind: kind,
         userId,
-        body: frame.body,
+        body,
         ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
         clientId: frame.clientId,
         ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
@@ -356,7 +363,7 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   let mentions: UserMentionDTO[] = []
   if (deps.chatMentions) {
     const { chatMentions } = deps
-    const handles = parseUserMentions(frame.body)
+    const handles = parseUserMentions(body)
     const userIds = frame.mentionedUserIds ?? []
     if (handles.length > 0 || userIds.length > 0) {
       try {

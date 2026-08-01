@@ -26,9 +26,10 @@ import {
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { makeDmService, type DmService, type DmUserLookup } from "../services/dm-service.js"
@@ -49,21 +50,12 @@ const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
 /** Path-param schema for the per-message routes (edit / react / delete share the `:threadId`/`:messageId` shape). */
 const ThreadMessageParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema }).strict()
 
-/**
- * Tighter per-IP rate limit for opening a DM (P2-7 style): a real client opens a handful of threads; 20/min
- * bounds automated thread-spinning while staying ample for normal use.
- */
-const DM_OPEN_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+export const EditDmMessageBodySchema = trimTextFields(EditChatMessageRequestSchema, "body")
 
-/**
- * The per-message DM routes are NOT thread-opens and must not share openDm's bucket: the global key is
- * the IP (plugins/rate-limit rateLimitKey), so 20/min throttled an engaged reader tapping reactions down
- * a conversation — a NAT'd household first. These match the equivalent per-room routes exactly: 60/min
- * for reactions (chat.routes CHAT_REACTION_RATE_LIMIT / report-chat REPORT_REACTION_RATE_LIMIT) and
- * 30/min for the state changes (messages.routes EDIT_MESSAGE_RATE_LIMIT / chat.routes' delete cap).
- */
-const DM_REACTION_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
-const DM_MESSAGE_MUTATION_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+export const DM_OPEN_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
+
+export const DM_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+export const DM_MESSAGE_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 /** Default DM history page size (shared cap is 50). Matches the cleanup chat default. */
 const DM_HISTORY_DEFAULT_LIMIT = 30
@@ -188,7 +180,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       const { threadId, messageId } = parse(ThreadMessageParamsSchema, request.params)
       // The body schema carries threadId/messageId (the typed client fills the path-param keys); the
       // authoritative ids are the URL path, so stamp them before validating the bounded body.
-      const body = parse(EditChatMessageRequestSchema, { ...(request.body as object), threadId, messageId })
+      const body = parse(EditDmMessageBodySchema, { ...(request.body as object), threadId, messageId })
 
       const edits = makeChatEditService({
         dm: dmRepo(),

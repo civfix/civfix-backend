@@ -320,12 +320,12 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **66 files**, `0000_extensions.sql` … `0065_void_report_volunteer_hours.sql`. The nine rows
+`drizzle/` holds **67 files**, `0000_extensions.sql` … `0066_backfill_post_reply_counts.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
-later still, with the service-hours feature set, and have their own table in §1a below; `0065` is a DATA
-migration and has §1b to itself.) Both backfills live **inside** their own migration file
+later still, with the service-hours feature set, and have their own table in §1a below; `0065` and `0066`
+are DATA migrations and have §1b and §1c to themselves.) Both backfills live **inside** their own migration file
 (`0058`'s `sessions.created_at`, `0059`'s follow counters; §2 and §6 below), so there is no separate
 backfill step to remember: the three `db:backfill*` scripts in `services/api/package.json` (report
 jurisdiction geoids, reference codes, ACS population) are boundary/ingest tooling and are not part of this
@@ -420,6 +420,25 @@ signed PDF service transcripts are built from.
   ```
 
   The window is small: `0064` shipped 2026-07-28.
+
+## 1c. Post reply-count reconciliation (`0066`)
+
+Like `0065`, this **changes data**: it rebuilds `posts.reply_count` from the actual direct replies. The
+write path used to increment the counter only when `kind='reply'`, but `PostComposeInputSchema` defaults
+`kind` to `'post'` and carries `replyToId` through regardless, so a `{body, replyToId}` post created a real
+reply (non-null `reply_to_id`, returned by `listReplies`) that never bumped the parent — while the delete
+path already decremented by `reply_to_id`. The code now keys the increment on `reply_to_id`, matching the
+delete path and the reads; this migration repairs the rows that already drifted.
+
+| File | What it does | If skipped |
+|---|---|---|
+| `0066_backfill_post_reply_counts.sql` | (1) sets `posts.reply_count` to the exact count of each post's non-deleted direct replies; (2) zeroes any leftover counter with no live direct reply | Every parent that received a `{body, replyToId}` reply keeps understating its reply count until it is next replied to or one of its replies is deleted |
+
+- **Order does not matter and re-applying is a no-op.** It is a pure reconciliation: statement 1 only
+  rewrites parents whose stored count already disagrees with their live children, statement 2 only touches
+  posts carrying a stale non-zero counter. The old image keeps serving correctly against the corrected data.
+- The recompute is viewer-independent (all non-deleted direct children), exactly like `like_count` /
+  `save_count`; per-viewer block filtering stays a read concern and never enters the stored counter.
 
 **No file in `drizzle/` may contain `BEGIN;` / `COMMIT;` / `ROLLBACK;`.** `src/db/migrate.ts:83-97` wraps
 every file in its own transaction on a reserved connection, together with the `_civfix_migrations`

@@ -991,3 +991,188 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     expect(cancelAsCohost.statusCode).toBe(403)
   })
 })
+
+describe("cleanup state machine + scheduledAt bounds", () => {
+  const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const YEAR_9999 = "9999-12-31T00:00:00.000Z"
+
+  async function cancel(app: FastifyInstance, token: string, id: string): Promise<void> {
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(token),
+      payload: {},
+    })
+  }
+
+  async function complete(app: FastifyInstance, token: string, id: string): Promise<void> {
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+  }
+
+  it("409s joining a CANCELLED cleanup (CVX-019)", async () => {
+    const { app, token, mailer } = await makeHarness()
+    const id = await createCleanup(app, token)
+    await cancel(app, token, id)
+    const joiner = await signIn(app, mailer, "latejoiner@example.com")
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe("CONFLICT")
+  })
+
+  it("409s joining a COMPLETED cleanup", async () => {
+    const { app, token, mailer } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+    await complete(app, token, id)
+    const joiner = await signIn(app, mailer, "postjoiner@example.com")
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
+    expect(res.statusCode).toBe(409)
+  })
+
+  it("409s editing a CANCELLED cleanup (CVX-007)", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+    await cancel(app, token, id)
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: { title: "Edited after cancel" },
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe("CONFLICT")
+  })
+
+  it("still allows a cosmetic edit on a COMPLETED cleanup (roster stays frozen)", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+    await complete(app, token, id)
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: { title: "Renamed after the fact" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().title).toBe("Renamed after the fact")
+  })
+
+  it("409s completing a CANCELLED cleanup", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+    await cancel(app, token, id)
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(res.statusCode).toBe(409)
+  })
+
+  it("still allows join and edit on an UPCOMING cleanup (no over-restriction)", async () => {
+    const { app, token, mailer } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const joiner = await signIn(app, mailer, "goodjoiner@example.com")
+    const join = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
+    expect(join.statusCode).toBe(200)
+    const edit = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: { title: "Still editable" },
+    })
+    expect(edit.statusCode).toBe(200)
+    expect(edit.json().title).toBe("Still editable")
+  })
+
+  it("422s a create with a far-past scheduledAt (CVX-006)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups",
+      headers: auth(token),
+      payload: {
+        title: "Backdated",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: THIRTY_DAYS_AGO,
+      },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+    expect(res.json().fields.scheduledAt).toBeDefined()
+  })
+
+  it("422s a create with an absurd future scheduledAt (year 9999)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups",
+      headers: auth(token),
+      payload: {
+        title: "Millennium",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: YEAR_9999,
+      },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().fields.scheduledAt).toBeDefined()
+  })
+
+  it("still accepts a recently-started event within the backdate grace (201)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups",
+      headers: auth(token),
+      payload: { title: "Just started", type: "site", lat: 34, lng: -118.49, scheduledAt: PAST },
+    })
+    expect(res.statusCode).toBe(201)
+  })
+
+  it("422s moving an existing event's scheduledAt into the absurd future", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const toFar = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: { scheduledAt: YEAR_9999 },
+    })
+    expect(toFar.statusCode).toBe(422)
+  })
+
+  it("lets a full-object edit of a COMPLETED event re-submit its own past scheduledAt (200)", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token, PAST)
+    await complete(app, token, id)
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: { title: "Recorded", scheduledAt: PAST },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().title).toBe("Recorded")
+  })
+})

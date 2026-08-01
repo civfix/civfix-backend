@@ -644,6 +644,239 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
   })
 })
 
+describe("getProfile block gate (CVX-023)", () => {
+  function makeBlockedService(edges: Array<{ blocker: string; blocked: string }>): {
+    repo: InMemorySocialRepository
+    service: SocialService
+  } {
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({
+      repo,
+      blockState: (viewerId, targetId) =>
+        Promise.resolve({
+          blockedByViewer: edges.some((e) => e.blocker === viewerId && e.blocked === targetId),
+          blockedByTarget: edges.some((e) => e.blocker === targetId && e.blocked === viewerId),
+        }),
+    })
+    return { repo, service }
+  }
+
+  it("returns a neutral shell with blockedByMe when the viewer blocked the target", async () => {
+    const { repo, service } = makeBlockedService([{ blocker: A, blocked: B }])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob", bio: "hi", verified: true })
+    repo.seedReports(B, 5, 2)
+    repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Past" }))
+
+    const { profile } = await service.getProfile(B, { userId: A })
+    expect(profile.blockedByMe).toBe(true)
+    expect(profile.id).toBe(B)
+    expect(profile.name).toBe("Bob")
+    expect(profile.handle).toBe("bob")
+    expect(profile.verified).toBe(true)
+    expect(profile.bio).toBeNull()
+    expect(profile.stats).toEqual({ reports: 0, fixed: 0, cleanups: 0 })
+    expect(profile.pastEvents).toEqual([])
+    expect(profile.followers).toBe(0)
+    expect(profile.following).toBe(0)
+    expect(profile.isFollowing).toBe(false)
+    expect("volunteerHours" in profile).toBe(false)
+    expect("showVolunteerHours" in profile).toBe(false)
+  })
+
+  it("404s when the target blocked the viewer (no oracle, no blockedByMe)", async () => {
+    const { repo, service } = makeBlockedService([{ blocker: B, blocked: A }])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    await expect(service.getProfile(B, { userId: A })).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("prefers the unblock shell when both directions are blocked", async () => {
+    const { repo, service } = makeBlockedService([
+      { blocker: A, blocked: B },
+      { blocker: B, blocked: A },
+    ])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    const { profile } = await service.getProfile(B, { userId: A })
+    expect(profile.blockedByMe).toBe(true)
+  })
+
+  it("returns the full profile with no blockedByMe when there is no block", async () => {
+    const { repo, service } = makeBlockedService([])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob", bio: "real bio" })
+    repo.seedReports(B, 3, 1)
+    const { profile } = await service.getProfile(B, { userId: A })
+    expect("blockedByMe" in profile).toBe(false)
+    expect(profile.bio).toBe("real bio")
+    expect(profile.stats.reports).toBe(3)
+  })
+
+  it("gates getProfileByHandle the same way", async () => {
+    const { repo, service } = makeBlockedService([{ blocker: A, blocked: B }])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob" })
+    const { profile } = await service.getProfileByHandle("bob", { userId: A })
+    expect(profile.blockedByMe).toBe(true)
+    expect(profile.pastEvents).toEqual([])
+  })
+
+  it("never blocks the viewer from their OWN profile", async () => {
+    const { repo, service } = makeBlockedService([{ blocker: A, blocked: A }])
+    repo.seedUser({ id: A, displayName: "Alice", bio: "me" })
+    const own = await service.getProfile(A, { userId: A })
+    expect("blockedByMe" in own.profile).toBe(false)
+    expect(own.profile.bio).toBe("me")
+    const mine = await service.getMyProfile(A)
+    expect("blockedByMe" in mine.profile).toBe(false)
+  })
+
+  it("does not consult the block state for an anonymous viewer", async () => {
+    const repo = new InMemorySocialRepository()
+    let consulted = false
+    const service = makeSocialService({
+      repo,
+      blockState: () => {
+        consulted = true
+        return Promise.resolve({ blockedByViewer: false, blockedByTarget: false })
+      },
+    })
+    repo.seedUser({ id: B, displayName: "Bob", bio: "hi" })
+    const { profile } = await service.getProfile(B, { userId: null })
+    expect(consulted).toBe(false)
+    expect(profile.bio).toBe("hi")
+    expect("blockedByMe" in profile).toBe(false)
+  })
+})
+
+describe("followers/following block gate (CVX-023)", () => {
+  function makeGatedService(edges: Array<{ blocker: string; blocked: string }>): {
+    repo: InMemorySocialRepository
+    service: SocialService
+  } {
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({
+      repo,
+      blockState: (viewerId, targetId) =>
+        Promise.resolve({
+          blockedByViewer: edges.some((e) => e.blocker === viewerId && e.blocked === targetId),
+          blockedByTarget: edges.some((e) => e.blocker === targetId && e.blocked === viewerId),
+        }),
+    })
+    return { repo, service }
+  }
+
+  function seedRoster(repo: InMemorySocialRepository): void {
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedUser({ id: C, displayName: "Carol" })
+    repo.seedFollow(C, B)
+    repo.seedFollow(B, C)
+  }
+
+  it("404s followers with the profile's message when the target blocked the viewer", async () => {
+    const { repo, service } = makeGatedService([{ blocker: B, blocked: A }])
+    seedRoster(repo)
+    await expect(service.listFollowers(B, { userId: A }, { id: B })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Person not found",
+    })
+  })
+
+  it("404s following when the target blocked the viewer", async () => {
+    const { repo, service } = makeGatedService([{ blocker: B, blocked: A }])
+    seedRoster(repo)
+    await expect(service.listFollowing(B, { userId: A }, { id: B })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Person not found",
+    })
+  })
+
+  it("serves an empty page when the viewer blocked the target", async () => {
+    const { repo, service } = makeGatedService([{ blocker: A, blocked: B }])
+    seedRoster(repo)
+    expect(await service.listFollowers(B, { userId: A }, { id: B })).toEqual({
+      items: [],
+      nextCursor: null,
+    })
+    expect(await service.listFollowing(B, { userId: A }, { id: B })).toEqual({
+      items: [],
+      nextCursor: null,
+    })
+  })
+
+  it("prefers the empty page over the 404 when both directions are blocked", async () => {
+    const { repo, service } = makeGatedService([
+      { blocker: A, blocked: B },
+      { blocker: B, blocked: A },
+    ])
+    seedRoster(repo)
+    expect(await service.listFollowers(B, { userId: A }, { id: B })).toEqual({
+      items: [],
+      nextCursor: null,
+    })
+  })
+
+  it("serves the real roster when there is no block", async () => {
+    const { repo, service } = makeGatedService([])
+    seedRoster(repo)
+    const followers = await service.listFollowers(B, { userId: A }, { id: B })
+    expect(followers.items.map((p) => p.id)).toEqual([C])
+    const following = await service.listFollowing(B, { userId: A }, { id: B })
+    expect(following.items.map((p) => p.id)).toEqual([C])
+  })
+
+  it("does not consult the block state for an anonymous viewer", async () => {
+    const repo = new InMemorySocialRepository()
+    let consulted = false
+    const service = makeSocialService({
+      repo,
+      blockState: () => {
+        consulted = true
+        return Promise.resolve({ blockedByViewer: true, blockedByTarget: true })
+      },
+    })
+    seedRoster(repo)
+    const page = await service.listFollowers(B, { userId: null }, { id: B })
+    expect(consulted).toBe(false)
+    expect(page.items.map((p) => p.id)).toEqual([C])
+  })
+
+  it("404s unfollow when the target blocked the viewer, and leaks no follower count", async () => {
+    const { repo, service } = makeGatedService([{ blocker: B, blocked: A }])
+    seedRoster(repo)
+    repo.seedFollow(A, B)
+    await expect(service.unfollowPerson(A, B)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Person not found",
+    })
+  })
+
+  it("still lets the viewer unfollow someone the viewer blocked", async () => {
+    const { repo, service } = makeGatedService([{ blocker: A, blocked: B }])
+    seedRoster(repo)
+    repo.seedFollow(A, B)
+    expect(await service.unfollowPerson(A, B)).toMatchObject({ isFollowing: false })
+  })
+
+  it("does not consult the block state for the owner's own roster", async () => {
+    const repo = new InMemorySocialRepository()
+    let consulted = false
+    const service = makeSocialService({
+      repo,
+      blockState: () => {
+        consulted = true
+        return Promise.resolve({ blockedByViewer: true, blockedByTarget: true })
+      },
+    })
+    seedRoster(repo)
+    const page = await service.listFollowers(B, { userId: B }, { id: B })
+    expect(consulted).toBe(false)
+    expect(page.items.map((p) => p.id)).toEqual([C])
+  })
+})
+
 describe("getMyProfile", () => {
   it("returns the caller's own profile with isFollowing false", async () => {
     const { repo, service } = makeHarness()

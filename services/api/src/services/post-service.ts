@@ -101,18 +101,24 @@ export function makePostService(deps: PostServiceDeps): PostService {
       if (input.kind === "repost") {
         throw AppError.validation({ kind: "Use POST /posts/:id/repost to repost." })
       }
+      if (input.replyToId !== undefined && input.repostOfId !== undefined) {
+        throw AppError.validation({
+          replyToId: "A post is either a reply or a quote, not both.",
+        })
+      }
+      const kind =
+        input.replyToId !== undefined ? "reply" : input.repostOfId !== undefined ? "quote" : "post"
 
-      // --- validate reply / quote targets ---
       let replyParentAuthor: string | null = null
-      if (input.kind === "reply") {
-        const parent = input.replyToId ? await deps.repo.getPostBrief(input.replyToId) : null
+      if (input.replyToId !== undefined) {
+        const parent = await deps.repo.getPostBrief(input.replyToId)
         if (!parent || parent.deletedAt !== null) throw AppError.notFound("Post not found")
         if (await isBlocked(authorId, parent.authorId)) throw AppError.notFound("Post not found")
         replyParentAuthor = parent.authorId
       }
       let quoteTargetAuthor: string | null = null
-      if (input.kind === "quote") {
-        const target = input.repostOfId ? await deps.repo.getPostBrief(input.repostOfId) : null
+      if (input.repostOfId !== undefined) {
+        const target = await deps.repo.getPostBrief(input.repostOfId)
         if (!target || target.deletedAt !== null) throw AppError.notFound("Post not found")
         if (await isBlocked(authorId, target.authorId)) throw AppError.notFound("Post not found")
         quoteTargetAuthor = target.authorId
@@ -139,7 +145,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
       const postId = await deps.repo.createPost({
         authorId,
-        kind: input.kind,
+        kind,
         body: input.body ?? null,
         replyToId: input.replyToId ?? null,
         repostOfId: input.repostOfId ?? null,

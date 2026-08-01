@@ -430,7 +430,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     expect(await repo.joinCleanupTx(created.id, bobId)).toBe("joined")
     expect(await repo.isMember(created.id, bobId)).toBe(true)
     // Direct repo guard: removing the organizer row is refused (and writes no ban).
-    expect((await repo.removeMember(created.id, organizerId, organizerId)).removed).toBe(false)
+    expect((await repo.removeMember(created.id, organizerId, organizerId)).kind).toBe("not_member")
     expect(await repo.isBanned(created.id, organizerId)).toBe(false)
   })
 })

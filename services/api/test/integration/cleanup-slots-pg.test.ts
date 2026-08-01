@@ -282,9 +282,9 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const target = await newUser("Removed")
     await repo.claimSlot(cleanupId, target, slotId)
 
-    const { removed } = await repo.removeMember(cleanupId, target, org)
+    const outcome = await repo.removeMember(cleanupId, target, org)
 
-    expect(removed).toBe(true)
+    expect(outcome.kind).toBe("removed")
     expect(await claimCount(slotId)).toBe(0)
     // ...and the ban keeps them from walking back in through the slot door.
     expect(await repo.claimSlot(cleanupId, target, slotId)).toEqual({ kind: "banned" })

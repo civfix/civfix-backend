@@ -12,8 +12,19 @@ import {
 } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
 import { reportOwnedBy } from "../services/report-sql.js"
+import {
+  makeAllowAllContentSubjectGate,
+  makeDrizzleContentSubjectGate,
+  type ContentSubjectGate,
+} from "../services/content-report-subject.js"
 
 const REPORT_CONTENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+
+declare module "fastify" {
+  interface FastifyInstance {
+    contentSubjectGate?: ContentSubjectGate
+  }
+}
 
 export async function registerReportContentRoutes(
   app: FastifyInstance,
@@ -34,6 +45,13 @@ export async function registerReportContentRoutes(
     })
   }
 
+  function subjectGate(): ContentSubjectGate {
+    if (app.contentSubjectGate) return app.contentSubjectGate
+    if (!container.env.DATABASE_URL) return makeAllowAllContentSubjectGate()
+    const handle = container.getDb()
+    return makeDrizzleContentSubjectGate(handle.sql, handle.db)
+  }
+
   route(
     app,
     "reportContent",
@@ -41,6 +59,8 @@ export async function registerReportContentRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const body = parse(ReportContentRequestSchema, request.body)
+
+      await subjectGate().assertReportable(body.subjectType, body.subjectId, userId)
 
       const store = app.authServices?.users
       const reporterUser = store ? await store.findById(userId) : null

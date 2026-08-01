@@ -2,7 +2,7 @@ import { ErrorCode } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { makeWsTicketStore } from "../auth/ws-ticket.js"
-import { normalizeIp } from "../abuse/ip-rate-limit.js"
+import { applyRateLimitHeaders, wsUpgradeRateLimitKey } from "../plugins/rate-limit.js"
 import {
   registerChatGateway,
   roomKeyFor,
@@ -178,13 +178,13 @@ export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
   if (typeof app.createRateLimit !== "function") return
   const limiter = app.createRateLimit({
     ...WS_UPGRADE_RATE_LIMIT,
-    keyGenerator: (req) => `ws-upgrade:${normalizeIp(req.ip)}`,
+    keyGenerator: wsUpgradeRateLimitKey,
   })
   app.addHook("onRequest", async (request, reply) => {
     if ((request.url ?? "").split("?")[0] !== "/ws") return
     const result = await limiter(request)
     if (!result.isAllowed && result.isExceeded) {
-      reply.header("retry-after", result.ttlInSeconds)
+      applyRateLimitHeaders(reply, result)
       reply
         .status(429)
         .send({ code: ErrorCode.RATE_LIMITED, message: "Too many connection attempts." })

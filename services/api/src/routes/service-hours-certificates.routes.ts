@@ -19,6 +19,7 @@ import {
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
+import { perHost, perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import {
@@ -63,9 +64,9 @@ const CodeParamsSchema = z.object({ code: z.string().min(1).max(32) }).strict()
  * one NAT address would 429 after twenty checks. Enumeration is not the threat model — the code space is
  * 2^60.
  */
-const CERTIFICATE_ISSUE_RATE_LIMIT = { max: 6, timeWindow: "1 hour" } as const
-const CERTIFICATE_REVOKE_RATE_LIMIT = { max: 20, timeWindow: "1 hour" } as const
-const CERTIFICATE_VERIFY_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
+export const CERTIFICATE_ISSUE_RATE_LIMIT = perIdentity({ max: 6, timeWindow: "1 hour", hostMax: 6 })
+export const CERTIFICATE_REVOKE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 hour" })
+export const CERTIFICATE_VERIFY_RATE_LIMIT = perHost({ max: 60, timeWindow: "1 minute" })
 
 export async function registerServiceHoursCertificateRoutes(
   app: FastifyInstance,

@@ -209,6 +209,22 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     )
   }
 
+  const LOCAL_STORAGE_DIR = (source.LOCAL_STORAGE_DIR ?? "").trim()
+  const usesLocalStorage = LOCAL_STORAGE_DIR.length > 0
+  if (isProd && usesLocalStorage) {
+    errors.push(
+      "LOCAL_STORAGE_DIR: the local-disk storage driver is DEVELOPMENT ONLY and must not be set in " +
+        "production; configure R2 (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET)",
+    )
+  }
+  if (usesLocalStorage && PUBLIC_API_URL.length === 0) {
+    errors.push(
+      "PUBLIC_API_URL: required whenever LOCAL_STORAGE_DIR is set — the local-disk driver's presigned " +
+        "URLs must be absolute and reachable from the browser and the media worker",
+    )
+  }
+  const LOCAL_STORAGE_SIGNING_KEY = (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim()
+
   const R2_ACCOUNT_ID = reqStr("R2_ACCOUNT_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
   const R2_ACCESS_KEY_ID = reqStr("R2_ACCESS_KEY_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
   const R2_SECRET_ACCESS_KEY = reqStr("R2_SECRET_ACCESS_KEY", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
@@ -222,7 +238,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   //   (2) the two buckets must never be the same name.
   const R2_INBOUND_BUCKET = (source.R2_INBOUND_BUCKET ?? "").trim()
   const R2_PUBLIC_BASE = (source.R2_PUBLIC_BASE ?? "").trim()
-  if (!fakeFlags.USE_FAKE_STORAGE) {
+  if (!fakeFlags.USE_FAKE_STORAGE && !usesLocalStorage) {
     if (R2_PUBLIC_BASE.length > 0 && R2_INBOUND_BUCKET.length === 0) {
       errors.push(
         "R2_INBOUND_BUCKET: required [BOOT] whenever R2_PUBLIC_BASE is set — a shared bucket would " +
@@ -301,6 +317,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     R2_ACCESS_KEY_ID,
     R2_SECRET_ACCESS_KEY,
     R2_BUCKET,
+    ...(usesLocalStorage ? { LOCAL_STORAGE_DIR } : {}),
+    ...(usesLocalStorage && LOCAL_STORAGE_SIGNING_KEY.length > 0
+      ? { LOCAL_STORAGE_SIGNING_KEY }
+      : {}),
     TILES_MIN_ZOOM: parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT),
     TILES_MAX_ZOOM: parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT),
     TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),

@@ -42,8 +42,10 @@ import type {
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
+import { SCHEDULE_MAX_BACKDATE_MS, isCleanupTerminal } from "./cleanup-rules.js"
 
 export * from "./cleanup-repository.types.js"
+export * from "./cleanup-rules.js"
 export {
   CLEANUPS_DEFAULT_LIMIT,
   ATTENDEES_DEFAULT_LIMIT,
@@ -66,6 +68,17 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function isUuid(value: string): boolean {
   return UUID_RE.test(value)
+}
+
+const EVENT_CLOSED_MESSAGE = "This event is closed."
+
+function assertScheduledAtNotBackdated(next: string | undefined, stored: Date): void {
+  if (next === undefined) return
+  const nextMs = Date.parse(next)
+  if (Number.isNaN(nextMs)) return
+  if (nextMs >= Date.now() - SCHEDULE_MAX_BACKDATE_MS) return
+  if (nextMs >= stored.getTime()) return
+  throw AppError.validation({ scheduledAt: "must not be in the past" })
 }
 
 /**
@@ -432,7 +445,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     // Slot reconciliation is refused on a done/cancelled event: deleting or renaming a slot after
     // completion rewrites the roster the credited hours were attested against. (The REST of
     // updateCleanup stays ungated on status, exactly as it is today.)
-    if (status === "done" || status === "cancelled") {
+    if (status !== null && isCleanupTerminal(status)) {
       throw AppError.validation({ slots: "slots can't be changed after an event is completed" })
     }
     if (slots.length > MAX_EVENT_SLOTS) {
@@ -583,6 +596,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
       const current = await deps.repo.findCleanupById(id, null)
       if (!current) notFoundCleanup()
+      if (current.status === "cancelled") {
+        throw AppError.conflict("This event has been cancelled and can no longer be edited.")
+      }
+      assertScheduledAtNotBackdated(patch.scheduledAt, current.scheduledAt)
       const effectiveKind = patch.eventKind ?? current.eventKind
 
       if (patch.linkedReportIds !== undefined && effectiveKind !== "cleanup") {
@@ -861,6 +878,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (outcome === "banned") {
         throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
       }
+      if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       const going = await deps.repo.memberCount(id)
       return { joined: true, going }
     },
@@ -871,7 +889,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (organizerId === userId) {
         throw AppError.conflict("The organizer cannot leave their own cleanup.")
       }
-      await deps.repo.leaveCleanup(id, userId)
+      const outcome = await deps.repo.leaveCleanup(id, userId)
+      if (outcome === "not_found") notFoundCleanup()
+      if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       const going = await deps.repo.memberCount(id)
       return { joined: false, going }
     },
@@ -994,11 +1014,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       // re-authorized, so the removed user keeps reading the room in real time until they reconnect.
       // Closing it needs a revocation publish on the room channel from ws/socket-lifecycle.ts — see the
       // handover notes accompanying this fix.
-      const { removed, going } = await deps.repo.removeMember(id, targetUserId, actorId)
-      if (!removed) throw AppError.notFound("That person isn't attending this event.")
+      const outcome = await deps.repo.removeMember(id, targetUserId, actorId)
+      if (outcome.kind === "not_found") notFoundCleanup()
+      if (outcome.kind === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
+      if (outcome.kind === "not_member") {
+        throw AppError.notFound("That person isn't attending this event.")
+      }
 
       await notifyRoleChange(targetUserId, "removed", { id: record.id, title: record.title })
-      return { ok: true, going }
+      return { ok: true, going: outcome.going }
     },
 
     /**
@@ -1041,7 +1065,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (outcome.kind === "banned") {
         throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
       }
-      if (outcome.kind === "closed") throw AppError.conflict("This event is closed.")
+      if (outcome.kind === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       if (outcome.kind === "full") throw AppError.conflict("That slot is already full.")
 
       const record = await deps.repo.findCleanupById(id, null)

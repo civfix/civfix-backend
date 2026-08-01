@@ -48,7 +48,7 @@ import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
-import { parse } from "./_validate.js"
+import { parse, trimTextFields } from "./_validate.js"
 import {
   makeCleanupService,
   type CleanupRepository,
@@ -57,6 +57,10 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import {
+  SCHEDULE_MAX_AHEAD_MS,
+  SCHEDULE_MAX_BACKDATE_MS,
+} from "../services/cleanup-rules.js"
 import {
   makeDrizzleChatRepository,
   type ChatRepository,
@@ -165,6 +169,62 @@ const COMPLETE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
  */
 const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
+function refineScheduledAt(
+  scheduledAt: string | undefined,
+  ctx: z.RefinementCtx,
+  opts: { rejectPast: boolean },
+): void {
+  if (scheduledAt === undefined) return
+  const whenMs = Date.parse(scheduledAt)
+  if (Number.isNaN(whenMs)) return
+  const nowMs = Date.now()
+  if (opts.rejectPast && whenMs < nowMs - SCHEDULE_MAX_BACKDATE_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["scheduledAt"],
+      message: "must not be in the past",
+    })
+  } else if (whenMs > nowMs + SCHEDULE_MAX_AHEAD_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["scheduledAt"],
+      message: "is too far in the future",
+    })
+  }
+}
+
+function dropBlankBringItems<T extends { bring?: readonly string[] | null }>(body: T): T {
+  if (!Array.isArray(body.bring)) return body
+  return { ...body, bring: body.bring.filter((item) => item !== "") }
+}
+
+export const CreateCleanupBodySchema = trimTextFields(
+  CreateCleanupRequestSchema,
+  "title",
+  "description",
+  "address",
+  "bring",
+)
+  .superRefine((data, ctx) => refineScheduledAt(data.scheduledAt, ctx, { rejectPast: true }))
+  .transform(dropBlankBringItems)
+
+export const UpdateCleanupBodySchema = trimTextFields(
+  UpdateCleanupRequestSchema,
+  "title",
+  "description",
+  "address",
+  "bring",
+)
+  .superRefine((data, ctx) => refineScheduledAt(data.scheduledAt, ctx, { rejectPast: false }))
+  .transform(dropBlankBringItems)
+
+export const CancelCleanupBodySchema = trimTextFields(CancelCleanupRequestSchema, "reason")
+
+export const RequestEventResourcesBodySchema = trimTextFields(
+  RequestEventResourcesRequestSchema,
+  "message",
+)
+
 export async function registerCleanupRoutes(
   app: FastifyInstance,
   container: Container,
@@ -262,7 +322,7 @@ export async function registerCleanupRoutes(
 
   route(app, "createCleanup", { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
-    const body = parse(CreateCleanupRequestSchema, request.body)
+    const body = parse(CreateCleanupBodySchema, request.body)
     const dto: CleanupDTO = await service().createCleanup(body, userId)
     reply.status(201).send(dto)
   })
@@ -272,7 +332,7 @@ export async function registerCleanupRoutes(
   route(app, "updateCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
-    const body = parse(UpdateCleanupRequestSchema, request.body)
+    const body = parse(UpdateCleanupBodySchema, request.body)
     const dto: GetCleanupResponse = await service().updateCleanup(id, body, userId)
     reply.status(200).send(dto)
   })
@@ -282,7 +342,7 @@ export async function registerCleanupRoutes(
   route(app, "cancelCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
-    const body = parse(CancelCleanupRequestSchema, { ...(request.body as object), id })
+    const body = parse(CancelCleanupBodySchema, { ...(request.body as object), id })
     const dto: GetCleanupResponse = await service().cancelCleanup(id, body.reason ?? null, userId)
     reply.status(200).send(dto)
   })
@@ -319,7 +379,7 @@ export async function registerCleanupRoutes(
   route(app, "requestEventResources", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
-    const body = parse(RequestEventResourcesRequestSchema, { ...(request.body as object), id })
+    const body = parse(RequestEventResourcesBodySchema, { ...(request.body as object), id })
     const payload: RequestEventResourcesResponse = await service().requestResources({
       cleanupId: id,
       message: body.message,
