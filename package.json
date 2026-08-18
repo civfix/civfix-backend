@@ -7,7 +7,10 @@
   "type": "module",
   "packageManager": "pnpm@9.12.0",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "ffmpeg-static"],
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "ffmpeg-static"
+    ],
     "//overrides": "H13. node-apn@3.0.0 (the APNs dispatcher in services/api/src/adapters/push-apns.ts, still live whenever APNS_* is configured) is ABANDONED and pins node-forge@0.7.6 — seven advisories including RSA and Ed25519 SIGNATURE FORGERY — plus jsonwebtoken@8.5.1, which signs the APNs auth token. Neither is reachable by a range bump because node-apn is unmaintained, so we force the patched majors here. Both are API-compatible for node-apn's usage (jwt.sign with ES256 + a pem key; forge only for the legacy pkcs12/cert path we never take). Revisit when node-apn is replaced or dropped.",
     "//overrides-transitive": "H13 (cont). find-my-way and fast-uri are pulled in by fastify/ajv at versions BELOW their patched releases even on the newest fastify, so the only way to pick up the HTTP/2 DDoS (find-my-way >= 9.7.0) and host-confusion (fast-uri >= 3.1.4) fixes is to force them. Both are semver-compatible with the ranges fastify and ajv declare (^9.6.0 / ^3.0.1); drop these entries once fastify ships them itself.",
     "overrides": {

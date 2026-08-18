@@ -43,6 +43,7 @@ function makeReportChatSource(
     isMember: () => Promise.resolve(true),
     roleOf: notImpl("roleOf") as never,
     advanceReadWatermark,
+    markRead: notImpl("markRead") as never,
     join: notImpl("join") as never,
     leave: notImpl("leave") as never,
     insertSystemMessage: notImpl("insertSystemMessage") as never,

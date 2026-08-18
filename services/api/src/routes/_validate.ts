@@ -1,17 +1,20 @@
 import { AppError } from "@civfix/shared"
-import { z, ZodError, type ZodTypeAny } from "zod"
+import { z, type ZodTypeAny } from "zod"
 import type { FastifyRequest } from "fastify"
 
-// The canonical route-level Zod validator. Field-key format is `issue.path.join(".")` (fallback "_") so
-// every route produces an identical AppError.validation envelope. This is the defense-in-depth partner to
-// the http-mapper ZodError branch (the real backstop for an un-wrapped/service-level/.transform throw).
 export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
   try {
     return schema.parse(data)
   } catch (err) {
-    if (err instanceof ZodError) {
+    if (
+      err instanceof Error &&
+      err.name === "ZodError" &&
+      Array.isArray((err as unknown as { issues?: unknown }).issues)
+    ) {
+      const issues = (err as unknown as { issues: { path: (string | number)[]; message: string }[] })
+        .issues
       const fields: Record<string, string> = {}
-      for (const issue of err.issues) {
+      for (const issue of issues) {
         const key = issue.path.length > 0 ? issue.path.join(".") : "_"
         fields[key] = issue.message
       }

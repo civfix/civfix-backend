@@ -347,10 +347,9 @@ export function buildContainer(env: Env): Container {
         fromOutreach: env.MAIL_FROM_OUTREACH,
       })
 
-  const geocoder: Geocoder =
-    env.NODE_ENV === "production"
-      ? new TigerGeocoder({ getSql: () => getDb().sql })
-      : new FakeGeocoder()
+  const geocoder: Geocoder = env.USE_FAKE_GEOCODER
+    ? new FakeGeocoder()
+    : new TigerGeocoder({ getSql: () => getDb().sql })
 
   const streetReverseGeocode: ReverseGeocode = chainReverse(
     env.MAPBOX_TOKEN ? makeMapboxReverseGeocode({ token: env.MAPBOX_TOKEN }) : null,

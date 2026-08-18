@@ -53,8 +53,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: ^0.34.0
-        version: 0.34.0
+        specifier: ^0.35.0
+        version: 0.35.0
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -192,8 +192,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
-        specifier: ^0.34.0
-        version: 0.34.0
+        specifier: ^0.35.0
+        version: 0.35.0
       '@sentry/node':
         specifier: ^8.42.0
         version: 8.55.2
@@ -384,8 +384,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.34.0':
-    resolution: {integrity: sha512-Ji4zrMxF/jka8/+hr0Q5O6K6niaE4DrlVkX/uOLt3r3VvpnmiriAt4uLxoZDCg2aS3CZWS4OKLQV/N8/BJtx4g==}
+  '@civfix/shared@0.35.0':
+    resolution: {integrity: sha512-X5rUF8kzGnVgIXlFQvDt/tldCHQ+vjg7BfX8PCNVGAZGu+H8LM6qT2ZzZpyHa3xfPc4WuHL3/QsNfjEuD+bqAw==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -5021,7 +5021,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.34.0':
+  '@civfix/shared@0.35.0':
     dependencies:
       zod: 3.25.76
 

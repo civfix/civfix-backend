@@ -10,10 +10,6 @@ import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.js"
 import type { SocialServiceOverrides } from "../../src/routes/social.routes.js"
 import type { SocialNotifier, PersonView } from "../../src/services/social-service.js"
-import type {
-  UserActivityRecord,
-  UserActivityRepository,
-} from "../../src/services/user-activity-service.js"
 
 
 class SpyNotifier implements SocialNotifier {
@@ -21,22 +17,6 @@ class SpyNotifier implements SocialNotifier {
   onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {
     this.calls.push(args)
     return Promise.resolve()
-  }
-}
-
-class StubUserActivityRepository implements UserActivityRepository {
-  listActivity(args: { userId: string }): Promise<UserActivityRecord[]> {
-    return Promise.resolve([
-      {
-        id: `act-${args.userId}`,
-        kind: "created_report",
-        at: new Date("2025-01-01T00:00:00.000Z"),
-        title: "Reported a pothole",
-        subtitle: null,
-        refKind: "report",
-        refId: "r1",
-      },
-    ])
   }
 }
 
@@ -72,12 +52,7 @@ async function makeHarness(seed?: (repo: InMemorySocialRepository) => void): Pro
   const notifier = new SpyNotifier()
   const socialOverrides: SocialServiceOverrides = { repo, notifier }
 
-  const app = await buildServer({
-    env,
-    authServices,
-    socialOverrides,
-    userActivityOverride: { repo: new StubUserActivityRepository() },
-  })
+  const app = await buildServer({ env, authServices, socialOverrides })
 
   const { token, userId } = await signIn(app, mailer, "viewer@example.com")
   repo.seedUser({ id: userId, displayName: "Viewer", handle: "viewer" })
@@ -271,35 +246,6 @@ describe("GET /people/:id (profile)", () => {
   })
 })
 
-describe("GET /people/:id/activity", () => {
-  it("resolves a non-UUID :id as an @handle and returns the same body as the UUID form", async () => {
-    const { app } = await makeHarness((repo) => {
-      repo.seedUser({ id: OTHER, displayName: "Pro", handle: "pro_neighbor" })
-    })
-    const byHandle = await app.inject({ method: "GET", url: "/v1/people/Pro_Neighbor/activity" })
-    const byUuid = await app.inject({ method: "GET", url: `/v1/people/${OTHER}/activity` })
-    expect(byHandle.statusCode).toBe(200)
-    expect(byUuid.statusCode).toBe(200)
-    expect(byHandle.json()).toEqual(byUuid.json())
-    expect(byHandle.json().items[0].id).toBe(`act-${OTHER}`)
-  })
-
-  it("404s a garbage :id that is neither a UUID nor a known handle (not 500)", async () => {
-    const { app } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/v1/people/not-a-real-id/activity" })
-    expect(res.statusCode).toBe(404)
-  })
-
-  it("404s an over-length non-UUID :id before hitting the handle lookup (parity with getProfile)", async () => {
-    const longRef = "a".repeat(41)
-    const { app } = await makeHarness((repo) => {
-      repo.seedUser({ id: OTHER, displayName: "Pro", handle: longRef })
-    })
-    const res = await app.inject({ method: "GET", url: `/v1/people/${longRef}/activity` })
-    expect(res.statusCode).toBe(404)
-  })
-})
-
 describe("GET /people/:id/followers and /following", () => {
   for (const rel of ["followers", "following"] as const) {
     it(`${rel}: resolves a non-UUID :id as an @handle (same body as the UUID form)`, async () => {
@@ -320,6 +266,32 @@ describe("GET /people/:id/followers and /following", () => {
     it(`${rel}: 404s a garbage :id that is neither a UUID nor a known handle (not 500)`, async () => {
       const { app } = await makeHarness()
       const res = await app.inject({ method: "GET", url: `/v1/people/not-a-real-id/${rel}` })
+      expect(res.statusCode).toBe(404)
+    })
+
+    it(`${rel}: 404s an unknown UUID instead of answering an empty list`, async () => {
+      const { app } = await makeHarness()
+      const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}/${rel}` })
+      expect(res.statusCode).toBe(404)
+    })
+
+    it(`${rel}: 404s a soft-deleted user's UUID, so a tombstoned account is not enumerable`, async () => {
+      const { app } = await makeHarness((repo) => {
+        repo.seedUser({ id: OTHER, displayName: "Gone", handle: "gone", deletedAt: new Date() })
+        repo.seedUser({ id: THIRD, displayName: "Other" })
+        if (rel === "followers") repo.seedFollow(THIRD, OTHER)
+        else repo.seedFollow(OTHER, THIRD)
+      })
+      const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}/${rel}` })
+      expect(res.statusCode).toBe(404)
+    })
+
+    it(`${rel}: 404s an over-length non-UUID :id before hitting the handle lookup`, async () => {
+      const longRef = "a".repeat(41)
+      const { app } = await makeHarness((repo) => {
+        repo.seedUser({ id: OTHER, displayName: "Pro", handle: longRef })
+      })
+      const res = await app.inject({ method: "GET", url: `/v1/people/${longRef}/${rel}` })
       expect(res.statusCode).toBe(404)
     })
   }

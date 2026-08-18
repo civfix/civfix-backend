@@ -78,6 +78,7 @@ import {
   type ChatPresence,
 } from "../adapters/chat-presence.js"
 import { InMemoryChatReadState, type ChatReadState } from "../services/threads-service.js"
+import { makeMarkRoomRead, type MarkRoomRead } from "../services/room-read-service.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
@@ -87,37 +88,18 @@ const REPORT_SEND_LIMIT = { capacity: 30, refillPerSec: 0.5 } as const
 const CITY_FORWARD_DEDUP_MS = 10 * 60 * 1000
 const CITY_FORWARD_DEDUP_MAX_KEYS = 5000
 
-/**
- * The resolve+record half of the mention seam. The WS gateway lane adds the third half (notifyChatMention);
- * PATCH /messages deliberately has none — an edit never re-fires mention bells.
- */
 export type ChatMentionSeam = Pick<
   GatewayChatMentions,
   "resolveChatMentions" | "recordChatMentions"
 >
 
-/** One seam per Fastify instance (see chatMentionDeps). */
 const mentionSeams = new WeakMap<FastifyInstance, ChatMentionSeam>()
 
-/**
- * The mention seam, built ONCE per Fastify instance and shared by the WS gateway wiring and
- * messages.routes (the only two consumers). Both hand-rolled the same makeChatMentionResolver call over
- * their own repo handles, so the SCOPE RULES — report chat-members-only [D11], dm peer-only, cleanup
- * members-only, group members-only — were a two-place decision that could drift on one side only. They
- * are now one place, and the caller supplies nothing but the app + container.
- *
- * Every lookup inside is LAZY: constructing the seam touches neither getDb() nor the container's repos,
- * so a caller may build it at mount time. The caller still owns the DECISION to use it at all (both gate
- * it off under fake-chat, where there is no DB to resolve mentions against) and an injected
- * chatOverrides.chatMentions still wins outright at the call site.
- */
 export function chatMentionDeps(app: FastifyInstance, container: Container): ChatMentionSeam {
   const cached = mentionSeams.get(app)
   if (cached) return cached
 
   const overrides: ChatGatewayOverrides | undefined = app.chatOverrides
-  // H9: PRIVATE presigner like every other chat-repo construction site. Nothing here hydrates a message
-  // (the seam reads member ids only), but the repos must not be a public-URL source if that ever changes.
   const presignMedia = makePrivateMediaPresigner(container.storage)
 
   let cleanups: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
@@ -140,8 +122,6 @@ export function chatMentionDeps(app: FastifyInstance, container: Container): Cha
           overrides?.reportChat ??
           (reportChat ??= makeReportChatRepository(container.getDb().sql, presignMedia))
         ).listMemberIds(reportId),
-      // Empty when the group repo is unwired (an override harness carrying no groups fake): a group
-      // mention then resolves to nothing rather than touching getDb().
       listGroupMemberIds: (groupId) => {
         const repo = overrides
           ? overrides.groups
@@ -156,6 +136,75 @@ export function chatMentionDeps(app: FastifyInstance, container: Container): Cha
   return seam
 }
 
+export interface ConversationReadSeam {
+  readState: ChatReadState
+  markRoomRead: MarkRoomRead
+}
+
+const readSeams = new WeakMap<FastifyInstance, ConversationReadSeam>()
+
+export function conversationReadSeam(app: FastifyInstance, container: Container): ConversationReadSeam {
+  const cached = readSeams.get(app)
+  if (cached) return cached
+
+  const overrides: ChatGatewayOverrides | undefined = app.chatOverrides
+  const useFakeChat = container.env.USE_FAKE_CHAT
+  const presignMedia = makePrivateMediaPresigner(container.storage)
+
+  const readState: ChatReadState =
+    overrides?.readState ??
+    (useFakeChat ? new InMemoryChatReadState() : makeDrizzleChatReadState(container.getDb().sql))
+  const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
+
+  let reportChat: ReportChatRepository | undefined
+  const getReportChat = (): ReportChatRepository | undefined =>
+    overrides
+      ? overrides.reportChat
+      : useFakeChat
+        ? undefined
+        : (reportChat ??= makeReportChatRepository(container.getDb().sql, presignMedia))
+
+  let groups: ChatGroupRepository | undefined
+  const getGroups = (): ChatGroupRepository | undefined =>
+    overrides
+      ? overrides.groups
+      : useFakeChat
+        ? undefined
+        : (groups ??= makeChatGroupRepository(container.getDb().sql, presignMedia))
+
+  const notifications = (): NotificationService | undefined =>
+    overrides?.notificationService ??
+    (useFakeChat ? undefined : container.getNotificationService(app.log))
+
+  const seam: ConversationReadSeam = {
+    readState,
+    markRoomRead: makeMarkRoomRead({
+      cleanup: (id, userId, at) => readState.markRead(id, userId, at),
+      dm: (id, userId, at) => dmRepo.markRead(id, userId, at),
+      report: async (id, userId, at) => {
+        await getReportChat()?.markRead(id, userId, at)
+      },
+      group: async (id, userId, at) => {
+        await getGroups()?.markRead(id, userId, at)
+      },
+      clearBell: async (kind, id, userId) => {
+        const service = notifications()
+        if (!service) return
+        try {
+          await clearConversationBellFor(service, kind, id, userId)
+        } catch (err) {
+          app.log.warn(
+            { err, kind, id, userId },
+            "read: clear conversation notifications failed (suppressed)",
+          )
+        }
+      },
+    }),
+  }
+  readSeams.set(app, seam)
+  return seam
+}
+
 export interface ChatWiring {
   readState: ChatReadState
   isMember: IsMemberFn
@@ -165,12 +214,6 @@ export interface ChatWiring {
   dmPeerOf: (threadId: string, userId: string) => Promise<string | null>
   getChatRepo(): ChatRepository
   getReportChatRepo(): ReportChatRepository
-  /**
-   * The dm half of the threads inbox — the repo method's FULL shape, cursor included. The keyset in
-   * threads-service re-applies an exact millisecond cut on the merge, so a binder that dropped the third
-   * arg handed page 2 the same newest rows and the service cut every one of them: DM threads disappeared
-   * from the inbox from page 2 onward.
-   */
   listDmThreadsFor: DmRepository["listThreadsForUser"]
 }
 
@@ -196,9 +239,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const overrides: ChatGatewayOverrides | undefined = app.chatOverrides
   const useFakeChat = container.env.USE_FAKE_CHAT
 
-  const readState: ChatReadState =
-    overrides?.readState ??
-    (useFakeChat ? new InMemoryChatReadState() : makeDrizzleChatReadState(container.getDb().sql))
+  const { readState, markRoomRead } = conversationReadSeam(app, container)
 
   const presence: ChatPresence =
     overrides?.presence ??
@@ -215,17 +256,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
   const isBlockedEitherWay: IsBlockedEitherWayFn = (a, b) => blocksRepo.isBlockedEitherWay(a, b)
 
-  /**
-   * The batched M11 block gate behind the report/group fan-outs (`blockedIdsAmong`): ONE user_blocks query
-   * for a room's whole candidate set instead of one `isBlockedEitherWay` per member.
-   *
-   * PROBED, not bound unconditionally — the same stance as `mutedUserIdsForRoom` below: the fan-out treats
-   * a present `blockedIdsFor` as authoritative and never falls back to the per-candidate gate, so binding
-   * an absent batch method through a `?? new Set()` default would silently UNBLOCK the whole room. The
-   * batch form is optional on BlocksRepository (the in-memory repo backing fake-chat/offline harnesses
-   * predates it), so an implementation without it stays on the per-candidate gate — same verdicts, more
-   * round trips, never a weaker gate.
-   */
   const blockedIdsForCandidates = (():
     | ((actorId: string, candidateIds: string[]) => Promise<Set<string>>)
     | undefined => {
@@ -247,11 +277,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     overrides?.reportChat ??
     (reportChatRepo ??= makeReportChatRepository(container.getDb().sql, presignMedia))
 
-  // P4 4.4: the group management repo backing the WS group lane (join/send member gate, ack watermark,
-  // mention scoping, mark-read-on-join). One instance shared with nothing route-side (the group routes
-  // build their own like the report routes do) but every WS consumer below shares THIS one. When
-  // chatOverrides is present WITHOUT a groups fake we must not touch getDb() (offline harness) — group
-  // frames then fail closed in authorizeRoom, mirroring the reportChat gating.
   let lazyGroupsRepo: ChatGroupRepository | undefined
   const getGroupsRepo = (): ChatGroupRepository | undefined =>
     overrides
@@ -274,13 +299,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       }
     : undefined
 
-  /**
-   * ONE chat_group_members scan per group send. A group send fires the threads signal
-   * (threadRecipientsOf) and the bell fan-out (onGroupMessage -> group notifier) in the SAME tick, and
-   * both read the same member list — so overlapping calls share the one in-flight query. The entry is
-   * dropped as soon as it settles: this coalesces concurrent readers, it does NOT cache, so no consumer
-   * can act on a membership set older than a query it could have issued itself.
-   */
   const groupMembersInFlight = new Map<string, Promise<string[]>>()
   const listGroupMembersShared = (groupId: string): Promise<string[]> => {
     const repo = getGroupsRepo()
@@ -323,15 +341,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     }
   }
 
-  /**
-   * The batched one-room-many-users mute lookup behind the report/group fan-outs: ONE conversation_mutes
-   * query per message instead of one per candidate member.
-   *
-   * Wired ONLY when the repo actually implements it. The fan-out treats a present `mutedUserIdsFor` as
-   * AUTHORITATIVE and skips the per-candidate `isMuted` entirely, so binding an absent method to an empty
-   * Set would silently unmute the whole room — and the batch shape is optional on
-   * ConversationMutesRepository precisely because the offline fakes predate it.
-   */
   const mutedUserIdsForRoom = (
     kind: "report" | "group",
   ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined => {
@@ -350,8 +359,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   ): Promise<void> => {
     if (!notificationService) return
     try {
-      // Single-sourced (type, link) mapping in conversation-bell.ts (PR #21), extended for the P4 group
-      // lane. report joins dm/cleanup/group here so opening a report room clears its report_chat bells.
       await clearConversationBellFor(notificationService, kind, id, userId)
     } catch (err) {
       app.log.warn(
@@ -361,8 +368,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     }
   }
 
-  // No isParticipant: the gateway authorizes dm rooms through peerOf alone (participation AND the peer
-  // the block gate needs, in one round trip).
   const dmGatewayDeps: GatewayDmDeps = {
     peerOf: dmPeerOf,
     persist: (input) => dmRepo.persist(input),
@@ -391,10 +396,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     }
     if (kind === "report") return []
     if (kind === "group") {
-      // Group inbox rows refresh live like cleanup ones, and carry the same fan-out ceiling: an inbox
-      // nudge is a best-effort refresh hint, so a very large group publishes to the first
-      // THREAD_SIGNAL_MEMBER_CAP members rather than one Redis publish per member per message. The
-      // member list is the one the bell fan-out reads too (see listGroupMembersShared).
       const members = await listGroupMembersShared(id)
       return members.filter((m) => m !== senderId).slice(0, THREAD_SIGNAL_MEMBER_CAP)
     }
@@ -403,9 +404,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     return members.filter((m) => m !== senderId)
   }
 
-  // Shared dep set for the P2 2.5 bell notifiers (mention/reply). Only built when the real
-  // notification stack exists (mirrors the pre-2.5 chatMentions gating): under fake-chat there is no
-  // DB for members/mutes and no notificationService.
   const bellDeps: ChatBellDeps | undefined =
     useFakeChat || !notificationService
       ? undefined
@@ -414,8 +412,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           isMutedFor,
           isCleanupMember: isMember,
           isReportChatMember: (reportId, userId) => getReportChatRepo().isMember(reportId, userId),
-          // Fail closed when the group repo is unwired (offline harness): a group mention/reply then
-          // never bells, mirroring authorizeRoom's fail-closed stance for group frames.
           isChatGroupMember: async (groupId, userId) =>
             ((await getGroupsRepo()?.roleOf(groupId, userId)) ?? null) !== null,
           isBlockedEitherWay,
@@ -428,14 +424,10 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     (!bellDeps
       ? undefined
       : {
-          // Resolve + record come from the shared, memoized seam (scope rules single-sourced there and
-          // with the PATCH /messages edit route); only the notify half is this lane's own.
           ...chatMentionDeps(app, container),
           notifyChatMention: makeChatMentionNotifier(bellDeps),
         })
 
-  // P2 2.5 reply bell: pierces conversation mutes (chat-bells makeChatReplyNotifier owns the gates);
-  // frame-handler fires it for group rooms and dedupes the mention bell for the same target.
   const onChatReply: OnChatReply | undefined = bellDeps
     ? makeChatReplyNotifier(bellDeps)
     : undefined
@@ -477,16 +469,11 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           ...(reportMutedUserIdsFor ? { mutedUserIdsFor: reportMutedUserIdsFor } : {}),
           presence,
           roomKeyFor,
-          // M11: the block gate the mention/reply bells already apply (chat-bells) — a blocked user
-          // must not reach their target's lock screen through a shared PUBLIC report room.
           isBlockedEitherWay,
           ...(blockedIdsForCandidates ? { blockedIdsFor: blockedIdsForCandidates } : {}),
         })
       : undefined
 
-  // Per-member group-chat bell (P4 4.5, the D-E2 twin over chat_group_members). Same gating stance as
-  // notifyReportChatMembers, plus the group repo must be wired (offline harnesses leave it undefined,
-  // where onGroupMessage is then absent and group sends simply raise no fan-out bells).
   const notifyGroupChatMembers =
     notificationService && conversationMutes && groupWired
       ? makeGroupChatNotifier({
@@ -496,7 +483,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           ...(groupMutedUserIdsFor ? { mutedUserIdsFor: groupMutedUserIdsFor } : {}),
           presence,
           roomKeyFor,
-          // M11: same block gate as the report fan-out above.
           isBlockedEitherWay,
           ...(blockedIdsForCandidates ? { blockedIdsFor: blockedIdsForCandidates } : {}),
         })
@@ -541,9 +527,6 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   applyWsUpgradeRateLimit(app)
 
-  // Same three-way stance as the group lane above (and the convention this file's comments state): with
-  // chatOverrides present, ONLY the injected fake counts — an offline harness that carries no reportChat
-  // must not have getReportChatRepo() reach container.getDb() here, at mount.
   const reportChatSource = overrides
     ? overrides.reportChat
     : useFakeChat
@@ -573,40 +556,17 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     isBlockedEitherWay,
     userChannel: container.userChannel,
     threadRecipientsOf,
-    // DM delivered bell, now via chat-bells (P2 2.5): carries the reply override — a reply TO the
-    // recipient pierces a muted thread; an unmuted thread keeps its single normal bell.
     onDmDelivered: notificationService
       ? makeDmBellNotifier({ notificationService, isMutedFor })
       : undefined,
-    markReadOnOpen: async (kind, id, userId) => {
-      const at = new Date()
-      if (kind === "dm") {
-        await dmRepo.markRead(id, userId, at)
-        await clearConversationBell("dm", id, userId)
-      } else if (kind === "cleanup") {
-        await readState.markRead(id, userId, at)
-        await clearConversationBell("cleanup", id, userId)
-      } else if (kind === "group") {
-        // P4 4.4/4.5: opening a group room marks it read (member-scoped in the repo's WHERE) and
-        // clears the room's group_chat bells (the dm/cleanup clear-on-open pattern).
-        await getGroupsRepo()?.markRead(id, userId, at)
-        await clearConversationBell("group", id, userId)
-      }
-    },
+    markReadOnOpen: markRoomRead,
     chatMentions,
     onReportMessage,
     onGroupMessage,
     onChatReply,
     reportVisible,
     reportSendLimiter,
-    // Wrapped (PR #21) so the ack watermark also clears the reader's report_chat bells, while still
-    // sharing ONE underlying repo instance with the routes (via getReportChatRepo). Gated on useFakeChat
-    // like reportVisible/onReportMessage: the fake path has no DB, so the wrapper is undefined and the
-    // socket falls back to public send (matching pre-D-C3).
     reportChat,
-    // P4 4.4: member gate + ack watermark for group rooms, same one-instance stance as reportChat.
-    // Absent under fake-chat / an override set without a groups fake, where authorizeRoom fails
-    // group frames closed.
     groupChat,
     webOrigins: container.env.WEB_ORIGINS,
   })

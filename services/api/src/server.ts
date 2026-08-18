@@ -19,11 +19,11 @@ import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
 import type { DiscussionServiceOverrides } from "./routes/report-chat.routes.js"
-import type { SocialServiceOverrides, UserActivityOverride } from "./routes/social.routes.js"
+import type { SocialServiceOverrides } from "./routes/social.routes.js"
 import type { VolunteerHoursOverrides } from "./routes/volunteer-hours.routes.js"
 import type { CertificateOverrides } from "./routes/service-hours-certificates.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
-import type { ConversationMutesOverrides } from "./routes/conversations.routes.js"
+import type { ConversationRoutesOverrides } from "./routes/conversations.routes.js"
 import type { DataExportOverride } from "./routes/users.routes.js"
 import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.js"
 import type { ContentSubjectGate } from "./services/content-report-subject.js"
@@ -53,11 +53,10 @@ export interface BuildServerOptions {
   chatOverrides?: ChatGatewayOverrides
   discussionOverrides?: DiscussionServiceOverrides
   socialOverrides?: SocialServiceOverrides
-  userActivityOverride?: UserActivityOverride
   volunteerOverrides?: VolunteerHoursOverrides
   certificateOverrides?: CertificateOverrides
   notificationOverrides?: NotificationServiceOverrides
-  conversationMutesOverrides?: ConversationMutesOverrides
+  conversationRoutesOverrides?: ConversationRoutesOverrides
   dataExportOverride?: DataExportOverride
   moderationOverrides?: ModerationRouteOverrides
   contentSubjectGate?: ContentSubjectGate
@@ -73,11 +72,10 @@ const OVERRIDE_KEYS = [
   "chatOverrides",
   "discussionOverrides",
   "socialOverrides",
-  "userActivityOverride",
   "volunteerOverrides",
   "certificateOverrides",
   "notificationOverrides",
-  "conversationMutesOverrides",
+  "conversationRoutesOverrides",
   "dataExportOverride",
   "moderationOverrides",
   "contentSubjectGate",

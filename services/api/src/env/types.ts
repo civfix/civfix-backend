@@ -204,6 +204,16 @@ export interface Env {
   USE_FAKE_USER_CHANNEL: boolean
 
   /**
+   * Use the constant-label FakeGeocoder ("Los Angeles, CA" for every point) instead of TigerGeocoder for
+   * the "City, ST" reverse label. Defaults ON outside production, OFF in production. Adds no new [BOOT]
+   * var: TigerGeocoder resolves the label from the `jurisdictions` PostGIS table this API already owns and
+   * makes NO external call, so any stack with DATABASE_URL and seeded boundaries can set this false and get
+   * real labels with zero credentials. Label quality tracks the seeded boundary set: a dev stack seeded with
+   * only the LA-area fixtures returns null (-> "" on /map/reverse-label) for points outside them.
+   */
+  USE_FAKE_GEOCODER: boolean
+
+  /**
    * Opt-in real NSFW scoring. Default false EVEN in production: with the flag off (or on but with no
    * model wired) RealAbuseChecks.nsfwScore returns benign (0), so default-flag production publishes media
    * instead of holding all of it. The media-worker reads the same flag from its own env.

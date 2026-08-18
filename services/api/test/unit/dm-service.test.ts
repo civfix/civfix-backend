@@ -11,15 +11,6 @@ import {
 } from "../../src/services/dm-repository.memory.js"
 import type { AppError } from "@civfix/shared"
 
-/**
- * DM service unit tests (no DB): openDm rules.
- *   - disabled target with no existing thread -> 403 (generic message);
- *   - blocked either way -> 403;
- *   - self -> 403; missing target -> 403, byte-identical to the blocked one (CVX-032);
- *   - normal -> creates a thread, MessageThreadDTO with kind:"dm", peer, display-name title;
- *   - idempotent: a second openDm returns the SAME thread id;
- *   - DM-disabled but an EXISTING thread still opens (existing threads keep working).
- */
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -66,11 +57,23 @@ describe("DmService.openDm", () => {
     expect(thread.unread).toBe(0)
     expect(thread.refId).toBe(thread.id)
     expect(thread.last).toBeNull()
+    expect(thread.ago).toBeNull()
+    expect(thread.lastMessageAt).toBeNull()
+  })
+
+  it("carries the last message's ISO timestamp beside the rendered ago", async () => {
+    const opened = await service.openDm(ALICE, BOB)
+    const message = await dm.persist({ threadId: opened.id, senderId: BOB, body: "hey" })
+
+    const thread = await service.openDm(ALICE, BOB)
+    expect(thread.last).toBe("hey")
+    expect(thread.lastMessageAt).toBe(new Date(message.createdAt).toISOString())
+    expect(thread.ago).not.toBeNull()
   })
 
   it("is idempotent: a second openDm returns the same thread id", async () => {
     const a = await service.openDm(ALICE, BOB)
-    const b = await service.openDm(BOB, ALICE) // reverse order, same pair
+    const b = await service.openDm(BOB, ALICE)
     expect(b.id).toBe(a.id)
   })
 
@@ -101,12 +104,10 @@ describe("DmService.openDm", () => {
 
   it("403s when the target has DMs disabled and no thread exists yet", async () => {
     await expect(service.openDm(ALICE, CAROL)).rejects.toMatchObject({ httpStatus: 403 })
-    // No thread was created (the rule must not silently spin one up).
     expect(await dm.getThreadForPair(ALICE, CAROL)).toBeNull()
   })
 
   it("opens an EXISTING thread even when the target later disables DMs", async () => {
-    // Carol allows DMs, open a thread, then she disables: the existing thread still opens.
     users.set(CAROL, user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: true }))
     const first = await service.openDm(ALICE, CAROL)
     users.set(CAROL, user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: false }))
@@ -115,9 +116,8 @@ describe("DmService.openDm", () => {
   })
 
   it("403s when either party blocked the other (and does not leak which)", async () => {
-    await blocks.block(BOB, ALICE) // Bob blocked Alice
+    await blocks.block(BOB, ALICE)
     await expect(service.openDm(ALICE, BOB)).rejects.toMatchObject({ httpStatus: 403 })
-    // Same generic outcome the other direction.
     await blocks.unblock(BOB, ALICE)
     await blocks.block(ALICE, BOB)
     await expect(service.openDm(ALICE, BOB)).rejects.toMatchObject({ httpStatus: 403 })
@@ -134,17 +134,12 @@ describe("DmService.openDm", () => {
 
   it("reports the viewer's REAL unread: peer messages count, own don't, and a read clears it", async () => {
     const opened = await service.openDm(ALICE, BOB)
-    // Two from the peer + one of the viewer's own: unread counts only the peer's (you are never unread
-    // on what you wrote). This used to be a hardcoded 0, so a thread opened from a profile rendered with
-    // no badge until the inbox refetched and threads-service stamped the real count.
     await dm.persist({ threadId: opened.id, senderId: BOB, body: "yo" })
     await dm.persist({ threadId: opened.id, senderId: BOB, body: "you there?" })
     await dm.persist({ threadId: opened.id, senderId: ALICE, body: "hi" })
     expect((await service.openDm(ALICE, BOB)).unread).toBe(2)
-    // The PEER's own view of the same thread: Alice's one message is unread for Bob.
     expect((await service.openDm(BOB, ALICE)).unread).toBe(1)
 
-    // Reading up to now clears it (same watermark the inbox uses).
     await dm.markRead(opened.id, ALICE, new Date())
     expect((await service.openDm(ALICE, BOB)).unread).toBe(0)
   })
@@ -152,7 +147,6 @@ describe("DmService.openDm", () => {
   it("an unread lookup failure fails OPEN (0) rather than failing the open", async () => {
     const opened = await service.openDm(ALICE, BOB)
     await dm.persist({ threadId: opened.id, senderId: BOB, body: "yo" })
-    // The repo instance is rebuilt per test, so patching it here needs no restore.
     dm.countUnread = () => Promise.reject(new Error("db down"))
     const thread = await service.openDm(ALICE, BOB)
     expect(thread.unread).toBe(0)

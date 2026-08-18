@@ -13,17 +13,9 @@ import { InMemoryDiscussionRepository } from "../helpers/discussion.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "../../src/services/dm-repository.memory.js"
 import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 
-/**
- * Route-level tests for the report-chat MEMBERSHIP surface (D-C2): Join/Leave and the member-gated
- * write paths (delete + react). Run with NO database: a fake ReportChatRepository is injected via
- * buildServer(opts.chatOverrides.reportChat), report visibility is served by an in-memory discussion
- * repo, and a full in-memory auth bundle mints a real bearer session. Bearer transport is CSRF-exempt
- * (see auth/csrf.ts), so these state-changing POST/DELETEs need only the Authorization header.
- */
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-/** A fake report-chat membership repo: only the methods each test exercises are real spies. */
 function makeFakeReportChat(over: {
   isMember?: boolean
 } = {}): ReportChatRepository & {
@@ -41,10 +33,9 @@ function makeFakeReportChat(over: {
     isMember,
     join,
     leave,
-    // P3 chat-powers resolver: a plain member (no owner role) — non-members resolve to null too, and
-    // either way the offline harness grants no pin/delete-others powers.
     roleOf: () => Promise.resolve(over.isMember ? ("member" as const) : null),
     advanceReadWatermark: notImpl("advanceReadWatermark") as never,
+    markRead: notImpl("markRead") as never,
     insertSystemMessage: notImpl("insertSystemMessage") as never,
     listMemberIds: notImpl("listMemberIds") as never,
     countMembers: notImpl("countMembers") as never,
@@ -99,7 +90,6 @@ async function makeHarness(
     discussionOverrides: { repo: discussionRepo },
   })
 
-  // Sign in through the real OTP flow (mobile transport -> bearer token in the body).
   const email = "member@example.com"
   await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
   const code = mailer.lastOtpFor(email)!
@@ -122,7 +112,6 @@ function auth(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` }
 }
 
-/** Seed a report-scoped message authored by `userId` and return its id. */
 async function seedReportMessage(chatRepo: InMemoryChatRepository, userId: string): Promise<string> {
   const id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
   const msg: ChatMessageDTO = await chatRepo.insertMessage(
@@ -202,7 +191,6 @@ describe("DELETE /reports/:id/messages/:messageId — membership gate", () => {
       headers: auth(token),
     })
     expect(res.statusCode).toBe(403)
-    // The message is still present (delete never ran).
     expect(chatRepo.count(REPORT)).toBe(1)
   })
 
@@ -215,7 +203,6 @@ describe("DELETE /reports/:id/messages/:messageId — membership gate", () => {
       },
     })
     void rest
-    // Author the message as the signed-in member so softDeleteReport's ownership gate passes.
     const messageId = await seedReportMessage(chatRepo, userId)
     const res = await app.inject({
       method: "DELETE",
@@ -239,20 +226,13 @@ describe("POST /reports/:id/messages/:messageId/reactions — membership gate", 
       payload: { emoji: "like" },
     })
     expect(res.statusCode).toBe(403)
-    // The gate lives in chat-reaction-service now (the route stopped pre-running it), so the room's own
-    // actionable copy has to come from there — a generic "You can't react in this conversation." here
-    // would mean the message regressed with the de-duplication.
     expect(res.json().message).toBe("Join the chat to react to messages.")
-    // ...and it is checked ONCE per toggle: the route's duplicate pre-check cost a second membership read
-    // (plus a second report read) on the hottest chat mutation.
     expect(reportChat.isMember).toHaveBeenCalledTimes(1)
   })
 
   it("404s (never 403) when the report is no longer visible — visibility gates before membership", async () => {
     const { app, token, chatRepo, discussionRepo, reportChat } = await makeHarness({ isMember: true })
     const messageId = await seedReportMessage(chatRepo, "someone-else")
-    // The report is unlisted after the member joined: a report_chat_members row outlives visibility, and
-    // an invisible report must be indistinguishable from a missing one.
     discussionRepo.seedReport({ id: REPORT, status: "held", visibility: "public", reporterUserId: null })
     const res = await app.inject({
       method: "POST",
@@ -261,7 +241,6 @@ describe("POST /reports/:id/messages/:messageId/reactions — membership gate", 
       payload: { emoji: "like" },
     })
     expect(res.statusCode).toBe(404)
-    // Visibility short-circuits, so membership is never even read.
     expect(reportChat.isMember).not.toHaveBeenCalled()
   })
 

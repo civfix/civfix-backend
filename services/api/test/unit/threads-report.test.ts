@@ -8,12 +8,6 @@ import {
 } from "../../src/services/threads-service.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 
-/**
- * Task D-E3 — DB-FREE unit tests for the threads service's report half + the real per-conversation
- * `muted` stamp across ALL three thread families. The DB-backed report SQL is exercised separately by
- * the Docker-gated test/integration/threads-report-pg.test.ts; here we drive the pure merge/sort logic
- * with FAKE `report` + `mutes` sources so it runs with no Postgres.
- */
 
 const ME = "11111111-1111-1111-1111-111111111111"
 const OTHER = "22222222-2222-2222-2222-222222222222"
@@ -22,15 +16,10 @@ const CLEANUP_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 const NOW = new Date("2026-06-01T12:00:00.000Z")
 
-/** A fake ReportThreadsSource returning whatever aggregate rows the test seeds. */
 function reportSource(rows: ReportThreadAggregateView[]): ReportThreadsSource {
   return { listReportThreadsFor: () => Promise.resolve(rows) }
 }
 
-/**
- * A fake ThreadsMutesSource backed by an in-memory `${roomKind}:${roomId}` set. Records the (userId,
- * roomKind, roomIds) it is asked about so tests can assert the service batches per family.
- */
 function mutesSource(muted: Array<{ roomKind: "cleanup" | "dm" | "report"; roomId: string }>): {
   source: ThreadsMutesSource
   calls: Array<{ roomKind: string; roomIds: string[] }>
@@ -68,7 +57,6 @@ describe("threads service — report half (DB-free)", () => {
       repo: new InMemoryThreadsRepository(),
       readState: new InMemoryChatReadState(),
       report: reportSource([report]),
-      // No mutes source wired -> fail-open: muted is false everywhere.
       now: () => NOW,
     })
     const { items } = await svc.listThreads(ME)
@@ -80,6 +68,7 @@ describe("threads service — report half (DB-free)", () => {
     expect(t.title).toBe("Trash - 123 Main St")
     expect(t.last).toBe("please look at this")
     expect(t.ago).toBe("30m")
+    expect(t.lastMessageAt).toBe("2026-06-01T11:30:00.000Z")
     expect(t.lastFromMe).toBe(false)
     expect(t.unread).toBe(1)
     expect(t.members).toBe(1)
@@ -96,7 +85,7 @@ describe("threads service — report half (DB-free)", () => {
       last: {
         body: "Report was acknowledged.",
         createdAt: new Date("2026-06-01T11:00:00.000Z"),
-        senderId: null, // system message
+        senderId: null,
       },
     }
     const svc = makeThreadsService({
@@ -128,12 +117,12 @@ describe("threads service — report half (DB-free)", () => {
     const t = (await svc.listThreads(ME)).items[0]!
     expect(t.last).toBeNull()
     expect(t.ago).toBeNull()
+    expect(t.lastMessageAt).toBeNull()
     expect(t.unread).toBe(0)
     expect(t.muted).toBe(false)
   })
 
   it("merges report entries with cleanup entries, most-recent-activity first", async () => {
-    // A cleanup with an OLDER last message.
     const repo = new InMemoryThreadsRepository()
     const c1 = repo.seedCleanup("Beach sweep", CLEANUP_ID)
     repo.addMember(c1, ME, new Date("2026-06-01T08:00:00.000Z"))
@@ -143,7 +132,6 @@ describe("threads service — report half (DB-free)", () => {
       createdAt: new Date("2026-06-01T09:00:00.000Z"),
     })
 
-    // A report with a NEWER last message -> sorts first.
     const report: ReportThreadAggregateView = {
       reportId: REPORT_A,
       title: "Graffiti - Elm Ave",
@@ -211,11 +199,8 @@ describe("threads service — real per-conversation muted on ALL families (DB-fr
     expect(byKind.cleanup!.muted).toBe(true)
     expect(byKind.report!.muted).toBe(true)
 
-    // The service issued one batch lookup per NON-empty family (cleanup + report here; dm was empty and
-    // short-circuited without a call).
     const kinds = calls.map((c) => c.roomKind).sort()
     expect(kinds).toEqual(["cleanup", "report"])
-    // Each call carried exactly that family's room ids.
     expect(calls.find((c) => c.roomKind === "cleanup")!.roomIds).toEqual([CLEANUP_ID])
     expect(calls.find((c) => c.roomKind === "report")!.roomIds).toEqual([REPORT_A])
   })
@@ -277,7 +262,6 @@ describe("threads service — real per-conversation muted on ALL families (DB-fr
       repo,
       readState: new InMemoryChatReadState(),
       report: reportSource([report]),
-      // no mutes
       now: () => NOW,
     })
     for (const t of (await svc.listThreads(ME)).items) {

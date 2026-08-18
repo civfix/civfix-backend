@@ -3,14 +3,12 @@ import {
   ListPeopleRequestSchema,
   FollowSuggestionsRequestSchema,
   type FollowSuggestionsResponse,
-  UserActivityListQuerySchema,
   ConnectionsListQuerySchema,
   IdSchema,
   AppError,
   type ListPeopleResponse,
   type FollowPersonResponse,
   type GetProfileResponse,
-  type UserActivityListResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -25,11 +23,6 @@ import {
 } from "../services/social-service.js"
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
-import {
-  makeUserActivityService,
-  type UserActivityRepository,
-} from "../services/user-activity-service.js"
-import { makeDrizzleUserActivityRepository } from "../services/user-activity-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
@@ -39,14 +32,9 @@ export interface SocialServiceOverrides {
   notifier?: SocialNotifier
 }
 
-export interface UserActivityOverride {
-  repo: UserActivityRepository
-}
-
 declare module "fastify" {
   interface FastifyInstance {
     socialOverrides?: SocialServiceOverrides
-    userActivityOverride?: UserActivityOverride
   }
 }
 
@@ -117,7 +105,7 @@ export async function registerSocialRoutes(
    * :id -> a user id that EXISTS and is not soft-deleted, else 404.
    *
    * The handle branch verifies existence inherently (the lookup filters deleted_at). The UUID branch used
-   * to pass the ref straight through, so followers/following/activity answered 200-with-items:[] for a
+   * to pass the ref straight through, so followers/following answered 200-with-items:[] for a
    * random or tombstoned UUID while getProfile 404'd the same id — inconsistent, and it left a deleted
    * account's surfaces enumerable by UUID. findPersonById applies the same deleted_at filter getProfile does.
    */
@@ -129,12 +117,6 @@ export async function registerSocialRoutes(
     }
     if (ref.length > PERSON_REF_MAX) throw AppError.notFound("Person not found")
     return service().resolveHandleToId(ref)
-  }
-
-  function userActivityRepo(): UserActivityRepository {
-    const override = app.userActivityOverride
-    if (override) return override.repo
-    return makeDrizzleUserActivityRepository(container.getDb().sql)
   }
 
   route(app, "listPeople", async (request, reply) => {
@@ -186,26 +168,6 @@ export async function registerSocialRoutes(
   route(app, "myProfile", async (request, reply) => {
     const userId = requireAuth(request)
     const payload: GetProfileResponse = await service().getMyProfile(userId)
-    reply.status(200).send(payload)
-  })
-
-  route(app, "listUserActivity", async (request, reply) => {
-    const input = mergeIdParam(UserActivityListQuerySchema, request)
-    const userId = await resolvePersonId(input.id)
-    const blockState = app.userActivityOverride
-      ? undefined
-      : (viewerId: string, targetId: string) =>
-          container.getBlocksRepo().blockState(viewerId, targetId)
-    const activity = makeUserActivityService({
-      repo: userActivityRepo(),
-      ...(blockState !== undefined ? { blockState } : {}),
-    })
-    const payload: UserActivityListResponse = await activity.list(
-      userId,
-      request.auth?.userId ?? null,
-      input.cursor ?? null,
-      input.limit,
-    )
     reply.status(200).send(payload)
   })
 

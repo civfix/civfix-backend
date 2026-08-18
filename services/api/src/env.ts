@@ -70,6 +70,7 @@ type FakeFlags = Pick<
   | "USE_FAKE_CHAT"
   | "USE_FAKE_JOBS"
   | "USE_FAKE_USER_CHANNEL"
+  | "USE_FAKE_GEOCODER"
   | "USE_REAL_NSFW"
 >
 
@@ -83,6 +84,7 @@ function deriveFakeFlags(source: NodeJS.ProcessEnv, isProd: boolean): FakeFlags 
     USE_FAKE_CHAT: parseBool(source.USE_FAKE_CHAT, !isProd),
     USE_FAKE_JOBS: parseBool(source.USE_FAKE_JOBS, !isProd),
     USE_FAKE_USER_CHANNEL: parseBool(source.USE_FAKE_USER_CHANNEL, !isProd),
+    USE_FAKE_GEOCODER: parseBool(source.USE_FAKE_GEOCODER, !isProd),
     // Real NSFW is opt-in and defaults OFF in ALL environments (prod publishes benign by default).
     USE_REAL_NSFW: parseBool(source.USE_REAL_NSFW, false),
   }
@@ -224,6 +226,16 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     )
   }
   const LOCAL_STORAGE_SIGNING_KEY = (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim()
+
+  // TigerGeocoder needs no credentials, but it DOES need the `jurisdictions` PostGIS table: turning the
+  // fake off without a database would defer the failure to the first /map/reverse-label call instead of
+  // boot. Fail closed here so the misconfiguration is loud and immediate.
+  if (!fakeFlags.USE_FAKE_GEOCODER && DATABASE_URL.length === 0) {
+    errors.push(
+      "DATABASE_URL: required whenever USE_FAKE_GEOCODER is false — the real geocoder resolves its " +
+        "\"City, ST\" label from the jurisdictions PostGIS table, so there is nothing to query without a database",
+    )
+  }
 
   const R2_ACCOUNT_ID = reqStr("R2_ACCOUNT_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
   const R2_ACCESS_KEY_ID = reqStr("R2_ACCESS_KEY_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
