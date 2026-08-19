@@ -31,12 +31,14 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
               SELECT dc.email FROM jurisdiction_contacts dc
               WHERE dc.geoid = j.geoid AND dc.category IS NULL
                 AND dc.email IS NOT NULL AND dc.email <> ''
+                AND dc.bounced_at IS NULL
               LIMIT 1
             ),
             (
               SELECT cc.email FROM jurisdiction_contacts cc
               WHERE cc.geoid = j.geoid AND cc.category IS NOT NULL
                 AND cc.email IS NOT NULL AND cc.email <> ''
+                AND cc.bounced_at IS NULL
               ORDER BY COALESCE(
                 array_position(${[...OUTREACH_CATEGORIES] as string[]}::text[], cc.category),
                 2147483647
@@ -82,7 +84,8 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
       }
     },
 
-    async listCandidateGeoids(): Promise<string[]> {
+    async listCandidateGeoids(limit?: number): Promise<string[]> {
+      const cap = limit !== undefined && limit > 0 ? limit : null
       const rows = await sql<{ geoid: string }[]>`
         WITH candidate AS (
           SELECT DISTINCT r.jurisdiction_geoid AS geoid
@@ -93,19 +96,25 @@ export function makeDrizzleOutreachRepository(sql: Sql): OutreachRepository {
         )
         SELECT c.geoid
         FROM candidate c
-        WHERE EXISTS (
-            SELECT 1 FROM jurisdiction_contacts jc
-            WHERE jc.geoid = c.geoid AND jc.email IS NOT NULL AND jc.email <> ''
+        LEFT JOIN outreach_state os ON os.geoid = c.geoid
+        WHERE COALESCE(os.suppressed, false) = false
+          AND (
+            EXISTS (
+              SELECT 1 FROM jurisdiction_contacts jc
+              WHERE jc.geoid = c.geoid AND jc.email IS NOT NULL AND jc.email <> ''
+                AND jc.bounced_at IS NULL
+            )
+            OR EXISTS (
+              SELECT 1 FROM jurisdictions j
+              WHERE j.geoid = c.geoid
+                AND j.contact_emails IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM unnest(j.contact_emails) AS e WHERE e <> ''
+                )
+            )
           )
-          OR EXISTS (
-            SELECT 1 FROM jurisdictions j
-            WHERE j.geoid = c.geoid
-              AND j.contact_emails IS NOT NULL
-              AND EXISTS (
-                SELECT 1 FROM unnest(j.contact_emails) AS e WHERE e <> ''
-              )
-          )
-        ORDER BY c.geoid ASC
+        ORDER BY os.last_outreach_at ASC NULLS FIRST, c.geoid ASC
+        ${cap !== null ? sql`LIMIT ${cap}` : sql``}
       `
       return rows.map((r) => r.geoid)
     },

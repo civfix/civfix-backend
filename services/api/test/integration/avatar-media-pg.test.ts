@@ -20,6 +20,8 @@ interface SeedOptions {
   reportId?: string
   postId?: string
   chatMessageId?: string
+  purpose?: string
+  ageHours?: number
 }
 
 describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
@@ -36,11 +38,14 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
     const r2Key = `uploads/2026/01/${uploadId}`
     const [row] = await h.sql<{ id: string }[]>`
       INSERT INTO media_assets (
-        upload_id, kind, r2_key, status, byte_size, report_id, post_id, chat_message_id
+        upload_id, kind, r2_key, status, byte_size, report_id, post_id, chat_message_id,
+        purpose, created_at
       )
       VALUES (
         ${uploadId}, ${over.kind ?? "image"}, ${r2Key}, ${over.status ?? "ready"}, 1024,
-        ${over.reportId ?? null}, ${over.postId ?? null}, ${over.chatMessageId ?? null}
+        ${over.reportId ?? null}, ${over.postId ?? null}, ${over.chatMessageId ?? null},
+        ${over.purpose ?? "report"},
+        now() - make_interval(hours => ${over.ageHours ?? 0})
       )
       RETURNING id
     `
@@ -74,6 +79,30 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       INSERT INTO posts (author_id, kind, body) VALUES (${owner.id}, 'post', 'has a photo') RETURNING id
     `
     return post!.id
+  }
+
+  async function seedUser(): Promise<string> {
+    const users = new PgUserStore(h.db)
+    const user = await users.create(`avatar.holder.${randomUUID()}@example.com`, {
+      displayName: "Avatar Holder",
+    })
+    return user.id
+  }
+
+  async function seedGroup(): Promise<string> {
+    const ownerId = await seedUser()
+    const [group] = await h.sql<{ id: string }[]>`
+      INSERT INTO chat_groups (name, owner_id) VALUES ('Avatar Group', ${ownerId}) RETURNING id
+    `
+    return group!.id
+  }
+
+  async function claimUserAvatar(userId: string, mediaId: string): Promise<void> {
+    await h.sql`UPDATE users SET avatar_media_id = ${mediaId} WHERE id = ${userId}`
+  }
+
+  async function claimGroupAvatar(groupId: string, mediaId: string): Promise<void> {
+    await h.sql`UPDATE chat_groups SET avatar_media_id = ${mediaId} WHERE id = ${groupId}`
   }
 
   const rejects422 = { httpStatus: 422, code: "VALIDATION" }
@@ -119,6 +148,60 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       const reportId = await seedForeignReport()
       const media = await seedMedia({ reportId })
       await expect(resolveAvatarMediaOrThrow(h.sql, media.uploadId)).rejects.toMatchObject(rejects422)
+    })
+
+    it("F074: rejects an upload older than the claim window (a leaked id is not a permanent capability)", async () => {
+      const media = await seedMedia({ ageHours: 7 })
+      await expect(resolveAvatarMediaOrThrow(h.sql, media.uploadId)).rejects.toMatchObject(rejects422)
+    })
+
+    it("F074: accepts an upload still inside the claim window", async () => {
+      const media = await seedMedia({ ageHours: 5 })
+      const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId)
+      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key })
+    })
+
+    it("F074: rejects a verification document (it cannot be laundered into a public avatar)", async () => {
+      const media = await seedMedia({ purpose: "verification" })
+      await expect(resolveAvatarMediaOrThrow(h.sql, media.uploadId)).rejects.toMatchObject(rejects422)
+    })
+
+    it("F074: rejects an uploadId already claimed as another user's avatar", async () => {
+      const media = await seedMedia()
+      const owner = await seedUser()
+      await claimUserAvatar(owner, media.id)
+      await expect(resolveAvatarMediaOrThrow(h.sql, media.uploadId)).rejects.toMatchObject(rejects422)
+      const stranger = await seedUser()
+      await expect(
+        resolveAvatarMediaOrThrow(h.sql, media.uploadId, { userId: stranger }),
+      ).rejects.toMatchObject(rejects422)
+    })
+
+    it("F074: rejects an uploadId already claimed as a group's avatar", async () => {
+      const media = await seedMedia()
+      const group = await seedGroup()
+      await claimGroupAvatar(group, media.id)
+      await expect(resolveAvatarMediaOrThrow(h.sql, media.uploadId)).rejects.toMatchObject(rejects422)
+      const otherGroup = await seedGroup()
+      await expect(
+        resolveAvatarMediaOrThrow(h.sql, media.uploadId, { groupId: otherGroup }),
+      ).rejects.toMatchObject(rejects422)
+    })
+
+    it("F074: the holder may re-apply the avatar it already has (a resubmitted profile save is idempotent)", async () => {
+      const media = await seedMedia()
+      const owner = await seedUser()
+      await claimUserAvatar(owner, media.id)
+      const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId, { userId: owner })
+      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key })
+    })
+
+    it("F074: a group may re-apply the avatar it already has", async () => {
+      const media = await seedMedia()
+      const group = await seedGroup()
+      await claimGroupAvatar(group, media.id)
+      const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId, { groupId: group })
+      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key })
     })
   })
 
@@ -198,6 +281,57 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       expect(await avatarMediaIdOf(id)).toBeNull()
     })
 
+    it("F074: a second profile save with the SAME avatarUploadId still succeeds", async () => {
+      const { store, id, handle } = await makeUser()
+      const media = await seedMedia()
+      await store.updateProfile(id, {
+        handle,
+        displayName: "Avatar User",
+        avatarUploadId: media.uploadId,
+      })
+      expect(await avatarMediaIdOf(id)).toBe(media.id)
+      const second = await store.updateProfile(id, {
+        handle,
+        displayName: "Avatar User Renamed",
+        avatarUploadId: media.uploadId,
+      })
+      expect(second.displayName).toBe("Avatar User Renamed")
+      expect(await avatarMediaIdOf(id)).toBe(media.id)
+    })
+
+    it("F074: another account cannot claim an avatar that is already someone's", async () => {
+      const holder = await makeUser()
+      const media = await seedMedia()
+      await holder.store.updateProfile(holder.id, {
+        handle: holder.handle,
+        displayName: "Avatar User",
+        avatarUploadId: media.uploadId,
+      })
+      const thief = await makeUser()
+      await expect(
+        thief.store.updateProfile(thief.id, {
+          handle: thief.handle,
+          displayName: "Avatar Thief",
+          avatarUploadId: media.uploadId,
+        }),
+      ).rejects.toMatchObject(rejects422)
+      expect(await avatarMediaIdOf(thief.id)).toBeNull()
+      expect(await avatarMediaIdOf(holder.id)).toBe(media.id)
+    })
+
+    it("F074: rejects an upload older than the claim window", async () => {
+      const { store, id, handle } = await makeUser()
+      const media = await seedMedia({ ageHours: 7 })
+      await expect(
+        store.updateProfile(id, {
+          handle,
+          displayName: "Avatar User",
+          avatarUploadId: media.uploadId,
+        }),
+      ).rejects.toMatchObject(rejects422)
+      expect(await avatarMediaIdOf(id)).toBeNull()
+    })
+
     it("rejects another user's report-bound media", async () => {
       const { store, id, handle } = await makeUser()
       const reportId = await seedForeignReport()
@@ -244,6 +378,14 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       const reportId = await seedForeignReport()
       const media = await seedMedia({ reportId })
       await expect(groups().findMediaIdByUploadId(media.uploadId)).rejects.toMatchObject(rejects422)
+    })
+
+    it("F074: rejects an avatar another group already holds, and stays idempotent for the holder", async () => {
+      const media = await seedMedia()
+      const holder = await seedGroup()
+      await claimGroupAvatar(holder, media.id)
+      await expect(groups().findMediaIdByUploadId(media.uploadId)).rejects.toMatchObject(rejects422)
+      expect(await groups().findMediaIdByUploadId(media.uploadId, holder)).toBe(media.id)
     })
   })
 })

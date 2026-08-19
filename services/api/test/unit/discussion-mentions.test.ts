@@ -1,17 +1,8 @@
-/**
- * Pure unit tests (no DB, no network) for the discussion @city-mention parser + the jurisdiction-handle
- * slug derivation (src/services/discussion-mentions.ts).
- *
- * These two helpers are the DB-free core of the discussion city-forward path: parseCityMention decides
- * whether a message references its report's OWN jurisdiction handle (word-boundary, case-insensitive), and
- * jurisdictionHandle derives the stable slug used by the backfill CLI + the on-the-fly read derivation. Both
- * are exercised here in isolation so the matching rules (boundaries, casing, partial-token rejection) and
- * the slug rules (prefix/suffix stripping, punctuation collapse) are locked.
- */
 
 import { describe, expect, it } from "vitest"
 import {
   jurisdictionHandle,
+  MAX_MENTIONS_PER_MESSAGE,
   parseCityMention,
   parseUserMentions,
 } from "../../src/services/discussion-mentions.js"
@@ -86,7 +77,6 @@ describe("parseCityMention", () => {
 
   it("handles an underscore handle as a single token", () => {
     expect(parseCityMention("tagging @san_francisco here", "san_francisco")).toBe("san_francisco")
-    // A trailing word char after the underscore handle breaks the boundary.
     expect(parseCityMention("@san_franciscox", "san_francisco")).toBeNull()
   })
 })
@@ -123,5 +113,12 @@ describe("parseUserMentions", () => {
 
   it("preserves the body's casing of each handle", () => {
     expect(parseUserMentions("hey @JaneDoe")).toEqual(["JaneDoe"])
+  })
+
+  it("F050: caps distinct handles at MAX_MENTIONS_PER_MESSAGE (mention-bomb bound)", () => {
+    const body = Array.from({ length: MAX_MENTIONS_PER_MESSAGE + 40 }, (_, i) => `@user${i}`).join(" ")
+    const out = parseUserMentions(body)
+    expect(out).toHaveLength(MAX_MENTIONS_PER_MESSAGE)
+    expect(out[0]).toBe("user0")
   })
 })

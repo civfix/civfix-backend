@@ -16,13 +16,6 @@ import {
 } from "../../src/routes/notifications.routes.js"
 import { randomUUID } from "node:crypto"
 
-/**
- * Route-level tests for the notifications plugin, run with NO database: an in-memory
- * NotificationRepository is injected via buildServer(opts.notificationOverrides), the container's push seam
- * is the FakePushSender (USE_FAKE_PUSH on in test), and a full in-memory auth bundle gives the [auth]
- * routes a real bearer session. Exercised through app.inject. The Drizzle/PostGIS path is covered by the
- * Docker-gated integration test.
- */
 
 interface Harness {
   app: FastifyInstance
@@ -55,7 +48,6 @@ async function makeHarness(seed?: (repo: InMemoryNotificationRepository) => void
   if (seed) seed(repo)
   const notificationOverrides: NotificationServiceOverrides = { repo }
 
-  // The container's push seam is the FakePushSender in test; grab a handle so register-delegation asserts.
   const container = buildContainer(env)
   const push = container.pushSender as FakePushSender
 
@@ -99,7 +91,6 @@ afterEach(async () => {
 describe("GET /notifications", () => {
   it("lists the caller's notifications newest-first (auth)", async () => {
     const { app, token, userId } = await makeHarness()
-    // Seed via the repo directly (as a triggering request would have).
     const { repo } = current!
     await repo.insertNotification({ userId, type: "system", title: "older", body: null, link: null })
     await repo.insertNotification({ userId, type: "system", title: "newer", body: null, link: null })
@@ -173,6 +164,31 @@ describe("POST /notifications/read", () => {
     expect(overCap.statusCode).toBe(422)
     expect(overCap.json().code).toBe("VALIDATION")
   })
+
+  it("F085: marks EVERY id in a large in-range batch read (no silent 50-id truncation)", async () => {
+    const { app, token, userId } = await makeHarness()
+    const { repo } = current!
+    const ids: string[] = []
+    for (let i = 0; i < 120; i++) {
+      const n = await repo.insertNotification({
+        userId,
+        type: "system",
+        title: `n${i}`,
+        body: null,
+        link: null,
+      })
+      ids.push(n.id)
+    }
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/read",
+      headers: auth(token),
+      payload: { ids },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(repo.notifications.filter((n) => n.userId === userId && n.readAt === null)).toHaveLength(0)
+  })
 })
 
 describe("GET + PUT /notifications/prefs", () => {
@@ -221,7 +237,6 @@ describe("GET + PUT /notifications/prefs", () => {
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.mentions).toBe(false)
-    // Untouched toggles stay on.
     expect(body.push).toBe(true)
     expect(body.cleanupChat).toBe(true)
   })
@@ -255,10 +270,8 @@ describe("POST /push/register", () => {
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
 
-    // Persisted in the repo.
     expect(current!.repo.pushTokens).toHaveLength(1)
     expect(current!.repo.pushTokens[0]).toMatchObject({ userId, platform: "ios", token: "device-token-1" })
-    // Delegated to the push seam.
     expect(push.tokens.some((t) => t.token === "device-token-1")).toBe(true)
   })
 
@@ -273,17 +286,6 @@ describe("POST /push/register", () => {
     expect(res.statusCode).toBe(422)
   })
 
-  /**
-   * H12 shape gate (routes-core HIGH). The shared contract types `deviceId` as a bare optional string, and
-   * the server uses it to key a destructive cross-account write. A value that is not the client-generated
-   * UUID is DROPPED (not rejected — rejecting would 422 older clients out of push entirely), so the repo
-   * must see `deviceId: null`.
-   *
-   * The bug these pin: the payload was assembled as `{...body, ...(deviceId !== undefined ? {deviceId} : {})}`,
-   * so whenever the normalizer dropped the value the raw string survived in the `{...body}` spread and the
-   * service persisted it (`req.deviceId ?? null`). The gate has to REMOVE the field, not merely fail to
-   * re-add it — and only a route-level assertion on what the repo stored can tell the two apart.
-   */
   it("STRIPS a malformed deviceId ('*') before the service: the repo stores null", async () => {
     const { app, token, userId } = await makeHarness()
     const res = await app.inject({
@@ -292,7 +294,6 @@ describe("POST /push/register", () => {
       headers: auth(token),
       payload: { platform: "ios", token: "device-token-wild", deviceId: "*" },
     })
-    // Dropped, not rejected: the registration still succeeds.
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
 
@@ -311,7 +312,7 @@ describe("POST /push/register", () => {
       "' OR 1=1 --",
       "a".repeat(4096),
       "not-a-uuid",
-      "3f2504e0-4f89-11d3-9a0c-0305e82c3301x", // a uuid with trailing junk
+      "3f2504e0-4f89-11d3-9a0c-0305e82c3301x",
       "",
       "   ",
     ]
@@ -331,7 +332,6 @@ describe("POST /push/register", () => {
   })
 
   it("PRESERVES a well-formed uuid deviceId (normalized to trimmed lower case)", async () => {
-    // The positive control for the gate above: it must not simply null everything.
     const { app, token } = await makeHarness()
     const res = await app.inject({
       method: "POST",
@@ -364,6 +364,63 @@ describe("POST /push/register", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/push/register",
+      payload: { platform: "ios", token: "x" },
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it("F091: 422s an over-long token (the bounded contract schema is the route belt, not a 500)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/push/register",
+      headers: auth(token),
+      payload: { platform: "ios", token: "x".repeat(4000) },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+    expect(current!.repo.pushTokens).toHaveLength(0)
+  })
+})
+
+describe("POST /push/unregister (F083)", () => {
+  it("soft-revokes the caller's own token (auth)", async () => {
+    const { app, token, userId } = await makeHarness()
+    await app.inject({
+      method: "POST",
+      url: "/v1/push/register",
+      headers: auth(token),
+      payload: { platform: "ios", token: "device-token-1" },
+    })
+    expect(current!.repo.pushTokens[0]).toMatchObject({ userId, token: "device-token-1", revokedAt: null })
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/push/unregister",
+      headers: auth(token),
+      payload: { platform: "ios", token: "device-token-1" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ ok: true })
+    expect(current!.repo.pushTokens[0]?.revokedAt).not.toBeNull()
+  })
+
+  it("422s an unknown field (strict schema)", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/push/unregister",
+      headers: auth(token),
+      payload: { platform: "ios", token: "t", bogus: true },
+    })
+    expect(res.statusCode).toBe(422)
+  })
+
+  it("401s anonymously", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/push/unregister",
       payload: { platform: "ios", token: "x" },
     })
     expect(res.statusCode).toBe(401)

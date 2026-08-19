@@ -177,8 +177,6 @@ export class InMemoryMailRepository implements MailRepository {
   upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
     let best: MailThreadRecord | null = null
     for (const t of this.threads.values()) {
-      // Both ids must be null: the Drizzle partial-unique target is (geoid) WHERE report_id IS NULL AND
-      // cleanup_id IS NULL, so an EVENT thread that happens to carry the geoid is NOT the digest thread.
       if (t.jurisdictionGeoid !== geoid || t.reportId !== null || t.cleanupId !== null) continue
       if (best === null || cmpThreadNewest(t, best) > 0) best = t
     }
@@ -212,7 +210,14 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve(best ? { ...best } : null)
   }
 
-  insertMessage(input: InsertMessageInput): Promise<MailMessageRecord> {
+  insertMessage(input: InsertMessageInput): Promise<MailMessageRecord | null> {
+    if (
+      input.messageId !== null &&
+      input.messageId !== undefined &&
+      this.messages.some((m) => m.messageId === input.messageId)
+    ) {
+      return Promise.resolve(null)
+    }
     const createdAt = this.nextDate()
     const record: MailMessageRecord = {
       id: randomUUID(),
@@ -349,8 +354,15 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve(best?.toAddr ?? null)
   }
 
-  messageExists(messageId: string): Promise<boolean> {
-    return Promise.resolve(this.messages.some((m) => m.messageId === messageId))
+  getLastInboundSender(threadId: string): Promise<string | null> {
+    let best: MailMessageRecord | null = null
+    for (const m of this.messages) {
+      if (m.threadId !== threadId) continue
+      if (m.direction !== "in") continue
+      if (m.fromAddr === null || m.fromAddr === "") continue
+      if (best === null || cmpCreated(m, best) > 0) best = m
+    }
+    return Promise.resolve(best?.fromAddr ?? null)
   }
 
   markThreadRead(id: string): Promise<boolean> {

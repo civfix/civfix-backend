@@ -1,18 +1,3 @@
-/**
- * Unit tests for the OCI SMTP mailer (src/adapters/mailer.oci.ts), previously untested end-to-end: the auth
- * OTP test stubs the whole Mailer, so nothing exercised this adapter's own guarantees.
- *
- * What matters here:
- *   - HEADER INJECTION: envelope addresses are REJECTED on a CR/LF/NUL (an injected newline lets an attacker
- *     append headers or a body), while free-text header values (subject, custom headers, In-Reply-To /
- *     References recovered from inbound mail) are SANITIZED. In-Reply-To/References used to bypass this.
- *   - ERROR CLASSIFICATION: a permanent 5xx is the "not an approved sender" CONFLICT operators act on; an
- *     EAUTH (bad SMTP credentials) is a DIFFERENT fault and must not be reported as an approval problem;
- *     anything else is a generic INTERNAL.
- *   - the generated Message-ID and the secure/STARTTLS port choice.
- *
- * nodemailer is mocked (the adapter imports it lazily inside getTransporter), so no SMTP is involved.
- */
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { AppError, ErrorCode } from "@civfix/shared"
@@ -35,8 +20,6 @@ const sendMail = vi.fn<(args: SentMailArgs) => Promise<unknown>>()
 const verify = vi.fn(async () => true)
 let lastTransportOpts: Record<string, unknown> | undefined
 
-// The adapter imports nodemailer LAZILY inside getTransporter, so this factory runs during a test (after
-// this module has evaluated) and can close over the bindings above.
 vi.mock("nodemailer", () => ({
   createTransport: (opts: Record<string, unknown>) => {
     lastTransportOpts = opts
@@ -80,7 +63,6 @@ describe("OciMailer.sendOutbound header handling", () => {
     await expect(
       mailer.sendOutbound(outbound({ from: "a@civfix.org\nX-Injected: 1" })),
     ).rejects.toMatchObject({ code: ErrorCode.INTERNAL })
-    // A NUL is rejected on the same grounds as CR/LF (kept out of the source as a char code).
     const nul = String.fromCharCode(0)
     await expect(
       mailer.sendOutbound(outbound({ replyTo: `a@civfix.org${nul}` })),
@@ -143,9 +125,34 @@ describe("OciMailer error classification", () => {
     })
     await mailer.sendOutbound(outbound()).catch((err: AppError) => {
       expect(err.message).toContain("approved sender")
-      // The domain in the remediation comes from the (display-name form) From address.
       expect(err.message).toContain("@civfix.org")
       expect(err.message).toContain("550 relay not permitted")
+    })
+  })
+
+  it("maps a size rejection (552 / 'message too large') to CONFLICT about size, not approved-sender", async () => {
+    sendMail.mockRejectedValue(
+      Object.assign(new Error("too big"), {
+        responseCode: 552,
+        response: "552 message size exceeds the administrative limit",
+      }),
+    )
+    const mailer = new OciMailer(CONFIG)
+    await mailer.sendOutbound(outbound()).then(
+      () => expect.unreachable("send should reject"),
+      (err: AppError) => {
+        expect(err.code).toBe(ErrorCode.CONFLICT)
+        expect(err.message).toContain("too large")
+        expect(err.message).not.toContain("approved sender")
+      },
+    )
+
+    sendMail.mockRejectedValue(
+      Object.assign(new Error("x"), { responseCode: 550, response: "550 message too large" }),
+    )
+    await mailer.sendOutbound(outbound()).catch((err: AppError) => {
+      expect(err.code).toBe(ErrorCode.CONFLICT)
+      expect(err.message).toContain("too large")
     })
   })
 
@@ -198,7 +205,6 @@ describe("OciMailer.sendOtp", () => {
     expect(english.html).toContain("123456")
     expect(english.text).toContain("123456")
 
-    // The locale slot is what makes the es/de/ko email.otp.* translations reachable at all.
     await mailer.sendOtp("user@example.com", "123456", "es-419")
     expect(sendMail.mock.calls[1]![0].subject).toBe("Tu código de acceso a civfix")
   })
@@ -211,11 +217,6 @@ describe("OciMailer.sendOtp", () => {
   })
 })
 
-/**
- * sendTransactional has no production caller yet (see the method's own note), which is precisely why it is
- * pinned here: the render machinery + the four report_update catalogs must not rot silently while they wait
- * for the report-status email path.
- */
 describe("OciMailer.sendTransactional", () => {
   it("renders the report_update template with the interpolated status", async () => {
     await new OciMailer(CONFIG).sendTransactional("user@example.com", "report_update", {

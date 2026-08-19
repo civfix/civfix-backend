@@ -1,13 +1,3 @@
-/**
- * user_blocks: directed block edges between users.
- *
- * Blocking hides the DM thread for BOTH sides (a thread is excluded from the threads list when blocked
- * either way) and rejects sends in the WS gateway. PK(blocker_id, blocked_id) makes block idempotent; a
- * CHECK forbids self-blocks; the blocked_id index serves the reverse ("who blocked me?") lookups used in
- * the bidirectional block test (isBlockedEitherWay).
- *
- * Canonical DDL: services/api/drizzle/0009_dm_and_privacy.sql.
- */
 
 import { sql } from "drizzle-orm"
 import { check, index, pgTable, primaryKey, timestamp, uuid } from "drizzle-orm/pg-core"
@@ -27,6 +17,11 @@ export const userBlocks = pgTable(
   (t) => [
     primaryKey({ columns: [t.blockerId, t.blockedId] }),
     index("user_blocks_blocked_idx").on(t.blockedId),
+    index("user_blocks_blocker_created_idx").on(
+      t.blockerId,
+      t.createdAt.desc(),
+      t.blockedId.desc(),
+    ),
     check("user_blocks_no_self", sql`${t.blockerId} <> ${t.blockedId}`),
   ],
 )

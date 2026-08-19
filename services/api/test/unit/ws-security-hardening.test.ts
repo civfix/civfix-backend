@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import {
   handleClientFrame,
   isSocketStillAuthorized,
+  canStillRead,
+  reauthorizeJoinedRooms,
+  roomKeyFor,
+  WS_MAX_JOINED_ROOMS,
   type GatewaySession,
   type GatewayDeps,
 } from "../../src/ws/gateway.js"
@@ -12,18 +16,6 @@ import RedisMock from "ioredis-mock"
 import type { RedisClient } from "../../src/adapters/redis.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 
-/**
- * Security regressions for the WS gateway, from the 2026-07-24 backend review:
- *
- *   H6  — `leave` was completely unauthorized: a frame for a room the socket never joined reached
- *         presence.leave, which reported userGone from ABSENCE and so forged a presence delta into a
- *         stranger's DM/group/cleanup room.
- *   H7  — `send` passed frame.kind through, so any member could forge a `kind:"system"` platform/city
- *         timeline event.
- *   M13 — no per-connection frame throttle at all; only `send` was metered. Typing also paid for a
- *         membership query BEFORE its own throttle.
- *   M1  — a live socket was never re-authorized, so a banned/logged-out user kept full access.
- */
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const OTHER_ROOM = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -47,21 +39,17 @@ beforeEach(() => {
 
 describe("H6: the leave frame is gated on what THIS socket joined", () => {
   it("a leave for a room the socket never joined is a silent no-op (no presence write, no broadcast)", async () => {
-    // Bob is genuinely present in the room and holds the only live socket there.
     const bobConn = new MockConnection("bob")
     const bob = sessionFor(BOB, bobConn)
     await handleClientFrame(bob, JSON.stringify({ type: "join", cleanupId: ROOM }))
     bobConn.sent.length = 0
 
-    // Alice never joined; she forges a leave for the same room.
     const aliceConn = new MockConnection("alice")
     const alice = sessionFor(ALICE, aliceConn)
     await handleClientFrame(alice, JSON.stringify({ type: "leave", cleanupId: ROOM }))
 
-    // No presence delta reaches Bob, and no error frame leaks the room's existence back to Alice.
     expect(bobConn.framesOfType("presence")).toHaveLength(0)
     expect(aliceConn.sent).toHaveLength(0)
-    // Bob is still shown as online: the forged leave touched nothing.
     expect(await presence.online(ROOM)).toEqual([BOB])
   })
 
@@ -123,8 +111,6 @@ describe("H6: presence.leave only reports userGone when it actually removed the 
 })
 
 describe("H6: RedisChatPresence.leave reads the ZREM's own reply slot", () => {
-  // The REAL Redis adapter (against ioredis-mock) — the in-memory twin above shares the semantics but
-  // not the MULTI reply parsing this fix turns on.
   const makeRedis = (): RedisClient => new RedisMock() as unknown as RedisClient
 
   it("reports userGone:false for a connection that was never in the sorted set", async () => {
@@ -143,7 +129,7 @@ describe("H6: RedisChatPresence.leave reads the ZREM's own reply slot", () => {
     await p.join(ROOM, "conn-2", ALICE)
     expect((await p.leave(ROOM, "conn-1", ALICE)).userGone).toBe(false)
     expect((await p.leave(ROOM, "conn-2", ALICE)).userGone).toBe(true)
-    expect((await p.leave(ROOM, "conn-2", ALICE)).userGone).toBe(false) // replayed leave: nothing removed
+    expect((await p.leave(ROOM, "conn-2", ALICE)).userGone).toBe(false)
   })
 })
 
@@ -196,7 +182,6 @@ describe("M13: per-connection frame throttle covering ALL frame types", () => {
     const isMember = vi.fn(() => Promise.resolve(true))
     const session = sessionFor(ALICE, conn, { isMember })
 
-    // The bucket's capacity is 60; alternate rooms so the per-room typing throttle is not what stops us.
     for (let i = 0; i < 120; i++) {
       const room = i % 2 === 0 ? ROOM : OTHER_ROOM
       await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: room }))
@@ -204,7 +189,6 @@ describe("M13: per-connection frame throttle covering ALL frame types", () => {
 
     const limited = conn.framesOfType("error").filter((f) => f.code === "RATE_LIMITED")
     expect(limited.length).toBeGreaterThan(0)
-    // The membership lookup ran only for the frames that survived the bucket.
     expect(isMember.mock.calls.length).toBeLessThanOrEqual(70)
   })
 
@@ -216,7 +200,6 @@ describe("M13: per-connection frame throttle covering ALL frame types", () => {
     for (let i = 0; i < 10; i++) {
       await handleClientFrame(session, JSON.stringify({ type: "typing", cleanupId: ROOM }))
     }
-    // Only the first typing frame in the TYPING_MIN_INTERVAL_MS window reaches authorizeRoom.
     expect(isMember).toHaveBeenCalledTimes(1)
   })
 })
@@ -239,7 +222,6 @@ describe("M1: a live socket is re-authorized, not trusted forever", () => {
       resolveSession: () => Promise.resolve(null),
     })
     expect(await isSocketStillAuthorized(svc, ALICE, "tok", true)).toBe(false)
-    // The full re-resolve is throttled: with fullCheck=false the same socket survives the tick.
     expect(await isSocketStillAuthorized(svc, ALICE, "tok", false)).toBe(true)
   })
 
@@ -262,5 +244,159 @@ describe("M1: a live socket is re-authorized, not trusted forever", () => {
   it("FAILS OPEN on an infrastructure error (a Redis blip must not disconnect every socket)", async () => {
     const svc = sessions({ isUserActive: () => Promise.reject(new Error("redis down")) })
     expect(await isSocketStillAuthorized(svc, ALICE, "tok", true)).toBe(true)
+  })
+})
+
+describe("F036: repeat join is idempotent (no duplicate presence delta, no re-run of joinRoom)", () => {
+  it("a second join for a room already held re-sends only presence_snapshot", async () => {
+    const bobConn = new MockConnection("bob")
+    const bob = sessionFor(BOB, bobConn)
+    await handleClientFrame(bob, JSON.stringify({ type: "join", cleanupId: ROOM }))
+
+    const aliceConn = new MockConnection("alice")
+    const alice = sessionFor(ALICE, aliceConn)
+    await handleClientFrame(alice, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    bobConn.sent.length = 0
+    aliceConn.sent.length = 0
+
+    await handleClientFrame(alice, JSON.stringify({ type: "join", cleanupId: ROOM }))
+
+    expect(bobConn.framesOfType("presence")).toHaveLength(0)
+    expect(aliceConn.framesOfType("presence_snapshot")).toHaveLength(1)
+    expect(aliceConn.framesOfType("presence")).toHaveLength(0)
+    expect((await presence.online(ROOM)).sort()).toEqual([ALICE, BOB].sort())
+    expect(chat.roomSize(ROOM)).toBe(2)
+  })
+})
+
+describe("F037: an over-long clientId is rejected, never persisted or fanned out", () => {
+  it("a send with a >64-char clientId is answered BAD_FRAME and persists nothing", async () => {
+    const conn = new MockConnection("a")
+    const persist = vi.fn()
+    const session = sessionFor(ALICE, conn, {
+      chat: { ...chat, persist } as unknown as GatewayDeps["chat"],
+    })
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, body: "hi", clientId: "x".repeat(65) }),
+    )
+    expect(conn.framesOfType("error")[0]).toMatchObject({ code: "BAD_FRAME" })
+    expect(persist).not.toHaveBeenCalled()
+    expect(conn.framesOfType("ack")).toHaveLength(0)
+  })
+
+  it("a send with a 64-char clientId is accepted (the bound is not off-by-one)", async () => {
+    const conn = new MockConnection("a")
+    const session = sessionFor(ALICE, conn)
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, body: "hi", clientId: "x".repeat(64) }),
+    )
+    expect(conn.framesOfType("error")).toHaveLength(0)
+    expect(conn.framesOfType("ack")).toHaveLength(1)
+  })
+})
+
+describe("F039: a socket cannot join more than WS_MAX_JOINED_ROOMS rooms", () => {
+  it("the cap+1-th distinct room is refused RATE_LIMITED, and does not run joinRoom", async () => {
+    const conn = new MockConnection("a")
+    const joinRoom = vi.fn(() => Promise.resolve())
+    const session = sessionFor(ALICE, conn, {
+      chat: { ...chat, joinRoom } as unknown as GatewayDeps["chat"],
+      presence: undefined,
+    })
+    for (let i = 0; i < WS_MAX_JOINED_ROOMS; i++) {
+      session.joined.add(roomKeyFor("cleanup", `room-${i}`))
+    }
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: OTHER_ROOM }))
+    expect(conn.framesOfType("error")[0]).toMatchObject({ code: "RATE_LIMITED" })
+    expect(joinRoom).not.toHaveBeenCalled()
+    expect(session.joined.has(roomKeyFor("cleanup", OTHER_ROOM))).toBe(false)
+  })
+
+  it("re-joining a room already held is allowed even at the cap (the idempotent path precedes it)", async () => {
+    const conn = new MockConnection("a")
+    const session = sessionFor(ALICE, conn, { presence: undefined })
+    for (let i = 0; i < WS_MAX_JOINED_ROOMS - 1; i++) {
+      session.joined.add(roomKeyFor("cleanup", `room-${i}`))
+    }
+    session.joined.add(roomKeyFor("cleanup", ROOM))
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    expect(conn.framesOfType("error")).toHaveLength(0)
+  })
+})
+
+describe("F041: ack does nothing for a room the socket never joined", () => {
+  const UP_TO = "00000000-0000-0000-0000-000000000001"
+
+  it("a cleanup ack for an unjoined room runs no read-watermark write", async () => {
+    const conn = new MockConnection("a")
+    const markRead = vi.fn(() => Promise.resolve())
+    const session = sessionFor(ALICE, conn, { markRead })
+    await handleClientFrame(session, JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: UP_TO }))
+    expect(markRead).not.toHaveBeenCalled()
+  })
+
+  it("once the room is joined the ack advances the watermark", async () => {
+    const conn = new MockConnection("a")
+    const markRead = vi.fn(() => Promise.resolve())
+    const session = sessionFor(ALICE, conn, { markRead })
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    await handleClientFrame(session, JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: UP_TO }))
+    expect(markRead).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("F022: live sockets are re-authorized against room membership", () => {
+  it("canStillRead tracks membership, and fails OPEN on a thrown check", async () => {
+    const conn = new MockConnection("a")
+    let member = true
+    const session = sessionFor(ALICE, conn, { isMember: () => Promise.resolve(member) })
+    const key = roomKeyFor("cleanup", ROOM)
+    session.joined.add(key)
+    expect(await canStillRead(session, key)).toBe(true)
+    member = false
+    expect(await canStillRead(session, key)).toBe(false)
+    const throwing = sessionFor(ALICE, conn, { isMember: () => Promise.reject(new Error("redis down")) })
+    expect(await canStillRead(throwing, key)).toBe(true)
+  })
+
+  it("reauthorizeJoinedRooms evicts a revoked member's socket and announces the leave", async () => {
+    let aliceMember = true
+    const isMember = (_cleanupId: string, userId: string): Promise<boolean> =>
+      Promise.resolve(userId === ALICE ? aliceMember : true)
+
+    const bobConn = new MockConnection("bob")
+    const bob = sessionFor(BOB, bobConn, { isMember })
+    await handleClientFrame(bob, JSON.stringify({ type: "join", cleanupId: ROOM }))
+
+    const aliceConn = new MockConnection("alice")
+    const alice = sessionFor(ALICE, aliceConn, { isMember })
+    await handleClientFrame(alice, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    bobConn.sent.length = 0
+    aliceConn.sent.length = 0
+
+    aliceMember = false
+    await reauthorizeJoinedRooms(alice)
+
+    expect(aliceConn.framesOfType("error")[0]).toMatchObject({ code: "FORBIDDEN" })
+    expect(alice.joined.has(roomKeyFor("cleanup", ROOM))).toBe(false)
+    expect(bobConn.framesOfType("presence")[0]).toMatchObject({ userId: ALICE, state: "leave" })
+    expect(await presence.online(ROOM)).toEqual([BOB])
+  })
+
+  it("keeps the socket (fail-open) when the reauth membership check throws", async () => {
+    const conn = new MockConnection("a")
+    let mode: "ok" | "throw" = "ok"
+    const session = sessionFor(ALICE, conn, {
+      isMember: () =>
+        mode === "throw" ? Promise.reject(new Error("redis down")) : Promise.resolve(true),
+    })
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    conn.sent.length = 0
+    mode = "throw"
+    await reauthorizeJoinedRooms(session)
+    expect(conn.framesOfType("error")).toHaveLength(0)
+    expect(session.joined.has(roomKeyFor("cleanup", ROOM))).toBe(true)
   })
 })

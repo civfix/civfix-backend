@@ -250,6 +250,10 @@ describe("DM bell notifications (#42)", () => {
     const bSession = sessionFor(BOB, bConn)
     await handleClientFrame(
       bSession,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      bSession,
       JSON.stringify({
         type: "ack",
         upToId: "44444444-4444-4444-4444-444444444444",

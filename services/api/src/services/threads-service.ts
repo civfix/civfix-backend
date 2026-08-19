@@ -60,6 +60,7 @@ export interface DmThreadAggregateView {
     handle: string | null
     bio: string | null
     avatarUrl: string | null
+    deleted: boolean
   }
   last: {
     body: string | null
@@ -152,6 +153,7 @@ function peerOf(p: DmThreadAggregateView["peer"]): PersonDTO {
     followers: 0,
     following: 0,
     isFollowing: false,
+    ...(p.deleted ? { deleted: true } : {}),
   }
 }
 

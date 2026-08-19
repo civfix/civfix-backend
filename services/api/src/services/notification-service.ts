@@ -9,17 +9,20 @@ import type {
   PushPlatform,
   QuietHours,
   RegisterPushTokenRequest,
+  UnregisterPushTokenRequest,
   UpdateNotificationPrefsRequest,
 } from "@civfix/shared"
 import type { PushPayload, PushSender, UserChannel } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import type { PersonView, SocialNotifier } from "./social-service.js"
 import {
+  DEFAULT_PREFS,
   isWithinQuietHours,
   toNotificationDTO,
   toPrefsDTO,
   typeAllowedByPrefs,
 } from "./notification-helpers.js"
+import { mapWithLimit } from "./media-presign.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"
 
@@ -36,7 +39,11 @@ export {
 
 export const NOTIFICATIONS_DEFAULT_LIMIT = 20
 
-const MARK_READ_MAX_IDS = 50
+export const NOTIFICATION_DEDUPE_WINDOW_MS = 5 * 60 * 1000
+
+export const BULK_NOTIFY_CONCURRENCY = 8
+
+export const PUSH_FANOUT_BATCH_SIZE = 100
 
 export interface NotificationRecord {
   id: string
@@ -66,6 +73,7 @@ export interface NotificationPrefsRecord {
   postInteractions: boolean
   quietStart: string | null
   quietEnd: string | null
+  tz: string | null
 }
 
 export interface NotificationPrefsPatch {
@@ -91,7 +99,19 @@ export interface NotificationRepository {
 
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
 
+  findRecentDuplicate(args: {
+    userId: string
+    type: NotificationType
+    link: string | null
+    body: string | null
+    since: Date
+  }): Promise<NotificationRecord | null>
+
+  deleteAllNotificationsForUser(userId: string): Promise<void>
+
   findPrefs(userId: string): Promise<NotificationPrefsRecord | null>
+
+  findPrefsMany?(userIds: string[]): Promise<Map<string, NotificationPrefsRecord>>
 
   createDefaultPrefs(userId: string): Promise<NotificationPrefsRecord>
 
@@ -104,22 +124,6 @@ export interface NotificationRepository {
     deviceId: string | null
   }): Promise<PushTokenUpsertOutcome>
 
-  /**
-   * DEVICE-CLAIM. A device's push token must only deliver to the account currently signed in ON that
-   * device, so when a user registers a token for a device we soft-revoke OTHER users' active tokens for
-   * the same device.
-   *
-   * H12 — the old contract took a caller-supplied `deviceId` on the claim that "device_id is the
-   * device's own secret". It is not: it is an unvalidated string from a JSON body, and one request
-   * revoked every active token carrying it, across every account. A harvested device-id list was a
-   * fleet-wide push blackout.
-   *
-   * The revoke is now scoped by POSSESSION OF THE TOKEN, which the caller demonstrably holds (they just
-   * presented it and it is what push is delivered to): only rows whose `token` matches, or whose
-   * device_id matches AND that device already had a row for this user, are touched. `deviceId` alone can
-   * no longer authorize anything. Returns the number of rows revoked so the caller can log a
-   * cross-account revoke.
-   */
   revokeDeviceTokensForOtherUsers(args: {
     userId: string
     token: string
@@ -127,9 +131,8 @@ export interface NotificationRepository {
     deviceId: string | null
   }): Promise<number>
 
-  // Account erasure (DELETE /me): a push token (token + device_id) is a device identifier, so erasure
-  // HARD-deletes the rows rather than soft-revoking (which is what normal rotation does, keeping an audit
-  // trail). Idempotent.
+  revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void>
+
   deletePushTokensForUser(userId: string): Promise<void>
 
   findUserLocale(userId: string): Promise<string | null>
@@ -145,6 +148,7 @@ export interface CreateNotificationInput {
   bodyKey?: MessageKey
   vars?: MessageVars
   link?: string
+  dedupeWindowMs?: number
 }
 
 export interface NotificationServiceDeps {
@@ -155,12 +159,6 @@ export interface NotificationServiceDeps {
   now?: () => Date
 }
 
-/**
- * Social-feed post interaction bells. Each notifies the recipient (a post's author, or an @-mentioned
- * user) that `actorName` interacted with their post. The CALLER (post-service) is responsible for the
- * self-notify + blocked-either-way guards before invoking these; push delivery is additionally gated by
- * notification_prefs (postInteractions for like/repost/reply/quote, mentions for post_mention).
- */
 export interface PostNotifier {
   onPostLike(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
   onPostRepost(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
@@ -175,8 +173,15 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
   getPrefs(userId: string): Promise<NotificationPrefsDTO>
   updatePrefs(userId: string, patch: UpdateNotificationPrefsRequest): Promise<NotificationPrefsDTO>
   registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }>
+  unregisterPushToken(userId: string, req: UnregisterPushTokenRequest): Promise<{ ok: true }>
   createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO>
+  createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void>
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
+}
+
+interface ResolvedPrefs {
+  byUser: Map<string, NotificationPrefsRecord>
+  unreadable: Set<string>
 }
 
 export function makeNotificationService(deps: NotificationServiceDeps): NotificationService {
@@ -192,7 +197,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     try {
       const prefs = await resolvePrefs(userId)
       if (!typeAllowedByPrefs(record.type, prefs)) return
-      if (isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd)) return
+      if (isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd, prefs.tz)) return
 
       const payload: PushPayload = {
         title: record.title,
@@ -228,10 +233,10 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
-  async function doCreateNotification(
+  async function persistNotification(
     userId: string,
     input: CreateNotificationInput,
-  ): Promise<NotificationDTO> {
+  ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const locale = await localeFor(userId, input)
     const title =
       input.titleKey !== undefined
@@ -241,18 +246,148 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       input.bodyKey !== undefined
         ? renderMessage(locale, input.bodyKey, input.vars)
         : (input.body ?? null)
+    const link = input.link ?? null
+    if (input.dedupeWindowMs !== undefined) {
+      try {
+        const existing = await deps.repo.findRecentDuplicate({
+          userId,
+          type: input.type,
+          link,
+          body,
+          since: new Date(now().getTime() - input.dedupeWindowMs),
+        })
+        if (existing) return { record: existing, deduped: true }
+      } catch (err) {
+        deps.logger?.warn(
+          { err, userId, type: input.type },
+          "notification dedupe lookup failed; creating anyway",
+        )
+      }
+    }
     const record = await deps.repo.insertNotification({
       userId,
       type: input.type,
       title,
       body,
-      link: input.link ?? null,
+      link,
     })
+    return { record, deduped: false }
+  }
+
+  async function doCreateNotification(
+    userId: string,
+    input: CreateNotificationInput,
+  ): Promise<NotificationDTO> {
+    const { record, deduped } = await persistNotification(userId, input)
+    if (deduped) return toNotificationDTO(record)
     await maybeSendPush(userId, record)
     void maybeSignalNotification(userId).catch((err: unknown) => {
       deps.logger?.error({ err, userId }, "notification signal dispatch failed (suppressed)")
     })
     return toNotificationDTO(record)
+  }
+
+  async function prefsForMany(userIds: string[]): Promise<ResolvedPrefs> {
+    if (deps.repo.findPrefsMany) {
+      try {
+        return { byUser: await deps.repo.findPrefsMany(userIds), unreadable: new Set<string>() }
+      } catch (err) {
+        deps.logger?.warn(
+          { err, count: userIds.length },
+          "batched prefs lookup failed; suppressing push for this fan-out",
+        )
+        return { byUser: new Map(), unreadable: new Set(userIds) }
+      }
+    }
+    const found = await mapWithLimit(userIds, BULK_NOTIFY_CONCURRENCY, async (userId) => {
+      try {
+        return { prefs: await deps.repo.findPrefs(userId), readable: true }
+      } catch (err) {
+        deps.logger?.warn({ err, userId }, "prefs lookup failed; suppressing push for this recipient")
+        return { prefs: null, readable: false }
+      }
+    })
+    const byUser = new Map<string, NotificationPrefsRecord>()
+    const unreadable = new Set<string>()
+    userIds.forEach((userId, i) => {
+      const outcome = found[i]
+      if (!outcome || !outcome.readable) {
+        unreadable.add(userId)
+        return
+      }
+      if (outcome.prefs) byUser.set(userId, outcome.prefs)
+    })
+    return { byUser, unreadable }
+  }
+
+  async function sendBatchedPush(created: Array<{ userId: string; record: NotificationRecord }>): Promise<void> {
+    const { byUser, unreadable } = await prefsForMany(created.map((c) => c.userId))
+    const at = now()
+    const groups = new Map<string, { payload: PushPayload; userIds: string[] }>()
+    for (const { userId, record } of created) {
+      if (unreadable.has(userId)) continue
+      const prefs = byUser.get(userId) ?? DEFAULT_PREFS
+      if (!typeAllowedByPrefs(record.type, prefs)) continue
+      if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
+      const key = JSON.stringify([record.title, record.body, record.link])
+      const group = groups.get(key)
+      if (group) {
+        group.userIds.push(userId)
+        continue
+      }
+      groups.set(key, {
+        payload: {
+          title: record.title,
+          ...(record.body !== null ? { body: record.body } : {}),
+          ...(record.link !== null ? { link: record.link } : {}),
+          data: { type: record.type },
+        },
+        userIds: [userId],
+      })
+    }
+    for (const group of groups.values()) {
+      for (let i = 0; i < group.userIds.length; i += PUSH_FANOUT_BATCH_SIZE) {
+        const batch = group.userIds.slice(i, i + PUSH_FANOUT_BATCH_SIZE)
+        try {
+          await deps.pushSender.sendMany(batch, group.payload)
+        } catch (err) {
+          deps.logger?.warn({ err, count: batch.length }, "batched push send failed (suppressed)")
+        }
+      }
+    }
+  }
+
+  async function signalMany(userIds: string[]): Promise<void> {
+    if (!deps.userChannel) return
+    try {
+      await deps.userChannel.publishToUsers(userIds, { topic: "notifications" })
+    } catch (err) {
+      deps.logger?.warn({ err, count: userIds.length }, "notification signal publish failed (suppressed)")
+    }
+  }
+
+  async function doCreateNotifications(
+    userIds: string[],
+    input: CreateNotificationInput,
+  ): Promise<void> {
+    const unique = [...new Set(userIds)]
+    if (unique.length === 0) return
+    const persisted = await mapWithLimit(unique, BULK_NOTIFY_CONCURRENCY, async (userId) => {
+      try {
+        const { record, deduped } = await persistNotification(userId, input)
+        return deduped ? null : { userId, record }
+      } catch (err) {
+        deps.logger?.warn(
+          { err, userId, type: input.type },
+          "fan-out notification insert failed (suppressed)",
+        )
+        return null
+      }
+    })
+    const created = persisted.filter((p): p is { userId: string; record: NotificationRecord } => p !== null)
+    if (created.length === 0) return
+    await sendBatchedPush(created)
+    void signalMany(created.map((c) => c.userId))
   }
 
   return {
@@ -269,7 +404,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     },
 
     async markRead(userId: string, ids: string[]): Promise<{ ok: true }> {
-      if (ids.length > 0) await deps.repo.markRead(userId, ids.slice(0, MARK_READ_MAX_IDS))
+      if (ids.length > 0) await deps.repo.markRead(userId, ids)
       return { ok: true }
     },
 
@@ -307,12 +442,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         deviceId: req.deviceId ?? null,
       })
       if (outcome === "conflict") {
-        // H11 — this used to log a warning and return {ok:true}. The client then believed registration
-        // had succeeded while the token stayed bound to whoever registered it FIRST, so the legitimate
-        // owner of the device silently never received push again, with no signal anywhere. Surface it:
-        // a real error status lets the client retry, fall back, or tell the user, and makes the
-        // (attacker-driven) first-registration land in logs as a failed request rather than a warning
-        // nobody reads.
         deps.logger?.warn(
           { userId, platform: req.platform, hasDeviceId: req.deviceId !== undefined },
           "push token re-registration refused: token is bound to another account (no possession proof)",
@@ -321,10 +450,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
           "This push token is registered to another account. Sign out on the other account or reinstall the app.",
         )
       }
-      // DEVICE-CLAIM: this account is now the one signed in on this device, so another account's active
-      // token for the same device must stop receiving here. Scoped by possession of the presented TOKEN
-      // (see NotificationRepository.revokeDeviceTokensForOtherUsers) — a self-declared deviceId alone no
-      // longer authorizes any cross-account write (H12).
       try {
         const revoked = await deps.repo.revokeDeviceTokensForOtherUsers({
           userId,
@@ -333,8 +458,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
           deviceId: req.deviceId ?? null,
         })
         if (revoked > 0) {
-          // Cross-account revokes are rare and security-relevant (account handoff on a shared device).
-          // Log every one so an anomalous burst is visible.
           deps.logger?.warn({ userId, platform: req.platform, revoked }, "device-claim revoked other accounts' push tokens")
         }
       } catch (err) {
@@ -348,8 +471,20 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return { ok: true }
     },
 
+    async unregisterPushToken(
+      userId: string,
+      req: UnregisterPushTokenRequest,
+    ): Promise<{ ok: true }> {
+      await deps.repo.revokeToken(userId, req.platform, req.token)
+      return { ok: true }
+    },
+
     createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO> {
       return doCreateNotification(userId, input)
+    },
+
+    createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void> {
+      return doCreateNotifications(userIds, input)
     },
 
     async clearByTypeAndLink(
@@ -374,6 +509,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         bodyKey: "notification.follower.body",
         vars: { name },
         link: `/people/${args.follower.id}`,
+        dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
       })
     },
 
@@ -384,6 +520,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         bodyKey: "notification.post.like.body",
         vars: { name: a.actorName },
         link: `/post/${a.postId}`,
+        dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
       })
     },
 
@@ -394,6 +531,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         bodyKey: "notification.post.repost.body",
         vars: { name: a.actorName },
         link: `/post/${a.postId}`,
+        dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
       })
     },
 

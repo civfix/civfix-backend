@@ -3,14 +3,6 @@ import { makeAuthHarness, type AuthHarness } from "../helpers/auth.js"
 import { resolvePostLoginRedirect } from "../../src/routes/auth.routes.js"
 import type { OAuthConfig } from "../../src/auth/oauth.js"
 
-/**
- * The Apple OAuth state cookie derives SameSite/Secure from isProd() (see appleStart), so the PROD shape
- * (None+Secure, required for Apple's cross-site form_post) is only reachable through that seam. Flipped
- * per test, exactly as errors-http-mapper.test.ts does; every OTHER export of src/env.js stays real and
- * the flag defaults to false, so the rest of this file sees the unmodified test-env behavior. Read at
- * REQUEST time by the route, so it is flipped around the inject only - never around buildServer, whose
- * boot-time isProd() reads (cookie defaults, cors, helmet) must stay in their test-env shape.
- */
 let prod = false
 vi.mock("../../src/env.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/env.js")>()
@@ -38,10 +30,16 @@ function parseCookies(setCookie: string | string[] | undefined): Record<string, 
   return out
 }
 
-/**
- * Mint a server-issued sign-in nonce, exactly as a native client must now do before calling
- * /v1/auth/apple or /v1/auth/google (H1). The nonce is single-use, so every sign-in needs its own.
- */
+function sessionCookieMaxAge(setCookie: string | string[] | undefined): number | null {
+  const list = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : []
+  for (const line of list) {
+    if (!line.startsWith("civfix_session=")) continue
+    const match = /max-age=(\d+)/i.exec(line)
+    if (match) return Number(match[1])
+  }
+  return null
+}
+
 async function mintNonce(h: AuthHarness): Promise<string> {
   const res = await h.app.inject({ method: "POST", url: "/v1/auth/oauth/nonce" })
   expect(res.statusCode).toBe(200)
@@ -140,11 +138,6 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(res.json().enabledProviders).toEqual(["apple", "google", "email"])
   })
 
-  /**
-   * Lower-cased ATTRIBUTE segments (everything after `name=value`) of the one Set-Cookie line. Attributes
-   * are matched as whole segments, never as substrings of the whole header, so a random signed cookie
-   * value can never satisfy (or falsify) an attribute assertion.
-   */
   function cookieAttrs(setCookie: string | string[] | undefined): string[] {
     const list = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : []
     expect(list.length).toBe(1)
@@ -163,8 +156,6 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(location).toContain("response_type=code")
     expect(location).toContain("response_mode=form_post")
 
-    // The cookie is the CSRF binding for the callback: it must carry the same state the redirect asks
-    // Apple to echo back, and must not be readable by script.
     const state = new URL(location).searchParams.get("state")
     expect(typeof state).toBe("string")
     expect(state!.length).toBeGreaterThan(20)
@@ -174,19 +165,12 @@ describe("auth routes: email OTP, mobile bearer flow", () => {
     expect(attrs).toContain("httponly")
     expect(attrs).toContain("path=/")
     expect(attrs).toContain("max-age=600")
-    // Outside production the cookie degrades to Lax and is NOT Secure: a None+Secure cookie is DROPPED by
-    // the browser over plain http, so every dev callback would fail "Invalid OAuth state". Apple cannot
-    // post to a localhost callback anyway, so nothing cross-site is lost here. The PROD shape - the one
-    // the flow actually depends on - is pinned by the next test.
     expect(attrs).toContain("samesite=lax")
     expect(attrs).not.toContain("secure")
   })
 
   it("GET /auth/apple/start sets the state cookie SameSite=None + Secure in PRODUCTION (cross-site form_post)", async () => {
     harness = await makeAuthHarness({ oauthConfig: OAUTH_WITH_APPLE_WEB })
-    // Flip the seam for the request only: Apple returns via a CROSS-SITE POST (response_mode=form_post),
-    // which a Lax cookie is NOT sent on, so over https the state cookie MUST be None - and None is only
-    // honored together with Secure. Losing either attribute breaks the entire web Apple sign-in flow.
     prod = true
     const res = await harness.app.inject({ method: "GET", url: "/auth/apple/start" })
     expect(res.statusCode).toBe(302)
@@ -313,6 +297,50 @@ describe("auth routes: web cookie flow + CSRF + logout", () => {
     expect(typeof minted).toBe("string")
     const setCookies = parseCookies(check.headers["set-cookie"])
     expect(setCookies.civfix_csrf).toBe(minted)
+  })
+
+  it("F035: GET /auth/session re-issues the session cookie, and its Max-Age advances with a slide", async () => {
+    harness = await makeAuthHarness()
+    const email = "sliding.web@example.com"
+    await harness.app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
+    const code = harness.mailer.lastOtpFor(email)!
+    const verify = await harness.app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/verify",
+      headers: { "x-client": "web" },
+      payload: { email, code },
+    })
+    const cookies = parseCookies(verify.headers["set-cookie"])
+    const cookie = `civfix_session=${cookies.civfix_session}`
+
+    const first = await harness.app.inject({
+      method: "GET",
+      url: "/v1/auth/session",
+      headers: { cookie },
+    })
+    expect(first.json().authenticated).toBe(true)
+    const firstMaxAge = sessionCookieMaxAge(first.headers["set-cookie"])
+    expect(firstMaxAge).not.toBeNull()
+    expect(parseCookies(first.headers["set-cookie"]).civfix_session).toBe(cookies.civfix_session)
+    expect(firstMaxAge!).toBeLessThanOrEqual(harness.services.sessions.ttl)
+    expect(firstMaxAge!).toBeGreaterThan(harness.services.sessions.ttl - 60)
+
+    harness.advance(16 * 24 * 60 * 60 * 1000)
+    const slid = await harness.app.inject({
+      method: "GET",
+      url: "/v1/auth/session",
+      headers: { cookie },
+    })
+    expect(slid.json().authenticated).toBe(true)
+
+    const after = await harness.app.inject({
+      method: "GET",
+      url: "/v1/auth/session",
+      headers: { cookie },
+    })
+    const afterMaxAge = sessionCookieMaxAge(after.headers["set-cookie"])
+    expect(afterMaxAge).not.toBeNull()
+    expect(afterMaxAge!).toBeGreaterThan(firstMaxAge!)
   })
 
   it("GET /auth/session OMITS csrfToken for the bearer (mobile) flow", async () => {
@@ -612,7 +640,6 @@ describe("auth routes: server-issued single-use sign-in nonce (H1)", () => {
     expect(ok.statusCode).toBe(200)
     expect(ok.json().user.displayName).toBe("Nonce User")
 
-    // A DIFFERENT server-issued nonce does not match the one baked into the token's claims.
     const other = await mintNonce(harness)
     const bad = await harness.app.inject({
       method: "POST",
@@ -675,8 +702,6 @@ describe("auth routes: server-issued single-use sign-in nonce (H1)", () => {
       },
       "attacker-chosen-nonce",
     )
-    // Exactly the replay the audit describes: the token carries a nonce, and the attacker echoes that
-    // same value in the body. It used to be compared against itself.
     const res = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/apple",
@@ -709,7 +734,6 @@ describe("auth routes: server-issued single-use sign-in nonce (H1)", () => {
     })
     expect(first.statusCode).toBe(200)
 
-    // A captured ID token replayed with its own nonce: the nonce is spent, so no session is minted.
     const replay = await harness.app.inject({
       method: "POST",
       url: "/v1/auth/google",
@@ -832,6 +856,33 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     })
     expect(conflict.statusCode).toBe(409)
     expect(conflict.json().code).toBe("CONFLICT")
+  })
+
+  async function updateWithAvatar(h: AuthHarness): Promise<{ presignAvatar: unknown }> {
+    const { token } = await signIn(h, "avatar@example.com")
+    const spy = vi.spyOn(h.stores.users, "updateProfile")
+    const res = await h.app.inject({
+      method: "PUT",
+      url: "/v1/me/profile",
+      headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+      payload: {
+        handle: "ana_avatar",
+        displayName: "Ana",
+        avatarUploadId: "9f1d2e3a-4b5c-4d6e-8f90-a1b2c3d4e5f6",
+      },
+    })
+    expect(res.statusCode).toBe(200)
+    const input = spy.mock.calls.at(-1)![1]
+    return { presignAvatar: input.presignAvatar }
+  }
+
+  it("F073: an avatar URL is persisted only when it is a durable CDN url (R2_PUBLIC_BASE set)", async () => {
+    harness = await makeAuthHarness()
+    expect((await updateWithAvatar(harness)).presignAvatar).toBeUndefined()
+    await harness.app.close()
+
+    harness = await makeAuthHarness({ env: { R2_PUBLIC_BASE: "https://cdn.example.org" } })
+    expect(typeof (await updateWithAvatar(harness)).presignAvatar).toBe("function")
   })
 
   it("validates the handle format (bad handle -> 422)", async () => {

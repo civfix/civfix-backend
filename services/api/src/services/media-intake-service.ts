@@ -68,7 +68,7 @@ export interface MediaChecksJob {
 export interface MediaOwner {
   userId?: string | undefined
   anonSessionId?: string | undefined
-  /** Normalized client IP, used only as the last-resort quota bucket key (see quotaSubject). */
+  /** Normalized client IP: the un-rotatable quota bucket key for any caller without a session (see quotaSubjects). */
   ipKey?: string | undefined
 }
 
@@ -93,6 +93,8 @@ export interface MediaAssetView {
   postId?: string | null
   /** Row age, used to bound the pre-commit capability window for an unbound asset. */
   createdAt?: Date | null
+  /** 0087 finalize watermark: NULL until the one winning finalize stamps it. */
+  finalizedAt?: Date | null
 }
 
 export interface NewMediaAsset {
@@ -108,11 +110,12 @@ export interface MediaRepository {
   insert(row: NewMediaAsset): Promise<void>
   findByUploadId(uploadId: string): Promise<MediaAssetView | null>
   findById(id: string): Promise<MediaAssetView | null>
-  setStatusByUploadId(
-    uploadId: string,
-    status: MediaStatus,
-    expectedStatus?: MediaStatus,
-  ): Promise<MediaAssetView | null>
+  /**
+   * F087 finalize CAS: stamp finalized_at exactly once per upload. Returns the row for the caller that
+   * won the compare-and-set and null for every later finalize, so the media.checks enqueue happens once
+   * no matter how often the client (or a retrying proxy) calls finalize.
+   */
+  markFinalized(uploadId: string): Promise<MediaAssetView | null>
 }
 
 export interface MediaIntakeDeps {
@@ -194,16 +197,22 @@ export function buildR2Key(uploadId: string, now: Date): string {
 const SIZE_MISMATCH_TOLERANCE = 1024
 
 /**
- * Quota bucket for a caller. A signed-in user is metered by account (so rotating IPs does not reset the
- * budget — M22's complaint about IP-only keying); everyone else falls back to the anon session, then to
- * the normalized client IP the route stamps into `ipKey`. `anonSessionId` is a client-presented cookie
- * value, so it is a convenience key, not an authorization signal — the IP fallback is what makes the
- * bucket non-trivial to reset, which is why the route always supplies one.
+ * Quota buckets for a caller — EVERY returned subject is charged and EVERY one is capped (F016).
+ *
+ * A signed-in user is metered by account alone: the session token behind `userId` is server-issued, so
+ * rotating IPs cannot reset that budget (M22's complaint about IP-only keying).
+ *
+ * An unauthenticated caller is metered by IP **always**, plus the anon session when one is presented.
+ * `anonSessionId` is the RAW `civfix_anon` cookie (auth/context.ts resolves it with no store lookup and
+ * no signature), so it is a client-CHOSEN label, never an identity: this used to be a preference order,
+ * which let an attacker mint a fresh 512 MB/day bucket per request just by rotating the cookie and left
+ * the 30/min per-IP request cap as the only real bound (30 x 50 MB x 60 = 90 GB/hour). The IP lane is
+ * the un-rotatable floor; the anon lane survives only as a tighter per-browser bound on top of it.
  */
-export function quotaSubject(owner: MediaOwner): string {
-  if (owner.userId) return `u:${owner.userId}`
-  if (owner.anonSessionId) return `a:${owner.anonSessionId}`
-  return `ip:${owner.ipKey ?? "unknown"}`
+export function quotaSubjects(owner: MediaOwner): string[] {
+  if (owner.userId) return [`u:${owner.userId}`]
+  const ipSubject = `ip:${owner.ipKey ?? "unknown"}`
+  return owner.anonSessionId ? [`a:${owner.anonSessionId}`, ipSubject] : [ipSubject]
 }
 
 export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeService {
@@ -225,12 +234,19 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
       // byte budget one source can park tens of GB in R2 far faster than the orphan sweep reclaims it.
       // Charged on the DECLARED byteSize, which is exactly what the signed PUT pins (Content-Length is
       // part of the signature), so the client cannot upload more than it was charged for.
-      if (deps.byteQuota) {
-        const subject = quotaSubject(owner)
-        const total = await deps.byteQuota.charge(subject, input.byteSize)
-        if (total > deps.byteQuota.limitBytes) {
+      const quota = deps.byteQuota
+      if (quota) {
+        // Charge EVERY bucket before deciding (F016): a caller whose anon bucket is already over must
+        // still be accounted against its IP bucket, or tripping the cheap bucket would shield the
+        // expensive one. The first bucket over the cap is what gets reported.
+        let over: { subject: string; total: number } | null = null
+        for (const subject of quotaSubjects(owner)) {
+          const total = await quota.charge(subject, input.byteSize)
+          if (total > quota.limitBytes && over === null) over = { subject, total }
+        }
+        if (over) {
           deps.logger?.warn(
-            { subject, totalBytes: total, limitBytes: deps.byteQuota.limitBytes },
+            { subject: over.subject, totalBytes: over.total, limitBytes: quota.limitBytes },
             "media upload byte quota exceeded",
           )
           throw AppError.rateLimited("Upload quota exceeded. Try again later.")
@@ -292,11 +308,11 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         return { mediaId: asset.id, status: "validating" }
       }
 
-      const updated = await deps.repo.setStatusByUploadId(input.uploadId, "validating", "validating")
-      if (updated === null) {
+      const claimed = await deps.repo.markFinalized(input.uploadId)
+      if (claimed === null) {
         return { mediaId: asset.id, status: "validating" }
       }
-      const mediaId = updated.id
+      const mediaId = claimed.id
 
       try {
         await deps.jobs.enqueue(
@@ -310,8 +326,10 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
           { singletonKey: input.uploadId },
         )
       } catch (err) {
-        deps.logger?.warn({ err, uploadId: input.uploadId, mediaId }, "media.checks enqueue failed")
-        throw err
+        deps.logger?.warn(
+          { err, uploadId: input.uploadId, mediaId },
+          "media.checks enqueue failed; the finalized row is left for the stuck sweep to drive",
+        )
       }
 
       return { mediaId, status: "validating" }

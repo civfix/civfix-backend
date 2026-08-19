@@ -122,7 +122,7 @@ Verified call sites (all public projections):
 | Public **reports** (detail / list / map pins / search) | `services/api/src/services/report-service.ts` (`ReportDTO`, `ReportPinDTO`) | The public report DTO **carries no reporter identity at all** — there is no reporter name/handle/avatar field on `ReportDTO`/`ReportPinDTO`. So a surviving public report exposes zero author PII regardless of deletion. (Reporter identity exists only on the admin `AdminReportDTO`.) |
 | Report **discussion** comments | `services/api/src/services/discussion-service.ts` (`toAuthorDTO`) | Renders "Deleted User", no handle, `deleted: true`. |
 | Cleanup group **chat** | `services/api/src/services/chat-repository.drizzle.ts` (`toMessageDTO`) | Renders "Deleted User", no handle/avatar, bio nulled, `deleted: true`. |
-| **Direct messages** | `services/api/src/services/dm-repository.drizzle.ts` | Uses `publicAuthorIdentity` — "Deleted User". |
+| **Direct messages** | `services/api/src/services/dm-repository.drizzle.ts` | Uses `publicAuthorIdentity` — "Deleted User". The surviving party KEEPS the thread in their inbox (the thread list no longer filters the peer on `deleted_at IS NULL`), with the peer rendered as "Deleted User", no handle/avatar/bio, `deleted: true`. |
 | **Profiles / people directory / follow lists** | `services/api/src/services/social-repository.drizzle.ts` | Soft-deleted users are **excluded** (`deleted_at IS NULL`): the profile read returns *not found*, and they never appear in the directory, follower/following lists, search, or @-mention pickers. |
 | @-mention resolution | `services/api/src/services/social-repository.drizzle.ts` | Excludes soft-deleted users. |
 | Cleanup report galleries | `services/api/src/services/cleanup-repository.drizzle.ts` | Joins exclude `deleted_at IS NOT NULL` rows. |
@@ -154,3 +154,50 @@ implemented as code in this pass:
 3. **Per-report takedown** (an owner asking to remove one specific published report
    without deleting their account) is handled via the content-report / moderation
    path — see `docs/report-takedown.md`.
+
+---
+
+## Batch-2 appended sections (usersverify — merge into prose)
+
+### F137 — deletion decoupled from having an email
+
+`DELETE /me` no longer requires the account to have an email address. Behaviour:
+- **Email on file** → the email-OTP gate still runs (re-prove control of the
+  account email before any destructive work). Unchanged.
+- **No email on file** (Apple hide-my-email, OTP-less, anon-claimed) → the OTP
+  gate is skipped; the authenticated session + CSRF are the proof of control, and
+  the soft-delete + anonymize proceeds. This closes a GDPR Art.17 gap where
+  email-less accounts could never erase themselves. No add-email flow was built
+  (deferred feature); the misleading "add and verify an email first" copy is gone.
+
+`POST /me/data-export` still requires an email (it is the only delivery channel).
+When none is on file it now returns an **accurate** 422 that points the user at the
+support/DSAR contact (`support@{MAIL_REPLY_DOMAIN}`, a monitored catch-all inbox)
+instead of telling them to use an add-email flow that does not exist.
+
+### F088 (delete half) — notifications purged on account deletion
+
+The `DELETE /me` post-revocation cleanup fan-out gained a
+`DELETE FROM notifications WHERE user_id = $1` step (alongside oauth-unlink,
+push-token purge, and the audit row). Notification rows are private to the deleted
+user (they can hold verbatim chat/DM previews) and are not civic record, so they
+are erased. Add this table to the "scrubbed on deletion" list. (The time-based
+retention sweep for notifications is the media-worker half of F088.)
+
+### F139 — DSAR export completeness + truncation remedy
+
+`POST /me/data-export` now includes two previously-omitted personal-data stores:
+`posts` (user-authored feed content) and the `volunteer_hours` ledger. The
+truncation remedy copy no longer says "reply to this email" (the export is sent
+From the no-reply mailbox); it now directs the user to the monitored support/DSAR
+address. Excluded/redacted as before: push-token secrets (`[REDACTED]`),
+certificate `snapshot`/`r2_key`, and all OTP/session/OAuth secrets.
+
+### F018 — bounded, off-request-path export assembly
+
+Export assembly moved off the request path into a `data.export` pg-boss job
+(API-side work loop). The OOM/undeliverable-mail fix is a hard **byte budget**
+(`DATA_EXPORT_BYTE_BUDGET`, 8 MB) applied while assembling: free-text sections
+(chat/DM/posts) are additionally capped at `DATA_EXPORT_FREE_TEXT_MAX_ROWS`
+(5,000), and any section clipped by rows or bytes is listed under `truncated`.
+Email delivery is unchanged (a download-link endpoint would be a contract change).

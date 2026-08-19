@@ -1,15 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest"
 import { RealAbuseChecks } from "../../src/adapters/abuse-checks.js"
 
-/**
- * Unit tests for the REAL AbuseChecks adapter, focused on the P1 regression: nsfwScore/pHash/
- * isNearDuplicate used to reject with "not implemented", which made the media.checks worker fail CLOSED
- * and hold 100% of media forever (so anon hold-release never published). These tests prove the adapter
- * now NEVER throws on those paths and DEFAULTS TO BENIGN, so default-flag production publishes media.
- *
- * Turnstile + gpsPlausible stay real and are unchanged; gpsPlausible (a pure distance check) is covered
- * here too to confirm the decoupling did not disturb it.
- */
 
 const IMG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 5, 6, 7, 8])
 
@@ -22,7 +13,6 @@ describe("RealAbuseChecks.nsfwScore (default benign, never throws)", () => {
     await expect(abuse.nsfwScore(IMG)).resolves.toBe(0)
     await expect(abuse.nsfwScore(new Uint8Array([9, 9, 9]))).resolves.toBe(0)
 
-    // One-shot notice: logged exactly once across many scores (not per asset).
     const notices = lines.filter((l) => l.includes("NSFW model not configured"))
     expect(notices).toHaveLength(1)
   })
@@ -55,8 +45,7 @@ describe("RealAbuseChecks.pHash (real hash, never throws)", () => {
     const a = await abuse.pHash(IMG)
     const b = await abuse.pHash(IMG)
     expect(a).toMatch(/^[0-9a-f]{16}$/)
-    expect(a).toBe(b) // deterministic
-    // Different bytes -> (almost certainly) different hash.
+    expect(a).toBe(b)
     const c = await abuse.pHash(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))
     expect(c).not.toBe(a)
   })
@@ -105,12 +94,6 @@ describe("RealAbuseChecks.gpsPlausible (unchanged; decoupled from NSFW)", () => 
   })
 })
 
-/**
- * L16 — the siteverify response carries `hostname` and `action` precisely so the server can bind a
- * token to the page that issued it. Ignoring them meant a token minted on ANY page using our sitekey
- * could be replayed against the highest-value endpoint. M9 — `hasNsfwScorer()` makes "no model wired"
- * an explicit, inspectable state instead of an invisible benign default.
- */
 describe("RealAbuseChecks.verifyTurnstile hostname/action binding (L16)", () => {
   const originalFetch = globalThis.fetch
 
@@ -155,6 +138,19 @@ describe("RealAbuseChecks.verifyTurnstile hostname/action binding (L16)", () => 
     })
     await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "home-turf" })).resolves.toBe(false)
     await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "login" })).resolves.toBe(true)
+  })
+
+  it("F128 SOFT-ENFORCE: a token with NO action still PASSES an expectation but logs the gap ONCE", async () => {
+    stubSiteverify({ success: true, hostname: "civfix.org" })
+    const lines: string[] = []
+    const abuse = new RealAbuseChecks({
+      turnstileSecret: "s",
+      turnstileHostnames: ["civfix.org"],
+      log: (l) => lines.push(l),
+    })
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "anon-report" })).resolves.toBe(true)
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "anon-report" })).resolves.toBe(true)
+    expect(lines.filter((l) => l.includes("carried no action"))).toHaveLength(1)
   })
 
   it("skips the hostname assertion when unconfigured, but logs the gap ONCE", async () => {

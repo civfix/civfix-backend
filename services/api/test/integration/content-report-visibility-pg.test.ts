@@ -123,6 +123,20 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     await rejects404(gate.assertReportable("message", ABSENT, member))
   })
 
+  it("F052: a soft-deleted message stays reportable by a room member (hit-and-run abuse)", async () => {
+    const owner = await newUser("hr owner")
+    const member = await newUser("hr member")
+    const outsider = await newUser("hr outsider")
+    const group = await seedGroup(owner, "private")
+    await addGroupMember(group, owner)
+    await addGroupMember(group, member)
+    const message = await seedGroupMessage(group, owner)
+    await h.sql`UPDATE chat_messages SET deleted_at = now() WHERE id = ${message}`
+
+    await expect(gate.assertReportable("message", message, member)).resolves.toBeUndefined()
+    await rejects404(gate.assertReportable("message", message, outsider))
+  })
+
   it("profile: an existing user is reportable; an unknown id is not", async () => {
     const target = await newUser("target")
     const reporter = await newUser("reporter")

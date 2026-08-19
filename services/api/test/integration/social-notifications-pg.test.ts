@@ -48,11 +48,6 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(bobItem.avatar).toHaveLength(2)
   })
 
-  // --- L13: the follower/following pages ignored blocks --------------------------------------------
-  // Every other people-listing surface — suggestFollows, people search, the home/replies/saves feeds,
-  // every DM surface — carries a symmetric user_blocks NOT EXISTS. The connection pages were the one
-  // exception, so a blocked account stayed visible in a roster the viewer can page through, which
-  // contradicts the mutual-invisibility semantics blocks have everywhere else in this product.
   it("L13: listFollowers / listFollowing hide a blocked account in BOTH directions", async () => {
     const repo = makeDrizzleSocialRepository(h.sql)
     const viewer = await newUser("Block Viewer", "blkview")
@@ -61,7 +56,6 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const innocent = await newUser("Ccc Innocent", "blkinn")
     const subject = await newUser("Ddd Subject", "blksubj")
 
-    // All three follow `subject` and are followed BY `subject`, so they appear on both pages.
     for (const u of [blockedByViewer, blockerOfViewer, innocent]) {
       await repo.addFollow(u, subject)
       await repo.addFollow(subject, u)
@@ -81,7 +75,6 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(followingIds).not.toContain(blockedByViewer)
     expect(followingIds).not.toContain(blockerOfViewer)
 
-    // An ANONYMOUS viewer has no block relationships, so nothing is filtered for them.
     const anon = await repo.listFollowers({ id: subject, viewerId: null, cursor: null, limit: 50 })
     expect(anon.items.map((p) => p.id)).toEqual(
       expect.arrayContaining([blockedByViewer, blockerOfViewer, innocent]),
@@ -197,6 +190,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       postInteractions: true,
       quietStart: null,
       quietEnd: null,
+      tz: null,
     })
 
     const patched = await repo.upsertPrefs(user, { follows: false })
@@ -219,7 +213,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(cleared.quietEnd).toBeNull()
   })
 
-  it("push tokens: owner re-register re-activates; foreign user CANNOT hijack; same device handoff allowed (P1-3)", async () => {
+  it("push tokens: owner re-register re-activates; foreign user CANNOT hijack; device_id does NOT authorize a cross-account rebind (F153)", async () => {
     const repo = makeDrizzleNotificationRepository(h.sql)
     const userA = await newUser("Token Owner A")
     const userB = await newUser("Token Owner B")
@@ -250,12 +244,12 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(rows[0]!.revoked_at).toBeNull()
 
     expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
-      "stored",
+      "conflict",
     )
     rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
       SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
     `
-    expect(rows[0]!.user_id).toBe(userB)
+    expect(rows[0]!.user_id).toBe(userA)
   })
 
   it("new_follower hook end to end: a NEW follow records a notification for the followee", async () => {
@@ -276,5 +270,38 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     await social.followPerson(follower, followee)
     const list2 = await notifRepo.listNotifications(followee, null, 50)
     expect(list2.records).toHaveLength(1)
+  })
+
+  it("F084: findPrefsMany reads the whole recipient set in one query and honours each row's opt-out", async () => {
+    const repo = makeDrizzleNotificationRepository(h.sql)
+    const optedIn = await newUser("Prefs In")
+    const optedOut = await newUser("Prefs Out")
+    const noRow = await newUser("Prefs Absent")
+    await repo.createDefaultPrefs(optedIn)
+    await repo.createDefaultPrefs(optedOut)
+    await repo.upsertPrefs(optedOut, { cleanupChat: false })
+
+    const prefs = await repo.findPrefsMany!([optedIn, optedOut, noRow])
+
+    expect(prefs.size).toBe(2)
+    expect(prefs.get(optedIn)?.cleanupChat).toBe(true)
+    expect(prefs.get(optedOut)?.cleanupChat).toBe(false)
+    expect(prefs.has(noRow)).toBe(false)
+
+    const push = new FakePushSender()
+    await makeNotificationService({ repo, pushSender: push }).createNotifications(
+      [optedIn, optedOut, noRow],
+      {
+        type: "group_chat",
+        title: "New message",
+        body: "Someone posted.",
+        link: `/messages/group/${optedIn}`,
+      },
+    )
+
+    const pushed = new Set(push.sent.map((s) => s.userId))
+    expect(pushed.has(optedIn)).toBe(true)
+    expect(pushed.has(noRow)).toBe(true)
+    expect(pushed.has(optedOut)).toBe(false)
   })
 })

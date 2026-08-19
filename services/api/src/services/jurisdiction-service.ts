@@ -1,36 +1,3 @@
-/**
- * Jurisdiction service: resolve a map point to the government that owns it, and keep the routing
- * metadata fresh by queueing a discovery task whenever a resolved jurisdiction is missing contacts or
- * has gone stale.
- *
- * Spatial access rule: ALL geometry goes through the raw postgres-js tag and the single canonical
- * query in db/sql/jurisdiction.ts (resolveJurisdiction). We never map PostGIS geometry through the
- * Drizzle ORM. The follow-up "is this jurisdiction healthy?" read selects only scalar columns
- * (contact_emails, contact_updated_at), so it is safe to run through the same `sql` tag.
- *
- * Write-time Census fallback (OPTIONAL, best-effort, dep-gated): when the local resolver MISSES and a
- * `jurisdictionLookup` dep is present, resolveForPoint queries the US Census Geocoder, lazily INSERTS the
- * most-specific place/county/state it returns as a NULL-geom jurisdiction row (only when no row exists
- * yet), and maps the report to it — so the common municipal case self-maps with zero ops instead of staying
- * "Unmapped". The lookup is best-effort (it never throws and falls through to null on any failure), the
- * insert is idempotent and PRESERVES everything about an existing row, and the new row carries no polygon
- * (geom NULL, 0015) so it only ever resolves for its own geoid. When the dep is ABSENT, behavior is exactly
- * today's local-only resolution (backward compatible).
- *
- * REPEAT-CALL COST is the CALLER's business: because the lazily-inserted row has a NULL geom, it can never
- * satisfy the resolver's ST_Contains, so every later resolve of the same point takes this same fallback
- * path. This service therefore does no memoization of its own; the anon-ok map resolve wires a TTL-memoized
- * lookup (services/route-geo-helpers.ts -> CachedJurisdictionLookup) so a repeat caller cannot drive one
- * outbound Census request per request, while the authenticated submit paths stay uncached and always
- * re-check live coverage. See src/adapters/jurisdiction-lookup.census.ts + documents/20-jurisdiction-mapping.md.
- *
- * Discovery-enqueue idempotency: the decision is the PURE function `needsDiscovery(row, now)` so it is
- * unit-testable with no DB. When it returns true we enqueue ONE job via the Jobs seam with
- * `singletonKey = geoid`; pg-boss collapses concurrent/duplicate enqueues for the same key into a
- * single active job, and the worker that materializes the task row is further guarded by the partial
- * UNIQUE(geoid) WHERE status <> 'done' index (0001_core.sql). So a hot point that resolves repeatedly
- * to an unconfigured jurisdiction never spawns duplicate open discovery tasks.
- */
 
 import type { JurisdictionDTO } from "@civfix/shared"
 import type { Geocoder, Jobs } from "@civfix/shared/interfaces"
@@ -42,46 +9,27 @@ import type {
   JurisdictionLookupResult,
 } from "../adapters/jurisdiction-lookup.census.js"
 
-/** Job name for the jurisdiction-discovery queue. The worker fills in contact info for a geoid. */
 export const JURISDICTION_DISCOVERY_JOB = "jurisdiction.discovery"
 
-/** Contact metadata is considered stale once it is older than this many months. */
 export const CONTACT_STALE_MONTHS = 18
 
-/** Payload enqueued for a discovery task. Kept minimal; the worker re-reads the row by geoid. */
 export interface JurisdictionDiscoveryJob {
   geoid: string
   population?: number | null
 }
 
-/**
- * The subset of a jurisdiction row the discovery decision needs. Declared structurally (not the full
- * Drizzle row) so `needsDiscovery` stays a pure function testable from a plain object.
- */
 export interface JurisdictionHealthRow {
   geoid: string
-  /** contact_emails text[]; null or empty means "no legacy contact". */
   contactEmails: string[] | null
-  /** contact_updated_at timestamptz; null or older than CONTACT_STALE_MONTHS -> needs discovery. */
   contactUpdatedAt: Date | null
-  /**
-   * Phase 2: whether ANY usable jurisdiction_contacts row exists for the geoid (a category-specific OR a
-   * default/category-NULL row with a non-empty email). The per-category routing model resolves
-   * category-specific -> default -> legacy contact_emails[]; a present jurisdiction_contacts row means
-   * the jurisdiction IS routable even if the legacy contact_emails[] column is still empty. Optional +
-   * defaulting to false so the decision stays BACKWARD COMPATIBLE: when no jurisdiction_contacts rows
-   * exist (the Phase 1 state), the behavior is exactly the legacy contact_emails[] check.
-   */
   hasRoutingContact?: boolean
   population?: number | null
 }
 
-/** Whether the jurisdiction has a usable legacy contact_emails[] entry (a non-blank address). */
 function hasUsableLegacyContact(row: Pick<JurisdictionHealthRow, "contactEmails">): boolean {
   return Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
 }
 
-/** Whether `updatedAt` is missing/unparseable or older than CONTACT_STALE_MONTHS as of `now`. */
 function isStale(updatedAt: Date | null, now: Date): boolean {
   if (!(updatedAt instanceof Date) || Number.isNaN(updatedAt.getTime())) return true
   const staleBefore = new Date(now)
@@ -89,19 +37,6 @@ function isStale(updatedAt: Date | null, now: Date): boolean {
   return updatedAt.getTime() < staleBefore.getTime()
 }
 
-/**
- * PURE decision: does this jurisdiction need a (re)discovery pass as of `now`? `now` is injected so the
- * decision is unit-testable with no DB or wall clock.
- *
- * Contact resolution precedence (Phase 2): "routable" = a per-category/default jurisdiction_contacts row
- * (`hasRoutingContact`) OR a usable legacy contact_emails[] entry.
- *   - No routable contact at all  -> needs discovery.
- *   - A jurisdiction_contacts row -> routable now; only re-flagged when the legacy contact_updated_at is
- *     present AND old (a fresh save stamps it; a MISSING timestamp does NOT re-flag here, unlike the
- *     legacy-only path, because the row itself is the authoritative routing signal).
- *   - Legacy emails only          -> Phase 1 behavior: re-flagged when the timestamp is missing or old.
- * BACKWARD COMPATIBLE: with `hasRoutingContact` absent/false this reduces to the original legacy check.
- */
 export function needsDiscovery(row: JurisdictionHealthRow, now: Date): boolean {
   const hasRoutingContact = row.hasRoutingContact === true
 
@@ -117,12 +52,6 @@ export function needsDiscovery(row: JurisdictionHealthRow, now: Date): boolean {
   return isStale(row.contactUpdatedAt, now)
 }
 
-/**
- * PURE: is this jurisdiction routable RIGHT NOW? True when it has a per-category/default
- * jurisdiction_contacts row OR a usable legacy contact_emails[] entry. Drives the public
- * JurisdictionDTO.routable flag. NOT the same as `!needsDiscovery`: a routable jurisdiction can still
- * need a refresh pass when its contact metadata has gone stale, yet it is still routable today.
- */
 export function isRoutable(
   row: Pick<JurisdictionHealthRow, "hasRoutingContact" | "contactEmails">,
 ): boolean {
@@ -130,30 +59,15 @@ export function isRoutable(
 }
 
 export interface JurisdictionServiceDeps {
-  /** Raw postgres-js tag (dbHandle.sql) for the spatial + scalar reads. */
   sql: Sql
-  /** Reverse-geocoder seam used to derive the "City, ST" label. */
   geocoder: Geocoder
-  /** Jobs seam used to enqueue discovery tasks idempotently. */
   jobs: Jobs
-  /**
-   * OPTIONAL write-time fallback: when the local PostGIS resolver misses, query the US Census Geocoder,
-   * lazily upsert the most-specific match, and map the report. Absent -> today's local-only behavior
-   * (backward compatible). Best-effort: the lookup never throws and a miss/failure leaves the point null.
-   */
   jurisdictionLookup?: JurisdictionLookup
-  /** Injectable clock (defaults to Date.now) so staleness is deterministic in tests. */
   now?: () => Date
 }
 
 export interface JurisdictionService {
-  /**
-   * Resolve the jurisdiction containing (lat, lng) into a JurisdictionDTO, or null when the point is
-   * outside all known coverage. As a side effect, enqueues a discovery task when the resolved
-   * jurisdiction needs one. Resolution is returned regardless of the discovery outcome.
-   */
   resolveForPoint(lat: number, lng: number): Promise<JurisdictionDTO | null>
-  /** True when `geoid` names a known jurisdiction row. */
   exists(geoid: string): Promise<boolean>
 }
 
@@ -162,17 +76,13 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
 
   return {
     async resolveForPoint(lat: number, lng: number): Promise<JurisdictionDTO | null> {
-      // Canonical spatial query (place -> county -> state). Note (lng, lat) order.
       const resolved = await resolveJurisdiction(deps.sql, lng, lat)
       if (!resolved) {
-        // Local MISS. If the optional write-time Census fallback is wired, try to self-map the point;
-        // otherwise (dep absent) preserve today's exact local-only behavior and return null ("Unmapped").
         return deps.jurisdictionLookup
           ? await resolveViaLookup(deps.sql, deps.jurisdictionLookup, lat, lng)
           : null
       }
 
-      // Health read + reverse-geocode label are independent of each other; run them concurrently.
       const [health, geoLabel] = await Promise.all([
         loadHealth(deps.sql, resolved.geoid),
         deps.geocoder.cityStateLabel(lat, lng),
@@ -181,7 +91,6 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
         await enqueueDiscovery(deps.jobs, health)
       }
 
-      // Label: prefer the geocoder seam; fall back to the jurisdiction name if it cannot produce one.
       const label = geoLabel ?? resolved.name
 
       return {
@@ -189,8 +98,6 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
         name: resolved.name,
         layer: resolved.layer,
         cityStateLabel: label,
-        // Whether routing is already configured (public, no contact address exposed). Defaults false
-        // when the health row could not be read, so an unknown jurisdiction reads as "manual review".
         routable: health ? isRoutable(health) : false,
       }
     },
@@ -202,35 +109,24 @@ export function makeJurisdictionService(deps: JurisdictionServiceDeps): Jurisdic
   }
 }
 
-/**
- * Layer -> `priority` rank for an API-sourced upsert. Matches JURISDICTION_LAYER_RANK_CASE (the resolver's
- * ordering CASE: place 2, county 3, state 4) so a NULL-geom API row sorts identically to a self-hosted one
- * of the same layer. The lookup ONLY ever returns place/county/state (the Census API does not expose
- * federal/tribal ownership), so this map is exhaustive for the values that can reach here.
- */
 const LAYER_PRIORITY: Record<JurisdictionLookupResult["layer"], number> = {
   place: 2,
   county: 3,
   state: 4,
 }
 
-/**
- * Write-time Census fallback on a LOCAL MISS: query the lookup, and on a hit lazily insert the returned
- * jurisdiction (NULL geom, only when absent) and map the report to it. Best-effort throughout — `lookup`
- * never throws and a miss returns null (today's "Unmapped" behavior).
- *
- * The returned DTO is NOT routable: a brand-new contact-less row has no routing configured yet. We do NOT
- * enqueue discovery here — the row simply lacks contacts, which is exactly the state `needsDiscovery` flags
- * on the NEXT resolve of this geoid; keeping the enqueue on the existing health path avoids duplicating the
- * idempotent-enqueue logic (and a fresh self-mapped report does not need its routing resolved synchronously).
- */
 async function resolveViaLookup(
   sql: Sql,
   lookup: JurisdictionLookup,
   lat: number,
   lng: number,
 ): Promise<JurisdictionDTO | null> {
-  const hit = await lookup.lookup(lat, lng)
+  let hit: JurisdictionLookupResult | null
+  try {
+    hit = await lookup.lookup(lat, lng)
+  } catch {
+    return null
+  }
   if (!hit) return null
 
   await insertApiSourcedJurisdictionIfAbsent(sql, hit)
@@ -239,42 +135,11 @@ async function resolveViaLookup(
     geoid: hit.geoid,
     name: hit.name,
     layer: hit.layer,
-    // "Name, ST" via the FIPS prefix of the (place/county/state) geoid; bare name when the prefix is
-    // unknown. Reuses the TIGER geocoder's pure helpers so the label format matches the local-hit path.
     cityStateLabel: formatCityStateLabel(hit.name, uspsFromGeoid(hit.geoid)),
-    // Not routable yet: a just-created contact-less row needs discovery before it can route.
     routable: false,
   }
 }
 
-/**
- * Lazily INSERT an API-sourced jurisdiction (geoid + name + layer, NO polygon) when no row exists yet.
- * Idempotent by geoid: an existing row of any origin is left completely untouched.
- *
- * Geometry access rule: written through the raw `sql` tag like every other jurisdiction write — even though
- * geom is NULL here so no PostGIS function appears (a plain insert), we keep the raw tag for consistency
- * with the house geometry rule (NEVER the Drizzle insert builder for this table).
- *
- * CODE on insert (D2, #56): a fresh row is stamped with the next `jurisdiction_code_seq` value so it gets a
- * compact JURCODE for reference codes — the SAME single-sequence source the backfill + every other lazy
- * insert use, so no two jurisdictions collide on a code.
- *
- * WHY `WHERE NOT EXISTS` AND NOT A PLAIN `VALUES ... ON CONFLICT` (A15 follow-up): a VALUES list is
- * evaluated BEFORE the conflict is detected, so `nextval` was consumed on every conflict too — and this
- * statement is on an anon-ok path (POST /map/resolve-jurisdiction) whose repeat calls always conflict,
- * because a NULL-geom row can never satisfy the resolver's ST_Contains. That burned one `code` value per
- * request forever. Guarding the insert with NOT EXISTS makes the target list unevaluated (zero rows out)
- * on the repeat path, so no sequence value is drawn. `ON CONFLICT (geoid) DO NOTHING` still covers the
- * narrow race where a concurrent request inserts the same geoid between the probe and the write (that one
- * loses its drawn value — a gappy sequence is expected and harmless, unlike a per-request burn).
- *
- * NOTHING IS UPDATED on the existing-row path (deliberate). The previous version refreshed name + layer;
- * for a NULL-geom row those columns came from this very lookup (a rewrite of identical values), and for a
- * self-hosted row the authoritative refresh is the boundary ingest (db/ingest-jurisdictions-core.ts, which
- * DOES update name/layer/geom/population). Skipping the update also means this fallback can never clobber
- * a curated name, and — as before — geom, contact_emails/contact_updated_at, priority and code are never
- * touched: an established jurisdiction keeps its boundary, its operator-mapped routing and its JURCODE.
- */
 async function insertApiSourcedJurisdictionIfAbsent(
   sql: Sql,
   hit: JurisdictionLookupResult,
@@ -289,14 +154,6 @@ async function insertApiSourcedJurisdictionIfAbsent(
   `
 }
 
-/**
- * Load the discovery-relevant scalar columns for a geoid. Returns null if the row vanished.
- *
- * Phase 2: also probes jurisdiction_contacts for ANY usable routing row (a category-specific OR a
- * default/category-NULL row with a non-empty email) so `needsDiscovery` consults the per-category routing
- * model (category-specific -> default -> legacy contact_emails[]). `has_routing_contact` is false when the
- * table has no row for the geoid, which keeps the legacy-only behavior unchanged (backward compatible).
- */
 async function loadHealth(sql: Sql, geoid: string): Promise<JurisdictionHealthRow | null> {
   const rows = await sql<
     {
@@ -331,7 +188,6 @@ async function loadHealth(sql: Sql, geoid: string): Promise<JurisdictionHealthRo
   }
 }
 
-/** Enqueue exactly one idempotent discovery job for a jurisdiction (singletonKey = geoid). */
 async function enqueueDiscovery(jobs: Jobs, row: JurisdictionHealthRow): Promise<void> {
   const data: JurisdictionDiscoveryJob = {
     geoid: row.geoid,

@@ -17,6 +17,15 @@ export function generatePlaceholderHandle(id?: string): string {
   return `user${hex}`
 }
 
+export const TOMBSTONE_HANDLE_RE = /^deleted_[0-9a-f]{12}$/
+
+export function generateTombstoneHandle(): string {
+  const hex = randomUUID().replace(/-/g, "").slice(0, 12).toLowerCase()
+  return `deleted_${hex}`
+}
+
+export type AccountStatus = "active" | "suspended" | "review" | "banned"
+
 export interface SessionRecord {
   id: string
   userId: string
@@ -104,14 +113,6 @@ export interface UserRecord {
   avatarUrl: string | null
   profileComplete: boolean
   allowDirectMessages: boolean
-  /**
-   * P6 hours privacy — a NULLABLE TRI-STATE mirroring `users.show_volunteer_hours`
-   * (0061_users_show_volunteer_hours.sql), NOT a plain boolean:
-   *   null  = never chosen (every account that predates the column) -> the aggregate hours stay
-   *           visible exactly as they were, and `UserDTO.showVolunteerHours` is OMITTED
-   *   true  = explicit opt-in    false = explicit opt-out
-   * The WRITE is always an explicit boolean (see UpdateSettingsInput); only the stored value is nullable.
-   */
   showVolunteerHours: boolean | null
   locale: string
   createdAt: Date
@@ -145,25 +146,30 @@ export interface UserStore {
   setRole(id: string, role: Role): Promise<UserRecord>
   updateSettings(id: string, input: UpdateSettingsInput): Promise<UserRecord>
   softDeleteAndAnonymize(id: string): Promise<UserRecord>
+  accountStatus(id: string): Promise<AccountStatus>
 }
 
 export interface UpdateSettingsInput {
   allowDirectMessages?: boolean
   locale?: string
-  /**
-   * Omitted = no change (the stored value keeps whatever it is, including "never chosen"). A PRESENT
-   * value is always an explicit boolean: the tri-state's null arm is only ever reached by never having
-   * written the column, never by writing one.
-   */
   showVolunteerHours?: boolean
 }
 
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()
+  private readonly statuses = new Map<string, AccountStatus>()
   private readonly now: () => Date
 
   constructor(opts: { now?: () => Date } = {}) {
     this.now = opts.now ?? (() => new Date())
+  }
+
+  accountStatus(id: string): Promise<AccountStatus> {
+    return Promise.resolve(this.statuses.get(id) ?? "active")
+  }
+
+  setAccountStatus(id: string, status: AccountStatus): void {
+    this.statuses.set(id, status)
   }
 
   findById(id: string): Promise<UserRecord | null> {
@@ -202,8 +208,6 @@ export class InMemoryUserStore implements UserStore {
       avatarUrl: input.avatarUrl ?? null,
       profileComplete: input.profileComplete ?? false,
       allowDirectMessages: true,
-      // NULL, not true: a new account has NEVER CHOSEN. The column has no DB default for the same
-      // reason (0061) — "never chosen" is a distinct state from "opted in".
       showVolunteerHours: null,
       locale: "en",
       createdAt: new Date(),
@@ -279,13 +283,6 @@ export class InMemoryUserStore implements UserStore {
     return Promise.resolve({ ...next })
   }
 
-  /**
-   * The USERS-ROW half only. PgUserStore additionally performs cross-table erasure in the same
-   * transaction — hides the user's public reports, cancels their upcoming/active events, and revokes +
-   * scrubs their service-hours certificates (docs/erasure-behavior.md). This twin holds no such tables,
-   * so that half is covered by `test/integration/account-deletion-cascade-pg.test.ts` against real
-   * Postgres, not here.
-   */
   softDeleteAndAnonymize(id: string): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.softDeleteAndAnonymize: user not found")
@@ -296,7 +293,7 @@ export class InMemoryUserStore implements UserStore {
       email: null,
       emailVerified: false,
       displayName: DELETED_USER_LABEL,
-      handle: generatePlaceholderHandle(id),
+      handle: generateTombstoneHandle(),
       avatarUrl: null,
     }
     this.byId.set(id, next)
@@ -318,7 +315,6 @@ export interface OAuthIdentityRecord {
 export interface OAuthIdentityStore {
   findByProvider(provider: string, providerUserId: string): Promise<OAuthIdentityRecord | null>
   linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void>
-  /** Drop every identity linked to a user (account deletion). Idempotent. */
   deleteAllForUser(userId: string): Promise<void>
 }
 
@@ -369,12 +365,6 @@ export interface OtpStore {
   insert(row: OtpInsert): Promise<OtpRecord>
   findLatestActive(email: string, now: Date): Promise<OtpRecord | null>
   incrementAttempts(id: string): Promise<number>
-  /**
-   * Consume a code, returning whether THIS call is the one that consumed it. The write is CONDITIONAL on
-   * the row still being unconsumed so "single-use" holds under racing, not merely in its absence: two
-   * concurrent verifies of the same correct code both clear the attempt ceiling, so the claim is what
-   * decides which one may mint a session.
-   */
   markConsumed(id: string, at: Date): Promise<boolean>
 }
 

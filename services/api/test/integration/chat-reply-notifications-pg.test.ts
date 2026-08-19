@@ -224,7 +224,10 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     // Run BOTH post-send paths exactly as the wiring does for a report message: the member fan-out
     // (onReportMessage) and the reply bell (onChatReply).
     const fanOut = makeReportChatNotifier({
-      notificationService: deps.notificationService,
+      notificationService: makeNotificationService({
+        repo: makeDrizzleNotificationRepository(h.sql),
+        pushSender: new FakePushSender(),
+      }),
       reportChatRepo: { listMemberIds: (id) => reportChatRepo.listMemberIds(id) },
       isMuted: (userId, roomId) => mutes.isMuted(userId, "report", roomId),
       roomKeyFor: (kind, id) => roomKeyFor(kind, id),

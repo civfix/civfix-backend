@@ -1,5 +1,5 @@
 
-import { AppError } from "@civfix/shared"
+import { AppError, MAX_LINKED_REPORTS } from "@civfix/shared"
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
 import {
@@ -10,13 +10,6 @@ import {
   parseTimeCursor,
 } from "../db/cursor-helpers.js"
 import { allocateEventReferenceCode } from "../db/reference-code.js"
-// THE canonical "this report is publicly readable" predicate (report-sql.ts H8). Both report reads in
-// this file used to re-type its three conditions inline, which is exactly the drift the fragment exists
-// to prevent: whatever set of statuses counts as publicly visible, the event gallery and the link
-// validator must agree with the report surfaces, or a report progressing past 'published' silently
-// disappears from its linked events while still being linkable (or vice versa). Requires alias `r`.
-// firstReadyStillLateral is the same story for the PREVIEW half: one join, one policy for which ready
-// asset may stand in as a report's thumbnail across the gallery, the map pins, search and post cards.
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
 import type {
   AttendeeView,
@@ -61,17 +54,11 @@ import type {
 
 const PG_UNIQUE_VIOLATION = "23505"
 
-/** The `(cleanup_id, lower(title))` unique index on cleanup_slots (0063). */
+export const LINKED_EVENTS_PER_REPORT_CAP = 20
+export const MAX_EVENTS_PER_REPORT = 50
+
 const SLOT_TITLE_INDEX = "cleanup_slots_cleanup_title_uidx"
 
-/**
- * Is this a duplicate-slot-title violation? Same shape as certificate-repository.drizzle.ts'
- * `conflictKind`: postgres.js surfaces the violated index on `constraint_name`, and the `detail`
- * fallback ("Key (cleanup_id, lower(title))=…") is belt-and-braces for a driver that ever stops
- * populating it. Narrow on PURPOSE — reconcileSlots also writes rows guarded by
- * cleanup_slots_id_cleanup_uidx, and re-labelling one of those as "duplicate slot title" would hand
- * the host a 422 naming a field that is not the problem.
- */
 function isSlotTitleConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false
   const e = err as { code?: unknown; constraint_name?: unknown; detail?: unknown }
@@ -129,11 +116,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
         await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
-        // B22: the slots land in this SAME transaction, LAST — the lock order is
-        // reference_counters -> cleanups -> cleanup_members -> cleanup_reports -> cleanup_slots, and
-        // allocateEventReferenceCode staying FIRST is the documented D4 contract (violating it
-        // reintroduces ABBA deadlocks across the create paths). Every entry is an insert: on create
-        // there is no existing slot to edit, so the service strips any client-supplied `id`.
         await insertSlotsInTx(tx, args.cleanupId, args.slots)
 
         const created = await readById(tx, args.cleanupId, null)
@@ -156,8 +138,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       if (patch.bring !== undefined) {
         sets.push(sql`bring = ${patch.bring as unknown as string[] | null}`)
       }
-      // Set in the SAME statement as geom (the service re-resolves it from the moved point), so the
-      // stored position and its jurisdiction can never disagree. reference_code is untouched by design.
       if (patch.jurisdictionGeoid !== undefined) {
         sets.push(sql`jurisdiction_geoid = ${patch.jurisdictionGeoid}`)
       }
@@ -234,6 +214,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
 
     async loadLinkedReportsForCleanups(
       cleanupIds: string[],
+      perCleanupCap: number = MAX_LINKED_REPORTS,
     ): Promise<Map<string, LinkedReportView[]>> {
       const grouped = new Map<string, LinkedReportView[]>()
       if (cleanupIds.length === 0) return grouped
@@ -253,29 +234,31 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         }[]
       >`
         SELECT
-          cr.cleanup_id,
-          r.id,
-          r.category,
-          r.type,
-          r.title,
-          r.status,
-          ST_X(r.geom) AS lng,
-          ST_Y(r.geom) AS lat,
-          r.addr,
-          -- The gallery card renders ONE key, so the poster wins and the image's full-size r2_key is the
-          -- fallback until its thumb exists. (A non-image only qualifies WITH a poster, so this can never
-          -- resolve to a raw .mp4 key — see firstReadyStillLateral.)
-          COALESCE(m.thumb_key, m.r2_key) AS thumb_key,
-          cr.linked_at
-        FROM cleanup_reports cr
-        JOIN reports r ON r.id = cr.report_id
-        -- THE shared "report's first visible still" join (report-sql.ts), not a local copy: this query used
-        -- to hand-roll it with a wider kind guard than the map/search/post-card sites, so a
-        -- video-with-poster report showed a thumbnail here and nowhere else.
-        ${firstReadyStillLateral(sql)}
-        WHERE cr.cleanup_id = ANY(${cleanupIds}::uuid[])
-          AND ${publicReportFilter(sql)}
-        ORDER BY cr.cleanup_id, cr.linked_at DESC, r.id
+          cleanup_id, id, category, type, title, status, lng, lat, addr, thumb_key, linked_at
+        FROM (
+          SELECT
+            cr.cleanup_id,
+            r.id,
+            r.category,
+            r.type,
+            r.title,
+            r.status,
+            ST_X(r.geom) AS lng,
+            ST_Y(r.geom) AS lat,
+            r.addr,
+            COALESCE(m.thumb_key, m.r2_key) AS thumb_key,
+            cr.linked_at,
+            row_number() OVER (
+              PARTITION BY cr.cleanup_id ORDER BY cr.linked_at DESC, r.id
+            ) AS rn
+          FROM cleanup_reports cr
+          JOIN reports r ON r.id = cr.report_id
+          ${firstReadyStillLateral(sql)}
+          WHERE cr.cleanup_id = ANY(${cleanupIds}::uuid[])
+            AND ${publicReportFilter(sql)}
+        ) ranked
+        WHERE rn <= ${perCleanupCap}
+        ORDER BY cleanup_id, linked_at DESC, id
       `
       for (const r of rows) {
         const view: LinkedReportView = {
@@ -322,28 +305,37 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         }[]
       >`
         SELECT
-          cr.report_id,
-          c.id,
-          c.title,
-          c.event_kind,
-          c.status,
-          c.scheduled_at,
-          ST_X(c.geom) AS lng,
-          ST_Y(c.geom) AS lat,
-          COALESCE(g.going, 0) AS going,
-          u.id AS org_id,
-          u.display_name AS org_display_name,
-          u.handle AS org_handle,
-          u.bio AS org_bio,
-          cr.linked_at
-        FROM cleanup_reports cr
-        JOIN cleanups c ON c.id = cr.cleanup_id
-        JOIN users u ON u.id = c.organizer_user_id
-        LEFT JOIN LATERAL (
-          SELECT count(*)::int AS going FROM cleanup_members m WHERE m.cleanup_id = c.id
-        ) g ON true
-        WHERE cr.report_id = ANY(${reportIds}::uuid[])
-        ORDER BY cr.report_id, cr.linked_at DESC, c.id
+          report_id, id, title, event_kind, status, scheduled_at,
+          lng, lat, going, org_id, org_display_name, org_handle, org_bio, linked_at
+        FROM (
+          SELECT
+            cr.report_id,
+            c.id,
+            c.title,
+            c.event_kind,
+            c.status,
+            c.scheduled_at,
+            ST_X(c.geom) AS lng,
+            ST_Y(c.geom) AS lat,
+            COALESCE(g.going, 0) AS going,
+            u.id AS org_id,
+            u.display_name AS org_display_name,
+            u.handle AS org_handle,
+            u.bio AS org_bio,
+            cr.linked_at,
+            row_number() OVER (
+              PARTITION BY cr.report_id ORDER BY cr.linked_at DESC, c.id
+            ) AS rn
+          FROM cleanup_reports cr
+          JOIN cleanups c ON c.id = cr.cleanup_id
+          JOIN users u ON u.id = c.organizer_user_id
+          LEFT JOIN LATERAL (
+            SELECT count(*)::int AS going FROM cleanup_members m WHERE m.cleanup_id = c.id
+          ) g ON true
+          WHERE cr.report_id = ANY(${reportIds}::uuid[])
+        ) ranked
+        WHERE rn <= ${LINKED_EVENTS_PER_REPORT_CAP}
+        ORDER BY report_id, linked_at DESC, id
       `
       for (const r of rows) {
         const view: LinkedEventView = {
@@ -425,8 +417,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ORDER BY c.geom <-> ${point} ASC, c.id ASC
           LIMIT ${filters.limit + 1}
         `
-        // A row with no measurable distance cannot anchor the (knn, id) keyset, so the page just ends
-        // (pageWith drops the cursor on a null encode) rather than emitting one the WHERE cannot consume.
         return paginate(rows, filters.limit, (last) =>
           last.knn === null || last.knn === undefined
             ? null
@@ -495,8 +485,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       userId: string,
       role: "cohost" | "member",
     ): Promise<boolean> {
-      // Single-statement (atomic) role flip. `role <> 'organizer'` is defense-in-depth: the service
-      // already refuses to target the organizer, but the SQL can never demote them regardless.
       const rows = await sql<{ user_id: string }[]>`
         UPDATE cleanup_members SET role = ${role}
         WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
@@ -510,20 +498,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       userId: string,
       actorId: string,
     ): Promise<RemoveMemberOutcome> {
-      // Ban + delete + fresh count in ONE transaction so the returned `going` is consistent with the
-      // delete AND there is no window between the two writes. Deleting the cleanup_members row drops
-      // the target from the event group chat (the same row gates isMember); the cleanup_bans row is
-      // what stops them walking straight back in via the self-service join (M17 — before this, removal
-      // was purely cosmetic and could be undone by the removed user in a loop).
-      //
-      // Statement ORDER inside the transaction is not by itself what makes the removal stick — the row
-      // lock is. FOR NO KEY UPDATE on the cleanups row conflicts with the FOR SHARE joinCleanupTx takes
-      // on the same row, so a concurrent join is serialized against this whole transaction instead of
-      // interleaving its (unlocked) ban probe with our delete. Deliberately NOT the stronger FOR UPDATE:
-      // that one also conflicts with the FOR KEY SHARE every FK-referencing insert takes on the parent
-      // row, which would stall unrelated writes for this event (chat messages, timeline rows, other
-      // people's joins) for the length of this transaction. FOR NO KEY UPDATE excludes the join and
-      // nothing else. Same reason the join side takes SHARE and not UPDATE.
       return sql.begin(async (tx) => {
         const locked = await tx<{ status: CleanupStatus }[]>`
           SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR NO KEY UPDATE
@@ -542,8 +516,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             VALUES (${cleanupId}, ${userId}, ${actorId})
             ON CONFLICT (cleanup_id, user_id) DO NOTHING
           `
-          // B28d: free the seat in the SAME transaction. A removed attendee who kept their claim would
-          // occupy a slot forever — a phantom-full row nobody can free and no host can attribute.
           await tx`
             DELETE FROM cleanup_slot_claims
             WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
@@ -604,23 +576,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       userId: string,
     ): Promise<"joined" | "not_found" | "banned" | "closed"> {
       return sql.begin(async (tx) => {
-        // FOR SHARE is what makes the ban probe below race-safe, and it is why the existence probe is
-        // also the lock: removeMember takes the conflicting FOR NO KEY UPDATE on this same cleanups row,
-        // so a removal either commits entirely before this probe (we see its ban) or waits until after
-        // our insert (its delete then removes the membership we just wrote). SHARE rather than an
-        // exclusive mode because concurrent joins touch disjoint cleanup_members rows and must not
-        // queue behind each other.
         const locked = await tx<{ status: CleanupStatus }[]>`
           SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return "not_found"
         if (isCleanupTerminal(cleanup.status)) return "closed"
-        // M17: joining was an unconditional self-service INSERT, which made attendee removal a
-        // no-op the target could undo instantly. The ban probe runs INSIDE the join transaction, under
-        // the row lock above — a bare transaction was NOT sufficient, because a plain SELECT on
-        // cleanup_bans takes no lock at all: a removal committing between this probe and the insert
-        // below used to leave the target banned AND a member (its delete ran before our insert).
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
@@ -659,19 +620,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       input: { note: string; body: string; reason: string | null; actorId: string },
     ): Promise<CancelCleanupOutcome> {
       return sql.begin(async (tx) => {
-        // B18: `status <> 'done'` joined the guard. Host completion is forward-only (B17), so cancel is
-        // no longer allowed to walk an event back out of 'done' — that would leave a cancelled event
-        // carrying credited volunteer_hours rows, which nothing downstream can interpret.
         const updated = await tx<{ id: string }[]>`
           UPDATE cleanups SET status = 'cancelled'
           WHERE id = ${id} AND status <> 'cancelled' AND status <> 'done'
           RETURNING id
         `
         if (updated.length === 0) {
-          // The guarded UPDATE is the concurrency primitive: exactly one of N racing cancels matches a
-          // row, so exactly one caller is told "cancelled" and gets to ring the roster. A miss is an
-          // already-cancelled event, a COMPLETED one, or no event at all — three different answers
-          // (200 / 409 / 404), so the follow-up read returns the status, not merely existence.
           const existing = await tx<{ status: CleanupStatus }[]>`
             SELECT status FROM cleanups WHERE id = ${id} LIMIT 1
           `
@@ -683,12 +637,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
         `
-        // L24: the cancellation fan-out USED to INSERT notification rows directly here, bypassing
-        // NotificationService entirely — so it ignored the recipient's push prefs, their quiet hours
-        // and their locale, and never emitted the user-channel signal, unlike every other bell in the
-        // product. The fan-out now lives in cleanup-service.cancelCleanup and rides the real pipeline.
-        // The repo's job ends at the status flip + the timeline row, which is what has to be atomic;
-        // a bell is best-effort by design and must never hold a transaction open.
         return "cancelled"
       })
     },
@@ -698,26 +646,15 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       input: { note: string; actorId: string; now: Date },
     ): Promise<CompleteCleanupOutcome> {
       return sql.begin(async (tx) => {
-        // Lock-then-branch (B16). FOR NO KEY UPDATE is removeMember's lock on this same row, so the
-        // vocabulary stays consistent and two racing completions serialize: the loser reads status
-        // 'done' and returns already_completed, writing nothing. Deliberately NOT the stronger FOR
-        // UPDATE, which also conflicts with the FOR KEY SHARE every FK-referencing insert takes on the
-        // parent row (chat messages, timeline rows, joins) — see removeMember for the same reasoning.
         const locked = await tx<{ status: CleanupStatus; scheduled_at: Date }[]>`
           SELECT status, scheduled_at FROM cleanups WHERE id = ${id} LIMIT 1 FOR NO KEY UPDATE
         `
         const row = locked[0]
         if (row === undefined) return "not_found"
         if (row.status === "cancelled") return "cancelled"
-        // Idempotent: a repeat completion writes NO second timeline row (and the service rings no bell —
-        // B19 rings none at all). The caller still gets its 200 + DTO.
         if (row.status === "done") return "already_completed"
-        // B14: the time gate is evaluated against the LOCKED scheduled_at, not a value read before the
-        // lock — a concurrent updateCleanup moving the date must either commit before this read or wait.
         if (row.scheduled_at.getTime() > input.now.getTime()) return "too_early"
         await tx`UPDATE cleanups SET status = 'done' WHERE id = ${id}`
-        // kind='status' reuses the free-text kind the admin setStatus path already writes (the column has
-        // no enum), so host completion needs no DDL and renders in the same event timeline.
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'status', ${input.note}, ${input.actorId})
@@ -738,9 +675,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           : sql`AND FALSE`
         : sql``
       const blockedPair = blockedPairExpr(sql, viewerId, sql`u.id`)
-      // B29b: the two LEFT JOINs are the whole "per-slot roster" feature — no second endpoint, no extra
-      // visibility rule. The roster is already role-scoped (onlyFollowed for non-members), so the slot
-      // field inherits exactly that gating.
       const rows = await sql<
         (AttendeeRowSelect & {
           slot_id: string | null
@@ -799,8 +733,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     },
 
     async slotCountsFor(cleanupIds: string[]): Promise<Map<string, number>> {
-      // The empty guard loadLinkedReportsForCleanups already uses: a page with no cleanups issues no
-      // query at all, which matters because this runs on the hottest list read.
       if (cleanupIds.length === 0) return new Map()
       const rows = await sql<{ cleanup_id: string; n: number }[]>`
         SELECT cleanup_id, count(*)::int AS n
@@ -823,44 +755,17 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           `
           const have = new Map(existing.map((r) => [r.id, r.title]))
 
-          // B23: an id that is not on THIS cleanup is a hard 422, never a silent insert — an id from
-          // another event must be a hard error, not a quiet re-parent. Checked BEFORE any write so the
-          // whole reconcile is all-or-nothing (the throw rolls this transaction back regardless).
           for (const slot of desired) {
             if (slot.id !== undefined && !have.has(slot.id)) {
               throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
             }
           }
 
-          // ---------------------------------------------------------------------------------------
-          // WRITE ORDER IS THE WHOLE POINT OF THIS TRANSACTION.
-          //
-          // cleanup_slots_cleanup_title_uidx (cleanup_id, lower(title)) is a plain, IMMEDIATELY
-          // checked unique index — Postgres has no deferrable unique INDEX, only a deferrable unique
-          // CONSTRAINT, and 0063 declares an index. So every INTERMEDIATE state inside this
-          // transaction must already satisfy it, not just the final one. Two perfectly ordinary host
-          // edits break that if the diff is applied naively:
-          //
-          //   (a) remove "Grill" and add a new "Grill" in the same save — the INSERT lands while the
-          //       old row is still there;
-          //   (b) swap two slots' titles — the first UPDATE writes a title the second row still holds.
-          //
-          // Both raise a raw 23505 that surfaces as a 500 on a legitimate edit. The order below makes
-          // every intermediate state legal: DELETE the removed rows first (their titles are freed),
-          // then park every RENAMED row on a sentinel title that no host can be holding (its own
-          // id::text, unique by construction and unique across the parked set), then write the real
-          // titles and the inserts into a board whose remaining keys are exactly those of the rows
-          // that legitimately keep them. The only collision left is a genuine duplicate WITHIN
-          // `desired`, which the catch below turns into a named 422 instead of a 500.
-          // ---------------------------------------------------------------------------------------
 
           const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
           const toRemove = [...have.keys()].filter((id) => !keep.has(id))
           const removed: SlotReconcileResult["removed"] = []
           if (toRemove.length > 0) {
-            // B23/B34: the claimants are read BEFORE the delete, inside this transaction — after the
-            // DELETE the cascade has taken the claim rows and there is nobody left to ring. The read
-            // travels WITH the delete, which is why this whole block moves as a unit.
             const claimants = await tx<{ slot_id: string; user_id: string }[]>`
               SELECT slot_id, user_id FROM cleanup_slot_claims
               WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${toRemove}::uuid[])
@@ -871,8 +776,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
               if (list) list.push(c.user_id)
               else bySlot.set(c.slot_id, [c.user_id])
             }
-            // B24: deleting a claimed slot silently drops its claimants and that is ALLOWED — it is
-            // the host's roster and a cancelled role is a legitimate edit. The bell is the mitigation.
             await tx`
               DELETE FROM cleanup_slots
               WHERE cleanup_id = ${cleanupId} AND id = ANY(${toRemove}::uuid[])
@@ -886,10 +789,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             }
           }
 
-          // Park the renames. Compared on the RAW title rather than a JS-lowercased one on purpose:
-          // parking a row whose lower(title) did not actually change is a harmless extra write, while
-          // JS's toLowerCase() disagreeing with Postgres' locale-aware lower() on some exotic
-          // character would not be harmless at all.
           const renaming = desired
             .filter((s): s is DesiredSlot & { id: string } => s.id !== undefined)
             .filter((s) => have.get(s.id) !== s.title)
@@ -926,9 +825,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           return { added, updated, removed }
         })
       } catch (err) {
-        // Belt-and-braces behind the ordering above: a residual title collision (a duplicate inside
-        // `desired` that reached the repo directly, or a concurrent reconcile of the same board) is a
-        // NAMED 422 the host can act on, never the unactionable 500 a leaked driver error becomes.
         if (isSlotTitleConflict(err)) {
           throw AppError.validation({ slots: "duplicate slot title" })
         }
@@ -942,21 +838,11 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       slotId: string,
     ): Promise<ClaimSlotOutcome> {
       return sql.begin(async (tx) => {
-        // Statement ORDER here is the B28 contract, not a style choice.
-        //
-        // FOR SHARE on the cleanups row FIRST mirrors joinCleanupTx exactly and establishes the lock
-        // order against removeMember's FOR NO KEY UPDATE on the same row: without it, claim-vs-remove
-        // deadlocks ABBA (removal locks cleanups then cleanup_slot_claims; we would lock the slot then
-        // block on cleanups). It is also what makes the ban probe below race-safe — a plain SELECT on
-        // cleanup_bans locks nothing.
         const locked = await tx<{ status: CleanupStatus }[]>`
           SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return { kind: "not_found" }
-        // B28e: a completed or cancelled event's roster is the basis for hours attestation, and the
-        // auto-RSVP below would hand membership to anyone who showed up afterwards — logEventHours
-        // requires current membership, so this would be a credit-laundering path.
         if (isCleanupTerminal(cleanup.status)) return { kind: "closed" }
 
         const banned = await tx<{ one: number }[]>`
@@ -973,10 +859,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         `
         const currentSlotId = mine[0]?.slot_id ?? null
 
-        // The FOR UPDATE on the SLOT row is what makes count-then-insert safe: two clients racing for
-        // the last seat serialize on this lock and the loser's count(*) below sees the winner's row.
-        // Moving A -> B needs no lock on A — only B's capacity can be invalidated, and A's count only
-        // decreases, which can never falsify anyone else's check.
         const slotRows = await tx<{ capacity: number | null }[]>`
           SELECT capacity FROM cleanup_slots
           WHERE id = ${slotId} AND cleanup_id = ${cleanupId}
@@ -986,8 +868,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         const slot = slotRows[0]
         if (slot === undefined) return { kind: "slot_not_found" }
 
-        // An idempotent re-claim of the slot the viewer already holds must NOT run the capacity check,
-        // or it 409s on a full slot the user is already sitting in.
         if (currentSlotId === slotId) return { kind: "claimed", slotId }
 
         if (slot.capacity !== null) {
@@ -997,33 +877,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           if ((counted[0]?.n ?? 0) >= slot.capacity) return { kind: "full" }
         }
 
-        // B28b: picking a shift IS an RSVP. The ban probe ran first, so a removed user cannot re-enter
-        // through the slot door (M17's whole point).
-        //
-        // WHY IT SITS HERE AND NOT ABOVE: sql.begin COMMITS on a normal return, and every refusal in
-        // this transaction is a normal return, not a throw. Written before the slot lookup, a
-        // `slot_not_found` or `full` outcome still committed this row — the caller got a 404/409 while
-        // the user had silently been made a member: counted in `going`, on the roster, receiving the
-        // event's lifecycle bells and admitted to the private event group chat (cleanup_members.role is
-        // the chat gate, chat-room-roles.ts `cleanupRoleOf`), with a client cache that still says
-        // not-joined. Only the outcomes that actually seat someone may write it.
-        //
-        // LOCK ORDER: this makes the claim path take cleanups -> cleanup_slots -> cleanup_members ->
-        // cleanup_slot_claims, i.e. members AFTER slots rather than before. That introduces no cycle:
-        // no other writer takes a cleanup_slots row lock at all except reconcileSlots (which takes no
-        // cleanup_members lock), and the only path that touches cleanup_members before cleanup_slots is
-        // createCleanupTx — whose rows are all brand new and therefore unlockable by anyone else until
-        // it commits. removeMember/joinCleanupTx, the two writers we can genuinely contend with, are
-        // still serialized against us by the FOR SHARE on the cleanups row taken as the FIRST
-        // statement above, which is what the ABBA argument in that comment rests on and is unchanged.
         await tx`
           INSERT INTO cleanup_members (cleanup_id, user_id, role)
           VALUES (${cleanupId}, ${userId}, 'member')
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
 
-        // The (cleanup_id, user_id) PK IS the one-slot-per-person rule, so a MOVE is an upsert of
-        // slot_id — never a second row, and it releases the old seat in the same statement.
         await tx`
           INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
           VALUES (${cleanupId}, ${userId}, ${slotId})
@@ -1035,20 +894,15 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     },
 
     async releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome> {
-      // Releasing does NOT leave the event (B28b): the membership row is untouched and you keep your
-      // RSVP. Asymmetric with claiming on purpose.
       const rows = await sql<{ status: CleanupStatus }[]>`
         SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1
       `
       const status = rows[0]?.status
       if (status === undefined) return { kind: "not_found" }
-      // Same attestation argument as B28e/B26: after completion the slot roster is the record the
-      // credited hours were attested against, so it stops moving in BOTH directions.
       if (isCleanupTerminal(status)) return { kind: "closed" }
       await sql`
         DELETE FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
       `
-      // Idempotent: released whether or not a claim existed (B28c).
       return { kind: "released" }
     },
 
@@ -1102,6 +956,21 @@ async function linkReportsInTx(
   actorId: string | null,
 ): Promise<string[]> {
   if (reportIds.length === 0) return []
+  const overCap = await tx<{ report_id: string }[]>`
+    SELECT cr.report_id
+    FROM cleanup_reports cr
+    WHERE cr.report_id = ANY(${reportIds}::uuid[])
+      AND cr.cleanup_id <> ${cleanupId}
+    GROUP BY cr.report_id
+    HAVING count(*) >= ${MAX_EVENTS_PER_REPORT}
+  `
+  if (overCap.length > 0) {
+    throw AppError.validation({
+      linkedReportIds: `already linked to the maximum number of events: ${overCap
+        .map((r) => r.report_id)
+        .join(", ")}`,
+    })
+  }
   const inserted = await tx<{ report_id: string }[]>`
     INSERT INTO cleanup_reports (cleanup_id, report_id, linked_by_user_id)
     SELECT ${cleanupId}, rid, ${actorId}
@@ -1120,10 +989,6 @@ async function linkReportsInTx(
   return newlyLinked
 }
 
-/**
- * Insert a create-time slot set (B22). Shared by createCleanupTx so the INSERT column list lives in one
- * place. Deliberately takes a Queryable: it only ever runs inside the caller's transaction.
- */
 async function insertSlotsInTx(
   tx: Queryable,
   cleanupId: string,
@@ -1138,12 +1003,6 @@ async function insertSlotsInTx(
   }
 }
 
-/**
- * The batched slot hydration (B29a) — ONE query for a whole page of cleanups, exactly the shape
- * loadLinkedReportsForCleanups has. `claimed` comes from a grouped sub-select over the claims table and
- * `mine` from a LEFT JOIN on the viewer's own claim; a NULL viewerId makes `mine` false for every row
- * (NULL never equals anything), which is the right anonymous answer rather than a special case.
- */
 async function loadSlots(
   tag: Sql,
   cleanupIds: string[],
@@ -1196,12 +1055,6 @@ async function loadSlots(
   return grouped
 }
 
-/**
- * The has-more split + cursor derivation for listCleanups, over the canonical `pageWith` (db/cursor-
- * helpers). `cursorOf` stays a parameter because this one function serves BOTH keysets the list has: the
- * near branch anchors on distance (`dist|id`) and the when branch on scheduled_at (`iso|id`). Only the
- * row->record projection is local.
- */
 function paginate(
   rows: CleanupRowSelect[],
   limit: number,

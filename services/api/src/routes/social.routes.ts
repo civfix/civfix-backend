@@ -24,8 +24,13 @@ import {
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
+import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
+
+export const FOLLOW_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+
+export const FOLLOW_SUGGESTIONS_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 export interface SocialServiceOverrides {
   repo: SocialRepository
@@ -46,7 +51,6 @@ const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(PERSON_REF_MA
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** Default page size for GET /users/follow-suggestions (the shared request caps `limit` at 20). */
 const FOLLOW_SUGGESTIONS_DEFAULT_LIMIT = 10
 
 export async function registerSocialRoutes(
@@ -101,14 +105,6 @@ export async function registerSocialRoutes(
     })
   }
 
-  /**
-   * :id -> a user id that EXISTS and is not soft-deleted, else 404.
-   *
-   * The handle branch verifies existence inherently (the lookup filters deleted_at). The UUID branch used
-   * to pass the ref straight through, so followers/following answered 200-with-items:[] for a
-   * random or tombstoned UUID while getProfile 404'd the same id — inconsistent, and it left a deleted
-   * account's surfaces enumerable by UUID. findPersonById applies the same deleted_at filter getProfile does.
-   */
   async function resolvePersonId(ref: string): Promise<string> {
     if (UUID_RE.test(ref)) {
       const person = await repo().findPersonById(ref)
@@ -129,10 +125,7 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  // GET /users/follow-suggestions [auth] — recommended people to follow. Nearby (viewer's recent
-  // activity area) first, community organizers ranked above ordinary nearby users, then organizers
-  // elsewhere, then everyone else; excludes self / already-followed / blocked / deleted.
-  route(app, "followSuggestions", async (request, reply) => {
+  route(app, "followSuggestions", { config: { rateLimit: FOLLOW_SUGGESTIONS_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const q = parse(FollowSuggestionsRequestSchema, request.query)
     const payload: FollowSuggestionsResponse = await service().followSuggestions(
@@ -142,14 +135,14 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "followPerson", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "followPerson", { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PersonIdParamsSchema, request.params)
     const payload: FollowPersonResponse = await service(true).followPerson(userId, id)
     reply.status(200).send(payload)
   })
 
-  route(app, "unfollowPerson", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "unfollowPerson", { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(PersonIdParamsSchema, request.params)
     const payload: FollowPersonResponse = await service().unfollowPerson(userId, id)

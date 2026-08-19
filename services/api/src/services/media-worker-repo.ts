@@ -1,22 +1,5 @@
-/**
- * Media-worker persistence seam (the WRITE half of the media pipeline).
- *
- * The API-side media-intake-service.MediaRepository is intentionally tiny (insert / find / setStatus):
- * the cheap intake path never touches bytes. The WORKER, by contrast, writes back the results of
- * untrusted-byte processing (dimensions, codec, phash, thumb_key, final status), raises abuse_flags,
- * and runs the orphan sweep (including its media_reap_tombstones bookkeeping). That richer surface lives
- * HERE so there is a SINGLE source of truth for media_assets / abuse_flags access shared by the API package
- * and the worker package (the worker imports this via the "@civfix/api/media-repo" export).
- *
- * Everything is expressed as a small structural interface (MediaWorkerRepo) so the worker's pure
- * processing function and its job handlers can be unit-tested with an in-memory fake and NO database.
- * makeDrizzleMediaWorkerRepo is the production implementation over the shared Drizzle client.
- *
- * byte_size is a bigint(mode:number) column; file sizes are well within the 2^53 safe-integer range
- * (MAX_VIDEO_BYTES is 50 MB), so reading/writing it as a number is safe and matches the schema.
- */
 
-import { and, eq, isNull, lt, ne, notExists, sql } from "drizzle-orm"
+import { and, eq, inArray, isNotNull, isNull, lt, ne, notExists, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import { mediaReapTombstones } from "../db/schema/media_reap_tombstones.js"
 import { abuseFlags } from "../db/schema/moderation.js"
@@ -28,10 +11,8 @@ import { chatGroups } from "../db/schema/chat-groups.js"
 import type { Db } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
-/** abuse_flags.reason values the worker raises. Mirrors the shared AbuseReason enum subset. */
 export type WorkerAbuseReason = "nsfw" | "phash_dup" | "gps"
 
-/** The media_assets fields the worker reads to decide how to process an asset. */
 export interface MediaWorkerAsset {
   id: string
   uploadId: string
@@ -43,7 +24,6 @@ export interface MediaWorkerAsset {
   byteSize: number | null
 }
 
-/** The processing results the worker writes back onto a media_assets row. */
 export interface MediaResultPatch {
   status: MediaStatus
   codec?: string | null
@@ -51,140 +31,59 @@ export interface MediaResultPatch {
   height?: number | null
   phash?: string | null
   thumbKey?: string | null
-  /** Re-measured byte size of the processed (stripped/remuxed) object, when known. */
   byteSize?: number | null
 }
 
-/** A row to insert into abuse_flags. subjectType is always "media" for the worker. */
 export interface NewAbuseFlag {
   subjectId: string
   reason: WorkerAbuseReason
-  /** Defaults to "worker". */
   source?: "worker" | "api" | "user_report"
 }
 
-/** A never-attached orphan candidate surfaced by the sweep. */
 export interface OrphanRow {
   id: string
   r2Key: string
   thumbKey: string | null
 }
 
-/** A tombstoned R2 key still owed a physical delete (media_reap_tombstones). */
+export interface StuckMediaRow {
+  id: string
+  uploadId: string
+  r2Key: string
+  thumbKey: string | null
+  kind: MediaKind
+  checkCount: number
+}
+
 export interface LeakedObjectRow {
   r2Key: string
-  /** The reaped media row the key came from (informational; that row is gone). */
   mediaId: string | null
-  /** Failed delete attempts so far. */
   attempts: number
 }
 
-/**
- * Persistence seam used by the media-worker. Implemented by makeDrizzleMediaWorkerRepo in production
- * and by an in-memory fake in unit tests.
- */
 export interface MediaWorkerRepo {
   findById(id: string): Promise<MediaWorkerAsset | null>
   findByUploadId(uploadId: string): Promise<MediaWorkerAsset | null>
-  /** Apply the processing result to a row by id. Returns the updated asset (null if it vanished). */
   applyResult(id: string, patch: MediaResultPatch): Promise<MediaWorkerAsset | null>
-  /** Insert an abuse_flag (subject_type = "media"). Idempotency is not required by callers. */
   insertAbuseFlag(flag: NewAbuseFlag): Promise<void>
-  /**
-   * Find orphan media: rows bound to NOTHING AT ALL and older than `olderThan`. Bounded by `limit` so a
-   * sweep processes a capped batch per run.
-   *
-   * THE INVARIANT (read this before touching the predicate — the sweep DELETES the R2 objects, so a
-   * wrong predicate is unrecoverable data loss, not a bug you can roll back):
-   *
-   *   An orphan is a media_assets row that NO subject anywhere in the product references, in EITHER
-   *   direction, and that is old enough that none ever will. Every one of the following must hold.
-   *
-   * FORWARD bindings — a committing subject stamps its id ONTO the media row:
-   *   report_id        reports (report-repository.drizzle.ts / anon-repository.drizzle.ts commit path)
-   *   chat_message_id  chat + DM attachments (message-attachments.drizzle.ts; shared by both stacks)
-   *   post_id          social-feed post media (post-repository.drizzle.ts, purpose='post')
-   *
-   *   `report_id IS NULL` ALONE IS NOT AN ORPHAN TEST. Every non-report lane leaves report_id NULL — the
-   *   chat attach guard at message-attachments.drizzle.ts even REQUIRES it — so a report_id-only
-   *   predicate matches every chat photo, every DM photo and every post photo in the database.
-   *
-   * REVERSE bindings — the SUBJECT points AT the media row, so the row's own columns look unbound:
-   *   users.avatar_media_id        (drizzle/0019_user_avatar.sql, ON DELETE SET NULL)
-   *   chat_groups.avatar_media_id  (drizzle/0047_chat_groups.sql, ON DELETE SET NULL)
-   *
-   *   ON DELETE SET NULL means a delete here does NOT fail loudly: the avatar column is silently NULLed
-   *   and the user simply loses their picture. Nothing surfaces the loss. Hence the NOT EXISTS probes.
-   *
-   * OUT-OF-BAND bindings — referenced from jsonb, invisible to any column predicate:
-   *   user_verification.documents[].mediaId (schema/user_verification.ts). Those uploads are the only
-   *   rows stamped purpose='verification', so excluding that purpose is the (exact) proxy test.
-   *
-   * NOT a lane: media_assets.discussion_message_id was DROPPED in drizzle/0044_drop_report_discussion.sql
-   * along with the discussion system, so it must NOT appear here (the column no longer exists).
-   *
-   * This mirrors, from the reaping side, the same lane enumeration services/media-authorization.ts makes
-   * from the serving side. If a new binding lane is ever added, it must be added in BOTH places.
-   */
   findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]>
-  /** Delete a media_assets row by id. Idempotent (deleting a missing id is a no-op). */
+  findStuckValidating(olderThan: Date, limit: number): Promise<StuckMediaRow[]>
+  terminalizeStuck(id: string): Promise<MediaWorkerAsset | null>
   deleteById(id: string): Promise<void>
-  /**
-   * True if ANY OTHER media_assets row references this exact r2_key. The orphan sweep consults this
-   * before deleting R2 objects so it never destroys media still referenced by a committed report (or
-   * another pending row).
-   *
-   * (L14 correction: this doc previously claimed r2_key is content-addressed as
-   * `uploads/yyyy/mm/<sha256>` and that identical bytes therefore dedupe to one shared object. They do
-   * not — buildR2Key in media-intake-service.ts derives the key from the server-generated random
-   * uploadId. Key sharing is rare rather than routine, but the check is cheap and correct, so it stays
-   * as defense in depth.)
-   */
   r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean>
-  /**
-   * Phase 2 MODERATION PRODUCER HOOK (optional). Enqueue a moderation_items row for a report whose media
-   * the worker just HELD. A `held` status now only ever means an NSFW policy hold (kind "image") - a
-   * perceptual near-duplicate is non-blocking and stays `ready`, so the worker no longer auto-enqueues a
-   * "duplicate" moderation item (issue #43; `kind: "duplicate"` remains a valid moderation kind for
-   * manual/operator use). The report's media surfaces in the operator moderation detail. DEDUPED against
-   * an existing OPEN item for the report so a re-delivered job does not double-enqueue. Optional on the
-   * interface so the in-memory worker test fake need not implement it; the production impl below provides
-   * it. It is wired in services/media-worker/src/jobs/media-checks.ts in the `result.status === "held"`
-   * branch of runMediaChecksJob.
-   *
-   * This is intentionally a best-effort, non-fatal call (a moderation-enqueue failure must not flip an
-   * already-correct media hold into a job failure), mirroring the existing best-effort abuse_flag insert.
-   */
   enqueueHeldModerationItem?(input: {
     reportId: string
     reason: string
-    /**
-     * CONTRACT LIMIT: ModerationKind has no "video" member (and 0007_admin_phase2.sql's CHECK rejects one),
-     * so a held VIDEO is also enqueued as "image". The worker puts the real asset kind in `reason` instead;
-     * widening this needs a @civfix/shared change plus a CHECK migration.
-     */
     kind?: "image" | "duplicate"
     note?: string | null
   }): Promise<void>
 
-  /**
-   * DURABLE-LEAK SEAM (drizzle/0057_media_reap_tombstones.sql). Optional on the interface, like
-   * enqueueHeldModerationItem, so the worker's in-memory fake and any older impl still satisfy it; the
-   * orphan sweep degrades to "report the leak and forget it" when they are absent.
-   *
-   * Record R2 keys whose delete failed after their media_assets row was already reaped. Called BOTH for a
-   * first leak and for a failed retry: an existing tombstone has its `attempts` bumped, which is what
-   * eventually takes the key out of listLeakedObjects' range. Never a FK to media_assets — the row is gone.
-   */
   recordLeakedObjects?(input: {
-    /** The reaped row's id, or null when re-recording a tombstone whose origin row id is unknown. */
     mediaId: string | null
     keys: string[]
     error?: string | null
   }): Promise<void>
-  /** Tombstones still under the attempt cap, oldest first, bounded by `limit`. */
   listLeakedObjects?(limit: number, maxAttempts: number): Promise<LeakedObjectRow[]>
-  /** Drop a tombstone once its object is confirmed gone. Idempotent. */
   clearLeakedObject?(r2Key: string): Promise<void>
 }
 
@@ -201,7 +100,6 @@ function toAsset(row: typeof mediaAssets.$inferSelect): MediaWorkerAsset {
   }
 }
 
-/** Production MediaWorkerRepo over the shared Drizzle client. */
 export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
   return {
     async findById(id: string): Promise<MediaWorkerAsset | null> {
@@ -221,7 +119,6 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
     },
 
     async applyResult(id: string, patch: MediaResultPatch): Promise<MediaWorkerAsset | null> {
-      // Build the update set explicitly so undefined fields are not written (leaving columns intact).
       const set: Partial<typeof mediaAssets.$inferInsert> = { status: patch.status }
       if (patch.codec !== undefined) set.codec = patch.codec
       if (patch.width !== undefined) set.width = patch.width
@@ -230,22 +127,16 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
       if (patch.thumbKey !== undefined) set.thumbKey = patch.thumbKey
       if (patch.byteSize !== undefined) set.byteSize = patch.byteSize
 
-      const rows = await db.update(mediaAssets).set(set).where(eq(mediaAssets.id, id)).returning()
+      const rows = await db
+        .update(mediaAssets)
+        .set(set)
+        .where(and(eq(mediaAssets.id, id), eq(mediaAssets.status, "validating")))
+        .returning()
       const row = rows[0]
       return row ? toAsset(row) : null
     },
 
     async insertAbuseFlag(flag: NewAbuseFlag): Promise<void> {
-      // IDEMPOTENT PER OPEN FLAG. media.checks is at-least-once (pg-boss retryLimit 5) and writes its flags
-      // BEFORE the terminal media status, so a persist failure re-runs the job and re-raises the same flag.
-      // The anon hold-release gate counts OPEN flags, so duplicates cost a moderator N clears per report.
-      // drizzle/0056_abuse_flags_worker_open_unique.sql makes "at most one OPEN worker flag per
-      // (subject_type, subject_id, reason)" a database invariant and this DO NOTHING absorbs the retry.
-      //
-      // The WHERE clause is the index PREDICATE (it identifies the partial index as the conflict arbiter,
-      // it is not a filter on the inserted row) and must stay textually equivalent to 0056's. The index is
-      // scoped to source='worker' on purpose — the admin lanes insert unguarded 'api' flags and must not
-      // start colliding — so a row inserted with any other source simply cannot conflict.
       await db
         .insert(abuseFlags)
         .values({
@@ -260,13 +151,6 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
         })
     },
 
-    /**
-     * "Bound to nothing at all, in either direction, and old enough that it never will be." See the
-     * MediaWorkerRepo.findOrphans doc above for why each clause is load-bearing; do not drop one without
-     * reading it. The two NOT EXISTS probes are index-backed (users_avatar_media_idx from
-     * drizzle/0037_perf_indexes_audit.sql; chat_groups.avatar_media_id's FK index), so they are cheap
-     * even at the drain-loop page sizes the sweep now uses.
-     */
     async findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {
       const rows = await db
         .select({
@@ -277,12 +161,9 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
         .from(mediaAssets)
         .where(
           and(
-            // FORWARD bindings: report / chat+DM message / social post.
             isNull(mediaAssets.reportId),
             isNull(mediaAssets.chatMessageId),
             isNull(mediaAssets.postId),
-            // REVERSE bindings: an avatar's owner points AT this row, and the FK is ON DELETE SET NULL,
-            // so deleting it would silently strip the avatar rather than fail.
             notExists(
               db.select({ id: users.id }).from(users).where(eq(users.avatarMediaId, mediaAssets.id)),
             ),
@@ -292,15 +173,64 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
                 .from(chatGroups)
                 .where(eq(chatGroups.avatarMediaId, mediaAssets.id)),
             ),
-            // OUT-OF-BAND binding: verification documents are referenced from a jsonb array
-            // (user_verification.documents[].mediaId) that no column predicate can see; purpose is the
-            // exact proxy for them.
             ne(mediaAssets.purpose, "verification"),
             lt(mediaAssets.createdAt, olderThan),
           ),
         )
         .limit(limit)
       return rows
+    },
+
+    async findStuckValidating(olderThan: Date, limit: number): Promise<StuckMediaRow[]> {
+      const stuck = and(
+        eq(mediaAssets.status, "validating"),
+        isNotNull(mediaAssets.finalizedAt),
+        lt(mediaAssets.finalizedAt, olderThan),
+      )
+      return db.transaction(async (tx) => {
+        const candidates = await tx
+          .select({ id: mediaAssets.id })
+          .from(mediaAssets)
+          .where(stuck)
+          .orderBy(sql`${mediaAssets.stuckCheckedAt} asc nulls first`, mediaAssets.finalizedAt)
+          .limit(limit)
+          .for("update", { skipLocked: true })
+        if (candidates.length === 0) return []
+
+        return tx
+          .update(mediaAssets)
+          .set({
+            stuckCheckedAt: sql`now()`,
+            stuckCheckCount: sql`${mediaAssets.stuckCheckCount} + 1`,
+          })
+          .where(
+            and(
+              inArray(
+                mediaAssets.id,
+                candidates.map((c) => c.id),
+              ),
+              stuck,
+            ),
+          )
+          .returning({
+            id: mediaAssets.id,
+            uploadId: mediaAssets.uploadId,
+            r2Key: mediaAssets.r2Key,
+            thumbKey: mediaAssets.thumbKey,
+            kind: mediaAssets.kind,
+            checkCount: mediaAssets.stuckCheckCount,
+          })
+      })
+    },
+
+    async terminalizeStuck(id: string): Promise<MediaWorkerAsset | null> {
+      const rows = await db
+        .update(mediaAssets)
+        .set({ status: "rejected" })
+        .where(and(eq(mediaAssets.id, id), eq(mediaAssets.status, "validating")))
+        .returning()
+      const row = rows[0]
+      return row ? toAsset(row) : null
     },
 
     async deleteById(id: string): Promise<void> {
@@ -322,8 +252,6 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
       kind?: "image" | "duplicate"
       note?: string | null
     }): Promise<void> {
-      // Dedupe: skip when an OPEN moderation item already exists for this report (e.g. the anon
-      // hold-then-publish path already enqueued one at submit, or a re-delivered worker job).
       const existing = await db
         .select({ id: moderationItems.id })
         .from(moderationItems)
@@ -337,7 +265,6 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
         .limit(1)
       if (existing[0]) return
 
-      // Read the report's category + jurisdiction name + description so the moderation detail is useful.
       const ctx = await db
         .select({
           category: reports.category,
@@ -351,14 +278,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
       const row = ctx[0]
       if (!row) return
 
-      // "image" for every held asset, video included — see the interface note (ModerationKind has no
-      // "video" and 0007's CHECK enforces that).
       const kind = input.kind ?? "image"
-      // The SELECT above is the intended dedupe; the ON CONFLICT is the race backstop for it. media.checks
-      // runs with batchSize = MEDIA_CHECKS_CONCURRENCY, so two held assets of the SAME report can reach
-      // this insert concurrently and both pass the probe. 0038_moderation_open_unique.sql already makes one
-      // open item per subject a database invariant, so without it the loser raises — swallowed as non-fatal
-      // by the caller, but logged as a failure it is not.
       await db
         .insert(moderationItems)
         .values({
@@ -385,14 +305,8 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
       keys: string[]
       error?: string | null
     }): Promise<void> {
-      // DEDUPE FIRST: a multi-row INSERT ... ON CONFLICT DO UPDATE aborts with 21000 ("cannot affect row
-      // a second time") if one statement carries the same key twice, and this write is the ONLY record of
-      // a leak the caller is about to forget - a throw here makes the leak permanent. The orphan sweep's
-      // derivedKeys() cannot repeat a key today; this keeps that from being a precondition of the seam.
       const keys = [...new Set(input.keys)]
       if (keys.length === 0) return
-      // One statement for the page: a first leak inserts at attempts=1, a failed RETRY of an existing
-      // tombstone bumps attempts (which is what eventually retires the key from listLeakedObjects).
       await db
         .insert(mediaReapTombstones)
         .values(
@@ -431,24 +345,16 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
   }
 }
 
-/**
- * Create the NEXT-month partition of a monthly-partitioned message table if it is missing. Bounds follow
- * 0002_chat_partitioning.sql ([lower inclusive, upper exclusive), monthly, UTC). Idempotent (CREATE TABLE
- * IF NOT EXISTS) so it is safe to run every month. Takes a postgres-js tag so the worker can run it
- * without Drizzle. Returns the created (or already-present) partition's table name.
- *
- * The partition name + bounds are derived from a CLOCK, never from user input, so this fixed-shape DDL
- * has no injection surface (the only reason `sql.unsafe` is acceptable here).
- */
-async function ensureNextMonthPartition(
+type MessageParent = "chat_messages" | "dm_messages"
+
+async function ensureMonthPartition(
   sqlTag: import("../db/client.js").Sql,
-  parent: "chat_messages" | "dm_messages",
-  now: Date,
+  parent: MessageParent,
+  year: number,
+  monthIndex0: number,
 ): Promise<string> {
-  const y = now.getUTCFullYear()
-  const m = now.getUTCMonth() // 0-based; NEXT month and the month after are the [from, to) bounds.
-  const from = new Date(Date.UTC(y, m + 1, 1, 0, 0, 0))
-  const to = new Date(Date.UTC(y, m + 2, 1, 0, 0, 0))
+  const from = new Date(Date.UTC(year, monthIndex0, 1, 0, 0, 0))
+  const to = new Date(Date.UTC(year, monthIndex0 + 1, 1, 0, 0, 0))
 
   const yyyy = String(from.getUTCFullYear()).padStart(4, "0")
   const mm = String(from.getUTCMonth() + 1).padStart(2, "0")
@@ -465,7 +371,29 @@ async function ensureNextMonthPartition(
   return table
 }
 
-/** Create next month's chat_messages partition if missing. `now` is injectable for deterministic tests. */
+async function ensureNextMonthPartition(
+  sqlTag: import("../db/client.js").Sql,
+  parent: MessageParent,
+  now: Date,
+): Promise<string> {
+  return ensureMonthPartition(sqlTag, parent, now.getUTCFullYear(), now.getUTCMonth() + 1)
+}
+
+async function ensurePartitionWindow(
+  sqlTag: import("../db/client.js").Sql,
+  parent: MessageParent,
+  now: Date,
+  monthsAhead: number,
+): Promise<string[]> {
+  const y = now.getUTCFullYear()
+  const m = now.getUTCMonth()
+  const tables: string[] = []
+  for (let i = 0; i <= monthsAhead; i++) {
+    tables.push(await ensureMonthPartition(sqlTag, parent, y, m + i))
+  }
+  return tables
+}
+
 export function ensureNextMonthChatPartition(
   sqlTag: import("../db/client.js").Sql,
   now: Date = new Date(),
@@ -473,7 +401,6 @@ export function ensureNextMonthChatPartition(
   return ensureNextMonthPartition(sqlTag, "chat_messages", now)
 }
 
-/** Create next month's dm_messages partition if missing. `now` is injectable for deterministic tests. */
 export function ensureNextMonthDmPartition(
   sqlTag: import("../db/client.js").Sql,
   now: Date = new Date(),
@@ -481,12 +408,23 @@ export function ensureNextMonthDmPartition(
   return ensureNextMonthPartition(sqlTag, "dm_messages", now)
 }
 
-/**
- * Re-export the stable job name + payload type from the intake service so the worker imports the SAME
- * constant the API enqueues with (single source; a rename can never desync producer and consumer).
- */
+export function ensureChatPartitionWindow(
+  sqlTag: import("../db/client.js").Sql,
+  now: Date = new Date(),
+  monthsAhead = 2,
+): Promise<string[]> {
+  return ensurePartitionWindow(sqlTag, "chat_messages", now, monthsAhead)
+}
+
+export function ensureDmPartitionWindow(
+  sqlTag: import("../db/client.js").Sql,
+  now: Date = new Date(),
+  monthsAhead = 2,
+): Promise<string[]> {
+  return ensurePartitionWindow(sqlTag, "dm_messages", now, monthsAhead)
+}
+
 export { MEDIA_CHECKS_JOB } from "./media-intake-service.js"
 export type { MediaChecksJob } from "./media-intake-service.js"
 
-/** Re-export so the worker can build the structural where-clause helpers if it ever needs them. */
 export { and, eq, isNull, lt, ne, sql }

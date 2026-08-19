@@ -1,15 +1,11 @@
-/**
- * Orphan sweep + chat-partition maintenance unit tests (offline; no DB).
- *
- * orphan-sweep uses the in-memory repo + FakeStorage; partition-maintenance's date math is asserted via
- * the shared ensureNextMonthChatPartition with an injected SQL spy (no real Postgres).
- */
 
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { loadLimits } from "../../src/config.js"
 import { LEAK_RETRY_MAX_ATTEMPTS, runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
 import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js"
+import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
 
 const limits = loadLimits({})
@@ -19,10 +15,9 @@ describe("orphan.sweep", () => {
     const storage = new FakeStorage()
     const repo = new InMemoryWorkerRepo()
     const now = new Date("2026-06-01T12:00:00Z")
-    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000) // older than TTL
-    const fresh = new Date(now.getTime() - 60_000) // within TTL
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+    const fresh = new Date(now.getTime() - 60_000)
 
-    // Orphan (old, no report) -> swept.
     const orphan = repo.seed({
       id: "orphan-1",
       uploadId: "u1",
@@ -36,7 +31,6 @@ describe("orphan.sweep", () => {
     await storage.put("thumbs/uploads/o1.jpg", Buffer.from([4, 5]))
     await storage.put("processed/uploads/o1.img", Buffer.from([6, 7]))
 
-    // Attached (old, but has a report) -> kept.
     repo.seed({
       id: "attached-1",
       uploadId: "u2",
@@ -45,7 +39,6 @@ describe("orphan.sweep", () => {
       reportId: "report-123",
       createdAt: old,
     })
-    // Fresh orphan (no report but within TTL) -> kept.
     repo.seed({
       id: "fresh-1",
       uploadId: "u3",
@@ -59,25 +52,15 @@ describe("orphan.sweep", () => {
     expect(res.deleted).toBe(1)
     expect(res.errors).toBe(0)
 
-    // Orphan row + its objects gone.
     expect(repo.byId.has("orphan-1")).toBe(false)
     expect(storage.get("uploads/o1")).toBeNull()
     expect(storage.get("thumbs/uploads/o1.jpg")).toBeNull()
     expect(storage.get("processed/uploads/o1.img")).toBeNull()
 
-    // The other two remain.
     expect(repo.byId.has("attached-1")).toBe(true)
     expect(repo.byId.has("fresh-1")).toBe(true)
   })
 
-  /**
-   * REGRESSION (blocker): the orphan predicate was `report_id IS NULL` alone, and EVERY non-report lane
-   * leaves report_id NULL. Combined with the 6h TTL and the drain loop, the first sweep after deploy
-   * would have deleted every user avatar, every social-post photo and every chat/DM attachment older
-   * than 6h — rows AND R2 objects, with avatar_media_id silently NULLed by its ON DELETE SET NULL FK.
-   *
-   * One row per binding lane, all old enough to be swept, none of them orphans.
-   */
   it("never reaps a BOUND row: chat/DM, post, avatar and verification lanes all survive", async () => {
     const storage = new FakeStorage()
     const repo = new InMemoryWorkerRepo()
@@ -85,14 +68,9 @@ describe("orphan.sweep", () => {
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
     const bound = [
-      // FORWARD: chat + DM attachment (message-attachments.drizzle.ts stamps chat_message_id and its
-      // attach guard REQUIRES report_id IS NULL, so every one of these matched the old predicate).
       { id: "chat-1", uploadId: "cu", r2Key: "uploads/chat1", chatMessageId: "msg-1" },
-      // FORWARD: social-feed post media (post_id + purpose='post').
       { id: "post-1", uploadId: "pu", r2Key: "uploads/post1", postId: "post-abc", purpose: "post" },
-      // OUT-OF-BAND: verification document, referenced only from user_verification.documents jsonb.
       { id: "verif-1", uploadId: "vu", r2Key: "uploads/verif1", purpose: "verification" },
-      // REVERSE: users.avatar_media_id / chat_groups.avatar_media_id point AT the row (seeded below).
       { id: "avatar-1", uploadId: "au", r2Key: "uploads/avatar1" },
     ] as const
     for (const row of bound) {
@@ -101,7 +79,6 @@ describe("orphan.sweep", () => {
     }
     repo.seedAvatarReference("avatar-1")
 
-    // A genuine orphan alongside them, so a predicate that simply matched nothing would not pass.
     const orphan = repo.seed({
       id: "orphan-only",
       uploadId: "ou",
@@ -119,7 +96,6 @@ describe("orphan.sweep", () => {
     expect(repo.byId.has("orphan-only")).toBe(false)
     expect(storage.get("uploads/orphan-only")).toBeNull()
 
-    // Every bound row keeps BOTH its database row and its bytes.
     for (const row of bound) {
       expect(repo.byId.has(row.id), `${row.id} row must survive`).toBe(true)
       expect(storage.get(row.r2Key), `${row.id} object must survive`).not.toBeNull()
@@ -132,9 +108,6 @@ describe("orphan.sweep", () => {
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
-    // 25 orphans against a page size of 10. The old sweep reaped ONE page per hourly run, against a
-    // presign rate limit that creates orders of magnitude more rows per day — so the backlog could
-    // only ever grow. The sweep now keeps paging while a page comes back full.
     const total = 25
     for (let i = 0; i < total; i++) {
       const row = repo.seed({
@@ -209,11 +182,6 @@ describe("orphan.sweep", () => {
     expect(reports.length).toBe(1)
   })
 
-  /**
-   * B35: the row is deleted BEFORE its objects, so a failed storage delete is the one leak nothing could
-   * rediscover. media_reap_tombstones (0057) is that memory — assert the whole round trip, because a
-   * tombstone that is written but never retried is indistinguishable from the bug it replaced.
-   */
   it("tombstones objects whose delete failed, then reclaims them on the next run", async () => {
     const storage = new FakeStorage()
     const repo = new InMemoryWorkerRepo()
@@ -234,12 +202,10 @@ describe("orphan.sweep", () => {
     await storage.put(orphan.r2Key, Buffer.from([1, 2, 3]))
 
     const first = await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
-    // The row IS reaped (that half succeeded); every derived key leaked and was tombstoned.
     expect(first.deleted).toBe(1)
     expect(repo.byId.has("leaky-1")).toBe(false)
     expect(first.leaked).toBe(repo.tombstones.size)
     expect(repo.tombstones.get("uploads/leak1")).toMatchObject({ mediaId: "leaky-1", attempts: 1 })
-    // The bytes really are still there — this is the leak the tombstone exists to close.
     expect(storage.get("uploads/leak1")).not.toBeNull()
 
     r2Down = false
@@ -250,12 +216,6 @@ describe("orphan.sweep", () => {
     expect(storage.get("uploads/leak1")).toBeNull()
   })
 
-  /**
-   * The real recordLeakedObjects is ONE multi-row upsert, so it collapses `keys` to a Set first: Postgres
-   * aborts a statement that tries to affect the same row twice (21000), and a throw there makes the leak
-   * permanent (the media row is already gone). The fake has to agree, or a duplicate key would bump
-   * attempts twice here and once in production — retiring the key from the retry range a run early.
-   */
   it("counts a key repeated inside ONE call as a single attempt (mirrors the real upsert)", async () => {
     const repo = new InMemoryWorkerRepo()
 
@@ -266,7 +226,6 @@ describe("orphan.sweep", () => {
     expect(repo.tombstones.size).toBe(2)
     expect(repo.tombstones.get("uploads/dup")).toMatchObject({ mediaId: "dup-1", attempts: 1 })
 
-    // A SEPARATE call is a real retry, so it does bump.
     await repo.recordLeakedObjects({ mediaId: "dup-1", keys: ["uploads/dup"] })
     expect(repo.tombstones.get("uploads/dup")?.attempts).toBe(2)
   })
@@ -280,7 +239,6 @@ describe("orphan.sweep", () => {
 
     const reports: unknown[] = []
     let lastRetried = 0
-    // Attempts start at 1, so the runs that still retry are (cap - 1); one extra run proves it stopped.
     for (let run = 0; run < LEAK_RETRY_MAX_ATTEMPTS; run++) {
       const res = await runOrphanSweep({
         repo,
@@ -293,74 +251,285 @@ describe("orphan.sweep", () => {
       lastRetried = res.retried
     }
     expect(lastRetried).toBe(0)
-    // Kept, not deleted: the row is the operator-visible record that a manual bucket cleanup is owed.
     expect(repo.tombstones.get("uploads/stuck")?.attempts).toBe(LEAK_RETRY_MAX_ATTEMPTS)
-    // Exactly one "gave up" report, on the attempt that reached the cap.
     expect(reports.length).toBe(1)
   })
 })
 
 describe("chat.partition.maintenance", () => {
-  it("issues CREATE TABLE IF NOT EXISTS for NEXT month's partition with correct bounds", async () => {
+  function sqlCaptor(fail = false): { sql: import("@civfix/api/db").Sql; calls: string[] } {
     const calls: string[] = []
-    // Minimal SQL spy: only `.unsafe(text)` is used by ensureNextMonthChatPartition.
-    const sqlSpy = {
+    const sql = {
       unsafe: (text: string) => {
         calls.push(text)
-        return Promise.resolve([])
+        return fail ? Promise.reject(new Error("db down")) : Promise.resolve([])
       },
     } as unknown as import("@civfix/api/db").Sql
+    return { sql, calls }
+  }
 
-    // From 2026-06-15, next month is 2026-07, bounds [2026-07-01, 2026-08-01).
-    const table = await runPartitionMaintenance({
-      sql: sqlSpy,
+  it("F001: ensures a WINDOW (current + next 2 months) for BOTH chat_messages and dm_messages", async () => {
+    const { sql, calls } = sqlCaptor()
+    const res = await runPartitionMaintenance({
+      sql,
       now: () => new Date("2026-06-15T00:00:00Z"),
       log: () => {},
     })
-    expect(table).toBe("chat_messages_2026_07")
-    // The maintenance now ensures BOTH the chat_messages AND the dm_messages partition for next month, so
-    // it issues two CREATE TABLE statements (one per partitioned table).
-    expect(calls.length).toBe(2)
-    const chatCall = calls.find((c) => c.includes("chat_messages_2026_07"))!
-    expect(chatCall).toContain("CREATE TABLE IF NOT EXISTS chat_messages_2026_07")
-    expect(chatCall).toContain("PARTITION OF chat_messages")
-    expect(chatCall).toContain("FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00')")
-    // And the dm_messages partition with the same bounds.
-    const dmCall = calls.find((c) => c.includes("dm_messages_2026_07"))!
-    expect(dmCall).toContain("CREATE TABLE IF NOT EXISTS dm_messages_2026_07")
-    expect(dmCall).toContain("PARTITION OF dm_messages")
-    expect(dmCall).toContain("FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00')")
+    expect(res.chat).toEqual([
+      "chat_messages_2026_06",
+      "chat_messages_2026_07",
+      "chat_messages_2026_08",
+    ])
+    expect(res.dm).toEqual(["dm_messages_2026_06", "dm_messages_2026_07", "dm_messages_2026_08"])
+    expect(calls.length).toBe(6)
+    const june = calls.find((c) => c.includes("chat_messages_2026_06"))!
+    expect(june).toContain("CREATE TABLE IF NOT EXISTS chat_messages_2026_06")
+    expect(june).toContain("PARTITION OF chat_messages")
+    expect(june).toContain("FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00')")
+    const dmAug = calls.find((c) => c.includes("dm_messages_2026_08"))!
+    expect(dmAug).toContain("FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00')")
   })
 
-  it("rolls the year correctly: December -> next-January partition", async () => {
-    const calls: string[] = []
-    const sqlSpy = {
-      unsafe: (text: string) => {
-        calls.push(text)
-        return Promise.resolve([])
-      },
-    } as unknown as import("@civfix/api/db").Sql
-    const table = await runPartitionMaintenance({
-      sql: sqlSpy,
+  it("honors monthsAhead and rolls the year across December", async () => {
+    const { sql } = sqlCaptor()
+    const res = await runPartitionMaintenance({
+      sql,
       now: () => new Date("2026-12-10T00:00:00Z"),
+      monthsAhead: 2,
       log: () => {},
     })
-    expect(table).toBe("chat_messages_2027_01")
-    expect(calls[0]).toContain("FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00')")
+    expect(res.chat).toEqual([
+      "chat_messages_2026_12",
+      "chat_messages_2027_01",
+      "chat_messages_2027_02",
+    ])
   })
 
-  it("never throws: a SQL failure returns null", async () => {
-    const sqlSpy = {
-      unsafe: () => Promise.reject(new Error("db down")),
-    } as unknown as import("@civfix/api/db").Sql
+  it("F001: a SQL failure THROWS (loud, so a missing partition is not silent) and is reported", async () => {
+    const { sql } = sqlCaptor(true)
     const reports: unknown[] = []
-    const table = await runPartitionMaintenance({
-      sql: sqlSpy,
-      now: () => new Date("2026-06-15T00:00:00Z"),
-      log: () => {},
-      report: (e) => reports.push(e),
-    })
-    expect(table).toBeNull()
+    await expect(
+      runPartitionMaintenance({
+        sql,
+        now: () => new Date("2026-06-15T00:00:00Z"),
+        log: () => {},
+        report: (e) => reports.push(e),
+      }),
+    ).rejects.toThrow(/db down/)
     expect(reports.length).toBe(1)
+  })
+})
+
+describe("media.stuck.sweep", () => {
+  const ttl = limits.stuckMediaTtlMs
+  const now = new Date("2026-06-01T12:00:00Z")
+  const old = new Date(now.getTime() - ttl - 60_000)
+
+  function makeJobsSpy(fail = false): {
+    jobs: { enqueue: (n: string, d: unknown, o?: unknown) => Promise<string> }
+    enqueued: { name: string; data: unknown; opts?: unknown }[]
+  } {
+    const enqueued: { name: string; data: unknown; opts?: unknown }[] = []
+    const jobs = {
+      enqueue: (name: string, data: unknown, opts?: unknown) => {
+        if (fail) return Promise.reject(new Error("queue down"))
+        enqueued.push({ name, data, opts })
+        return Promise.resolve("job-id")
+      },
+    }
+    return { jobs, enqueued }
+  }
+
+  function makeRepo(): InMemoryWorkerRepo {
+    const repo = new InMemoryWorkerRepo()
+    repo.now = () => now
+    return repo
+  }
+
+  let storage: FakeStorage
+
+  function run(
+    repo: InMemoryWorkerRepo,
+    jobs: { enqueue: (n: string, d: unknown, o?: unknown) => Promise<string> },
+    overrides: Partial<typeof limits> = {},
+    report?: (e: unknown) => void,
+  ): ReturnType<typeof runStuckSweep> {
+    storage = storage ?? new FakeStorage()
+    return runStuckSweep({
+      repo,
+      jobs,
+      storage,
+      limits: { ...limits, ...overrides },
+      now: () => now,
+      log: () => {},
+      ...(report ? { report } : {}),
+    })
+  }
+
+  it("re-enqueues media.checks for FINALIZED rows stuck at validating past the TTL (singletonKey = uploadId)", async () => {
+    const repo = makeRepo()
+    const fresh = new Date(now.getTime() - 60_000)
+    repo.seed({ id: "stuck-1", uploadId: "u1", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({ id: "fresh-1", uploadId: "u2", kind: "image", r2Key: "uploads/s2", status: "validating", createdAt: fresh, finalizedAt: fresh })
+    repo.seed({ id: "ready-1", uploadId: "u3", kind: "image", r2Key: "uploads/s3", status: "ready", createdAt: old, finalizedAt: old })
+
+    const { jobs, enqueued } = makeJobsSpy()
+    const res = await run(repo, jobs)
+
+    expect(res).toEqual({ scanned: 1, requeued: 1, terminalized: 0, errors: 0 })
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]!.name).toBe(MEDIA_CHECKS_JOB)
+    expect(enqueued[0]!.data).toEqual({
+      mediaId: "stuck-1",
+      uploadId: "u1",
+      r2Key: "uploads/s1",
+      kind: "image",
+    })
+    expect(enqueued[0]!.opts).toEqual({ singletonKey: "u1" })
+  })
+
+  it("never throws: an enqueue failure is counted + reported, the sweep continues", async () => {
+    const repo = makeRepo()
+    repo.seed({ id: "stuck-1", uploadId: "u1", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+
+    const reports: unknown[] = []
+    const { jobs } = makeJobsSpy(true)
+    const res = await run(repo, jobs, {}, (e) => reports.push(e))
+
+    expect(res.scanned).toBe(1)
+    expect(res.requeued).toBe(0)
+    expect(res.errors).toBe(1)
+    expect(reports.length).toBe(1)
+  })
+
+  it("F087b: NEVER-FINALIZED rows are out of scope - a presigned upload whose bytes never arrived is the orphan sweep's job", async () => {
+    const repo = makeRepo()
+    repo.seed({ id: "intent-1", uploadId: "u1", kind: "image", r2Key: "uploads/i1", status: "validating", createdAt: old, finalizedAt: null })
+    repo.seed({ id: "stuck-1", uploadId: "u2", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+
+    const { jobs, enqueued } = makeJobsSpy()
+    const res = await run(repo, jobs)
+
+    expect(res.scanned).toBe(1)
+    expect(enqueued.map((e) => (e.data as { mediaId: string }).mediaId)).toEqual(["stuck-1"])
+    expect(repo.get("intent-1")!.stuckCheckCount).toBe(0)
+  })
+
+  it("F087d: staleness is measured from FINALIZE, not presign - a late-finalized asset gets a full TTL", async () => {
+    const repo = makeRepo()
+    // Presigned a day ago, finalized a minute ago: the bytes have only just arrived and the media.checks
+    // job is still in flight. Keyed on created_at this row was born stuck, burning its whole attempt
+    // budget (and being terminalized as rejected) while the worker was still doing its first pass.
+    repo.seed({ id: "late-1", uploadId: "u1", kind: "image", r2Key: "uploads/l1", status: "validating", createdAt: old, finalizedAt: new Date(now.getTime() - 60_000) })
+    repo.seed({ id: "stuck-1", uploadId: "u2", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+
+    const { jobs, enqueued } = makeJobsSpy()
+    const res = await run(repo, jobs)
+
+    expect(res).toEqual({ scanned: 1, requeued: 1, terminalized: 0, errors: 0 })
+    expect(enqueued.map((e) => (e.data as { mediaId: string }).mediaId)).toEqual(["stuck-1"])
+    expect(repo.get("late-1")!.stuckCheckCount).toBe(0)
+    expect(repo.get("late-1")!.status).toBe("validating")
+  })
+
+  it("F087d: the give-up budget starts at finalize too - a late-finalized asset is never terminalized early", async () => {
+    const repo = makeRepo()
+    repo.seed({ id: "late-1", uploadId: "u1", kind: "image", r2Key: "uploads/l1", status: "validating", createdAt: old, finalizedAt: new Date(now.getTime() - 60_000), stuckCheckCount: 9 })
+
+    const { jobs } = makeJobsSpy()
+    const res = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
+
+    expect(res).toEqual({ scanned: 0, requeued: 0, terminalized: 0, errors: 0 })
+    expect(repo.get("late-1")!.status).toBe("validating")
+  })
+
+  it("F087b: rotates - every pick is stamped, so an over-full batch serves never-checked rows first and cannot starve", async () => {
+    const repo = makeRepo()
+    for (const id of ["a", "b", "c"]) {
+      repo.seed({ id, uploadId: `up-${id}`, kind: "image", r2Key: `uploads/${id}`, status: "validating", createdAt: old, finalizedAt: old })
+    }
+    repo.get("a")!.stuckCheckedAt = new Date(now.getTime() - 60_000)
+    repo.get("b")!.stuckCheckedAt = new Date(now.getTime() - 120_000)
+
+    const { jobs, enqueued } = makeJobsSpy()
+    const res = await run(repo, jobs, { stuckSweepBatch: 2 })
+
+    expect(res.scanned).toBe(2)
+    expect(enqueued.map((e) => (e.data as { mediaId: string }).mediaId)).toEqual(["c", "b"])
+    expect(repo.get("c")!.stuckCheckCount).toBe(1)
+    expect(repo.get("b")!.stuckCheckCount).toBe(1)
+    expect(repo.get("a")!.stuckCheckCount).toBe(0)
+  })
+
+  it("F087b: terminalizes a hopeless row after the attempt cap - status 'rejected', no further enqueue, ever", async () => {
+    const repo = makeRepo()
+    repo.seed({ id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", status: "validating", createdAt: old, finalizedAt: old })
+
+    const { jobs, enqueued } = makeJobsSpy()
+    for (let i = 0; i < 3; i++) {
+      const res = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
+      expect(res).toEqual({ scanned: 1, requeued: 1, terminalized: 0, errors: 0 })
+    }
+    expect(enqueued).toHaveLength(3)
+    expect(repo.get("hopeless")!.status).toBe("validating")
+
+    const giveUp = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
+    expect(giveUp).toEqual({ scanned: 1, requeued: 0, terminalized: 1, errors: 0 })
+    expect(enqueued).toHaveLength(3)
+    expect(repo.get("hopeless")!.status).toBe("rejected")
+
+    const after = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
+    expect(after).toEqual({ scanned: 0, requeued: 0, terminalized: 0, errors: 0 })
+  })
+
+  it("F087b: a terminalize failure is counted + reported, never thrown", async () => {
+    const repo = makeRepo()
+    repo.seed({ id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9 })
+    repo.failApplyResult = new Error("db down")
+
+    const reports: unknown[] = []
+    const { jobs } = makeJobsSpy()
+    const res = await run(repo, jobs, { stuckSweepMaxAttempts: 3 }, (e) => reports.push(e))
+
+    expect(res).toEqual({ scanned: 1, requeued: 0, terminalized: 0, errors: 1 })
+    expect(reports.length).toBe(1)
+  })
+  it("F087b: NEVER clobbers a terminal status — a row the worker finished mid-sweep is left alone", async () => {
+    const repo = makeRepo()
+    repo.seed({ id: "raced", uploadId: "u1", kind: "image", r2Key: "uploads/r1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9 })
+    // The claim already happened; the media.checks job this sweep's earlier pass enqueued lands NOW and
+    // writes the real terminal status. The give-up must lose the compare-and-set, not overwrite 'ready'.
+    const { jobs } = makeJobsSpy()
+    await repo.applyResult("raced", { status: "ready" })
+
+    const res = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
+
+    expect(res).toEqual({ scanned: 0, requeued: 0, terminalized: 0, errors: 0 })
+    expect(repo.get("raced")!.status).toBe("ready")
+
+    // Same guarantee one layer up: even handed a row directly, terminalizeStuck is a CAS on 'validating'.
+    expect(await repo.terminalizeStuck("raced")).toBeNull()
+    expect(repo.get("raced")!.status).toBe("ready")
+  })
+
+  it("F087b: a terminalized row's bytes are reclaimed, exactly like an in-band rejection", async () => {
+    const repo = makeRepo()
+    repo.seed({
+      id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", thumbKey: "uploads/h1.thumb",
+      reportId: "report-1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9,
+    })
+    storage = new FakeStorage()
+    await storage.put("uploads/h1", Buffer.from([1, 2, 3]))
+    await storage.put("uploads/h1.thumb", Buffer.from([4]))
+
+    const { jobs } = makeJobsSpy()
+    const res = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
+
+    expect(res.terminalized).toBe(1)
+    expect(repo.get("hopeless")!.status).toBe("rejected")
+    // A bound row is invisible to the orphan sweep, so if the give-up did not delete these bytes nothing
+    // ever would: unscanned, never-EXIF-stripped media retained forever.
+    expect(await storage.head("uploads/h1")).toBeNull()
+    expect(await storage.head("uploads/h1.thumb")).toBeNull()
   })
 })

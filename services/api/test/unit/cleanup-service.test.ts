@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest"
+import { FakeJobs } from "@civfix/shared/fakes"
 import {
   makeCleanupService,
+  CLEANUP_CANCEL_FANOUT_JOB,
   ATTENDEES_DEFAULT_LIMIT,
   MAX_BRING_ITEMS,
   RESOURCE_REQUEST_PER_HOST_PER_DAY,
@@ -17,7 +19,6 @@ const ORG = "11111111-1111-1111-1111-111111111111"
 const ALICE = "22222222-2222-2222-2222-222222222222"
 const BOB = "33333333-3333-3333-3333-333333333333"
 
-// An already-started event: the only kind a host may mark complete (B14's time gate).
 const PAST = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
 
 let repo: InMemoryCleanupRepository
@@ -169,9 +170,6 @@ describe("cancelCleanup", () => {
   })
 
   it("B18: 409s cancelling an event the host has already COMPLETED, and writes nothing", async () => {
-    // Host completion is forward-only (B17 — there is no un-complete), so cancel must not become a back
-    // door out of it: a 'cancelled' event still carrying credited volunteer_hours rows is a state nothing
-    // downstream can interpret. An operator can still flip the status via the admin route.
     const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
     await service.completeCleanup(created.id, null, ORG)
 
@@ -180,6 +178,26 @@ describe("cancelCleanup", () => {
     })
     expect(repo.cleanups.get(created.id)?.status).toBe("done")
     expect(repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel")).toEqual([])
+  })
+
+  it("F067: a completed event's date/title/location/type are frozen; cosmetic edits still apply", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    await service.completeCleanup(created.id, null, ORG)
+
+    const future = new Date(Date.now() + 30 * 86_400_000).toISOString()
+    await expect(
+      service.updateCleanup(created.id, { scheduledAt: future }, ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(
+      service.updateCleanup(created.id, { title: "Retitled after the fact" }, ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(
+      service.updateCleanup(created.id, { lat: 40.0, lng: -74.0 }, ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+
+    const ok = await service.updateCleanup(created.id, { description: "post-event notes" }, ORG)
+    expect(ok.status).toBe("done")
+    expect(ok.description).toBe("post-event notes")
   })
 })
 
@@ -242,6 +260,25 @@ describe("listCleanups filters", () => {
 
     const all = await service.listCleanups({}, { userId: null })
     expect(all.items.map((c) => c.title).sort()).toEqual(["Future", "Past"])
+  })
+
+  it("F070: a cancelled event whose date has passed stays out of the past list", async () => {
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000011",
+      organizerUserId: ORG,
+      title: "RealPast",
+      scheduledAt: new Date("2026-05-10T00:00:00.000Z"),
+      status: "done",
+    })
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000012",
+      organizerUserId: ORG,
+      title: "CancelledPast",
+      scheduledAt: new Date("2026-05-20T00:00:00.000Z"),
+      status: "cancelled",
+    })
+    const past = await service.listCleanups({ when: "past" }, { userId: null })
+    expect(past.items.map((c) => c.title)).toEqual(["RealPast"])
   })
 
   it("filters by bbox (point-in-envelope)", async () => {
@@ -425,17 +462,14 @@ describe("listAttendees (who's going)", () => {
       memberIds.push(id)
     }
 
-    // Organizer sees everyone (61 = organizer + 60 members).
     const asOrganizer = await service.listAttendees(created.id, { userId: ORG })
     expect(asOrganizer.attendees.length).toBe(61)
     expect(asOrganizer.attendees.length).toBeGreaterThan(ATTENDEES_DEFAULT_LIMIT)
 
-    // A promoted cohost gets the same host-scoped roster.
     await service.setMemberRole(created.id, ORG, memberIds[0]!, "cohost")
     const asCohost = await service.listAttendees(created.id, { userId: memberIds[0]! })
     expect(asCohost.attendees.length).toBe(61)
 
-    // A plain member stays on the default cap (going count is still the real total).
     const asMember = await service.listAttendees(created.id, { userId: memberIds[1]! })
     expect(asMember.attendees.length).toBe(ATTENDEES_DEFAULT_LIMIT)
     expect(asMember.going).toBe(61)
@@ -477,9 +511,6 @@ describe("requestResources (D19 event resource request)", () => {
         name: "City of LA",
       })
     }
-    // M20: each harness gets its OWN counter store so the budget is per-test. Production wires a
-    // RedisCounterStore (see cleanups.routes.ts) — the whole point of the fix is that the budget is
-    // SHARED across pods and survives a deploy, which the old in-process Map was not.
     const counters = new InMemoryCounterStore()
     const svc = makeCleanupService({
       repo: r,
@@ -551,25 +582,31 @@ describe("requestResources (D19 event resource request)", () => {
     expect(row?.note).toContain("Need 20 trash bags.")
   })
 
-  // --- M20: the resource-request budget ------------------------------------------------------------
-  // This WAS an in-process Map keyed on `${cleanupId}:${actorId}`, so a verified host looped
-  // create-event -> request-resources and relayed ~150 branded, DKIM-signed emails/minute into
-  // municipal inboxes: every throwaway event minted a fresh cooldown key. The budget is now keyed on
-  // the ACTOR (per day) and the JURISDICTION (per hour), and never on the event.
+  it("F068: 422s a slur in the message and neither sends nor writes a timeline row", async () => {
+    const { repo: r, svc, sends } = harness({
+      verified: true,
+      contact: { geoid: "0644000", email: "events@lacity.gov" },
+    })
+    const id = await seedEvent(r, svc, "0644000")
+    await expect(
+      svc.requestResources({ cleanupId: id, message: "please send bags nigger", actorId: ORG }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(sends).toHaveLength(0)
+    expect(r.timeline.find((t) => t.cleanupId === id && t.kind === "resource_request")).toBeUndefined()
+  })
+
 
   it("M20: a FRESH event does not reset the host's budget (the old cleanupId-keyed bypass)", async () => {
     const { repo: r, svc, sends } = harness({
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    // Spend the whole daily host allowance across DISTINCT events — the exact bypass shape.
     for (let i = 0; i < RESOURCE_REQUEST_PER_HOST_PER_DAY; i += 1) {
       const id = await seedEvent(r, svc, "0644000")
       await svc.requestResources({ cleanupId: id, message: `Need bags ${i}.`, actorId: ORG })
     }
     expect(sends).toHaveLength(RESOURCE_REQUEST_PER_HOST_PER_DAY)
 
-    // A brand-new event buys no new allowance.
     const fresh = await seedEvent(r, svc, "0644000")
     await expect(
       svc.requestResources({ cleanupId: fresh, message: "One more.", actorId: ORG }),
@@ -582,7 +619,6 @@ describe("requestResources (D19 event resource request)", () => {
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    // Each host stays under their own daily cap; the city-side cap is what has to stop them.
     let host = 0
     for (let i = 0; i < RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR; i += 1) {
       if (i % RESOURCE_REQUEST_PER_HOST_PER_DAY === 0) host += 1
@@ -612,11 +648,9 @@ describe("requestResources (D19 event resource request)", () => {
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, svc, "0644000")
-    // A non-host is refused before the budget is charged...
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
-    // ...so the real host still has their full allowance.
     for (let i = 0; i < RESOURCE_REQUEST_PER_HOST_PER_DAY; i += 1) {
       await svc.requestResources({ cleanupId: id, message: `Need bags ${i}.`, actorId: ORG })
     }
@@ -673,7 +707,6 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
     bells = []
     svc = makeCleanupService({
       repo,
-      // Fresh per test so the M18 role-change cooldown can't leak across cases.
       counters: new InMemoryCounterStore(),
       notifier: {
         createNotification: (userId, input) => {
@@ -792,12 +825,10 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
     const id = await setup()
     await svc.setMemberRole(id, ORG, ALICE, "cohost")
 
-    // Cohost removes a plain member.
     const byCohost = await svc.removeMember(id, ALICE, BOB)
     expect(byCohost).toEqual({ ok: true, going: 2 })
     expect(await repo.isMember(id, BOB)).toBe(false)
 
-    // Organizer removes the cohost.
     const byOrg = await svc.removeMember(id, ORG, ALICE)
     expect(byOrg).toEqual({ ok: true, going: 1 })
     expect(await repo.isMember(id, ALICE)).toBe(false)
@@ -871,14 +902,10 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
     const roster = await svc.listAttendees(id, { userId: ALICE })
     const rolesByName = Object.fromEntries(roster.attendees.map((p) => [p.name, p.role]))
     expect(rolesByName).toEqual({ "Olive Organizer": "organizer", Alice: "cohost", Bob: "member" })
-    // Cohorts sort after the organizer, before plain members.
     expect(roster.attendees.map((p) => p.name)).toEqual(["Olive Organizer", "Alice", "Bob"])
   })
 })
 
-// ---------------------------------------------------------------------------------------------------
-// Security fixes from the 2026-07-24 backend audit.
-// ---------------------------------------------------------------------------------------------------
 
 describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
   let svc: CleanupService
@@ -897,8 +924,6 @@ describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
     await svc.removeMember(created.id, ORG, BOB)
     expect(await repo.isMember(created.id, BOB)).toBe(false)
 
-    // The whole exploit: `join` was an unconditional self-service INSERT, so this used to succeed
-    // instantly, in a loop, putting the removed user straight back into the event group chat.
     await expect(svc.joinCleanup(created.id, BOB)).rejects.toMatchObject({ code: "FORBIDDEN" })
     expect(await repo.isMember(created.id, BOB)).toBe(false)
   })
@@ -911,7 +936,6 @@ describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
     await svc.removeMember(a.id, ORG, BOB)
     expect(repo.bans).toContainEqual({ cleanupId: a.id, userId: BOB, bannedByUserId: ORG })
 
-    // A ban on one event never bleeds into another.
     const joined = await svc.joinCleanup(b.id, BOB)
     expect(joined.joined).toBe(true)
   })
@@ -934,7 +958,6 @@ describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
     const res = await svc.setMemberRole(created.id, ORG, BOB, "member")
     expect(res).toEqual({ ok: true })
     expect(repo.bans).toHaveLength(0)
-    // Unbanning does NOT re-join them — they RSVP again themselves (the normal consent flow).
     expect(await repo.isMember(created.id, BOB)).toBe(false)
     const rejoined = await svc.joinCleanup(created.id, BOB)
     expect(rejoined.joined).toBe(true)
@@ -947,11 +970,9 @@ describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
     await svc.setMemberRole(created.id, ORG, ALICE, "cohost")
     await svc.removeMember(created.id, ORG, BOB)
 
-    // A cohost cannot lift a ban (setMemberRole is organizer-only end to end).
     await expect(svc.setMemberRole(created.id, ALICE, BOB, "member")).rejects.toMatchObject({
       code: "FORBIDDEN",
     })
-    // And 'cohost' is not an unban gesture — a non-attending target is still a 404.
     await expect(svc.setMemberRole(created.id, ORG, BOB, "cohost")).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
@@ -966,8 +987,6 @@ describe("M18: promote/demote notification bombing", () => {
     const created = await svc.createCleanup(baseInput(), ORG)
     await svc.joinCleanup(created.id, ALICE)
 
-    // The attack: there are exactly two legal roles, so alternating them makes every call a REAL flip
-    // that slips past `if (targetRole === role) return` and fires a lock-screen push.
     let flips = 0
     let err: unknown = null
     for (let i = 0; i < ROLE_CHANGES_PER_TARGET_PER_WINDOW + 5; i += 1) {
@@ -997,15 +1016,11 @@ describe("M18: promote/demote notification bombing", () => {
     await expect(svc.setMemberRole(created.id, ORG, ALICE, "cohost")).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
-    // Bob's budget is untouched.
     await expect(svc.setMemberRole(created.id, ORG, BOB, "cohost")).resolves.toEqual({ ok: true })
   })
 })
 
 describe("M19: the slur filter reaches event fields", () => {
-  // The filter guarded reports, profiles and chat but NOT one event field — even though events render
-  // on the anonymously readable map behind a 60s public cache and the cancel reason is pushed verbatim
-  // to every attendee. SLUR is the canonical term the shared filter matches; see abuse/slur-filter.ts.
   const SLUR = "nigger"
 
   it("rejects a slur in the event title, description, address and bring list on create", async () => {
@@ -1035,7 +1050,6 @@ describe("M19: the slur filter reaches event fields", () => {
     await expect(
       service.cancelCleanup(created.id, `called off, ${SLUR}`, ORG),
     ).rejects.toMatchObject({ code: "VALIDATION" })
-    // The cancel is refused outright, not applied-then-sanitized.
     expect(repo.cleanups.get(created.id)?.status).toBe("upcoming")
   })
 
@@ -1111,14 +1125,8 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
 
     await svc.cancelCleanup(created.id, "Storm warning", ORG)
 
-    // Going through createNotification is what buys prefs, quiet hours and the user-channel signal —
-    // the raw INSERT it replaced honored none of them.
     expect(bells.map((b) => b.userId).sort()).toEqual([ALICE, BOB].sort())
     expect(bells.every((b) => b.type === "cleanup_cancelled")).toBe(true)
-    // Asserted over EVERY bell rather than bells[0]: the fan-out is now concurrent (CANCEL_FANOUT_
-    // CONCURRENCY), so arrival order is not part of the contract — every recipient carrying the reason
-    // and the deep link is. The copy travels as catalog KEYS + a {{reason}} var, never as literal English
-    // (the pipeline renders them in each recipient's locale), which is why this asserts the keys.
     expect(
       bells.every(
         (b) =>
@@ -1128,7 +1136,6 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     ).toBe(true)
     expect(bells.every((b) => b.vars?.reason === "Storm warning")).toBe(true)
     expect(bells.every((b) => b.link === `/cleanups/${created.id}`)).toBe(true)
-    // The canceller never rings themselves.
     expect(bells.some((b) => b.userId === ORG)).toBe(false)
   })
 
@@ -1157,8 +1164,6 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     const created = await svc.createCleanup(baseInput(), ORG)
     await svc.joinCleanup(created.id, ALICE)
 
-    // A blank/whitespace reason is normalized to null upstream, so there is no {{reason}} to interpolate:
-    // the reason-carrying body would otherwise render a dangling "Reason:" on the attendee's lock screen.
     await svc.cancelCleanup(created.id, "   ", ORG)
 
     expect(bells).toEqual([{ bodyKey: "notification.cleanup_cancelled.body" }])
@@ -1189,11 +1194,8 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     await svc.cancelCleanup(created.id, "Storm warning", ORG)
     expect(bells).toEqual([ALICE])
 
-    // Cancelling twice is still a legal 200 + DTO (idempotent at the HTTP layer)...
     const second = await svc.cancelCleanup(created.id, "Storm warning", ORG)
     expect(second.status).toBe("cancelled")
-    // ...but the bell is NOT idempotent at the receiver, so a host (or a retrying client) looping
-    // /cancel must not push every attendee's lock screen on each pass. Same for the timeline row.
     expect(bells).toEqual([ALICE])
     expect(
       repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel"),
@@ -1217,11 +1219,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
       },
       notifier: {
         createNotification: async (userId, input) => {
-          // Yield first so the rejection surfaces through a real await, the way a prefs read or a push
-          // adapter would fail — not synchronously at call time.
           await Promise.resolve()
-          // A single poisoned recipient (a bad prefs row, a push-adapter error) used to abandon every
-          // remaining attendee: ONE try/catch wrapped the whole sequential loop.
           if (userId === ALICE) throw new Error("prefs row corrupt")
           delivered.push(userId)
           return {
@@ -1243,9 +1241,6 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
 
     expect(dto.status).toBe("cancelled")
     expect(delivered.sort()).toEqual([BOB, CAROL].sort())
-    // The failure is attributed to the ONE recipient it belongs to. A single try/catch around the whole
-    // fan-out logs once for the batch with no userId and tells you nothing about who was skipped; this
-    // asserts the blast radius is one attendee wide.
     expect(warned).toHaveLength(1)
     expect(warned[0]!.userId).toBe(ALICE)
     expect(warned[0]!.cleanupId).toBe(created.id)
@@ -1279,11 +1274,14 @@ describe("cleanup state machine (terminal states)", () => {
     })
   })
 
-  it("still allows a cosmetic edit on a completed event (roster stays frozen)", async () => {
+  it("F067: freezes the title of a completed event but still allows a cosmetic description edit", async () => {
     const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
     await service.completeCleanup(created.id, null, ORG)
-    const edited = await service.updateCleanup(created.id, { title: "Renamed" }, ORG)
-    expect(edited.title).toBe("Renamed")
+    await expect(
+      service.updateCleanup(created.id, { title: "Renamed" }, ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    const edited = await service.updateCleanup(created.id, { description: "post-event recap" }, ORG)
+    expect(edited.description).toBe("post-event recap")
   })
 
   it("409s joining a cancelled event", async () => {
@@ -1320,18 +1318,19 @@ describe("CVX-006: PATCH cannot backdate an event past the create-time floor", (
     expect(repo.cleanups.get(created.id)?.scheduledAt).toEqual(original)
   })
 
-  it("allows a PATCH that echoes the stored past scheduledAt of a completed event", async () => {
+  it("F067: refuses any scheduledAt/title change on a completed event, even echoing the stored date", async () => {
     const created = await service.createCleanup(baseInput({ scheduledAt: daysAgo(30) }), ORG)
     await service.completeCleanup(created.id, null, ORG)
     const stored = repo.cleanups.get(created.id)!.scheduledAt.toISOString()
 
-    const edited = await service.updateCleanup(
-      created.id,
-      { scheduledAt: stored, title: "Renamed after the fact" },
-      ORG,
-    )
-    expect(edited.title).toBe("Renamed after the fact")
-    expect(edited.scheduledAt).toBe(stored)
+    await expect(
+      service.updateCleanup(
+        created.id,
+        { scheduledAt: stored, title: "Renamed after the fact" },
+        ORG,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(repo.cleanups.get(created.id)!.title).toBe("Beach cleanup")
   })
 
   it("allows moving a backdated event FORWARD but not further into the past", async () => {
@@ -1356,5 +1355,79 @@ describe("CVX-006: PATCH cannot backdate an event past the create-time floor", (
 
     const edited = await service.updateCleanup(created.id, { scheduledAt: justNow }, ORG)
     expect(edited.scheduledAt).toBe(justNow)
+  })
+})
+
+describe("F157: cancellation fan-out leaves the request path", () => {
+  function bellHarness(jobs?: FakeJobs) {
+    const bells: string[] = []
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      ...(jobs !== undefined ? { jobs } : {}),
+      notifier: {
+        createNotification: (userId, input) => {
+          bells.push(userId)
+          return Promise.resolve({
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          })
+        },
+      },
+    })
+    return { svc, bells }
+  }
+
+  it("enqueues cleanup.cancel.fanout instead of ringing 2000 members inline", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    const jobs = new FakeJobs()
+    const { svc, bells } = bellHarness(jobs)
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+
+    expect(bells).toEqual([])
+    const enqueued = jobs.jobsFor(CLEANUP_CANCEL_FANOUT_JOB)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]?.data).toEqual({
+      cleanupId: created.id,
+      reason: "Storm warning",
+      actorId: ORG,
+    })
+    expect(enqueued[0]?.opts?.singletonKey).toBe(created.id)
+  })
+
+  it("the enqueued job delivers exactly the bells the inline path used to", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    const jobs = new FakeJobs()
+    const { svc, bells } = bellHarness(jobs)
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+
+    await svc.runCancelFanout({ cleanupId: created.id, reason: "Storm warning", actorId: ORG })
+
+    expect(bells.sort()).toEqual([ALICE, BOB].sort())
+  })
+
+  it("falls back to the inline fan-out when the queue refuses the job", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const failing = new FakeJobs()
+    failing.enqueue = () => Promise.reject(new Error("queue down"))
+    const { svc, bells } = bellHarness(failing)
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+
+    expect(bells).toEqual([ALICE])
   })
 })

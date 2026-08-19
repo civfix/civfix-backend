@@ -51,8 +51,11 @@ export { buildMailStats } from "./mail-stats.js"
 
 const MAIL_THREAD_MESSAGE_CAP = 500
 
+export const MAIL_BODY_DETAIL_CHARS = 64 * 1024
 
-/** The mail_threads column list every thread read selects, optionally qualified by a table `alias`. */
+const PRIOR_OUTBOUND_ID_WINDOW = 20
+
+
 function threadColumns(sql: Queryable, alias?: string): SqlFragment {
   const p = alias === undefined ? sql`` : sql`${sql(alias)}.`
   return sql`
@@ -61,7 +64,6 @@ function threadColumns(sql: Queryable, alias?: string): SqlFragment {
   `
 }
 
-/** The full mail_threads insert tuple (every upsert writes all of it; only the conflict target differs). */
 interface ThreadInsertValues {
   threadToken: string
   jurisdictionGeoid: string | null
@@ -86,13 +88,6 @@ function threadValues(threadToken: string, init: ThreadInit): ThreadInsertValues
   }
 }
 
-/**
- * The find-or-create shape all four thread upserts share: INSERT ... ON CONFLICT DO NOTHING RETURNING,
- * then re-SELECT the row the conflict kept.
- *
- * INVARIANT: `selectWhere` must match exactly the row `onConflict`'s target matched. If the two disagree
- * the fallback SELECT can miss (the "row vanished" throw) or, worse, return a different thread.
- */
 async function insertOrSelectThread(
   sql: Sql,
   values: ThreadInsertValues,
@@ -189,18 +184,29 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     async priorOutboundMessageIds(threadId: string): Promise<string[]> {
       const rows = await sql<{ message_id: string }[]>`
         SELECT message_id
-        FROM mail_messages
-        WHERE thread_id = ${threadId}
-          AND direction = 'out'
-          AND message_id IS NOT NULL
+        FROM (
+          (
+            SELECT message_id, created_at, id
+            FROM mail_messages
+            WHERE thread_id = ${threadId} AND direction = 'out' AND message_id IS NOT NULL
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+          )
+          UNION
+          (
+            SELECT message_id, created_at, id
+            FROM mail_messages
+            WHERE thread_id = ${threadId} AND direction = 'out' AND message_id IS NOT NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT ${PRIOR_OUTBOUND_ID_WINDOW}
+          )
+        ) u
         ORDER BY created_at ASC, id ASC
       `
       return rows.map((r) => r.message_id)
     },
 
     async upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-      // A digest thread is the geoid's thread that belongs to NO report and NO event, so both ids are
-      // forced null here and the fallback SELECT repeats the partial index's predicate.
       return insertOrSelectThread(
         sql,
         {
@@ -241,7 +247,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return rows[0] ? toThreadRecord(rows[0]) : null
     },
 
-    async insertMessage(input: InsertMessageInput): Promise<MailMessageRecord> {
+    async insertMessage(input: InsertMessageInput): Promise<MailMessageRecord | null> {
       const attachments = input.attachments ?? []
       return sql.begin(async (tx) => {
         const inserted = await tx<MessageRowSelect[]>`
@@ -258,11 +264,12 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
             ${input.messageId ?? null},
             ${input.inReplyTo ?? null}
           )
+          ON CONFLICT (message_id) WHERE message_id IS NOT NULL DO NOTHING
           RETURNING id, thread_id, direction, from_addr, to_addr, subject, body, attachments,
                     message_id, in_reply_to, created_at
         `
         const row = inserted[0]
-        if (!row) throw new Error("insertMessage: insert returned no row")
+        if (!row) return null
         const setUnread = input.direction === "in"
         await tx`
           UPDATE mail_threads
@@ -373,8 +380,10 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const threadRow = threads[0]
       if (!threadRow) return null
       const messages = await sql<MessageRowSelect[]>`
-        SELECT id, thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id,
-               in_reply_to, created_at
+        SELECT id, thread_id, direction, from_addr, to_addr, subject,
+               left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
+               length(body) > ${MAIL_BODY_DETAIL_CHARS} AS truncated,
+               attachments, message_id, in_reply_to, created_at
         FROM (
           SELECT id, thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id,
                  in_reply_to, created_at
@@ -424,11 +433,18 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return rows[0]?.to_addr ?? null
     },
 
-    async messageExists(messageId: string): Promise<boolean> {
-      const rows = await sql<{ exists: boolean }[]>`
-        SELECT EXISTS(SELECT 1 FROM mail_messages WHERE message_id = ${messageId}) AS exists
+    async getLastInboundSender(threadId: string): Promise<string | null> {
+      const rows = await sql<{ from_addr: string | null }[]>`
+        SELECT from_addr
+        FROM mail_messages
+        WHERE thread_id = ${threadId}
+          AND direction = 'in'
+          AND from_addr IS NOT NULL
+          AND from_addr <> ''
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
       `
-      return rows[0]?.exists ?? false
+      return rows[0]?.from_addr ?? null
     },
 
     async markThreadRead(id: string): Promise<boolean> {
@@ -506,11 +522,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async setOutreachState(geoid: string, patch: OutreachStatePatch): Promise<OutreachStateRecord> {
-      // OMITTED (undefined) keeps the stored value; an explicit null CLEARS it (a throttle reset, e.g. the
-      // outreach service rolling back a claim whose send failed). COALESCE cannot tell those apart — it
-      // treated a clear as "keep", so the reset silently no-op'd against Postgres while passing against the
-      // in-memory repo, which has always distinguished them. The provided-flags mirror the
-      // jurisdiction forward-template CASEs.
       const setLastOutreachAt = patch.lastOutreachAt !== undefined
       const lastOutreachAt = patch.lastOutreachAt ?? null
       const setSuppressed = patch.suppressed !== undefined

@@ -115,7 +115,7 @@ export class InMemoryChatRepository implements ChatRepository {
     const list = this.log.get(input.cleanupId) ?? []
     list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.cleanupId, list)
-    return Promise.resolve(this.withReply(input.cleanupId, dto))
+    return Promise.resolve({ ...this.withReply(input.cleanupId, dto), mine: true })
   }
 
   history(

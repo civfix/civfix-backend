@@ -3,13 +3,20 @@ import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-ment
 import type { OutboundMailService } from "./admin/outbound-mail-service.js"
 import type { ReportForwardAudit } from "./report-forward-audit.drizzle.js"
 import type { ReportJurisdictionView } from "./discussion-types.js"
+import type { CounterStore } from "../abuse/counter-store.js"
 
 export interface CityForwardContext {
   reportId: string
   category: string
   place: string | null
   jurisdiction: ReportJurisdictionView | null
+  actorUserId: string
 }
+
+export const CITY_FORWARD_DEDUP_TTL_SECONDS = 10 * 60
+export const CITY_FORWARD_WINDOW_SECONDS = 60 * 60
+export const CITY_FORWARD_PER_SENDER_PER_HOUR = 3
+export const CITY_FORWARD_PER_GEOID_PER_HOUR = 20
 
 export interface CityForwardResult {
   mentioned: boolean
@@ -18,16 +25,41 @@ export interface CityForwardResult {
   forwardedAt: Date | null
 }
 
+export type CityForwardGate = (
+  reportId: string,
+  geoid: string,
+  actorUserId: string,
+) => Promise<boolean>
+
 export interface CityForwardOptions {
-  canForward?: (reportId: string, geoid: string) => boolean
-  // D-C4 audit seam. When both are supplied and the body @mentions the report's jurisdiction, an audit row
-  // is written to report_message_forwards (forwarded_at NULL) BEFORE the send is attempted, and stamped
-  // forwarded_at on a SUCCESSFUL forward. A message that mentions @city but has NO city contact (cannot
-  // forward) STILL writes the mentioned-but-not-forwarded row. Audit writes are best-effort: a failure
-  // never rejects the message (the message already persisted). Omit `audit`/`messageId` to skip auditing
-  // (e.g. the old discussion path, whose audit rode discussion_message_mentions).
+  canForward?: CityForwardGate
   audit?: ReportForwardAudit
   messageId?: string
+}
+
+export function makeCityForwardThrottle(counters: CounterStore): CityForwardGate {
+  return async (reportId, geoid, actorUserId) => {
+    try {
+      const dedup = await counters.incr(
+        `citfwd:dedup:${actorUserId}:${reportId}:${geoid}`,
+        CITY_FORWARD_DEDUP_TTL_SECONDS,
+      )
+      if (dedup > 1) return false
+
+      const perSender = await counters.incr(
+        `citfwd:user:${actorUserId}`,
+        CITY_FORWARD_WINDOW_SECONDS,
+      )
+      if (perSender > CITY_FORWARD_PER_SENDER_PER_HOUR) return false
+
+      const perGeoid = await counters.incr(`citfwd:geoid:${geoid}`, CITY_FORWARD_WINDOW_SECONDS)
+      if (perGeoid > CITY_FORWARD_PER_GEOID_PER_HOUR) return false
+
+      return true
+    } catch {
+      return false
+    }
+  }
 }
 
 export async function forwardReportCityMention(
@@ -43,17 +75,13 @@ export async function forwardReportCityMention(
   if (handle === null || parseCityMention(body, handle) === null) {
     return { mentioned: false, geoid: jurisdiction.geoid, forwarded: false, forwardedAt: null }
   }
-  // From here the message @mentions the report's jurisdiction. Record the audit row (forwarded_at NULL)
-  // BEFORE attempting to forward, so a mention with no city contact (or a deduped/failed send) is still
-  // captured as mentioned-but-not-forwarded. Best-effort: never let an audit-write failure reject the
-  // already-persisted message.
   const geoid = jurisdiction.geoid
   await recordMention(opts, geoid)
   const contact = jurisdiction.contactEmail
   if (contact === null || contact === "") {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
-  if (opts.canForward !== undefined && !opts.canForward(ctx.reportId, geoid)) {
+  if (opts.canForward !== undefined && !(await opts.canForward(ctx.reportId, geoid, ctx.actorUserId))) {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
   const packet = buildDiscussionForwardPacket(
@@ -77,22 +105,12 @@ export async function forwardReportCityMention(
   }
 }
 
-// Best-effort audit helpers: no-op unless BOTH audit and messageId were supplied, and never throw (an
-// audit-write failure must not reject the chat message, which already persisted).
 async function recordMention(opts: CityForwardOptions, geoid: string): Promise<void> {
   if (opts.audit === undefined || opts.messageId === undefined) return
-  try {
-    await opts.audit.recordMention(opts.messageId, geoid)
-  } catch {
-    // swallowed: the message is already persisted; a missing audit row degrades gracefully.
-  }
+  await opts.audit.recordMention(opts.messageId, geoid).catch(() => {})
 }
 
 async function markForwarded(opts: CityForwardOptions, geoid: string): Promise<void> {
   if (opts.audit === undefined || opts.messageId === undefined) return
-  try {
-    await opts.audit.markForwarded(opts.messageId, geoid)
-  } catch {
-    // swallowed: the forward itself succeeded; only the forwarded_at stamp is best-effort.
-  }
+  await opts.audit.markForwarded(opts.messageId, geoid).catch(() => {})
 }

@@ -1,5 +1,5 @@
 
-import type { Sql } from "../../db/client.js"
+import type { Queryable, Sql } from "../../db/client.js"
 import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { upsertJurisdictionContacts } from "./discovery-repository.drizzle.js"
@@ -26,6 +26,56 @@ import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { ilikeAnyOf } from "./sql-fragments.js"
 
 const DIRECTORY_FACET_TTL_MS = 30_000
+
+export const ROUTE_REPORTS_BATCH_SIZE = 500
+
+export const ROUTE_REPORTS_MAX_BATCHES = 1_000
+
+async function routeWaitingBatch(tx: Queryable, geoid: string): Promise<number> {
+  const rows = await tx<{ routed: string }[]>`
+    WITH picked AS (
+      SELECT id
+      FROM reports
+      WHERE jurisdiction_geoid = ${geoid}
+        AND deleted_at IS NULL
+        AND status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
+      ORDER BY id
+      LIMIT ${ROUTE_REPORTS_BATCH_SIZE}
+      FOR UPDATE SKIP LOCKED
+    ),
+    routed AS (
+      UPDATE reports
+      SET status = 'acknowledged'
+      WHERE id IN (SELECT id FROM picked)
+      RETURNING id
+    ),
+    timeline AS (
+      INSERT INTO report_timeline (report_id, status, note)
+      SELECT id, 'acknowledged', 'Routed to jurisdiction contact' FROM routed
+    )
+    SELECT COUNT(*)::text AS routed FROM routed
+  `
+  return parseCount(rows[0]?.routed)
+}
+
+async function drainWaitingReports(sql: Sql, geoid: string): Promise<number> {
+  let routed = 0
+  for (let batch = 0; batch < ROUTE_REPORTS_MAX_BATCHES; batch++) {
+    const n = await routeWaitingBatch(sql, geoid)
+    if (n === 0) return routed
+    routed += n
+  }
+  return routed
+}
+
+const PG_UNIQUE_VIOLATION = "23505"
+const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
+
+function isJurisdictionHandleConflict(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false
+  const e = err as { code?: unknown; constraint_name?: unknown }
+  return e.code === PG_UNIQUE_VIOLATION && e.constraint_name === JURISDICTION_HANDLE_CONSTRAINT
+}
 
 interface DirectoryFacetAggregate {
   total: number
@@ -134,7 +184,7 @@ export function makeDrizzleJurisdictionContactsRepository(
       input: SaveContactsInput,
       audit: { actorId: string | null },
     ): Promise<{ routedReports: number; taskResolved: boolean }> {
-      const result = await sql.begin(async (tx) => {
+      const committed = await sql.begin(async (tx) => {
         await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
         await tx`
           UPDATE jurisdictions
@@ -160,22 +210,8 @@ export function makeDrizzleJurisdictionContactsRepository(
         `
         const taskResolved = tasks.length > 0
 
-        const routed = await tx<{ id: string }[]>`
-          WITH routed AS (
-            UPDATE reports
-            SET status = 'acknowledged'
-            WHERE jurisdiction_geoid = ${geoid}
-              AND deleted_at IS NULL
-              AND status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
-            RETURNING id
-          ),
-          timeline AS (
-            INSERT INTO report_timeline (report_id, status, note)
-            SELECT id, 'acknowledged', 'Routed to jurisdiction contact' FROM routed
-          )
-          SELECT id FROM routed
-        `
-
+        const routed = await routeWaitingBatch(tx, geoid)
+        const drainPending = routed === ROUTE_REPORTS_BATCH_SIZE
 
         await writeAudit(tx, {
           actorId: audit.actorId,
@@ -185,15 +221,24 @@ export function makeDrizzleJurisdictionContactsRepository(
             geoid,
             categories: Object.keys(input.contacts),
             defaultEmails: input.defaultEmails,
-            routedReports: routed.length,
+            routedReports: routed,
+            drainPending,
             taskResolved,
           },
         })
 
-        return { routedReports: routed.length, taskResolved }
+        return { routedReports: routed, taskResolved, drainPending }
       })
       invalidateDefaultFacetCache()
-      return result
+      if (!committed.drainPending) {
+        return { routedReports: committed.routedReports, taskResolved: committed.taskResolved }
+      }
+      const drained = await drainWaitingReports(sql, geoid)
+      invalidateDefaultFacetCache()
+      return {
+        routedReports: committed.routedReports + drained,
+        taskResolved: committed.taskResolved,
+      }
     },
 
     async patch(
@@ -250,11 +295,17 @@ export function makeDrizzleJurisdictionContactsRepository(
             if (dupeUser.length > 0) {
               throw AppError.conflict("That @handle is already taken by a member.")
             }
-            await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
+            try {
+              await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
+            } catch (err) {
+              if (isJurisdictionHandleConflict(err)) {
+                throw AppError.conflict("That @handle is already used by another jurisdiction.")
+              }
+              throw err
+            }
           }
         }
         if (input.forwardSubjectTemplate !== undefined) {
-          // Empty string clears back to the built-in default (the handle-clear convention).
           const t = input.forwardSubjectTemplate
           await tx`UPDATE jurisdictions SET forward_subject_template = ${t === null || t === "" ? null : t} WHERE geoid = ${geoid}`
         }
@@ -315,7 +366,7 @@ export function makeDrizzleJurisdictionContactsRepository(
               ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
               : args.filter === "routed"
                 ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
-                : // "needs_mapping": actionable backlog = has WAITING reports AND no routing contact on file.
+                :
                   args.filter === "needs_mapping"
                   ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr}) AND COALESCE(w.total, 0) > 0`
                   : sql``
@@ -327,8 +378,7 @@ export function makeDrizzleJurisdictionContactsRepository(
           ? sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
           : args.sort === "name"
             ? sql`ORDER BY j.name ASC, j.geoid ASC`
-            : // "oldest": longest-unrouted first — the jurisdiction whose oldest waiting report is oldest.
-              // NULLS LAST so jurisdictions with no waiting report sink below those that have a backlog.
+            :
               args.sort === "oldest"
               ? sql`ORDER BY w.oldest_waiting_at ASC NULLS LAST, j.geoid ASC`
               : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
@@ -353,14 +403,6 @@ export function makeDrizzleJurisdictionContactsRepository(
             AND r.deleted_at IS NULL
             AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
           GROUP BY r.jurisdiction_geoid
-        ),
-        routed AS (
-          -- The routing signal: the most recent 'acknowledged' timeline row across the geoid's reports.
-          SELECT r.jurisdiction_geoid AS geoid, MAX(rt.created_at) AS last_routed_at
-          FROM report_timeline rt
-          JOIN reports r ON r.id = rt.report_id
-          WHERE rt.status = 'acknowledged' AND r.jurisdiction_geoid IS NOT NULL
-          GROUP BY r.jurisdiction_geoid
         )
         SELECT
           j.geoid,
@@ -381,7 +423,12 @@ export function makeDrizzleJurisdictionContactsRepository(
             FROM jurisdiction_contacts cc
             WHERE cc.geoid = j.geoid AND cc.category IS NOT NULL
           ) AS category_emails,
-          lr.last_routed_at,
+          (
+            SELECT MAX(rt.created_at)
+            FROM report_timeline rt
+            JOIN reports r2 ON r2.id = rt.report_id
+            WHERE r2.jurisdiction_geoid = j.geoid AND rt.status = 'acknowledged'
+          ) AS last_routed_at,
           (
             -- A contact is 'bounced' when ANY of the geoid's contact rows has a bounce marker (the inbound
             -- bounce handler stamps jurisdiction_contacts.bounced_at; this takes precedence over
@@ -415,7 +462,6 @@ export function makeDrizzleJurisdictionContactsRepository(
           ${categoryCountsProjection(sql, "w")}
         FROM jurisdictions j
         LEFT JOIN waiting w ON w.geoid = j.geoid
-        LEFT JOIN routed lr ON lr.geoid = j.geoid
         WHERE true
         ${search}
         ${methodFilter}

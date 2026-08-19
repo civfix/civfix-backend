@@ -1,27 +1,14 @@
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
+import { hashForLog } from "./push-sender.js"
 
-/**
- * True when APNs is telling us this device token is permanently dead, so it must be pruned rather than
- * retried: HTTP 410 (Unregistered) or a 400 whose reason is Unregistered / BadDeviceToken. Pure + exported
- * so the prune-vs-warn matrix is unit-testable without the node-apn SDK.
- */
 export function isApnsPruneFailure(status: string, reason: string): boolean {
   return status === "410" || reason === "Unregistered" || reason === "BadDeviceToken"
 }
 
-/**
- * APNs dispatcher (node-apn). Builds a token-auth Provider once (memoized) on first send. Maps the payload
- * to an apn.Notification (alert title/body, topic = bundleId, data merged into the payload). Tokens whose
- * response status is 410 (Unregistered) or 400 with BadDeviceToken are reported invalid for pruning.
- *
- * SEAM RULE: node-apn may ONLY be imported here, via lazy dynamic import, so DI wiring loads no SDK and
- * opens no HTTP/2 connection until the first real send().
- */
 export function makeApnsDispatcher(
   apns: NonNullable<PushSenderConfig["apns"]>,
   logger: PushLogger,
 ): PlatformDispatcher {
-  // node-apn types are loose (any) here because the SDK is dynamically imported; we narrow what we touch.
   let providerPromise: Promise<{ provider: any; Notification: any }> | null = null
 
   async function getProvider() {
@@ -55,14 +42,20 @@ export function makeApnsDispatcher(
     const invalidTokens: string[] = []
     try {
       const result = await provider.send(note, tokens)
-      // result.failed carries per-token failures; 410 (Unregistered) / BadDeviceToken => prune.
       for (const failure of result.failed ?? []) {
         const status = String(failure.status ?? "")
         const reason = failure.response?.reason ?? ""
         if (isApnsPruneFailure(status, reason)) {
           if (typeof failure.device === "string") invalidTokens.push(failure.device)
         } else {
-          logger.warn({ status, reason, device: failure.device }, "push(apns): delivery failure")
+          logger.warn(
+            {
+              status,
+              reason,
+              deviceHash: typeof failure.device === "string" ? hashForLog(failure.device) : undefined,
+            },
+            "push(apns): delivery failure",
+          )
         }
       }
     } catch (err) {
@@ -71,8 +64,6 @@ export function makeApnsDispatcher(
     return { invalidTokens }
   }
 
-  // The Provider holds a long-lived HTTP/2 connection; shut it down on container close so it doesn't
-  // keep the event loop alive on SIGTERM. No-op if the provider was never built.
   dispatch.close = async () => {
     if (!providerPromise) return
     try {

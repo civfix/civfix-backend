@@ -27,7 +27,6 @@ const SAMPLE_PIN_CAP = 50
 
 const DISCOVERY_NOTE_CAP = 200
 
-/** The `cat_*` count columns come from category-counts.ts (CategoryCountRow), not re-listed per category. */
 interface TaskAggRow extends CategoryCountRow {
   id: string
   geoid: string | null
@@ -63,33 +62,13 @@ function toTaskRecord(r: TaskAggRow): DiscoveryTaskRecord {
   }
 }
 
-/**
- * "This jurisdiction has SOME usable routing contact" — a default/all-categories `jurisdiction_contacts`
- * row or the legacy `jurisdictions.contact_emails[]`. One definition because it is read twice per row: as
- * the `has_default_contact` output column AND inside the attention predicate below (a SELECT alias is not
- * visible in WHERE, so the expression itself has to be shared).
- */
 function hasDefaultContactExpr(sql: Queryable): SqlFragment {
-  // COALESCE around array_length, not an IS NOT NULL guard: array_length('{}', 1) is NULL, so the guarded
-  // form evaluated to NULL for a jurisdiction with an EMPTY contact_emails array. As an output column that
-  // NULL was a boolean field lying about itself; inside the WHERE below it would make such a task match
-  // NEITHER facet (NULL and NOT NULL are both non-true) and disappear from the queue.
   return sql`(
     COALESCE(c.has_default, false)
     OR COALESCE(array_length(j.contact_emails, 1), 0) > 0
   )`
 }
 
-/**
- * The queue's "needs attention" predicate, IN SQL: some category has waiting reports and nothing routes
- * it. Mirrors computeContactState (discovery-service.ts) exactly — a default contact covers every category,
- * otherwise a waiting category needs its own `jurisdiction_contacts` row — but evaluated in the database so
- * the facet narrows BEFORE the page window instead of filtering an already-capped fetch in JS (which made
- * tasks past the cap unreachable on every page).
- *
- * Restricted to the canonical categories for the same reason toTaskRecord is: a row carrying an unknown
- * category must not silently demand attention nobody can resolve.
- */
 function needsAttentionExpr(sql: Queryable): SqlFragment {
   return sql`(
     NOT ${hasDefaultContactExpr(sql)}
@@ -102,7 +81,6 @@ function needsAttentionExpr(sql: Queryable): SqlFragment {
   )`
 }
 
-/** The list's sort expression; the keyset anchors on this value plus `t.id`. */
 function sortValueExpr(sql: Queryable, sort: ListDiscoveryArgs["sort"]): SqlFragment {
   return sort === "reports"
     ? sql`COALESCE(w.total, 0)::bigint`
@@ -113,8 +91,26 @@ async function taskAggregateSql(
   sql: Queryable,
   extraWhere: SqlFragment,
   extraTail: SqlFragment = sql``,
+  geoidScope?: SqlFragment,
 ): Promise<TaskAggRow[]> {
+  const scope =
+    geoidScope ??
+    sql`SELECT st.geoid FROM jurisdiction_discovery_tasks st WHERE st.status <> 'done' AND st.geoid IS NOT NULL`
   const rows = await sql`
+    WITH waiting AS (
+      SELECT
+        r.jurisdiction_geoid AS geoid,
+        COUNT(*) AS total,
+        MIN(r.created_at) AS oldest_waiting_at,
+        MAX(r.created_at) AS newest_waiting_at,
+        ${categoryCountsFragment(sql, "r")},
+        array_agg(DISTINCT r.category) AS waiting_categories
+      FROM reports r
+      WHERE r.deleted_at IS NULL
+        AND r.status NOT IN ('rejected', 'resolved')
+        AND r.jurisdiction_geoid IN (${scope})
+      GROUP BY r.jurisdiction_geoid
+    )
     SELECT
       t.id,
       t.geoid,
@@ -130,20 +126,7 @@ async function taskAggregateSql(
       ${hasDefaultContactExpr(sql)} AS has_default_contact
     FROM jurisdiction_discovery_tasks t
     LEFT JOIN jurisdictions j ON j.geoid = t.geoid
-    LEFT JOIN LATERAL (
-      SELECT
-        COUNT(*) AS total,
-        MIN(r.created_at) AS oldest_waiting_at,
-        MAX(r.created_at) AS newest_waiting_at,
-        ${categoryCountsFragment(sql, "r")},
-        -- The distinct categories that HAVE waiting reports; the attention predicate diffs this against
-        -- the jurisdiction's per-category contacts.
-        array_agg(DISTINCT r.category) AS waiting_categories
-      FROM reports r
-      WHERE r.jurisdiction_geoid = t.geoid
-        AND r.deleted_at IS NULL
-        AND r.status NOT IN ('rejected', 'resolved')
-    ) w ON true
+    LEFT JOIN waiting w ON w.geoid = t.geoid
     LEFT JOIN LATERAL (
       SELECT
         array_agg(jc.category) FILTER (WHERE jc.category IS NOT NULL) AS categories,
@@ -161,19 +144,10 @@ async function taskAggregateSql(
 
 export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
   return {
-    /**
-     * KEYSET: the queue's sort key is a derived aggregate (waiting total / population), not a timestamp, so
-     * the anchor rides in the cursor's createdAt slot as epoch-ms — `new Date(sortValue)` out, `getTime()`
-     * back in — keeping the wire cursor the same opaque "<iso>|<id>" string every other admin list uses.
-     * Paging is a real SQL keyset now: the facet + search + window all narrow in the database, so a task is
-     * reachable however deep the queue is.
-     */
     async listTasks(
       args: ListDiscoveryArgs,
     ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      // requireUuid: the keyset casts the anchor id to uuid, so a forged non-uuid cursor must degrade to
-      // "from the start" rather than raising a Postgres 22P02.
       const anchor = decodeCursor(args.cursor, true)
       const sortValue = sortValueExpr(sql, args.sort)
 
@@ -205,7 +179,12 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     },
 
     async getDetail(id: string): Promise<DiscoveryDetailRecord | null> {
-      const rows = await taskAggregateSql(sql, sql`AND t.id = ${id}`)
+      const rows = await taskAggregateSql(
+        sql,
+        sql`AND t.id = ${id}`,
+        sql``,
+        sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
+      )
       const row = rows[0]
       if (!row) return null
       const task = toTaskRecord(row)
@@ -277,7 +256,12 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     },
 
     async getTask(id: string): Promise<DiscoveryTaskRecord | null> {
-      const rows = await taskAggregateSql(sql, sql`AND t.id = ${id}`)
+      const rows = await taskAggregateSql(
+        sql,
+        sql`AND t.id = ${id}`,
+        sql``,
+        sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
+      )
       const row = rows[0]
       return row ? toTaskRecord(row) : null
     },
@@ -433,12 +417,18 @@ async function loadGeometry(
   return { placeGeojson, center, zoom }
 }
 
+export interface UpsertDefaultContactOpts {
+  setEmail?: boolean
+  setFormUrl?: boolean
+}
+
 export async function upsertJurisdictionContacts(
   tx: Queryable,
   geoid: string,
   contacts: Partial<Record<ReportCategory, string | null>>,
   defaultEmails: string[],
   formUrl: string | null,
+  opts?: UpsertDefaultContactOpts,
 ): Promise<void> {
   for (const [category, rawEmail] of Object.entries(contacts) as [
     ReportCategory,
@@ -461,12 +451,30 @@ export async function upsertJurisdictionContacts(
 
   const defaultEmail = defaultEmails.find((e) => e.trim() !== "")?.trim() ?? null
   const form = formUrl && formUrl.trim() !== "" ? formUrl.trim() : null
-  if (defaultEmail !== null || form !== null) {
+  const setEmail = opts?.setEmail ?? defaultEmail !== null
+  const setForm = opts?.setFormUrl ?? form !== null
+  const writeEmail = setEmail && defaultEmail !== null
+  const writeForm = setForm && form !== null
+  if (writeEmail || writeForm) {
     await tx`
       INSERT INTO jurisdiction_contacts (geoid, category, email, form_url, updated_at, bounced_at)
-      VALUES (${geoid}, NULL, ${defaultEmail}, ${form}, now(), NULL)
+      VALUES (${geoid}, NULL, ${writeEmail ? defaultEmail : null}, ${writeForm ? form : null}, now(), NULL)
       ON CONFLICT (geoid) WHERE category IS NULL
-      DO UPDATE SET email = EXCLUDED.email, form_url = EXCLUDED.form_url, updated_at = now(), bounced_at = NULL
+      DO UPDATE SET
+        email = CASE WHEN ${setEmail} THEN EXCLUDED.email ELSE jurisdiction_contacts.email END,
+        form_url = CASE WHEN ${setForm} THEN EXCLUDED.form_url ELSE jurisdiction_contacts.form_url END,
+        updated_at = now(),
+        bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE jurisdiction_contacts.bounced_at END
+    `
+  } else if (setEmail || setForm) {
+    await tx`
+      UPDATE jurisdiction_contacts
+      SET
+        email = CASE WHEN ${setEmail} THEN NULL ELSE email END,
+        form_url = CASE WHEN ${setForm} THEN NULL ELSE form_url END,
+        updated_at = now(),
+        bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE bounced_at END
+      WHERE geoid = ${geoid} AND category IS NULL
     `
   }
 

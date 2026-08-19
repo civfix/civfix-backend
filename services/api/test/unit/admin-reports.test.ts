@@ -10,25 +10,15 @@ import {
   type AdminReportService,
 } from "../../src/services/admin/admin-report-service.js"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
+import { MAX_PACKET_TOTAL_BYTES } from "../../src/services/admin/mail-format.js"
+import {
+  makeOutboundMailService,
+  type OutboundMailService,
+} from "../../src/services/admin/outbound-mail-service.js"
 
-/**
- * Offline unit tests for the admin reports service over the in-memory AdminReportRepository (no DB, no
- * Docker). They cover the list (status + flagged facet, search, pagination), the detail projection
- * (timeline/routing/media), status changes (timeline + audit), the flag toggle
- * (abuse-flag marker + audit), remove (-> rejected + audit), and the follow-up paths: to the reporter
- * (notification + timeline) and to the city (OutboundMailService.sendToCity + timeline), plus the pure
- * helpers. Mirrors admin-discovery.test.ts conventions.
- */
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
-/**
- * A recording fake for the D-D1 report-chat SYSTEM-message emitter. Captures every emitted timeline event
- * so a test can assert the service fired it with the right status/kind after a mutation. `shouldThrow`
- * makes emit reject INTERNALLY (the real emitter never does — it swallows) so a test can prove the status
- * change is INDEPENDENT of the emit even if the emit blew up.
- */
 class FakeReportChatEmitter {
   readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
   shouldThrow = false
@@ -63,7 +53,6 @@ function harness(): Harness {
     outboundMail,
     now: () => NOW,
     reportChatEmitter: emitter,
-    // A deterministic presigner so the media test asserts the keys are resolved into client URLs.
     presignMedia: async (r2Key, thumbKey) => ({
       url: `https://media.test/${r2Key}`,
       ...(thumbKey !== null ? { thumbUrl: `https://media.test/${thumbKey}` } : {}),
@@ -72,14 +61,12 @@ function harness(): Harness {
   return { repo, mailRepo, mailer, emitter, svc }
 }
 
-/** A timestamp `hours` before NOW. */
 function hoursAgo(hours: number): Date {
   return new Date(NOW.getTime() - hours * 60 * 60 * 1000)
 }
 
 describe("admin reports pure helpers", () => {
   it("resolveListFilter maps each design facet to its civfix status SET + flaggedOnly", () => {
-    // "Submitted" = a freshly published/held pin (live, awaiting city action) too, NOT just literal submitted.
     expect(resolveListFilter("all")).toEqual({ statuses: null, flaggedOnly: false })
     expect(resolveListFilter("submitted")).toEqual({
       statuses: ["submitted", "held", "published"],
@@ -166,7 +153,6 @@ describe("admin reports list", () => {
   it("filters by status bucket and by flagged (published/held are Submitted, not Completed)", async () => {
     const { repo, svc } = harness()
     repo.seedReport({ id: "s", status: "submitted" })
-    // A live, just-published pin and a held one both belong in the Submitted bucket.
     repo.seedReport({ id: "pub", status: "published" })
     repo.seedReport({ id: "held", status: "held" })
     repo.seedReport({ id: "ack", status: "acknowledged" })
@@ -184,7 +170,6 @@ describe("admin reports list", () => {
       "ack",
       "p",
     ])
-    // Only a resolved report is Completed — a published (live) one must NOT show here.
     expect((await svc.list({ filter: "completed" })).items.map((i) => i.id)).toEqual(["r"])
     expect((await svc.list({ filter: "flagged" })).items.map((i) => i.id)).toEqual(["f"])
   })
@@ -197,9 +182,8 @@ describe("admin reports list", () => {
     repo.seedReport({ id: "ack", status: "acknowledged" })
     repo.seedReport({ id: "ip", status: "in_progress" })
     repo.seedReport({ id: "res", status: "resolved" })
-    repo.seedReport({ id: "rej", status: "rejected" }) // removed -> excluded from every bucket
+    repo.seedReport({ id: "rej", status: "rejected" })
     repo.seedReport({ id: "f", status: "published", flagged: true })
-    // counts span ALL statuses (not the active facet) so the chips are accurate regardless of the page.
     const { counts } = await svc.list({ filter: "completed" })
     expect(counts).toEqual({ all: 7, submitted: 4, in_progress: 2, completed: 1, flagged: 1 })
   })
@@ -223,16 +207,9 @@ describe("admin reports list", () => {
     expect((await svc.list({ q: "pothole" })).items.map((i) => i.id)).toEqual(["rep-1"])
     expect((await svc.list({ q: "dallas" })).items.map((i) => i.id)).toEqual(["rep-2"])
     expect((await svc.list({ q: "maria" })).items.map((i) => i.id)).toEqual(["rep-2"])
-    // u.handle::text is one of the four ILIKE columns; the fake used not to search it at all.
     expect((await svc.list({ q: "MURALwatch" })).items.map((i) => i.id)).toEqual(["rep-2"])
   })
 
-  /**
-   * The id branch of searchReportsFragment is `OR r.id = $q::uuid`, gated on `isUuid(q)`: an EXACT uuid
-   * equality, never a substring. This pins that contract on the fake so an offline search test can no
-   * longer pass on behavior production lacks (the old fake matched any id substring, so "REP-1" and a uuid
-   * PREFIX both "found" a report that Postgres would never return).
-   */
   it("matches an id ONLY on a full uuid — never a substring, never a non-uuid needle", async () => {
     const { repo, svc } = harness()
     const id = "3f2b1c44-0a55-4d66-8e77-99aa00bb11cc"
@@ -240,11 +217,8 @@ describe("admin reports list", () => {
     repo.seedReport({ id: "rep-other", title: "Litter", place: "Dallas", reporter: null })
 
     expect((await svc.list({ q: id })).items.map((i) => i.id)).toEqual([id])
-    // Uuid equality is case-insensitive in Postgres, so the fake normalizes too.
     expect((await svc.list({ q: id.toUpperCase() })).items.map((i) => i.id)).toEqual([id])
-    // A uuid PREFIX is not a uuid -> no id branch at all, and no substring fallback.
     expect((await svc.list({ q: "3f2b1c44" })).items).toHaveLength(0)
-    // A non-uuid id (only the fake can hold one) is never matched by an id search.
     expect((await svc.list({ q: "rep-other" })).items).toHaveLength(0)
   })
 
@@ -331,6 +305,31 @@ describe("admin reports mutations", () => {
     })
   })
 
+  it("F114: setStatus('rejected') soft-removes the report so it drops out of the default admin list", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "submitted" })
+    await svc.setStatus("rep-1", { status: "rejected", actorId: "op-1" })
+    expect(repo.reports.get("rep-1")?.record.status).toBe("rejected")
+    const page = await svc.list({})
+    expect(page.items.some((i) => i.id === "rep-1")).toBe(false)
+  })
+
+  it("F114: a report rejected via setStatus stays gone even when the caller filters for rejected", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "submitted" })
+    await svc.setStatus("rep-1", { status: "rejected", actorId: "op-1" })
+    const explicit = await repo.listReports({
+      q: null,
+      statuses: ["rejected"],
+      flaggedOnly: false,
+      cursor: null,
+      limit: 25,
+    })
+    expect(explicit.records.some((r) => r.id === "rep-1")).toBe(false)
+    expect(await repo.getReport("rep-1")).toBeNull()
+    expect(repo.reports.get("rep-1")?.deletedAt).toBeInstanceOf(Date)
+  })
+
   it("setStatus throws notFound for an unknown report", async () => {
     const { svc } = harness()
     await expect(
@@ -356,11 +355,9 @@ describe("admin reports mutations", () => {
     const { repo, emitter, svc } = harness()
     repo.seedReport({ id: "rep-1", status: "submitted" })
     emitter.shouldThrow = true
-    // The real emitter never throws (it swallows), but even if it did the status change must be independent.
     await expect(
       svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" }),
     ).rejects.toThrow("emit boom")
-    // The underlying transition committed BEFORE the emit, so it stuck regardless of the emit failure.
     expect(repo.reports.get("rep-1")?.record.status).toBe("resolved")
     expect(repo.timeline.get("rep-1")?.at(-1)).toMatchObject({ status: "resolved" })
   })
@@ -391,14 +388,10 @@ describe("admin reports mutations", () => {
   it("flag still SUCCEEDS (returns the toggled state) even if the post-commit status read-back throws", async () => {
     const { repo, emitter, svc } = harness()
     repo.seedReport({ id: "rep-1", flagged: false })
-    // The flag toggle has already committed; simulate the read-back (added only to recover the status for
-    // the chat mirror) throwing. It must NOT reject flag() — a 500 here would leave the admin thinking the
-    // flag failed (and a retry would double-toggle).
     repo.getReport = () => Promise.reject(new Error("read boom"))
     const on = await svc.flag("rep-1", { reason: "looks off", actorId: "op-1" })
     expect(on).toBe(true)
     expect(repo.reports.get("rep-1")?.record.flagged).toBe(true)
-    // The read-back failed, so no system message was mirrored — but the flag change stuck.
     expect(emitter.events).toHaveLength(0)
   })
 
@@ -470,14 +463,10 @@ describe("admin reports mutations", () => {
       actorId: "op-1",
     })
     expect(result).toEqual({ to: "city", destination: "311@lacity.gov" })
-    // The mailer delivered to the city contact via the first-class sendOutbound envelope, From the
-    // per-thread reply- address (the digest path; no Reply-To).
     const sent = mailer.sent.find((m) => m.to === "311@lacity.gov")
     expect(sent).toBeDefined()
     expect(sent?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
     expect(sent?.outbound?.replyTo).toBeUndefined()
-    // A jurisdiction (digest) thread was created with a MINTED 24-hex token (not geo-<geoid>) + an OUT
-    // message. The reply token must satisfy the real inbound regex, so it is no longer geo-prefixed.
     const thread = [...mailRepo.threads.values()].find(
       (t) => t.jurisdictionGeoid === "0644000" && t.reportId === null,
     )
@@ -502,16 +491,6 @@ describe("admin reports mutations", () => {
   })
 })
 
-/**
- * M5: POST /admin/reports/:id/route emails a FULL report packet — the reporter's display name, the exact
- * lat/lng, the street address, presigned photo URLs and the raw JPEGs — off-platform. Three controls:
- *   (a) the report.routed audit is written INSIDE the outbound message insert's transaction, so a packet
- *       can never be sent without an audit row (it used to be written afterwards, best-effort, with the
- *       failure caught and downgraded to a log warning);
- *   (b) contactEmailOverride is constrained to the jurisdiction's OWN mail domain (it used to accept any
- *       address that merely parsed as an email — a one-request exfiltration channel);
- *   (c) a per-operator rate limit at the route (asserted at the HTTP layer, not here).
- */
 describe("M5: routeToJurisdiction destination + audit", () => {
   function seedRoutable(h: Harness): void {
     h.repo.seedReport({
@@ -538,8 +517,6 @@ describe("M5: routeToJurisdiction destination + audit", () => {
       actorId: "op-1",
     })
     expect(routedTo).toBe("311@lacity.gov")
-    // The audit rode through MailRepository.insertMessage's `audit` param (the same seam the other mail
-    // paths use), so it is recorded by the mail repo, not by a separate best-effort write.
     expect(h.mailRepo.audits.at(-1)).toMatchObject({
       actorId: "op-1",
       action: "report.routed",
@@ -612,16 +589,7 @@ describe("M5: routeToJurisdiction destination + audit", () => {
   })
 })
 
-/**
- * The route endpoint's idempotency gate is a DUPLICATE-SEND guard, not a one-shot latch. It must refuse a
- * repeat of a send that already reached the destination (a double-click, a retry after a 500 that happened
- * downstream of the send) while still letting the operator recover a report the city never got — otherwise
- * a hard bounce or a mailer outage strands the report permanently, since nothing else in the product
- * re-mails the packet (sendFollowup is text-only to the ON-FILE contact, jurisdictions save-and-route mails
- * nothing, and autoforward skips any report whose outreach is not `not_sent`).
- */
 describe("routeToJurisdiction re-send gate", () => {
-  /** Seed a report already routed to 311@lacity.gov, with the thread in `threadStatus`. */
   function seedRouted(
     h: Harness,
     outreach: { threadStatus: string; hasInbound?: boolean; sendFailed?: boolean; routedTo?: string },
@@ -658,8 +626,6 @@ describe("routeToJurisdiction re-send gate", () => {
     })
     expect(routedTo).toBe("311@lacity.gov")
     expect(h.mailer.sent).toHaveLength(1)
-    // The report is already `acknowledged`, so the re-route records a non-transition `route` timeline row
-    // at the CURRENT status rather than advancing it again.
     expect(h.emitter.events.at(-1)).toMatchObject({ status: "acknowledged", kind: "route" })
   })
 
@@ -671,7 +637,6 @@ describe("routeToJurisdiction re-send gate", () => {
     ).rejects.toMatchObject({ httpStatus: 409 })
     expect(h.mailer.sent).toHaveLength(0)
 
-    // ...and the same for the later lifecycle states the city drove.
     for (const threadStatus of ["delivered", "replied"]) {
       const h2 = harness()
       seedRouted(h2, { threadStatus })
@@ -705,8 +670,6 @@ describe("routeToJurisdiction re-send gate", () => {
     })
     expect(routedTo).toBe("streets@lacity.gov")
     expect(h.mailer.sent.some((m) => m.to === "streets@lacity.gov")).toBe(true)
-    // M5 still applies to the recovery path: a foreign domain is refused even though the gate would allow
-    // the re-send, so "correcting the address" can never become an exfiltration retry.
     await expect(
       h.svc.routeToJurisdiction("rep-1", {
         contactEmailOverride: "attacker@evil.example",
@@ -718,8 +681,6 @@ describe("routeToJurisdiction re-send gate", () => {
 
   it("ALLOWS a re-route when every send attempt THREW (thread stamped 'sent', nothing delivered)", async () => {
     const h = harness()
-    // The real Drizzle repo derives this from mail_events ('failed' recorded, no 'sent'); the thread row is
-    // created with status 'sent' BEFORE the mailer runs, which is why the status alone cannot tell.
     seedRouted(h, { threadStatus: "sent", sendFailed: true })
     await h.svc.routeToJurisdiction("rep-1", {
       contactEmailOverride: null,
@@ -742,8 +703,6 @@ describe("routeToJurisdiction re-send gate", () => {
         routed: false,
       },
     })
-    // First attempt: the mailer rejects. The message row + a 'failed' mail_event are recorded and the
-    // error surfaces; the report's status is NOT advanced.
     h.mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
     await expect(
       h.svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
@@ -751,9 +710,6 @@ describe("routeToJurisdiction re-send gate", () => {
     expect(h.mailRepo.events.map((e) => e.type)).toEqual(["failed"])
     expect((await h.svc.get("rep-1")).status).toBe("submitted")
 
-    // The mail repo now holds a per-report thread stamped 'sent' with a 'failed'/no-'sent' event trail —
-    // exactly the state the Drizzle getOutreach reports as sendFailed. Mirror it onto the report fake and
-    // prove the retry goes through instead of 409-ing forever.
     const thread = [...h.mailRepo.threads.values()].find((t) => t.reportId === "rep-1")
     expect(thread?.status).toBe("sent")
     const seeded = h.repo.reports.get("rep-1")
@@ -789,21 +745,177 @@ describe("routeToJurisdiction re-send gate", () => {
       note: null,
       actorId: "op-1",
     })
-    // Same thread reused (found-or-create by report_id) — not a fresh one, which would make the assertion
-    // below vacuous — and its bounce verdict, which described the OLD address, no longer stands, so the
-    // outreach status stops reading as re-routable.
     expect(h.mailRepo.threads.size).toBe(1)
     expect((await h.mailRepo.getThreadRecord(thread.id))?.status).toBe("sent")
   })
 })
 
-/**
- * The auto-forward JOB no longer pre-checks the outreach status. That pre-check ("skip anything not
- * not_sent") turned a transient mailer failure into a permanent one: the thread is stamped 'sent' before
- * delivery, so pg-boss re-ran the job and the job itself refused to retry — the report was never forwarded
- * and no operator was told. The duplicate-send decision now lives only in routeToJurisdiction, which can
- * actually see whether the send landed; the job just distinguishes THAT conflict from a real failure.
- */
+describe("F009 routeToJurisdiction concurrent double-send guard", () => {
+  it("two concurrent routes of the same report yield exactly one send and one 409", async () => {
+    const repo = new InMemoryAdminReportRepository()
+    repo.now = NOW
+    repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+
+    let sends = 0
+    const outboundMail = {
+      async sendReportToJurisdiction(input: { reportId: string; toAddr: string }) {
+        await Promise.resolve()
+        sends += 1
+        const marker = sends
+        const seeded = repo.reports.get(input.reportId)
+        if (seeded) {
+          seeded.outreach = {
+            threadId: `t-${marker}`,
+            threadStatus: "sent",
+            hasInbound: false,
+            routedTo: input.toAddr,
+            routedAt: NOW,
+            sendFailed: false,
+          }
+        }
+        return { thread: { id: `t-${marker}` }, messageId: `m-${marker}` }
+      },
+    } as unknown as OutboundMailService
+
+    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+
+    const results = await Promise.allSettled([
+      svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
+      svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-2" }),
+    ])
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled")
+    const rejected = results.filter((r) => r.status === "rejected")
+    expect(sends).toBe(1)
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ httpStatus: 409 })
+  })
+})
+
+describe("F108 report-packet attachments are bounded in AGGREGATE, not just per file", () => {
+  const FOUR_MB = 4 * 1024 * 1024
+
+  function harnessWithMedia(count: number, bytesEach: number) {
+    const repo = new InMemoryAdminReportRepository()
+    repo.now = NOW
+    const mailRepo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    const outboundMail = makeOutboundMailService({
+      repo: mailRepo,
+      mailer,
+      env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
+    })
+    const loaded: string[] = []
+    const svc = makeAdminReportService({
+      repo,
+      outboundMail,
+      now: () => NOW,
+      presignMedia: async (r2Key) => ({ url: `https://media.test/${r2Key}` }),
+      loadMediaBytes: (r2Key) => {
+        loaded.push(r2Key)
+        return Promise.resolve(new Uint8Array(bytesEach))
+      },
+    })
+    repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      category: "hazard",
+      place: "Los Angeles",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+      media: Array.from({ length: count }, (_, i) => ({
+        id: `m-${i}`,
+        kind: "image" as const,
+        r2Key: `media/photo-${i}.jpg`,
+        thumbKey: null,
+        contentType: "image/jpeg",
+      })),
+    })
+    return { repo, mailer, svc, loaded }
+  }
+
+  it("stops attaching once the running total would exceed MAX_PACKET_TOTAL_BYTES", async () => {
+    const h = harnessWithMedia(4, FOUR_MB)
+    await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    const sent = h.mailer.sent.at(-1)?.outbound
+    expect(sent?.attachments).toHaveLength(2)
+    const total = (sent?.attachments ?? []).reduce((n, a) => n + a.content.byteLength, 0)
+    expect(total).toBeLessThanOrEqual(MAX_PACKET_TOTAL_BYTES)
+  })
+
+  it("still lists every skipped photo as a presigned mediaLink so nothing is lost from the packet", async () => {
+    const h = harnessWithMedia(4, FOUR_MB)
+    await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    const body = h.mailer.sent.at(-1)?.outbound?.text ?? ""
+    for (let i = 0; i < 4; i++) {
+      expect(body).toContain(`https://media.test/media/photo-${i}.jpg`)
+    }
+  })
+
+  it("attaches every photo when the aggregate stays under the cap", async () => {
+    const h = harnessWithMedia(4, 512 * 1024)
+    await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+    expect(h.mailer.sent.at(-1)?.outbound?.attachments).toHaveLength(4)
+  })
+})
+
+describe("F116 one-off override address is not leaked into the public timeline", () => {
+  it("routes to the override but records the on-file contact in the resident-visible note", async () => {
+    const h = harness()
+    h.repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: "streets@lacity.gov",
+      note: null,
+      actorId: "op-1",
+    })
+    expect(routedTo).toBe("streets@lacity.gov")
+    expect(h.mailer.sent.some((m) => m.to === "streets@lacity.gov")).toBe(true)
+
+    const timeline = (await h.svc.get("rep-1")).timeline
+    const routeEntry = timeline.find((t) => t.kind === "route")
+    expect(routeEntry?.what).toContain("311@lacity.gov")
+    expect(timeline.every((t) => !t.what.includes("streets@lacity.gov"))).toBe(true)
+  })
+})
+
 describe("runAutoForwardWith delegates the duplicate-send decision", () => {
   function routable(h: Harness): void {
     h.repo.seedReport({
@@ -823,11 +935,8 @@ describe("runAutoForwardWith delegates the duplicate-send decision", () => {
     const h = harness()
     routable(h)
     h.mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
-    // A non-AppError is treated as transient infra, so the job rethrows and pg-boss will re-run it.
     await expect(runAutoForwardWith(h.svc, "rep-1")).rejects.toThrow(/smtp down/)
 
-    // The state the failed attempt left behind: a per-report thread stamped 'sent' whose only delivery
-    // event is 'failed' (what the Drizzle getOutreach reports as sendFailed).
     const seeded = h.repo.reports.get("rep-1")
     if (seeded) {
       seeded.outreach = {
@@ -886,8 +995,6 @@ describe("runAutoForwardWith delegates the duplicate-send decision", () => {
     h.mailer.sendOutbound = () => Promise.reject(AppError.conflict("sender not approved"))
     const infos: unknown[] = []
     const warnings: unknown[] = []
-    // A CONFLICT that is NOT the route's duplicate-send refusal must not be mistaken for one: it is a
-    // terminal send failure, so the job completes but records a warning.
     await expect(
       runAutoForwardWith(h.svc, "rep-1", {
         info: (o) => infos.push(o),

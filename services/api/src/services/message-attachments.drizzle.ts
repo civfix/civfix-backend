@@ -2,19 +2,19 @@ import type { Queryable } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 
-// Message media lives in the shared `media_assets` table; a message claims its media by stamping one of
-// the per-stack columns below. Those columns are bare uuids (NOT foreign keys): the chat/dm message tables
-// are RANGE-partitioned with a composite PK(id, created_at), so there is no single-column key to reference.
-// One column per stack; the read is always scoped to one message id (globally-unique uuid), so they never
-// collide. The attach guard requires every OTHER stack column to be NULL so an upload claims exactly once.
-export type MessageMediaColumn = "chat_message_id" | "discussion_message_id"
+export type MessageMediaColumn = "chat_message_id"
 
-const ALL_COLUMNS: readonly MessageMediaColumn[] = ["chat_message_id", "discussion_message_id"]
+const ALL_COLUMNS: readonly MessageMediaColumn[] = ["chat_message_id"]
 
-// Only the write side rides the repo object (chat-attachments.drizzle binds `attach`); every reader calls
-// the standalone loadReadyAttachmentsFor below with its own tag, so there is no repo-shaped load method.
+const CLAIM_GUARD_COLUMNS: readonly string[] = ["report_id", "post_id"]
+
 export interface MessageAttachmentRepo {
-  attach(tx: Queryable, messageId: string, uploadIds: string[]): Promise<void>
+  attach(
+    tx: Queryable,
+    messageId: string,
+    uploadIds: string[],
+    messageCreatedAt: Date,
+  ): Promise<void>
 }
 
 interface MediaRow {
@@ -30,34 +30,26 @@ interface MediaRow {
 }
 
 export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmentRepo {
-  // The siblings that must be NULL for an upload to be claimable here: every message-media column except
-  // this one, plus report_id (a report attachment is never re-bindable to a message).
   const otherCols = ALL_COLUMNS.filter((c) => c !== column)
   return {
-    async attach(tx, messageId, uploadIds) {
+    async attach(tx, messageId, uploadIds, messageCreatedAt) {
       if (uploadIds.length === 0) return
-      // The WHERE clause is the entire ownership guard (capability-based: knowing the unguessable uploadId
-      // is the proof). A foreign / already-claimed id silently matches 0 rows — never an error.
-      const nullGuards = [...otherCols, "report_id"].reduce(
+      const nullGuards = [...otherCols, ...CLAIM_GUARD_COLUMNS].reduce(
         (acc, c) => tx`${acc} AND ${tx(c)} IS NULL`,
         tx``,
       )
       await tx`
         UPDATE media_assets
-        SET ${tx(column)} = ${messageId}
+        SET ${tx(column)} = ${messageId}, chat_message_created_at = ${messageCreatedAt}
         WHERE upload_id IN ${tx(uploadIds)}
           AND (${tx(column)} IS NULL OR ${tx(column)} = ${messageId})
           ${nullGuards}
-          AND status IN ('ready', 'validating')
+          AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
       `
     },
   }
 }
 
-// Standalone batched loader so a repo can pass its own transaction/tag. Only status='ready' media is
-// served (validating/held/rejected are persisted but hidden) — this is the EXIF/GPS privacy gate (the
-// worker strips + promotes to ready). The presign round-trips run with a concurrency cap; the SELECT's
-// created_at order is preserved so each message's bucket stays chronological.
 export async function loadReadyAttachmentsFor(
   tag: Queryable,
   column: MessageMediaColumn,

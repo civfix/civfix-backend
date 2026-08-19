@@ -1,17 +1,3 @@
-/**
- * VIDEO moderation policy branches (jobs/media-pipeline.ts processVideoBytes).
- *
- * The suite's only video fixture was a 1s h264 MP4 on the happy path, so three moderation-relevant
- * outcomes had no regression net at all:
- *   - the CODEC ALLOWLIST (a real, decodable video in a codec we refuse to serve),
- *   - the DURATION BOUND (the cap that stops a 10-minute upload from being remuxed and published),
- *   - the FRAME-GRAB FAILURE hold (no decodable frame => nothing was NSFW-scored => must NOT publish).
- * Deleting any of those three checks would have kept the suite green.
- *
- * Real ffmpeg/ffprobe throughout. The one stub is grabFrameJpeg in the last block: the branch under test
- * is the pipeline's decision when frame extraction fails, and a fixture that remuxes but cannot yield a
- * single frame is not reliably craftable. remuxStripMetadata stays real even there.
- */
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
@@ -20,7 +6,6 @@ import { makeDownloader } from "../../src/download.js"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
 import * as fx from "../fixtures/make.js"
 
-/** Mutable switch for the grabFrameJpeg stub, hoisted so the vi.mock factory can close over it. */
 const stub = vi.hoisted(() => ({ grabFrameError: null as Error | null }))
 
 vi.mock("../../src/sandbox/ffmpeg-remux.js", async (importOriginal) => {
@@ -34,7 +19,6 @@ vi.mock("../../src/sandbox/ffmpeg-remux.js", async (importOriginal) => {
   }
 })
 
-// Imported AFTER the mock declaration on purpose: vi.mock is hoisted, so these see the patched module.
 const { processMedia } = await import("../../src/jobs/media-pipeline.js")
 const { runMediaChecksJob } = await import("../../src/jobs/media-checks.js")
 type MediaChecksDeps = import("../../src/jobs/media-checks.js").MediaChecksDeps
@@ -90,13 +74,12 @@ describe("video codec allowlist (ALLOWED_VIDEO_CODECS)", () => {
 
     expect(res.status).toBe("rejected")
     expect(res.note).toBe("unsupported codec: mpeg4")
-    // Nothing was remuxed or thumbnailed for a rejected asset.
     expect(res.processedBytes).toBeNull()
     expect(res.thumbnailBytes).toBeNull()
     expect(res.codec).toBeNull()
   })
 
-  it("end-to-end: the mpeg4 row is persisted rejected and the ORIGINAL object is left untouched", async () => {
+  it("F080: the mpeg4 row is persisted rejected AND its original (EXIF-bearing) object is deleted", async () => {
     const bytes = await fx.makeMpeg4Mp4()
     const { deps, storage, repo, reports } = makeEnv()
     const { id, uploadId, r2Key } = await seedVideo(storage, repo, bytes)
@@ -107,9 +90,20 @@ describe("video codec allowlist (ALLOWED_VIDEO_CODECS)", () => {
     expect(repo.get(id)!.status).toBe("rejected")
     expect(repo.get(id)!.thumbKey).toBeNull()
     expect(storage.get(`thumbs/${r2Key}.jpg`)).toBeNull()
-    // The r2 object still holds the ORIGINAL bytes (no remux was written over them).
-    expect(Buffer.from(storage.get(r2Key)!).equals(Buffer.from(bytes))).toBe(true)
+    expect(storage.get(r2Key)).toBeNull()
     expect(reports.length).toBeGreaterThan(0)
+  })
+
+  it("F080: a rejected object still referenced by ANOTHER media row is NOT deleted", async () => {
+    const bytes = await fx.makeMpeg4Mp4()
+    const { deps, storage, repo } = makeEnv()
+    const { id, uploadId, r2Key } = await seedVideo(storage, repo, bytes)
+    repo.seed({ id: "sibling", uploadId: "up-sibling", kind: "video", r2Key, reportId: "r-keep" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "video" }, deps)
+
+    expect(status).toBe("rejected")
+    expect(storage.get(r2Key)).not.toBeNull()
   })
 
   it("ACCEPTS h264 through the same gate (the rejection above is the codec, not the fixture)", async () => {
@@ -168,7 +162,6 @@ describe("video frame-grab failure => HELD (never published unscored)", () => {
     expect(res.status).toBe("held")
     expect(res.flags).toEqual([{ reason: "nsfw" }])
     expect(res.note).toMatch(/no decodable frame extracted from video/)
-    // The remux still succeeded (it does not need a decoded frame) - but with no thumbnail.
     expect(res.processedBytes).not.toBeNull()
     expect(res.processedContentType).toBe("video/mp4")
     expect(res.thumbnailBytes).toBeNull()
@@ -190,11 +183,6 @@ describe("video frame-grab failure => HELD (never published unscored)", () => {
     expect(storage.get(`thumbs/${r2Key}.jpg`)).toBeNull()
   })
 
-  /**
-   * The documented ModerationKind wart: there is no "video" member, so a held VIDEO enqueues as
-   * kind:"image" and carries its real kind in the reason string. Pinned so the compensating detail cannot
-   * be dropped silently, leaving the operator console actively misleading.
-   */
   it("enqueues the held VIDEO for moderation as kind 'image' with the kind named in the reason", async () => {
     stub.grabFrameError = new Error("ffmpeg: no decodable frame")
     const bytes = await fx.makeValidMp4()

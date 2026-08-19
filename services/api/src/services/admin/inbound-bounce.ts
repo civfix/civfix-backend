@@ -22,7 +22,7 @@ export function detectBounce(mail: ParsedMail): BounceDetection {
   const failedHeader = mail.headers["x-failed-recipients"] ?? ""
   const isBounce =
     /(mailer-daemon|postmaster)@/i.test(fromAddr) ||
-    /report-type=["']?delivery-status/i.test(contentType) ||
+    /report-type["']?\s*[=:]\s*["']?delivery-status/i.test(contentType) ||
     failedHeader.length > 0
   if (!isBounce) {
     return { isBounce: false, failedRecipient: null, originalMessageId: null }
@@ -44,10 +44,15 @@ export async function handleBounce(
   bounce: BounceDetection,
 ): Promise<void> {
   if (bounce.originalMessageId === null) return
+  if (bounce.failedRecipient === null) return
   const thread = await mailRepo
     .findThreadByOutboundMessageIds([bounce.originalMessageId])
     .catch(() => null)
   if (thread === null) return
+
+  const sql = container.getDb().sql
+  const ownsRecipient = await threadSentTo(sql, thread.id, bounce.failedRecipient).catch(() => false)
+  if (!ownsRecipient) return
 
   await mailRepo
     .recordEvent({
@@ -58,19 +63,13 @@ export async function handleBounce(
     .catch(() => {})
   await mailRepo.setThreadStatus(thread.id, "bounced").catch(() => {})
 
-  if (bounce.failedRecipient === null) return
-  const sql = container.getDb().sql
-  const ownsRecipient = await threadSentTo(sql, thread.id, bounce.failedRecipient).catch(() => false)
-  if (!ownsRecipient) return
-
-  await markBouncedContact(sql, bounce.failedRecipient).catch(() => {})
   const geoid = thread.jurisdictionGeoid ?? (await geoidForContact(sql, bounce.failedRecipient))
-  if (geoid !== null) {
-    const data: JurisdictionDiscoveryJob = { geoid }
-    await container.jobs
-      .enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: geoid })
-      .catch(() => {})
-  }
+  if (geoid === null) return
+  await markBouncedContact(sql, bounce.failedRecipient, geoid).catch(() => {})
+  const data: JurisdictionDiscoveryJob = { geoid }
+  await container.jobs
+    .enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: geoid })
+    .catch(() => {})
 }
 
 export async function threadSentTo(sql: Sql, threadId: string, email: string): Promise<boolean> {
@@ -86,13 +85,17 @@ export async function threadSentTo(sql: Sql, threadId: string, email: string): P
   return rows[0]?.ok ?? false
 }
 
-export async function markBouncedContact(sql: Sql, email: string): Promise<void> {
-  await sql`UPDATE jurisdiction_contacts SET bounced_at = now() WHERE email = ${email}`
+export async function markBouncedContact(sql: Sql, email: string, geoid: string): Promise<void> {
+  await sql`
+    UPDATE jurisdiction_contacts
+    SET bounced_at = now()
+    WHERE lower(email) = lower(${email}) AND geoid = ${geoid}
+  `
 }
 
 export async function geoidForContact(sql: Sql, email: string): Promise<string | null> {
   const rows = await sql<{ geoid: string }[]>`
-    SELECT geoid FROM jurisdiction_contacts WHERE email = ${email} LIMIT 1
+    SELECT geoid FROM jurisdiction_contacts WHERE lower(email) = lower(${email}) LIMIT 1
   `
   return rows[0]?.geoid ?? null
 }

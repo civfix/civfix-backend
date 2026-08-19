@@ -1,21 +1,3 @@
-/**
- * In-memory JurisdictionContactsRepository (Phase 2): the offline binding of the contacts persistence
- * seam, faithful to the Drizzle impl's observable behavior so the service is unit-testable with NO
- * database (no Docker):
- *   - saveAndRoute upserts the per-category + default contacts, sets contactUpdatedAt, marks the open
- *     discovery task for the geoid 'done', and routes every waiting report (-> acknowledged), returning
- *     the routed count + whether a task resolved. It deliberately does NOT touch outreach_state (C1):
- *     the Drizzle saveAndRoute no longer stamps last_outreach_at at save time either, so the send window
- *     is started only when a digest is actually sent. The two impls therefore agree exactly (C2): the
- *     immediate-outreach path the service enqueues after save is not throttled-by-construction;
- *   - patch upserts the provided contact fields + notes without routing;
- *   - getOutreachState reads the throttle state (from a SHARED outreach store when injected, so a test can
- *     wire the same outreach_state the OutreachService stamps and exercise the real save -> send -> stamp
- *     -> throttle coupling end to end);
- *   - listDirectory pages the seeded jurisdictions with the method facet + search.
- * Seed/inspect helpers (seedJurisdiction, seedReport, seedTask, seedOutreach, the public maps) let tests
- * arrange + assert state directly.
- */
 
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeOffsetCursor, encodeOffsetCursor } from "./pagination.js"
@@ -37,7 +19,6 @@ import type {
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
-/** A seeded jurisdiction's mutable contact + routing state. */
 export interface SeededJurisdiction {
   geoid: string
   name: string
@@ -58,7 +39,6 @@ export interface SeededJurisdiction {
   forwardBodyTemplate: string | null
 }
 
-/** A seeded report (the subset the routing path mutates). */
 export interface SeededReport {
   id: string
   geoid: string
@@ -68,17 +48,14 @@ export interface SeededReport {
   createdAt: Date
 }
 
-/** A seeded discovery task (the subset save-and-route resolves). */
 export interface SeededContactsTask {
   id: string
   geoid: string
   status: string
 }
 
-/** Statuses that are NOT waiting (already closed / already routed). */
 const NON_WAITING = new Set(["rejected", "resolved", "acknowledged", "in_progress"])
 
-/** A recorded audit row (mirrors the Drizzle impl's in-tx writeAudit), inspectable by tests (H4). */
 export interface RecordedContactsAudit {
   actorId: string | null
   action: string
@@ -90,20 +67,11 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
   readonly jurisdictions = new Map<string, SeededJurisdiction>()
   readonly reports: SeededReport[] = []
   readonly tasks: SeededContactsTask[] = []
-  /**
-   * The outreach throttle store this repo reads. Defaults to its own map, but a test can inject the SAME
-   * map the OutreachService (via the in-memory mail repo) stamps, so the save -> enqueue -> send -> stamp
-   * -> throttle loop is exercised against one shared outreach_state (mirroring the single production
-   * table). The record type is the mail repo's OutreachStateRecord (a superset of what this repo reads).
-   */
   readonly outreach: Map<string, OutreachStateRecord>
-  /** Recorded audit rows (the in-tx writeAudit mirror), so tests can assert the save/patch was audited. */
   readonly audits: RecordedContactsAudit[] = []
 
-  /** Deterministic clock used for contactUpdatedAt / lastRoutedAt writes. */
   now = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 0))
 
-  /** @param sharedOutreach optional throttle store shared with the mail repo (the production single table). */
   constructor(sharedOutreach?: Map<string, OutreachStateRecord>) {
     this.outreach = sharedOutreach ?? new Map<string, OutreachStateRecord>()
   }
@@ -218,7 +186,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     }
     j.contactUpdatedAt = this.now
 
-    // Mark the open discovery task(s) for this geoid resolved.
     let taskResolved = false
     for (const t of this.tasks) {
       if (t.geoid === geoid && t.status !== "done") {
@@ -227,7 +194,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       }
     }
 
-    // Route the waiting reports: move every open, non-deleted, not-yet-routed report to acknowledged.
     let routedReports = 0
     for (const r of this.reports) {
       if (r.geoid === geoid && r.deletedAt === null && !NON_WAITING.has(r.status)) {
@@ -235,12 +201,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         routedReports += 1
       }
     }
-    // lastRoutedAt is derived in prod from the 'acknowledged' report_timeline rows this save writes, so a
-    // save that routed NOTHING leaves it null there. Stamping it unconditionally let offline tests see a
-    // timestamp production would not have.
     if (routedReports > 0) j.lastRoutedAt = this.now
 
-    // Mirror the Drizzle in-tx audit (H4) so the service/route tests can assert the save was recorded.
     this.audits.push({
       actorId: audit.actorId,
       action: "discovery.contacts_saved",
@@ -274,14 +236,10 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       touchedContact = true
     }
     if (input.notes !== undefined) j.notes = input.notes
-    // Flag / unflag for review: set stamps flaggedAt + reason; clear nulls both (mirrors the Drizzle impl).
     if (input.flagged !== undefined) {
       j.flaggedAt = input.flagged ? this.now : null
       j.flagReason = input.flagged ? (input.flagReason ?? null) : null
     }
-    // Set / clear the @handle (mirrors the Drizzle impl): empty/null clears it; a non-empty handle must be
-    // case-insensitively unique across OTHER jurisdictions, else a conflict (the Drizzle impl additionally
-    // guards against a user-handle collision, which this in-memory double has no users to check).
     if (input.handle !== undefined) {
       const handle = input.handle
       if (handle === null || handle === "") {
@@ -299,7 +257,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         j.handle = handle
       }
     }
-    // Set / clear the custom forward templates (mirrors the Drizzle impl): empty/null clears to null.
     if (input.forwardSubjectTemplate !== undefined) {
       const t = input.forwardSubjectTemplate
       j.forwardSubjectTemplate = t === null || t === "" ? null : t
@@ -309,7 +266,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       j.forwardBodyTemplate = t === null || t === "" ? null : t
     }
     if (touchedContact) j.contactUpdatedAt = this.now
-    // Mirror the Drizzle in-tx audit (H4).
     this.audits.push({
       actorId: audit.actorId,
       action: "jurisdiction.patched",
@@ -330,14 +286,10 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     return this.outreach.get(geoid) ?? null
   }
 
-  // No bounce stamping here either: it lives entirely in the inbound bounce handler (see the note on
-  // JurisdictionContactsRepository). A test that needs a bounced row seeds `bounced: true`.
 
   async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
     const all = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))
 
-    // Search + type (layer) first — both scope the chip facets, which stay routing-filter-agnostic
-    // (mirroring the Drizzle aggregate's `WHERE search AND layer`, but NOT the methodFilter).
     const matched =
       args.q !== null
         ? (() => {
@@ -349,8 +301,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         : all
     const searched = args.layer !== null ? matched.filter((r) => r.layer === args.layer) : matched
 
-    // Routing-posture facet ("routed" = any contact, i.e. method !== "none"). "needs_mapping" = no contact
-    // AND a waiting backlog (mirrors the Drizzle predicate).
     const records =
       args.filter === "all"
         ? searched.slice()
@@ -360,8 +310,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
             ? searched.filter((r) => directoryMethod(r) === "none" && r.reportsWaiting > 0)
             : searched.filter((r) => directoryMethod(r) === args.filter)
 
-    // Whole-table sort (mirrors the Drizzle ORDER BY): population/reports DESC, name A->Z, oldest waiting
-    // report ASC (NULLS LAST), geoid tiebreak.
     const byGeoid = (a: JurisdictionDirectoryRecord, b: JurisdictionDirectoryRecord) =>
       a.geoid < b.geoid ? -1 : a.geoid > b.geoid ? 1 : 0
     records.sort((a, b) => {
@@ -370,7 +318,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         const at = a.oldestReportAt?.getTime() ?? null
         const bt = b.oldestReportAt?.getTime() ?? null
         if (at === null && bt === null) return byGeoid(a, b)
-        if (at === null) return 1 // NULLS LAST
+        if (at === null) return 1
         if (bt === null) return -1
         return at - bt || byGeoid(a, b)
       }
@@ -386,8 +334,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     const page = hasMore ? slice.slice(0, limit) : slice
     const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
 
-    // total + facets only on the first page. The total follows the active filter; facets remain scoped to
-    // the search/type result so they continue to provide the routed/unrouted chip split.
     let total: number | null = null
     let facets: { routed: number; unrouted: number } | null = null
     if (offset === 0) {
@@ -396,8 +342,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       facets = { routed, unrouted: searched.length - routed }
     }
 
-    // Prepend the synthetic "Unmapped / Unknown jurisdiction" row on the first page (mirrors the Drizzle
-    // impl): waiting reports whose geoid is not a seeded jurisdiction (orphaned/unresolved) aggregate here.
     if (shouldIncludeUnmapped(args)) {
       const unmapped = this.unmappedAggregate()
       if (unmapped.total > 0) {
@@ -412,13 +356,10 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     return { records: page, nextCursor, total, facets }
   }
 
-  // The in-memory fake stores no geometry, so the verification map has nothing to render here. Tests that
-  // need geometry exercise the Drizzle impl against PostGIS; the service 404s on this null.
   async getGeometry(_geoid: string): Promise<JurisdictionGeometryRecord | null> {
     return null
   }
 
-  /** Aggregate waiting reports whose geoid is not a seeded jurisdiction (the in-memory "unmapped" set). */
   private unmappedAggregate(): {
     total: number
     perCategoryCounts: Partial<Record<ReportCategory, number>>
@@ -435,31 +376,33 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
   }
 }
 
-/** Apply a contact-save input to a seeded jurisdiction (per-category + default + form mirror). */
 function applyContacts(j: SeededJurisdiction, input: SaveContactsInput): void {
-  // A re-entered address is presumed good: clear the bounce marker on any save (mirrors the Drizzle
-  // upsert nulling bounced_at). §2.9.
-  j.bounced = false
+  let wroteEmail = false
   for (const [category, email] of Object.entries(input.contacts) as [
     ReportCategory,
     string | null,
   ][]) {
     const normalized = email && email.trim() !== "" ? email.trim() : null
     if (normalized === null) j.categoryContacts.delete(category)
-    else j.categoryContacts.set(category, normalized)
+    else {
+      j.categoryContacts.set(category, normalized)
+      wroteEmail = true
+    }
   }
   const emails = input.defaultEmails.filter((e) => e.trim() !== "")
-  if (emails.length > 0) j.defaultEmails = emails
-  if (emails.length > 0) j.hasDefaultContact = true
+  if (emails.length > 0) {
+    j.defaultEmails = emails
+    j.hasDefaultContact = true
+    wroteEmail = true
+  }
   if (input.formUrl !== null && input.formUrl.trim() !== "") {
     j.reportFormUrl = input.formUrl.trim()
     j.hasDefaultContact = true
   }
+  if (wroteEmail) j.bounced = false
 }
 
-/** Project a seeded jurisdiction into the directory record the service consumes. */
 function toRecord(j: SeededJurisdiction, reports: SeededReport[]): JurisdictionDirectoryRecord {
-  // Waiting = open, un-routed reports for this geoid (same NON_WAITING exclusion the Drizzle query uses).
   const perCategoryCounts: Partial<Record<ReportCategory, number>> = {}
   let reportsWaiting = 0
   let oldestReportAt: Date | null = null

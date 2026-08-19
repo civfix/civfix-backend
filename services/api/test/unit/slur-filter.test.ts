@@ -1,12 +1,3 @@
-/**
- * Unit tests for the SLUR-ONLY content filter (abuse/slur-filter).
- *
- * Two invariants under test:
- *   1. RECALL ENOUGH: a representative set of widely-recognized hate slurs is blocked, INCLUDING trivial
- *      obfuscations (interspersed separators, leetspeak digits, repeated letters).
- *   2. PRECISION FIRST: innocent lookalikes that merely CONTAIN a slur substring PASS (the Scunthorpe
- *      problem), AND ordinary general profanity PASSES (this filter is slurs only, not a profanity gate).
- */
 
 import { describe, expect, it } from "vitest"
 import { assertNoSlur, containsSlur } from "../../src/abuse/slur-filter.js"
@@ -31,15 +22,16 @@ describe("containsSlur - blocks hate slurs", () => {
 
 describe("containsSlur - blocks obfuscated variants", () => {
   const obfuscated = [
-    "n i g g e r", // spacing
-    "n.i.g.g.e.r", // dotted
-    "f@ggot", // leetspeak @ -> a
-    "f4ggot", // leetspeak 4 -> a
-    "r3tard", // leetspeak 3 -> e
-    "retaaaard", // repeated letters
-    "f-a-g-g-o-t", // dashed
-    "n1gger", // leetspeak 1 -> i
-    " ret*ard", // star separator
+    "n i g g e r",
+    "n.i.g.g.e.r",
+    "f@ggot",
+    "f4ggot",
+    "r3tard",
+    "retaaaard",
+    "f-a-g-g-o-t",
+    "n1gger",
+    " ret*ard",
+    "nig.ger",
   ]
   for (const text of obfuscated) {
     it(`blocks obfuscated: ${JSON.stringify(text)}`, () => {
@@ -61,13 +53,17 @@ describe("containsSlur - passes innocent lookalikes (Scunthorpe problem)", () =>
     "shuttlecock",
     "I visited Nigeria last year",
     "he was niggardly with praise",
-    "Pakistan is large", // "paki" inside Pakistan must pass
+    "Pakistan is large",
     "a Pakistani dish",
     "the cocoon opened",
     "a raccoon in the yard",
     "a tycoon's fortune",
     "the pothole on Main St is huge",
     "please fix the broken streetlight",
+    "(5 pics) trash pile",
+    "(5 pics) trash pile at the corner",
+    "5 pic of the dumped couch",
+    "co on down to the meeting",
   ]
   for (const text of innocent) {
     it(`passes: ${JSON.stringify(text)}`, () => {
@@ -107,7 +103,7 @@ describe("assertNoSlur", () => {
     expect(() => assertNoSlur(null)).not.toThrow()
     expect(() => assertNoSlur("")).not.toThrow()
     expect(() => assertNoSlur("a normal comment about a pothole")).not.toThrow()
-    expect(() => assertNoSlur("this is shit")).not.toThrow() // profanity passes
+    expect(() => assertNoSlur("this is shit")).not.toThrow()
   })
 
   it("throws a VALIDATION AppError keyed on the given field when a slur is present", () => {

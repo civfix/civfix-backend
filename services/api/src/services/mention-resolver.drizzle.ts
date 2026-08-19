@@ -2,6 +2,9 @@
 import type { Sql } from "../db/client.js"
 import type { UserMentionDTO } from "@civfix/shared"
 import { isUuid } from "../db/cursor-helpers.js"
+import { MAX_MENTIONS_PER_MESSAGE } from "./discussion-mentions.js"
+
+const MENTION_RESOLVE_LIMIT = MAX_MENTIONS_PER_MESSAGE
 
 export async function resolveHandles(
   sql: Sql,
@@ -17,6 +20,7 @@ export async function resolveHandles(
       AND u.handle IS NOT NULL
       AND u.id <> ${selfUserId}
       AND u.handle IN ${sql(handleSet)}
+    LIMIT ${MENTION_RESOLVE_LIMIT}
   `
   return rows.map((r) => ({ id: r.id, handle: r.handle, displayName: r.display_name }))
 }
@@ -36,6 +40,7 @@ export async function resolveUserIdsToMentions(
       AND u.handle IS NOT NULL
       AND u.id <> ${selfUserId}
       AND u.id IN ${sql(ids)}
+    LIMIT ${MENTION_RESOLVE_LIMIT}
   `
   return rows.map((r) => ({ id: r.id, handle: r.handle, displayName: r.display_name }))
 }
@@ -44,8 +49,6 @@ export async function resolveMentionTargets(
   sql: Sql,
   input: { handles: string[]; userIds: string[]; authorUserId: string },
 ): Promise<UserMentionDTO[]> {
-  // Independent lookups, so they go out together — this sits on the WS send hot path for every
-  // mention-bearing message. Each already short-circuits to [] on an empty input list.
   const [byHandle, byId] = await Promise.all([
     resolveHandles(sql, input.handles, input.authorUserId),
     resolveUserIdsToMentions(sql, input.userIds, input.authorUserId),

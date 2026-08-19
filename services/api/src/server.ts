@@ -24,7 +24,6 @@ import type { VolunteerHoursOverrides } from "./routes/volunteer-hours.routes.js
 import type { CertificateOverrides } from "./routes/service-hours-certificates.routes.js"
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
 import type { ConversationRoutesOverrides } from "./routes/conversations.routes.js"
-import type { DataExportOverride } from "./routes/users.routes.js"
 import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.js"
 import type { ContentSubjectGate } from "./services/content-report-subject.js"
 import { registerRoutes } from "./routes/index.js"
@@ -32,6 +31,8 @@ import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
 import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
+import { registerDataExportJobs } from "./services/data-export-jobs.js"
+import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
@@ -57,7 +58,6 @@ export interface BuildServerOptions {
   certificateOverrides?: CertificateOverrides
   notificationOverrides?: NotificationServiceOverrides
   conversationRoutesOverrides?: ConversationRoutesOverrides
-  dataExportOverride?: DataExportOverride
   moderationOverrides?: ModerationRouteOverrides
   contentSubjectGate?: ContentSubjectGate
 }
@@ -76,16 +76,11 @@ const OVERRIDE_KEYS = [
   "certificateOverrides",
   "notificationOverrides",
   "conversationRoutesOverrides",
-  "dataExportOverride",
   "moderationOverrides",
   "contentSubjectGate",
 ] as const satisfies readonly (keyof BuildServerOptions)[]
 
 export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
-  // An injected container carries its OWN env, and that env keys the CSRF HMAC (container.csrf) — while
-  // this `env` keys cookie signing. Prefer the container's when no explicit env is passed, so the two can
-  // never be built from different sources (a freshly loadEnv()'d key here + the container's key there
-  // would sign cookies with one secret and CSRF tokens with another). An explicit opts.env still wins.
   const env = opts.env ?? opts.container?.env ?? loadEnv()
   const container = opts.container ?? buildContainer(env)
 
@@ -94,7 +89,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     trustProxy: env.TRUST_PROXY,
     bodyLimit: 262144,
     requestTimeout: 15000,
-    connectionTimeout: 10000,
+    connectionTimeout: 30000,
     keepAliveTimeout: 5000,
     disableRequestLogging: false,
     logger: {
@@ -139,9 +134,6 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   await registerCors(app, env.WEB_ORIGINS)
   await registerRateLimit(app, env.REDIS_URL ? { redis: container.getRedis() } : {})
 
-  // H4: the rate limiter's sensitive-route buckets fail CLOSED, but a Redis that is merely MISCONFIGURED
-  // (wrong host in the env) would otherwise let the API boot and serve every request as a 429 — or, on the
-  // lax global bucket, with no limiting at all. Prove reachability once at boot instead.
   await assertRedisReachable(container)
 
   await registerVersionGate(app)
@@ -171,6 +163,9 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   }
 
   await registerAuthContext(app)
+
+  if (env.DATABASE_URL) container.getNotificationService(app.log)
+
   await registerRoutes(app, container, { authMounted: authServices !== undefined })
 
   return app
@@ -183,9 +178,6 @@ function resolveAuthServices(
   logger: FastifyInstance["log"],
 ): AuthServices | undefined {
   if (opts.authServices) return opts.authServices
-  // The logger is not optional in practice: OtpService's only log line (P1-7's cooldown-release
-  // failure, which otherwise locks a user out for 60s with no code and no signal) is a no-op without
-  // it, so the production bundle must be built WITH the server's pino instance.
   if (env.DATABASE_URL && env.REDIS_URL) {
     return buildAuthServicesFromContainer(container, { logger })
   }
@@ -213,6 +205,8 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
     await registerDiscoveryJobs(app.container)
     await registerAutoForwardJobs(app.container, app.log)
+    await registerDataExportJobs(app.container, { logger: app.log })
+    await registerCleanupCancelFanoutJob(app.container, app.log)
   }
 
   async function shutdown(signal: string): Promise<void> {

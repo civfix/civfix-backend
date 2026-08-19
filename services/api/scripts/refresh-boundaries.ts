@@ -1,36 +1,3 @@
-/**
- * refresh-boundaries: the ONE local command that loads real nationwide jurisdiction boundaries into prod
- * Postgres. Run it on a workstation (Mac/Linux) that has GDAL + SSH access to the prod box:
- *
- *   pnpm db:boundaries:refresh                 # latest TIGER vintage, auto SSH tunnel to prod
- *   pnpm db:boundaries:refresh 2025            # explicit TIGER vintage year
- *   pnpm db:boundaries:refresh 2025 /tmp/bnd   # explicit vintage + work dir
- *   pnpm db:boundaries:refresh --backfill-only # re-run ONLY backfill + vintage stamp (no re-download);
- *                                              # recovery path when a load committed every layer but the
- *                                              # backfill step failed — counts come from the live DB.
- *
- * What it does, end to end (no CI, no R2):
- *   1. Opens an `ssh -L` tunnel to prod Postgres (resolves the postgres container's live bridge IP +
- *      password via `ssh`, forwards a local port). Skipped if DATABASE_URL is already set (then it loads
- *      against that directly — open your own tunnel and export it if you prefer).
- *   2. Downloads the public-domain sources the manifest enumerates (Census TIGER state/county/place×50 +
- *      Census AIANNH; USGS PAD-US federal is best-effort) and unzips them.
- *   3. Converts each with `ogr2ogr` (reproject 4269→4326; places filtered G4110; federal Fee/FED via the
- *      manifest's -sql) — REQUIRES GDAL on PATH (`brew install gdal`).
- *   4. Ingests each layer via ingestGeoJsonFile (idempotent upsert-by-geoid; PRESERVES operator contacts),
- *      runs backfillReports (heals NULL reports.jurisdiction_geoid), and records the load in boundary_vintage.
- *   5. Tears the tunnel down + cleans the work dir.
- *
- * Re-runnable any time (annually when a new TIGER vintage drops, or after PAD-US bumps): every step is an
- * idempotent upsert. Census layers are REQUIRED (a failed census download/convert aborts the whole run);
- * only PAD-US federal is best-effort (a hiccup there just skips the federal layer). This is a `scripts/`
- * tsx tool — NEVER bundled into the API image, so it can import the DB client + ingest core directly.
- *
- * Config via env (all optional): BOUNDARIES_SSH_HOST (default "civfix"), BOUNDARIES_PG_CONTAINER
- * (compose-postgres-1), BOUNDARIES_PG_USER (civfix), BOUNDARIES_PG_DB (civfix), BOUNDARIES_LOCAL_PORT
- * (15433), DATABASE_URL (skip the tunnel + use this), BOUNDARIES_KEEP=1 (keep the work dir).
- */
-
 import { execFileSync, spawn, type ChildProcess } from "node:child_process"
 import { mkdirSync, existsSync, readFileSync, rmSync } from "node:fs"
 import { connect } from "node:net"
@@ -58,19 +25,16 @@ const PG_USER = process.env.BOUNDARIES_PG_USER ?? "civfix"
 const PG_DB = process.env.BOUNDARIES_PG_DB ?? "civfix"
 const LOCAL_PORT = Number(process.env.BOUNDARIES_LOCAL_PORT ?? "15433")
 
-/** True when the federal (PAD-US) job — the one best-effort layer. */
 function isFederal(job: BoundaryJob): boolean {
   return job.layer === "federal"
 }
 
-/** Run `ssh <host> <remoteCmd>` and return trimmed stdout. */
 function ssh(remoteCmd: string): string {
   return execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", SSH_HOST, remoteCmd], {
     encoding: "utf8",
   }).trim()
 }
 
-/** Poll until 127.0.0.1:port accepts a TCP connection (the forward is live), or throw after `tries`. */
 async function waitForPort(port: number, tries = 30): Promise<void> {
   for (let i = 0; i < tries; i++) {
     const ok = await new Promise<boolean>((resolve) => {
@@ -91,11 +55,6 @@ async function waitForPort(port: number, tries = 30): Promise<void> {
   throw new Error(`tunnel local port ${port} never became reachable`)
 }
 
-/**
- * Open an `ssh -L` tunnel to prod Postgres and return {databaseUrl, close}. Resolves the postgres
- * container's live bridge IP (it shifts on stack recreate) + its password over ssh, then forwards
- * 127.0.0.1:LOCAL_PORT → <bridge-ip>:5432. The password lives only in the returned URL (never logged).
- */
 async function openTunnel(): Promise<{ databaseUrl: string; close: () => void }> {
   log(`resolving prod Postgres on ${SSH_HOST} (${PG_CONTAINER})…`)
   const pgIp = ssh(
@@ -121,12 +80,10 @@ async function openTunnel(): Promise<{ databaseUrl: string; close: () => void }>
   return { databaseUrl, close: () => child.kill() }
 }
 
-/** Download + unzip one job's source archive into <outDir>/sources/. */
 function fetchSource(job: BoundaryJob, outDir: string): boolean {
   const zip = join(outDir, "_download.zip")
   try {
     execFileSync("curl", ["-fsSL", job.sourceUrl, "-o", zip], { stdio: ["ignore", "inherit", "inherit"] })
-    // unzip exit 1 == benign warning (extra bytes) with extraction OK; only >1 is fatal.
     try {
       execFileSync("unzip", ["-o", "-q", zip, "-d", join(outDir, "sources")], { stdio: "inherit" })
     } catch (e) {
@@ -143,7 +100,6 @@ function fetchSource(job: BoundaryJob, outDir: string): boolean {
   }
 }
 
-/** Convert one job's source to GeoJSON with ogr2ogr; returns the output path or null on a (best-effort) miss. */
 function convert(job: BoundaryJob, outDir: string): string | null {
   const src = join(outDir, "sources", job.sourcePath)
   if (!existsSync(src)) {
@@ -166,10 +122,6 @@ function convert(job: BoundaryJob, outDir: string): string | null {
 
 type Sql = Parameters<typeof backfillReports>[0]
 
-/**
- * Row counts per layer (and whether federal is present) derived from the jurisdictions ALREADY in the DB.
- * Used by --backfill-only, which doesn't re-ingest, so it reads the live table to stamp an accurate vintage.
- */
 async function countLoadedLayers(sql: Sql): Promise<{ rowCounts: Record<string, number>; federalLoaded: boolean }> {
   const rows = await sql<{ layer: string; n: number }[]>`
     SELECT layer, count(*)::int AS n FROM jurisdictions GROUP BY layer
@@ -179,16 +131,6 @@ async function countLoadedLayers(sql: Sql): Promise<{ rowCounts: Record<string, 
   return { rowCounts, federalLoaded: (rowCounts.federal ?? 0) > 0 }
 }
 
-/**
- * Remove NON-authoritative federal/tribal rows — legacy dev-seed jurisdictions whose geoid is not the
- * `PADUS-`/`AIANNH-` prefix the real PAD-US/AIANNH ingest assigns (the octagonal `NPS-*`/`USFS-*`/`BIA-*`
- * fixtures from db/seed.ts). They duplicate and can OUT-RANK the authoritative polygons — a seed geoid
- * sorts before `PADUS-` and wins the resolver's same-layer tie, so a report in Yellowstone resolves to the
- * fake `NPS-YELL` instead of `PADUS-…`. FK-safe: nullable referrers (reports/gov_claims/mail_threads) are
- * NULLed so the backfill that follows re-resolves them to the real polygon; geoid-keyed dependents
- * (contacts/outreach/mentions) are deleted; then the stale jurisdictions go. Idempotent. Returns the count
- * removed. One transaction.
- */
 async function pruneNonAuthoritative(sql: Sql): Promise<number> {
   return await sql.begin(async (tx) => {
     const stale = await tx<{ geoid: string }[]>`
@@ -209,7 +151,11 @@ async function pruneNonAuthoritative(sql: Sql): Promise<number> {
   })
 }
 
-/** Upsert the singleton boundary_vintage audit row (shared by the full load and --backfill-only). */
+async function prune(sql: Sql): Promise<void> {
+  const pruned = await pruneNonAuthoritative(sql)
+  if (pruned > 0) log(`pruned ${pruned} non-authoritative (dev-seed) federal/tribal row(s)`)
+}
+
 async function stampVintage(sql: Sql, tag: string, year: number, rowCounts: Record<string, number>): Promise<void> {
   await sql`
     INSERT INTO boundary_vintage (id, vintage_tag, tiger_vintage, padus_version, row_counts, loaded_at)
@@ -234,12 +180,8 @@ async function main(): Promise<void> {
   }
   const outDir = positional[1] ?? join(tmpdir(), `civfix-boundaries-${year}`)
   const keep = argv.includes("--keep")
-  // --backfill-only: skip download/convert/ingest and just re-run backfill + vintage stamp against the
-  // jurisdictions ALREADY loaded. The recovery path when a full run loaded every layer but died at backfill
-  // (so re-downloading the 1.5 GB PAD-US source to redo only the backfill would be pure waste).
   const backfillOnly = argv.includes("--backfill-only")
 
-  // GDAL is only needed to convert sources; --backfill-only doesn't touch ogr2ogr.
   if (!backfillOnly) {
     try {
       execFileSync("ogr2ogr", ["--version"], { stdio: "ignore" })
@@ -249,7 +191,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 1) DB connection: an explicit DATABASE_URL wins (BYO tunnel); else open an ssh -L tunnel to prod.
   let closeTunnel: (() => void) | null = null
   let databaseUrl = process.env.DATABASE_URL ?? ""
   if (databaseUrl) {
@@ -261,19 +202,15 @@ async function main(): Promise<void> {
   }
 
   let handle: DbHandle | null = null
+  let completed = false
   try {
-    handle = makeDb(databaseUrl, { max: 1 })
-
-    // Remove legacy dev-seed federal/tribal rows (FK-safe) up front, in BOTH modes — they duplicate and can
-    // out-rank the authoritative PAD-US/AIANNH data; any report they held is NULLed here and re-resolved by
-    // the backfill below. Runs before countLoadedLayers so --backfill-only stamps post-prune counts.
-    const pruned = await pruneNonAuthoritative(handle.sql)
-    if (pruned > 0) log(`pruned ${pruned} non-authoritative (dev-seed) federal/tribal row(s)`)
+    handle = makeDb(databaseUrl, { max: 1, statementTimeoutMs: 0, idleInTxTimeoutMs: 0 })
 
     let rowCounts: Record<string, number>
     let federalLoaded: boolean
 
     if (backfillOnly) {
+      await prune(handle.sql)
       log("--backfill-only: skipping download/convert/ingest; reading layers already in the DB")
       ;({ rowCounts, federalLoaded } = await countLoadedLayers(handle.sql))
       const total = Object.values(rowCounts).reduce((a, b) => a + b, 0)
@@ -282,7 +219,6 @@ async function main(): Promise<void> {
       log(`vintage ${year}: ${boundaryManifest(year).length} layer job(s); work dir ${outDir}`)
       mkdirSync(join(outDir, "sources"), { recursive: true })
 
-      // 2) Download → 3) convert. Census layers are required (throw aborts the run); federal is best-effort.
       const converted: { job: BoundaryJob; path: string }[] = []
       for (const job of boundaryManifest(year)) {
         const got = fetchSource(job, outDir)
@@ -294,14 +230,10 @@ async function main(): Promise<void> {
         throw new Error("no census layers converted — refusing to load a partial-coverage dataset")
       }
 
-      // 4) Ingest each layer against prod over the tunnel.
       rowCounts = {}
       federalLoaded = false
       for (const { job, path } of converted) {
         try {
-          // The federal (PAD-US) layer is emitted as GeoJSONSeq (.geojsonl) and STREAMED — it is >512 MB,
-          // which exceeds Node's max string length, so readFileSync would throw ERR_STRING_TOO_LONG. The
-          // small TIGER layers are read whole.
           const { upserted, skipped, features } = path.endsWith(".geojsonl")
             ? await ingestGeoJsonSeqFile(handle.sql, path, job.layer, job.ingestGeoidPrefix ?? undefined)
             : await ingestGeoJsonFile(handle.sql, readFileSync(path, "utf8"), job.layer, job.ingestGeoidPrefix ?? undefined)
@@ -310,22 +242,18 @@ async function main(): Promise<void> {
           if (upserted === 0) warn(`[${job.layer}] upserted 0 rows — check the source/conversion`)
           if (isFederal(job)) federalLoaded = true
         } catch (err) {
-          // Federal is best-effort: an ingest hiccup on it must NOT discard the TIGER layers already
-          // committed (each layer is its own transaction). Any non-federal failure is fatal.
           if (!isFederal(job)) throw err
           warn(`[federal] ingest failed — skipping federal layer (${(err as Error).message})`)
         }
       }
+
+      await prune(handle.sql)
     }
 
-    // 5) Backfill + record the load (both modes). Tag notes federal presence — "-nofed" if PAD-US is
-    //    missing (failed at any of fetch/convert/ingest, or absent from the DB in --backfill-only).
     log("backfilling reports.jurisdiction_geoid (NULL → resolved)…")
     const { resolved, stayedNull } = await backfillReports(handle.sql)
     log(`backfill: ${resolved} reports resolved, ${stayedNull} still null (outside all coverage)`)
 
-    // Population from Census ACS (TIGER carries none). Best-effort: a Census outage must NOT fail a load
-    // whose boundaries already committed — population can always be re-backfilled with --backfill-only.
     try {
       log("backfilling jurisdictions.population from Census ACS…")
       const pop = await backfillPopulation(handle.sql, { log: (m) => log(`population: ${m}`) })
@@ -337,11 +265,15 @@ async function main(): Promise<void> {
     const tag = federalLoaded ? vintageTag(year) : `${vintageTag(year)}-nofed`
     await stampVintage(handle.sql, tag, year, rowCounts)
     log(`done — vintage ${tag}; row counts: ${JSON.stringify(rowCounts)}`)
+    completed = true
   } finally {
     if (handle) await handle.close()
     if (closeTunnel) closeTunnel()
-    // Only the full path creates the work dir; never delete it in --backfill-only (we didn't make it).
-    if (!keep && !backfillOnly) rmSync(outDir, { recursive: true, force: true })
+    if (!keep && !backfillOnly && completed) {
+      rmSync(outDir, { recursive: true, force: true })
+    } else if (!keep && !backfillOnly && !completed) {
+      warn(`run did not complete — keeping the work dir for retry/inspection: ${outDir}`)
+    }
   }
 }
 

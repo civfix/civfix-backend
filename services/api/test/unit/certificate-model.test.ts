@@ -1,13 +1,3 @@
-/**
- * The transcript model (DP §8.1) — the bulk of the document's correctness, proven without pdfkit.
- *
- * Every test injects its own translator, so the assertions describe DERIVATION (which label a row gets,
- * what the totals cover) and never the English copy, which lands with the i18n block in WP21.
- *
- * ONE DELIBERATE EXCEPTION, at the bottom: the attestation paragraph. That string is the document's legal
- * boilerplate, so what it CLAIMS is a correctness property of this feature, not chrome — see the block
- * comment there.
- */
 
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
 import { describe, expect, it } from "vitest"
@@ -22,7 +12,6 @@ import {
   type TranscriptLedgerRow,
 } from "../../src/services/certificate-model.js"
 
-/** Renders "key" or "key(a=1,b=2)" so a test can assert exactly which key + vars a field came from. */
 const t: CertificateTranslator = (key, vars) => {
   const rendered = vars
     ? `(${Object.entries(vars)
@@ -129,7 +118,6 @@ describe("buildTranscriptModel", () => {
     const [event, report, manual] = model.rows
     expect(event?.activity).toBe("Beach cleanup")
     expect(event?.creditedBy).toBe("Ada Host")
-    // A report credit is awarded by the PLATFORM; naming a person there would be a fabricated claim.
     expect(report?.activity).toBe("certificate.activity.report(ref=R-2026-001)")
     expect(report?.creditedBy).toBe("certificate.credited_by.automatic")
     expect(manual?.activity).toBe("certificate.activity.manual")
@@ -198,11 +186,8 @@ describe("buildTranscriptModel", () => {
     expect(model.truncated).toBe(true)
     expect(model.rows).toHaveLength(MAX_CERTIFICATE_ENTRIES)
     expect(model.includedCount).toBe(MAX_CERTIFICATE_ENTRIES)
-    // The full ledger, not the printed subset: refusing the most prolific volunteers a document, or
-    // printing a total that is quietly 842 activities short, would both be wrong.
     expect(model.entryCount).toBe(total)
     expect(model.totalHours).toBe(total)
-    // The MOST RECENT cap rows are the ones itemised, still in ascending order.
     expect(model.rows[0]?.id).toBe("row-00842")
     expect(model.rows[MAX_CERTIFICATE_ENTRIES - 1]?.id).toBe(`row-0${total - 1}`)
   })
@@ -220,8 +205,28 @@ describe("buildTranscriptModel", () => {
     expect(model.includedCount).toBe(1)
   })
 
+  it("F063: flags truncation from the whole-ledger count when a capped page was read", () => {
+    const truncatedModel = buildTranscriptModel({
+      holder: HOLDER,
+      locale: "en",
+      t,
+      rows: [row({ id: "a", hours: 2 })],
+      totals: { entryCount: 1842, totalHours: 900.5 },
+    })
+    expect(truncatedModel.truncated).toBe(true)
+
+    const wholeModel = buildTranscriptModel({
+      holder: HOLDER,
+      locale: "en",
+      t,
+      rows: [row({ id: "a", hours: 2 })],
+      totals: { entryCount: 1, totalHours: 2 },
+    })
+    expect(wholeModel.truncated).toBe(false)
+  })
+
   it("formats row dates per locale in CERTIFICATE_TIME_ZONE", () => {
-    const at = "2026-07-27T02:30:00.000Z" // 19:30 on the 26th in Los Angeles
+    const at = "2026-07-27T02:30:00.000Z"
     const labels = (["en", "es", "de", "ko"] as const).map(
       (locale) =>
         buildTranscriptModel({
@@ -249,9 +254,7 @@ describe("buildTranscriptModel", () => {
         timeZone: CERTIFICATE_TIME_ZONE,
       }).format(new Date(at)),
     ])
-    // The zone is the whole point: in UTC this evening event would print as the following day.
     expect(labels[0]).toContain("26")
-    // Four genuinely different renderings prove full ICU is present, not the small-icu stub.
     expect(new Set(labels).size).toBe(4)
   })
 
@@ -380,26 +383,8 @@ describe("ledgerFingerprint", () => {
   })
 })
 
-/**
- * THE ATTESTATION MAY NOT CLAIM AN AUTOMATIC / REPORT-DERIVED AWARD.
- *
- * This is the one place the real catalog copy is asserted, and it is asserted through
- * `certificateTranslator` — the exact resolution the renderer uses (certificate-pdf.ts:drawIssuerBlock)
- * — so a locale that silently falls back to English is covered too.
- *
- * WHY IT IS A TEST AND NOT A REVIEW HABIT: migration 0065 retired the report auto-award, so
- * `logEventHours` is the only writer of credited hours and the certificate queries exclude
- * `source = 'report'` outright. A sentence saying the platform awards report-verification hours
- * automatically is therefore FALSE about the very document it is printed on — and unfixable per holder
- * once issued, because `ledgerFingerprint` hashes only holder + totals + rows, so `issue()` returns the
- * stored PDF (`reused: true`) forever rather than re-rendering corrected copy.
- *
- * The word lists are per-language on purpose: an English-only regex would pass a German catalog that
- * still says "vergibt die Plattform automatisch".
- */
 describe("certificate.attestation.body (real catalog copy)", () => {
   const FORBIDDEN: Record<string, readonly RegExp[]> = {
-    // "automatic(ally)" / "report" — either word in this paragraph means the retired award is back.
     en: [/automatic/i, /\breports?\b/i],
     es: [/autom[aá]tic/i, /reporte/i],
     de: [/automatisch/i, /meldung/i],
@@ -409,8 +394,6 @@ describe("certificate.attestation.body (real catalog copy)", () => {
   for (const [locale, patterns] of Object.entries(FORBIDDEN)) {
     it(`${locale}: says nothing about an automatic or report-derived award`, () => {
       const body = certificateTranslator(locale)("certificate.attestation.body")
-      // Guards against a vacuous pass if the key is ever renamed away: renderMessage would return the
-      // literal key, which matches none of the patterns above.
       expect(body).not.toBe("certificate.attestation.body")
       expect(body.length).toBeGreaterThan(80)
       for (const pattern of patterns) {
@@ -422,7 +405,6 @@ describe("certificate.attestation.body (real catalog copy)", () => {
   }
 
   it("still attests the rules that DO ship (event hours, entered by a verified host)", () => {
-    // The paragraph must not be emptied into a content-free blurb by the deletion above.
     expect(certificateTranslator("en")("certificate.attestation.body")).toContain("host")
   })
 })

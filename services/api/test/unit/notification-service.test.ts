@@ -7,9 +7,12 @@ import {
   typeAllowedByPrefs,
   toPrefsDTO,
   DEFAULT_PREFS,
+  FEED_HIDDEN_NOTIFICATION_TYPES,
+  NOTIFICATION_DEDUPE_WINDOW_MS,
   type NotificationService,
   type NotificationPrefsRecord,
 } from "../../src/services/notification-service.js"
+import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
 import { normalizeDeviceId } from "../../src/routes/notifications.routes.js"
 
@@ -23,6 +26,7 @@ function makeHarness(nowFn?: () => Date): {
   service: NotificationService
 } {
   const repo = new InMemoryNotificationRepository()
+  if (nowFn !== undefined) repo.now = nowFn
   const push = new FakePushSender()
   const service = makeNotificationService({
     repo,
@@ -55,33 +59,44 @@ function at(hh: number, mm = 0): Date {
 }
 
 describe("isWithinQuietHours", () => {
-  it("same-day window [09:00, 17:00): quiet inside, not at/after the end, not before the start", () => {
-    expect(isWithinQuietHours(at(8, 59), "09:00", "17:00")).toBe(false)
-    expect(isWithinQuietHours(at(9, 0), "09:00", "17:00")).toBe(true)
-    expect(isWithinQuietHours(at(12, 0), "09:00", "17:00")).toBe(true)
-    expect(isWithinQuietHours(at(16, 59), "09:00", "17:00")).toBe(true)
-    expect(isWithinQuietHours(at(17, 0), "09:00", "17:00")).toBe(false)
+  it("same-day window [09:00, 17:00) evaluated in the stored zone (UTC here)", () => {
+    expect(isWithinQuietHours(at(8, 59), "09:00", "17:00", "UTC")).toBe(false)
+    expect(isWithinQuietHours(at(9, 0), "09:00", "17:00", "UTC")).toBe(true)
+    expect(isWithinQuietHours(at(12, 0), "09:00", "17:00", "UTC")).toBe(true)
+    expect(isWithinQuietHours(at(16, 59), "09:00", "17:00", "UTC")).toBe(true)
+    expect(isWithinQuietHours(at(17, 0), "09:00", "17:00", "UTC")).toBe(false)
   })
 
   it("wrap-around window [22:00, 07:00): quiet late night and early morning, awake midday", () => {
-    expect(isWithinQuietHours(at(22, 0), "22:00", "07:00")).toBe(true)
-    expect(isWithinQuietHours(at(23, 30), "22:00", "07:00")).toBe(true)
-    expect(isWithinQuietHours(at(0, 0), "22:00", "07:00")).toBe(true)
-    expect(isWithinQuietHours(at(6, 59), "22:00", "07:00")).toBe(true)
-    expect(isWithinQuietHours(at(7, 0), "22:00", "07:00")).toBe(false)
-    expect(isWithinQuietHours(at(12, 0), "22:00", "07:00")).toBe(false)
-    expect(isWithinQuietHours(at(21, 59), "22:00", "07:00")).toBe(false)
+    expect(isWithinQuietHours(at(22, 0), "22:00", "07:00", "UTC")).toBe(true)
+    expect(isWithinQuietHours(at(23, 30), "22:00", "07:00", "UTC")).toBe(true)
+    expect(isWithinQuietHours(at(0, 0), "22:00", "07:00", "UTC")).toBe(true)
+    expect(isWithinQuietHours(at(6, 59), "22:00", "07:00", "UTC")).toBe(true)
+    expect(isWithinQuietHours(at(7, 0), "22:00", "07:00", "UTC")).toBe(false)
+    expect(isWithinQuietHours(at(12, 0), "22:00", "07:00", "UTC")).toBe(false)
+    expect(isWithinQuietHours(at(21, 59), "22:00", "07:00", "UTC")).toBe(false)
   })
 
   it("equal bounds is treated as an EMPTY window (never quiet), not always-quiet", () => {
-    expect(isWithinQuietHours(at(8, 0), "08:00", "08:00")).toBe(false)
-    expect(isWithinQuietHours(at(0, 0), "00:00", "00:00")).toBe(false)
+    expect(isWithinQuietHours(at(8, 0), "08:00", "08:00", "UTC")).toBe(false)
+    expect(isWithinQuietHours(at(0, 0), "00:00", "00:00", "UTC")).toBe(false)
   })
 
   it("null bounds or malformed values fail open (not quiet)", () => {
-    expect(isWithinQuietHours(at(3, 0), null, null)).toBe(false)
-    expect(isWithinQuietHours(at(3, 0), "22:00", null)).toBe(false)
-    expect(isWithinQuietHours(at(3, 0), "oops", "07:00")).toBe(false)
+    expect(isWithinQuietHours(at(3, 0), null, null, "UTC")).toBe(false)
+    expect(isWithinQuietHours(at(3, 0), "22:00", null, "UTC")).toBe(false)
+    expect(isWithinQuietHours(at(3, 0), "oops", "07:00", "UTC")).toBe(false)
+  })
+
+  it("F086: a NULL zone disables suppression (fail open) rather than guessing UTC", () => {
+    expect(isWithinQuietHours(at(23, 0), "22:00", "07:00", null)).toBe(false)
+    expect(isWithinQuietHours(at(12, 0), "09:00", "17:00", null)).toBe(false)
+  })
+
+  it("F086: the window is evaluated in the stored IANA zone, honoring the UTC offset", () => {
+    expect(isWithinQuietHours(at(6, 0), "22:00", "07:00", "America/Los_Angeles")).toBe(true)
+    expect(isWithinQuietHours(at(20, 0), "22:00", "07:00", "America/Los_Angeles")).toBe(false)
+    expect(isWithinQuietHours(at(23, 0), "22:00", "07:00", "Not/AZone")).toBe(false)
   })
 })
 
@@ -102,7 +117,6 @@ describe("typeAllowedByPrefs", () => {
     expect(typeAllowedByPrefs("claim_available", { ...base, reportUpdates: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_chat", { ...base, cleanupChat: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_reminder", { ...base, cleanupChat: false })).toBe(false)
-    // WS4: role bells (promoted/demoted/removed) ride the cleanups pref bucket.
     expect(typeAllowedByPrefs("cleanup_role", { ...base, cleanupChat: false })).toBe(false)
     expect(typeAllowedByPrefs("cleanup_role", { ...base, cleanupChat: true })).toBe(true)
     expect(typeAllowedByPrefs("cleanup_cancelled", { ...base, cleanupChat: false })).toBe(false)
@@ -257,6 +271,20 @@ describe("getPrefs + updatePrefs", () => {
     const cleared = await service.updatePrefs(U, { quietHours: null })
     expect(cleared.quietHours).toBeUndefined()
   })
+
+  it("F086: round-trips the quiet-hours IANA zone and clears it with the window", async () => {
+    const { service } = makeHarness()
+    const withZone = await service.updatePrefs(U, {
+      quietHours: { start: "22:00", end: "07:00", tz: "America/Los_Angeles" },
+    })
+    expect(withZone.quietHours).toEqual({
+      start: "22:00",
+      end: "07:00",
+      tz: "America/Los_Angeles",
+    })
+    const cleared = await service.updatePrefs(U, { quietHours: null })
+    expect(cleared.quietHours).toBeUndefined()
+  })
 })
 
 
@@ -296,9 +324,6 @@ describe("registerPushToken", () => {
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
     expect(push.tokens).toHaveLength(1)
 
-    // H11: this used to resolve {ok:true}, so the client believed registration succeeded while the
-    // token stayed bound to whoever registered FIRST — the legitimate device owner silently lost push
-    // forever with no signal anywhere. The conflict is now surfaced as an error the client can act on.
     await expect(
       service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "d2" }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
@@ -309,21 +334,19 @@ describe("registerPushToken", () => {
     expect(push.tokens).toHaveLength(1)
   })
 
-  it("P1-3: a different user presenting the SAME non-null device_id IS allowed (genuine handoff)", async () => {
+  it("F153: a matching device_id can NO LONGER take over another account's (platform,token) row", async () => {
     const { repo, service } = makeHarness()
     await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "shared-device" })
-    await service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "shared-device" })
+    await expect(
+      service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "shared-device" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
     expect(repo.pushTokens).toHaveLength(1)
-    expect(repo.pushTokens[0]).toMatchObject({ userId: V, deviceId: "shared-device", revokedAt: null })
+    expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "shared-device", revokedAt: null })
   })
 
   it("H12: a self-declared device_id does NOT revoke another account's token (mass-revoke closed)", async () => {
     const { repo, service } = makeHarness()
     await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
-    // V claims the same device_id with a DIFFERENT token. Previously this soft-revoked every active
-    // token carrying that device_id across every account — one harvested device-id list was a
-    // fleet-wide push blackout. The device_id branch is gone: the revoke is scoped to the presented
-    // TOKEN, which the caller provably holds.
     await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "shared" })
 
     const uRow = repo.pushTokens.find((t) => t.token === "tok-U")
@@ -388,16 +411,24 @@ describe("createNotification (inline-send gating)", () => {
 
   it("does NOT push within quiet hours (but still records the row)", async () => {
     const { repo, push, service } = makeHarness(() => at(23, 0))
-    await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00" } })
+    await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00", tz: "UTC" } })
     await service.createNotification(U, { type: "system", title: "late" })
     expect(repo.notifications).toHaveLength(1)
     expect(push.sent).toHaveLength(0)
   })
 
+  it("F086: quiet hours with NO zone fail open (suppression disabled, push still sent)", async () => {
+    const { repo, push, service } = makeHarness(() => at(23, 0))
+    await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00" } })
+    await service.createNotification(U, { type: "system", title: "late" })
+    expect(repo.notifications).toHaveLength(1)
+    expect(push.sent).toHaveLength(1)
+  })
+
   it("pushes again once outside quiet hours", async () => {
     let nowMs = at(23, 0).getTime()
     const { push, service } = makeHarness(() => new Date(nowMs))
-    await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00" } })
+    await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00", tz: "UTC" } })
     await service.createNotification(U, { type: "system", title: "late" })
     expect(push.sent).toHaveLength(0)
     nowMs = at(12, 0).getTime()
@@ -503,12 +534,6 @@ describe("createNotification (per-user signal)", () => {
   })
 })
 
-/**
- * H12 — `deviceId` arrives from a JSON body as an unconstrained string in the shared contract and the
- * server used it to key a destructive cross-account write. It is now shape-gated at the route boundary
- * and, critically, DROPPED rather than rejected: 422-ing an older client would cost it push entirely,
- * which is the exact silent-failure mode H11 is about.
- */
 describe("normalizeDeviceId (H12)", () => {
   it("accepts a UUID (the shape the mobile client stores in SecureStore), normalized", () => {
     expect(normalizeDeviceId("3F2504E0-4F89-41D3-9A0C-0305E82C3301")).toBe(
@@ -527,5 +552,127 @@ describe("normalizeDeviceId (H12)", () => {
 
   it("passes through an absent value unchanged", () => {
     expect(normalizeDeviceId(undefined)).toBeUndefined()
+  })
+})
+
+describe("markRead (F085: no silent truncation)", () => {
+  it("marks EVERY id in a large batch read, not just the first 50", async () => {
+    const { repo, service } = makeHarness()
+    const ids: string[] = []
+    for (let i = 0; i < 120; i++) {
+      const n = await repo.insertNotification({
+        userId: U,
+        type: "system",
+        title: `n${i}`,
+        body: null,
+        link: null,
+      })
+      ids.push(n.id)
+    }
+    await service.markRead(U, ids)
+    const unread = repo.notifications.filter((n) => n.userId === U && n.readAt === null)
+    expect(unread).toHaveLength(0)
+  })
+})
+
+describe("unregisterPushToken (F083)", () => {
+  it("soft-revokes ONLY the caller's own (platform, token) row", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "ios", token: "tok-U" })
+    await service.registerPushToken(V, { platform: "ios", token: "tok-V" })
+
+    const res = await service.unregisterPushToken(U, { platform: "ios", token: "tok-U" })
+    expect(res).toEqual({ ok: true })
+
+    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).not.toBeNull()
+    expect(repo.pushTokens.find((t) => t.token === "tok-V")?.revokedAt).toBeNull()
+  })
+
+  it("does NOT revoke another account's token even with a matching token value", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(V, { platform: "ios", token: "tok-shared" })
+    await service.unregisterPushToken(U, { platform: "ios", token: "tok-shared" })
+    expect(repo.pushTokens.find((t) => t.token === "tok-shared")?.revokedAt).toBeNull()
+  })
+})
+
+describe("push token cap per user (F087)", () => {
+  it("keeps at most MAX_ACTIVE_PUSH_TOKENS_PER_USER active tokens, revoking the oldest", async () => {
+    const { repo, service } = makeHarness()
+    const total = MAX_ACTIVE_PUSH_TOKENS_PER_USER + 5
+    for (let i = 0; i < total; i++) {
+      await service.registerPushToken(U, { platform: "ios", token: `tok-${i}` })
+    }
+    const active = repo.pushTokens.filter((t) => t.userId === U && t.revokedAt === null)
+    expect(active).toHaveLength(MAX_ACTIVE_PUSH_TOKENS_PER_USER)
+    expect(repo.pushTokens.find((t) => t.token === "tok-0")?.revokedAt).not.toBeNull()
+    expect(repo.pushTokens.find((t) => t.token === `tok-${total - 1}`)?.revokedAt).toBeNull()
+  })
+})
+
+describe("toggle-bell de-duplication (F015)", () => {
+  it("collapses a like/unlike/like loop from the SAME actor into ONE bell + ONE push", async () => {
+    let nowMs = at(12, 0).getTime()
+    const { repo, push, service } = makeHarness(() => new Date(nowMs))
+    for (let i = 0; i < 4; i++) {
+      await service.onPostLike({ recipientId: U, actorName: "Mallory", postId: "p1" })
+      nowMs += 1000
+    }
+    const bells = repo.notifications.filter((n) => n.userId === U && n.type === "post_like")
+    expect(bells).toHaveLength(1)
+    expect(push.sent.filter((p) => p.userId === U)).toHaveLength(1)
+  })
+
+  it("a DIFFERENT actor liking the same post still rings (dedupe keys on actor via body)", async () => {
+    const { repo, service } = makeHarness(() => at(12, 0))
+    await service.onPostLike({ recipientId: U, actorName: "Alice", postId: "p1" })
+    await service.onPostLike({ recipientId: U, actorName: "Bob", postId: "p1" })
+    const bells = repo.notifications.filter((n) => n.userId === U && n.type === "post_like")
+    expect(bells).toHaveLength(2)
+  })
+
+  it("re-fires the follow bell once the cooldown window has elapsed", async () => {
+    let nowMs = at(12, 0).getTime()
+    const { repo, service } = makeHarness(() => new Date(nowMs))
+    const follower = {
+      id: V,
+      displayName: "Alice",
+      handle: "alice",
+      bio: null,
+      followers: 0,
+      following: 0,
+      verified: false,
+      avatarR2Key: null,
+      avatarUrl: null,
+      socialLinks: null,
+      showVolunteerHours: null,
+    }
+    await service.onNewFollower({ followeeId: U, follower })
+    await service.onNewFollower({ followeeId: U, follower })
+    expect(repo.notifications.filter((n) => n.type === "new_follower")).toHaveLength(1)
+    nowMs += NOTIFICATION_DEDUPE_WINDOW_MS + 1000
+    await service.onNewFollower({ followeeId: U, follower })
+    expect(repo.notifications.filter((n) => n.type === "new_follower")).toHaveLength(2)
+  })
+})
+
+describe("account-erasure notification purge (F088)", () => {
+  it("hard-deletes every notification row for the erased user, keeping others", async () => {
+    const repo = new InMemoryNotificationRepository()
+    await repo.insertNotification({ userId: U, type: "dm", title: "Alice", body: "secret", link: "/messages/dm/t1" })
+    await repo.insertNotification({ userId: U, type: "system", title: "x", body: null, link: null })
+    await repo.insertNotification({ userId: V, type: "system", title: "keep", body: null, link: null })
+
+    await repo.deleteAllNotificationsForUser(U)
+    expect(repo.notifications.filter((n) => n.userId === U)).toHaveLength(0)
+    expect(repo.notifications.filter((n) => n.userId === V)).toHaveLength(1)
+  })
+})
+
+describe("FEED_HIDDEN_NOTIFICATION_TYPES pinning (F089)", () => {
+  it("equals the literal list encoded in the notifications_feed_idx partial index predicate", () => {
+    expect([...FEED_HIDDEN_NOTIFICATION_TYPES].sort()).toEqual(
+      ["cleanup_chat", "dm", "group_chat", "report_chat"].sort(),
+    )
   })
 })

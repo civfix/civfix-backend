@@ -10,7 +10,10 @@
  *   - it is ABSENT from the report-service map candidates (published+public only) and 404s a stranger
  *     via getReport, while its status is visible via anonReportStatus with the right claim code;
  *   - releaseAnonHoldIfReady flips it to published once its media are ready + clean;
- *   - claimReport links it to a user (single-use code).
+ *   - claimReport links it to a user (single-use code) - matching on the stored SHA-256 only, since
+ *     the plaintext code is never written to reports.claim_code (F150 / 0091);
+ *   - the idempotency snapshot is owner-scoped: another anon session reusing the key gets the
+ *     retryable 409, never the first submitter's snapshot + claim code (F028 / 0078+0079).
  *
  * Skips wholesale when Docker is unavailable (describe.skipIf), keeping the local suite green.
  */
@@ -21,6 +24,7 @@ import { FakeAbuseChecks } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { signAnonToken, ANON_TOKEN_REPORT_CAP } from "../../src/abuse/anon-token.js"
+import { sha256Hex } from "../../src/auth/crypto.js"
 import { makeAnonService, type AnonService } from "../../src/services/anon-service.js"
 import { makeClaimService, type ClaimService } from "../../src/services/claim-service.js"
 import {
@@ -151,6 +155,40 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     })
   })
 
+  it("F087e: REJECTS a held-report submit whose media is VALIDATING but never finalized", async () => {
+    const uploadId = randomUUID()
+    const [asset] = await h.sql<{ id: string }[]>`
+      INSERT INTO media_assets (upload_id, kind, r2_key, status, byte_size)
+      VALUES (${uploadId}, 'image', ${`uploads/2026/06/${uploadId}`}, 'validating', 1024)
+      RETURNING id
+    `
+
+    // Worst case on this lane: a held anon report waits for every attached asset to leave 'validating'
+    // before it can publish. An unfinalized asset has no media.checks job behind it and no sweep
+    // coverage once it is bound, so the report would sit in media_pending for good.
+    await expect(
+      anon.submitAnonReport(req({ mediaUploadIds: [uploadId] }), { ip: "203.0.113.9", cfGeo: {} }),
+    ).rejects.toMatchObject({
+      httpStatus: 422,
+      code: "VALIDATION",
+      fields: { mediaUploadIds: "One or more media uploads are unavailable." },
+    })
+    const [unbound] = await h.sql<{ report_id: string | null }[]>`
+      SELECT report_id FROM media_assets WHERE id = ${asset!.id}
+    `
+    expect(unbound!.report_id).toBeNull()
+
+    await h.sql`UPDATE media_assets SET finalized_at = now() WHERE id = ${asset!.id}`
+    const { response } = await anon.submitAnonReport(req({ mediaUploadIds: [uploadId] }), {
+      ip: "203.0.113.9",
+      cfGeo: {},
+    })
+    const [bound] = await h.sql<{ report_id: string | null }[]>`
+      SELECT report_id FROM media_assets WHERE id = ${asset!.id}
+    `
+    expect(bound!.report_id).toBe(response.reportId)
+  })
+
   it("releases a held report to published once its media are ready + clean", async () => {
     const { response } = await anon.submitAnonReport(req(), { ip: "203.0.113.6", cfGeo: {} })
     await attachMedia(response.reportId, "ready")
@@ -207,7 +245,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     expect(row!.status).toBe("held")
   })
 
-  it("claims a held anon report into a user (single-use), then mine=true", async () => {
+  it("claims a held anon report into a user (single-use) by hash match, then mine=true", async () => {
     const submit = await anon.submitAnonReport(req(), { ip: "203.0.113.8", cfGeo: {} })
     const [u] = await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Claimer') RETURNING id`
     const userId = u!.id
@@ -227,15 +265,120 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     })
   })
 
-  it("replays the original response for a duplicate idempotency key (no second row)", async () => {
+  it("replays the original response for a duplicate idempotency key from the SAME anon session", async () => {
     const key = randomUUID()
     const first = await anon.submitAnonReport(req({ idempotencyKey: key }), { ip: "203.0.113.9", cfGeo: {} })
-    const second = await anon.submitAnonReport(req({ idempotencyKey: key }), { ip: "203.0.113.9", cfGeo: {} })
-    expect(second.response.reportId).toBe(first.response.reportId)
+    // The retry carries the token the first submit issued: the stored snapshot is owner-scoped by it.
+    const second = await anon.submitAnonReport(
+      req({ idempotencyKey: key, anonToken: first.issuedAnonToken! }),
+      { ip: "203.0.113.9", cfGeo: {} },
+    )
+    expect(second.response).toEqual(first.response)
     const countRows = await h.sql<{ n: number }[]>`
       SELECT COUNT(*)::int AS n FROM reports WHERE idempotency_key = ${key}
     `
     expect(countRows[0]!.n).toBe(1)
+  })
+
+  it("F028: a DIFFERENT anon session reusing the key gets a 409, never the first session's snapshot", async () => {
+    const key = randomUUID()
+    const first = await anon.submitAnonReport(req({ idempotencyKey: key }), { ip: "203.0.113.20", cfGeo: {} })
+
+    // A second session (its own freshly issued token) presenting the squatted key must NOT be handed
+    // the first submitter's reportId + claim code; the owner-scoped snapshot read misses and the
+    // globally-unique reports.idempotency_key turns the create into the retryable conflict.
+    await expect(
+      anon.submitAnonReport(req({ idempotencyKey: key }), { ip: "203.0.113.21", cfGeo: {} }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+
+    const countRows = await h.sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM reports WHERE idempotency_key = ${key}
+    `
+    expect(countRows[0]!.n).toBe(1)
+    const owners = await h.sql<{ user_or_anon: string | null }[]>`
+      SELECT user_or_anon FROM idempotency_keys WHERE key = ${key}
+    `
+    expect(owners).toHaveLength(1)
+    const [report] = await h.sql<{ anon_session_id: string | null }[]>`
+      SELECT anon_session_id FROM reports WHERE id = ${first.response.reportId}
+    `
+    expect(report!.anon_session_id).toBe(owners[0]!.user_or_anon)
+  })
+
+  it("F150: persists ONLY sha256(claim code) - reports.claim_code stays NULL on every new row", async () => {
+    const { response } = await anon.submitAnonReport(req(), { ip: "203.0.113.22", cfGeo: {} })
+
+    const [row] = await h.sql<{ claim_code: string | null; claim_code_hash: string | null }[]>`
+      SELECT claim_code, claim_code_hash FROM reports WHERE id = ${response.reportId}
+    `
+    expect(row!.claim_code).toBeNull()
+    expect(row!.claim_code_hash).toBe(await sha256Hex(response.claimCode))
+
+    // The digest resolves the code on both read paths, and a wrong code still 404s.
+    const status = await anon.anonReportStatus(response.reportId, response.claimCode)
+    expect(status.status).toBe("held")
+    await expect(anon.anonReportStatus(response.reportId, "wrong")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+
+    // No plaintext code is recoverable from the database for this report.
+    const [leak] = await h.sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM reports WHERE claim_code = ${response.claimCode}
+    `
+    expect(leak!.n).toBe(0)
+  })
+
+  it("F150: a pre-0091 plaintext row whose hash was BACKFILLED stays claimable by its old code", async () => {
+    const [u] = await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Legacy') RETURNING id`
+    const legacyCode = `legacy-${randomUUID()}`
+    const [seeded] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell, claim_code)
+      VALUES (
+        ${randomUUID()},
+        ST_SetSRID(ST_MakePoint(${PROBE_INSIDE_CITY.lng}, ${PROBE_INSIDE_CITY.lat}), 4326),
+        'device', 'trash', 'dump', 'held', '8a2830828767fff', ${legacyCode}
+      )
+      RETURNING id
+    `
+    // Exactly 0091's backfill statement.
+    await h.sql`
+      UPDATE reports
+      SET claim_code_hash = encode(sha256(claim_code::bytea), 'hex')
+      WHERE id = ${seeded!.id} AND claim_code IS NOT NULL AND claim_code_hash IS NULL
+    `
+
+    const claimed = await claim.claimReport(legacyCode, u!.id)
+    expect(claimed.report.id).toBe(seeded!.id)
+
+    // Consumed: BOTH columns are cleared, so no stale plaintext survives the claim.
+    const [after] = await h.sql<{ claim_code: string | null; claim_code_hash: string | null }[]>`
+      SELECT claim_code, claim_code_hash FROM reports WHERE id = ${seeded!.id}
+    `
+    expect(after!.claim_code).toBeNull()
+    expect(after!.claim_code_hash).toBeNull()
+    await expect(claim.claimReport(legacyCode, u!.id)).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("F150: the nudge mints a FRESH code (it cannot read one back) and that code claims the report", async () => {
+    const submit = await anon.submitAnonReport(req(), { ip: "203.0.113.23", cfGeo: {} })
+    const [u] = await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Nudged') RETURNING id`
+
+    const nudge = await claim.claimNudge(submit.issuedAnonToken!)
+    expect(nudge.reportId).toBe(submit.response.reportId)
+    expect(nudge.claimCode).not.toBe(submit.response.claimCode)
+
+    const [row] = await h.sql<{ claim_code: string | null; claim_code_hash: string | null }[]>`
+      SELECT claim_code, claim_code_hash FROM reports WHERE id = ${submit.response.reportId}
+    `
+    expect(row!.claim_code).toBeNull()
+    expect(row!.claim_code_hash).toBe(await sha256Hex(nudge.claimCode))
+
+    // The superseded code no longer claims; the nudged one does.
+    await expect(claim.claimReport(submit.response.claimCode, u!.id)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    const claimed = await claim.claimReport(nudge.claimCode, u!.id)
+    expect(claimed.report.id).toBe(submit.response.reportId)
   })
 
   it("bugs P0-1: concurrent submits on one token never exceed the per-token cap (atomic UPDATE)", async () => {

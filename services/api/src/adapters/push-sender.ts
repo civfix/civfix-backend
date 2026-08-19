@@ -1,8 +1,9 @@
 
+import { createHash } from "node:crypto"
 import type { PushSender, PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 import type { Db } from "../db/client.js"
 import { pushTokens } from "../db/schema/push_tokens.js"
-import { and, inArray, isNull } from "drizzle-orm"
+import { and, desc, inArray, isNull } from "drizzle-orm"
 import { isIP } from "node:net"
 import { lookup } from "node:dns/promises"
 import { makeApnsDispatcher } from "./push-apns.js"
@@ -35,6 +36,12 @@ export interface PushLogger {
   warn(obj: unknown, msg?: string): void
   error(obj: unknown, msg?: string): void
 }
+
+export function hashForLog(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12)
+}
+
+const ACTIVE_TOKEN_SCAN_CAP_PER_USER = 20
 
 const consoleLogger: PushLogger = {
   warn: (obj, msg) => console.warn(msg ?? "", obj),
@@ -167,6 +174,8 @@ export class MultiPushSender implements PushSender {
       })
       .from(pushTokens)
       .where(and(inArray(pushTokens.userId, userIds), isNull(pushTokens.revokedAt)))
+      .orderBy(desc(pushTokens.createdAt))
+      .limit(userIds.length * ACTIVE_TOKEN_SCAN_CAP_PER_USER)
     return rows.map((r) => ({ userId: r.userId, platform: r.platform, token: r.token }))
   }
 
@@ -287,8 +296,6 @@ function ipv6ToBytes(input: string): number[] | null {
     const lo = ((nums[2]! << 8) | nums[3]!).toString(16)
     s = `${s.slice(0, cut + 1)}${hi}:${lo}`
   }
-  // Shared expansion (also used by the per-IP rate limiter); the STRICTNESS is this caller's policy — this
-  // is an SSRF guard, so anything not parseable to exactly 8 well-formed hextets is rejected outright.
   const { hextets: groups, runs, fill } = expandIpv6Hextets(s)
   if (runs > 1) return null
   if (runs === 1 && fill < 1) return null

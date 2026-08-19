@@ -1,20 +1,52 @@
-/**
- * Tests for the shared bounded-JSON-fetch helper (src/adapters/http-fetch.ts) that replaced five
- * hand-rolled copies of "AbortController + setTimeout(abort) + res.ok gate + guarded res.json()".
- *
- * The behaviors the copies had drifted on, now pinned in one place:
- *   - redirect:"error" is the DEFAULT (the SSRF guard: a compromised upstream must not 30x us inward),
- *   - transport failure, non-2xx, and an unparseable 2xx body are DISTINGUISHABLE outcomes, because the
- *     callers fail open (geocoders -> null) or closed (Turnstile -> AppError) on different ones,
- *   - the deadline aborts the request AND covers the body read,
- *   - fetchImpl is resolved at CALL time, so a test that swaps globalThis.fetch after construction wins.
- */
 
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { fetchJsonWithTimeout, fetchJsonOrNull } from "../../src/adapters/http-fetch.js"
+import {
+  fetchJsonWithTimeout,
+  fetchJsonOrNull,
+  JsonBodyTooLargeError,
+} from "../../src/adapters/http-fetch.js"
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response
+}
+
+function streamResponse(
+  text: string,
+  opts: { status?: number; contentLength?: string | null; chunks?: number } = {},
+): { res: Response; cancelled: () => boolean } {
+  const status = opts.status ?? 200
+  const bytes = new TextEncoder().encode(text)
+  const n = opts.chunks ?? 1
+  const size = Math.ceil(bytes.byteLength / n)
+  let i = 0
+  let cancelled = false
+  const body = {
+    getReader: () => ({
+      read: async () => {
+        if (i >= bytes.byteLength) return { done: true, value: undefined }
+        const value = bytes.subarray(i, i + size)
+        i += size
+        return { done: false, value }
+      },
+      releaseLock: () => {},
+      cancel: async () => {
+        cancelled = true
+      },
+    }),
+    cancel: async () => {
+      cancelled = true
+    },
+  }
+  const headers = {
+    get: (k: string) =>
+      k.toLowerCase() === "content-length"
+        ? opts.contentLength === undefined
+          ? String(bytes.byteLength)
+          : opts.contentLength
+        : null,
+  }
+  const res = { ok: status >= 200 && status < 300, status, headers, body } as unknown as Response
+  return { res, cancelled: () => cancelled }
 }
 
 describe("fetchJsonWithTimeout", () => {
@@ -91,7 +123,6 @@ describe("fetchJsonWithTimeout", () => {
       fetchJsonWithTimeout("https://x/y", { timeoutMs: 50, fetchImpl: throwing }),
     ).resolves.toEqual({ ok: false, kind: "http", status: 500 })
 
-    // Bare test doubles (and a 204-style response) have no `body` — the optional chain must not throw.
     const noBody = vi.fn(
       async () => ({ ok: false, status: 404 }) as unknown as Response,
     ) as unknown as typeof fetch
@@ -161,6 +192,57 @@ describe("fetchJsonWithTimeout", () => {
 
     const result = await fetchJsonWithTimeout("https://x/y", { timeoutMs: 5, fetchImpl })
     expect(result.ok === false && result.kind).toBe("body")
+  })
+
+  it("reads and parses a streamed 2xx body (real ReadableStream path), including multi-chunk", async () => {
+    const single = streamResponse(JSON.stringify({ a: 1 }))
+    const r1 = await fetchJsonWithTimeout<{ a: number }>("https://x/y", {
+      timeoutMs: 50,
+      fetchImpl: (async () => single.res) as unknown as typeof fetch,
+    })
+    expect(r1).toEqual({ ok: true, status: 200, json: { a: 1 } })
+
+    const multi = streamResponse(JSON.stringify({ hello: "world", n: 42 }), { chunks: 5 })
+    const r2 = await fetchJsonWithTimeout<{ hello: string; n: number }>("https://x/y", {
+      timeoutMs: 50,
+      fetchImpl: (async () => multi.res) as unknown as typeof fetch,
+    })
+    expect(r2.ok && r2.json).toEqual({ hello: "world", n: 42 })
+  })
+
+  it("rejects a body whose declared content-length exceeds maxBytes, and cancels it", async () => {
+    const big = streamResponse(JSON.stringify({ a: 1 }), { contentLength: "5000000" })
+    const result = await fetchJsonWithTimeout("https://x/y", {
+      timeoutMs: 50,
+      maxBytes: 100,
+      fetchImpl: (async () => big.res) as unknown as typeof fetch,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.kind).toBe("body")
+    expect(result.ok === false && result.kind === "body" && result.error).toBeInstanceOf(
+      JsonBodyTooLargeError,
+    )
+    expect(big.cancelled()).toBe(true)
+  })
+
+  it("aborts a streamed body that exceeds maxBytes even when content-length under-reports", async () => {
+    const body = "x".repeat(5000)
+    const lying = streamResponse(body, { contentLength: "0", chunks: 10 })
+    const result = await fetchJsonWithTimeout("https://x/y", {
+      timeoutMs: 50,
+      maxBytes: 500,
+      fetchImpl: (async () => lying.res) as unknown as typeof fetch,
+    })
+    expect(result.ok === false && result.kind).toBe("body")
+    expect(result.ok === false && result.kind === "body" && result.error).toBeInstanceOf(
+      JsonBodyTooLargeError,
+    )
+  })
+
+  it("still parses a bare {ok,json} double (no body) via the res.json() fallback under the cap", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: 1 })) as unknown as typeof fetch
+    const result = await fetchJsonWithTimeout("https://x/y", { timeoutMs: 50, maxBytes: 10, fetchImpl })
+    expect(result).toEqual({ ok: true, status: 200, json: { ok: 1 } })
   })
 
   it("resolves globalThis.fetch at CALL time when no fetchImpl is injected", async () => {

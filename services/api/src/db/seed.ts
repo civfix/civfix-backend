@@ -1,35 +1,9 @@
-/**
- * Seed runner: inserts the dev/test jurisdiction set - the nested California / LA County / LA city boxes
- * (seed-fixtures.ts) PLUS the curated real federal + tribal lands (data/federal-lands.ts: Yellowstone,
- * Yosemite, Grand Canyon, Joshua Tree, Angeles National Forest, Navajo Nation), each a DISTINCT unit
- * with its own routing contact.
- *
- * Idempotent: each row uses ON CONFLICT (geoid) DO NOTHING, so running it repeatedly (or after a
- * partial run) is safe. The LA boxes are built with ST_Multi(ST_MakeEnvelope(...,4326)); the federal
- * lands via ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(...),4326)) - the same path the ingest CLI
- * (db:ingest) uses to load full PAD-US/NPS boundaries. We never ship WKB from JS. The geometry fixtures
- * + expected probe resolutions live in seed-fixtures.ts / data/federal-lands.ts and are shared with the
- * spatial integration test.
- *
- * The inserts are factored into `seedJurisdictions(sql)` (which also calls `seedFederalLands`) so the
- * Testcontainers harness seeds a fresh database with the exact same data the CLI seed produces. Requires
- * DATABASE_URL + live Postgres when run as a CLI; not exercised by the offline unit suite.
- *
- * Each row draws a `code` (the reference-code JURCODE, 0030/D2) from `jurisdiction_code_seq`, the same
- * single sequence the ingest + lazy-Census upserts use — so dev and the integration harness mint real
- * '<TYPE>-<JURCODE>-NNNNNN' reference codes instead of everything landing in the unknown '0' bucket. The
- * sequence advances on a DO NOTHING conflict too; gaps are expected and harmless.
- */
 
 import type { Sql } from "./client.js"
 import { runDbCli, runIfMain } from "./cli.js"
 import { JURISDICTION_SEEDS } from "./seed-fixtures.js"
 import { FEDERAL_LANDS, federalLandGeoJson } from "./data/federal-lands.js"
 
-/**
- * Insert the seed jurisdictions. Returns the number of rows actually inserted (0 if everything was
- * already present). Safe to call multiple times.
- */
 export async function seedJurisdictions(sql: Sql): Promise<number> {
   let inserted = 0
   for (const j of JURISDICTION_SEEDS) {
@@ -51,17 +25,10 @@ export async function seedJurisdictions(sql: Sql): Promise<number> {
     `
     inserted += rows.length
   }
-  // Also seed the curated real federal + tribal lands (distinct units, each its own routing target).
   inserted += await seedFederalLands(sql)
   return inserted
 }
 
-/**
- * Insert the curated real federal + tribal jurisdictions (FEDERAL_LANDS). Each unit's real bounding
- * extent is generalized to a simplified octagonal boundary and ingested via ST_GeomFromGeoJSON - the
- * SAME PostGIS path the ingest CLI uses for full external boundaries. Idempotent (ON CONFLICT DO
- * NOTHING). `priority` mirrors the resolver's layer rank (federal/tribal are most-specific, so negative).
- */
 export async function seedFederalLands(sql: Sql): Promise<number> {
   let inserted = 0
   for (const land of FEDERAL_LANDS) {
@@ -89,22 +56,19 @@ export async function seedFederalLands(sql: Sql): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  const forced = process.argv.includes("--force")
+  if (process.env.NODE_ENV === "production" && !forced) {
+    console.log(
+      "seed: skipping — NODE_ENV=production. The dev jurisdiction fixtures (hand-made octagons + " +
+        "example.* contacts) are not for production; pass --force to override deliberately.",
+    )
+    return
+  }
   await runDbCli(async (_db, sql) => {
-    // GUARD: refuse to seed a database that already holds AUTHORITATIVE boundary data (a real
-    // db:boundaries:refresh load — detected by the presence of PADUS-/AIANNH- geoids). The dev seed's
-    // hand-made octagonal federal/tribal fixtures (NPS-*/USFS-*/BIA-*) and example.gov contacts would
-    // pollute real data and can even out-rank it in the resolver (a seed geoid sorts before "PADUS-" and
-    // wins the same-layer tie). This is how the original prod cruft got there. The integration test calls
-    // `seedJurisdictions()` directly and never hits this guard; pass --force to override deliberately.
     const [authoritative] = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM jurisdictions WHERE geoid LIKE 'PADUS-%' OR geoid LIKE 'AIANNH-%'
     `
-    if ((authoritative?.n ?? 0) > 0 && !process.argv.includes("--force")) {
-      // Graceful no-op (exit 0), NOT a hard failure: this runs as a compose init service on every deploy,
-      // and "real boundary data is present, so there's nothing to dev-seed" is the EXPECTED success path in
-      // production. Exiting non-zero here would make the `seed` init service fail and block `api` startup
-      // (taking prod down). Re-seeding dev fixtures over real data is what we want to AVOID; pass --force
-      // only to override deliberately.
+    if ((authoritative?.n ?? 0) > 0 && !forced) {
       console.log(
         `seed: skipping — found ${authoritative?.n} authoritative (PADUS-/AIANNH-) jurisdictions ` +
           `(a real boundary load). The dev seed would inject fixtures over real data; pass --force to override.`,

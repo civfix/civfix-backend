@@ -2,6 +2,7 @@
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { flaggedReportExpr } from "./admin-report-repository.drizzle.js"
+import { reportRoutableExpr } from "./sql-fragments.js"
 import { toEventStatus } from "./event-status.js"
 import { DISCOVERY_SLA_HOURS } from "./discovery-service.js"
 import type {
@@ -33,22 +34,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           WHERE r.deleted_at IS NULL
             AND r.status NOT IN ('rejected', 'resolved')
             AND r.jurisdiction_geoid IS NOT NULL
-            AND NOT (
-              EXISTS (
-                -- The empty-string test matters: a contact row saved with a blank email routes nothing.
-                -- Without it this counter called the report routed while the discovery queue
-                -- (discovery-jobs.ts, taskAggregateSql) still counted it waiting -- two home numbers, one
-                -- report, no agreement.
-                SELECT 1 FROM jurisdiction_contacts jc
-                WHERE jc.geoid = r.jurisdiction_geoid AND jc.email IS NOT NULL AND jc.email <> ''
-              )
-              OR EXISTS (
-                SELECT 1 FROM jurisdictions j
-                WHERE j.geoid = r.jurisdiction_geoid
-                  AND j.contact_emails IS NOT NULL
-                  AND array_length(j.contact_emails, 1) > 0
-              )
-            )
+            AND NOT ${reportRoutableExpr(sql, "r")}
         ),
         per_geoid AS (
           SELECT geoid, COUNT(*)::int AS n, MIN(created_at) AS oldest
@@ -72,13 +58,14 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async reportsSummary(): Promise<ReportsSectionCounts> {
-      // The flagged chip counts flagged reports that still EXIST. Counting open abuse_flags directly (which
-      // this did) kept counting a report after it was removed, so the home chip and the reports page's own
-      // flagged count drifted apart the moment an operator removed a flagged report. Same predicate as the
-      // reports repo, imported rather than re-inlined.
       const rows = await sql<{ flagged: string; in_progress: string; completed: string }[]>`
         SELECT
-          COUNT(*) FILTER (WHERE ${flaggedReportExpr(sql)})::text AS flagged,
+          (
+            SELECT COUNT(DISTINCT af.subject_id)
+            FROM abuse_flags af
+            JOIN reports fr ON fr.id = af.subject_id::uuid
+            WHERE af.subject_type = 'report' AND af.resolved_at IS NULL AND fr.deleted_at IS NULL
+          )::text AS flagged,
           COUNT(*) FILTER (WHERE r.status IN ('in_progress', 'acknowledged'))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = 'resolved')::text AS completed
         FROM reports r
@@ -95,14 +82,17 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     async eventsSummary(): Promise<EventsSectionCounts> {
       const rows = await sql<{ upcoming: string; live: string; attending: string }[]>`
         SELECT
-          COUNT(*) FILTER (WHERE status = 'upcoming')::text AS upcoming,
-          COUNT(*) FILTER (WHERE status IN ('active', 'in_progress'))::text AS live,
+          COUNT(*) FILTER (WHERE c.status = 'upcoming')::text AS upcoming,
+          COUNT(*) FILTER (WHERE c.status IN ('active', 'in_progress'))::text AS live,
           COALESCE(SUM(
-            CASE WHEN status NOT IN ('done', 'completed', 'cancelled')
-              THEN (SELECT COUNT(*) FROM cleanup_members m WHERE m.cleanup_id = c.id)
+            CASE WHEN c.status NOT IN ('done', 'completed', 'cancelled')
+              THEN COALESCE(mc.n, 0)
               ELSE 0 END
           ), 0)::text AS attending
         FROM cleanups c
+        LEFT JOIN (
+          SELECT cleanup_id, COUNT(*)::int AS n FROM cleanup_members GROUP BY cleanup_id
+        ) mc ON mc.cleanup_id = c.id
       `
       const r = rows[0]
       return {
@@ -113,8 +103,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async mailSummary(): Promise<MailSectionCounts> {
-      // Independent reads; the home dashboard fires every section at once, so serializing these two adds a
-      // round-trip to its slowest path for nothing.
       const [stats, rows] = await Promise.all([
         mailRepo.stats7d(),
         sql<{ needs_action: string }[]>`
@@ -158,7 +146,6 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
 
     async recentPins(limit: number): Promise<HomeMapPinRecord[]> {
       const half = Math.max(1, Math.floor(limit / 2))
-      // Independent halves of one map layer; awaited together.
       const [reportRows, eventRows] = await Promise.all([
         sql<
           {

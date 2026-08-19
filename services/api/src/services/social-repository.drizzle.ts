@@ -7,7 +7,7 @@ import type {
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
 import type { CleanupStatus, CleanupType, EventKind, SocialLinks } from "@civfix/shared"
-import { encodeNameCursor, pageWith, parseNameCursor } from "../db/cursor-helpers.js"
+import { encodeNameCursor, pageWith, paginate, parseNameCursor, parseTimeCursor } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
 
 export {
@@ -20,7 +20,6 @@ export {
   resolveUserIdsToMentions,
 } from "./mention-resolver.drizzle.js"
 
-/** "In the viewer's area" radius for follow suggestions (~25 km). */
 const SUGGEST_NEARBY_METERS = 25_000
 
 export interface PersonRowSelect {
@@ -34,20 +33,6 @@ export interface PersonRowSelect {
   avatar_r2_key: string | null
   avatar_url: string | null
   social_links?: SocialLinks | null
-  /**
-   * P6 hours privacy (0061). Declared REQUIRED (not optional like `social_links`) as DOCUMENTATION of
-   * what every projection below owes this shape — it is NOT a compile-time guarantee.
-   *
-   * ⚠ postgres.js's `sql<PersonRowSelect[]>` is an UNCHECKED TYPE ASSERTION over a template literal:
-   * TypeScript never inspects the SQL column list, so a projection that forgets
-   * `u.show_volunteer_hours` typechecks fine and yields `undefined` at runtime — and `undefined` would
-   * slip through the consumer's `=== false` opt-out gate (social-service.ts buildProfile), publishing
-   * the hours of a user who explicitly hid them.
-   *
-   * `toPersonView` therefore coerces `undefined` to `false`: a forgotten column FAILS CLOSED (hours
-   * hidden, which is merely wrong-looking) instead of failing open (hours disclosed, which is the
-   * disclosure 0061 exists to prevent).
-   */
   show_volunteer_hours: boolean | null
 }
 
@@ -55,11 +40,6 @@ interface PersonRowSelectWithFollow extends PersonRowSelect {
   is_following: boolean
 }
 
-/**
- * Exported for `test/unit/social-service.test.ts`, which feeds it a row literal with the
- * `show_volunteer_hours` column MISSING — the exact runtime shape a forgotten column produces, and the
- * one thing no typecheck can catch (see the field's doc comment).
- */
 export function toPersonView(r: PersonRowSelect): PersonView {
   return {
     id: r.id,
@@ -72,10 +52,6 @@ export function toPersonView(r: PersonRowSelect): PersonView {
     avatarR2Key: r.avatar_r2_key,
     avatarUrl: r.avatar_url,
     socialLinks: r.social_links ?? null,
-    // FAIL CLOSED, and note this is NOT `?? false`: `null` is the meaningful "never chosen" arm of the
-    // tri-state and must survive verbatim (it is what keeps the flag off the DTO). Only `undefined` —
-    // which the database cannot produce, so it means the projection omitted the column — collapses to an
-    // explicit opt-out.
     showVolunteerHours: r.show_volunteer_hours === undefined ? false : r.show_volunteer_hours,
   }
 }
@@ -84,7 +60,6 @@ function pagePeople(
   rows: PersonRowSelectWithFollow[],
   limit: number,
 ): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
-  // The people surfaces key on (display_name, id), so the cursor is the NAME cursor parseNameCursor reads.
   const { items, nextCursor } = pageWith(rows, limit, (last) =>
     encodeNameCursor({ name: last.display_name, id: last.id }),
   )
@@ -145,28 +120,41 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
   }
 }
 
+type ConnectionRow = PersonRowSelectWithFollow & { edge_created_at: Date }
+
+function pageConnections(
+  rows: ConnectionRow[],
+  limit: number,
+): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
+  const { items, nextCursor } = paginate(rows, limit, (last) => ({
+    at: last.edge_created_at,
+    id: last.id,
+  }))
+  const sorted = [...items].sort((a, b) => {
+    const nameCmp = a.display_name.localeCompare(b.display_name)
+    return nameCmp !== 0 ? nameCmp : a.id.localeCompare(b.id)
+  })
+  return {
+    items: sorted.map((r) => ({ ...toPersonView(r), isFollowing: r.is_following })),
+    nextCursor,
+  }
+}
+
 async function connectionsPage(
   sql: Sql,
   args: { viewerId: string | null; cursor: string | null; limit: number },
   joinPredicate: ReturnType<Sql>,
 ): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
-  const cursor = parseNameCursor(args.cursor)
+  const cursor = parseTimeCursor(args.cursor)
   const viewerId = args.viewerId
   const cursorFilter =
     cursor !== null
-      ? sql`AND (u.display_name, u.id) > (${cursor.name}, ${cursor.id}::uuid)`
+      ? sql`AND (f.created_at, u.id) < (${cursor.at}, ${cursor.id}::uuid)`
       : sql``
   const followingExpr =
     viewerId !== null
       ? sql`EXISTS (SELECT 1 FROM follows_people ff WHERE ff.follower_id = ${viewerId} AND ff.followee_id = u.id)`
       : sql`FALSE`
-  // L13: the follower/following connection pages were the ONE people-listing surface with no block
-  // filter — suggestFollows, people search, the home/replies/saves feeds and every DM surface all carry
-  // this exact NOT EXISTS. Blocks in this product are a mutual-invisibility control, not a messaging-only
-  // one (the block hides the pair from each other's *content* everywhere else), so a blocked account
-  // surfacing in a public roster the viewer can page through is a real leak of the control. Symmetric
-  // (either direction blocks) to match every other call site. Anonymous viewers have no block
-  // relationships at all, so the clause is simply omitted rather than joined against a null id.
   const blockFilter =
     viewerId !== null
       ? sql`AND NOT EXISTS (
@@ -176,13 +164,7 @@ async function connectionsPage(
         )`
       : sql``
 
-  // M-follow-counts: the counts are the denormalized users.follower_count / users.following_count
-  // (0059_users_follow_counters.sql), so the roster no longer re-walks each listed person's edge list.
-  // NOTE the counts include that person's edges to/from SOFT-DELETED users while this roster does not
-  // list them (`u.deleted_at IS NULL` below) — the pre-existing asymmetry of the aggregates, documented
-  // in the migration. The page is still cut FIRST and only the (limit + 1) survivors pay for the
-  // verified probe / avatar join: expressions in an outer target list are never pushed below a LIMIT.
-  const rows = await sql<PersonRowSelectWithFollow[]>`
+  const rows = await sql<ConnectionRow[]>`
     SELECT
       u.id,
       u.display_name,
@@ -194,29 +176,29 @@ async function connectionsPage(
       am.r2_key AS avatar_r2_key,
       u.avatar_url,
       u.show_volunteer_hours,
+      u.edge_created_at,
       ${followingExpr} AS is_following
     FROM (
       SELECT
         u.id, u.display_name, u.handle, u.bio, u.avatar_media_id, u.avatar_url,
         u.show_volunteer_hours,
-        u.follower_count, u.following_count
+        u.follower_count, u.following_count,
+        f.created_at AS edge_created_at
       FROM users u
       JOIN follows_people f ON ${joinPredicate}
       WHERE u.deleted_at IS NULL
         ${blockFilter}
         ${cursorFilter}
-      ORDER BY u.display_name ASC, u.id ASC
+      ORDER BY f.created_at DESC, u.id DESC
       LIMIT ${args.limit + 1}
     ) u
     LEFT JOIN media_assets am ON am.id = u.avatar_media_id
-    ORDER BY u.display_name ASC, u.id ASC
+    ORDER BY u.edge_created_at DESC, u.id DESC
   `
-  return pagePeople(rows, args.limit)
+  return pageConnections(rows, args.limit)
 }
 
 export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
-  // The single-person projection (findPersonById / findPersonByHandle differ ONLY in the lookup key, and
-  // are the two reads that carry social_links). One body so a field addition cannot land in just one.
   async function findPerson(keyFilter: ReturnType<Sql>): Promise<PersonView | null> {
     const rows = await sql<PersonRowSelect[]>`
       SELECT
@@ -267,10 +249,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         viewerId !== null
           ? sql`EXISTS (SELECT 1 FROM follows_people f WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id)`
           : sql`FALSE`
-      // M-people-blocks: people SEARCH was the last people surface with no block filter — connections,
-      // suggestions, DM/mention search and every feed carry this exact symmetric NOT EXISTS. A block is a
-      // mutual-invisibility control here, so a blocked (or blocking) account must not surface in the search
-      // list with live follower counts. Anonymous viewers have no block rows, so the clause is omitted.
       const blockFilter =
         viewerId !== null
           ? sql`AND NOT EXISTS (
@@ -280,8 +258,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
             )`
           : sql``
 
-      // Page first, then hydrate the verified probe / avatar join — see connectionsPage for why the
-      // projection sits outside the LIMIT. The two totals are plain denormalized columns (0059).
       const rows = await sql<PersonRowSelectWithFollow[]>`
         SELECT
           u.id,
@@ -317,23 +293,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
 
     async suggestFollows(args): Promise<Array<PersonView & { isFollowing: boolean }>> {
       const viewerId = args.viewerId
-      // "The viewer's area" = the point of their most recent activity (a report they filed, or a
-      // cleanup they organized/joined). Each CANDIDATE's area = their most recent report or hosted
-      // cleanup. `is_near` = both points exist and are within SUGGEST_NEARBY_METERS of each other;
-      // `is_organizer` = the candidate hosts at least one cleanup/event. Ranking tiers:
-      //   1. nearby organizers  2. nearby people  3. organizers elsewhere  4. everyone else
-      // within a tier: closer first (NULL distances last), then higher follower count, then newest.
-      // Exclusions: self, soft-deleted, handle-less, already-followed, blocked either way.
-      //
-      // M-suggest-cost: the tier expressions are computed ONCE per candidate in `candidates` and only
-      // referenced by name in the ORDER BY — the flat version re-ran the organizer EXISTS twice and the
-      // follower count a second time inside the sort key, for every user in the table. Everything the
-      // ranking does NOT need (the verified probe, the avatar join) is deferred to `ranked`, i.e. to the
-      // `limit` rows actually returned. `followers` is a ranking key and is now the denormalized
-      // users.follower_count (0059_users_follow_counters.sql), so the sort no longer costs a count(*)
-      // scan per candidate; `following` rides along from the same row for free. The candidate set is
-      // still the whole users table; narrowing it (activity window / bounded pool) would change WHICH
-      // people are suggested, so it stays a product decision rather than a refactor.
       const rows = await sql<
         Array<PersonRowSelect & { is_organizer: boolean }>
       >`
@@ -464,17 +423,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       return rows.length > 0
     },
 
-    // M-follow-counts write side (0059_users_follow_counters.sql): the edge write and the two counter
-    // bumps are ONE transaction, and the bump is gated on the INSERT/DELETE having actually changed a
-    // row — an idempotent re-follow (ON CONFLICT DO NOTHING → zero rows) or a re-unfollow must not move
-    // anything. Same shape as the post counters (post-repository.drizzle.ts like/unlike).
-    //
-    // Both users move in a SINGLE UPDATE on purpose. Two statements ("bump the followee, then the
-    // follower") take the two row locks in OPPOSITE orders for a mutual follow-back and can deadlock;
-    // one statement's lock order is a property of its plan, so it is the same for both directions. The
-    // UPDATE touches no key column, so it takes only a NO KEY UPDATE row lock, which does not conflict
-    // with the FOR KEY SHARE that every FK-referencing insert takes on the same users row (the reason
-    // removeMember uses FOR NO KEY UPDATE in cleanup-repository).
     async addFollow(
       followerId: string,
       followeeId: string,
@@ -506,9 +454,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           WHERE follower_id = ${followerId} AND followee_id = ${followeeId}
           RETURNING follower_id
         `
-        // The DELETE is idempotent by contract (the route reports "not following" as success), so a
-        // zero-row delete leaves the counters alone. GREATEST clamps at 0 so drift can never present a
-        // negative follower count to a client.
         if (removed.length === 0) return { exists: true }
         await tx`
           UPDATE users SET
@@ -520,9 +465,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       })
     },
 
-    // Reads the denormalized counter, so the follow/unfollow response no longer walks the target's whole
-    // follower list. No deleted_at filter: the aggregate this replaced had none either, and the counter
-    // is only ever read for a user the caller just resolved. A user id with no row reads 0, as before.
     async followerCount(userId: string): Promise<number> {
       const rows = await sql<{ count: number }[]>`
         SELECT follower_count AS count FROM users WHERE id = ${userId}

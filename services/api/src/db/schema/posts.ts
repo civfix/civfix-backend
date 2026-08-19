@@ -1,14 +1,3 @@
-/**
- * posts: a first-class social-feed post. Repost / quote / reply are all posts rows disambiguated by
- * `kind` (+ repost_of_id / reply_to_id) so the home timeline is a single scan. Post media reuses
- * media_assets (media_assets.post_id + purpose='post'); attachable event/report cards are the
- * event_id / report_id FKs. Interaction counts (like/repost/reply/save) are denormalized here and
- * bumped in the same txn as the interaction insert/delete.
- *
- * CANONICAL DDL: drizzle/0051_social_posts.sql. This mirror exists for typed queries / diff
- * inspection only; it is NOT applied to create the database. `kind`/`visibility` are app-enforced
- * text (no DB CHECK), mirrored via POST_KIND_VALUES / REPORT_VISIBILITY_VALUES in ./types.js.
- */
 
 import { sql } from "drizzle-orm"
 import {
@@ -42,13 +31,13 @@ export const posts = pgTable(
     body: text("body"),
     visibility: text("visibility").$type<PostVisibility>().notNull().default("public"),
     replyToId: uuid("reply_to_id").references((): AnyPgColumn => posts.id, {
-      onDelete: "cascade",
+      onDelete: "restrict",
     }),
     threadRootId: uuid("thread_root_id").references((): AnyPgColumn => posts.id, {
-      onDelete: "cascade",
+      onDelete: "restrict",
     }),
     repostOfId: uuid("repost_of_id").references((): AnyPgColumn => posts.id, {
-      onDelete: "cascade",
+      onDelete: "restrict",
     }),
     eventId: uuid("event_id").references(() => cleanups.id, { onDelete: "set null" }),
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
@@ -67,9 +56,10 @@ export const posts = pgTable(
     index("posts_reply_to_idx")
       .on(t.replyToId, t.createdAt)
       .where(sql`deleted_at IS NULL`),
+    index("posts_reply_to_fk_idx")
+      .on(t.replyToId)
+      .where(sql`${t.replyToId} IS NOT NULL`),
     index("posts_repost_of_idx").on(t.repostOfId),
-    // Covers the thread_root_id self-FK's ON DELETE CASCADE lookup (0055); partial because only replies
-    // carry a thread root.
     index("posts_thread_root_idx")
       .on(t.threadRootId)
       .where(sql`${t.threadRootId} IS NOT NULL`),
@@ -78,10 +68,12 @@ export const posts = pgTable(
     index("posts_public_recent_idx")
       .on(t.createdAt.desc())
       .where(sql`deleted_at IS NULL AND visibility = 'public'`),
-    // At most one repost per user per target (the repost toggle).
+    index("posts_toplevel_recent_idx")
+      .on(t.createdAt.desc(), t.id.desc())
+      .where(sql`deleted_at IS NULL AND reply_to_id IS NULL`),
     uniqueIndex("posts_repost_unique_idx")
       .on(t.authorId, t.repostOfId)
-      .where(sql`kind = 'repost'`),
+      .where(sql`kind = 'repost' AND deleted_at IS NULL`),
   ],
 )
 

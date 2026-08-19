@@ -1,16 +1,3 @@
-/**
- * Mail (Phase 2): two-way mail with municipal contacts (outreach + replies) plus the OCI delivery event
- * feed — mail_threads, mail_messages, mail_events.
- *
- * GOTCHAS: mail_threads.thread_token is the per-thread routing key — the outbound From is
- * {kind}-{token}@{MAIL_REPLY_DOMAIN} (kind = report/event/reply by thread type) and the token is globally
- * UNIQUE (it routes an inbound reply back to the thread). mail_events.thread_id / message_id are nullable
- * because a delivery event can arrive before it is correlated to a thread/message.
- *
- * The status / direction / type CHECKs are enforced in 0007_admin_phase2.sql.
- *
- * CANONICAL DDL: drizzle/0007_admin_phase2.sql. This mirror exists for typed queries / diff inspection.
- */
 
 import { sql } from "drizzle-orm"
 import {
@@ -44,12 +31,7 @@ export const mailThreads = pgTable(
       .default(sql`gen_random_uuid()`),
     threadToken: text("thread_token").notNull(),
     jurisdictionGeoid: text("jurisdiction_geoid").references(() => jurisdictions.geoid),
-    // Per-report outreach thread linkage (0020): the report this thread carries the conversation for, so
-    // a jurisdiction's reply auto-routes back onto it. Nullable: digest/compose threads have no report.
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
-    // Per-event outreach thread linkage (0031, D10/D19): the cleanup (event) this resource-request thread
-    // carries the conversation for, so a city reply auto-routes back onto it. Nullable: report/digest
-    // threads have no cleanup. Mirrors reportId.
     cleanupId: uuid("cleanup_id").references(() => cleanups.id, { onDelete: "set null" }),
     org: text("org"),
     subject: text("subject"),
@@ -62,29 +44,10 @@ export const mailThreads = pgTable(
     uniqueIndex("mail_threads_thread_token_key").on(t.threadToken),
     index("mail_threads_status_idx").on(t.status),
     index("mail_threads_geoid_idx").on(t.jurisdictionGeoid),
-    // NOTE: the partial index `mail_threads_report_idx ON mail_threads (report_id) WHERE report_id IS
-    // NOT NULL` lives ONLY in drizzle/0020_report_mail_link.sql (drizzle-kit cannot emit the partial
-    // WHERE predicate), so it is intentionally not mirrored here. Likewise the partial index
-    // `mail_threads_cleanup_idx ON mail_threads (cleanup_id) WHERE cleanup_id IS NOT NULL` lives only in
-    // drizzle/0031_timeline_event_mail.sql and is intentionally not mirrored here for the same reason.
     index("mail_threads_last_message_idx").on(t.lastMessageAt.desc()),
     index("mail_threads_unread_idx")
       .on(t.lastMessageAt.desc())
       .where(sql`${t.unread} = true`),
-    // NOTE: the inbox keyset index `mail_threads_inbox_keyset_idx ON mail_threads
-    // ((COALESCE(last_message_at, created_at)) DESC, id DESC)` lives in drizzle/0013_perf_indexes.sql.
-    // It is an EXPRESSION index over COALESCE(...) which Drizzle cannot cleanly express, so it is
-    // intentionally not mirrored here.
-    // NOTE: trigram GIN indexes `mail_threads_org_trgm` / `mail_threads_subject_trgm`
-    // (USING gin (... gin_trgm_ops)) back the inbox ILIKE search and live in
-    // drizzle/0014_search_trgm.sql; not mirrored here (raw-SQL-only search).
-    // NOTE: the three partial UNIQUE indexes that make "at most one thread per subject" a DB invariant —
-    // `mail_threads_report_uk (report_id) WHERE report_id IS NOT NULL`,
-    // `mail_threads_cleanup_uk (cleanup_id) WHERE cleanup_id IS NOT NULL` and
-    // `mail_threads_geoid_only_uk (jurisdiction_geoid) WHERE report_id IS NULL AND cleanup_id IS NULL AND
-    // jurisdiction_geoid IS NOT NULL` — live in drizzle/0039_mail_thread_unique.sql and are the arbiters
-    // the find-or-create ON CONFLICT paths name. Intentionally not mirrored here (partial predicates, same
-    // convention as the partial indexes noted above).
   ],
 )
 
@@ -112,6 +75,9 @@ export const mailMessages = pgTable(
     index("mail_messages_message_id_idx")
       .on(t.messageId)
       .where(sql`message_id IS NOT NULL`),
+    uniqueIndex("mail_messages_message_id_uk")
+      .on(t.messageId)
+      .where(sql`message_id IS NOT NULL`),
   ],
 )
 
@@ -130,7 +96,6 @@ export const mailEvents = pgTable(
   (t) => [
     index("mail_events_type_created_idx").on(t.type, t.createdAt.desc()),
     index("mail_events_thread_idx").on(t.threadId),
-    // Activity-feed mail_events branch: global newest-first scan. Added in drizzle/0013_perf_indexes.sql.
     index("mail_events_created_idx").on(t.createdAt.desc()),
   ],
 )

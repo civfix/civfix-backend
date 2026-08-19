@@ -144,9 +144,6 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     expect(page.records).toHaveLength(0)
   })
 
-  // A reported POST has to resolve to its author (so the strike lands on the right account) and has to be
-  // removable. Both switches in the repository fall through to a `default` that returns null/false, so a
-  // subject type added to the enum without a case here files a queue item that no operator can action.
   it("removes a reported post: soft-deletes it and strikes its author", async () => {
     const authorId = await insertUser(h, "postauthor")
     const [post] = await h.sql<{ id: string }[]>`
@@ -163,13 +160,11 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
       reason: "harassment",
     }))!
 
-    // The snapshot resolves through posts.author_id, not through a report's reporter.
     const detail = await repo.getItem(id)
     expect(detail?.user?.handle).toBe("postauthor")
 
     await repo.remove(id, { actorId: null, reason: "harassment" })
 
-    // Soft delete, matching the user-facing delete: the row survives so replies keep their parent.
     const [row] = await h.sql<{ deleted_at: Date | null }[]>`
       SELECT deleted_at FROM posts WHERE id = ${postId}
     `
@@ -271,6 +266,136 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     expect(flag?.resolved_at).not.toBeNull()
     const item = await repo.getItem(id)
     expect(item?.status).toBe("approved")
+  })
+
+  it("decideAppeal overturn lifts the real suspension it appeals; uphold leaves it standing (F115)", async () => {
+    const suspended = await insertUser(h, `appeal_ov_${Date.now().toString(36)}`)
+    const kept = await insertUser(h, `appeal_up_${Date.now().toString(36)}`)
+
+    for (const userId of [suspended, kept]) {
+      const modId = await insertModerationItem(h.sql, {
+        kind: "user_report",
+        subjectType: "user",
+        subjectId: userId,
+        flag: "Abusive chat",
+        reason: "Reported by members",
+      })
+      await repo.remove(modId, { actorId: null, reason: "abuse" })
+    }
+    await h.sql`
+      INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
+      VALUES ('user', ${suspended}, 'manual', 'api')
+    `
+
+    const statusOf = async (userId: string): Promise<{ status: string; flagged: boolean }> => {
+      const [row] = await h.sql<{ account_status: string; flagged: boolean }[]>`
+        SELECT account_status, flagged FROM user_moderation WHERE user_id = ${userId}
+      `
+      return { status: row!.account_status, flagged: row!.flagged }
+    }
+    expect(await statusOf(suspended)).toEqual({ status: "suspended", flagged: true })
+    expect(await statusOf(kept)).toEqual({ status: "suspended", flagged: true })
+
+    const overturnId = await insertModerationItem(h.sql, {
+      kind: "appeal",
+      subjectType: "user",
+      subjectId: suspended,
+      flag: "Suspension appeal",
+      reason: "User requests review",
+    })
+    const upholdId = await insertModerationItem(h.sql, {
+      kind: "appeal",
+      subjectType: "user",
+      subjectId: kept,
+      flag: "Suspension appeal",
+      reason: "User requests review",
+    })
+
+    await repo.decideAppeal(overturnId, { decision: "overturn", actorId: null, note: null })
+    await repo.decideAppeal(upholdId, { decision: "uphold", actorId: null, note: null })
+
+    expect(await statusOf(suspended)).toEqual({ status: "active", flagged: false })
+    expect(await statusOf(kept)).toEqual({ status: "suspended", flagged: true })
+
+    const [flag] = await h.sql<{ resolved_at: Date | null }[]>`
+      SELECT resolved_at FROM abuse_flags WHERE subject_type = 'user' AND subject_id = ${suspended}
+    `
+    expect(flag?.resolved_at).not.toBeNull()
+
+    expect((await repo.getItem(overturnId))?.status).toBe("approved")
+    expect((await repo.getItem(upholdId))?.status).toBe("approved")
+  })
+
+  it("decideAppeal overturn never re-activates a TOMBSTONED account, and reports no restored user", async () => {
+    const deleted = await insertUser(h, `appeal_del_${Date.now().toString(36)}`)
+    const modId = await insertModerationItem(h.sql, {
+      kind: "user_report",
+      subjectType: "user",
+      subjectId: deleted,
+      flag: "Abusive chat",
+      reason: "Reported by members",
+    })
+    await repo.remove(modId, { actorId: null, reason: "abuse" })
+
+    // The account is erased after the suspension (softDeleteAndAnonymize). An overturn that upserted
+    // account_status='active' unconditionally would resurrect it in the operator console as a live,
+    // unflagged account — and, with the session hook wired, lift its ban marker too.
+    await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${deleted}`
+
+    const appealId = await insertModerationItem(h.sql, {
+      kind: "appeal",
+      subjectType: "user",
+      subjectId: deleted,
+      flag: "Suspension appeal",
+      reason: "User requests review",
+    })
+    const record = await repo.decideAppeal(appealId, {
+      decision: "overturn",
+      actorId: null,
+      note: null,
+    })
+
+    expect(record?.status).toBe("approved")
+    expect(record?.restoredUserId).toBeUndefined()
+    const [row] = await h.sql<{ account_status: string; flagged: boolean }[]>`
+      SELECT account_status, flagged FROM user_moderation WHERE user_id = ${deleted}
+    `
+    expect(row!.account_status).toBe("suspended")
+    expect(row!.flagged).toBe(true)
+
+    // The audit row records that nothing was restored, so the decision is still legible after the fact.
+    const [audit] = await h.sql<{ meta: { restored: boolean } }[]>`
+      SELECT meta FROM audit_log
+      WHERE action = 'moderation.appeal_decided' AND target = ${`moderation:${appealId}`}
+      ORDER BY created_at DESC LIMIT 1
+    `
+    expect(audit!.meta.restored).toBe(false)
+  })
+
+  it("decideAppeal overturn on a live account reports the restored user id (the ban-marker hook)", async () => {
+    const userId = await insertUser(h, `appeal_live_${Date.now().toString(36)}`)
+    const modId = await insertModerationItem(h.sql, {
+      kind: "user_report",
+      subjectType: "user",
+      subjectId: userId,
+      flag: "Abusive chat",
+      reason: "Reported by members",
+    })
+    await repo.remove(modId, { actorId: null, reason: "abuse" })
+    const appealId = await insertModerationItem(h.sql, {
+      kind: "appeal",
+      subjectType: "user",
+      subjectId: userId,
+      flag: "Suspension appeal",
+      reason: "User requests review",
+    })
+
+    const record = await repo.decideAppeal(appealId, {
+      decision: "overturn",
+      actorId: null,
+      note: null,
+    })
+    expect(record?.restoredUserId).toBe(userId)
   })
 
   it("backfillFromHeldReports creates one item per held report lacking an open item", async () => {

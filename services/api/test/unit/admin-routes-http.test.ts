@@ -257,7 +257,12 @@ async function makeHarness(): Promise<Harness> {
     revokeSessions: () => Promise.resolve(0),
   }
   app.moderationOverrides = { repo: fakes.moderation }
-  app.adminMailOverrides = { repo: fakes.mail, outboundMail, fromOutreach: FROM_OUTREACH }
+  app.adminMailOverrides = {
+    repo: fakes.mail,
+    outboundMail,
+    fromOutreach: FROM_OUTREACH,
+    storage: new FakeStorage(),
+  }
   app.adminInboxOverrides = { repo: fakes.inbox, storage: new FakeStorage() }
   app.systemOverrides = {
     service: {
@@ -704,5 +709,62 @@ describe("every admin list route rejects a malformed query with 422", () => {
     expect((sorted.json() as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([
       SUBJECT_REPORT,
     ])
+  })
+})
+
+/**
+ * F092: inbound mail attachments are persisted as RAW R2 object keys ("inbound-mail/<thread>/<file>").
+ * The thread read used to hand those keys straight to the console, where the SPA renders them as hrefs —
+ * relative to admin.civfix.org, swallowed by the SPA catch-all rewrite, so an operator saw a "working"
+ * link that served HTML instead of the municipality's attachment. The route must presign every
+ * attachment through the inbound storage seam (as the sibling inbox route already did), and cap the
+ * per-thread fan-out so a many-part thread cannot issue unbounded presign calls.
+ */
+describe("F092: GET /admin/mail/:id presigns inbound attachment keys", () => {
+  it("returns an absolute presigned URL per attachment, never the raw object key", async () => {
+    await h.fakes.mail.insertMessage({
+      threadId: h.mailThreadId,
+      direction: "in",
+      fromAddr: "311@lacity.gov",
+      body: "Here is the permit.",
+      attachments: [
+        { key: `inbound-mail/${h.mailThreadId}/permit.pdf`, filename: "permit.pdf", size: 1024 },
+        { key: `inbound-mail/${h.mailThreadId}/photo.jpg`, filename: "photo.jpg", size: 2048 },
+      ],
+    })
+
+    const res = await get(`/v1/admin/mail/${h.mailThreadId}`)
+    expect(res.statusCode).toBe(200)
+    const dto = res.json() as {
+      messages: { attachments: { key: string; filename: string }[] }[]
+    }
+    const inbound = dto.messages.at(-1)!
+    expect(inbound.attachments.map((a) => a.filename)).toEqual(["permit.pdf", "photo.jpg"])
+    for (const att of inbound.attachments) {
+      expect(att.key).toBe(`memory://inbound-mail/${h.mailThreadId}/${att.filename}`)
+      expect(att.key).not.toMatch(/^inbound-mail\//)
+    }
+  })
+
+  it("caps the presigned attachments per message so a many-part thread cannot fan out unbounded", async () => {
+    const many = Array.from({ length: 80 }, (_, i) => ({
+      key: `inbound-mail/${h.mailThreadId}/f${i}.bin`,
+      filename: `f${i}.bin`,
+      size: 1,
+    }))
+    await h.fakes.mail.insertMessage({
+      threadId: h.mailThreadId,
+      direction: "in",
+      fromAddr: "311@lacity.gov",
+      body: "many parts",
+      attachments: many,
+    })
+
+    const res = await get(`/v1/admin/mail/${h.mailThreadId}`)
+    expect(res.statusCode).toBe(200)
+    const dto = res.json() as { messages: { attachments: { key: string }[] }[] }
+    const inbound = dto.messages.at(-1)!
+    expect(inbound.attachments).toHaveLength(50)
+    expect(inbound.attachments.every((a) => a.key.startsWith("memory://"))).toBe(true)
   })
 })

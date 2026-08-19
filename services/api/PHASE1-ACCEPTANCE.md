@@ -71,7 +71,7 @@ GET    /media/:id                   optional  csrf=false
 POST   /anon/reports                public    csrf=false
 GET    /anon/reports/:id/status     public    csrf=false
 POST   /claim/report                required  csrf=true
-GET    /claim/nudge                 optional  csrf=false
+POST   /claim/nudge                optional  csrf=false
 ```
 
 Plus `GET /ws` (WebSocket upgrade; not in the HTTP registry) and `GET /readyz` (readiness). The WS
@@ -93,7 +93,7 @@ endpoint map (Phase-1 screens):
 | Drop a pin -> new report | `POST /map/resolve-jurisdiction`, `POST /map/reverse-label`, `POST /media/upload`, `POST /media/:uploadId/finalize`, `POST /reports` |
 | Report detail | `GET /reports/:id`, `GET /media/:id`, `POST` + `DELETE /reports/:id/follow` |
 | My reports | `GET /reports` |
-| Anonymous submit (logged out) | `POST /anon/reports`, `GET /anon/reports/:id/status`, `GET /claim/nudge`, `POST /claim/report` |
+| Anonymous submit (logged out) | `POST /anon/reports`, `GET /anon/reports/:id/status`, `POST /claim/nudge`, `POST /claim/report` |
 | Cleanups list / map / detail | `GET /cleanups`, `GET /map/cleanups`, `GET /cleanups/:id` |
 | Create / join / leave a cleanup | `POST /cleanups`, `POST /cleanups/:id/join`, `POST /cleanups/:id/leave` |
 | Cleanup chat | `GET /ws`, `GET /cleanups/:id/messages` |

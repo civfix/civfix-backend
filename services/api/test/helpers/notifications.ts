@@ -9,8 +9,7 @@ import type {
   PushTokenUpsertOutcome,
 } from "../../src/services/notification-service.js"
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
-// The CANONICAL keyset primitives the real repository uses — imported, never re-implemented, so the fake
-// cannot drift into accepting a cursor the production parser rejects (or vice versa).
+import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
@@ -71,7 +70,6 @@ export class InMemoryNotificationRepository implements NotificationRepository {
           })
         : mine
 
-    // Same split + encoder as notification-repository.drizzle.ts.
     const { items, nextCursor } = paginate(after, limit, (n) => ({ at: n.createdAt, id: n.id }))
     return Promise.resolve({ records: items, nextCursor })
   }
@@ -130,6 +128,12 @@ export class InMemoryNotificationRepository implements NotificationRepository {
           : patch.quietHours === null
             ? null
             : patch.quietHours.end,
+      tz:
+        patch.quietHours === undefined
+          ? current.tz
+          : patch.quietHours === null
+            ? null
+            : (patch.quietHours.tz ?? null),
     }
     this.prefs.set(userId, next)
     return Promise.resolve(next)
@@ -145,14 +149,10 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       (t) => t.platform === args.platform && t.token === args.token,
     )
     if (existing) {
-      const owner = existing.userId === args.userId
-      const sameDevice = args.deviceId !== null && existing.deviceId === args.deviceId
-      if (!owner && !sameDevice) {
-        return Promise.resolve("conflict")
-      }
-      existing.userId = args.userId
+      if (existing.userId !== args.userId) return Promise.resolve("conflict")
       existing.deviceId = args.deviceId
       existing.revokedAt = null
+      this.capActiveTokens(args.userId)
       return Promise.resolve("stored")
     }
     this.pushTokens.push({
@@ -162,7 +162,17 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       deviceId: args.deviceId,
       revokedAt: null,
     })
+    this.capActiveTokens(args.userId)
     return Promise.resolve("stored")
+  }
+
+  private capActiveTokens(userId: string): void {
+    const active = this.pushTokens.filter((t) => t.userId === userId && t.revokedAt === null)
+    if (active.length <= MAX_ACTIVE_PUSH_TOKENS_PER_USER) return
+    const at = this.now()
+    for (const t of active.slice(0, active.length - MAX_ACTIVE_PUSH_TOKENS_PER_USER)) {
+      t.revokedAt = at
+    }
   }
 
   revokeDeviceTokensForOtherUsers(args: {
@@ -171,8 +181,6 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     platform: PushPlatform
     deviceId: string | null
   }): Promise<number> {
-    // Mirror the Drizzle UPDATE (H12): the revoke is scoped to the PRESENTED TOKEN, which the caller
-    // provably holds. A self-declared deviceId no longer authorizes any cross-account write.
     let revoked = 0
     for (const t of this.pushTokens) {
       if (
@@ -188,9 +196,50 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve(revoked)
   }
 
+  revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void> {
+    for (const t of this.pushTokens) {
+      if (
+        t.userId === userId &&
+        t.platform === platform &&
+        t.token === token &&
+        t.revokedAt === null
+      ) {
+        t.revokedAt = this.now()
+      }
+    }
+    return Promise.resolve()
+  }
+
   deletePushTokensForUser(userId: string): Promise<void> {
     for (let i = this.pushTokens.length - 1; i >= 0; i--) {
       if (this.pushTokens[i]!.userId === userId) this.pushTokens.splice(i, 1)
+    }
+    return Promise.resolve()
+  }
+
+  findRecentDuplicate(args: {
+    userId: string
+    type: NotificationType
+    link: string | null
+    body: string | null
+    since: Date
+  }): Promise<NotificationRecord | null> {
+    const match = this.notifications
+      .filter(
+        (n) =>
+          n.userId === args.userId &&
+          n.type === args.type &&
+          n.link === args.link &&
+          n.body === args.body &&
+          n.createdAt.getTime() > args.since.getTime(),
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
+    return Promise.resolve(match ?? null)
+  }
+
+  deleteAllNotificationsForUser(userId: string): Promise<void> {
+    for (let i = this.notifications.length - 1; i >= 0; i--) {
+      if (this.notifications[i]!.userId === userId) this.notifications.splice(i, 1)
     }
     return Promise.resolve()
   }

@@ -1,22 +1,16 @@
 import { describe, it, expect } from "vitest"
 import { loadEnv, REVIEWER_OTP_CODE_MIN_LENGTH } from "../../src/env.js"
 
-/**
- * Minimal, deterministic env source for production tests. The helper starts from a fully-valid
- * production env and lets each case delete keys to assert the aggregated error.
- */
 function validProdEnv(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "production",
     PORT: "8080",
     PUBLIC_API_URL: "https://api.civfix.org",
     WEB_ORIGINS: "https://civfix.org,https://app.civfix.org",
-    // Production requires a TLS sslmode (M15); the valid baseline carries one.
     DATABASE_URL: "postgres://user:pass@db:5432/civfix?sslmode=require",
     REDIS_URL: "redis://cache:6379",
-    SESSION_SIGNING_KEY: "prod-session-key",
-    ANON_TOKEN_SIGNING_KEY: "prod-anon-key",
-    // All fakes off in prod by default, so storage + mailer BOOT vars are required.
+    SESSION_SIGNING_KEY: "prod-session-signing-key-abcdefghijklmnop",
+    ANON_TOKEN_SIGNING_KEY: "prod-anon-token-signing-key-abcdefghijklmnop",
     R2_ACCOUNT_ID: "acct",
     R2_ACCESS_KEY_ID: "akid",
     R2_SECRET_ACCESS_KEY: "secret",
@@ -34,13 +28,10 @@ describe("loadEnv", () => {
     expect(env.NODE_ENV).toBe("production")
     expect(env.PORT).toBe(8080)
     expect(env.WEB_ORIGINS).toEqual(["https://civfix.org", "https://app.civfix.org"])
-    // Fakes default OFF in production.
     expect(env.USE_FAKE_STORAGE).toBe(false)
     expect(env.USE_FAKE_JOBS).toBe(false)
-    // Optional defaults applied.
     expect(env.MAIL_FROM_NOREPLY).toBe("no-reply@civfix.org")
     expect(env.MAIL_FROM_OUTREACH).toBe("outreach@civfix.org")
-    // TRUST_PROXY defaults to the safe internal CIDR set, NEVER trust-all, even in production.
     expect(env.TRUST_PROXY).not.toBe(true)
     expect(Array.isArray(env.TRUST_PROXY)).toBe(true)
   })
@@ -67,44 +58,59 @@ describe("loadEnv", () => {
     expect(msg).toContain("DATABASE_URL")
     expect(msg).toContain("SESSION_SIGNING_KEY")
     expect(msg).toContain("R2_BUCKET")
-    // Aggregated: mentions a count of problems.
     expect(msg).toMatch(/problem\(s\) found/)
   })
 
-  it("does NOT require R2/mailer BOOT vars in production when their fakes are on", () => {
-    const source = validProdEnv()
-    source.USE_FAKE_STORAGE = "1"
-    source.USE_FAKE_MAILER = "true"
-    delete source.R2_ACCOUNT_ID
-    delete source.R2_BUCKET
-    delete source.OCI_EMAIL_SMTP_HOST
-    const env = loadEnv(source)
+  it("refuses to boot production when a security/durability fake is explicitly enabled (F030)", () => {
+    for (const flag of ["USE_FAKE_ABUSE_NSFW", "USE_FAKE_CHAT", "USE_FAKE_MAILER", "USE_FAKE_STORAGE"]) {
+      const source = validProdEnv()
+      source[flag] = "1"
+      expect(() => loadEnv(source), flag).toThrow(
+        new RegExp(`${flag}: must not be true in production`),
+      )
+    }
+  })
+
+  it("still defaults fakes ON (and never rejects them) outside production (F030)", () => {
+    const env = loadEnv({ NODE_ENV: "test", USE_FAKE_STORAGE: "1", USE_FAKE_CHAT: "1" })
     expect(env.USE_FAKE_STORAGE).toBe(true)
-    expect(env.USE_FAKE_MAILER).toBe(true)
+    expect(env.USE_FAKE_CHAT).toBe(true)
+  })
+
+  it("rejects a signing key shorter than the minimum in production (F024)", () => {
+    const shortSession = validProdEnv()
+    shortSession.SESSION_SIGNING_KEY = "too-short"
+    expect(() => loadEnv(shortSession)).toThrow(/SESSION_SIGNING_KEY: must be at least 32/)
+
+    const shortAnon = validProdEnv()
+    shortAnon.ANON_TOKEN_SIGNING_KEY = "too-short"
+    expect(() => loadEnv(shortAnon)).toThrow(/ANON_TOKEN_SIGNING_KEY: must be at least 32/)
+  })
+
+  it("rejects equal session and anon signing keys in production (F024)", () => {
+    const source = validProdEnv()
+    source.SESSION_SIGNING_KEY = "the-same-32-char-signing-key-abcdef"
+    source.ANON_TOKEN_SIGNING_KEY = "the-same-32-char-signing-key-abcdef"
+    expect(() => loadEnv(source)).toThrow(/must be DIFFERENT values in production/)
   })
 
   it("supplies insecure dev defaults and turns fakes on outside production", () => {
     const env = loadEnv({ NODE_ENV: "development" })
-    // Dev defaults for signing keys exist (non-empty) so the server can boot.
     expect(env.SESSION_SIGNING_KEY.length).toBeGreaterThan(0)
     expect(env.ANON_TOKEN_SIGNING_KEY.length).toBeGreaterThan(0)
-    // Fakes default ON outside production.
     expect(env.USE_FAKE_STORAGE).toBe(true)
     expect(env.USE_FAKE_MAILER).toBe(true)
     expect(env.USE_FAKE_PUSH).toBe(true)
     expect(env.USE_FAKE_ABUSE_NSFW).toBe(true)
     expect(env.USE_FAKE_CHAT).toBe(true)
     expect(env.USE_FAKE_JOBS).toBe(true)
-    // PORT default.
     expect(env.PORT).toBe(8080)
   })
 
-  // ---- C1: the reviewer-OTP bypass is fail-closed ----
 
   it("defaults REVIEWER_OTP_BYPASS to false in every environment", () => {
     expect(loadEnv(validProdEnv()).REVIEWER_OTP_BYPASS).toBe(false)
     expect(loadEnv({ NODE_ENV: "development" }).REVIEWER_OTP_BYPASS).toBe(false)
-    // A typo'd/unknown value is NOT "on" either.
     const source = validProdEnv()
     source.REVIEWER_OTP_BYPASS = "maybe"
     expect(loadEnv(source).REVIEWER_OTP_BYPASS).toBe(false)
@@ -144,7 +150,6 @@ describe("loadEnv", () => {
     expect(loadEnv(validProdEnv()).REVIEWER_OTP_CODE).toBeUndefined()
   })
 
-  // ---- H10: inbound-mail bucket separation ----
 
   it("requires R2_INBOUND_BUCKET once R2_PUBLIC_BASE is set", () => {
     const source = validProdEnv()
@@ -172,14 +177,11 @@ describe("loadEnv", () => {
     expect(loadEnv(source).R2_INBOUND_BUCKET).toBeUndefined()
   })
 
-  it("does not police buckets when storage is fake", () => {
-    const source = validProdEnv()
-    source.USE_FAKE_STORAGE = "1"
-    source.R2_PUBLIC_BASE = "https://cdn.civfix.org"
-    expect(() => loadEnv(source)).not.toThrow()
+  it("does not police buckets when storage is fake (non-production)", () => {
+    const env = loadEnv({ NODE_ENV: "development", R2_PUBLIC_BASE: "https://cdn.civfix.org" })
+    expect(env.R2_PUBLIC_BASE).toBe("https://cdn.civfix.org")
   })
 
-  // ---- M15: Postgres TLS ----
 
   it.each(["require", "verify-ca", "verify-full"])(
     "accepts sslmode=%s on DATABASE_URL in production",
@@ -190,8 +192,6 @@ describe("loadEnv", () => {
     },
   )
 
-  // The host here is DOTTED on purpose: a single-label host is exempt from the TLS assertion (see the
-  // isNonRoutableDbHost block below), so using `db` would make these cases pass for the wrong reason.
   it.each([undefined, "disable", "prefer", "allow"])(
     "refuses to boot production with sslmode=%s on a routable host",
     (mode) => {
@@ -204,11 +204,6 @@ describe("loadEnv", () => {
     },
   )
 
-  // ---- The TLS assertion's non-routable-host exemption ----
-  //
-  // Demanding sslmode=require against a Postgres with no server certificate does not encrypt anything,
-  // it makes libpq refuse to connect — so a link that cannot leave the machine is exempt. The boundary
-  // is the whole point of the control: anything that crosses a wire must still be asserted against.
 
   it.each([
     ["compose service alias", "postgres://user:pass@postgres:5432/civfix"],
@@ -243,7 +238,6 @@ describe("loadEnv", () => {
     ).not.toThrow()
   })
 
-  // ---- L20: TRUST_PROXY=true ----
 
   it("rejects TRUST_PROXY=true in production", () => {
     const source = validProdEnv()
@@ -256,9 +250,6 @@ describe("loadEnv", () => {
   })
 
   it("parses CF_TURNSTILE_HOSTNAMES as a lowercased, de-duplicated list and defaults to empty", () => {
-    // L16 token binding. The var did not exist, so the hostname assertion in abuse-checks could never be
-    // configured — it was wired and permanently inert. Empty stays a VALID configuration (the assertion is
-    // skipped with a one-time notice), so adding the var cannot brick a deployment's captcha.
     expect(loadEnv({ NODE_ENV: "test" }).CF_TURNSTILE_HOSTNAMES).toEqual([])
     expect(loadEnv({ NODE_ENV: "test", CF_TURNSTILE_HOSTNAMES: "" }).CF_TURNSTILE_HOSTNAMES).toEqual([])
     const env = loadEnv({

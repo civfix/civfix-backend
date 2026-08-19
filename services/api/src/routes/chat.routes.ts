@@ -17,7 +17,11 @@ import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import { wireChatGateway } from "./chat-gateway-wiring.js"
-import { deleteMessageWithPowers, DELETE_MESSAGE_FORBIDDEN } from "./chat-route-helpers.js"
+import {
+  deleteMessageWithPowers,
+  DELETE_MESSAGE_FORBIDDEN,
+  neutralizeChatViewerFields,
+} from "./chat-route-helpers.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
 import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
@@ -68,16 +72,9 @@ export interface ChatGatewayOverrides {
   reportChat?: ReportChatRepository
   conversationMutes?: ConversationMutesRepository
   reportThreadsSource?: ReportThreadsSource
-  /** P4 4.5: the group half of the threads inbox (absent => no group threads, like the report seam). */
   groupThreadsSource?: GroupThreadsSource
-  /** P4: chat_groups management repo (group routes + the powers resolver's group lane). */
   groups?: ChatGroupRepository
-  /** P6: chat_polls write repo (poll create/vote/close). When absent, built over the container sql. */
   chatPolls?: ChatPollRepository
-  /**
-   * P3: injected chat-powers resolver (pin / delete-others). When absent, wireChatPowers builds a
-   * fail-closed resolver over the other override seams (offline) or the real Drizzle lookups (prod).
-   */
   chatPowers?: ResolveChatPowers
 }
 
@@ -91,11 +88,6 @@ const ThreadMessageParamsSchema = z.object({ cleanupId: IdSchema, messageId: IdS
 
 export const CHAT_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
-/**
- * L11: deleting messages is a state change with a broadcast attached and had NO route limit at all
- * (only the global 300/min/IP). 30/min is well above any human moderation session while bounding a
- * scripted delete sweep — the same order of magnitude as the reaction limit above.
- */
 export const CHAT_DELETE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
 export async function registerChatRoutes(app: FastifyInstance, container: Container): Promise<void> {
@@ -108,19 +100,12 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
 
   const dmThreadsSource: DmThreadsSource = { listDmThreadsFor: wiring.listDmThreadsFor }
 
-  // Built ONCE on first use (never at mount time — the offline route-coverage boot must not open a
-  // connection), like the lazy repo seams in the sibling chat route files.
   let threadsService: ThreadsService | undefined
   const getThreads = (): ThreadsService => {
     if (threadsService) return threadsService
     const threadsRepo: ThreadsRepository = overrides
       ? overrides.threadsRepo
       : makeDrizzleThreadsRepository(container.getDb().sql)
-    // The report-chat half of the inbox + the per-conversation mute seam. Both are DB-backed off the
-    // shared sql tag in production. When chatOverrides is present (the no-DB route tests inject only a
-    // fake threadsRepo) we do NOT touch container.getDb() — mirroring the threadsRepo branch above — and
-    // instead honor the optional override fields: an absent reportThreadsSource means "no report half"
-    // and an absent conversationMutes means "fail open" (muted=false), so those tests need not wire them.
     const reportThreadsSource: ReportThreadsSource | undefined = overrides
       ? overrides.reportThreadsSource
       : makeDrizzleReportThreadsSource(container.getDb().sql)
@@ -144,8 +129,6 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     const userId = requireAuth(request)
     const pagination = parse(PaginationQuerySchema, request.query)
     const limit = pagination.limit ?? THREADS_DEFAULT_LIMIT
-    // The contract's `cursor` is now honored (it used to be parsed and dropped, so the inbox was
-    // truncated at `limit` with no way to reach older threads); nextCursor comes back verbatim.
     const result = await getThreads().list(userId, {
       limit,
       ...(pagination.cursor !== undefined ? { cursor: pagination.cursor } : {}),
@@ -178,7 +161,7 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
         container.chatService.broadcastEvent?.(roomKeyFor("cleanup", cleanupId), {
           type: "reaction",
           cleanupId,
-          message: updated,
+          message: neutralizeChatViewerFields(updated),
         }),
       ).catch(() => {})
       reply.status(200).send(updated)
@@ -194,8 +177,6 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     async (request, reply) => {
       const userId = requireAuth(request)
       const { cleanupId, messageId } = parse(ThreadMessageParamsSchema, request.params)
-      // Cleanup rooms are private: a non-member never reaches the ladder (an organizer's delete-others
-      // power comes with their membership row, unlike the operator lane in public report rooms).
       if (!(await wiring.isMember(cleanupId, userId))) {
         throw AppError.forbidden(DELETE_MESSAGE_FORBIDDEN)
       }

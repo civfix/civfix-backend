@@ -5,9 +5,13 @@
  * gate, and the anon/claim HTTP ROUTES can be exercised with NO database (no Docker). Faithful to the
  * Drizzle impls' observable contract:
  *   - createAnonReportTx is atomic: it inserts the report (held), attaches media, appends the
- *     submitted+held timeline, bumps the token's report_count, stamps the claim code, and stores the
- *     snapshot - and on a duplicate idempotency key does NONE of that and replays the stored snapshot.
- *   - claimByCode links the (unclaimed) report to the user and clears the claim code (single-use).
+ *     submitted+held timeline, bumps the token's report_count, stamps the claim-code DIGEST, and stores
+ *     the snapshot under (scope, key, anon session) - and on a duplicate idempotency key from the SAME
+ *     anon session does NONE of that and replays the stored snapshot. A key already spent by a
+ *     DIFFERENT anon session never replays (F028); it answers the retryable 409 Postgres produces via
+ *     the globally-unique reports.idempotency_key.
+ *   - claimByCode matches the stored digest of the presented code (F150 / 0091), links the (unclaimed)
+ *     report to the user and clears the digest (single-use); the plaintext code is never stored.
  *
  * The Drizzle-backed repos are covered by the Docker-gated integration test; these fakes exercise the
  * same seams.
@@ -49,8 +53,10 @@ export interface StoredAnonReport {
   lng: number
   jurisdictionGeoid: string | null
   h3Cell: string
-  /** Per-report single-use claim code (0005). Cleared on claim. Null for non-anon reports. */
-  claimCode: string | null
+  /** SHA-256 of the per-report single-use claim code (0091). Cleared on claim. Null for non-anon. */
+  claimCodeHash: string | null
+  /** The submit's idempotency key, globally unique across reports (reports_idempotency_key_key). */
+  idempotencyKey: string | null
   /** The immutable reference code minted at create (#56 / M3). Null on rows seeded without one. */
   referenceCode: string | null
   createdAt: Date
@@ -93,7 +99,7 @@ export class InMemoryAnonStore {
   readonly media: StoredAnonMedia[] = []
   readonly timeline: StoredTimeline[] = []
   readonly flags: StoredFlag[] = []
-  readonly idempotency = new Map<string, AnonReportResponse>() // `${scope}:${key}`
+  readonly idempotency = new Map<string, AnonReportResponse>() // `${scope}:${key}:${userOrAnon}`
   /** Per-scope reference-code counter, mirroring reference_counters (D4). */
   private readonly refCounters = new Map<string, number>()
 
@@ -145,7 +151,8 @@ export class InMemoryAnonStore {
       lng: over.lng ?? -118.35,
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
       h3Cell: over.h3Cell ?? "8a2830828767fff",
-      claimCode: over.claimCode ?? null,
+      claimCodeHash: over.claimCodeHash ?? null,
+      idempotencyKey: over.idempotencyKey ?? null,
       referenceCode: over.referenceCode ?? null,
       createdAt: over.createdAt ?? now,
       publishedAt: over.publishedAt ?? null,
@@ -185,18 +192,38 @@ export class InMemoryAnonStore {
         const t = this.tokens.get(id)
         return Promise.resolve(t ? { ...t } : null)
       },
-      findIdempotentSnapshot: (key: string, scope: string): Promise<AnonReportResponse | null> =>
-        Promise.resolve(this.idempotency.get(`${scope}:${key}`) ?? null),
+      findIdempotentSnapshot: (
+        key: string,
+        scope: string,
+        userOrAnon: string | null,
+      ): Promise<AnonReportResponse | null> =>
+        Promise.resolve(this.idempotency.get(idempotencyMapKey(scope, key, userOrAnon)) ?? null),
       createAnonReportTx: (args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult> => {
-        const idemKey = `anon_report_create:${args.idempotencyKey}`
+        const idemKey = idempotencyMapKey(
+          "anon_report_create",
+          args.idempotencyKey,
+          args.anonSessionId,
+        )
         const prior = this.idempotency.get(idemKey)
         if (prior) return Promise.resolve({ kind: "replayed", snapshot: prior })
+
+        // reports.idempotency_key is globally unique (0001), so a key already spent by ANOTHER anon
+        // session rolls the real transaction back with a 23505 whose owner-scoped snapshot read then
+        // misses - the retryable 409 (F028). Modeled here so the fakes answer what Postgres answers
+        // instead of silently minting a second report on a squatted key.
+        const keyTaken = [...this.reports.values()].some(
+          (r) => r.idempotencyKey === args.idempotencyKey,
+        )
+        if (keyTaken) {
+          return Promise.reject(AppError.conflict("Report submit is still settling; retry"))
+        }
 
         // ATOMIC per-token cap (bugs P0-1), mirroring the Drizzle tx: bump report_count ONLY while the
         // token is under the cap, and abort (throw, no writes) otherwise. The whole body runs
         // synchronously here, so two interleaved calls cannot both pass the cap check - exactly the
-        // atomic check-and-consume the real UPDATE ... WHERE report_count < cap provides. The claim code
-        // is stamped on the REPORT row (0005), not the token, so it is not overwritten by later submits.
+        // atomic check-and-consume the real UPDATE ... WHERE report_count < cap provides. The claim-code
+        // digest is stamped on the REPORT row (0005 / 0091), not the token, so it is not overwritten by
+        // later submits.
         const token = this.tokens.get(args.anonSessionId)
         if (token && token.reportCount >= args.reportCap) {
           return Promise.reject(
@@ -224,7 +251,8 @@ export class InMemoryAnonStore {
           lng: args.lng,
           jurisdictionGeoid: args.jurisdictionGeoid,
           h3Cell: args.h3Cell,
-          claimCode: args.claimCode,
+          claimCodeHash: args.claimCodeHash,
+          idempotencyKey: args.idempotencyKey,
           referenceCode,
           publishedAt: null,
         })
@@ -248,19 +276,20 @@ export class InMemoryAnonStore {
           note: "Awaiting automated review",
           createdAt: this.nextDate(),
         })
-        // report_count + claim_code were already bumped atomically above (cap-gated).
+        // report_count + the claim-code digest were already stamped atomically above (cap-gated).
         this.idempotency.set(idemKey, args.responseSnapshot)
         return Promise.resolve({ kind: "created", snapshot: args.responseSnapshot })
       },
       findAnonReportStatus: (reportId: string): Promise<AnonReportStatusRow | null> => {
         const r = this.reports.get(reportId)
         if (!r || r.deletedAt !== null) return Promise.resolve(null)
-        // Per-report claim code (0005): read it off the report row, not the (overwritten) token row.
+        // Per-report claim-code digest (0091): read it off the report row, not the (overwritten) token
+        // row. The caller compares digests, so no plaintext secret is ever handed back.
         return Promise.resolve({
           reportId: r.id,
           status: r.status,
           publishedAt: r.publishedAt,
-          claimCode: r.claimCode,
+          claimCodeHash: r.claimCodeHash,
         })
       },
     }
@@ -337,34 +366,47 @@ export class InMemoryAnonStore {
         const t = this.tokens.get(id)
         return Promise.resolve(t ? { ...t } : null)
       },
-      findPendingByTokenId: (tokenId: string): Promise<PendingAnonReport | null> => {
+      rotatePendingClaimCode: (
+        tokenId: string,
+        claimCodeHash: string,
+      ): Promise<PendingAnonReport | null> => {
         const token = this.tokens.get(tokenId)
         if (!token) return Promise.resolve(null)
-        // The claim code is per-report (0005): the nudge surfaces the newest unclaimed report that still
-        // carries its own code.
+        // No plaintext code is stored (0091), so the nudge stamps the caller's freshly minted digest onto
+        // the newest unclaimed report of this token, superseding whatever code it carried.
         const report = [...this.reports.values()]
           .filter(
             (r) =>
               r.anonSessionId === tokenId &&
               r.reporterUserId === null &&
               r.deletedAt === null &&
-              r.claimCode !== null,
+              r.claimCodeHash !== null,
           )
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
-        if (!report || report.claimCode === null) return Promise.resolve(null)
-        return Promise.resolve({ reportId: report.id, claimCode: report.claimCode })
+        if (!report) return Promise.resolve(null)
+        report.claimCodeHash = claimCodeHash
+        return Promise.resolve({ reportId: report.id })
       },
-      claimByCode: (claimCode: string, userId: string): Promise<{ reportId: string } | null> => {
-        // Match the specific report carrying this per-report code (0005), not the token. Single-use:
-        // a cleared code no longer matches. anon_session_id is kept as an audit trail.
+      claimByCode: (claimCodeHash: string, userId: string): Promise<{ reportId: string } | null> => {
+        // Match the report whose stored DIGEST equals the hash of the presented code (0091), not the
+        // token. Single-use: a cleared digest no longer matches. anon_session_id is kept as an audit
+        // trail.
         const report = [...this.reports.values()].find(
-          (r) => r.claimCode === claimCode && r.reporterUserId === null && r.deletedAt === null,
+          (r) => r.claimCodeHash === claimCodeHash && r.reporterUserId === null && r.deletedAt === null,
         )
         if (!report) return Promise.resolve(null)
         report.reporterUserId = userId
-        report.claimCode = null
+        report.claimCodeHash = null
         return Promise.resolve({ reportId: report.id })
       },
     }
   }
+}
+
+/**
+ * Idempotency map key: (scope, key, owner), mirroring the (key, scope, COALESCE(user_or_anon, ''))
+ * unique index the real table carries (0078/0079) and the authenticated in-memory repo's helper.
+ */
+function idempotencyMapKey(scope: string, key: string, userOrAnon: string | null): string {
+  return `${scope}:${key}:${userOrAnon ?? ""}`
 }

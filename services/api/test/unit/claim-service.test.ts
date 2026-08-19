@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import type { ReportDTO } from "@civfix/shared"
 import { signAnonToken } from "../../src/abuse/anon-token.js"
+import { sha256Hex } from "../../src/auth/crypto.js"
 import { makeClaimService, type ClaimService } from "../../src/services/claim-service.js"
 import type { ReportOwner } from "../../src/services/report-service.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"
@@ -9,6 +10,10 @@ import { InMemoryAnonStore } from "../helpers/anon.js"
  * Offline unit tests for the account-claim service: the post-submit nudge and the single-use claim that
  * links a held anon report to a signed-in account. Run against the in-memory anon store; the ReportDTO
  * projection is faked (a tiny stub that echoes the now-owner).
+ *
+ * F150 shapes both paths: only sha256(code) is ever stored, so the service hashes a presented code
+ * before matching, and the nudge - which cannot read a code back - MINTS a fresh one and stamps its
+ * digest onto the pending report.
  */
 
 const SIGNING_KEY = "test-anon-signing-key"
@@ -40,39 +45,59 @@ function stubGetReport(store: InMemoryAnonStore) {
 
 function harness(): { store: InMemoryAnonStore; service: ClaimService } {
   const store = new InMemoryAnonStore()
+  let minted = 0
   const service = makeClaimService({
     repo: store.claimRepo(),
     anonTokenSigningKey: SIGNING_KEY,
     getReportForOwner: stubGetReport(store),
+    newClaimCode: () => `fresh-${++minted}`,
   })
   return { store, service }
 }
 
 /**
- * Seed a token + its held anon report carrying a per-report claim code (0005), returning the signed
- * token + ids. The code lives on the REPORT row now (not the token), which is the claim source of truth.
+ * Seed a token + its held anon report carrying the DIGEST of a per-report claim code - which is exactly
+ * what a pre-0091 plaintext row looks like after 0091's backfill. The digest lives on the REPORT row,
+ * the claim source of truth.
  */
-function seedPending(
+async function seedPending(
   store: InMemoryAnonStore,
   claimCode = "claim-xyz",
-): { tokenId: string; signed: string; reportId: string } {
+): Promise<{ tokenId: string; signed: string; reportId: string }> {
   const token = store.seedToken({ id: "tok-1" })
   const report = store.seedReport({
     id: "rep-1",
     anonSessionId: token.id,
     reporterUserId: null,
     status: "held",
-    claimCode,
+    claimCodeHash: await sha256Hex(claimCode),
   })
   return { tokenId: token.id, signed: signAnonToken(token.id, SIGNING_KEY), reportId: report.id }
 }
 
 describe("claimNudge", () => {
-  it("returns {claimCode, reportId} for the pending report tied to a valid token", async () => {
+  it("mints a FRESH code for the pending report and stores only its digest (F150)", async () => {
     const { store, service } = harness()
-    const { signed, reportId } = seedPending(store, "claim-xyz")
+    const { signed, reportId } = await seedPending(store, "claim-xyz")
+
     const nudge = await service.claimNudge(signed)
-    expect(nudge).toEqual({ claimCode: "claim-xyz", reportId })
+    expect(nudge).toEqual({ claimCode: "fresh-1", reportId })
+
+    const stored = store.reports.get(reportId)!
+    expect(stored.claimCodeHash).toBe(await sha256Hex("fresh-1"))
+    expect(JSON.stringify(stored)).not.toContain("fresh-1")
+  })
+
+  it("the freshly nudged code claims the report, and the superseded one no longer does", async () => {
+    const { store, service } = harness()
+    const { signed, reportId } = await seedPending(store, "claim-xyz")
+    const nudge = await service.claimNudge(signed)
+
+    await expect(service.claimReport("claim-xyz", "user-1")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    const claimed = await service.claimReport(nudge.claimCode, "user-1")
+    expect(claimed.report.id).toBe(reportId)
   })
 
   it("404s an invalid/unknown token", async () => {
@@ -84,7 +109,7 @@ describe("claimNudge", () => {
 
   it("404s a valid token with no pending report", async () => {
     const { store, service } = harness()
-    store.seedToken({ id: "tok-empty", claimCode: null })
+    store.seedToken({ id: "tok-empty" })
     await expect(
       service.claimNudge(signAnonToken("tok-empty", SIGNING_KEY)),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
@@ -94,7 +119,7 @@ describe("claimNudge", () => {
 describe("claimReport", () => {
   it("links the report to the user and returns the ReportDTO (mine=true)", async () => {
     const { store, service } = harness()
-    const { reportId } = seedPending(store, "claim-xyz")
+    const { reportId } = await seedPending(store, "claim-xyz")
 
     const res = await service.claimReport("claim-xyz", "user-1")
     expect(res.report.id).toBe(reportId)
@@ -105,9 +130,9 @@ describe("claimReport", () => {
 
   it("is single-use: a second claim with the same code 404s", async () => {
     const { store, service } = harness()
-    seedPending(store, "claim-xyz")
+    await seedPending(store, "claim-xyz")
     await service.claimReport("claim-xyz", "user-1")
-    // The code was consumed (cleared) on the first claim.
+    // The digest was consumed (cleared) on the first claim.
     await expect(service.claimReport("claim-xyz", "user-2")).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
@@ -122,22 +147,23 @@ describe("claimReport", () => {
 
   it("keeps anon_session_id as an audit trail after the claim (documented choice)", async () => {
     const { store, service } = harness()
-    const { reportId, tokenId } = seedPending(store, "claim-xyz")
+    const { reportId, tokenId } = await seedPending(store, "claim-xyz")
     await service.claimReport("claim-xyz", "user-1")
     expect(store.reports.get(reportId)!.anonSessionId).toBe(tokenId)
   })
 
   it("P2-5: two reports under ONE token are each independently claimable by their own code", async () => {
     const { store, service } = harness()
-    // One token, two held reports, each with its OWN per-report claim code (0005). Before the fix the
-    // single anon_tokens.claim_code column held only the LATEST code, so the first report was unclaimable.
+    // One token, two held reports, each with its OWN per-report claim code (0005), stored as digests
+    // (0091). Before the fix the single anon_tokens.claim_code column held only the LATEST code, so the
+    // first report was unclaimable.
     const token = store.seedToken({ id: "tok-multi" })
     const r1 = store.seedReport({
       id: "rep-a",
       anonSessionId: token.id,
       reporterUserId: null,
       status: "held",
-      claimCode: "code-a",
+      claimCodeHash: await sha256Hex("code-a"),
       createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
     })
     const r2 = store.seedReport({
@@ -145,7 +171,7 @@ describe("claimReport", () => {
       anonSessionId: token.id,
       reporterUserId: null,
       status: "held",
-      claimCode: "code-b",
+      claimCodeHash: await sha256Hex("code-b"),
       createdAt: new Date(Date.UTC(2026, 0, 1, 0, 1, 0)),
     })
 

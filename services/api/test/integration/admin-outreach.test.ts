@@ -1,26 +1,3 @@
-/**
- * Outreach pipeline data-layer integration test (Docker-gated). Exercises the REAL Drizzle/raw-SQL
- * OutreachRepository (makeDrizzleOutreachRepository) + the OutreachService end-to-end against a live
- * Postgres container via withPg, which applies the canonical migrations + the jurisdiction seed (so
- * reports / jurisdiction_contacts / jurisdictions / mail_* / outreach_state all exist with their real
- * constraints + FKs).
- *
- * Proven here against the real schema:
- *   - loadDigest aggregates a geoid's waiting reports per category + resolves the routing recipient
- *     (jurisdiction_contacts default -> per-category -> legacy contact_emails[]), returning null when
- *     there is nothing to send;
- *   - listCandidateGeoids returns geoids with BOTH waiting reports and a usable contact;
- *   - runForGeoid sends ONE digest via the (Fake) Mailer, records the out mail_threads/mail_messages +
- *     a 'sent' mail_events row, and stamps outreach_state.last_outreach_at;
- *   - the throttle window (outreach_state.last_outreach_at + throttleDays) prevents a re-send;
- *   - setOutreachState's OMITTED-vs-EXPLICIT-NULL semantics, and the claim RELEASE that depends on them.
- *     Both need a real Postgres: the clear was folded into a `COALESCE`, which cannot tell "keep" from
- *     "clear", so the reset silently no-op'd against the database while passing against the in-memory repo,
- *     which has always distinguished them. A unit test could not have caught it and cannot guard it.
- *
- * When Docker is unavailable the whole describe block SKIPS (describe.skipIf), so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
- */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
@@ -38,7 +15,6 @@ const GEOID = LA_CITY.geoid
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const THROTTLE_DAYS = 7
 
-/** Insert a report in the seeded jurisdiction. */
 async function insertReport(
   h: PgHarness,
   opts: { category: string; status?: string },
@@ -57,7 +33,6 @@ async function insertReport(
   `
 }
 
-/** Upsert a routing contact for the seeded jurisdiction (category NULL = default). */
 async function setContact(h: PgHarness, email: string): Promise<void> {
   await h.sql`
     INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at)
@@ -103,13 +78,12 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
 
   it("loadDigest aggregates waiting reports + resolves the contact (null when nothing to send)", async () => {
     const repo = makeDrizzleOutreachRepository(h.sql)
-    expect(await repo.loadDigest(GEOID)).toBeNull() // no reports, no contact
+    expect(await repo.loadDigest(GEOID)).toBeNull()
 
     await insertReport(h, { category: "trash" })
     await insertReport(h, { category: "trash" })
     await insertReport(h, { category: "hazard" })
-    await insertReport(h, { category: "other", status: "resolved" }) // not waiting
-    // Still null: waiting reports but no contact.
+    await insertReport(h, { category: "other", status: "resolved" })
     expect(await repo.loadDigest(GEOID)).toBeNull()
 
     await setContact(h, "clerk@lacity.gov")
@@ -124,9 +98,45 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
     const repo = makeDrizzleOutreachRepository(h.sql)
     expect(await repo.listCandidateGeoids()).not.toContain(GEOID)
     await insertReport(h, { category: "trash" })
-    expect(await repo.listCandidateGeoids()).not.toContain(GEOID) // no contact yet
+    expect(await repo.listCandidateGeoids()).not.toContain(GEOID)
     await setContact(h, "clerk@lacity.gov")
     expect(await repo.listCandidateGeoids()).toContain(GEOID)
+  })
+
+  describe("F107: a hard-bounced contact is excluded from every send path", () => {
+    async function markBounced(email: string): Promise<void> {
+      await h.sql`UPDATE jurisdiction_contacts SET bounced_at = now() WHERE email = ${email}`
+    }
+
+    it("loadDigest does NOT resolve a bounced default contact", async () => {
+      const repo = makeDrizzleOutreachRepository(h.sql)
+      await insertReport(h, { category: "trash" })
+      await setContact(h, "clerk@lacity.gov")
+      await markBounced("clerk@lacity.gov")
+      expect(await repo.loadDigest(GEOID)).toBeNull()
+    })
+
+    it("loadDigest falls through to a non-bounced per-category contact when the default bounced", async () => {
+      const repo = makeDrizzleOutreachRepository(h.sql)
+      await insertReport(h, { category: "trash" })
+      await setContact(h, "clerk@lacity.gov")
+      await markBounced("clerk@lacity.gov")
+      await h.sql`
+        INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at)
+        VALUES (${GEOID}, 'trash', 'sanitation@lacity.gov', now())
+      `
+      const digest = await repo.loadDigest(GEOID)
+      expect(digest?.toAddr).toBe("sanitation@lacity.gov")
+    })
+
+    it("listCandidateGeoids drops a geoid whose only contact is bounced", async () => {
+      const repo = makeDrizzleOutreachRepository(h.sql)
+      await insertReport(h, { category: "trash" })
+      await setContact(h, "clerk@lacity.gov")
+      expect(await repo.listCandidateGeoids()).toContain(GEOID)
+      await markBounced("clerk@lacity.gov")
+      expect(await repo.listCandidateGeoids()).not.toContain(GEOID)
+    })
   })
 
   it("runForGeoid sends one digest, records the out thread/message + 'sent' event, stamps outreach_state", async () => {
@@ -157,7 +167,6 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
   it("does NOT re-send inside the throttle window", async () => {
     await insertReport(h, { category: "trash" })
     await setContact(h, "clerk@lacity.gov")
-    // Seed a recent outreach (1 day ago, inside the 7-day window).
     await h.sql`
       INSERT INTO outreach_state (geoid, last_outreach_at)
       VALUES (${GEOID}, ${new Date(NOW.getTime() - 24 * 60 * 60 * 1000)})
@@ -169,7 +178,6 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
     expect(mailer.sent).toHaveLength(0)
   })
 
-  /** Read outreach_state straight out of Postgres (the fake cannot be wrong about this). */
   async function storedState(): Promise<{ last_outreach_at: Date | null; suppressed: boolean } | undefined> {
     const rows = await h.sql<{ last_outreach_at: Date | null; suppressed: boolean }[]>`
       SELECT last_outreach_at, suppressed FROM outreach_state WHERE geoid = ${GEOID}
@@ -184,7 +192,6 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
       await repo.setOutreachState(GEOID, { lastOutreachAt: stamped })
       expect((await storedState())?.last_outreach_at?.getTime()).toBe(stamped.getTime())
 
-      // The bug: folded into COALESCE, this was indistinguishable from "omitted" and kept the old value.
       const cleared = await repo.setOutreachState(GEOID, { lastOutreachAt: null })
       expect(cleared.lastOutreachAt).toBeNull()
       expect((await storedState())?.last_outreach_at).toBeNull()
@@ -195,7 +202,6 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
       const stamped = new Date(NOW.getTime() - 24 * 60 * 60 * 1000)
       await repo.setOutreachState(GEOID, { lastOutreachAt: stamped, suppressed: true })
 
-      // Patch ONLY suppressed: the timestamp must survive.
       const kept = await repo.setOutreachState(GEOID, { suppressed: false })
       expect(kept.lastOutreachAt?.getTime()).toBe(stamped.getTime())
       expect(kept.suppressed).toBe(false)
@@ -203,7 +209,6 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
       expect(afterKeep?.last_outreach_at?.getTime()).toBe(stamped.getTime())
       expect(afterKeep?.suppressed).toBe(false)
 
-      // Patch ONLY the timestamp (to null): suppressed must survive.
       await repo.setOutreachState(GEOID, { suppressed: true })
       const clearedTs = await repo.setOutreachState(GEOID, { lastOutreachAt: null })
       expect(clearedTs.lastOutreachAt).toBeNull()
@@ -225,7 +230,6 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
   })
 
   describe("claimOutreachWindow + release against the real schema", () => {
-    /** A mailer that rejects its first `failures` sends, then behaves normally. */
     class FlakyMailer extends FakeMailer {
       failures = 0
       override sendOutbound(email: OutboundEmail): Promise<{ messageId: string }> {
@@ -237,10 +241,6 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
       }
     }
 
-    /**
-     * The claim, narrowed to non-optional. It is optional on the SEAM (so a fake may decline it), but the
-     * Drizzle repo always implements it — asserting that here is itself part of the contract.
-     */
     function drizzleClaim(): (
       geoid: string,
       window: { at: Date; windowStart: Date },
@@ -279,14 +279,10 @@ describe.skipIf(!pg)("outreach pipeline (integration: real schema)", () => {
       mailer.failures = 1
 
       await expect(service(mailer).runForGeoid(GEOID)).rejects.toThrow("OCI mail transient 500")
-      // The claim stamped last_outreach_at BEFORE the send; the release must have cleared it back to NULL.
-      // With the COALESCE bug the release was a silent no-op and this row still read NOW — the jurisdiction
-      // then got no digest for the whole 7-day window.
       expect((await storedState())?.last_outreach_at).toBeNull()
       const failedEvents = await h.sql<{ type: string }[]>`SELECT type FROM mail_events`
       expect(failedEvents.map((e) => e.type)).toEqual(["failed"])
 
-      // The retry really goes out.
       const retry = await service(new FakeMailer()).runForGeoid(GEOID)
       expect(retry.sent).toBe(true)
       expect((await storedState())?.last_outreach_at?.getTime()).toBe(NOW.getTime())

@@ -1,7 +1,3 @@
-/**
- * Pure mapping for the mail domain: SQL-row -> record, record -> @civfix/shared DTO, plus the keyset
- * anchor and the thread-token mint. No I/O; shared by the Drizzle impl and the in-memory fake.
- */
 
 import type { CursorAnchor } from "./pagination.js"
 import { toPreview } from "./mail-preview.js"
@@ -19,7 +15,6 @@ import type {
   MailThreadListItemDTO,
 } from "@civfix/shared"
 
-/** A mail_threads row as selected back from SQL (snake_case). */
 export interface ThreadRowSelect {
   id: string
   thread_token: string
@@ -34,7 +29,6 @@ export interface ThreadRowSelect {
   created_at: Date
 }
 
-/** A mail_messages row as selected back from SQL. */
 export interface MessageRowSelect {
   id: string
   thread_id: string
@@ -47,9 +41,9 @@ export interface MessageRowSelect {
   message_id: string | null
   in_reply_to: string | null
   created_at: Date
+  truncated?: boolean
 }
 
-/** An outreach_state row as selected back from SQL. */
 export interface OutreachRowSelect {
   geoid: string
   last_outreach_at: Date | null
@@ -85,6 +79,7 @@ export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
     messageId: r.message_id,
     inReplyTo: r.in_reply_to,
     createdAt: r.created_at,
+    ...(r.truncated === true ? { truncated: true } : {}),
   }
 }
 
@@ -96,15 +91,8 @@ export function toOutreachRecord(r: OutreachRowSelect): OutreachStateRecord {
   }
 }
 
-/** Lowercase base32 (RFC 4648) alphabet. 256 = 8x32, so `byte & 31` maps uniformly with no modulo bias. */
 const TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
 
-/**
- * Generate a thread token (used when a caller does not supply one): 12 lowercase base32 chars (~60 bits).
- * Address-safe + short enough to read socially in the per-thread From address ({kind}-{token}@domain) we
- * send to municipal staff, while leaving collisions astronomically unlikely (the UNIQUE thread_token index
- * is the backstop). Each char is drawn unbiased from the 32-char alphabet via `byte & 31`.
- */
 export function mintThreadToken(): string {
   const bytes = new Uint8Array(12)
   globalThis.crypto.getRandomValues(bytes)
@@ -113,21 +101,11 @@ export function mintThreadToken(): string {
   return out
 }
 
-/** A message's display "who": its address, or a direction-based fallback. */
 export function deriveWho(direction: MailDirection, fromAddr: string | null): string {
   if (fromAddr && fromAddr.length > 0) return fromAddr
   return direction === "in" ? "Inbound" : "civfix"
 }
 
-/**
- * Map a thread + its latest message to MailThreadListItemDTO. `dir` falls back to "out" for a thread
- * with no messages yet (civfix originates outreach); `ts` is last_message_at (or created_at). Empty-string
- * fallbacks keep the DTO `.strict()` shape valid.
- *
- * `preview` is a bounded one-line preview (the shared mail-preview policy), not the message body: an
- * inbound municipal reply can be tens of KB and the list ships a page of them. The full body stays on the
- * thread DTO's `messages`.
- */
 export function toThreadListItem(
   thread: MailThreadRecord,
   latest: MailMessageRecord | null,
@@ -145,8 +123,6 @@ export function toThreadListItem(
     unread: thread.unread,
     status: thread.status,
     jurisdictionGeoid: thread.jurisdictionGeoid,
-    // Cross-entity clickability: the originating report for an outreach thread (null for inbound/cold
-    // threads that were not spawned from a report). Flows into MailThreadDTO via the toThreadDTO spread.
     reportId: thread.reportId,
   }
 }
@@ -156,13 +132,12 @@ export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
     id: message.id,
     who: deriveWho(message.direction, message.fromAddr),
     from: message.fromAddr ?? "",
-    // The OUT row's to_addr; empty for inbound (we are the recipient) or when unknown — it lets the admin
-    // reader name who an outbound-only thread was sent to.
     to: message.toAddr ?? "",
     dir: message.direction,
     body: message.body ?? "",
     ts: message.createdAt.toISOString(),
     attachments: message.attachments,
+    ...(message.truncated === true ? { truncated: true } : {}),
   }
 }
 
@@ -177,7 +152,6 @@ export function toThreadDTO(
   }
 }
 
-/** The keyset anchor for a thread (the coalesced last_message_at/created_at sort key + id tiebreak). */
 export function anchorOf(thread: MailThreadRecord): CursorAnchor {
   return { createdAt: thread.lastMessageAt ?? thread.createdAt, id: thread.id }
 }

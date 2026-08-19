@@ -1,10 +1,3 @@
-/**
- * notifications: in-app notification feed rows. `read_at` null means unread. Two indexes:
- *   - (user_id, created_at DESC) for the chronological feed;
- *   - a PARTIAL index on (user_id) WHERE read_at IS NULL for the cheap unread-count/badge query.
- * The partial index is created in 0001_core.sql (drizzle-kit cannot express a partial index cleanly
- * here), but it is also declared below via `.where(...)` so introspection/diff sees it.
- */
 
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
@@ -34,6 +27,10 @@ export const notifications = pgTable(
     index("notifications_user_unread_idx")
       .on(t.userId)
       .where(sql`${t.readAt} is null`),
+    index("notifications_feed_idx")
+      .on(t.userId, t.createdAt.desc(), t.id.desc())
+      .where(sql`type <> ALL (ARRAY['dm', 'cleanup_chat', 'group_chat', 'report_chat']::text[])`),
+    index("notifications_created_idx").on(t.createdAt),
   ],
 )
 

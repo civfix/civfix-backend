@@ -4,8 +4,8 @@
  *
  * "Save & route" persists a per-category routing contact for a GEOID (upserts jurisdiction_contacts +
  * mirrors the legacy contact_emails[]/report_form_url), sets contact_updated_at, marks the geoid's open
- * discovery task done, ROUTES the waiting pins (every waiting report -> acknowledged with a routed
- * timeline entry), and enqueues throttled outreach. Audit is the in-tx repo's responsibility (H4); the
+ * discovery task done, ROUTES the waiting pins in bounded batches (every waiting report -> acknowledged
+ * with a routed timeline entry), and enqueues throttled outreach. Audit is the in-tx repo's responsibility (H4); the
  * service returns the routing outcome so the route can audit + the test can assert. See endpoints
  * #13/#14/#15.
  *
@@ -47,8 +47,9 @@ export function makeJurisdictionContactsService(
         throw AppError.validation({ contacts: "At least one contact is required to route." })
       }
 
-      // The save + route + audit run atomically in the repo (H4); the outreach enqueue is a post-commit
-      // action, audited separately by the worker on send.
+      // The save + the first bounded routing batch + the audit run atomically in the repo (H4); the rest
+      // of the backlog drains in further bounded batches inside the repo (F094), and the outreach enqueue
+      // is a post-commit action, audited separately by the worker on send.
       const { routedReports, taskResolved } = await deps.repo.saveAndRoute(geoid, input, { actorId })
       const outreachEnqueued = await maybeEnqueueOutreach(geoid)
       return { geoid, routedReports, taskResolved, outreachEnqueued }

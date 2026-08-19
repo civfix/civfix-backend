@@ -120,7 +120,11 @@ export type CreateReportTxResult =
   | { kind: "replayed"; snapshot: ReportDTO }
 
 export interface ReportRepository {
-  findIdempotentSnapshot(key: string, scope: string): Promise<ReportDTO | null>
+  findIdempotentSnapshot(
+    key: string,
+    scope: string,
+    userOrAnon: string | null,
+  ): Promise<ReportDTO | null>
   createReportTx(args: CreateReportTxArgs): Promise<CreateReportTxResult>
   findReportById(id: string): Promise<ReportRecord | null>
   findReportByReferenceCode(code: string): Promise<ReportRecord | null>
@@ -151,7 +155,7 @@ export interface ReportRepository {
     reportId: string,
     userId: string,
     input: { status: ReportStatus; note: string },
-  ): Promise<"updated" | "not_found" | "forbidden">
+  ): Promise<"updated" | "not_found" | "forbidden" | "invalid_state">
   setVisibilityByOwner(
     reportId: string,
     userId: string,
@@ -181,12 +185,6 @@ export interface ReportDiscussionMeta {
   canForwardToCity: boolean
 }
 
-/**
- * D-Fmeta: the viewer-scoped report-chat membership + counts surfaced on the report-DETAIL DTO only
- * (never the list/pin payloads). `joined` = the viewer holds a report_chat_members row; `memberCount` /
- * `messageCount` are report-wide totals (independent of the viewer); `unread` is the viewer's unread
- * count of non-deleted messages from OTHERS after their read watermark, and is 0 for a non-member/anon.
- */
 export interface ReportChatMeta {
   joined: boolean
   memberCount: number
@@ -203,29 +201,16 @@ export interface ReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
+  presignPrivateMedia?: (
+    r2Key: string,
+    thumbKey: string | null,
+  ) => Promise<{ url: string; thumbUrl?: string }>
   loadLinkedEventsForReports?: (reportIds: string[]) => Promise<Map<string, LinkedEventView[]>>
   loadDiscussionMeta?: (reportId: string) => Promise<ReportDiscussionMeta>
-  /**
-   * D-Fmeta: load the viewer-scoped report-chat metadata for the report-DETAIL DTO. Called ONLY from
-   * getReport (the single-report + viewer path), never the list/pin builders, so those payloads leave
-   * the four chat* fields undefined. `viewerUserId` is null for an anonymous viewer (joined=false,
-   * unread=0, counts still valid). OPTIONAL: offline/fake wiring omits it and the fields stay undefined.
-   */
   loadReportChatMeta?: (reportId: string, viewerUserId: string | null) => Promise<ReportChatMeta>
   jobs?: Jobs
   isReportVerified?: (userId: string) => Promise<boolean>
-  // There is deliberately NO `awardReportHours` seam. Filing a report is not volunteer service, so
-  // createReport credits nothing; see the note at its former call site in report-service.ts and
-  // drizzle/0065_void_report_volunteer_hours.sql.
-  // Auto-join the report's creator as an "owner" member of its chat, once the report row is committed.
-  // Best-effort (see maybeJoinReportChatAsOwner): a failure here must NOT fail report creation.
   joinReportChatAsOwner?: (reportId: string, userId: string) => Promise<void>
-  /**
-   * D-D1: the report-chat SYSTEM-message emitter (the timeline choke point). After the owner resolve/
-   * reopen or hide/re-list writes its timeline row, the service fires `emit(...)` to mirror the event into
-   * the report's group chat + push the members. OPTIONAL + fully best-effort (the emitter swallows its own
-   * errors), so the status/visibility change is independent of the chat reflection.
-   */
   reportChatEmitter?: ReportChatSystemEmitter
   logger?: { warn: (obj: unknown, msg?: string) => void }
   newId?: () => string

@@ -32,7 +32,10 @@ import {
 import type { GatewayGroupChat } from "../ws/types.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
-import { forwardReportCityMention } from "../services/report-city-forward.js"
+import {
+  forwardReportCityMention,
+  makeCityForwardThrottle,
+} from "../services/report-city-forward.js"
 import {
   makeReportForwardAudit,
   type ReportForwardAudit,
@@ -47,7 +50,10 @@ import {
 } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { recordChatMentions } from "../services/chat-mentions.drizzle.js"
-import { makeDrizzleChatReadState } from "../services/chat-read-state.drizzle.js"
+import {
+  makeDrizzleChatReadState,
+  monotonicReadWatermarkUpdate,
+} from "../services/chat-read-state.drizzle.js"
 import {
   makeNotificationService,
   type NotificationService,
@@ -84,9 +90,6 @@ import type { ChatGatewayOverrides } from "./chat.routes.js"
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
 const REPORT_SEND_LIMIT = { capacity: 30, refillPerSec: 0.5 } as const
-
-const CITY_FORWARD_DEDUP_MS = 10 * 60 * 1000
-const CITY_FORWARD_DEDUP_MAX_KEYS = 5000
 
 export type ChatMentionSeam = Pick<
   GatewayChatMentions,
@@ -378,16 +381,24 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     },
   }
 
-  const resolveReadAt: (cleanupId: string, upToId: string) => Promise<Date> = useFakeChat
-    ? () => Promise.resolve(new Date())
-    : async (cleanupId, upToId) => {
-        const rows = await container.getDb().sql<{ created_at: Date }[]>`
-          SELECT created_at FROM chat_messages
-          WHERE id = ${upToId} AND cleanup_id = ${cleanupId} AND created_at >= now() - interval '90 days'
-          LIMIT 1
-        `
-        return rows[0]?.created_at ?? new Date()
-      }
+  const advanceCleanupWatermark: (
+    cleanupId: string,
+    userId: string,
+    upToId: string,
+  ) => Promise<void> = useFakeChat
+    ? (cleanupId, userId) => readState.markRead(cleanupId, userId, new Date())
+    : (cleanupId, userId, upToId) =>
+        monotonicReadWatermarkUpdate(
+          container.getDb().sql,
+          "cleanup_members",
+          { cleanup_id: cleanupId, user_id: userId },
+          {
+            messagesTable: "chat_messages",
+            messageId: upToId,
+            scopeColumn: "cleanup_id",
+            scopeId: cleanupId,
+          },
+        )
 
   const threadRecipientsOf: ThreadRecipientsOf = async (kind, id, senderId) => {
     if (kind === "dm") {
@@ -445,18 +456,9 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   const reportSendLimiter: RateLimiter = makeTokenBucketLimiter(REPORT_SEND_LIMIT)
 
-  const cityForwardSeen = new Map<string, number>()
-  const canForwardCity = (reportId: string, geoid: string): boolean => {
-    const key = `${reportId}:${geoid}`
-    const t = Date.now()
-    const until = cityForwardSeen.get(key)
-    if (until !== undefined && until > t) return false
-    cityForwardSeen.set(key, t + CITY_FORWARD_DEDUP_MS)
-    if (cityForwardSeen.size > CITY_FORWARD_DEDUP_MAX_KEYS) {
-      for (const [k, exp] of cityForwardSeen) if (exp <= t) cityForwardSeen.delete(k)
-    }
-    return true
-  }
+  const canForwardCity = makeCityForwardThrottle({
+    incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
+  })
 
   const notifyReportChatMembers =
     notificationService && conversationMutes
@@ -497,7 +499,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   let reportForwardAudit: ReportForwardAudit | undefined
   const onReportMessage: OnReportMessage | undefined = useFakeChat
     ? undefined
-    : async (reportId, message) => {
+    : async (reportId, message, actorUserId) => {
         if (notifyReportChatMembers) void notifyReportChatMembers(reportId, message).catch(() => {})
         reportOutboundMail ??= makeOutboundMailService({
           repo: makeDrizzleMailRepository(container.getDb().sql),
@@ -518,6 +520,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
             category: report.category,
             place: report.place,
             jurisdiction: report.jurisdiction,
+            actorUserId,
           },
           body,
           new Date(message.createdAt),
@@ -547,8 +550,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       ? { redeemTicket: (ticket: string) => makeWsTicketStore(wsTicketCache).redeem(ticket) }
       : {}),
     markRead: async (cleanupId, userId, upToId) => {
-      const at = await resolveReadAt(cleanupId, upToId)
-      await readState.markRead(cleanupId, userId, at)
+      await advanceCleanupWatermark(cleanupId, userId, upToId)
       await clearConversationBell("cleanup", cleanupId, userId)
     },
     presence,

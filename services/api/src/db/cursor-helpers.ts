@@ -1,10 +1,3 @@
-// Single home for keyset/cursor primitives shared across the persistence layer. Cursors are a DB
-// concern, not an admin one, so they live here; admin/pagination.ts re-exports the relevant bits.
-//
-// The keyset format is "<anchor>|<id>" where the id participates in a row-value comparison and is cast
-// `${id}::uuid` downstream by callers. A non-UUID id would raise a Postgres 22P02 -> unhandled 500, so a
-// malformed cursor degrades to "from the start" (null) rather than throwing — every parser below treats
-// absent/malformed input as null.
 
 export const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -17,23 +10,22 @@ export interface TimeCursor {
   id: string
 }
 
-// Parses an "<iso>|<id>" time cursor. With requireUuid (the default) a non-UUID id degrades to null.
-// A legacy timestamp-only cursor (no "|id", from an older client) anchors at the max uuid for that
-// instant so the row-value comparison degrades to created_at-only paging rather than 500ing.
+export const MIN_UUID = "00000000-0000-0000-0000-000000000000"
+export const MAX_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
 export function parseTimeCursor(
   cursor: string | null | undefined,
-  opts?: { requireUuid?: boolean },
+  opts?: { requireUuid?: boolean; direction?: "asc" | "desc" },
 ): TimeCursor | null {
   if (cursor === null || cursor === undefined || cursor === "") return null
   const requireUuid = opts?.requireUuid ?? true
-  // `|` cannot appear in an ISO timestamp or a UUID, so the first delimiter is the separator.
   const idx = cursor.indexOf("|")
+  if (idx === 0) return null
   if (idx < 0) {
     const at = new Date(cursor)
     if (Number.isNaN(at.getTime())) return null
-    return { at, id: "ffffffff-ffff-ffff-ffff-ffffffffffff" }
+    return { at, id: opts?.direction === "asc" ? MIN_UUID : MAX_UUID }
   }
-  if (idx === 0) return null
   const iso = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
   const at = new Date(iso)
@@ -52,8 +44,6 @@ export interface NameCursor {
   id: string
 }
 
-// Splits on the LAST "|" because a name may itself contain "|" — the id (a UUID) is the suffix. This
-// delimiter position differs from parseTimeCursor (first "|") on purpose; do not collapse them.
 export function parseNameCursor(cursor: string | null | undefined): NameCursor | null {
   if (cursor === null || cursor === undefined || cursor === "") return null
   const idx = cursor.lastIndexOf("|")
@@ -87,16 +77,6 @@ export function encodeNearCursor(c: NearCursor): string {
   return `${c.dist}|${c.id}`
 }
 
-/**
- * THE keyset page split: given rows fetched with `limit + 1`, drop the has-more probe row and derive
- * { items, nextCursor }. `encode` builds the cursor from the LAST EMITTED row and may return null when
- * that row cannot anchor a keyset (so the page simply ends).
- *
- * M-pagination: every repository that pages a keyset must go through this (or `paginate` below) rather
- * than re-deriving hasMore/slice/last — six repos each hand-rolled it with subtly different encoders,
- * which is how a page could advertise a cursor its own WHERE clause could not consume. The encoder is a
- * parameter precisely because the anchor differs per surface (time / display name / distance / offset).
- */
 export function pageWith<T>(
   rows: readonly T[],
   limit: number,
@@ -111,8 +91,6 @@ export function pageWith<T>(
   return { items, nextCursor: encode(last) }
 }
 
-// The time-cursor specialization of `pageWith`. `pick` extracts the keyset anchor (an `at` or `createdAt`
-// Date + id) from the last emitted row.
 export function paginate<T>(
   rows: readonly T[],
   limit: number,

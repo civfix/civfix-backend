@@ -1,52 +1,34 @@
-/**
- * chat.partition.maintenance cron: pre-create next month's chat_messages AND dm_messages partitions.
- *
- * chat_messages and dm_messages are declaratively RANGE-partitioned by created_at, one partition per
- * calendar month (see services/api/drizzle/0002_chat_partitioning.sql and 0009_dm_and_privacy.sql). A
- * DEFAULT partition guarantees inserts never fail, but rows in the default partition do not benefit from
- * per-month pruning/retention. This monthly cron creates the upcoming month's partition for BOTH tables
- * ahead of the rollover so new messages land in their own partition. It is the plan's section-7/12
- * monthly-partitioning maintenance.
- *
- * Safe/idempotent: the DDL is CREATE TABLE IF NOT EXISTS PARTITION OF ... with clock-derived bounds
- * (never user input), so running it repeatedly (or after the partition already exists) is a no-op.
- * NEVER throws: a failure is logged + reported (the report() is the alert) and the worker keeps running.
- *
- * GOTCHA: this cron is the only writer of next-month partitions. If the worker is DOWN across the 28th
- * through end-of-month, the upcoming month's partition is never pre-created — inserts then fall back to
- * the DEFAULT partition (both chat_messages and dm_messages declare one in 0002/0009), so writes never
- * FAIL, they just miss per-month pruning until the next run backfills. An ensure-failure is reported so
- * it is visible rather than a silent miss.
- *
- * The actual DDL lives in @civfix/api (ensureNextMonthChatPartition / ensureNextMonthDmPartition) so
- * partition bounds/naming have a SINGLE source shared with the API's migrations.
- */
 
-import { ensureNextMonthChatPartition, ensureNextMonthDmPartition } from "@civfix/api/media-repo"
+import { ensureChatPartitionWindow, ensureDmPartitionWindow } from "@civfix/api/media-repo"
 import type { Sql } from "@civfix/api/db"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
+export const PARTITION_MONTHS_AHEAD = 2
+
 export interface PartitionMaintenanceDeps extends JobObsDeps {
   sql: Sql
+  monthsAhead?: number
 }
 
-/**
- * Run the partition maintenance once: ensure next month's chat_messages AND dm_messages partitions.
- * Returns the chat partition table name (the DM partition is ensured alongside), or null on failure.
- */
+export interface PartitionMaintenanceResult {
+  chat: string[]
+  dm: string[]
+}
+
 export async function runPartitionMaintenance(
   deps: PartitionMaintenanceDeps,
-): Promise<string | null> {
+): Promise<PartitionMaintenanceResult> {
   const { log, report, now } = resolveJobObs(deps)
   const at = now()
+  const monthsAhead = deps.monthsAhead ?? PARTITION_MONTHS_AHEAD
   try {
-    const table = await ensureNextMonthChatPartition(deps.sql, at)
-    const dmTable = await ensureNextMonthDmPartition(deps.sql, at)
-    log("chat.partition.maintenance: ensured", { table, dmTable })
-    return table
+    const chat = await ensureChatPartitionWindow(deps.sql, at, monthsAhead)
+    const dm = await ensureDmPartitionWindow(deps.sql, at, monthsAhead)
+    log("chat.partition.maintenance: ensured", { chat, dm })
+    return { chat, dm }
   } catch (err) {
     report(err, { job: "chat.partition.maintenance" })
     log("chat.partition.maintenance: failed", { err: String(err) })
-    return null
+    throw err
   }
 }

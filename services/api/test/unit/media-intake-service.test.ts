@@ -21,11 +21,11 @@ function videoReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUplo
   return { kind: "video", contentType: "video/mp4", byteSize: 4 * 1024 * 1024, sha256: SHA, ...over }
 }
 
-function makeHarness() {
+function makeHarness(over: { logger?: { warn(obj: unknown, msg?: string): void } } = {}) {
   const repo = new InMemoryMediaRepository()
   const storage = new FakeStorage()
   const jobs = new FakeJobs()
-  const service: MediaIntakeService = makeMediaIntakeService({ repo, storage, jobs })
+  const service: MediaIntakeService = makeMediaIntakeService({ repo, storage, jobs, ...over })
   async function row(uploadId: string) {
     const found = await repo.findByUploadId(uploadId)
     if (!found) throw new Error(`no media row for uploadId ${uploadId}`)
@@ -132,17 +132,63 @@ describe("finalize", () => {
     expect(enqueued[0]?.opts?.singletonKey).toBe(created.uploadId)
   })
 
-  it("is idempotent: a double finalize keeps the media validating and dedupes the checks job by uploadId", async () => {
+  it("F087: a double finalize enqueues media.checks EXACTLY ONCE (the finalized_at CAS, not pg-boss dedup)", async () => {
+    const { storage, jobs, service, row } = makeHarness()
+    const created = await service.createUpload(imageReq(), {})
+    const asset = await row(created.uploadId)
+    await storage.put(asset.r2Key, new Uint8Array(32 * 1024), { contentType: "image/jpeg" })
+
+    const first = await service.finalize({ uploadId: created.uploadId }, {})
+    const second = await service.finalize({ uploadId: created.uploadId }, {})
+
+    expect(second).toEqual(first)
+    expect((await row(created.uploadId)).status).toBe("validating")
+    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(1)
+  })
+
+  it("F087: the CAS survives the whole processing window - a re-finalize while the row is still validating never re-enqueues", async () => {
     const { storage, jobs, service, row } = makeHarness()
     const created = await service.createUpload(imageReq(), {})
     const asset = await row(created.uploadId)
     await storage.put(asset.r2Key, new Uint8Array(32 * 1024), { contentType: "image/jpeg" })
 
     await service.finalize({ uploadId: created.uploadId }, {})
-    await service.finalize({ uploadId: created.uploadId }, {})
+    for (let i = 0; i < 5; i++) {
+      await service.finalize({ uploadId: created.uploadId }, {})
+    }
 
-    expect((await row(created.uploadId)).status).toBe("validating")
-    expect(jobs.jobsFor(MEDIA_CHECKS_JOB).length).toBeGreaterThanOrEqual(1)
+    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(1)
+    expect((await row(created.uploadId)).finalizedAt).toBeInstanceOf(Date)
+  })
+
+  it("F087: a FAILED media.checks enqueue KEEPS the finalize claim and returns success - the stuck sweep is the backstop", async () => {
+    const warnings: unknown[] = []
+    const { storage, jobs, service, row } = makeHarness({
+      logger: { warn: (obj: unknown) => warnings.push(obj) },
+    })
+    const created = await service.createUpload(imageReq(), {})
+    const asset = await row(created.uploadId)
+    await storage.put(asset.r2Key, new Uint8Array(32 * 1024), { contentType: "image/jpeg" })
+
+    const patched = jobs as unknown as { enqueue: (...a: unknown[]) => Promise<string> }
+    patched.enqueue = () => Promise.reject(new Error("queue down"))
+
+    // The rollback this used to do (clearFinalized) revoked a claim whose idempotent success a
+    // CONCURRENT finalize could already have been handed: that caller was told "validating, job queued"
+    // and would then wait forever on a row whose watermark had been nulled behind it - and a bound row
+    // with finalized_at NULL is invisible to BOTH sweeps (findOrphans skips bound rows, the stuck sweep
+    // requires the watermark), so nothing ever reclaimed it. The claim now stands; the row is exactly
+    // the shape the stuck sweep picks up.
+    const fin = await service.finalize({ uploadId: created.uploadId }, {})
+    expect(fin).toEqual({ mediaId: asset.id, status: "validating" })
+    expect((await row(created.uploadId)).finalizedAt).toBeInstanceOf(Date)
+    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
+    expect(warnings).toHaveLength(1)
+
+    // ...and the CAS is not replayable, so a client retry cannot mint a second job either.
+    const again = await service.finalize({ uploadId: created.uploadId }, {})
+    expect(again).toEqual(fin)
+    expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
   })
 
   it("rejects finalize for an unknown uploadId (404) without enqueueing", async () => {

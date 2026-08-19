@@ -13,13 +13,6 @@ import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { clientQuery } from "../helpers/query.js"
 import type { CleanupServiceOverrides } from "../../src/routes/cleanups.routes.js"
 
-/**
- * Route-level tests for the cleanups plugin, run with NO database: an in-memory CleanupRepository is
- * injected via buildServer(opts.cleanupOverrides) and a full in-memory auth bundle gives [auth] routes a
- * real bearer session. GET /cleanups/:id/messages reads through the container's chat seam (the
- * FakeChatService, into which the test persists messages). Exercised through app.inject. The
- * Drizzle/PostGIS path is covered by the Docker-gated integration test.
- */
 
 interface Harness {
   app: FastifyInstance
@@ -52,17 +45,13 @@ async function makeHarness(seed?: (repo: InMemoryCleanupRepository) => void): Pr
   if (seed) seed(repo)
   const cleanupOverrides: CleanupServiceOverrides = { repo }
 
-  // Default container has USE_FAKE_CHAT on in test, so container.chatService is a FakeChatService; grab a
-  // typed handle to it so the history test can persist messages the route then reads back.
   const container = buildContainer(env)
   const chat = container.chatService as FakeChatService
 
   const app = await buildServer({ env, container, authServices, cleanupOverrides })
 
-  // Sign in (organizer) through the real OTP flow (mobile -> bearer token in the body).
   const email = "organizer@example.com"
   const { token, userId } = await signIn(app, mailer, email)
-  // Register the signed-in user in the cleanup repo so the organizer person join resolves.
   repo.seedUser({ id: userId, displayName: "Organizer", handle: "org" })
 
   const h: Harness = { app, repo, chat, mailer, token, userId }
@@ -70,7 +59,6 @@ async function makeHarness(seed?: (repo: InMemoryCleanupRepository) => void): Pr
   return h
 }
 
-/** Sign a user in via the OTP flow and return their bearer token + id. */
 async function signIn(
   app: FastifyInstance,
   mailer: FakeMailer,
@@ -100,10 +88,8 @@ afterEach(async () => {
 })
 
 const FUTURE = new Date(Date.now() + 7 * 86_400_000).toISOString()
-// An already-started event: the only kind a host may mark complete (B14's time gate).
 const PAST = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
 
-/** Create a cleanup as the organizer and return its id. Defaults to a future date. */
 async function createCleanup(
   app: FastifyInstance,
   token: string,
@@ -155,12 +141,6 @@ describe("POST /cleanups", () => {
     expect(res.statusCode).toBe(401)
   })
 
-  // Regression for the "Host an event" 500: replays the BYTE-EXACT payload the mobile host-event form
-  // builds (app/host-event.tsx onPublish) — title, type "site", lat/lng, an ISO scheduledAt, the
-  // "name the spot" address line, a description, and a bring[] checklist. The whole valid host payload
-  // must create the cleanup and return 201 (the organizer auto-joins; address/bring/description echo
-  // back). The DB-backed createCleanupTx for this same shape is covered by the Docker-gated integration
-  // test (cleanups-chat-pg.test.ts).
   it("creates a cleanup from the exact mobile host-event payload (201)", async () => {
     const { app, token } = await makeHarness()
     const res = await app.inject({
@@ -215,7 +195,7 @@ describe("GET /cleanups and /cleanups/:id", () => {
     const body = res.json()
     expect(body.items.length).toBe(1)
     expect(body.items[0].title).toBe("Future sweep")
-    expect(body.items[0].joined).toBe(false) // anonymous viewer
+    expect(body.items[0].joined).toBe(false)
   })
 
   it("gets one cleanup and 404s a missing one", async () => {
@@ -233,8 +213,6 @@ describe("GET /cleanups and /cleanups/:id", () => {
   })
 
   it("treats a non-UUID id as a reference code (resolve-either): unknown code -> 404", async () => {
-    // Issue #56 resolve-either: GET /cleanups/:id accepts a UUID OR an EVENT reference_code. A non-UUID id
-    // is no longer a 422 — it is looked up by reference_code, and an unknown one is NOT_FOUND.
     const { app } = await makeHarness()
     const res = await app.inject({ method: "GET", url: "/v1/cleanups/EVENT-42-999999" })
     expect(res.statusCode).toBe(404)
@@ -260,11 +238,8 @@ describe("GET /cleanups and /cleanups/:id", () => {
 })
 
 describe("GET /cleanups query encoding (the previously-422 client calls)", () => {
-  // The shared client serializes near/bbox as a single JSON-encoded object param. These tests build the
-  // query exactly as the client's buildQuery does (clientQuery) and prove the backend now parses it.
   it("GET /cleanups?near=<json> succeeds (200) and orders by distance, nearest first", async () => {
     const { app, token } = await makeHarness()
-    // Two cleanups at different distances from the query point.
     await app.inject({
       method: "POST",
       url: "/v1/cleanups",
@@ -278,7 +253,6 @@ describe("GET /cleanups query encoding (the previously-422 client calls)", () =>
       payload: { title: "Far", type: "site", lat: 35.5, lng: -118.49, scheduledAt: FUTURE },
     })
 
-    // near as the client sends it: ?near=%7B%22lat%22%3A34%2C%22lng%22%3A-118.49%7D
     const res = await app.inject({
       method: "GET",
       url: `/v1/cleanups${clientQuery({ near: { lat: 34.0, lng: -118.49 }, when: "upcoming" })}`,
@@ -328,7 +302,6 @@ describe("POST /cleanups/:id/join and /leave", () => {
     const { app, token, mailer } = await makeHarness()
     const id = await createCleanup(app, token)
 
-    // Sign in a SECOND user (the joiner) for real via OTP.
     const joiner = await signIn(app, mailer, "joiner@example.com")
 
     const joinRes = await app.inject({
@@ -339,7 +312,6 @@ describe("POST /cleanups/:id/join and /leave", () => {
     expect(joinRes.statusCode).toBe(200)
     expect(joinRes.json()).toEqual({ joined: true, going: 2 })
 
-    // Re-join is idempotent: still going=2.
     const rejoin = await app.inject({
       method: "POST",
       url: `/v1/cleanups/${id}/join`,
@@ -400,7 +372,6 @@ describe("POST /cleanups/:id/cancel (host cancel)", () => {
     expect(res.statusCode).toBe(200)
     expect(res.json().status).toBe("cancelled")
 
-    // The cancelled event is excluded from the upcoming list (unlisted automatically).
     const list = await app.inject({ method: "GET", url: "/v1/cleanups?when=upcoming" })
     expect((list.json().items as { id: string }[]).some((c) => c.id === id)).toBe(false)
   })
@@ -525,7 +496,6 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
     })
     expect(asMember.statusCode).toBe(403)
 
-    // Unlike cancel (organizer-only), completion is open to the cohost — the person who then logs hours.
     const asCohost = await app.inject({
       method: "POST",
       url: `/v1/cleanups/${id}/complete`,
@@ -567,7 +537,6 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
     })
     expect(completeCancelled.statusCode).toBe(409)
 
-    // The other direction: host completion is forward-only, so cancel is not a way back out of it.
     const completed = await createCleanup(app, token, PAST)
     await app.inject({
       method: "POST",
@@ -622,11 +591,9 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     const { app, token, userId, chat, mailer } = await makeHarness()
     const id = await createCleanup(app, token)
 
-    // Persist two messages into the container's chat seam (as the gateway would).
     await chat.persist({ cleanupId: id, userId, body: "first" })
     await chat.persist({ cleanupId: id, userId, body: "second" })
 
-    // The organizer (a member) can read history, newest-first.
     const ok = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}/messages`,
@@ -636,7 +603,6 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     const body = ok.json()
     expect(body.items.map((m: { body: string }) => m.body)).toEqual(["second", "first"])
 
-    // A non-member (a freshly signed-in stranger) gets 403.
     const stranger = await signIn(app, mailer, "stranger@example.com")
     const forbidden = await app.inject({
       method: "GET",
@@ -657,19 +623,16 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
   describe("GET /cleanups/:id/attendees (who's going, anon-ok)", () => {
     it("scopes the roster to the viewer: follows-only until you RSVP, everyone after", async () => {
       const { app, token, userId, repo, mailer } = await makeHarness()
-      const id = await createCleanup(app, token) // organizer (userId) auto-joins; going = 1
+      const id = await createCleanup(app, token)
 
-      // A second user RSVPs (seed their person row so the name resolves).
       const joiner = await signIn(app, mailer, "joiner@example.com")
       repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
       await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
 
-      // Anonymous viewer: no names, but the real going count.
       const anon = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/attendees` })
       expect(anon.statusCode).toBe(200)
       expect(anon.json()).toMatchObject({ scope: "following", attendees: [], going: 2 })
 
-      // A non-member who follows the organizer sees ONLY the organizer (follows-only gate).
       const stranger = await signIn(app, mailer, "stranger@example.com")
       repo.seedFollow(stranger.userId, userId)
       const asStranger = await app.inject({
@@ -684,7 +647,6 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
       expect(sBody.attendees.map((p: { name: string }) => p.name)).toEqual(["Organizer"])
       expect(sBody.attendees[0].isFollowing).toBe(true)
 
-      // The joiner (a member) sees EVERYONE going, organizer first.
       const asJoiner = await app.inject({
         method: "GET",
         url: `/v1/cleanups/${id}/attendees`,
@@ -713,7 +675,6 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
       sent.push(await chat.persist({ cleanupId: id, userId, body: `f${i}` }))
     }
 
-    // limit 2 around f3: ceil(2/2)=1 at-or-older (f3 itself) + floor(2/2)=1 newer (f4), newest-first.
     const res = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}/messages?around=${sent[2]!.id}&limit=2`,
@@ -722,10 +683,9 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.items.map((m: { body: string }) => m.body)).toEqual(["f4", "f3"])
-    expect(body.nextCursor).toBe(sent[2]!.id) // f2/f1 remain older
-    expect(body.prevCursor).toBe(sent[3]!.id) // f5 remains newer
+    expect(body.nextCursor).toBe(sent[2]!.id)
+    expect(body.prevCursor).toBe(sent[3]!.id)
 
-    // Before-mode responses stay byte-identical: NO prevCursor key at all.
     const plain = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}/messages?limit=2`,
@@ -765,9 +725,6 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
     const id = await createCleanup(app, token)
     await chat.persist({ cleanupId: id, userId, body: "hello" })
 
-    // The shared typed client serializes a GET's input as BOTH path params and query, so it sends
-    // ?cleanupId=<id> on top of the URL path. A strict schema would 400; we accept + ignore it and the
-    // request still parses + returns history. (We send cleanupId AND before to prove both keys are fine.)
     const res = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}/messages?cleanupId=${id}&limit=10`,
@@ -796,7 +753,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     expect(promote.statusCode).toBe(200)
     expect(promote.json()).toEqual({ ok: true })
 
-    // The roster row now carries the cohost role (AttendeeDTO.role).
     const roster = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}/attendees`,
@@ -807,7 +763,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     )
     expect(jordan?.role).toBe("cohost")
 
-    // And the detail DTO surfaces the viewer's own role.
     const detail = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}`,
@@ -880,7 +835,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
     await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
 
-    // Pre-removal the member can read the room history.
     const before = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}/messages`,
@@ -896,7 +850,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true, going: 1 })
 
-    // The same cleanup_members row gated chat: history is now 403 for the removed user.
     const after = await app.inject({
       method: "GET",
       url: `/v1/cleanups/${id}/messages`,
@@ -921,7 +874,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
       payload: { role: "cohost" },
     })
 
-    // Cohost removing the organizer: 403.
     const removeOrg = await app.inject({
       method: "DELETE",
       url: `/v1/cleanups/${id}/members/${userId}`,
@@ -929,7 +881,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     })
     expect(removeOrg.statusCode).toBe(403)
 
-    // Cohost removes the plain member: 200, going drops to 2.
     const removeMember = await app.inject({
       method: "DELETE",
       url: `/v1/cleanups/${id}/members/${member.userId}`,
@@ -938,7 +889,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     expect(removeMember.statusCode).toBe(200)
     expect(removeMember.json()).toEqual({ ok: true, going: 2 })
 
-    // A plain (non-member now) user removing the cohost: 403.
     const asStranger = await app.inject({
       method: "DELETE",
       url: `/v1/cleanups/${id}/members/${cohost.userId}`,
@@ -981,7 +931,6 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     })
     expect(asMember.statusCode).toBe(403)
 
-    // Cancel stays organizer-only: the cohost gets 403.
     const cancelAsCohost = await app.inject({
       method: "POST",
       url: `/v1/cleanups/${id}/cancel`,
@@ -1055,18 +1004,25 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     expect(res.json().code).toBe("CONFLICT")
   })
 
-  it("still allows a cosmetic edit on a COMPLETED cleanup (roster stays frozen)", async () => {
+  it("F067: freezes the title of a COMPLETED cleanup but still allows a description edit", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token, PAST)
     await complete(app, token, id)
-    const res = await app.inject({
+    const frozen = await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}`,
       headers: auth(token),
       payload: { title: "Renamed after the fact" },
     })
-    expect(res.statusCode).toBe(200)
-    expect(res.json().title).toBe("Renamed after the fact")
+    expect(frozen.statusCode).toBe(409)
+    const ok = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: { description: "post-event recap" },
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json().description).toBe("post-event recap")
   })
 
   it("409s completing a CANCELLED cleanup", async () => {
@@ -1162,7 +1118,7 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     expect(toFar.statusCode).toBe(422)
   })
 
-  it("lets a full-object edit of a COMPLETED event re-submit its own past scheduledAt (200)", async () => {
+  it("F067: 409s a full-object edit of a COMPLETED event that changes title/scheduledAt", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token, PAST)
     await complete(app, token, id)
@@ -1172,7 +1128,6 @@ describe("cleanup state machine + scheduledAt bounds", () => {
       headers: auth(token),
       payload: { title: "Recorded", scheduledAt: PAST },
     })
-    expect(res.statusCode).toBe(200)
-    expect(res.json().title).toBe("Recorded")
+    expect(res.statusCode).toBe(409)
   })
 })

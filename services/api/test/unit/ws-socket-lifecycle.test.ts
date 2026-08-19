@@ -19,26 +19,6 @@ import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository } from "../helpers/chat.js"
 
-/**
- * The socket LIFECYCLE half of the gateway (ws/socket-lifecycle.ts), driven through the real Fastify
- * handler with a mock socket — no network, no `ws` client. Covers the parts that only exist between
- * "upgrade accepted" and "session established", which no other suite touches:
- *
- *   - HANDSHAKE FRAME BUFFER: a client sends `join` the instant the socket opens (the gateway emits no
- *     ready signal) while the handshake is still awaiting its auth store. Those frames must be buffered
- *     and drained, not dropped — and a REJECTED handshake must discard them unread.
- *   - CONNECTION CAPS: the per-user AND per-IP ceilings reject the (cap+1)-th socket, and a slot is
- *     released EXACTLY ONCE per socket (a double "close" must not hand out a free slot), including on the
- *     close-during-subscribe path where the handshake bails before the session exists. Both caps come
- *     from the exported constants, so a test can't keep passing against a number that has since moved.
- *   - BACKPRESSURE: wrapSocket drops only droppable frame types once the outbound buffer is over
- *     threshold, and the heartbeat terminates a socket that stays over threshold for
- *     WS_BUFFER_TERMINATE_TICKS ticks even while it answers pings. All THREE heartbeat outcomes are
- *     pinned separately — survive (responsive + drained), backpressure-terminate, missed-pong-terminate —
- *     so a backpressure "terminate" can't be a missed-pong terminate wearing its name.
- *   - SEND-LIMITER ROUTING: makeSendLimiter sends report keys to the injected report bucket and
- *     cleanup/dm keys to their own, so one room kind can never spend another's budget.
- */
 
 const WS_OPEN = 1
 const WS_CLOSED = 3
@@ -46,12 +26,10 @@ const WS_CLOSED = 3
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const ALICE = "11111111-1111-1111-1111-111111111111"
 
-/** A distinct uuid per index, for the per-IP cap test (many users sharing one address). */
 function userN(n: number): string {
   return `2222${String(n).padStart(4, "0")}-2222-2222-2222-222222222222`
 }
 
-/** A distinct address per index, so the per-USER cap is exercised without the per-IP cap interfering. */
 function ipN(n: number): string {
   return `198.51.100.${n + 1}`
 }
@@ -67,12 +45,6 @@ beforeEach(() => {
   chat = new WsChatService({ repo, pubsub: new InMemoryChatPubSub() })
 })
 
-/**
- * A minimal stand-in for the raw `ws` socket the gateway drives: records outbound frames, closes,
- * terminates and pings, and lets a test fire listeners ("message", "close") deterministically.
- * `respondToPing` models a client that answers the heartbeat — needed to reach the buffer-terminate
- * path, which is otherwise pre-empted by the missed-pong terminate.
- */
 class MockSocket {
   readyState = WS_OPEN
   bufferedAmount = 0
@@ -122,12 +94,10 @@ class MockSocket {
   }
 }
 
-/** ROOM's only member is Alice. */
 function memberOf(cleanupId: string, userId: string): Promise<boolean> {
   return Promise.resolve(cleanupId === ROOM && userId === ALICE)
 }
 
-/** An upgrade the auth hook already resolved (no cookie, no Origin — webOrigins:[] allows all). */
 function authedRequest(userId: string, ip = "203.0.113.7"): FastifyRequest {
   return {
     auth: { userId },
@@ -139,7 +109,6 @@ function authedRequest(userId: string, ip = "203.0.113.7"): FastifyRequest {
   } as unknown as FastifyRequest
 }
 
-/** An upgrade carrying no credential at all: the handshake must reject it. */
 function anonRequest(ip = "203.0.113.8"): FastifyRequest {
   return {
     ip,
@@ -152,7 +121,6 @@ function anonRequest(ip = "203.0.113.8"): FastifyRequest {
 
 type GatewayOptions = Parameters<typeof registerChatGateway>[1]
 
-/** Capture the /ws handler registered by the gateway so a test can drive it with a mock socket. */
 function captureGatewayHandler(
   opts: GatewayOptions,
 ): (socket: WebSocket, request: FastifyRequest) => void {
@@ -182,12 +150,10 @@ function baseOpts(extra: Partial<GatewayOptions> = {}): GatewayOptions {
   }
 }
 
-/** Drain the microtask queue AND the macrotask turn (real timers). */
 function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0))
 }
 
-/** Microtask-only drain, for the fake-timer tests where setTimeout never fires on its own. */
 async function microflush(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await Promise.resolve()
 }
@@ -197,8 +163,6 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
     handler(socket as unknown as WebSocket, authedRequest(ALICE))
-    // SYNCHRONOUSLY, i.e. strictly before the handshake IIFE's first await settles: the client's first
-    // frame. Without the pre-attached buffering listener `ws` would drop it on the floor.
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
 
@@ -236,21 +200,10 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
     expect(chat.roomSize(ROOM)).toBe(0)
   })
 
-  /**
-   * The pre-authentication buffer is bounded TWICE over: by frame COUNT and by total BYTES. The byte
-   * ceiling is the one that matters for an abusive socket — fastifyWebsocket allows a 64 KiB payload, so a
-   * count-only bound let an UNAUTHENTICATED socket park ~2 MB (32 x 64 KiB) in the process for the whole
-   * handshake, and the per-user/per-IP connection caps are only applied after the handshake resolves.
-   *
-   * Both cases are observed the same way: fill the buffer to its bound with junk, then send a legitimate
-   * `join` and assert it never took effect — the bound dropped it.
-   */
   it("stops buffering past the BYTE ceiling (a legit join behind 64 KiB of junk is dropped)", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
     handler(socket as unknown as WebSocket, authedRequest(ALICE))
-    // Two 32 KiB frames exactly fill WS_HANDSHAKE_BUFFER_BYTES while staying far under the frame COUNT
-    // bound, so only the byte accounting can be what rejects the join below.
     const filler = JSON.stringify("x".repeat(WS_HANDSHAKE_BUFFER_BYTES / 2 - 2))
     expect(Buffer.byteLength(filler)).toBe(WS_HANDSHAKE_BUFFER_BYTES / 2)
     socket.emit("message", filler)
@@ -266,7 +219,6 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
     handler(socket as unknown as WebSocket, authedRequest(ALICE))
-    // Tiny frames: the byte ceiling is nowhere near reached, so the count bound is what drops the join.
     for (let i = 0; i < WS_HANDSHAKE_FRAME_BUFFER; i += 1) socket.emit("message", '"x"')
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
@@ -300,10 +252,6 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
 })
 
 describe("per-user connection cap and slot release", () => {
-  /**
-   * Open one socket for ALICE. Each call uses its OWN source address (ipN) so the per-IP ceiling can
-   * never be what rejects a socket here — these tests are about MAX_CONNECTIONS_PER_USER alone.
-   */
   let opened = 0
   async function open(
     handler: (socket: WebSocket, request: FastifyRequest) => void,
@@ -331,8 +279,6 @@ describe("per-user connection cap and slot release", () => {
   })
 
   it("rejects the (cap+1)-th socket for the same IP even though every user is under their own cap", async () => {
-    // MAX_CONNECTIONS_PER_IP distinct users behind one NAT, one socket each: nobody is near the per-user
-    // ceiling, so only the IP counter can reject the next one.
     const handler = captureGatewayHandler(baseOpts())
     const shared = "203.0.113.44"
     for (let i = 0; i < MAX_CONNECTIONS_PER_IP; i += 1) {
@@ -348,7 +294,6 @@ describe("per-user connection cap and slot release", () => {
     expect(rejected.framesOfType("error")[0]).toMatchObject({ code: "RATE_LIMITED" })
     expect(rejected.closes[0]?.code).toBe(1008)
 
-    // Same fresh user from a DIFFERENT address is admitted: the rejection was the IP bucket, not the user.
     const elsewhere = new MockSocket()
     handler(
       elsewhere as unknown as WebSocket,
@@ -364,8 +309,6 @@ describe("per-user connection cap and slot release", () => {
     const sockets: MockSocket[] = []
     for (let i = 0; i < MAX_CONNECTIONS_PER_USER; i += 1) sockets.push(await open(handler))
 
-    // A double close (ws can emit close after an error, and the gateway registers two listeners) must
-    // not decrement the counter twice — that would hand out a slot the user does not hold.
     sockets[0]!.emit("close")
     sockets[0]!.emit("close")
     await flush()
@@ -377,8 +320,6 @@ describe("per-user connection cap and slot release", () => {
   })
 
   it("a socket that dies DURING subscribeUserChannel releases its slot (and its subscription)", async () => {
-    // Hold subscribeUser pending so the socket can close inside the handshake's last await, before any
-    // "close" listener that could release the slot exists.
     const racing = new FakeUserChannel()
     let release: (() => void) | undefined
     const realSubscribe = racing.subscribeUser.bind(racing)
@@ -397,22 +338,13 @@ describe("per-user connection cap and slot release", () => {
     await flush()
 
     expect(racing.subscriberCount(ALICE)).toBe(0)
-    // The slot came back: a full cap's worth of sockets still opens afterwards.
     const later: MockSocket[] = []
     for (let i = 0; i < MAX_CONNECTIONS_PER_USER; i += 1) later.push(await open(handler))
     for (const s of later) expect(s.closes).toHaveLength(0)
   })
 })
 
-/**
- * A socket that dies while handleJoin is still awaiting joinRoom used to leak: the close handler walks
- * `session.joined`, which does not yet contain the room, and the join then registers the DEAD connection in
- * the room's Set afterwards — so the Set never reaches 0 and the room's pub/sub subscription (and the
- * ChatConnection) leaked for the process lifetime. Presence self-heals in 90s; the room Set does not.
- * The fix is `session.closed`, re-checked after every await in handleJoin.
- */
 describe("socket close DURING an in-flight join", () => {
-  /** Delegating ChatService whose joinRoom parks until `gate.release()` is called. */
   function gatedChat(gate: { release?: () => void }): GatewayOptions["chat"] {
     return {
       joinRoom: (roomKey: string, conn: unknown, userId: string) =>
@@ -446,7 +378,7 @@ describe("socket close DURING an in-flight join", () => {
 
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
-    expect(gate.release).toBeTypeOf("function") // parked inside joinRoom
+    expect(gate.release).toBeTypeOf("function")
 
     if (opts.close) {
       socket.readyState = WS_CLOSED
@@ -465,8 +397,6 @@ describe("socket close DURING an in-flight join", () => {
   })
 
   it("un-does it with NO presence dep too — the post-joinRoom check is the one that must catch it", async () => {
-    // Presence-less on purpose: the later `session.closed` check inside the presence branch also unwinds
-    // the room, so a presence-wired test alone cannot tell whether the FIRST post-joinRoom check exists.
     await joinThenSettle({ close: true, withPresence: false })
 
     expect(chat.roomSize(ROOM)).toBe(0)
@@ -494,7 +424,6 @@ describe("outbound backpressure (wrapSocket)", () => {
     conn.send(JSON.stringify({ type: "presence_snapshot", cleanupId: ROOM, userIds: [] }))
     expect(socket.sent).toHaveLength(0)
 
-    // Content frames are never dropped: losing one loses a message.
     conn.send(message)
     conn.send(JSON.stringify({ type: "ack", clientId: "c1" }))
     conn.send(JSON.stringify({ type: "error", code: "BAD_FRAME", message: "nope" }))
@@ -514,7 +443,6 @@ describe("outbound backpressure (wrapSocket)", () => {
     const socket = new MockSocket()
     socket.bufferedAmount = WS_BUFFER_DROP_THRESHOLD + 1
     const conn = wrapSocket(socket as unknown as WebSocket)
-    // A member pasted a frame into chat: the droppable word appears in the BODY, after the real type.
     conn.send(
       JSON.stringify({
         type: "message",
@@ -533,12 +461,6 @@ describe("outbound backpressure (wrapSocket)", () => {
     expect(socket.sent).toHaveLength(0)
   })
 
-  /**
-   * The three heartbeat outcomes are pinned as a set, because they are mutually confusable: every one of
-   * them ends in `terminate()`, so a single "it terminated" assertion cannot say WHY. The survive case
-   * below establishes that an answered ping really does keep a socket alive indefinitely — which is what
-   * makes the backpressure case's terminate attributable to the buffer rather than to a missed pong.
-   */
   it("a responsive socket with a drained buffer is NEVER terminated, however many ticks pass", async () => {
     vi.useFakeTimers()
     try {
@@ -568,12 +490,10 @@ describe("outbound backpressure (wrapSocket)", () => {
       for (let tick = 1; tick < WS_BUFFER_TERMINATE_TICKS; tick += 1) {
         await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
         expect(socket.terminated).toBe(0)
-        // The client is responsive — this is the backpressure path, not the missed-pong one.
         expect(socket.pings).toBe(tick)
       }
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
       expect(socket.terminated).toBe(1)
-      // Terminated at the TOP of the tick, before that tick's ping: the buffer check short-circuits.
       expect(socket.pings).toBe(WS_BUFFER_TERMINATE_TICKS - 1)
     } finally {
       vi.useRealTimers()
@@ -589,8 +509,6 @@ describe("outbound backpressure (wrapSocket)", () => {
       handler(socket as unknown as WebSocket, authedRequest(ALICE))
       await microflush()
 
-      // Tick 1 pings and clears `alive`; with no pong back, tick 2 terminates — with the buffer EMPTY the
-      // whole time, so this is the liveness path and not the backpressure one.
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
       expect(socket.terminated).toBe(0)
       expect(socket.pings).toBe(1)
@@ -629,8 +547,6 @@ describe("send limiter routes each room kind to its own bucket", () => {
 
   beforeEach(() => {
     consumed = []
-    // Exhausted on purpose: a send that reaches this bucket is answered RATE_LIMITED before any query,
-    // which is exactly what makes the routing observable.
     reportBucket = {
       tryConsume(key: string): boolean {
         consumed.push(key)
@@ -639,9 +555,22 @@ describe("send limiter routes each room kind to its own bucket", () => {
     }
   })
 
-  async function sendFrame(frame: Record<string, unknown>): Promise<MockSocket> {
+  const reportMember: GatewayOptions["reportChat"] = {
+    isMember: () => Promise.resolve(true),
+    advanceReadWatermark: () => Promise.resolve(),
+  }
+
+  async function sendFrame(
+    frame: Record<string, unknown>,
+    over: Partial<GatewayOptions> = {},
+  ): Promise<MockSocket> {
     const handler = captureGatewayHandler(
-      baseOpts({ reportSendLimiter: reportBucket, reportVisible: () => Promise.resolve(true) }),
+      baseOpts({
+        reportSendLimiter: reportBucket,
+        reportVisible: () => Promise.resolve(true),
+        reportChat: reportMember,
+        ...over,
+      }),
     )
     const socket = new MockSocket()
     handler(socket as unknown as WebSocket, authedRequest(ALICE))
@@ -663,6 +592,15 @@ describe("send limiter routes each room kind to its own bucket", () => {
     expect(socket.framesOfType("error")[0]).toMatchObject({ code: "RATE_LIMITED" })
   })
 
+  it("F042: an UNAUTHORIZED report send creates no bucket key (authorization gates first)", async () => {
+    const socket = await sendFrame(
+      { type: "send", roomKind: "report", cleanupId: ROOM, clientId: "c1", body: "hi" },
+      { reportChat: { isMember: () => Promise.resolve(false), advanceReadWatermark: () => Promise.resolve() } },
+    )
+    expect(consumed).toEqual([])
+    expect(socket.framesOfType("error")[0]).toMatchObject({ code: "FORBIDDEN" })
+  })
+
   it("a CLEANUP send never touches the report bucket", async () => {
     const socket = await sendFrame({ type: "send", cleanupId: ROOM, clientId: "c1", body: "hi" })
     expect(consumed).toEqual([])
@@ -678,7 +616,6 @@ describe("send limiter routes each room kind to its own bucket", () => {
       body: "hi",
     })
     expect(consumed).toEqual([])
-    // No dm deps wired, so it stops at authorization — past the limiter, which is the point.
     expect(socket.framesOfType("error")[0]).toMatchObject({ code: "FORBIDDEN" })
   })
 
@@ -691,7 +628,95 @@ describe("send limiter routes each room kind to its own bucket", () => {
       body: "hi",
     })
     expect(consumed).toEqual([])
-    // No groupChat deps wired, so it fails closed at authorization — again, past the limiter.
     expect(socket.framesOfType("error")[0]).toMatchObject({ code: "FORBIDDEN" })
+  })
+})
+
+describe("F038: post-handshake frames are dispatched in wire order, one at a time", () => {
+  function orderedPersistChat(gate: { release?: () => void }): GatewayOptions["chat"] {
+    return {
+      joinRoom: (...a: unknown[]) => (chat.joinRoom as (...x: unknown[]) => unknown)(...a),
+      leaveRoom: (...a: unknown[]) => (chat.leaveRoom as (...x: unknown[]) => unknown)(...a),
+      persist: (input: { body?: string }) => {
+        if (input.body === "first") {
+          return new Promise((resolve) => {
+            gate.release = () =>
+              resolve((chat.persist as (i: unknown) => unknown)(input))
+          })
+        }
+        return (chat.persist as (i: unknown) => unknown)(input)
+      },
+      history: (...a: unknown[]) => (chat.history as (...x: unknown[]) => unknown)(...a),
+      broadcast: (...a: unknown[]) => (chat.broadcast as (...x: unknown[]) => unknown)(...a),
+      broadcastEvent: (...a: unknown[]) => (chat.broadcastEvent as (...x: unknown[]) => unknown)(...a),
+    } as unknown as GatewayOptions["chat"]
+  }
+
+  it("a slow first send blocks the second, then both ack in order (no interleaving)", async () => {
+    const gate: { release?: () => void } = {}
+    const handler = captureGatewayHandler(baseOpts({ chat: orderedPersistChat(gate) }))
+    const socket = new MockSocket()
+    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    await flush()
+
+    socket.emit("message", JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "first" }))
+    socket.emit("message", JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c2", body: "second" }))
+    await flush()
+
+    expect(gate.release).toBeTypeOf("function")
+    expect(socket.framesOfType("ack")).toHaveLength(0)
+
+    gate.release!()
+    await flush()
+
+    const acks = socket.framesOfType("ack")
+    expect(acks.map((a) => a.clientId)).toEqual(["c1", "c2"])
+    expect(repo.count(ROOM)).toBe(2)
+  })
+})
+
+describe("F022: the heartbeat re-authorizes joined rooms and evicts a revoked member", () => {
+  it("drops a socket from a room once its membership is revoked", async () => {
+    vi.useFakeTimers()
+    try {
+      let allowed = true
+      const isMember = (cleanupId: string, userId: string): Promise<boolean> =>
+        Promise.resolve(cleanupId === ROOM && userId === ALICE && allowed)
+      const handler = captureGatewayHandler(baseOpts({ isMember }))
+      const socket = new MockSocket()
+      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      await microflush()
+      socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
+      await microflush()
+      expect(chat.roomSize(ROOM)).toBe(1)
+
+      allowed = false
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
+
+      expect(chat.roomSize(ROOM)).toBe(0)
+      expect(await presence.online(ROOM)).toEqual([])
+      expect(socket.framesOfType("error").some((f) => f.code === "FORBIDDEN")).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps a still-authorized socket joined across many heartbeats", async () => {
+    vi.useFakeTimers()
+    try {
+      const handler = captureGatewayHandler(baseOpts())
+      const socket = new MockSocket()
+      handler(socket as unknown as WebSocket, authedRequest(ALICE))
+      await microflush()
+      socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
+      await microflush()
+
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
+
+      expect(chat.roomSize(ROOM)).toBe(1)
+      expect(socket.framesOfType("error")).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

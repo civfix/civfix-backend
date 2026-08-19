@@ -31,6 +31,7 @@ import type { ChatMessageDTO, ChatMessageKind, RoomKind, WsServerMessage } from 
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { parseUserMentions } from "./discussion-mentions.js"
 import { broadcastMessageUpdate } from "../ws/frame-handler.js"
+import { neutralizeChatViewerFields } from "./chat-viewer-fields.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 import type { ChatRepository } from "./chat-repository.drizzle.js"
 import type { DmRepository } from "./dm-repository.drizzle.js"
@@ -136,7 +137,12 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
 
   /** Fire-and-forget the {type:"message_update"} frame to the room key (SAME helper the delete routes use). */
   function fireMessageUpdate(roomKind: RoomKind, roomId: string, message: ChatMessageDTO): void {
-    broadcastMessageUpdate({ broadcastEvent: deps.broadcastEvent }, roomKind, roomId, message)
+    broadcastMessageUpdate(
+      { broadcastEvent: deps.broadcastEvent },
+      roomKind,
+      roomId,
+      neutralizeChatViewerFields(message),
+    )
   }
 
   async function editDmMessage(input: EditMessageInput): Promise<ChatMessageDTO> {

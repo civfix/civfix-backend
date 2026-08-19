@@ -1,15 +1,3 @@
-/**
- * Admin system-health route (Phase 2).
- *
- *   GET /admin/system/health  service-health summary (SystemHealthResponse).
- *
- * Read-only operator view (no audit written for a read). The requireOperator guard is applied by
- * routes/admin/index.ts. This route wires the real dependency probes (system-health-probes.ts) from the
- * container into the SystemHealthService (which assembles the panel + degrades gracefully on any single
- * probe failure). Probes are only built when DATABASE_URL / REDIS_URL are configured, so the offline /
- * all-fakes boot never opens a connection that does not exist. Tests inject a SystemHealthService via the
- * override so no live infra is needed.
- */
 
 import type { SystemHealthResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
@@ -21,17 +9,12 @@ import {
 import { makeSystemHealthProbes } from "../../services/admin/system-health-probes.js"
 import { route } from "../../versioning/route.js"
 
-/**
- * Optional injected system-health service (tests). When present the route uses it directly instead of
- * assembling one from the container, so the whole HTTP flow runs offline with no DB / Redis / pg-boss.
- */
 export interface SystemRouteOverrides {
   service: SystemHealthService
 }
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected system-route override (tests). See SystemRouteOverrides. */
     systemOverrides?: SystemRouteOverrides
   }
 }
@@ -40,8 +23,6 @@ export async function registerAdminSystemRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  // The container-backed service is stable across requests (env + probe closures don't change), so build
-  // it once on first use rather than reassembling the whole graph on every /admin/system/health.
   let cached: SystemHealthService | null = null
 
   function service(): SystemHealthService {
@@ -60,10 +41,10 @@ export async function registerAdminSystemRoutes(
 
     cached = makeSystemHealthService({
       probes,
+      log: (err, meta) => app.log.warn({ err, ...meta }, "admin system-health probe failed"),
       env: {
         glitchTipConfigured:
           typeof env.GLITCHTIP_DSN === "string" && env.GLITCHTIP_DSN.length > 0,
-        // The clients hardcode the CARTO Voyager raster basemap, so a tile source is always advertised.
         tileCdnConfigured: true,
         mailerIsFake: env.USE_FAKE_MAILER,
         jobsIsFake: env.USE_FAKE_JOBS,

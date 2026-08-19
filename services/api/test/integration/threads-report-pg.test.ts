@@ -49,19 +49,29 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
 
   /** Insert a report (category + addr drive the thread title) and return its id. */
   async function newReport(
-    opts: { category?: string; type?: string; addr?: string | null; deleted?: boolean } = {},
+    opts: {
+      category?: string
+      type?: string
+      addr?: string | null
+      deleted?: boolean
+      status?: string
+      visibility?: string
+      reporterId?: string | null
+    } = {},
   ): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
-      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell, addr, deleted_at)
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, visibility, h3_cell, addr, reporter_user_id, deleted_at)
       VALUES (
         ${randomUUID()},
         ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326),
         'manual',
         ${opts.category ?? "trash"},
         ${opts.type ?? "dump"},
-        'submitted',
+        ${opts.status ?? "published"},
+        ${opts.visibility ?? "public"},
         'h0',
         ${opts.addr ?? null},
+        ${opts.reporterId ?? null},
         ${opts.deleted ? new Date() : null}
       )
       RETURNING id
@@ -175,5 +185,24 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
 
     const threads = await service().listThreads(me)
     expect(threads.items.some((x) => x.id === reportId)).toBe(false)
+  })
+
+  it("a non-public report drops from a non-owner member's inbox but stays in the reporter's (finding #45)", async () => {
+    const reporter = await newUser("Held Reporter")
+    const member = await newUser("Held Member")
+    const reportId = await newReport({
+      category: "trash",
+      addr: "77 Held St",
+      status: "submitted",
+      reporterId: reporter,
+    })
+    await joinReportChat(reportId, reporter, new Date("2026-06-01T09:00:00.000Z"))
+    await joinReportChat(reportId, member, new Date("2026-06-01T09:00:00.000Z"))
+
+    const memberThreads = await service().listThreads(member)
+    expect(memberThreads.items.some((x) => x.id === reportId)).toBe(false)
+
+    const reporterThreads = await service().listThreads(reporter)
+    expect(reporterThreads.items.some((x) => x.id === reportId)).toBe(true)
   })
 })

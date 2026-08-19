@@ -37,6 +37,15 @@ function stripSqlComments(sql: string): string {
   return sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ")
 }
 
+/**
+ * Drop dollar-quoted bodies (a PL/pgSQL DO block or function body). Their BEGIN/END are block
+ * structure, and transaction-control statements are illegal inside one, so a partition-window
+ * loop (DO $ DECLARE ...; BEGIN ... END $) must not read as opening a txn.
+ */
+function stripDollarQuoted(sql: string): string {
+  return sql.replace(/\$(\w*)\$[\s\S]*?\$\1\$/g, " ")
+}
+
 describe("migrations contain no transaction-control statements", () => {
   const files = orderMigrationFiles(readdirSync(DRIZZLE_DIR))
 
@@ -45,7 +54,7 @@ describe("migrations contain no transaction-control statements", () => {
   })
 
   it.each(files)("%s drives no BEGIN / COMMIT / ROLLBACK of its own", (name) => {
-    const body = stripSqlComments(readFileSync(join(DRIZZLE_DIR, name), "utf8")).toLowerCase()
+    const body = stripDollarQuoted(stripSqlComments(readFileSync(join(DRIZZLE_DIR, name), "utf8"))).toLowerCase()
     for (const keyword of TXN_KEYWORDS) {
       // Statement-initial only: `;`/newline/start-of-file, then the keyword as a whole word. This keeps
       // identifiers that merely contain the word (a `commit_at` column, `rollback_reason`) legal.

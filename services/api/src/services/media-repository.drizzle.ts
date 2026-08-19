@@ -1,5 +1,5 @@
 
-import { and, eq } from "drizzle-orm"
+import { and, eq, isNull, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import type { Db } from "../db/client.js"
 import type {
@@ -7,7 +7,6 @@ import type {
   MediaRepository,
   NewMediaAsset,
 } from "./media-intake-service.js"
-import type { MediaStatus } from "@civfix/shared"
 
 function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
   return {
@@ -27,6 +26,7 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     reportId: row.reportId,
     chatMessageId: row.chatMessageId,
     postId: row.postId,
+    finalizedAt: row.finalizedAt,
     createdAt: row.createdAt,
   }
 }
@@ -68,16 +68,19 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
       return row ? toView(row) : null
     },
 
-    async setStatusByUploadId(
-      uploadId: string,
-      status: MediaStatus,
-      expectedStatus?: MediaStatus,
-    ): Promise<MediaAssetView | null> {
-      const predicate =
-        expectedStatus === undefined
-          ? eq(mediaAssets.uploadId, uploadId)
-          : and(eq(mediaAssets.uploadId, uploadId), eq(mediaAssets.status, expectedStatus))
-      const rows = await db.update(mediaAssets).set({ status }).where(predicate).returning()
+    /**
+     * The finalize compare-and-set (0087). A conditional UPDATE is the whole control: the ONE caller whose
+     * statement finds finalized_at NULL flips it and gets the row back; every concurrent or later finalize
+     * matches zero rows and gets null, so the media.checks enqueue cannot be replayed. Read-then-write
+     * would race, and the old status-CAS could not work at all — the row is already 'validating' for the
+     * entire processing window, so the guard was true every time.
+     */
+    async markFinalized(uploadId: string): Promise<MediaAssetView | null> {
+      const rows = await db
+        .update(mediaAssets)
+        .set({ finalizedAt: sql`now()` })
+        .where(and(eq(mediaAssets.uploadId, uploadId), isNull(mediaAssets.finalizedAt)))
+        .returning()
       const row = rows[0]
       return row ? toView(row) : null
     },

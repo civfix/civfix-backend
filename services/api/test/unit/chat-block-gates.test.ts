@@ -33,12 +33,12 @@ function message(): ChatMessageDTO {
   } as unknown as ChatMessageDTO
 }
 
-function notificationSpy(): { createNotification: ReturnType<typeof vi.fn>; recipients: () => string[] } {
-  const createNotification = vi.fn(() => Promise.resolve())
+function notificationSpy(): { createNotifications: ReturnType<typeof vi.fn>; recipients: () => string[] } {
+  const createNotifications = vi.fn(() => Promise.resolve())
   return {
-    createNotification,
+    createNotifications,
     recipients: () =>
-      createNotification.mock.calls.map((c) => (c as unknown as [string])[0]),
+      createNotifications.mock.calls.flatMap((c) => (c as unknown as [string[]])[0]),
   }
 }
 
@@ -46,7 +46,7 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
   const build = (isBlockedEitherWay: (a: string, b: string) => Promise<boolean>) => {
     const spy = notificationSpy()
     const notify = makeReportChatNotifier({
-      notificationService: { createNotification: spy.createNotification } as never,
+      notificationService: { createNotifications: spy.createNotifications } as never,
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `report:${id}`,
@@ -92,7 +92,7 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
    */
   it("REQUIRED dep: a construction that omits the blocks seam does not typecheck", () => {
     const withoutBlocks = {
-      notificationService: { createNotification: () => Promise.resolve() } as never,
+      notificationService: { createNotifications: () => Promise.resolve() } as never,
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k: "report", id: string) => `report:${id}`,
@@ -101,7 +101,7 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
     expect(makeReportChatNotifier(withoutBlocks)).toBeTypeOf("function")
 
     const withoutBlocksGroup = {
-      notificationService: { createNotification: () => Promise.resolve() } as never,
+      notificationService: { createNotifications: () => Promise.resolve() } as never,
       groupRepo: { listMemberIds: () => Promise.resolve([ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k: "group", id: string) => `group:${id}`,
@@ -123,7 +123,7 @@ describe("M11 batch seam: blockedIdsFor replaces the per-candidate gate, with th
     const spy = notificationSpy()
     const single = vi.fn(() => Promise.resolve(false))
     const notify = makeReportChatNotifier({
-      notificationService: { createNotification: spy.createNotification } as never,
+      notificationService: { createNotifications: spy.createNotifications } as never,
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `report:${id}`,
@@ -158,7 +158,7 @@ describe("M11: the group-room fan-out skips blocked pairs", () => {
   it("drops the blocked member and keeps the rest", async () => {
     const spy = notificationSpy()
     const notify = makeGroupChatNotifier({
-      notificationService: { createNotification: spy.createNotification } as never,
+      notificationService: { createNotifications: spy.createNotifications } as never,
       groupRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `group:${id}`,

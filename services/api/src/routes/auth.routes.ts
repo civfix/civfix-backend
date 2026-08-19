@@ -62,22 +62,6 @@ export const OTP_REQUEST_RATE_LIMIT = perHost({ max: 5, timeWindow: "1 minute" }
 export const OTP_VERIFY_RATE_LIMIT = perHost({ max: 10, timeWindow: "1 minute" })
 export const OAUTH_RATE_LIMIT = perHost({ max: 20, timeWindow: "1 minute" })
 
-/**
- * Server-issued sign-in nonces for the NATIVE Apple/Google flows (H1).
- *
- * Native sign-in hands us an ID token minted by Apple/Google for a client the app controls. The token
- * alone proves only that SOMEONE authenticated at some point — it is a bearer artifact that lives in
- * process memory, crash dumps and logs for its whole `exp` window, and it is replayable by anyone who
- * gets a copy. The nonce is what makes it a proof of a LIVE, THIS-REQUEST authentication: the client
- * asks us for a nonce, passes it into the platform sign-in sheet (which binds it into the token's
- * `nonce` claim), and returns it with the token.
- *
- * Previously the "expected" nonce was read from the same request body that carried the token, which is
- * a tautology — an attacker replaying a stolen token simply echoes the nonce it contains. So the nonce
- * must be (a) MINTED HERE, from the CSPRNG, and (b) SINGLE-USE. Both, plus store-it-hashed, are exactly
- * the guarantees auth/single-use-secret.ts provides (the same machine behind WS handshake tickets), so
- * the atomicity reasoning is not restated here — see that module.
- */
 const OAUTH_NONCE_TTL_SECONDS = 10 * 60
 const OAUTH_NONCE_PREFIX = "oauthnonce:"
 
@@ -93,35 +77,11 @@ async function mintOAuthNonce(cache: CacheClient): Promise<{ nonce: string; expi
   return { nonce: secret, expiresInSeconds }
 }
 
-/**
- * Atomically consume a presented nonce, returning the value the caller may use as the EXPECTED nonce, or
- * null when it was never issued, has expired, or has already been spent. The nonce carries no payload —
- * the presented value IS what the ID token's `nonce` claim must match.
- */
 async function redeemOAuthNonce(cache: CacheClient, presented: string): Promise<string | null> {
   const issued = await oauthNonces(cache).redeem(presented)
   return issued === null ? null : presented
 }
 
-/**
- * Redeem the nonce carried by a native sign-in request, returning the value to compare against the ID
- * token's `nonce` claim — or undefined when there is nothing to compare and the transition gate allows it.
- *
- * TRANSITION (OAUTH_REQUIRE_NONCE, default OFF). The end state is a mandatory nonce; shipping that
- * immediately is a total outage. The shared contract still types `nonce` as optional, no shipped native
- * build sends one, and recovery would need an EAS build plus App Store review — days during which nobody
- * can sign in with Apple or Google. So this follows the same accept-both shape as WS_ALLOW_QUERY_TOKEN:
- *
- *   - a nonce that IS presented is ALWAYS redeemed against the server-issued store, single-use. An
- *     updated client therefore gets the full H1 protection the moment it ships, with no flag flip.
- *   - a nonce that is ABSENT is refused once the flag is on, and until then is allowed with a warning.
- *
- * What this never does is fall back to the original bug — comparing the token's nonce claim against a
- * value from the same request body, which proves nothing. Absent means "no nonce check", not "check the
- * attacker's own value".
- *
- * Flip OAUTH_REQUIRE_NONCE=true once the nonce-sending mobile build is the floor in the store.
- */
 async function requireIssuedNonce(
   cache: CacheClient,
   presented: string | undefined,
@@ -150,8 +110,6 @@ export async function registerAuthRoutes(
 ): Promise<void> {
   const services = app.authServices
   const webOrigins = container.env.WEB_ORIGINS
-  // ONE csrf instance for both halves: the tokens minted below are verified by this same preHandler, so
-  // they must be signed with the key this container was built from (see auth/csrf.ts).
   const csrf = container.csrf
   const csrfProtect = csrf.protect
 
@@ -174,9 +132,6 @@ export async function registerAuthRoutes(
     await issueSession(services, csrf, request, reply, userId)
   })
 
-  // Mint a server-issued, single-use sign-in nonce (H1). Registered as a raw route rather than through
-  // the shared endpoint registry because the contract package is versioned separately; the path mirrors
-  // the versioned /v1/auth/* surface so the typed client can adopt it without moving.
   app.post(
     "/v1/auth/oauth/nonce",
     { config: { rateLimit: OAUTH_RATE_LIMIT } },
@@ -188,8 +143,6 @@ export async function registerAuthRoutes(
 
   route(app, "appleSignIn", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const body = parse(AppleSignInRequestSchema, request.body)
-    // Redeem BEFORE verifying the token: the nonce is what makes this a live sign-in rather than a
-    // replay, and it must be spent exactly once whatever the token turns out to be.
     const expectedNonce = await requireIssuedNonce(services.cache, body.nonce, {
       required: container.env.OAUTH_REQUIRE_NONCE,
       log: request.log,
@@ -259,11 +212,6 @@ export async function registerAuthRoutes(
       state: auth.state,
       ...(startQuery.redirect !== undefined ? { redirect: startQuery.redirect } : {}),
     }
-    // SameSite=None is REQUIRED for this one: Apple returns via a CROSS-SITE POST
-    // (response_mode=form_post), which a Lax cookie is not sent on. None in turn requires Secure, i.e.
-    // https — always true in production. Outside production the browser DROPS a None+Secure cookie over
-    // plain http and every callback then fails "Invalid OAuth state", so dev degrades to Lax; Apple cannot
-    // post to a localhost callback anyway, so the web flow is only exercisable against an https deployment.
     const httpsCrossSite = isProd()
     reply.setCookie(OAUTH_STATE_COOKIE, JSON.stringify(stash), {
       signed: true,
@@ -311,12 +259,6 @@ export async function registerAuthRoutes(
   })
 
   route(app, "logout", { preHandler: csrfProtect }, async (request, reply) => {
-    // Logout is keyed on the PRESENTED credential, not on a resolved session. An expired / revoked /
-    // banned session still leaves httpOnly cookies the SPA cannot clear itself, and requireAuth would 401
-    // and leave them behind forever; those requests are logged out best-effort instead. A request carrying
-    // NO credential has nothing to revoke or clear and stays 401, which is what the contract's
-    // auth:"required" pins. CSRF is unaffected: a cross-site POST bearing the victim's cookies presents a
-    // session cookie, so csrfProtect enforced the session-bound token before this handler ran.
     const token = presentedSessionToken(request)
     if (token === null) {
       throw AppError.unauthorized()
@@ -366,11 +308,6 @@ export async function registerAuthRoutes(
     assertNoSlur(body.displayName, "displayName")
     assertNoSlur(body.bio ?? null, "bio")
 
-    // Responsibility split (see auth/handle-policy.ts): the ROUTE owns the slur / reserved / jurisdiction
-    // gate, the STORE owns format + uniqueness + the rename cooldown. The change predicate comes from the
-    // policy module rather than a second inline copy, and uniqueness is NOT pre-checked here — the store
-    // resolves it (plus a unique-violation catch) on the same request, so a duplicate query per rename
-    // bought nothing but a way for the two answers to drift.
     const current = await services.users.findById(userId)
     if (handleChanged(current?.handle ?? null, body.handle)) {
       assertNoSlur(body.handle, "handle")
@@ -379,6 +316,7 @@ export async function registerAuthRoutes(
       }
     }
 
+    const avatarUrlDurable = (container.env.R2_PUBLIC_BASE ?? "").length > 0
     const updated = await services.users.updateProfile(userId, {
       handle: body.handle,
       displayName: body.displayName,
@@ -387,7 +325,9 @@ export async function registerAuthRoutes(
       ...(body.avatarUploadId !== undefined
         ? {
             avatarUploadId: body.avatarUploadId,
-            presignAvatar: (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
+            ...(avatarUrlDurable
+              ? { presignAvatar: (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC) }
+              : {}),
           }
         : {}),
     })
@@ -424,6 +364,9 @@ async function issueSessionForUser(
   user: UserRecord,
   opts: IssueSessionOptions = {},
 ): Promise<void> {
+  if ((await services.users.accountStatus(user.id)) === "banned") {
+    throw AppError.forbidden("This account has been banned.")
+  }
   const kind = opts.forceKind ?? clientKind(request)
   const token = await services.sessions.createSession(user.id, [user.role], {
     userAgent: request.headers["user-agent"] ?? null,
@@ -439,8 +382,6 @@ async function issueSessionForUser(
   }
 
   setSessionCookie(reply, token, ttl)
-  // The CSRF token is DERIVED from the session just minted (see auth/csrf.ts), so it is only valid for
-  // this session and cannot be planted by anything that merely writes cookies for the site.
   const csrfToken = await csrf.tokenForSession(token)
   setCsrfCookie(reply, csrfToken, ttl)
   if (opts.webRedirectTo !== undefined) {
@@ -457,8 +398,6 @@ async function buildSessionCheck(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<SessionCheckResponse> {
-  // Always present: enabledProvidersFromConfig always includes "email", so the list cannot be empty even
-  // after the apple filter, and the old `length > 0 ? … : {}` implied an optionality no client ever saw.
   const providerList =
     clientKind(request) === "web" && !services.oauth.appleWebEnabled
       ? services.enabledProviders.filter((p) => p !== "apple")
@@ -485,14 +424,6 @@ async function buildSessionCheck(
   }
 }
 
-/**
- * The CSRF token a cookie-transport client should use, refreshed on every session check.
- *
- * It is always RE-DERIVED from the presented session rather than echoed back from the cookie: an
- * existing cookie may be a pre-binding random value (or one planted by an attacker), and returning it
- * would keep that value alive forever. Re-deriving means the first session check after a client picks
- * up this build hands it the correct, session-bound token and overwrites the cookie with it.
- */
 async function webCsrfToken(
   csrf: Csrf,
   request: FastifyRequest,
@@ -503,6 +434,14 @@ async function webCsrfToken(
 
   const sessionToken = sessionCookieValue(request)
   if (sessionToken === null) return null
+
+  const expiresAtMs = request.sessionExpiresAtMs
+  if (expiresAtMs !== undefined) {
+    const remainingSeconds = Math.ceil((expiresAtMs - Date.now()) / 1000)
+    if (remainingSeconds > 0) {
+      setSessionCookie(reply, sessionToken, remainingSeconds)
+    }
+  }
 
   const token = await csrf.tokenForSession(sessionToken)
   setCsrfCookie(reply, token, services.sessions.ttl)

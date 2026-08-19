@@ -87,12 +87,8 @@ let mail: SpyOutboundMail
 let visibleReports: Set<string>
 let sendLimiter: RateLimiter | undefined
 let cityForwardSeen: Map<string, number>
-// Membership repo fake (D-C3): report rooms are member-only to post/type; ack advances a watermark.
-// When left undefined, deps.reportChat is omitted and the send/typing gate FAILS CLOSED (the group
-// lane's stance): with no membership source there is nothing to authorize a post against.
 let reportChat: GatewayReportChat | undefined
 
-/** GatewayReportChat fake: `isMember` drives the member-only send/typing gate; the ack write is spied. */
 function makeReportChat(
   isMember: boolean,
 ): GatewayReportChat & { advanceReadWatermark: ReturnType<typeof vi.fn> } {
@@ -102,20 +98,20 @@ function makeReportChat(
   }
 }
 
-function canForwardCity(reportId: string, geoid: string): boolean {
-  const key = `${reportId}:${geoid}`
+function canForwardCity(reportId: string, geoid: string, actorUserId: string): Promise<boolean> {
+  const key = `${actorUserId}:${reportId}:${geoid}`
   const t = Date.now()
   const until = cityForwardSeen.get(key)
-  if (until !== undefined && until > t) return false
+  if (until !== undefined && until > t) return Promise.resolve(false)
   cityForwardSeen.set(key, t + 10 * 60 * 1000)
-  return true
+  return Promise.resolve(true)
 }
 
-const onReportMessage: OnReportMessage = async (reportId, message) => {
+const onReportMessage: OnReportMessage = async (reportId, message, actorUserId) => {
   const body = typeof message.body === "string" ? message.body : ""
   await forwardReportCityMention(
     mail,
-    { reportId, category: "graffiti", place: "SF", jurisdiction: SF_JURISDICTION },
+    { reportId, category: "graffiti", place: "SF", jurisdiction: SF_JURISDICTION, actorUserId },
     body,
     new Date(message.createdAt),
     { canForward: canForwardCity },
@@ -188,7 +184,6 @@ describe("report chat gateway", () => {
   })
 
   it("refuses WS JOIN and SEND for a non-visible (held) report and persists nothing", async () => {
-    // A MEMBER fake, so the only possible reason for the refusal below is visibility.
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
@@ -320,14 +315,10 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
   })
 
   it("FAILS CLOSED on report SEND and TYPING when no membership source is wired", async () => {
-    // deps.reportChat omitted entirely. The gate that decides who may post does not exist, so there is
-    // nothing to authorize against and the frame is refused — the group lane's stance. (This used to
-    // fall through to "authorized", so a wiring that forgot reportChat made the room world-writable.)
     reportChat = undefined
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
-    // The public READ join is unaffected — only send/typing require the membership source.
     expect(session.joined.has(`report:${REPORT}`)).toBe(true)
     await handleClientFrame(
       session,
@@ -346,7 +337,6 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    // A second socket in the same room to observe the broadcast (excludeConnId omits the sender).
     const observerConn = new MockConnection("B")
     const observer = sessionFor(ALICE, observerConn)
     await handleClientFrame(observer, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
@@ -357,16 +347,12 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     )
     await new Promise((r) => setTimeout(r, 0))
 
-    // persisted through the shipped deps.chat.persist({ roomKind: "report" }) path
     expect(chatRepo.count(REPORT)).toBe(1)
-    // ack to the sender
     const acks = conn.framesOfType("ack")
     expect(acks).toHaveLength(1)
     expect((acks[0] as { message: { roomKind?: string } }).message.roomKind).toBe("report")
-    // broadcast (excludeConnId) reaches the other socket, not the sender
     expect(observerConn.framesOfType("message")).toHaveLength(1)
     expect(conn.framesOfType("message")).toHaveLength(0)
-    // @city hook still fires
     expect(mail.reportCalls).toHaveLength(1)
     expect(mail.reportCalls[0]!.geoid).toBe("0600001")
   })
@@ -392,7 +378,6 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     reportChat = makeReportChat(false)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    // Observer joins to prove no typing frame is fanned out.
     const observerConn = new MockConnection("B")
     const observer = sessionFor(ALICE, observerConn)
     await handleClientFrame(observer, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))

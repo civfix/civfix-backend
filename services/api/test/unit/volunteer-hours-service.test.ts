@@ -34,8 +34,6 @@ function makeCleanups(
   return {
     load: () => Promise.resolve(view),
     listMemberIds: () => Promise.resolve(members),
-    // Role derivation for tests: the view's organizer is 'organizer', listed cohosts are 'cohost',
-    // any other listed member is 'member', everyone else null (not attending).
     roleOf: (_cleanupId: string, userId: string) => {
       if (view !== null && view.organizerUserId === userId) return Promise.resolve("organizer" as const)
       if (cohosts.includes(userId)) return Promise.resolve("cohost" as const)
@@ -45,7 +43,6 @@ function makeCleanups(
   }
 }
 
-/** Records every bell the service rings, and can be told to throw for one specific recipient. */
 interface RecordingNotifier extends Pick<NotificationService, "createNotification"> {
   sent: { userId: string; type: string; vars: Record<string, string | number> }[]
 }
@@ -61,7 +58,6 @@ function makeNotifier(throwFor?: string): RecordingNotifier {
         type: input.type,
         vars: (input.vars ?? {}) as Record<string, string | number>,
       })
-      // The service ignores the return value; a cast keeps the fake from restating the whole DTO.
       return Promise.resolve({} as Awaited<ReturnType<NotificationService["createNotification"]>>)
     },
   }
@@ -72,7 +68,6 @@ function makeService(opts: {
   view: CleanupHoursView | null
   members?: string[]
   cohosts?: string[]
-  // Per-user verification map; a plain boolean applies to every caller (default: verified).
   verified?: boolean | Record<string, boolean>
   notifier?: Pick<NotificationService, "createNotification">
 }): VolunteerHoursService {
@@ -86,18 +81,10 @@ function makeService(opts: {
   })
 }
 
-/** Shorthand: entries crediting the same `hours` to each listed user (the old bulk behavior). */
 function flat(userIds: string[], hours: number): { userId: string; hours: number }[] {
   return userIds.map((userId) => ({ userId, hours }))
 }
 
-/**
- * Filing a report is NOT volunteer service. It used to auto-award 0.1h with `source='report'`, which
- * ranked report filings on the public jurisdiction leaderboard and printed them on signed PDF service
- * transcripts. The write path is gone and the capability was removed from the repository interface
- * (drizzle/0065_void_report_volunteer_hours.sql voids the historical rows), so what is pinned here is the
- * ABSENCE — plus the read filters that keep a surviving pre-0065 row out of anything that counts.
- */
 describe("volunteer hours: a report filing is not volunteer service", () => {
   it("the repository exposes NO way to credit a report", () => {
     const repo = new InMemoryVolunteerHoursRepository()
@@ -115,13 +102,9 @@ describe("volunteer hours: a report filing is not volunteer service", () => {
       entries: [{ userId: HOST, hours: 2 }],
     })
 
-    // The owner's own transcript defaults to ITEMISED_SOURCES, which excludes 'report'...
     const page = await repo.listEntries({ userId: HOST, cursor: null, limit: 50 })
     expect(page.items.map((e) => e.source)).toEqual(["event"])
 
-    // ...and the certificate read excludes it too, which is what keeps a report filing off a signed,
-    // publicly verifiable document. That read can never be corrected after issue, so it does not rely on
-    // the 0065 void having run.
     const cert = await repo.entriesForCertificate({
       userId: HOST,
       geoid: null,
@@ -147,8 +130,6 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL, DAVE] })
 
-    // M21: the acting host is deliberately NOT among the credited entries — self-crediting is refused
-    // (see the dedicated test below); a co-host or operator has to credit the organizer.
     const result = await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: HOST,
@@ -165,10 +146,6 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     expect((await repo.totalsFor(CAROL)).totalHours).toBe(1)
   })
 
-  // --- M21: a verified host could credit THEMSELVES ------------------------------------------------
-  // Nothing excluded the actor from `entries`, and the organizer is auto-inserted as a cleanup member
-  // at create time, so they always passed the membership filter. A verified host could therefore mint
-  // unlimited hours onto the PUBLIC jurisdiction leaderboard with no second party anywhere in the flow.
   it("M21: refuses to credit the acting host themselves (403)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
@@ -197,7 +174,6 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
         ],
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
-    // Nothing is credited: the check runs before any repo write.
     expect((await repo.totalsFor(HOST)).totalHours).toBe(0)
     expect((await repo.totalsFor(BOB)).totalHours).toBe(0)
   })
@@ -274,7 +250,6 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
 
   it("rejects an unverified ACTOR even when the organizer is verified (D4 rule change)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
-    // The organizer (HOST) is verified, but the acting cohost (BOB) is not: 403.
     const service = makeService({
       repo,
       view: doneEvent,
@@ -304,11 +279,10 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
         actorId: HOST,
         entries: [
           { userId: BOB, hours: 2 },
-          { userId: CAROL, hours: 2 }, // never joined
+          { userId: CAROL, hours: 2 },
         ],
       }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
-    // Nothing partial was written.
     expect((await repo.totalsFor(BOB)).totalHours).toBe(0)
   })
 
@@ -331,6 +305,21 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
         ],
       }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
+  })
+
+  it("F069: 422s a sub-centihour credit that would round to 0.00 and trip the numeric(6,2) CHECK", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: [{ userId: BOB, hours: 0.001 }] }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [{ userId: BOB, hours: 3.14159 }],
+    })
+    const page = await repo.entriesForCertificate({ userId: BOB, geoid: null, from: null, to: null, limit: 10 })
+    expect(page.items[0]?.hours).toBe(3.14)
   })
 
   it("rejects an event that is not done yet (409)", async () => {
@@ -373,7 +362,6 @@ describe("volunteer hours: leaderboard", () => {
       geoid: GEOID_A,
       entries: flat([HOST, BOB, CAROL], 1),
     })
-    // A small second credit for Bob, so the ranking has a fractional total to order on.
     await repo.logEventHours({
       actorId: HOST,
       cleanupId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
@@ -388,9 +376,6 @@ describe("volunteer hours: leaderboard", () => {
     })
 
     const service = makeService({ repo, view: null })
-    // LeaderboardQuerySchema.geoid became REQUIRED in @civfix/shared 0.31.0 (it is echoed on the
-    // response and drives the viewer-rank projection), so the query object carries it too even though
-    // the service takes the geoid positionally. See the route's T1 fix.
     const page = await service.leaderboard(GEOID_A, { geoid: GEOID_A })
 
     expect(page.geoid).toBe(GEOID_A)
@@ -431,17 +416,10 @@ describe("volunteer hours: leaderboard", () => {
     expect(second.entries[0]?.rank).toBe(3)
   })
 
-  /**
-   * C18 — the leaderboard filter is `show_volunteer_hours IS NOT FALSE`, never a bare truth test. This is
-   * the tripwire for the deploy-day failure: every account that exists today holds NULL, so a
-   * three-valued `AND u.show_volunteer_hours` returns the empty set and the board is blank everywhere.
-   */
   it("C18: excludes an explicit opt-OUT and keeps a never-chosen (NULL) user on the board", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    // NULL = never chosen (every existing account). Stays visible.
     repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null, verified: false })
-    // Explicit opt-in.
     repo.seedUser(BOB, {
       name: "Bob",
       handle: null,
@@ -449,7 +427,6 @@ describe("volunteer hours: leaderboard", () => {
       verified: false,
       showVolunteerHours: true,
     })
-    // Explicit opt-out: off the board entirely.
     repo.seedUser(CAROL, {
       name: "Carol",
       handle: null,
@@ -471,7 +448,6 @@ describe("volunteer hours: leaderboard", () => {
     const service = makeService({ repo, view: null })
     const page = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25 })
     expect(page.entries.map((e) => e.userId)).toEqual([HOST, BOB])
-    // Ranks are computed over the FILTERED set, so the opt-out does not leave a gap at #1.
     expect(page.entries.map((e) => e.rank)).toEqual([1, 2])
     expect(page.participantCount).toBe(2)
   })
@@ -503,18 +479,15 @@ describe("volunteer hours: leaderboard", () => {
     expect(full.viewerRank).toBe(2)
     expect(full.viewerHours).toBe(3)
 
-    // Deep page: the count is not recomputed (absent), the viewer standing still is.
     const deep = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25, offset: 25 }, BOB)
     expect(deep.participantCount).toBeUndefined()
     expect(deep.viewerRank).toBe(2)
 
-    // Anonymous: viewer fields are ABSENT (not null) — null would mean "you are not ranked here".
     const anon = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25 })
     expect(anon.participantCount).toBe(3)
     expect(anon.viewerRank).toBeUndefined()
     expect(anon.viewerHours).toBeUndefined()
 
-    // A signed-in viewer with no hours here IS ranked-absent: null, present, and distinguishable.
     const stranger = await service.leaderboard(GEOID_A, { geoid: GEOID_A, limit: 25 }, DAVE)
     expect(stranger.viewerRank).toBeNull()
     expect(stranger.viewerHours).toBeNull()
@@ -538,14 +511,6 @@ describe("volunteer hours: leaderboard", () => {
     expect(preview.viewerHours).toBeUndefined()
   })
 
-  /**
-   * The other side of the same threshold, and the one that shipped broken: `LeaderboardQuerySchema.limit`
-   * is `.optional()` with NO default, so the full-board request every shipped client sends carries no
-   * `limit` at all. Gating the extras on the CLAMPED limit (LEADERBOARD_DEFAULT_LIMIT = 20, below the
-   * threshold of 25) turned B48 off for exactly that request — participantCount, viewerRank and
-   * viewerHours all silently absent unless a caller hand-wrote `?limit=25`. An ABSENT limit is the full
-   * board and opts IN; only an explicit preview limit opts out (the test above).
-   */
   it("B48: an OMITTED limit is the full board and still pays for the extras", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
@@ -568,13 +533,11 @@ describe("volunteer hours: leaderboard", () => {
     })
     const service = makeService({ repo, view: null })
 
-    // No `limit` key at all — byte-identical to what the route parses from an empty query string.
     const board = await service.leaderboard(GEOID_A, { geoid: GEOID_A }, BOB)
     expect(board.participantCount).toBe(3)
     expect(board.viewerRank).toBe(2)
     expect(board.viewerHours).toBe(3)
 
-    // Anonymous on the same omitted-limit request: the count is still there, the viewer fields absent.
     const anon = await service.leaderboard(GEOID_A, { geoid: GEOID_A })
     expect(anon.participantCount).toBe(3)
     expect(anon.viewerRank).toBeUndefined()
@@ -582,11 +545,6 @@ describe("volunteer hours: leaderboard", () => {
   })
 })
 
-/**
- * B33b — the hours_logged bell. The rule is narrow on purpose: a host re-logs to FIX a typo, and the
- * upsert re-writes every row in the batch, so notifying on every write rings up to 2000 lock screens per
- * correction. Only a NEW or INCREASED credit rings; a downward correction is deliberately silent.
- */
 describe("volunteer hours: hours_logged notifications", () => {
   const doneEvent: CleanupHoursView = {
     organizerUserId: HOST,
@@ -666,7 +624,6 @@ describe("volunteer hours: hours_logged notifications", () => {
     expect(notifier.sent).toHaveLength(2)
     notifier.sent.length = 0
 
-    // BOB unchanged, CAROL corrected DOWN: neither is a new or increased credit.
     await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: HOST,
@@ -677,7 +634,6 @@ describe("volunteer hours: hours_logged notifications", () => {
     })
     expect(notifier.sent).toEqual([])
 
-    // ...but an INCREASE does ring, and only for the attendee whose credit went up.
     await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: HOST,
@@ -689,8 +645,6 @@ describe("volunteer hours: hours_logged notifications", () => {
     expect(notifier.sent.map((s) => s.userId)).toEqual([CAROL])
   })
 
-  // One throwing prefs row must not abandon the rest of the roster — the exact bug the L24 cancellation
-  // fan-out had (a single try/catch around the whole loop).
   it("is best-effort PER RECIPIENT: one failure does not abandon the others", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const notifier = makeNotifier(BOB)
@@ -712,9 +666,7 @@ describe("volunteer hours: hours_logged notifications", () => {
         { userId: DAVE, hours: 1 },
       ],
     })
-    // The mutation itself is unaffected...
     expect(result.credited).toBe(3)
-    // ...and the two healthy recipients still got their bell.
     expect(notifier.sent.map((s) => s.userId).sort()).toEqual([CAROL, DAVE].sort())
     expect(warnings).toHaveLength(1)
   })
@@ -729,7 +681,6 @@ describe("volunteer hours: hours_logged notifications", () => {
       cohosts: [BOB],
       notifier,
     })
-    // BOB (a verified cohost) credits the organizer; the bell goes to HOST, never back to BOB.
     await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: BOB,
@@ -739,17 +690,6 @@ describe("volunteer hours: hours_logged notifications", () => {
   })
 })
 
-/**
- * Route-level regression tripwires for the two VIEWER-DEPENDENT reads in volunteer-hours.routes.ts, run
- * with NO database: the in-memory repo is injected via buildServer(volunteerOverrides) and driven through
- * app.inject.
- *
- * These ship together on purpose. T1 is the line that 422s EVERY leaderboard request the moment `geoid`
- * became required on LeaderboardQuerySchema; T4 is what stops the cache split from serving one signed-in
- * user's rank — or one owner's itemised ledger — to every anonymous reader. Both routes answer ONE url
- * with TWO bodies, so both carry the same `Vary` + `Cache-Control` pair; asserting them side by side is
- * what keeps a third such read from landing silent.
- */
 describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
   let app: FastifyInstance | undefined
 
@@ -759,8 +699,6 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
   })
 
   async function makeApp(): Promise<{ app: FastifyInstance; token: string; userId: string }> {
-    // A real WEB_ORIGINS allowlist so @fastify/cors emits its own `Vary: Origin` — the header the route
-    // must MERGE with rather than overwrite.
     const env = loadEnv({ NODE_ENV: "test", WEB_ORIGINS: "https://civfix.org" })
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
@@ -795,11 +733,6 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     return { app: built, token: body.token, userId: body.user.id }
   }
 
-  /**
-   * T1 — `request.query` NEVER carries `geoid`; it is a PATH param the client already consumed. Parsing
-   * the bare query object against a schema that now REQUIRES geoid 422s every request, including this
-   * one, which is exactly what the shipped client sends. If this test goes red the leaderboard is dead.
-   */
   it("T1: an EMPTY query string returns 200, not 422", async () => {
     const { app: built } = await makeApp()
     const res = await built.inject({
@@ -831,17 +764,10 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     })
     expect(authed.statusCode).toBe(200)
     expect(authed.headers["cache-control"]).toBe("private, max-age=0, no-store")
-    // Vary ships on BOTH branches: without it nothing tells a shared cache why one URL has two bodies.
     expect(authed.headers["vary"]).toContain("Cookie")
     expect(authed.headers["vary"]).toContain("Authorization")
   })
 
-  /**
-   * `@fastify/cors` sets its OWN `Vary: Origin` before the handler runs (its allowlist reflects the
-   * request's Origin, so the response really does vary by it) and `reply.header()` overwrites. Setting
-   * Vary bare here would drop `Origin` from precisely the response we are inviting a shared cache to
-   * store — which is how one origin's Access-Control-Allow-Origin gets served to another.
-   */
   it("T4: the Vary the route adds MERGES with the Origin @fastify/cors already set", async () => {
     const { app: built } = await makeApp()
     const res = await built.inject({
@@ -853,13 +779,6 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     expect(res.headers["vary"]).toBe("Origin, Cookie, Authorization")
   })
 
-  /**
-   * The SAME split on `GET /v1/people/:id/volunteer-hours`, which is the more privacy-sensitive of the
-   * two: `isSelf` bypasses both C18 gates, so the owner's own request to this url returns the full
-   * itemised ledger — event titles, dates, crediting hosts — where every other viewer gets
-   * `{visible:false|true, items: []}`. A shared cache told nothing about that is a cache that can serve
-   * one person's movement history to the next reader of the same url.
-   */
   it("T4: getPublicVolunteerHours splits its cache the same way the leaderboard does", async () => {
     const { app: built, token } = await makeApp()
 
@@ -883,7 +802,6 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     expect(authed.headers["vary"]).toContain("Authorization")
   })
 
-  /** Same merge rule as the leaderboard: `Vary` is APPENDED to the one @fastify/cors already set. */
   it("T4: getPublicVolunteerHours also MERGES its Vary with the CORS Origin", async () => {
     const { app: built } = await makeApp()
     const res = await built.inject({

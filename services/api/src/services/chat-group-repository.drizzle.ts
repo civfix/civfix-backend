@@ -1,21 +1,3 @@
-/**
- * P4 Task 4.3: chat_groups + chat_group_members persistence (migration 0047).
- *
- * The GROUP MANAGEMENT store: room rows (chat_groups) and the three-tier membership ladder
- * (chat_group_members: owner|admin|member). Group MESSAGES are NOT here — they ride the unified
- * chat_messages table via the group_id scope in chat-repository.drizzle.ts, exactly as report chat
- * rides report_id.
- *
- * Pure data access; every authorization gate (who may update / add / remove / set roles) lives in
- * chat-group-service.ts. Written against the raw postgres-js tag (`Sql`) like the other chat repos.
- *
- * MEMBER-LIST ORDERING (documented contract, mirrored by the keyset cursor): role first
- * (owner, then admins, then members), joined_at ASC then user_id ASC within a tier — the same shape
- * as the cleanup attendee roster's `(role='organizer') DESC, joined_at ASC` ordering. The cursor is
- * the LAST ROW'S user_id; resuming re-resolves that member's (role, joined_at) and keysets on
- * (role_rank, joined_at, user_id). A cursor whose membership row vanished mid-pagination falls back
- * to the first page (same stance as an unknown `before` history cursor).
- */
 
 import type { Sql } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus, PersonDTO } from "@civfix/shared"
@@ -30,38 +12,19 @@ import { isUuid } from "../db/cursor-helpers.js"
 
 export type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
 
-/**
- * Default ceiling on ONE listMemberIds scan (a real SQL LIMIT). Every consumer of that list is a
- * bounded-by-nature fan-out — mention scoping, the threads unread signal, the member bell fan-out, the
- * invite block scan — and none of them may pay an unbounded row set for a pathologically large group.
- * Matches the other member fan-out ceilings in the tree (EVENT_HOURS_MEMBER_CAP /
- * CANCEL_FANOUT_MEMBER_CAP), i.e. far above any real group, so it changes no observable behavior today
- * while making the query bounded by construction rather than by each caller remembering to slice.
- */
 export const GROUP_MEMBER_SCAN_CAP = 2000
 
-/**
- * The kind + visibility of a group plus the viewer's role in it (null = not a member), resolved in ONE
- * query — the P5 channel/public-read gate needs all three at once (the WS group lane's read-vs-send
- * decision and the edit route's send-permission check). `null` from accessOf = the group row is gone.
- */
 export interface GroupRoomAccess {
   kind: ChatGroupKind
   visibility: ChatGroupVisibility
   role: GroupMemberRole | null
 }
 
-/**
- * P5 send-permission predicate: who may POST (and type / edit) in a group room. A regular group
- * ('group') is member-writable; a CHANNEL is owner/admin-only (members are read-only). Single-sourced
- * so the WS send lane, the edit route, and any future caller all agree — a non-member never posts.
- */
 export function canPostToGroup(access: { kind: ChatGroupKind; role: GroupMemberRole | null }): boolean {
   if (access.role === null) return false
   return access.kind === "group" || access.role === "owner" || access.role === "admin"
 }
 
-/** A chat_groups row with its avatar hydrated (null = none or not yet 'ready') and live member count. */
 export interface ChatGroupView {
   id: string
   kind: ChatGroupKind
@@ -74,7 +37,6 @@ export interface ChatGroupView {
   memberCount: number
 }
 
-/** One membership row hydrated to the wire shape (user as PersonDTO, joined_at as Date). */
 export interface GroupMemberView {
   user: PersonDTO
   role: GroupMemberRole
@@ -98,61 +60,33 @@ export interface UpdateChatGroupPatch {
 }
 
 export interface ChatGroupRepository {
-  /**
-   * Insert the group + the owner membership row (role 'owner') + the given member rows (role
-   * 'member') in ONE transaction; returns the new group id. `memberIds` must already be deduped,
-   * self-free, and block-filtered (the service owns those gates).
-   */
   create(input: CreateChatGroupInput, memberIds: string[]): Promise<string>
   findById(id: string): Promise<ChatGroupView | null>
-  /** Apply a set-only patch (omitted keys unchanged). No-op when the patch is empty. */
   update(id: string, patch: UpdateChatGroupPatch): Promise<void>
-  /** The user's chat_group_members.role, or null when not a member (feeds the chat-powers resolver). */
   roleOf(groupId: string, userId: string): Promise<GroupMemberRole | null>
-  /**
-   * P5: the group's kind + visibility + the viewer's role in ONE round trip; null when the group row is
-   * gone. Backs the WS group lane's read-vs-send/channel gate and the edit route's send-permission check.
-   */
   accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null>
-  /** Idempotent bulk insert as role 'member' (ON CONFLICT DO NOTHING keeps existing roles). */
   addMembers(groupId: string, userIds: string[]): Promise<void>
-  /** Delete the membership row; true when a row was actually removed. */
   removeMember(groupId: string, userId: string): Promise<boolean>
-  /** Flip an EXISTING member's role (admin <-> member); true when a row matched. */
+  banMember(groupId: string, userId: string, bannedBy: string): Promise<void>
+  isBanned(groupId: string, userId: string): Promise<boolean>
   setRole(groupId: string, userId: string, role: "admin" | "member"): Promise<boolean>
-  /** One hydrated membership row, or null when not a member. */
   findMember(groupId: string, userId: string, viewerId: string | null): Promise<GroupMemberView | null>
-  /** Keyset page of members in the documented ordering (see module banner). */
   listMembers(
     groupId: string,
     viewerId: string | null,
     cursor: string | null,
     limit: number,
   ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
-  findMediaIdByUploadId(uploadId: string): Promise<string>
   /**
-   * The subset of `candidateIds` the actor may actually invite, in input order — ONE round trip
-   * (review fix: replaces a per-candidate blocked-pair fan-out). A candidate survives only when it
-   * EXISTS in users (a schema-valid but unknown uuid would otherwise trip the membership FK -> 500),
-   * is not soft-deleted, and is not blocked either way with `actorId`. Dropped ids are silently
-   * skipped, never errors (the create/addMembers "skip, don't leak" contract).
+   * Resolve an avatar uploadId to a media id. `groupId` is the group about to point at it, so a group
+   * re-applying the avatar it already has stays idempotent while every other group is refused a
+   * claimed row (F074); omitted on the create path, where no group exists yet.
    */
+  findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string>
   invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]>
-  /**
-   * Member user ids of a group (mention scoping + thread signals + the bell fan-out; mirrors the
-   * cleanup repo's capped listMemberIds). `limit` is a REAL SQL LIMIT, defaulting to
-   * GROUP_MEMBER_SCAN_CAP so no caller can ever materialize an unbounded membership set — a fan-out
-   * caller that wants a tighter ceiling (e.g. THREAD_SIGNAL_MEMBER_CAP, which chat-gateway-wiring
-   * currently applies by slicing in JS AFTER the full scan) passes its own.
-   */
+  blockedPairsAmong(userIds: string[]): Promise<Set<string>>
   listMemberIds(groupId: string, limit?: number): Promise<string[]>
-  /**
-   * WS ack (4.4): set chat_group_members.last_read_at to the target message's created_at, only ever
-   * moving the watermark FORWARD (the report-chat advanceReadWatermark twin, scoped on group_id).
-   * No-op for non-members or when the message id does not resolve to a row in THIS group.
-   */
   advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void>
-  /** Mark-read-on-join (4.4): monotonic last_read_at = max(current, at). No-op for non-members. */
   markRead(groupId: string, userId: string, at: Date): Promise<void>
 }
 
@@ -175,7 +109,6 @@ interface GroupRowSelect {
   avatar_height: number | null
 }
 
-/** One joined chat_group_members + users row behind the roster query. Exported alongside its mapper. */
 export interface MemberRowSelect {
   user_id: string
   role: GroupMemberRole
@@ -190,10 +123,6 @@ export interface MemberRowSelect {
   blocked_pair: boolean
 }
 
-/**
- * PURE row -> view mapper for the group roster. Exported for unit tests (the query around it needs a
- * database; every privacy rule lives here, so this is the layer worth pinning).
- */
 export function toMemberView(r: MemberRowSelect): GroupMemberView {
   const author = publicAuthorIdentity({
     id: r.user_id,
@@ -210,14 +139,9 @@ export function toMemberView(r: MemberRowSelect): GroupMemberView {
     bio: author.deleted || hidden !== null ? null : r.bio,
     avatar: author.avatar,
     ...(hidden === null && author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
-    // The roster does not load follower counts (same stance as the cleanup attendee roster).
     followers: 0,
     following: 0,
     isFollowing: r.is_following,
-    // `!author.deleted` matters as much as the hidden check: every other identifying field above
-    // already drops for a tombstoned user (publicAuthorIdentity nulls the handle and avatar, and the
-    // bio is nulled explicitly), so leaving the verified badge on made "Deleted User" the one row
-    // that still carried a live identity signal.
     ...(r.verified && hidden === null && !author.deleted ? { verified: true } : {}),
     ...(author.deleted ? { deleted: true } : {}),
   }
@@ -226,14 +150,11 @@ export function toMemberView(r: MemberRowSelect): GroupMemberView {
 
 export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatGroupRepository {
   async function toGroupView(r: GroupRowSelect): Promise<ChatGroupView> {
-    // Serve the avatar only once 'ready' (EXIF-strip privacy gate); a presign-less wiring (offline
-    // harnesses) also reads as null rather than leaking raw keys.
     let avatar: MediaDTO | null = null
     if (presign && r.avatar_id !== null && r.avatar_status === "ready" && r.avatar_r2_key !== null) {
       const { url, thumbUrl } = await presign(r.avatar_r2_key, r.avatar_thumb_key)
       avatar = {
         id: r.avatar_id,
-        // kind is NOT NULL on media_assets; the fallback only satisfies the joined-nullable type.
         kind: r.avatar_kind ?? "image",
         codec: r.avatar_codec,
         url,
@@ -361,10 +282,16 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
     async addMembers(groupId: string, userIds: string[]): Promise<void> {
       if (userIds.length === 0) return
       const rows = userIds.map((userId) => ({ group_id: groupId, user_id: userId, role: "member" }))
-      await sql`
-        INSERT INTO chat_group_members ${sql(rows, "group_id", "user_id", "role")}
-        ON CONFLICT (group_id, user_id) DO NOTHING
-      `
+      await sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO chat_group_members ${tx(rows, "group_id", "user_id", "role")}
+          ON CONFLICT (group_id, user_id) DO NOTHING
+        `
+        await tx`
+          DELETE FROM chat_group_bans
+          WHERE group_id = ${groupId} AND user_id IN ${tx(userIds)}
+        `
+      })
     },
 
     async removeMember(groupId: string, userId: string): Promise<boolean> {
@@ -376,9 +303,25 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return rows.length > 0
     },
 
+    async banMember(groupId: string, userId: string, bannedBy: string): Promise<void> {
+      await sql`
+        INSERT INTO chat_group_bans (group_id, user_id, banned_by)
+        VALUES (${groupId}, ${userId}, ${bannedBy})
+        ON CONFLICT (group_id, user_id)
+          DO UPDATE SET banned_by = ${bannedBy}, banned_at = now()
+      `
+    },
+
+    async isBanned(groupId: string, userId: string): Promise<boolean> {
+      const rows = await sql<{ one: number }[]>`
+        SELECT 1 AS one FROM chat_group_bans
+        WHERE group_id = ${groupId} AND user_id = ${userId}
+        LIMIT 1
+      `
+      return rows.length > 0
+    },
+
     async setRole(groupId: string, userId: string, role: "admin" | "member"): Promise<boolean> {
-      // The owner row is untouchable here by construction: the service rejects owner targets, and the
-      // WHERE below refuses to demote an 'owner' row even if a future caller slips one through.
       const rows = await sql<{ user_id: string }[]>`
         UPDATE chat_group_members
         SET role = ${role}
@@ -410,13 +353,6 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       cursor: string | null,
       limit: number,
     ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }> {
-      // Resolve the cursor row's keyset position; a stale/foreign cursor falls back to page one.
-      // The anchor's (rank, joined_at, user_id) tuple deliberately NEVER leaves the database (a
-      // row-valued subquery): round-tripping joined_at through the driver truncates microseconds to
-      // milliseconds (postgres-js serializes Date/`::timestamptz`-hinted params via a JS Date), and a
-      // same-tx roster shares ONE microsecond timestamp — a truncated anchor would compare "less
-      // than" every tied row and re-include the previous page. The existence pre-check keeps the
-      // page-one fallback (a vanished cursor must not turn the filter into an all-NULL empty page).
       let cursorFilter = sql``
       if (cursor !== null && isUuid(cursor)) {
         const anchorRows = await sql<{ user_id: string }[]>`
@@ -454,8 +390,8 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       }
     },
 
-    async findMediaIdByUploadId(uploadId: string): Promise<string> {
-      const media = await resolveAvatarMediaOrThrow(sql, uploadId)
+    async findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string> {
+      const media = await resolveAvatarMediaOrThrow(sql, uploadId, { groupId })
       return media.id
     },
 
@@ -473,8 +409,22 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
           )
       `
       const allowed = new Set(rows.map((r) => r.id))
-      // Re-project onto the caller's order (the SELECT returns rows in arbitrary order).
       return candidateIds.filter((id) => allowed.has(id))
+    },
+
+    async blockedPairsAmong(userIds: string[]): Promise<Set<string>> {
+      const unique = [...new Set(userIds)]
+      const set = new Set<string>()
+      if (unique.length < 2) return set
+      const rows = await sql<{ blocker_id: string; blocked_id: string }[]>`
+        SELECT blocker_id, blocked_id FROM user_blocks
+        WHERE blocker_id IN ${sql(unique)} AND blocked_id IN ${sql(unique)}
+      `
+      for (const r of rows) {
+        set.add(`${r.blocker_id}|${r.blocked_id}`)
+        set.add(`${r.blocked_id}|${r.blocker_id}`)
+      }
+      return set
     },
 
     async listMemberIds(groupId: string, limit = GROUP_MEMBER_SCAN_CAP): Promise<string[]> {
@@ -488,8 +438,6 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
     },
 
     async advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void> {
-      // Monotonic + room-scoped via the shared watermark helper (chat-read-state.drizzle.ts): the
-      // report_chat_members twin, scoped on chat_messages.group_id.
       await monotonicReadWatermarkUpdate(
         sql,
         "chat_group_members",

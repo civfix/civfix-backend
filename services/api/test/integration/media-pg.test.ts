@@ -104,6 +104,45 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(checks).toHaveLength(1)
   })
 
+  it("F087: a repeat finalize is idempotent — finalized_at is stamped ONCE and no second media.checks job is enqueued", async () => {
+    const createRes = await app.inject({
+      method: "POST",
+      url: "/v1/media/upload",
+      payload: { kind: "image", contentType: "image/png", byteSize: 4096, sha256: "e".repeat(64) },
+    })
+    const { uploadId } = createRes.json()
+    const [row] = await h.sql<{ id: string; r2_key: string }[]>`
+      SELECT id, r2_key FROM media_assets WHERE upload_id = ${uploadId}
+    `
+    await storage.put(row!.r2_key, new Uint8Array(4096), { contentType: "image/png" })
+
+    const first = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
+    expect(first.statusCode).toBe(200)
+    const [stamped] = await h.sql<{ finalized_at: Date | null }[]>`
+      SELECT finalized_at FROM media_assets WHERE upload_id = ${uploadId}
+    `
+    expect(stamped!.finalized_at).not.toBeNull()
+
+    // Every later finalize loses the compare-and-set: same success body, same finalized_at, NO enqueue.
+    // The old status-CAS could not catch this — the row is 'validating' for the whole processing window.
+    for (let i = 0; i < 3; i++) {
+      const again = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
+      expect(again.statusCode).toBe(200)
+      expect(again.json()).toEqual(first.json())
+    }
+    const [after] = await h.sql<{ finalized_at: Date | null; status: string }[]>`
+      SELECT finalized_at, status FROM media_assets WHERE upload_id = ${uploadId}
+    `
+    expect(after!.finalized_at).toEqual(stamped!.finalized_at)
+    expect(after!.status).toBe("validating")
+
+    const checks = jobs.jobsFor(MEDIA_CHECKS_JOB).filter((j) => {
+      const d = j.data as { uploadId?: string }
+      return d.uploadId === uploadId
+    })
+    expect(checks).toHaveLength(1)
+  })
+
   it("getMedia returns a ready row and 404s a validating row", async () => {
     const createRes = await app.inject({
       method: "POST",

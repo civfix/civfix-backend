@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
@@ -139,6 +139,20 @@ describe("mail-service: reply", () => {
     const updated = await svc.reply(t.id, { body: "Following up." }, "op-1")
     expect(updated.status).toBe("replied")
     expect(mailer.sent.at(-1)?.to).toBe("mayor@city.gov")
+  })
+
+  it("F025: resolves the recipient through the point reads, not by loading every body in the thread", async () => {
+    const { repo, mailer, svc } = harness()
+    const t = await repo.createThread({ subject: "Question", org: "City of LA" })
+    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    const getThread = vi.spyOn(repo, "getThread")
+    const lastInbound = vi.spyOn(repo, "getLastInboundSender")
+
+    await svc.reply(t.id, { body: "Here is the answer." }, "op-1")
+
+    expect(mailer.sent.at(-1)?.to).toBe("clerk@city.gov")
+    expect(lastInbound).toHaveBeenCalledWith(t.id)
+    expect(getThread).toHaveBeenCalledTimes(1)
   })
 
   it("404s an unknown thread and 422s a thread with no recipient at all to reply to", async () => {

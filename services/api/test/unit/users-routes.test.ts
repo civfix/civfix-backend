@@ -1,18 +1,3 @@
-/**
- * HTTP-layer tests for the privacy surfaces of users.routes.ts — block / unblock / listBlocks /
- * updateSettings (routes-core test gap: only `searchUsers`, `deleteAccount` and `requestDataExport` had
- * route coverage; the four endpoints below had none, so nothing pinned their status codes, their
- * idempotence, or that a block actually CLOSES the DM lane).
- *
- * The blocks repo is injected through `chatOverrides.blocksRepo`, which users.routes AND dm.routes both
- * read — so a block written through `POST /users/:id/block` is the very same edge `POST /dm` consults.
- * That shared instance is what makes the cross-route side-effect assertions here real rather than
- * two independent fakes agreeing by construction.
- *
- * Settings ride the auth bundle's in-memory UserStore, so `PUT /me/settings` round-trips through a real
- * store and its effect is observable on `GET /auth/session` and on another user's `POST /dm`.
- * Mirrors the dm-edit-slur / delete-message-routes harness. No database, no Redis.
- */
 
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
@@ -32,13 +17,11 @@ import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/ch
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { BLOCK_RATE_LIMIT } from "../../src/routes/users.routes.js"
 
-/** A mobile (bearer) session: CSRF-exempt. */
 interface Session {
   userId: string
   token: string
 }
 
-/** A web (cookie) session plus its session-bound CSRF token. */
 interface WebSession {
   userId: string
   cookie: string
@@ -49,7 +32,6 @@ interface Harness {
   app: FastifyInstance
   blocks: InMemoryBlocksRepository
   stores: ReturnType<typeof makeInMemoryStores>
-  /** One sign-in per email: `POST /auth/otp/request` has a 60s per-address cooldown. */
   signIn(email: string, name: string): Promise<Session>
   signInWeb(email: string, name: string): Promise<WebSession>
 }
@@ -83,7 +65,6 @@ async function makeHarness(): Promise<Harness> {
     threadsRepo: new InMemoryThreadsRepository(),
     dmRepo,
     chatRepo: new InMemoryChatRepository(),
-    // THE shared instance: users.routes writes through it, dm.routes reads it.
     blocksRepo: blocks,
   }
   const app = await buildServer({ env, authServices, chatOverrides })
@@ -104,7 +85,6 @@ async function makeHarness(): Promise<Harness> {
     })
     expect(res.statusCode).toBe(200)
     const userId = res.json().user.id as string
-    // Register the person with both fakes so the blocked-list projection and the DM peer have real names.
     blocks.registerUser({ id: userId, displayName: name, handle: name.toLowerCase() })
     dmRepo.registerUser({ id: userId, displayName: name, handle: name.toLowerCase() })
     return { res, userId }
@@ -327,8 +307,6 @@ describe("DELETE /users/:id/block", () => {
     const me = await h.signIn("idem@example.com", "Idem")
     const them = await h.signIn("idemt@example.com", "IdemT")
 
-    // Never blocked: still a 200 no-op rather than a 404 (unblock has no existence probe on purpose —
-    // a user may need to clear an edge toward an account that has since been deleted).
     expect(
       (await h.app.inject({ method: "DELETE", url: blockUrl(them.userId), headers: bearer(me) }))
         .statusCode,
@@ -360,7 +338,6 @@ describe("DELETE /users/:id/block", () => {
       headers: { cookie: web.cookie },
     })
     expect(noCsrf.statusCode).toBe(403)
-    // The rejected request did not clear the edge.
     expect(await h.blocks.isBlockedEitherWay(web.userId, them.userId)).toBe(true)
   })
 })
@@ -386,7 +363,6 @@ describe("GET /me/blocks", () => {
     expect(first).toMatchObject({ name: "One", handle: "one" })
     expect(Array.isArray(first.avatar)).toBe(true)
 
-    // Unblocking removes it from the list.
     await h.app.inject({ method: "DELETE", url: blockUrl(one.userId), headers: bearer(me) })
     const after = await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })
     expect((after.json().blocked as PersonDTO[]).map((p) => p.id)).toEqual([two.userId])
@@ -396,19 +372,45 @@ describe("GET /me/blocks", () => {
     const h = await makeHarness()
     const alice = await h.signIn("alice@example.com", "Alice")
     const bob = await h.signIn("bob@example.com", "Bob")
-    // Bob blocks Alice.
     await h.app.inject({ method: "POST", url: blockUrl(alice.userId), headers: bearer(bob) })
 
     const bobList = await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(bob) })
     expect((bobList.json().blocked as PersonDTO[]).map((p) => p.id)).toEqual([alice.userId])
 
-    // Alice's own list is EMPTY even though the DM lane between them is closed both ways.
     const aliceList = await h.app.inject({
       method: "GET",
       url: "/v1/me/blocks",
       headers: bearer(alice),
     })
     expect(aliceList.json()).toEqual({ blocked: [] })
+  })
+
+  it("honors the pagination limit query (W-SOCIAL-2 / F014)", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("pager@example.com", "Pager")
+    const one = await h.signIn("p-one@example.com", "POne")
+    const two = await h.signIn("p-two@example.com", "PTwo")
+    await h.app.inject({ method: "POST", url: blockUrl(one.userId), headers: bearer(me) })
+    await h.app.inject({ method: "POST", url: blockUrl(two.userId), headers: bearer(me) })
+
+    const res = await h.app.inject({
+      method: "GET",
+      url: "/v1/me/blocks?limit=1",
+      headers: bearer(me),
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.json().blocked as PersonDTO[]).length).toBeLessThanOrEqual(1)
+  })
+
+  it("422s a bad pagination limit (strict PaginationQuery)", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("badpage@example.com", "BadPage")
+    const res = await h.app.inject({
+      method: "GET",
+      url: "/v1/me/blocks?limit=999",
+      headers: bearer(me),
+    })
+    expect(res.statusCode).toBe(422)
   })
 
   it("401s anonymously", async () => {
@@ -437,10 +439,8 @@ describe("block SIDE EFFECT: the DM lane closes both ways", () => {
     })
     expect(blocked.statusCode).toBe(200)
 
-    // The blocker cannot open it...
     const asAlice = await open(alice, bob)
     expect(asAlice.statusCode).toBe(403)
-    // ...and neither can the blocked party (the gate is either-way, and the message must not reveal which).
     const asBob = await open(bob, alice)
     expect(asBob.statusCode).toBe(403)
     expect(asBob.json().message).toBe(asAlice.json().message)
@@ -465,7 +465,6 @@ describe("PUT /me/settings", () => {
     expect(res.statusCode).toBe(200)
     expect(res.json().user).toMatchObject({ id: me.userId, allowDirectMessages: false })
 
-    // Persisted, not just echoed.
     expect((await h.stores.users.findById(me.userId))!.allowDirectMessages).toBe(false)
     const session = await h.app.inject({
       method: "GET",
@@ -474,7 +473,6 @@ describe("PUT /me/settings", () => {
     })
     expect(session.json().user.allowDirectMessages).toBe(false)
 
-    // And back on again.
     const on = await h.app.inject({
       method: "PUT",
       url: "/v1/me/settings",
@@ -490,7 +488,6 @@ describe("PUT /me/settings", () => {
     const keen = await h.signIn("keen@example.com", "Keen")
     const stranger = await h.signIn("stranger@example.com", "Stranger")
 
-    // Keen already has a thread with Shy.
     expect(
       (await h.app.inject({
         method: "POST",
@@ -507,7 +504,6 @@ describe("PUT /me/settings", () => {
       payload: { allowDirectMessages: false },
     })
 
-    // A stranger with no existing thread is refused...
     const refused = await h.app.inject({
       method: "POST",
       url: "/v1/dm",
@@ -515,7 +511,6 @@ describe("PUT /me/settings", () => {
       payload: { userId: shy.userId },
     })
     expect(refused.statusCode).toBe(403)
-    // ...while the existing conversation still opens (the toggle gates NEW threads only).
     const existing = await h.app.inject({
       method: "POST",
       url: "/v1/dm",
@@ -539,7 +534,6 @@ describe("PUT /me/settings", () => {
     expect(es.json().user.locale).toBe("es")
     expect((await h.stores.users.findById(me.userId))!.locale).toBe("es")
 
-    // REJECTED, not clamped: the persisted source-of-truth stays a known-good code.
     const fr = await h.app.inject({
       method: "PUT",
       url: "/v1/me/settings",
@@ -563,7 +557,6 @@ describe("PUT /me/settings", () => {
     expect(both.statusCode).toBe(200)
     expect(both.json().user).toMatchObject({ allowDirectMessages: false, locale: "ko" })
 
-    // An empty patch is a legal no-op.
     const noop = await h.app.inject({
       method: "PUT",
       url: "/v1/me/settings",
@@ -574,17 +567,10 @@ describe("PUT /me/settings", () => {
     expect(noop.json().user).toMatchObject({ allowDirectMessages: false, locale: "ko" })
   })
 
-  /**
-   * P6 hours privacy. `users.show_volunteer_hours` is a NULLABLE TRI-STATE (C18): NULL = never chosen,
-   * and only an explicit boolean is ever written. So the DTO field must be ABSENT before the first
-   * interaction — a default `true` on the wire would tell the settings toggle the user opted in when
-   * they have never been asked, and a default `false` would claim an opt-out nobody made.
-   */
   it("showVolunteerHours is ABSENT until chosen, then round-trips true and false", async () => {
     const h = await makeHarness()
     const me = await h.signIn("hours@example.com", "Hours")
 
-    // Never chosen: the key is not on the payload at all, on the settings write OR the session view.
     const noop = await h.app.inject({
       method: "PUT",
       url: "/v1/me/settings",
@@ -609,7 +595,6 @@ describe("PUT /me/settings", () => {
     })
     expect(off.statusCode).toBe(200)
     expect(off.json().user.showVolunteerHours).toBe(false)
-    // Persisted, not just echoed — and `false` is a REAL stored value, not the null it started at.
     expect((await h.stores.users.findById(me.userId))!.showVolunteerHours).toBe(false)
     const session = await h.app.inject({
       method: "GET",
@@ -639,7 +624,6 @@ describe("PUT /me/settings", () => {
       headers: bearer(me),
       payload: { showVolunteerHours: false },
     })
-    // A locale-only patch must not resurrect the flag to its default.
     const later = await h.app.inject({
       method: "PUT",
       url: "/v1/me/settings",
@@ -718,7 +702,6 @@ describe("per-route rate limits", () => {
 
     let saw429 = false
     let accepted = 0
-    // Block/unblock is idempotent, so the handler outcome stays 200 and the only signal is the limiter.
     for (let i = 0; i < BLOCK_RATE_LIMIT.max + 5; i++) {
       const res = await h.app.inject({
         method: "POST",
@@ -734,7 +717,6 @@ describe("per-route rate limits", () => {
       accepted += 1
     }
     expect(saw429).toBe(true)
-    // It is the ROUTE bucket that fired, not the far looser global one: exactly `max` got through.
     expect(accepted).toBe(BLOCK_RATE_LIMIT.max)
   })
 })

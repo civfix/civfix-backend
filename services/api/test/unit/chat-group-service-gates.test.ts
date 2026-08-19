@@ -3,16 +3,6 @@ import { AppError } from "@civfix/shared"
 import { makeChatGroupService } from "../../src/services/chat-group-service.js"
 import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 
-/**
- * Group-management gate regressions from the 2026-07-24 backend review:
- *
- *   M12 — addMembers is a unilateral INSERT with no consent step, and the invitee filter only excluded
- *         pairs blocked with the ACTOR. A third party could therefore force a blocked pair into the same
- *         room, repeatedly. The invitee filter now also drops anyone blocked either way with an EXISTING
- *         member of the target room.
- *   L8  — requireGroup threw 404 for an unknown group while requireReadable threw 403 for a private one,
- *         an existence oracle contradicting the WS lane's deliberately uniform 403.
- */
 
 const GROUP = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const OWNER = "11111111-1111-1111-1111-111111111111"
@@ -26,17 +16,31 @@ interface FakeOpts {
   visibility?: "public" | "private"
   roles?: Record<string, "owner" | "admin" | "member">
   members?: string[]
-  /** Unordered blocked pairs, as "a|b". */
   blocked?: Array<[string, string]>
+  banned?: string[]
 }
 
-function fakeRepo(opts: FakeOpts = {}): ChatGroupRepository & { addMembers: ReturnType<typeof vi.fn> } {
+type FakeRepo = ChatGroupRepository & {
+  addMembers: ReturnType<typeof vi.fn>
+  banMember: ReturnType<typeof vi.fn>
+  bannedSet: Set<string>
+}
+
+function fakeRepo(opts: FakeOpts = {}): FakeRepo {
   const exists = opts.exists ?? true
   const visibility = opts.visibility ?? "private"
   const roles = opts.roles ?? { [OWNER]: "owner", [MEMBER]: "member" }
   const members = opts.members ?? [OWNER, MEMBER]
   const blocked = new Set((opts.blocked ?? []).flatMap(([a, b]) => [`${a}|${b}`, `${b}|${a}`]))
-  const addMembers = vi.fn(() => Promise.resolve())
+  const bannedSet = new Set<string>(opts.banned ?? [])
+  const banMember = vi.fn((_g: string, userId: string) => {
+    bannedSet.add(userId)
+    return Promise.resolve()
+  })
+  const addMembers = vi.fn((_g: string, userIds: string[]) => {
+    for (const u of userIds) bannedSet.delete(u)
+    return Promise.resolve()
+  })
 
   const view = {
     id: GROUP,
@@ -54,13 +58,22 @@ function fakeRepo(opts: FakeOpts = {}): ChatGroupRepository & { addMembers: Retu
     findById: () => Promise.resolve(exists ? view : null),
     roleOf: (_g: string, userId: string) => Promise.resolve(exists ? (roles[userId] ?? null) : null),
     listMemberIds: () => Promise.resolve(members),
-    // The production query returns candidates that exist AND are not blocked either way with `actor`.
     invitableIdsOf: (actor: string, candidates: string[]) =>
       Promise.resolve(candidates.filter((c) => !blocked.has(`${actor}|${c}`))),
+    blockedPairsAmong: (ids: string[]) => {
+      const set = new Set<string>()
+      for (const a of ids)
+        for (const b of ids) if (a !== b && blocked.has(`${a}|${b}`)) set.add(`${a}|${b}`)
+      return Promise.resolve(set)
+    },
     addMembers,
+    removeMember: () => Promise.resolve(true),
+    banMember,
+    isBanned: (_g: string, userId: string) => Promise.resolve(bannedSet.has(userId)),
+    bannedSet,
     listMembers: () => Promise.resolve({ members: [], nextCursor: null }),
     findMediaIdByUploadId: () => Promise.resolve(null),
-  } as unknown as ChatGroupRepository & { addMembers: ReturnType<typeof vi.fn> }
+  } as unknown as FakeRepo
 }
 
 const svcOver = (repo: ChatGroupRepository): ReturnType<typeof makeChatGroupService> =>
@@ -106,10 +119,6 @@ describe("M12: invitees blocked with an EXISTING member are silently skipped", (
 
 describe("addMembers reports the ACCEPTED invitees, independently of the members page", () => {
   it("returns `added` even when the first page shows none of them (pagination hides fresh members)", async () => {
-    // listMembers is paginated owner->admin->member then joined_at ASC, so a just-added member sorts LAST
-    // and is absent from page one in any group at/over GROUP_MEMBERS_DEFAULT_LIMIT. The fake returns an
-    // empty page to stand in for that: deriving the invitee set from `page.members` (what the route used
-    // to do for its inbox nudge) yields nobody, so the nudge silently died in exactly the big rooms.
     const repo = fakeRepo()
     const res = await svcOver(repo).addMembers(OWNER, { id: GROUP, memberIds: [INVITEE_OK] })
     expect(res.page.members).toEqual([])
@@ -202,5 +211,62 @@ describe("L8: unknown group and no-access answer identically (no existence oracl
   it("a member still reads their own private group", async () => {
     const dto = await svcOver(fakeRepo()).getGroup(MEMBER, GROUP)
     expect(dto).toMatchObject({ id: GROUP, myRole: "member" })
+  })
+})
+
+describe("F044 — group bans survive removal", () => {
+  it("a moderation removal (actor !== target) writes a ban row", async () => {
+    const repo = fakeRepo({ visibility: "public" })
+    await svcOver(repo).removeMember(OWNER, GROUP, MEMBER)
+    expect(repo.banMember).toHaveBeenCalledWith(GROUP, MEMBER, OWNER)
+    expect(repo.bannedSet.has(MEMBER)).toBe(true)
+  })
+
+  it("a voluntary leave (actor === target) does NOT ban", async () => {
+    const repo = fakeRepo({ visibility: "public" })
+    await svcOver(repo).removeMember(MEMBER, GROUP, MEMBER)
+    expect(repo.banMember).not.toHaveBeenCalled()
+    expect(repo.bannedSet.has(MEMBER)).toBe(false)
+  })
+
+  it("a banned user can't re-join a public group — same 403 not_public, no oracle", async () => {
+    const repo = fakeRepo({ visibility: "public", banned: [STRANGER] })
+    const res = await statusOf(() => svcOver(repo).joinGroup(STRANGER, GROUP))
+    expect(res).toEqual({ status: 403, code: "not_public" })
+  })
+
+  it("a non-banned user still joins a public group", async () => {
+    const repo = fakeRepo({ visibility: "public" })
+    const dto = await svcOver(repo).joinGroup(STRANGER, GROUP)
+    expect(dto).toMatchObject({ id: GROUP, myRole: "member" })
+  })
+
+  it("an owner/admin re-invite clears the ban (unban path)", async () => {
+    const repo = fakeRepo({ visibility: "public", banned: [INVITEE_OK] })
+    await svcOver(repo).addMembers(OWNER, { id: GROUP, memberIds: [INVITEE_OK] })
+    expect(repo.bannedSet.has(INVITEE_OK)).toBe(false)
+  })
+})
+
+/**
+ * F045: the invite gates used to issue ONE block-scan query per candidate (~100 per addMembers call).
+ * They are two bulk reads now — the invitee/actor scan and the pairwise scan — whatever the roster size.
+ */
+describe("F045 — invite block scans are bulk, not per-candidate", () => {
+  it("issues a constant number of block queries for a 40-invitee addMembers", async () => {
+    const repo = fakeRepo()
+    const invitable = vi.spyOn(repo, "invitableIdsOf")
+    const pairwise = vi.spyOn(repo, "blockedPairsAmong")
+    const invitees = Array.from(
+      { length: 40 },
+      (_, i) => `66666666-6666-6666-6666-6666666${String(i).padStart(5, "0")}`,
+    )
+
+    await svcOver(repo).addMembers(OWNER, { id: GROUP, memberIds: invitees })
+
+    expect(repo.addMembers).toHaveBeenCalledWith(GROUP, invitees)
+    expect(invitable).toHaveBeenCalledTimes(1)
+    expect(invitable).toHaveBeenCalledWith(OWNER, invitees)
+    expect(pairwise).toHaveBeenCalledTimes(1)
   })
 })

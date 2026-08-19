@@ -77,6 +77,104 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     return { id: row!.id, uploadId }
   }
 
+  it("F087c: a CONCURRENT double repost cannot double-count — the revival UPDATE carries the tombstone predicate itself", async () => {
+    const svc = makeService()
+    const author = await newUser("Race Author")
+    const actor = await newUser("Race Actor")
+    const post = await svc.createPost(
+      { kind: "post", body: "race me", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    await svc.repostPost(post.id, actor)
+    await svc.unrepostPost(post.id, actor)
+    expect((await svc.getPost(post.id, author)).counts.reposts).toBe(0)
+
+    // The exact statement repost() runs to revive a tombstoned repost. Two transactions run it against
+    // the SAME tombstone with real overlap: T1 takes the row lock and holds it; T2 blocks on that lock
+    // and, under READ COMMITTED, re-evaluates its WHERE against the row T1 committed. Because
+    // `deleted_at IS NOT NULL` lives IN the UPDATE (not in an unlocked subselect), T2 now matches ZERO
+    // rows and skips its `repost_count + 1` — the drift 0074 had to reconcile.
+    const revive = (tx: typeof h.sql) => tx<{ id: string }[]>`
+      UPDATE posts SET deleted_at = NULL, updated_at = now()
+      WHERE author_id = ${actor} AND kind = 'repost' AND repost_of_id = ${post.id}
+        AND deleted_at IS NOT NULL
+      RETURNING id
+    `
+    let openTheGate = (): void => {}
+    const gate = new Promise<void>((resolve) => {
+      openTheGate = resolve
+    })
+    let firstRows = -1
+    let secondRows = -1
+
+    const t1 = h.sql.begin(async (tx) => {
+      firstRows = (await revive(tx as unknown as typeof h.sql)).length
+      await gate
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    const t2 = h.sql.begin(async (tx) => {
+      secondRows = (await revive(tx as unknown as typeof h.sql)).length
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    openTheGate()
+    await Promise.all([t1, t2])
+
+    expect(firstRows).toBe(1)
+    expect(secondRows).toBe(0)
+
+    // One live repost remains (the partial unique index over live rows would have rejected a second).
+    const live = await h.sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM posts
+      WHERE author_id = ${actor} AND kind = 'repost' AND repost_of_id = ${post.id}
+        AND deleted_at IS NULL
+    `
+    expect(live[0]!.n).toBe(1)
+
+    // The raw revive above bypassed the service, so the counter was never bumped for the row it made
+    // live — and the service stays consistent with that: a repost of an already-live repost is a no-op.
+    expect((await svc.repostPost(post.id, actor)).counts.reposts).toBe(0)
+  })
+
+  it("F087c: the same race driven through the REAL repostPost path leaves repost_count at exactly 1", async () => {
+    const svc = makeService()
+    const author = await newUser("Race Path Author")
+    const actor = await newUser("Race Path Actor")
+    const post = await svc.createPost(
+      { kind: "post", body: "double tap me", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+
+    // Unlike the statement-level test above, this drives the production repository so a regression that
+    // moves the tombstone predicate back into a subselect is caught here. Repeated because the losing
+    // transaction has to actually overlap the winner to exercise the re-check.
+    for (let round = 0; round < 8; round++) {
+      await svc.repostPost(post.id, actor)
+      await svc.unrepostPost(post.id, actor)
+
+      const settled = await Promise.allSettled([
+        svc.repostPost(post.id, actor),
+        svc.repostPost(post.id, actor),
+      ])
+      for (const outcome of settled) {
+        expect(outcome.status, `round ${round}: ${JSON.stringify(outcome)}`).toBe("fulfilled")
+      }
+
+      const [counts] = await h.sql<{ repost_count: number }[]>`
+        SELECT repost_count FROM posts WHERE id = ${post.id}
+      `
+      expect(counts!.repost_count, `round ${round}`).toBe(1)
+      const live = await h.sql<{ n: number }[]>`
+        SELECT COUNT(*)::int AS n FROM posts
+        WHERE author_id = ${actor} AND kind = 'repost' AND repost_of_id = ${post.id}
+          AND deleted_at IS NULL
+      `
+      expect(live[0]!.n, `round ${round}`).toBe(1)
+
+      await svc.unrepostPost(post.id, actor)
+      expect((await svc.getPost(post.id, author)).counts.reposts).toBe(0)
+    }
+  })
+
   it("create → get → like → repost → reply → save → delete round-trip with denormalized counts", async () => {
     const svc = makeService()
     const author = await newUser("Round Author")
@@ -362,6 +460,39 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     `
     expect(row!.post_id).toBeNull()
     expect(row!.purpose).toBe("report")
+  })
+
+  it("F087e: REJECTS (422) a post whose media is VALIDATING but never finalized", async () => {
+    const svc = makeService()
+    const author = await newUser("Unfinalized Poster", "unfinal")
+    const media = await seedMedia("validating")
+
+    // media_assets rows are born 'validating' at PRESIGN time. Claiming one before finalize bound an
+    // asset with no bytes and no media.checks job behind it — invisible to the orphan sweep (bound) and
+    // to the stuck sweep (no finalized_at watermark), so nothing would ever have reclaimed it.
+    await expect(
+      svc.createPost(
+        { kind: "post", body: "too early", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+        author,
+      ),
+    ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
+
+    const [unbound] = await h.sql<{ post_id: string | null; purpose: string }[]>`
+      SELECT post_id, purpose FROM media_assets WHERE id = ${media.id}
+    `
+    expect(unbound!.post_id).toBeNull()
+    expect(unbound!.purpose).toBe("report")
+
+    // Once finalize stamps the watermark the same still-validating asset claims normally.
+    await h.sql`UPDATE media_assets SET finalized_at = now() WHERE id = ${media.id}`
+    const created = await svc.createPost(
+      { kind: "post", body: "now ok", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+      author,
+    )
+    const [bound] = await h.sql<{ post_id: string | null }[]>`
+      SELECT post_id FROM media_assets WHERE id = ${media.id}
+    `
+    expect(bound!.post_id).toBe(created.id)
   })
 
   it("REJECTS (422) an asset already bound to a REPORT (no cross-publishing into the feed)", async () => {

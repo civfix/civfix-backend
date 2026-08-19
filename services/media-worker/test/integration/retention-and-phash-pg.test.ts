@@ -2,10 +2,12 @@
  * The worker's RAW SQL against the canonical migrated schema (Docker-gated; SKIPS without Docker).
  *
  * Two pieces of the worker talk to Postgres in hand-written SQL and were only ever exercised against
- * fakes: runRetentionSweep (four DELETE ... WHERE id IN (SELECT ... LIMIT n) RETURNING statements, spy-
+ * fakes: runRetentionSweep (five paged DELETE ... RETURNING statements, spy-
  * tested as STRINGS, so a wrong column or table name was invisible) and makePhashDuplicateLookup (replaced
  * by an injected stub in every unit test, and its interpolated `AND id <> $1` / `AND report_id IS DISTINCT
  * FROM $2` fragments plus ORDER BY created_at are exactly the kind of thing a string spy cannot check).
+ * The idempotency_keys lane pages by ctid rather than by `key`: 0078/0079 dropped the key-only PK, so
+ * `key` alone is NOT unique any more and a key-keyed subquery deleted unrelated live rows.
  * Both are also failure-tolerant in production - the retention sweep counts and continues, the dedupe
  * error is downgraded to a note - so drift would surface as silently-doing-nothing, not as an incident.
  *
@@ -56,12 +58,13 @@ afterAll(async () => {
 describe.skipIf(!pg)("retention.sweep against the real schema", () => {
   const NOW = new Date("2026-06-20T12:00:00Z")
 
-  /** A deterministic baseline: these four tables hold ONLY what each test puts in them. */
+  /** A deterministic baseline: these five tables hold ONLY what each test puts in them. */
   beforeEach(async () => {
     await h.sql`DELETE FROM email_otps`
     await h.sql`DELETE FROM anon_tokens`
     await h.sql`DELETE FROM sessions`
     await h.sql`DELETE FROM idempotency_keys`
+    await h.sql`DELETE FROM notifications`
   })
 
   const at = (ms: number): Date => new Date(NOW.getTime() + ms)
@@ -90,22 +93,41 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     return id
   }
 
-  async function insertIdempotencyKey(createdAt: Date): Promise<string> {
+  async function insertIdempotencyKey(
+    createdAt: Date,
+    opts?: { key?: string; scope?: string; owner?: string | null },
+  ): Promise<string> {
     const [row] = await h.sql<{ key: string }[]>`
-      INSERT INTO idempotency_keys (key, scope, response_snapshot, created_at)
-      VALUES (gen_random_uuid(), 'report.create', '{}'::jsonb, ${createdAt})
+      INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot, created_at)
+      VALUES (
+        ${opts?.key ?? randomUUID()},
+        ${opts?.scope ?? "report.create"},
+        ${opts?.owner ?? null},
+        '{}'::jsonb,
+        ${createdAt}
+      )
       RETURNING key
     `
     return row!.key
   }
 
-  it("deletes exactly the expired/consumed rows in all four tables and keeps the live ones", async () => {
+  async function insertNotification(createdAt: Date): Promise<string> {
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO notifications (user_id, type, title, body, created_at)
+      VALUES (${userId}, 'chat.message', 'Sender', 'a private message excerpt', ${createdAt})
+      RETURNING id
+    `
+    return row!.id
+  }
+
+  it("deletes exactly the expired/consumed rows in all five tables and keeps the live ones", async () => {
     // Doomed: past the 1h grace cutoff, or consumed regardless of expiry.
     const expiredOtp = await insertOtp({ expiresAt: at(-3 * HOUR) })
     const consumedButValidOtp = await insertOtp({ expiresAt: at(3 * HOUR), consumedAt: at(-HOUR) })
     const expiredToken = await insertAnonToken(at(-3 * HOUR))
     const expiredSession = await insertSession(at(-3 * HOUR))
     const oldKey = await insertIdempotencyKey(at(-72 * HOUR))
+    const oldNotification = await insertNotification(at(-100 * 24 * HOUR))
 
     // Survivors: still inside the grace window / retention window.
     const liveOtp = await insertOtp({ expiresAt: at(3 * HOUR) })
@@ -113,10 +135,18 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     const liveToken = await insertAnonToken(at(3 * HOUR))
     const liveSession = await insertSession(at(3 * HOUR))
     const recentKey = await insertIdempotencyKey(at(-2 * HOUR))
+    const recentNotification = await insertNotification(at(-24 * HOUR))
 
     const res = await runRetentionSweep({ sql: h.sql, now: () => NOW, log: () => {} })
 
-    expect(res).toEqual({ otps: 2, anonTokens: 1, sessions: 1, idempotencyKeys: 1, errors: 0 })
+    expect(res).toEqual({
+      otps: 2,
+      anonTokens: 1,
+      sessions: 1,
+      idempotencyKeys: 1,
+      notifications: 1,
+      errors: 0,
+    })
 
     const otps = await h.sql<{ id: string }[]>`SELECT id FROM email_otps ORDER BY expires_at`
     expect(otps.map((r) => r.id).sort()).toEqual([liveOtp, justExpiredOtp].sort())
@@ -134,11 +164,22 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     const keys = await h.sql<{ key: string }[]>`SELECT key FROM idempotency_keys`
     expect(keys.map((r) => r.key)).toEqual([recentKey])
     expect(keys.map((r) => r.key)).not.toContain(oldKey)
+
+    const notifications = await h.sql<{ id: string }[]>`SELECT id FROM notifications`
+    expect(notifications.map((r) => r.id)).toEqual([recentNotification])
+    expect(notifications.map((r) => r.id)).not.toContain(oldNotification)
   })
 
   it("is a no-op on an empty database (no throw, all zeroes)", async () => {
     const res = await runRetentionSweep({ sql: h.sql, now: () => NOW, log: () => {} })
-    expect(res).toEqual({ otps: 0, anonTokens: 0, sessions: 0, idempotencyKeys: 0, errors: 0 })
+    expect(res).toEqual({
+      otps: 0,
+      anonTokens: 0,
+      sessions: 0,
+      idempotencyKeys: 0,
+      notifications: 0,
+      errors: 0,
+    })
   })
 
   /**
@@ -193,6 +234,53 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     const keys = await h.sql<{ key: string }[]>`SELECT key FROM idempotency_keys`
     expect(keys.map((r) => r.key)).toEqual([withinCustom])
     expect(keys.map((r) => r.key)).not.toContain(beyondCustom)
+  })
+
+  /**
+   * The key-value blast radius. 0078/0079 dropped the key-only PRIMARY KEY and moved uniqueness to
+   * (key, scope, COALESCE(user_or_anon, '')), so ONE key value can legitimately name several live rows.
+   * The lane used to page with `WHERE key IN (SELECT key ... WHERE created_at < cutoff LIMIT n)`, which
+   * re-expands each aged key back over its whole family: a younger row in another scope/owner was
+   * deleted with it — silently voiding a still-live idempotency guarantee — and a single page could
+   * delete more rows than the batch limit it was handed. Paging by ctid deletes exactly the rows the age
+   * predicate selected.
+   */
+  it("deletes ONLY the aged row when a younger row shares its key in another scope/owner", async () => {
+    const key = randomUUID()
+    await insertIdempotencyKey(at(-72 * HOUR), { key, scope: "report.create", owner: "user-a" })
+    await insertIdempotencyKey(at(-2 * HOUR), { key, scope: "cleanup.create", owner: "user-a" })
+    await insertIdempotencyKey(at(-2 * HOUR), { key, scope: "report.create", owner: "user-b" })
+
+    const res = await runRetentionSweep({ sql: h.sql, now: () => NOW, log: () => {} })
+
+    expect(res.idempotencyKeys).toBe(1)
+    const survivors = await h.sql<{ scope: string; owner: string | null }[]>`
+      SELECT scope, user_or_anon AS owner FROM idempotency_keys WHERE key = ${key} ORDER BY scope
+    `
+    expect(survivors.map((r) => `${r.scope}/${r.owner}`)).toEqual([
+      "cleanup.create/user-a",
+      "report.create/user-b",
+    ])
+  })
+
+  /** ctid paging must also respect the page size when one key value spans many aged rows. */
+  it("never deletes more aged rows than the batch limit in a single page", async () => {
+    const key = randomUUID()
+    for (let i = 0; i < 5; i++) {
+      await insertIdempotencyKey(at(-72 * HOUR), { key, scope: `report.create.${i}`, owner: "user-a" })
+    }
+
+    const res = await runRetentionSweep({
+      sql: h.sql,
+      now: () => NOW,
+      log: () => {},
+      batchSize: 2,
+      maxPages: 1,
+    })
+
+    expect(res.idempotencyKeys).toBe(2)
+    const [left] = await h.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM idempotency_keys`
+    expect(left!.n).toBe(3)
   })
 })
 

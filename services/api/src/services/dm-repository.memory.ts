@@ -1,15 +1,3 @@
-/**
- * In-memory DmRepository + BlocksRepository: dependency-free implementations for the USE_FAKE_CHAT dev
- * path (no DB) and for unit tests. They mirror the observable contract of the Drizzle impls:
- *
- *   - InMemoryDmRepository: threads keyed by the ordered pair (lo<hi); messages stored per thread, history
- *     paged newest-first before a cursor id; monotonic per-(thread,user) read watermark; listThreadsForUser
- *     excludes any thread blocked either way (via an injected block check) and computes peer + last + unread.
- *   - InMemoryBlocksRepository: directed block edges with a bidirectional check.
- *
- * Senders/users are registered so persisted DTOs carry a real `from` and threads carry a real peer. In the
- * dev path the gateway's isParticipant is permissive (see di.ts), so these just need to persist + page.
- */
 
 import { randomUUID } from "node:crypto"
 import { avatarGradient, AppError } from "@civfix/shared"
@@ -21,6 +9,7 @@ import {
   replyWrongRoom,
 } from "./chat-reply-hydration.js"
 import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
+import { publicAuthorIdentity } from "./public-author.js"
 import { aroundLimits } from "./chat-history-window.js"
 import type {
   DmMessageMeta,
@@ -29,63 +18,49 @@ import type {
   DmThread,
   DmThreadAggregate,
 } from "./dm-repository.drizzle.js"
-import type { BlockState, BlocksRepository } from "./blocks-repository.drizzle.js"
+import type {
+  BlockState,
+  BlocksRepository,
+  ListBlockedArgs,
+  ListBlockedPage,
+} from "./blocks-repository.drizzle.js"
+import { LIST_BLOCKS_DEFAULT_LIMIT } from "./blocks-repository.drizzle.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
 import type { PersonDTO } from "@civfix/shared"
 
-/** Minimal user fields the in-memory dm/threads paths need to build `from` / `peer`. */
 export interface DmUser {
   id: string
   displayName: string
   handle?: string | null
   bio?: string | null
   avatarUrl?: string | null
+  deletedAt?: Date | null
 }
 
 interface StoredDmMessage {
   dto: ChatMessageDTO
   deleted: boolean
-  /**
-   * REAL wall-clock insertion time. The dto's createdAt rides the deterministic 2026-01-01 tick clock
-   * (stable ordering for assertions), which would make every fake message look months old to the
-   * chat-edit-service EDIT_WINDOW_HOURS gate; findMessageMeta reports this instead so a just-sent
-   * message is editable on the offline dev/test path.
-   */
   insertedAtMs: number
 }
 
-/** Order a user pair so (lo, hi) is stable regardless of who initiates. */
 function orderPair(a: string, b: string): [string, string] {
   return a < b ? [a, b] : [b, a]
 }
 
-/**
- * The sender id of a DM message. `from` is nullable at the contract-type level (a sender-less SYSTEM
- * message has no author), but the dm path never persists a SYSTEM message - `persist()` always builds
- * `from` from a real `input.senderId`. Throwing here documents that invariant instead of silently
- * mis-attributing an "impossible" null to a fallback user.
- */
 function lastSenderId(message: ChatMessageDTO): string {
   if (!message.from) throw new Error("DM message unexpectedly has no author")
   return message.from.id
 }
 
 export class InMemoryDmRepository implements DmRepository {
-  /** threadId -> thread. */
   private readonly threads = new Map<string, DmThread>()
-  /** `${lo}:${hi}` -> threadId. */
   private readonly byPair = new Map<string, string>()
-  /** threadId -> append-ordered messages (oldest first). */
   private readonly log = new Map<string, StoredDmMessage[]>()
-  /** `${threadId}:${userId}` -> last-read epoch ms. */
   private readonly reads = new Map<string, number>()
-  /** messageId -> set of `${userId}:${emoji}` reaction keys (mirrors the chat_message_reactions PK). */
   private readonly reactions = new Map<string, Set<string>>()
-  /** userId -> user fields, so `from`/`peer` resolve. */
   private readonly users = new Map<string, DmUser>()
   private tick = 0
 
-  /** Optional injected block check so listThreadsForUser excludes blocked-either-way threads. */
   constructor(private readonly isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>) {}
 
   registerUser(user: DmUser): void {
@@ -101,10 +76,6 @@ export class InMemoryDmRepository implements DmRepository {
     return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
   }
 
-  /**
-   * Recompute the reply preview for a target id from the CURRENT store state (mirrors the drizzle
-   * hydration: tombstoned target -> deleted:true + excerpt ""; excerpt = first 120 chars of body).
-   */
   private replyToFor(threadId: string, replyToId: string): ReplyToDTO | null {
     const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === replyToId)
     if (!stored) return null
@@ -117,7 +88,6 @@ export class InMemoryDmRepository implements DmRepository {
     }
   }
 
-  /** Project a stored DTO with its live reply preview (no-op for non-replies). */
   private withReply(threadId: string, dto: ChatMessageDTO): ChatMessageDTO {
     if (dto.replyToId == null) return dto
     return { ...dto, replyTo: this.replyToFor(threadId, dto.replyToId) }
@@ -149,7 +119,6 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(t !== undefined && (t.userLo === userId || t.userHi === userId))
   }
 
-  /** The OTHER participant of the thread, or null when `userId` is not in it. */
   peerOf(threadId: string, userId: string): string | null {
     const t = this.threads.get(threadId)
     if (!t) return null
@@ -159,8 +128,6 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   persist(input: DmPersistInput): Promise<ChatMessageDTO> {
-    // Reply validation (P2), mirroring the drizzle repo: target must exist in THIS thread (else 422
-    // reply_wrong_room) and not be tombstoned (else 422 reply_deleted_target).
     if (input.replyToId !== undefined) {
       const target = (this.log.get(input.threadId) ?? []).find((m) => m.dto.id === input.replyToId)
       if (!target) return Promise.reject(replyWrongRoom())
@@ -183,14 +150,8 @@ export class InMemoryDmRepository implements DmRepository {
       },
       body: input.body,
       kind: input.kind ?? "text",
-      // The in-memory dev/test repo has no media_assets / presign pipeline, so it cannot resolve
-      // `input.mediaUploadIds` into real MediaDTOs - a media send over the offline path echoes with none.
-      // Empty ARRAY, and no editedAt key at all, because that is what the Drizzle repo emits: the fake must
-      // not hand USE_FAKE_CHAT clients (or unit tests) a wire shape production never produces.
       attachments: [],
       reactions: [],
-      // No persisted mentions on a fresh insert; the gateway projects a send's resolved @-mentions onto its
-      // broadcast/ack copy (this in-memory repo keeps no mention store, the dev-path mention bell being moot).
       mentions: [],
       createdAt: this.nextDate().toISOString(),
       ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
@@ -199,7 +160,7 @@ export class InMemoryDmRepository implements DmRepository {
     const list = this.log.get(input.threadId) ?? []
     list.push({ dto, deleted: false, insertedAtMs: Date.now() })
     this.log.set(input.threadId, list)
-    return Promise.resolve(this.withReply(input.threadId, dto))
+    return Promise.resolve({ ...this.withReply(input.threadId, dto), mine: true })
   }
 
   editMessage(
@@ -208,11 +169,7 @@ export class InMemoryDmRepository implements DmRepository {
     senderId: string,
     body: string,
   ): Promise<ChatMessageDTO | null> {
-    // Mirror the Drizzle WHERE gate: the message must exist in THIS thread, be sent by `senderId`, and not be
-    // soft-deleted. Otherwise return null (not-found OR forbidden — indistinguishable, like the SQL no-op).
     const stored = (this.log.get(threadId) ?? []).find(
-      // DM messages always have an author (no sender-less SYSTEM messages on the dm path); guard the
-      // nullable contract type without weakening the WHERE-gate semantics for the normal case.
       (m) => m.dto.id === messageId && m.dto.from?.id === senderId && !m.deleted,
     )
     if (!stored) return Promise.resolve(null)
@@ -226,7 +183,6 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   findMessageMeta(messageId: string): Promise<DmMessageMeta | null> {
-    // Id-only scan across threads (mirrors the drizzle id-only seek), INCLUDING soft-deleted entries.
     for (const [threadId, list] of this.log) {
       const stored = list.find((m) => m.dto.id === messageId)
       if (stored) {
@@ -235,9 +191,7 @@ export class InMemoryDmRepository implements DmRepository {
           threadId,
           senderId: lastSenderId(stored.dto),
           kind: stored.dto.kind,
-          // Real insertion time, NOT the deterministic dto clock (see StoredDmMessage.insertedAtMs).
           createdAt: new Date(stored.insertedAtMs),
-          // The store keeps a boolean, not a tombstone timestamp; any non-null Date marks "deleted".
           deletedAt: stored.deleted ? new Date(stored.insertedAtMs) : null,
         })
       }
@@ -250,7 +204,6 @@ export class InMemoryDmRepository implements DmRepository {
     messageId: string,
     senderId: string,
   ): Promise<ChatMessageDTO | null> {
-    // Same WHERE gate as editMessage: exist in THIS thread, sent by `senderId`, not already deleted.
     const stored = (this.log.get(threadId) ?? []).find(
       (m) => m.dto.id === messageId && m.dto.from?.id === senderId && !m.deleted,
     )
@@ -264,11 +217,6 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(this.withReply(threadId, tombstone))
   }
 
-  /**
-   * Pin/unpin (P3), mirroring the drizzle gate: thread-scoped, live, non-system, and only an ACTUAL
-   * state change flips pinnedAt (a repeat pin keeps the original stamp). Returns the CURRENT DTO either
-   * way; null when missing/deleted.
-   */
   setPinned(
     threadId: string,
     messageId: string,
@@ -288,7 +236,6 @@ export class InMemoryDmRepository implements DmRepository {
     )
   }
 
-  /** The thread's pins, newest-pin first, capped at PIN_LIST_CAP (mirrors the drizzle partial-index query). */
   listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
     const pins = (this.log.get(threadId) ?? [])
       .filter((m) => !m.deleted && m.dto.pinnedAt != null)
@@ -313,15 +260,11 @@ export class InMemoryDmRepository implements DmRepository {
   ): Promise<ChatHistoryPage> {
     if (around !== undefined) return this.historyAround(threadId, around, limit, viewerUserId)
     const allDesc = [...(this.log.get(threadId) ?? [])].reverse()
-    // Anchor resolves against ALL rows, tombstones included (2.4 review): the anchor is only a keyset
-    // position, so a deleted cursor id still pages correctly instead of falling back to the newest page.
     let afterAnchor = allDesc
     if (before !== undefined) {
       const idx = allDesc.findIndex((m) => m.dto.id === before)
       if (idx >= 0) afterAnchor = allDesc.slice(idx + 1)
     }
-    // Recompute each item's reactions against the viewer so `mine` is resolved on the history page (the
-    // stored DTO's reactions were last computed for whoever toggled). Mirrors the drizzle history path.
     const ordered = afterAnchor
       .filter((m) => !m.deleted)
       .map((m) =>
@@ -332,12 +275,6 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve({ items: page, nextCursor })
   }
 
-  /**
-   * Around-mode window (P2 2.4), mirroring the drizzle semantics: ceil(limit/2) at-or-older rows (the
-   * target INCLUDED — even a tombstoned target anchors, riding as a tombstone while every OTHER deleted
-   * row stays filtered) + floor(limit/2) strictly newer, newest-first. nextCursor = older end,
-   * prevCursor = newer end (null when that side reaches the edge). Missing/foreign-thread target -> 404.
-   */
   private historyAround(
     threadId: string,
     around: string,
@@ -357,8 +294,6 @@ export class InMemoryDmRepository implements DmRepository {
       this.withReply(threadId, {
         ...m.dto,
         reactions: this.reactionsFor(m.dto.id, viewerUserId),
-        // The store keeps a deleted boolean, not a timestamp; stamp a deletedAt so the tombstone
-        // projects like a drizzle tombstone row.
         ...(m.deleted ? { deletedAt: new Date(m.insertedAtMs).toISOString() } : {}),
       }),
     )
@@ -369,7 +304,6 @@ export class InMemoryDmRepository implements DmRepository {
     })
   }
 
-  /** Aggregate a message's reactions into the wire summary, resolving `mine` for the viewer. */
   private reactionsFor(messageId: string, viewerUserId: string | null): ReactionSummaryDTO[] {
     const set = this.reactions.get(messageId)
     if (!set || set.size === 0) return []
@@ -401,8 +335,6 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
-    // Drizzle FK-gates a reaction to a live message; mirror that here so a toggle on a
-    // nonexistent/soft-deleted id is a no-op rather than minting an orphan reaction set.
     const exists = [...this.log.values()].some((list) =>
       list.some((m) => m.dto.id === messageId && !m.deleted),
     )
@@ -433,10 +365,6 @@ export class InMemoryDmRepository implements DmRepository {
     return Promise.resolve(ms !== undefined ? new Date(ms) : null)
   }
 
-  /**
-   * Same definition as the Drizzle twin (and as this fake's own listThreadsForUser aggregate): live
-   * messages NOT written by the viewer, strictly after max(thread.createdAt, lastRead).
-   */
   countUnread(threadId: string, userId: string): Promise<number> {
     const thread = this.threads.get(threadId)
     if (!thread) return Promise.resolve(0)
@@ -470,12 +398,17 @@ export class InMemoryDmRepository implements DmRepository {
       if (this.isBlockedEitherWay && (await this.isBlockedEitherWay(userId, peerId))) continue
 
       const peer = this.userOf(peerId)
+      const identity = publicAuthorIdentity({
+        id: peer.id,
+        displayName: peer.displayName,
+        handle: peer.handle ?? null,
+        avatarUrl: peer.avatarUrl ?? null,
+        deletedAt: peer.deletedAt ?? null,
+      })
       const live = (this.log.get(t.id) ?? []).filter((m) => !m.deleted).map((m) => m.dto)
       const last = live.length > 0 ? live[live.length - 1]! : null
       const lastReadMs = this.reads.get(`${t.id}:${userId}`) ?? 0
       const baseline = Math.max(t.createdAt.getTime(), lastReadMs)
-      // DM messages always have an author (no sender-less SYSTEM messages on the dm path); optional-chain
-      // to satisfy the nullable contract type without changing which messages count as unread.
       const unread = live.filter(
         (m) => m.from?.id === peerId && new Date(m.createdAt).getTime() > baseline,
       ).length
@@ -485,10 +418,11 @@ export class InMemoryDmRepository implements DmRepository {
         createdAt: t.createdAt,
         peer: {
           id: peer.id,
-          displayName: peer.displayName,
-          handle: peer.handle ?? null,
-          bio: peer.bio ?? null,
-          avatarUrl: peer.avatarUrl ?? null,
+          displayName: identity.name,
+          handle: identity.handle,
+          bio: identity.deleted ? null : (peer.bio ?? null),
+          avatarUrl: identity.avatarUrl ?? null,
+          deleted: identity.deleted,
         },
         last:
           last !== null
@@ -497,9 +431,6 @@ export class InMemoryDmRepository implements DmRepository {
         unread,
       })
     }
-    // Same (activity, id) DESC order + keyset cut the Drizzle twin applies (THREADS_CURSOR in
-    // threads-service.ts), so the offline inbox pages identically. The activity comparison is exact here
-    // (the fake's timestamps are millisecond-resolution to begin with).
     const activityOf = (a: DmThreadAggregate): number =>
       (a.last?.createdAt ?? a.createdAt).getTime()
     out.sort(
@@ -519,9 +450,7 @@ export class InMemoryDmRepository implements DmRepository {
   }
 }
 
-/** In-memory directed block edges with a bidirectional test + a blocked-list projection. */
 export class InMemoryBlocksRepository implements BlocksRepository {
-  /** blockerId -> set of blockedId. */
   private readonly edges = new Map<string, Set<string>>()
   private readonly users = new Map<string, DmUser>()
 
@@ -554,9 +483,10 @@ export class InMemoryBlocksRepository implements BlocksRepository {
     })
   }
 
-  listBlocked(blockerId: string): Promise<PersonDTO[]> {
-    const ids = [...(this.edges.get(blockerId) ?? [])]
-    const people: PersonDTO[] = ids.map((id) => {
+  listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage> {
+    const limit = args?.limit ?? LIST_BLOCKS_DEFAULT_LIMIT
+    const ids = [...(this.edges.get(blockerId) ?? [])].slice(0, limit)
+    const blocked: PersonDTO[] = ids.map((id) => {
       const u = this.users.get(id) ?? { id, displayName: `User ${id.slice(0, 4)}` }
       return {
         id: u.id,
@@ -570,6 +500,6 @@ export class InMemoryBlocksRepository implements BlocksRepository {
         isFollowing: false,
       }
     })
-    return Promise.resolve(people)
+    return Promise.resolve({ blocked, nextCursor: null })
   }
 }

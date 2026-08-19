@@ -1,6 +1,6 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError } from "@civfix/shared"
+import { AppError, REPORT_TYPE_TO_CATEGORY } from "@civfix/shared"
 import type {
   CreateReportRequest,
   LinkedEventRef,
@@ -62,8 +62,14 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
   const newId = deps.newId ?? (() => randomUUID())
   const now = deps.now ?? (() => new Date())
 
-  async function toMediaDTO(view: ReportMediaView): Promise<MediaDTO> {
-    const { url, thumbUrl } = await deps.presignMedia(view.r2Key, view.thumbKey)
+  const publicPresign = deps.presignMedia
+  const privatePresign = deps.presignPrivateMedia ?? deps.presignMedia
+
+  async function toMediaDTO(
+    view: ReportMediaView,
+    presign: ReportServiceDeps["presignMedia"],
+  ): Promise<MediaDTO> {
+    const { url, thumbUrl } = await presign(view.r2Key, view.thumbKey)
     return {
       id: view.id,
       kind: view.kind,
@@ -92,10 +98,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(pin.title !== null ? { title: pin.title } : {}),
       description: pin.description,
       thumbUrl,
-      // Search-row enrichment (the /reports/search list reads these to render its location + "<type>:
       // <reference>" headline). addr stays nullable; referenceCode is omitted when null, mirroring title.
-      // The /map/reports route's fast-json-stringify schema does NOT declare these, so the hot map path
-      // drops them - they ride only on the unschematized search response.
       addr: pin.addr,
       ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
     }
@@ -123,7 +126,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       chatMeta?: ReportChatMeta | null
     },
   ): Promise<ReportDTO> {
-    const mediaDTOs = await mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO)
+    const reportIsPublic =
+      isPubliclyVisibleStatus(record.status) && record.visibility === "public"
+    const mediaDTOs = await mapWithLimit(media, PRESIGN_CONCURRENCY, (view) => {
+      const usePrivate = !reportIsPublic || view.status === "validating"
+      return toMediaDTO(view, usePrivate ? privatePresign : publicPresign)
+    })
     const meta = flags.discussionMeta ?? null
     const chat = flags.chatMeta ?? null
     return {
@@ -144,9 +152,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(record.publishedAt !== null ? { publishedAt: record.publishedAt.toISOString() } : {}),
       mine: flags.mine,
       gov: false,
-      // `following` is a deprecated, always-false field on ReportDTO: the per-report follow/subscribe
-      // surface (report_follows) was removed with the discussion system. Kept on the DTO so older clients
-      // still parse; report chat is now the notification channel.
       following: false,
       media: mediaDTOs,
       mediaPending: flags.mediaPending ?? 0,
@@ -160,8 +165,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
             canForwardToCity: meta.canForwardToCity,
           }
         : {}),
-      // D-Fmeta: report-chat membership + counts — populated ONLY on the report-detail path (getReport
-      // passes chatMeta). The list/pin builders leave chatMeta undefined so these fields are omitted.
       ...(chat !== null
         ? {
             chatJoined: chat.joined,
@@ -188,8 +191,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     }
   }
 
-  // D-Fmeta: viewer-scoped report-chat metadata for the DETAIL DTO. Best-effort (a failure returns null,
-  // leaving the chat* fields undefined) so the detail fetch never fails on the chat metadata alone.
   async function chatMetaFor(reportId: string, viewerId: string | null): Promise<ReportChatMeta | null> {
     if (deps.loadReportChatMeta === undefined) return null
     try {
@@ -208,8 +209,14 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       assertNoSlur(input.title ?? null, "title")
       assertNoSlur(input.description ?? null, "description")
 
-      const existing = await deps.repo.findIdempotentSnapshot(input.idempotencyKey, REPORT_CREATE_SCOPE)
+      const existing = await deps.repo.findIdempotentSnapshot(
+        input.idempotencyKey,
+        REPORT_CREATE_SCOPE,
+        owner.userId,
+      )
       if (existing) return existing
+
+      const category = REPORT_TYPE_TO_CATEGORY[input.type]
 
       const wantsReverse = !input.addr?.trim() && deps.reverseGeocode !== undefined
       const [jurisdictionGeoid, reversed] = await Promise.all([
@@ -234,7 +241,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         geomSource: input.geomSource,
         jurisdictionGeoid,
         jurCode,
-        category: input.category,
+        category,
         type: input.type,
         title: input.title ?? null,
         description: input.description ?? null,
@@ -250,17 +257,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           toReportDTO(record, media, timeline, { mine: true }),
       })
 
-      // Auto-join the creator as an OWNER of the report chat. Done AFTER createReportTx returns (the
-      // report row is committed) because report_chat_members.report_id references reports.id. Best-effort:
-      // a join failure must not fail report creation.
+      if (result.kind === "replayed") return result.snapshot
+
       await maybeJoinReportChatAsOwner(deps, result.snapshot.id, owner.userId)
 
-      await maybeEnqueueAutoForward(deps, reportId, owner.userId)
+      await maybeEnqueueAutoForward(deps, result.snapshot.id, owner.userId)
 
-      // Creating a report credits NO volunteer hours. It used to award 0.1h with source='report', which
-      // ranked report filings on the public jurisdiction leaderboard and itemised them on signed service
-      // transcripts as if they were volunteer service. Removed (write path + repository capability), and
-      // every historical credit is voided by drizzle/0065_void_report_volunteer_hours.sql.
       return result.snapshot
     },
 
@@ -275,8 +277,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const viewerId = viewer.userId ?? null
       const mine = viewerId !== null && record.reporterUserId === viewerId
 
-      // The TS twin of report-sql.ts:publicReportFilter — see report-visibility.ts:PUBLIC_REPORT_STATUSES
-      // for why the whole in-progress tail of the lifecycle is public, and keep the three in lockstep.
       const isPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
       if (!isPublic && !mine) {
         throw AppError.notFound("Report not found")
@@ -334,9 +334,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       types: ReportType[] | null,
       zoom: number,
     ): Promise<ReportClusterResponse> {
-      // M14: the client's `zoom` is advisory only — it is clamped to what the requested bbox extent can
-      // actually imply, so a world-sized bbox can never reach the per-pin (per-presign) branch no matter
-      // what zoom is claimed. See effectiveMapZoom in report-clustering.ts.
       const points = await deps.repo.findMapCandidates(bbox, categories, types, MAP_REPORTS_CANDIDATE_CAP)
       const { clusters, pins: unsignedPins } = clusterByZoom(points, effectiveMapZoom(bbox, zoom))
       const counts = countByCategory(points)
@@ -375,7 +372,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only change the status of your own report")
       }
-      // Post-commit: mirror the resolve/reopen transition into the report chat (best-effort; never throws).
+      if (outcome === "invalid_state") {
+        throw AppError.conflict("This report cannot be resolved or reopened from its current state")
+      }
       await maybeEmitTimeline(deps, { reportId, status, kind: resolved ? "done" : "status", note })
       return service.getReport(reportId, { userId })
     },
@@ -388,8 +387,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only hide your own report")
       }
-      // The visibility change writes a timeline row at the report's CURRENT status; reflect it into the
-      // chat with that same status (read back from the fresh DTO below).
       const dto = await service.getReport(reportId, { userId })
       await maybeEmitTimeline(deps, { reportId, status: dto.status, kind: "status", note })
       return dto
@@ -430,11 +427,6 @@ async function maybeJoinReportChatAsOwner(
   }
 }
 
-/**
- * D-D1: fire the report-chat SYSTEM-message emitter for an owner timeline event (resolve/reopen/hide/
- * re-list). No-op when no emitter is injected (offline / fake-chat). The emitter is already best-effort
- * (swallows its own errors), so this can never fail the owner mutation.
- */
 async function maybeEmitTimeline(
   deps: ReportServiceDeps,
   event: { reportId: string; status: string; kind?: string | null; note?: string | null },

@@ -399,10 +399,17 @@ describe("slot validation happens BEFORE the database is touched (B26)", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
-  it("the REST of updateCleanup stays ungated on status (only slots are refused)", async () => {
+  it("freezes date/title/location/type on a terminal event, text corrections still apply (F015)", async () => {
     const id = seedEvent(CLEANUP_ID, { status: "done" })
-    const dto = await service.updateCleanup(id, { title: "Renamed after the fact" }, ORG)
-    expect(dto.title).toBe("Renamed after the fact")
+    await expect(
+      service.updateCleanup(id, { title: "Renamed after the fact" }, ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    const dto = await service.updateCleanup(
+      id,
+      { description: "Thanks to everyone who came out" },
+      ORG,
+    )
+    expect(dto.description).toBe("Thanks to everyone who came out")
   })
 })
 

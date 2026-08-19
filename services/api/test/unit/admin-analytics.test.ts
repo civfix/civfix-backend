@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { InMemoryAnalyticsRepository } from "../../src/services/admin/analytics-repository.memory.js"
+import { makeDrizzleAnalyticsRepository } from "../../src/services/admin/analytics-repository.drizzle.js"
+import type { Sql } from "../../src/db/client.js"
 import {
   buildByCategory,
   buildByMonth,
@@ -23,13 +25,6 @@ import {
   type AnalyticsService,
 } from "../../src/services/admin/analytics-service.js"
 
-/**
- * Offline unit tests for the admin analytics service. The DATABASE does the aggregation (medians, grouped
- * counts, period windows) so these tests target the service's PURE SHAPING - pct, category fill, KPI
- * deltas + arrows, funnel percentages, week/month/cohort alignment - against known aggregate inputs, plus
- * the service wiring over the in-memory repo. The real SQL aggregates are Docker-gated
- * (test/integration/admin-analytics.test.ts).
- */
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 
@@ -66,11 +61,9 @@ describe("analytics pure math helpers", () => {
   })
 
   it("startOfWeekUtc anchors to Monday (UTC)", () => {
-    // 2026-06-15 is a Monday; its week start is itself (midnight UTC).
     expect(startOfWeekUtc(new Date("2026-06-15T12:00:00Z")).toISOString()).toBe(
       "2026-06-15T00:00:00.000Z",
     )
-    // 2026-06-21 is a Sunday; its week start is the prior Monday 2026-06-15.
     expect(startOfWeekUtc(new Date("2026-06-21T23:00:00Z")).toISOString()).toBe(
       "2026-06-15T00:00:00.000Z",
     )
@@ -96,7 +89,6 @@ describe("buildKpis", () => {
     expect(kpis[0]).toEqual({ label: "Pins this month", num: 120, delta: "+20", dir: "up" })
     expect(kpis[1]).toEqual({ label: "Resolved", num: 50, delta: "+3pt", dir: "up" })
     expect(kpis[2]).toEqual({ label: "Cleanups planned", num: 8, delta: "0", dir: "flat" })
-    // Avg route time is the Phase 3 placeholder.
     expect(kpis[3]).toEqual({ label: "Avg. route time", num: 0, delta: "Phase 3", dir: "flat" })
     expect(kpis[4]).toEqual({ label: "Events this month", num: 5, delta: "-4", dir: "down" })
     expect(kpis[5]).toEqual({ label: "New users", num: 64, delta: "+4", dir: "up" })
@@ -172,7 +164,6 @@ describe("buildCoverage", () => {
 
 describe("buildPinsByWeek", () => {
   it("aligns sparse weekly buckets into a fixed window ending at the current week", () => {
-    // NOW is Mon 2026-06-15. This week + the week 2 weeks ago have pins.
     const res = buildPinsByWeek(
       [
         { weekStart: new Date("2026-06-15T00:00:00Z"), count: 10 },
@@ -182,11 +173,8 @@ describe("buildPinsByWeek", () => {
       NOW,
     )
     expect(res.weeks).toHaveLength(8)
-    // Current week is the last cell.
     expect(res.weeks[7]).toBe(10)
-    // Two weeks ago is cell index 5.
     expect(res.weeks[5]).toBe(4)
-    // The rest are 0.
     expect(res.weeks[6]).toBe(0)
     expect(res.labels[7]).toBe("now")
     expect(res.labels[6]).toBe("last")
@@ -214,10 +202,8 @@ describe("buildByMonth", () => {
       NOW,
     )
     expect(byMonth).toHaveLength(8)
-    // June is the last cell (current month).
     expect(byMonth[7]).toBe(7)
     expect(monthLabels[7]).toBe("Jun")
-    // April is two months before June -> cell index 5.
     expect(byMonth[5]).toBe(3)
     expect(monthLabels[5]).toBe("Apr")
   })
@@ -252,7 +238,6 @@ describe("buildRetention", () => {
     expect(res.cohorts).toHaveLength(2)
     const may = res.cohorts.find((c) => c.cohort === "May 2026")!
     expect(may.size).toBe(100)
-    // 100/100, 40/100, 25/100, then zeros.
     expect(may.values).toEqual([1, 0.4, 0.25, 0, 0, 0])
     const jun = res.cohorts.find((c) => c.cohort === "Jun 2026")!
     expect(jun.values[0]).toBe(1)
@@ -310,5 +295,44 @@ describe("analytics service wiring", () => {
     repo.resolutionByCategoryValue = [{ category: "trash", medianHours: 5 }]
     expect((await svc.byCategory()).rows).toHaveLength(7)
     expect((await svc.resolutionByCategory()).rows).toHaveLength(7)
+  })
+})
+
+describe("analytics repository TTL cache (F026)", () => {
+  function countingSql(): { sql: Sql; count: () => number } {
+    let calls = 0
+    const tag = (..._args: unknown[]): Promise<unknown[]> => {
+      calls += 1
+      return Promise.resolve([])
+    }
+    return { sql: tag as unknown as Sql, count: () => calls }
+  }
+
+  it("serves a second call inside the TTL from cache, and re-queries once it lapses", async () => {
+    const { sql, count } = countingSql()
+    const repo = makeDrizzleAnalyticsRepository(sql, { cacheTtlMs: 60_000 })
+    await repo.kpis()
+    const firstBurst = count()
+    expect(firstBurst).toBeGreaterThan(0)
+    await repo.kpis()
+    expect(count()).toBe(firstBurst)
+
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(Date.now() + 61_000)
+      await repo.kpis()
+      expect(count()).toBe(firstBurst * 2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("is opt-in: a repo built without a TTL queries every time", async () => {
+    const { sql, count } = countingSql()
+    const repo = makeDrizzleAnalyticsRepository(sql)
+    await repo.funnel()
+    const firstBurst = count()
+    await repo.funnel()
+    expect(count()).toBe(firstBurst * 2)
   })
 })

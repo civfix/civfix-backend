@@ -18,7 +18,11 @@ import { requireAuth } from "../auth/context.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { roomKeyFor } from "../ws/gateway.js"
-import { chatHistoryPayload, deleteMessageWithPowers } from "./chat-route-helpers.js"
+import {
+  chatHistoryPayload,
+  deleteMessageWithPowers,
+  neutralizeChatViewerFields,
+} from "./chat-route-helpers.js"
 import {
   makeDrizzleChatRepository,
   type ChatRepository,
@@ -34,11 +38,6 @@ import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
-/**
- * Test injection seam for the report-lookup the report-chat routes use (visibility + @city forward gating).
- * A fake `repo` wins over the real drizzle repo so route tests can run without a DB. (Named `discussion*`
- * for continuity with the fastify decoration key that predates the discussion system's removal.)
- */
 export interface DiscussionServiceOverrides {
   repo?: DiscussionRepository
 }
@@ -57,15 +56,8 @@ const REPORT_CHAT_HISTORY_MAX = 50
 
 export const REPORT_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
-/** L11: message deletes are state changes with a broadcast; 30/min matches the cleanup-room delete cap. */
 export const REPORT_DELETE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
-/**
- * L11: report-chat join/leave churn is deliberately bounded TIGHTER than the other chat limits. Each
- * pair writes and deletes a report_chat_members row and moves the caller in and out of a public room's
- * roster + notification fan-out, so an unbounded loop is both a write amplifier and a roster-flicker
- * nuisance for everyone else. 20/min is far more than any real user (who joins a room once).
- */
 export const REPORT_CHAT_MEMBERSHIP_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
 
 export async function registerReportChatRoutes(
@@ -82,9 +74,6 @@ export async function registerReportChatRoutes(
       makePrivateMediaPresigner(container.storage),
     ))
 
-  // Report-chat MEMBERSHIP repo (report_chat_members). Mirrors getChatRepo: an injected fake
-  // (app.chatOverrides.reportChat) wins, else a lazily-built drizzle repo. Fake-chat route tests MUST
-  // supply chatOverrides.reportChat because the real repo touches the DB.
   let reportChatRepo: ReportChatRepository | undefined
   const getReportChatRepo = (): ReportChatRepository =>
     app.chatOverrides?.reportChat ??
@@ -115,8 +104,6 @@ export async function registerReportChatRoutes(
     )
     const viewerUserId = request.auth?.userId ?? null
     await requireVisibleReport(id, viewerUserId)
-    // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together);
-    // the pins-on-the-initial-page-only contract lives in chatHistoryPayload.
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>
@@ -140,10 +127,6 @@ export async function registerReportChatRoutes(
       const { id, messageId } = parse(ReportChatMessageParamsSchema, request.params)
       parse(DeleteReportMessageRequestSchema, { id, messageId })
       await requireVisibleReport(id, userId)
-      // Report chat is view-only until you Join: a MEMBER may self-delete (sender-gated in the repo).
-      // A non-member is NOT pre-gated out entirely (P3 Task 3.5): platform OPERATORS hold delete-others
-      // power in the public report rooms WITHOUT a membership row, so the ladder still consults the
-      // chat-powers resolver before rejecting. Report owners do NOT get delete-others.
       const chatRepo = getChatRepo()
       const tombstone = await deleteMessageWithPowers({
         roomKind: "report",
@@ -173,11 +156,6 @@ export async function registerReportChatRoutes(
         id,
         messageId,
       })
-      // GATES: both of them (report VISIBILITY -> 404 "Report not found", then report_chat_members
-      // membership -> 403 "Join the chat to react to messages.") run INSIDE the service below, in that
-      // order, off the two deps wired here. This route deliberately does NOT pre-run them: the duplicate
-      // pre-checks cost two extra round trips (a report read + a membership read) on the hottest chat
-      // mutation and answered with the same status and the same copy the service produces.
       const reactions = makeChatReactionService({
         chat: getChatRepo(),
         isReportChatMember: (reportId, uid) => getReportChatRepo().isMember(reportId, uid),
@@ -195,7 +173,7 @@ export async function registerReportChatRoutes(
           type: "reaction",
           cleanupId: id,
           roomKind: "report",
-          message: updated,
+          message: neutralizeChatViewerFields(updated),
         }),
       ).catch(() => {})
       reply.status(200).send(updated)
@@ -210,11 +188,8 @@ export async function registerReportChatRoutes(
       const userId = requireAuth(request)
       const { id } = parse(ReportChatIdParamsSchema, request.params)
       parse(JoinReportChatRequestSchema, { id })
-      // The report must still be visible to the joiner (do not let a held/private report be joined).
       await requireVisibleReport(id, userId)
       await getReportChatRepo().join(id, userId, "member")
-      // Nudge the joiner's own inbox so the newly-joined report chat surfaces (best-effort; the client
-      // also invalidates on the mutation).
       void Promise.resolve(
         container.userChannel?.publishToUser(userId, { topic: "threads" }),
       ).catch(() => {})
@@ -222,13 +197,6 @@ export async function registerReportChatRoutes(
     },
   )
 
-  /**
-   * The report chat's roster, backing the chat-info surface's member list. Auth is REQUIRED even
-   * though this room's message history is auth-optional: the history already names its own authors,
-   * but a membership LIST is a separate disclosure, so only a signed-in viewer who can still see the
-   * report gets one. No membership gate beyond that - the room is view-only-until-you-Join, so a
-   * viewer who can read the messages can see who is in the room they are reading.
-   */
   route(app, "getReportChatParticipants", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(ReportChatIdParamsSchema, request.params)

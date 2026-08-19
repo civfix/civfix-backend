@@ -6,9 +6,11 @@ import {
   cleanups,
   emailOtps,
   oauthIdentities,
+  posts,
   reports,
   serviceHoursCertificates,
   sessions,
+  userModeration,
   users,
 } from "../db/schema/index.js"
 import { AppError, DELETED_USER_LABEL, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/shared"
@@ -16,6 +18,8 @@ import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
 import {
   generatePlaceholderHandle,
+  generateTombstoneHandle,
+  type AccountStatus,
   type AuthStores,
   type CreateUserInput,
   type OAuthIdentityRecord,
@@ -69,14 +73,6 @@ export class PgSessionStore implements SessionStore {
       id: r.id,
       userId: r.userId,
       roles: rolesFor(r.role),
-      // sessions.created_at is NOT NULL as of drizzle/0058_sessions_created_at.sql (it backfills the legacy
-      // NULL rows from last_seen_at), and the absolute 90-day ceiling (M3) is measured FROM it. This
-      // fallback is KEPT as belt-and-braces: the production deploy does not auto-migrate (see the operator
-      // runbook), so a box running this code against the pre-0058 schema must still fail closed. A NULL
-      // reads as the epoch: already past the ceiling (the holder re-authenticates once). Falling back to
-      // last_seen_at instead would make the ceiling unreachable — last_seen_at is bumped by every
-      // sliding-expiry write, so an active legacy session was capped from its own last activity and never
-      // expired, which is the unbounded-sliding hole M3 closes.
       createdAt: r.createdAt ?? new Date(0),
       expiresAt: r.expiresAt,
       lastSeenAt: r.lastSeenAt,
@@ -105,27 +101,16 @@ export class PgSessionStore implements SessionStore {
   }
 }
 
-/**
- * Structural slice of the storage adapter, declared locally so the auth layer never imports a service
- * (the same posture `CertificateStorage` takes in certificate-service.ts). Account erasure needs exactly
- * one verb: drop the rendered certificate PDF that prints the erased holder's legal name.
- */
 export interface ErasureObjectStore {
   delete(key: string): Promise<void>
 }
 
-/** Same shape as `OtpLogger`; re-declared rather than imported for the same reason. */
 export interface ErasureLogger {
   warn(obj: unknown, msg?: string): void
 }
 
 export interface PgUserStoreOptions {
   now?: () => Date
-  /**
-   * Wired in production by `buildAuthServicesFromContainer`. When ABSENT the row-level scrub still runs
-   * (it is transactional with the tombstone); only the best-effort object delete is skipped, and that
-   * skip is LOGGED rather than silent — an unwired deleter means erased holders' PDFs accumulate in R2.
-   */
   certificateObjects?: ErasureObjectStore
   logger?: ErasureLogger
 }
@@ -217,7 +202,9 @@ export class PgUserStore implements UserStore {
     }
     if (input.bio !== undefined) set.bio = input.bio === "" ? null : input.bio
     if (input.avatarUploadId !== undefined) {
-      const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId)
+      const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId, {
+        userId: id,
+      })
       set.avatarMediaId = media.id
       if (input.presignAvatar) {
         set.avatarUrl = await input.presignAvatar(media.r2Key)
@@ -236,11 +223,6 @@ export class PgUserStore implements UserStore {
     }
     let updated: (typeof users.$inferSelect)[]
     try {
-      // Never write a profile onto a TOMBSTONE: a soft-deleted row would otherwise take the display
-      // name/handle/bio/avatar and profile_complete of whoever still held a session, resurrecting a
-      // deleted identity's public surface. Unreachable today (deletion revokes every session), so this
-      // is the structural guard, not a fix for a live path — and the empty result falls into the 404
-      // below, the same answer a caller gets for an id that never existed.
       updated = await this.db
         .update(users)
         .set(set)
@@ -266,27 +248,44 @@ export class PgUserStore implements UserStore {
     const set: Partial<typeof users.$inferInsert> = {}
     if (input.allowDirectMessages !== undefined) set.allowDirectMessages = input.allowDirectMessages
     if (input.locale !== undefined) set.locale = input.locale
-    // Only an EXPLICIT boolean is ever written; an omitted field leaves the tri-state alone, so a user
-    // who has never touched the toggle keeps the NULL "never chosen" state through every other settings
-    // write.
     if (input.showVolunteerHours !== undefined) set.showVolunteerHours = input.showVolunteerHours
+    if (Object.keys(set).length === 0) {
+      const current = await this.findById(id)
+      if (!current) throw new Error("PgUserStore.updateSettings: user not found")
+      return current
+    }
     const updated = await this.db.update(users).set(set).where(eq(users.id, id)).returning()
     const r = updated[0]
     if (!r) throw new Error("PgUserStore.updateSettings: user not found")
     return toUserRecord(r)
   }
 
-  /**
-   * SOFT delete + anonymize (docs/erasure-behavior.md is the source of record).
-   *
-   * The `users` scrub, the content de-listing and the CERTIFICATE scrub all commit together: a partial
-   * erasure that tombstones the account but leaves the one unscrubbed copy of the erased legal name
-   * behind is exactly the failure this transaction exists to prevent. The R2 objects are dropped AFTER
-   * the commit (best-effort) — deleting them inside would destroy live documents if the transaction then
-   * rolled back.
-   */
+  async accountStatus(id: string): Promise<AccountStatus> {
+    const rows = await this.db
+      .select({ status: userModeration.accountStatus })
+      .from(userModeration)
+      .where(eq(userModeration.userId, id))
+      .limit(1)
+    return rows[0]?.status ?? "active"
+  }
+
   async softDeleteAndAnonymize(id: string): Promise<UserRecord> {
-    const { record, certificateKeys } = await this.db.transaction(async (tx) => {
+    let attempt = 0
+    for (;;) {
+      try {
+        return await this.runErasure(id)
+      } catch (err) {
+        if (isUniqueViolation(err) && attempt < ERASURE_HANDLE_RETRIES) {
+          attempt += 1
+          continue
+        }
+        throw err
+      }
+    }
+  }
+
+  private async runErasure(id: string): Promise<UserRecord> {
+    const { record, objectKeys } = await this.db.transaction(async (tx) => {
       const updated = await tx
         .update(users)
         .set({
@@ -295,7 +294,7 @@ export class PgUserStore implements UserStore {
           email: null,
           emailVerified: false,
           displayName: DELETED_USER_LABEL,
-          handle: generatePlaceholderHandle(id),
+          handle: generateTombstoneHandle(),
           bio: null,
           avatarUrl: null,
           avatarMediaId: null,
@@ -313,32 +312,16 @@ export class PgUserStore implements UserStore {
         .update(cleanups)
         .set({ status: "cancelled" })
         .where(and(eq(cleanups.organizerUserId, id), inArray(cleanups.status, ["upcoming", "active"])))
+      await tx
+        .update(posts)
+        .set({ visibility: "hidden" })
+        .where(and(eq(posts.authorId, id), eq(posts.visibility, "public")))
 
-      /**
-       * `service_hours_certificates` is the ONLY table that keeps a FROZEN COPY of the holder's legal
-       * name (`holder_name`/`holder_handle`) plus an itemised record of where they were and when
-       * (`snapshot` — the whole rendered TranscriptModel: per-event titles, jurisdictions, credited-by
-       * names). Nulling `users.display_name` does not reach it, so an erased account used to leave its
-       * one unscrubbed identity copy here.
-       *
-       * REVOKE rather than DELETE the rows (0064's banner rule): the code must keep answering "issued,
-       * then revoked" instead of "no such code" for whoever is holding the paper. `code`, `issued_at`,
-       * the totals and `document_sha256` are KEPT so `verify` can still answer; everything that names
-       * the person is blanked. `revoked_reason = 'account_closed'` is the exact reason the verify
-       * projection already synthesises for a tombstoned holder, so the stored row and the wire answer
-       * now agree.
-       *
-       * COALESCE keeps it idempotent (a repeat delete does not move an existing revocation timestamp)
-       * and preserves a holder's own earlier "holder" revocation reason. Already-revoked rows are
-       * included on purpose: their PII is just as much PII, and their object may still exist if the
-       * best-effort delete at revoke time failed.
-       */
       const certificates = await tx
         .update(serviceHoursCertificates)
         .set({
           revokedAt: sql`COALESCE(${serviceHoursCertificates.revokedAt}, now())`,
           revokedReason: sql`COALESCE(${serviceHoursCertificates.revokedReason}, 'account_closed')`,
-          // NOT NULL, so it takes the same tombstone label the users row does rather than an empty string.
           holderName: DELETED_USER_LABEL,
           holderHandle: null,
           snapshot: {},
@@ -346,24 +329,61 @@ export class PgUserStore implements UserStore {
         .where(eq(serviceHoursCertificates.userId, id))
         .returning({ r2Key: serviceHoursCertificates.r2Key })
 
-      return { record: toUserRecord(r), certificateKeys: certificates.map((c) => c.r2Key) }
+      await tx.execute(sql`
+        UPDATE moderation_items
+        SET meta = jsonb_set(
+          jsonb_set(
+            jsonb_set(
+              jsonb_set(meta, '{user,name}', to_jsonb(${DELETED_USER_LABEL}::text), false),
+              '{user,handle}', to_jsonb(''::text), false),
+            '{user,device}', to_jsonb(''::text), false),
+          '{user,joined}', to_jsonb(''::text), false)
+        WHERE meta->'user'->>'id' = ${id}
+      `)
+      await tx.execute(sql`
+        UPDATE moderation_items
+        SET meta = jsonb_set(
+          jsonb_set(meta, '{reporter}', to_jsonb(${DELETED_USER_LABEL}::text), false),
+          '{desc}', to_jsonb(''::text), false)
+        WHERE meta->>'reporterUserId' = ${id}
+      `)
+
+      const verificationMedia = await tx.execute<{ r2_key: string }>(sql`
+        DELETE FROM media_assets
+        WHERE purpose = 'verification'
+          AND id IN (
+            SELECT (doc->>'mediaId')::uuid
+            FROM user_verification uv,
+                 jsonb_array_elements(uv.documents) AS doc
+            WHERE uv.user_id = ${id} AND doc->>'mediaId' IS NOT NULL
+          )
+        RETURNING r2_key
+      `)
+      await tx.execute(sql`
+        UPDATE user_verification
+        SET note = NULL, rejection_reason = NULL, documents = '[]'::jsonb, updated_at = now()
+        WHERE user_id = ${id}
+      `)
+
+      const objectKeys = [
+        ...certificates.map((c) => c.r2Key),
+        ...verificationMedia.map((m) => m.r2_key),
+      ]
+      return { record: toUserRecord(r), objectKeys }
     })
 
-    // Post-commit and best-effort, mirroring CertificateService.revoke's own delete: an orphaned 40 KB
-    // PDF is a rounding error, but a throw here would turn a COMPLETED erasure into a 500 the client
-    // reads as "deletion failed" (users.routes' deleteAccount makes the same trade for its cleanups).
-    for (const key of certificateKeys) {
+    for (const key of objectKeys) {
       if (this.certificateObjects === undefined) {
         this.logger?.warn(
           { userId: id, key },
-          "certificate object not deleted on account erasure: no object store wired",
+          "erasure object not deleted: no object store wired",
         )
         continue
       }
       try {
         await this.certificateObjects.delete(key)
       } catch (err) {
-        this.logger?.warn({ err, userId: id, key }, "certificate object delete failed on erasure")
+        this.logger?.warn({ err, userId: id, key }, "erasure object delete failed")
       }
     }
     return record
@@ -459,8 +479,6 @@ export class PgOtpStore implements OtpStore {
   }
 
   async markConsumed(id: string, at: Date): Promise<boolean> {
-    // Conditional on consumed_at IS NULL so the RETURNING row identifies the single winner among
-    // concurrent verifies of the same code (see the OtpStore doc).
     const claimed = await this.db
       .update(emailOtps)
       .set({ consumedAt: at })
@@ -476,10 +494,6 @@ export class PgAuthStores implements AuthStores {
   readonly oauth: OAuthIdentityStore
   readonly otps: OtpStore
 
-  /**
-   * `opts` is forwarded to `PgUserStore` only. It carries the erasure object store (the certificate PDF
-   * deleter) so account deletion can reach R2; omitting it degrades to a row-only scrub with a warning.
-   */
   constructor(db: Db, opts: PgUserStoreOptions = {}) {
     this.sessions = new PgSessionStore(db)
     this.users = new PgUserStore(db, opts)
@@ -517,8 +531,6 @@ function toUserRecord(r: UserRowLike): UserRecord {
     avatarUrl: r.avatarUrl,
     profileComplete: r.profileComplete,
     allowDirectMessages: r.allowDirectMessages,
-    // Carried through as-is: NULL means "never chosen" and must NOT be coerced to a boolean here (see
-    // UserRecord). toUserDTO decides whether to put it on the wire at all.
     showVolunteerHours: r.showVolunteerHours,
     locale: r.locale,
     createdAt: r.createdAt,
@@ -551,6 +563,8 @@ function toOtpRecord(r: OtpRowLike): OtpRecord {
 function rolesFor(role: Role): Role[] {
   return [role]
 }
+
+const ERASURE_HANDLE_RETRIES = 5
 
 const PG_UNIQUE_VIOLATION = "23505"
 

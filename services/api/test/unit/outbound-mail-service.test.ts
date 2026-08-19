@@ -8,24 +8,12 @@ import {
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
 
-/**
- * Offline unit tests for the OutboundMailService over the in-memory MailRepository + FakeMailer (no DB,
- * no SMTP). They prove the API the reports/events agent and the mail agent import: each send path
- *   (1) delivers via the first-class `Mailer.sendOutbound` envelope, sent FROM the per-thread reply
- *       address {kind}-{token}@{MAIL_REPLY_DOMAIN} (NOT via the old `sendTransactional` template, which
- *       silently dropped from/attachments in prod), with NO separate Reply-To,
- *   (2) persists an OUT message (DB from_addr stays the canonical MAIL_FROM_OUTREACH),
- *   (3) records a 'sent' mail_events row (meta.from stays MAIL_FROM_OUTREACH),
- *   (4) derives the From local-part + token from the thread type (12-char base32 token), and
- *   (5) stores the returned Message-ID on the OUT row (for In-Reply-To reply/bounce correlation).
- */
 
 const ENV: OutboundMailEnv = {
   MAIL_FROM_OUTREACH: "outreach@civfix.org",
   MAIL_REPLY_DOMAIN: "civfix.org",
 }
 
-/** The per-thread From headers we now send: a display name + {kind}-{12-char base32 token}@civfix.org. */
 const REPLY_FROM_RE = /^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/
 const REPORT_FROM_RE = /^"civfix Reports" <report-[a-z2-7]{12}@civfix\.org>$/
 const EVENT_FROM_RE = /^"civfix Cleanups" <event-[a-z2-7]{12}@civfix\.org>$/
@@ -60,33 +48,25 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
       attachments,
     })
 
-    // The thread is a PER-REPORT thread (report_id set) with a minted base32 token.
     expect(thread.reportId).toBe("report-1")
     expect(thread.jurisdictionGeoid).toBe("0644000")
     expect(thread.threadToken).toMatch(/^[a-z2-7]{12}$/)
 
-    // Exactly one delivery, via the first-class outbound envelope (not the legacy template path).
     expect(mailer.sent).toHaveLength(1)
     const env = mailer.lastOutbound()
     expect(env).toBeDefined()
-    // Sent FROM the per-report reply address (display name + report-{token}@), so the city's reply
-    // auto-routes back onto this report. NO separate Reply-To.
     expect(env?.from).toMatch(REPORT_FROM_RE)
     expect(env?.from).toBe(`"civfix Reports" <report-${thread.threadToken}@civfix.org>`)
     expect(env?.replyTo).toBeUndefined()
     expect(env?.to).toBe("clerk@lacity.gov")
     expect(env?.subject).toBe("civfix report: Pothole [abcd1234]")
     expect(env?.html).toBe("<p>A pothole on Main St.</p>")
-    // The binary photo attachment is carried through (the bug that dropped attachments is closed).
     expect(env?.attachments).toHaveLength(1)
     expect(env?.attachments?.[0]?.filename).toBe("photo.png")
     expect(env?.attachments?.[0]?.contentType).toBe("image/png")
-    // The OUT Message-ID is derived from the message row (`<out-{id}@civfix.org>`) and returned.
     expect(messageId).toMatch(/^<out-.+@civfix\.org>$/)
     expect(env?.messageId).toBe(messageId)
 
-    // One OUT message persisted; the DB from_addr stays the canonical outreach identity (NOT the wire
-    // From), so resolveCorrespondent + stats stay stable. The Message-ID is stored on the row.
     const dto = await repo.getThread(thread.id)
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("out")
@@ -94,7 +74,6 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
     const out = repo.messagesOf(thread.id)[0]
     expect(out?.messageId).toBe(messageId)
 
-    // A 'sent' event recorded with the report + geoid context.
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.type).toBe("sent")
     expect(repo.events[0]?.meta).toMatchObject({
@@ -153,7 +132,6 @@ describe("OutboundMailService.sendEventToJurisdiction (D10/D19 per-event thread)
       text: "We need 20 trash bags and gloves.",
       html: "<p>We need 20 trash bags and gloves.</p>",
     })
-    // The thread is a PER-EVENT thread (cleanup_id set, report_id null) with a minted base32 token.
     expect(thread.cleanupId).toBe("cleanup-1")
     expect(thread.reportId).toBeNull()
     expect(thread.jurisdictionGeoid).toBe("0644000")
@@ -161,7 +139,6 @@ describe("OutboundMailService.sendEventToJurisdiction (D10/D19 per-event thread)
 
     expect(mailer.sent).toHaveLength(1)
     const env = mailer.lastOutbound()
-    // Sent FROM the per-event reply address event-{token}@ (display name "civfix Cleanups"), no Reply-To.
     expect(env?.from).toMatch(EVENT_FROM_RE)
     expect(env?.from).toBe(`"civfix Cleanups" <event-${thread.threadToken}@civfix.org>`)
     expect(env?.replyTo).toBeUndefined()
@@ -205,7 +182,6 @@ describe("OutboundMailService threading headers (D14)", () => {
       subject: "S1",
       text: "b1",
     })
-    // First message on the thread: no prior OUT Message-IDs to echo.
     const env1 = mailer.lastOutbound()
     expect(env1?.inReplyTo).toBeUndefined()
     expect(env1?.references).toBeUndefined()
@@ -217,7 +193,6 @@ describe("OutboundMailService threading headers (D14)", () => {
       subject: "S2",
       text: "b2",
     })
-    // Same thread; the second send threads off the first's stored Message-ID.
     expect(second.thread.id).toBe(first.thread.id)
     const env2 = mailer.lastOutbound()
     expect(env2?.inReplyTo).toBe(first.messageId)
@@ -236,20 +211,17 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
       reportContext: { reportId: "42" },
       org: "City of LA",
     })
-    // The digest thread token is a minted base32 value; the old `geo-0644000` scheme is GONE.
     expect(thread.threadToken).toMatch(/^[a-z2-7]{12}$/)
     expect(thread.threadToken).not.toMatch(/^geo-/)
     expect(thread.jurisdictionGeoid).toBe("0644000")
     expect(thread.reportId).toBeNull()
     expect(thread.lastMessageAt).not.toBeNull()
 
-    // One OUT message persisted; DB from_addr stays the canonical outreach identity.
     const dto = await repo.getThread(thread.id)
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("out")
     expect(dto?.messages[0]?.from).toBe("outreach@civfix.org")
 
-    // Delivery is the first-class envelope (no template), From the generic reply- address, no Reply-To.
     expect(mailer.sent).toHaveLength(1)
     const env = mailer.lastOutbound()
     expect(env?.from).toMatch(REPLY_FROM_RE)
@@ -258,7 +230,6 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
     expect(env?.to).toBe("clerk@city.gov")
     expect(env?.subject).toBe("Pothole follow-up")
 
-    // A 'sent' event with the report context + recipient.
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.type).toBe("sent")
     expect(repo.events[0]?.meta).toMatchObject({
@@ -291,7 +262,6 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
 
   it("does NOT reuse a per-report thread for the digest path (report_id IS NULL filter)", async () => {
     const { repo, svc } = harness()
-    // A per-report thread exists for the same geoid; the digest must NOT thread into it.
     const reportThread = await svc.sendReportToJurisdiction({
       reportId: "report-9",
       geoid: "0644000",
@@ -329,7 +299,6 @@ describe("OutboundMailService.compose / appendOutbound", () => {
     expect(dto?.messages[0]?.dir).toBe("out")
     expect(mailer.sent).toHaveLength(1)
     expect(mailer.lastOutbound()?.to).toBe("mayor@city.gov")
-    // A compose thread has no report/cleanup, so it sends from the generic reply- address, no Reply-To.
     expect(mailer.lastOutbound()?.from).toMatch(REPLY_FROM_RE)
     expect(mailer.lastOutbound()?.replyTo).toBeUndefined()
     expect(repo.events[0]?.type).toBe("sent")
@@ -373,12 +342,54 @@ describe("OutboundMailService.compose / appendOutbound", () => {
     await expect(svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })).rejects.toThrow(
       /smtp down/,
     )
-    // The message was persisted (insert precedes delivery) and a 'failed' event was recorded for the
-    // outreach trail; NO 'sent' event exists.
     expect(repo.messagesOf(t.id)).toHaveLength(1)
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.type).toBe("failed")
     expect(repo.events[0]?.meta).toMatchObject({ to: "x@y.com", error: "smtp down" })
     expect(repo.events.some((e) => e.type === "sent")).toBe(false)
+  })
+})
+
+describe("OutboundMailService — F110: References chain is trimmed (root + last 9)", () => {
+  it("emits root + the last 9 prior ids (never the unbounded middle); In-Reply-To stays the true latest", async () => {
+    const { repo, mailer, svc } = harness()
+    const t = repo.seedThread({ subject: "Digest" })
+    for (let i = 0; i < 12; i++) {
+      repo.seedMessage({ threadId: t.id, direction: "out", messageId: `<out-${i}@civfix.org>` })
+    }
+
+    await svc.appendOutbound(t.id, { toAddr: "clerk@city.gov", body: "next digest" })
+
+    const env = mailer.lastOutbound()
+    const refs = env?.references ?? []
+    expect(refs).toHaveLength(10)
+    expect(refs[0]).toBe("<out-0@civfix.org>")
+    expect(refs).toEqual([
+      "<out-0@civfix.org>",
+      "<out-3@civfix.org>",
+      "<out-4@civfix.org>",
+      "<out-5@civfix.org>",
+      "<out-6@civfix.org>",
+      "<out-7@civfix.org>",
+      "<out-8@civfix.org>",
+      "<out-9@civfix.org>",
+      "<out-10@civfix.org>",
+      "<out-11@civfix.org>",
+    ])
+    expect(env?.inReplyTo).toBe("<out-11@civfix.org>")
+  })
+})
+
+describe("OutboundMailService — F109: a delivered send never throws post-delivery", () => {
+  it("swallows a thread re-read failure after delivery so the throttle window is not reopened", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    repo.getThreadRecord = () => Promise.reject(new Error("db down"))
+    const svc = makeOutboundMailService({ repo, mailer, env: ENV })
+
+    await expect(
+      svc.sendToCity({ geoid: null, toAddr: "clerk@city.gov", subject: "Digest", body: "hi" }),
+    ).resolves.toBeDefined()
+    expect(mailer.sent).toHaveLength(1)
   })
 })

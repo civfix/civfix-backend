@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import type { CreateReportRequest, ReportDTO } from "@civfix/shared"
+import { REPORT_TYPE_TO_CATEGORY, type CreateReportRequest, type ReportDTO } from "@civfix/shared"
 import {
   makeReportService,
   clusterByZoom,
@@ -15,16 +15,9 @@ import {
 } from "../../src/services/report-service.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
-/**
- * Offline unit tests for the report service + its pure helpers. The pure clusterByZoom/countByCategory
- * are tested directly; the create/get/follow flows run against an in-memory ReportRepository with fake
- * jurisdiction/presign closures, so they need NO database and NO Docker. The Drizzle/PostGIS repo + the
- * real transaction path are covered by the Docker-gated integration suite.
- */
 
 const VALID_UUID = "11111111-1111-1111-1111-111111111111"
 
-/** A fake presigner that echoes the key (so DTO urls are assertable without a storage SDK). */
 function fakePresign(r2Key: string, thumbKey: string | null) {
   return Promise.resolve(
     thumbKey === null
@@ -33,10 +26,6 @@ function fakePresign(r2Key: string, thumbKey: string | null) {
   )
 }
 
-/**
- * A recording fake for the D-D1 report-chat SYSTEM-message emitter, so a citizen-mutation test can assert
- * the owner resolve/reopen/hide event was mirrored into the report chat.
- */
 class FakeReportChatEmitter {
   readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
   emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
@@ -45,7 +34,6 @@ class FakeReportChatEmitter {
   }
 }
 
-/** Build a service over a fresh in-memory repo; jurisdiction resolves to a fixed geoid by default. */
 function makeHarness(
   opts: {
     geoid?: string | null
@@ -59,7 +47,6 @@ function makeHarness(
 ) {
   const repo = new InMemoryReportRepository()
   const emitter = new FakeReportChatEmitter()
-  // Distinguish "not provided" (default to a fixed geoid) from "explicitly null" (outside coverage).
   const geoid: string | null = "geoid" in opts ? (opts.geoid ?? null) : "0644000"
   const service: ReportService = makeReportService({
     repo,
@@ -77,7 +64,6 @@ function makeHarness(
   return { repo, service, emitter }
 }
 
-/** A minimal valid create request. */
 function createReq(over: Partial<CreateReportRequest> = {}): CreateReportRequest {
   return {
     idempotencyKey: over.idempotencyKey ?? VALID_UUID,
@@ -95,16 +81,12 @@ function createReq(over: Partial<CreateReportRequest> = {}): CreateReportRequest
   }
 }
 
-// ---------------------------------------------------------------------------
-// Pure: clusterByZoom / clusterCellSizeDeg / countByCategory / reportH3Cell
-// ---------------------------------------------------------------------------
 
 describe("clusterCellSizeDeg", () => {
   it("halves with each zoom step and is the world width at zoom 0", () => {
     expect(clusterCellSizeDeg(0)).toBeCloseTo(180, 6)
     expect(clusterCellSizeDeg(1)).toBeCloseTo(90, 6)
     expect(clusterCellSizeDeg(2)).toBeCloseTo(45, 6)
-    // Monotonic decreasing.
     expect(clusterCellSizeDeg(5)).toBeLessThan(clusterCellSizeDeg(4))
   })
 
@@ -115,8 +97,6 @@ describe("clusterCellSizeDeg", () => {
 })
 
 describe("clusterByZoom", () => {
-  // A small fixture: three points clumped near LA and one far away in NYC. "a" carries a title + a
-  // first-photo thumb key pair so the carry-through onto the (unsigned) pin can be asserted.
   const pts: ReportMapPoint[] = [
     { id: "a", lat: 34.10, lng: -118.350, category: "trash", type: "dump", status: "published", title: "Mattress dumped", description: "blocking the sidewalk", addr: "12 Spring St", referenceCode: "DU-42-000001", thumbKey: "thumbs/a", r2Key: "uploads/a" },
     { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
@@ -128,8 +108,6 @@ describe("clusterByZoom", () => {
     const { clusters, pins } = clusterByZoom(pts, CLUSTER_ZOOM_THRESHOLD)
     expect(clusters).toHaveLength(0)
     expect(pins).toHaveLength(4)
-    // Pins carry the per-point identity + category + status + the preview fields (title + the first-photo
-    // key pair the service later presigns into thumbUrl).
     const a = pins.find((p) => p.id === "a")!
     expect(a).toMatchObject({
       id: "a",
@@ -147,7 +125,6 @@ describe("clusterByZoom", () => {
   })
 
   it("below the threshold snaps to a grid and emits clusters with correct counts", () => {
-    // Low zoom -> a coarse grid: the three LA points land in one cell, NYC in another.
     const { clusters, pins } = clusterByZoom(pts, 3)
     expect(pins).toHaveLength(0)
     expect(clusters).toHaveLength(2)
@@ -158,7 +135,6 @@ describe("clusterByZoom", () => {
     const counts = clusters.map((c) => c.count).sort()
     expect(counts).toEqual([1, 3])
 
-    // The 3-point cluster's centroid is the mean of the LA points.
     const big = clusters.find((c) => c.count === 3)!
     expect(big.lat).toBeCloseTo((34.1 + 34.11 + 34.12) / 3, 6)
     expect(big.lng).toBeCloseTo((-118.35 + -118.351 + -118.352) / 3, 6)
@@ -187,17 +163,12 @@ describe("reportH3Cell", () => {
     const cell = reportH3Cell(34.1, -118.35)
     expect(typeof cell).toBe("string")
     expect(cell.length).toBeGreaterThan(0)
-    // Same input -> same cell.
     expect(reportH3Cell(34.1, -118.35)).toBe(cell)
-    // A point ~10km away should land in a different r10 cell.
     expect(reportH3Cell(34.2, -118.35)).not.toBe(cell)
     expect(REPORT_H3_RESOLUTION).toBe(10)
   })
 })
 
-// ---------------------------------------------------------------------------
-// Service: honeypot, idempotency replay, create happy path, getReport hiding, follow toggle
-// ---------------------------------------------------------------------------
 
 describe("createReport: honeypot", () => {
   it("rejects a non-empty honeypot with VALIDATION and creates nothing", async () => {
@@ -210,8 +181,6 @@ describe("createReport: honeypot", () => {
   })
 
   it("treats a whitespace-only honeypot as empty (legitimate) and creates the report", async () => {
-    // Trimming means a stray-whitespace value from a real client is not punished; only real content
-    // (which a bot auto-filling the hidden field would produce) trips the reject.
     const { repo, service } = makeHarness()
     await service.createReport(createReq({ honeypot: "   " }), { userId: "u1" })
     expect(repo.reports.size).toBe(1)
@@ -232,7 +201,6 @@ describe("createReport: happy path (authed publish-immediately)", () => {
       { userId: "u1" },
     )
 
-    // The fine-grained type (0021) round-trips through create onto the DTO + the persisted row.
     expect(dto.type).toBe("graffiti")
     expect(dto.status).toBe("published")
     expect(dto.visibility).toBe("public")
@@ -244,22 +212,15 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     expect(dto.lat).toBe(34.1)
     expect(dto.lng).toBe(-118.35)
     expect(dto.publishedAt).toBeTruthy()
-    // Initial timeline entry records the published transition.
     expect(dto.timeline).toHaveLength(1)
     expect(dto.timeline[0]!.status).toBe("published")
 
-    // Issue #56: a well-formed reference code is minted at create + surfaced on the DTO. The harness wires
-    // no jurisdiction-code resolver, so the report lands in the unknown bucket (JURCODE 0): "GR-0-NNNNNN".
     expect(dto.referenceCode).toMatch(/^GR-0-\d{6}$/)
 
-    // The report row + the H3 cell were persisted.
     const stored = repo.reports.get(dto.id)!
     expect(stored.status).toBe("published")
-    // The minted code is persisted on the row too (so a by-code fetch resolves it).
     expect(stored.referenceCode).toBe(dto.referenceCode)
-    // The fine-grained type was persisted on the row too.
     expect(stored.type).toBe("graffiti")
-    // The snapshot is stored under the idempotency key.
     expect(repo.idempotency.size).toBe(1)
   })
 
@@ -270,8 +231,6 @@ describe("createReport: happy path (authed publish-immediately)", () => {
   })
 
   it("persists the title + reverse-geocoded address and echoes them in the DTO", async () => {
-    // The operator console reads reports.title + reports.addr; a submission that carries them must
-    // round-trip through create so the admin reports surface is fully populated (not "Untitled report").
     const { repo, service } = makeHarness()
     const dto = await service.createReport(
       createReq({ title: "Mattress dumped on the corner", addr: "123 Main St, Springfield" }),
@@ -279,7 +238,6 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     )
     expect(dto.title).toBe("Mattress dumped on the corner")
     expect(dto.addr).toBe("123 Main St, Springfield")
-    // Persisted on the row (so the admin report SELECT reads them back).
     const stored = repo.reports.get(dto.id)!
     expect(stored.title).toBe("Mattress dumped on the corner")
     expect(stored.addr).toBe("123 Main St, Springfield")
@@ -304,7 +262,6 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     expect(dto.media).toHaveLength(1)
     expect(dto.media[0]!.id).toBe(asset.id)
     expect(dto.media[0]!.url).toBe("memory://uploads/2026/01/pic")
-    // The asset is now bound to the report.
     expect(repo.media.find((m) => m.id === asset.id)!.reportId).toBe(dto.id)
   })
 
@@ -316,7 +273,6 @@ describe("createReport: happy path (authed publish-immediately)", () => {
       createReq({ mediaUploadIds: [foreign.uploadId] }),
       { userId: "u1" },
     )
-    // The foreign asset keeps its original report_id and is NOT in this report's media.
     expect(repo.media.find((m) => m.id === foreign.id)!.reportId).toBe("other-report")
     expect(dto.media).toHaveLength(0)
   })
@@ -351,20 +307,18 @@ describe("createReport: idempotency replay", () => {
     const first = await service.createReport(createReq(), { userId: "u1" })
     expect(repo.reports.size).toBe(1)
 
-    // Same idempotency key again (even with different-looking body) -> same id, no new row.
     const second = await service.createReport(
       createReq({ category: "hazard", description: "changed" }),
       { userId: "u1" },
     )
     expect(second.id).toBe(first.id)
-    expect(second).toEqual(first) // verbatim replay
+    expect(second).toEqual(first)
     expect(repo.reports.size).toBe(1)
     expect(repo.idempotency.size).toBe(1)
   })
 
   it("a pre-seeded snapshot is replayed without touching the repo's create path", async () => {
     const { repo, service } = makeHarness()
-    // Seed a snapshot directly (as if a prior submit had stored it).
     const seeded: ReportDTO = {
       id: "seeded-report-id",
       category: "water",
@@ -383,28 +337,70 @@ describe("createReport: idempotency replay", () => {
       timeline: [],
       linkedEvents: [],
     }
-    repo.idempotency.set(`report_create:${VALID_UUID}`, {
+    repo.idempotency.set(`report_create:${VALID_UUID}:u1`, {
       key: VALID_UUID,
       scope: "report_create",
+      userOrAnon: "u1",
       snapshot: seeded,
     })
 
     const dto = await service.createReport(createReq(), { userId: "u1" })
     expect(dto).toEqual(seeded)
-    // No report row was inserted (the snapshot short-circuited create).
     expect(repo.reports.size).toBe(0)
   })
 })
 
-/**
- * Filing a report is NOT volunteer service. createReport used to award 0.1h with `source='report'`
- * through an optional `awardReportHours` dep, which ranked report filings on the PUBLIC jurisdiction
- * leaderboard and itemised them on signed PDF service transcripts. The dep is gone from
- * ReportServiceDeps and the capability was deleted from VolunteerHoursRepository outright
- * (drizzle/0065_void_report_volunteer_hours.sql voids the historical rows) — but a best-effort dep seam
- * is easy to re-add by accident, so this pins the ABSENCE: a spy is attached under the old name (through
- * a cast, since the property no longer type-checks) and must never be called.
- */
+describe("createReport: idempotency is scoped to the caller (F028)", () => {
+  it("does NOT replay one user's snapshot to a DIFFERENT user presenting the same key", async () => {
+    const { repo, service } = makeHarness()
+    const a = await service.createReport(createReq({ title: "A's report" }), { userId: "userA" })
+    const b = await service.createReport(createReq({ title: "B's report" }), { userId: "userB" })
+    expect(b.id).not.toBe(a.id)
+    expect(repo.reports.size).toBe(2)
+    expect(repo.reports.get(a.id)!.reporterUserId).toBe("userA")
+    expect(repo.reports.get(b.id)!.reporterUserId).toBe("userB")
+  })
+})
+
+describe("createReport: derives the canonical category from the type (F060)", () => {
+  it("stores REPORT_TYPE_TO_CATEGORY[type], ignoring a mismatched client-supplied category", async () => {
+    const { repo, service } = makeHarness()
+    const dto = await service.createReport(createReq({ type: "dump", category: "graffiti" }), {
+      userId: "u1",
+    })
+    expect(dto.type).toBe("dump")
+    expect(dto.category).toBe(REPORT_TYPE_TO_CATEGORY.dump)
+    expect(dto.category).not.toBe("graffiti")
+    expect(repo.reports.get(dto.id)!.category).toBe(REPORT_TYPE_TO_CATEGORY.dump)
+  })
+})
+
+describe("createReport: auto-forward enqueue on replay (F062)", () => {
+  it("enqueues auto-forward exactly once and NOT again on an idempotent replay", async () => {
+    const repo = new InMemoryReportRepository()
+    const enqueued: { name: string; data: unknown }[] = []
+    const service = makeReportService({
+      repo,
+      resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
+      presignMedia: fakePresign,
+      isReportVerified: () => Promise.resolve(true),
+      jobs: {
+        enqueue: (name: string, data: unknown) => {
+          enqueued.push({ name, data })
+          return Promise.resolve("job-id")
+        },
+      },
+    } as unknown as Parameters<typeof makeReportService>[0])
+
+    const first = await service.createReport(createReq(), { userId: "u1" })
+    const replay = await service.createReport(createReq(), { userId: "u1" })
+
+    expect(replay.id).toBe(first.id)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]!.data).toMatchObject({ reportId: first.id })
+  })
+})
+
 describe("createReport: credits no volunteer hours", () => {
   it("never reaches a report-hours award seam, and still creates the report", async () => {
     const awarded: unknown[][] = []
@@ -498,9 +494,6 @@ describe("getReport: visibility / held hiding", () => {
   })
 
   it("carries the report-chat metadata on the DETAIL DTO (joined/member/message/unread) and passes the viewer through", async () => {
-    // D-Fmeta: the detail path threads chatMeta from loadReportChatMeta onto the DTO. A recording fake
-    // proves getReport calls it with (reportId, viewerId) and the four fields land on the DTO. DB-free
-    // (the real correlated-subquery SQL is covered by the Docker-gated integration suite).
     const calls: { reportId: string; viewerId: string | null }[] = []
     const { repo, service } = makeHarness({
       loadReportChatMeta: (reportId, viewerId) => {
@@ -515,7 +508,6 @@ describe("getReport: visibility / held hiding", () => {
     expect(dto.chatMemberCount).toBe(3)
     expect(dto.chatMessageCount).toBe(12)
     expect(dto.chatUnread).toBe(4)
-    // Called exactly once, with the report id + the resolved viewer id.
     expect(calls).toEqual([{ reportId: r.id, viewerId: "member" }])
   })
 
@@ -549,10 +541,7 @@ describe("getReport: visibility / held hiding", () => {
 
   it("surfaces a city reply's kind + full body on the timeline DTO (D13)", async () => {
     const { repo, service } = makeHarness()
-    // Published + public so an anonymous viewer can read it; the 'reply' row records a city reply.
     const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
-    // A status-only published transition (kind/body null) PLUS a 'reply' row carrying the full untruncated
-    // body (as onJurisdictionReply persists). The status-only row proves legacy rows omit kind/body.
     repo.timeline.push({
       reportId: r.id,
       status: "published",
@@ -573,8 +562,6 @@ describe("getReport: visibility / held hiding", () => {
     expect(reply).toBeDefined()
     expect(reply?.body).toBe(fullBody)
     expect(reply?.note).toContain("Jurisdiction replied")
-    // A status-only row (the published transition) carries neither note, kind, nor body (all omitted on
-    // the DTO when null). It is the only non-reply entry.
     const statusOnly = dto.timeline.find((t) => t.kind === undefined)
     expect(statusOnly).toBeDefined()
     expect(statusOnly?.note).toBeUndefined()
@@ -589,11 +576,9 @@ describe("resolveReport (owner status toggle)", () => {
 
     const dto = await service.resolveReport("owner", r.id, true)
     expect(dto.status).toBe("resolved")
-    // The returned DTO carries the fresh timeline; the last entry is the owner's resolve.
     const last = dto.timeline[dto.timeline.length - 1]!
     expect(last.status).toBe("resolved")
     expect(last.note).toBe("Marked resolved by the reporter")
-    // The underlying record was updated.
     expect(repo.reports.get(r.id)!.status).toBe("resolved")
   })
 
@@ -646,10 +631,6 @@ describe("resolveReport (owner status toggle)", () => {
     })
   })
 
-  // --- L12: 403-vs-404 was an existence oracle ----------------------------------------------------
-  // A flat 403 for "exists but not yours" confirmed the existence — and the exact id — of held
-  // (pre-moderation, anonymous) reports and owner-unlisted ones, which the READ path deliberately 404s.
-  // The 403 survives ONLY where the report is already publicly readable and therefore leaks nothing.
 
   it("L12: 404s (not 403) a stranger probing a HELD report", async () => {
     const { repo, service } = makeHarness()
@@ -657,7 +638,6 @@ describe("resolveReport (owner status toggle)", () => {
     await expect(service.resolveReport("stranger", r.id, true)).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
-    // Identical to the answer for an id that does not exist at all — that is the point.
     await expect(
       service.resolveReport("stranger", "00000000-0000-0000-0000-000000000000", true),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
@@ -682,6 +662,27 @@ describe("resolveReport (owner status toggle)", () => {
     await service.unlistReport("owner", held.id, true)
     expect(repo.reports.get(held.id)!.visibility).toBe("hidden")
   })
+
+  it("F057: 409s the OWNER resolving/reopening a HELD report and leaves it held", async () => {
+    const { repo, service } = makeHarness()
+    const held = repo.seedReport({ reporterUserId: "owner", status: "held", visibility: "public" })
+    await expect(service.resolveReport("owner", held.id, true)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    await expect(service.resolveReport("owner", held.id, false)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(repo.reports.get(held.id)!.status).toBe("held")
+  })
+
+  it("F057: 409s the OWNER resolving a submitted (pre-publish) report", async () => {
+    const { repo, service } = makeHarness()
+    const sub = repo.seedReport({ reporterUserId: "owner", status: "submitted", visibility: "public" })
+    await expect(service.resolveReport("owner", sub.id, true)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(repo.reports.get(sub.id)!.status).toBe("submitted")
+  })
 })
 
 describe("unlistReport (owner visibility toggle)", () => {
@@ -691,13 +692,10 @@ describe("unlistReport (owner visibility toggle)", () => {
 
     const dto = await service.unlistReport("owner", r.id, true)
     expect(dto.visibility).toBe("hidden")
-    // Status is deliberately unchanged (the city pipeline keeps the item).
     expect(dto.status).toBe("published")
-    // The returned DTO carries the fresh timeline; the last entry is the owner's hide (status repeated).
     const last = dto.timeline[dto.timeline.length - 1]!
     expect(last.status).toBe("published")
     expect(last.note).toBe("Hidden from the public map by the reporter")
-    // The underlying record was updated (visibility hidden, status intact).
     expect(repo.reports.get(r.id)!.visibility).toBe("hidden")
     expect(repo.reports.get(r.id)!.status).toBe("published")
   })
@@ -741,7 +739,6 @@ describe("unlistReport (owner visibility toggle)", () => {
 describe("listMyReports", () => {
   it("returns the caller's non-deleted reports newest-first and paginates by cursor", async () => {
     const { repo, service } = makeHarness()
-    // Seed 3 owned + 1 other-owner + 1 deleted.
     const r1 = repo.seedReport({ reporterUserId: "me" })
     const r2 = repo.seedReport({ reporterUserId: "me" })
     const r3 = repo.seedReport({ reporterUserId: "me" })
@@ -751,7 +748,6 @@ describe("listMyReports", () => {
     const page1 = await service.listMyReports("me", { limit: 2 })
     expect(page1.items).toHaveLength(2)
     expect(page1.nextCursor).toBeTruthy()
-    // Newest first: r3 then r2 (seedReport assigns increasing created_at).
     expect(page1.items[0]!.id).toBe(r3.id)
     expect(page1.items[1]!.id).toBe(r2.id)
 
@@ -762,8 +758,6 @@ describe("listMyReports", () => {
   })
 
   it("does NOT populate report-chat metadata on the LIST path even when a loader is wired (detail-only)", async () => {
-    // D-Fmeta: the chat metadata is a DETAIL-path concern; the list builder never calls loadReportChatMeta,
-    // so the four chat* fields stay undefined (and the loader is never invoked).
     let called = 0
     const { repo, service } = makeHarness({
       loadReportChatMeta: () => {
@@ -787,16 +781,12 @@ describe("listMyReports", () => {
 
   it("does NOT skip a row when two reports share the SAME created_at across a page boundary (P1-3)", async () => {
     const { repo, service } = makeHarness()
-    // Three of the caller's reports where TWO share the exact same created_at. With a created_at-only
-    // cursor, paging at the tie boundary (limit=1) would skip one of the tied rows. The row-value
-    // (created_at, id) cursor returns all three with no skip and no duplicate.
     const tie = new Date("2026-05-31T12:00:00.000Z")
     const later = new Date("2026-05-31T12:00:01.000Z")
     repo.seedReport({ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", reporterUserId: "me", createdAt: tie })
     repo.seedReport({ id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", reporterUserId: "me", createdAt: tie })
     repo.seedReport({ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", reporterUserId: "me", createdAt: later })
 
-    // Walk every page at limit=1 and collect the ids.
     const seen: string[] = []
     let cursor: string | null | undefined = undefined
     for (let guard = 0; guard < 10; guard++) {
@@ -809,13 +799,11 @@ describe("listMyReports", () => {
       cursor = page.nextCursor
     }
 
-    // All three came back exactly once (no skip at the created_at tie, no duplicate).
     expect(seen).toHaveLength(3)
     expect(new Set(seen).size).toBe(3)
     expect(seen).toContain("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     expect(seen).toContain("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
     expect(seen).toContain("cccccccc-cccc-cccc-cccc-cccccccccccc")
-    // Newest (distinct created_at) is first.
     expect(seen[0]).toBe("cccccccc-cccc-cccc-cccc-cccccccccccc")
   })
 })
@@ -823,19 +811,18 @@ describe("listMyReports", () => {
 describe("listReportsInBBox", () => {
   it("clusters at low zoom and returns per-category counts over the candidates", async () => {
     const { repo, service } = makeHarness()
-    // Three published+public points in-box; one out-of-box; one held (excluded).
     repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
     repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.11, lng: -118.34 })
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.12, lng: -118.33 })
-    repo.seedReport({ status: "published", visibility: "public", category: "hazard", lat: 10, lng: 10 }) // out of box
-    repo.seedReport({ status: "held", visibility: "public", category: "trash", lat: 34.1, lng: -118.35 }) // held
+    repo.seedReport({ status: "published", visibility: "public", category: "hazard", lat: 10, lng: 10 })
+    repo.seedReport({ status: "held", visibility: "public", category: "trash", lat: 34.1, lng: -118.35 })
 
     const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
     const low = await service.listReportsInBBox(bbox, null, null, 3)
     expect(low.pins).toHaveLength(0)
     expect(low.clusters.length).toBeGreaterThanOrEqual(1)
     const total = low.clusters.reduce((n, c) => n + c.count, 0)
-    expect(total).toBe(3) // only the 3 in-box published+public points
+    expect(total).toBe(3)
     expect(low.counts).toEqual({ trash: 2, graffiti: 1 })
   })
 
@@ -844,8 +831,6 @@ describe("listReportsInBBox", () => {
     repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
 
-    // M14: a per-pin (zoom >= 13) read now needs a bbox a real client could be showing at that zoom —
-    // effectiveMapZoom clamps the claimed zoom to what the extent implies. This ~5 km box implies 14.
     const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
     const high = await service.listReportsInBBox(bbox, null, null, 16)
     expect(high.clusters).toHaveLength(0)
@@ -854,31 +839,25 @@ describe("listReportsInBBox", () => {
 
   it("enriches high-zoom pins with title + a presigned first-photo thumbUrl", async () => {
     const { repo, service } = makeHarness()
-    // M14: see above — a zoom-16 read requires a viewport-sized bbox.
     const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
 
-    // (1) A report whose first ready photo has a generated thumbnail -> thumbUrl is the THUMB key signed.
-    // It also carries a description, which must ride onto the pin DTO (null for the others below).
     const withThumb = repo.seedReport({
       status: "published", visibility: "public", category: "trash",
       lat: 34.10, lng: -118.35, title: "Mattress dumped", description: "blocking the sidewalk",
     })
     repo.seedMedia({ reportId: withThumb.id, status: "ready", r2Key: "uploads/a", thumbKey: "thumbs/a" })
 
-    // (2) A report whose first ready photo has NO thumbnail -> thumbUrl FALLS BACK to the original key.
     const noThumb = repo.seedReport({
       status: "published", visibility: "public", category: "graffiti",
       lat: 34.11, lng: -118.34, title: "Graffiti on the wall",
     })
     repo.seedMedia({ reportId: noThumb.id, status: "ready", r2Key: "uploads/b", thumbKey: null })
 
-    // (3) A report with NO visible media -> thumbUrl is null and title is still carried.
     const noMedia = repo.seedReport({
       status: "published", visibility: "public", category: "hazard",
       lat: 34.12, lng: -118.33, title: "Pothole",
     })
 
-    // (4) A report whose only media is still `validating` -> hidden, so thumbUrl stays null.
     const pendingOnly = repo.seedReport({
       status: "published", visibility: "public", category: "water",
       lat: 34.13, lng: -118.32, title: null,
@@ -889,18 +868,14 @@ describe("listReportsInBBox", () => {
     const byId = new Map(high.pins.map((p) => [p.id, p]))
 
     expect(byId.get(withThumb.id)).toMatchObject({ title: "Mattress dumped", description: "blocking the sidewalk", thumbUrl: "memory://thumbs/a" })
-    // description rides onto the pin as value-or-null (null when the report has none, mirroring thumbUrl).
     expect(byId.get(noThumb.id)).toMatchObject({ title: "Graffiti on the wall", description: null, thumbUrl: "memory://uploads/b" })
     expect(byId.get(noMedia.id)).toMatchObject({ title: "Pothole", description: null, thumbUrl: null })
 
     const pending = byId.get(pendingOnly.id)!
     expect(pending.thumbUrl).toBeNull()
-    expect(pending.title).toBeUndefined() // null title is omitted from the DTO
+    expect(pending.title).toBeUndefined()
   })
 
-  // firstReadyStillLateral's policy: a `ready` VIDEO that already has its poster is a legitimate still, and
-  // a thumbless video is not (its r2_key is an .mp4 and must never be handed back as a thumbnail). The event
-  // gallery always did this; the map/search/post-card sites now do too, from the one shared fragment.
   it("previews a video's poster but never a thumbless video's raw key", async () => {
     const { repo, service } = makeHarness()
     const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
@@ -950,7 +925,6 @@ describe("listReportsInBBox", () => {
     expect(empty.counts).toBeUndefined()
   })
 
-  // --- M14: the client's zoom is advisory, the bbox is authoritative -------------------------------
   it("M14: a world bbox at zoom 22 produces ZERO per-pin rows (no presign fan-out)", async () => {
     const { repo, service } = makeHarness()
     repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
@@ -959,10 +933,8 @@ describe("listReportsInBBox", () => {
     const world = { west: -180, south: -85, east: 180, north: 85 }
     const attack = await service.listReportsInBBox(world, null, null, 22)
 
-    // The whole exploit was reaching this branch: 2000 full rows + 2000 presigns per request.
     expect(attack.pins).toHaveLength(0)
     expect(attack.clusters.length).toBeGreaterThanOrEqual(1)
-    // Counts are computed over all candidates regardless of the split, so the data is still there.
     expect(attack.counts).toEqual({ trash: 1, graffiti: 1 })
   })
 })
@@ -975,11 +947,8 @@ describe("effectiveMapZoom / impliedZoomForBBox (M14)", () => {
   })
 
   it("leaves a genuine neighborhood viewport alone (clamping is one-directional)", () => {
-    // ~5 km across — a real phone/desktop map viewport at zoom 13-15.
     const hood = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
     expect(impliedZoomForBBox(hood)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
-    // Asking to be zoomed further OUT than the viewport is always honored: that only coarsens
-    // clustering, which is cheaper, so there is nothing to defend against.
     expect(effectiveMapZoom(hood, 4)).toBe(4)
   })
 
@@ -998,7 +967,6 @@ describe("searchReports", () => {
       title: "Broken streetlight", description: "out for a week", addr: "5th Ave",
       referenceCode: "TR-7-000009",
     })
-    // Excluded: a held report, a hidden-visibility report, and a soft-deleted one.
     repo.seedReport({ status: "held", visibility: "public", title: "Held one", publishedAt: null })
     repo.seedReport({ status: "published", visibility: "hidden", title: "Hidden one" })
     repo.seedReport({ status: "published", visibility: "public", title: "Deleted one", deletedAt: new Date() })
@@ -1006,8 +974,6 @@ describe("searchReports", () => {
     const res = await service.searchReports({})
     expect(res.items).toHaveLength(1)
     expect(res.items[0]!.id).toBe(pub.id)
-    // Carries the SAME pin fields PLUS the report's description, address, and human reference code (so a
-    // search row can render its location + "<type>: <reference>" headline without a detail fetch).
     expect(res.items[0]).toMatchObject({
       id: pub.id,
       category: "trash",
@@ -1040,8 +1006,8 @@ describe("searchReports", () => {
 
     const res = await service.searchReports({ q: "pothole" })
     const ids = new Set(res.items.map((p) => p.id))
-    expect(ids.has(byTitle.id)).toBe(true) // matched on title
-    expect(ids.has(byAddr.id)).toBe(true) // matched on address, case-insensitively
+    expect(ids.has(byTitle.id)).toBe(true)
+    expect(ids.has(byAddr.id)).toBe(true)
     expect(res.items).toHaveLength(2)
   })
 
@@ -1058,7 +1024,6 @@ describe("searchReports", () => {
 
   it("filters by fine-grained type set (0021), alongside category", async () => {
     const { repo, service } = makeHarness()
-    // Two trash-category reports with DIFFERENT fine types; the type filter narrows to one.
     const dump = repo.seedReport({ status: "published", visibility: "public", category: "trash", type: "dump", title: "dumped mattress" })
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", type: "graffiti", title: "tag" })
 
@@ -1075,7 +1040,7 @@ describe("searchReports", () => {
     const r3 = repo.seedReport({ status: "published", visibility: "public", title: "three" })
 
     const page1 = await service.searchReports({ limit: 2 })
-    expect(page1.items.map((p) => p.id)).toEqual([r3.id, r2.id]) // newest-first
+    expect(page1.items.map((p) => p.id)).toEqual([r3.id, r2.id])
     expect(page1.nextCursor).toBeTruthy()
 
     const page2 = await service.searchReports({ limit: 2, cursor: page1.nextCursor! })
@@ -1104,6 +1069,49 @@ describe("searchReports", () => {
     }
     expect(seen).toHaveLength(3)
     expect(new Set(seen).size).toBe(3)
-    expect(seen[0]).toBe("cccccccc-cccc-cccc-cccc-cccccccccccc") // newest distinct created_at first
+    expect(seen[0]).toBe("cccccccc-cccc-cccc-cccc-cccccccccccc")
+  })
+})
+
+/**
+ * F058: owner-only report media (held / unlisted, and any still-`validating` asset) used to be signed with
+ * the PUBLIC presigner, which returns a permanent unsigned CDN URL whenever R2_PUBLIC_BASE is configured.
+ * The presigner is chosen per report + per asset now; the public map surfaces keep the public one.
+ */
+describe("report media presigner selection (F058)", () => {
+  function presignHarness() {
+    const repo = new InMemoryReportRepository()
+    const service = makeReportService({
+      repo,
+      resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
+      presignMedia: (r2Key: string) => Promise.resolve({ url: `public://${r2Key}` }),
+      presignPrivateMedia: (r2Key: string) => Promise.resolve({ url: `signed://${r2Key}` }),
+    })
+    return { repo, service }
+  }
+
+  it("signs a HELD or UNLISTED report's media privately, and a published+public one publicly", async () => {
+    const { repo, service } = presignHarness()
+    const published = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    repo.seedMedia({ reportId: published.id, status: "ready", r2Key: "k/pub.jpg" })
+    const held = repo.seedReport({ reporterUserId: "owner", status: "held", visibility: "public" })
+    repo.seedMedia({ reportId: held.id, status: "ready", r2Key: "k/held.jpg" })
+    const unlisted = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "hidden" })
+    repo.seedMedia({ reportId: unlisted.id, status: "ready", r2Key: "k/unlisted.jpg" })
+
+    expect((await service.getReport(published.id, { userId: "owner" })).media[0]!.url).toBe("public://k/pub.jpg")
+    expect((await service.getReport(held.id, { userId: "owner" })).media[0]!.url).toBe("signed://k/held.jpg")
+    expect((await service.getReport(unlisted.id, { userId: "owner" })).media[0]!.url).toBe(
+      "signed://k/unlisted.jpg",
+    )
+  })
+
+  it("signs a still-VALIDATING asset privately even on a published+public report", async () => {
+    const { repo, service } = presignHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    repo.seedMedia({ reportId: r.id, status: "validating", r2Key: "k/pending.jpg" })
+
+    const dto = await service.getReport(r.id, { userId: "owner" })
+    expect(dto.media[0]!.url).toBe("signed://k/pending.jpg")
   })
 })

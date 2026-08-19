@@ -40,6 +40,12 @@ function fakeDb(rows: TokenRow[], prune: PruneCapture): Db {
       return this
     },
     where() {
+      return this
+    },
+    orderBy() {
+      return this
+    },
+    limit() {
       return Promise.resolve(rows)
     },
   }

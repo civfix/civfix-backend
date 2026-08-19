@@ -35,7 +35,8 @@ import {
   type OutboundMailService,
 } from "../../services/admin/outbound-mail-service.js"
 import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.drizzle.js"
-import { makeMediaPresigner } from "../../services/media-presign.js"
+import { makePrivateMediaPresigner } from "../../services/media-presign.js"
+import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "./mail.routes.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
@@ -50,7 +51,6 @@ export interface AdminReportRouteOverrides {
     reportIds: string[],
   ) => Promise<Map<string, import("../../services/cleanup-service.js").LinkedEventView[]>>
   now?: () => Date
-  /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
   reportChatEmitter?: ReportChatSystemEmitter
 }
 
@@ -90,12 +90,10 @@ export async function registerAdminReportsRoutes(
       return makeAdminReportService({
         repo,
         outboundMail,
-        presignMedia: makeMediaPresigner(container.storage),
+        presignMedia: makePrivateMediaPresigner(container.storage),
         loadLinkedEventsForReports: (reportIds) =>
           cleanupRepo.loadLinkedEventsForReports(reportIds),
         loadMediaBytes: (k) => container.storage.getObject(k),
-        // D-D1: mirror every timeline event this service writes into the report chat (best-effort, no-op
-        // under fake-chat). Built from container primitives so it needs no chat-gateway wiring instances.
         reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
       })
     },
@@ -134,39 +132,26 @@ export async function registerAdminReportsRoutes(
     sendOk(reply)
   })
 
-  route(app, "sendReportFollowup", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(SendFollowupRequestSchema, request)
-    await service().sendFollowup(id, { to: body.to, body: body.body, actorId: operatorId })
-    sendOk(reply)
-  })
+  route(
+    app,
+    "sendReportFollowup",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(SendFollowupRequestSchema, request)
+      await service().sendFollowup(id, { to: body.to, body: body.body, actorId: operatorId })
+      sendOk(reply)
+    },
+  )
 
   route(app, "setReportVerdict", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetReportVerdictRequestSchema, request)
     await service().setVerdict({ id, verdict: body.verdict, actorId: operatorId })
-    // Its own response type, structurally { ok: true } — not the shared AdminOkResponse sendOk writes.
     const payload: SetReportVerdictResponse = { ok: true }
     reply.status(200).send(payload)
   })
 
-  /**
-   * M5: route a report's full packet (reporter name, exact coords, address, photos) to its jurisdiction.
-   *
-   * Three controls, all added by the 2026-07-24 review:
-   *  (a) the `report.routed` audit is now written INSIDE the outbound message insert's transaction (the
-   *      service passes it down as MailRepository.insertMessage's `audit` param, exactly like the other
-   *      mail paths). It used to be written here afterwards on a separate connection, in a try/catch that
-   *      downgraded a failure to a warn — so a packet could be emailed with no audit row at all. An audit
-   *      failure now rolls the message insert back and fails the request BEFORE delivery.
-   *  (b) `contactEmailOverride` is constrained to the jurisdiction's own mail domain by the service
-   *      (assertOverrideDomainAllowed); it used to accept any well-formed address.
-   *  (c) the per-OPERATOR rate limit below. The global limiter keys on IP only, so a single stolen operator
-   *      session could walk the report table and mail every packet out. Keyed on the session userId (with
-   *      the IP as the fallback for a caller that somehow reached here unauthenticated) this caps bulk
-   *      exfiltration at ROUTE_REPORT_RATE_LIMIT while leaving normal triage (a handful of routes a minute)
-   *      untouched.
-   */
   route(
     app,
     "routeReport",
@@ -185,16 +170,6 @@ export async function registerAdminReportsRoutes(
   )
 }
 
-/**
- * M5(c): per-OPERATOR bucket for routeReport. Every request here emails a citizen's identity + exact home
- * location off-platform, so it is rate-limited by ACTOR, not by IP (the global limiter's IP key is escaped
- * by simply rotating egress). 10/minute is far above real triage throughput and far below "drain the table".
- *
- * FAIL-CLOSED: a route bucket otherwise inherits the global limiter's `skipOnError: true`, and
- * `/v1/admin/reports` is not under a SENSITIVE_RATE_LIMIT_PREFIXES path, so a Redis store error would
- * silently remove this cap — exactly the anti-exfiltration control it exists to be. `skipOnError: false`
- * makes an uncountable request a 429 instead of an unmetered mail-out.
- */
 export const ROUTE_REPORT_RATE_LIMIT = perIdentity({
   max: 10,
   timeWindow: "1 minute",

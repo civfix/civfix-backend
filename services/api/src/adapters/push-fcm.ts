@@ -1,37 +1,23 @@
 import type { PushPayload } from "@civfix/shared/interfaces"
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
+import { hashForLog } from "./push-sender.js"
 
-// sendEachForMulticast rejects the WHOLE batch with invalid-argument when tokens.length > 500, so we
-// chunk and dispatch each slice independently.
 const FCM_MULTICAST_MAX = 500
 
-/** FCM error codes that mean "this token is dead; stop sending to it". */
 const PRUNE_CODES = new Set([
   "messaging/registration-token-not-registered",
   "messaging/invalid-registration-token",
   "messaging/invalid-argument",
 ])
 
-/**
- * True when the FCM per-token error code means the token is dead and must be pruned (vs a transient failure
- * we only warn about). Pure + exported so the prune-vs-warn matrix is unit-testable without firebase-admin.
- */
 export function isFcmPruneCode(code: string): boolean {
   return PRUNE_CODES.has(code)
 }
 
-/**
- * FCM dispatcher (firebase-admin). Initializes a NAMED app once (memoized) from the service-account JSON so
- * it never clashes with any other firebase usage. Chunks tokens into ≤500 slices, maps each slice's
- * responses to the prune set.
- *
- * SEAM RULE: firebase-admin may ONLY be imported here, via lazy dynamic import.
- */
 export function makeFcmDispatcher(
   fcm: NonNullable<PushSenderConfig["fcm"]>,
   logger: PushLogger,
 ): PlatformDispatcher {
-  // Loose type: firebase-admin is dynamically imported; we only call getMessaging/sendEachForMulticast.
   const appName = "civfix-push"
   let initPromise: Promise<{ messaging: any; deleteApp: () => Promise<void> }> | null = null
 
@@ -76,7 +62,6 @@ export function makeFcmDispatcher(
     }
     try {
       const resp = await messaging.sendEachForMulticast(message)
-      // responses[] aligns 1:1 with tokens[]; map failed indices with a prune-worthy code to their token.
       resp.responses.forEach((r: { success: boolean; error?: { code?: string } }, i: number) => {
         if (r.success) return
         const code: string = r.error?.code ?? ""
@@ -84,7 +69,11 @@ export function makeFcmDispatcher(
           const tok = tokens[i]
           if (tok !== undefined) invalidTokens.push(tok)
         } else {
-          logger.warn({ code, token: tokens[i] }, "push(fcm): delivery failure")
+          const tok = tokens[i]
+          logger.warn(
+            { code, tokenHash: typeof tok === "string" ? hashForLog(tok) : undefined },
+            "push(fcm): delivery failure",
+          )
         }
       })
     } catch (err) {
@@ -101,8 +90,6 @@ export function makeFcmDispatcher(
     return { invalidTokens }
   }
 
-  // Delete the named app on container close so firebase-admin's keep-alive connection doesn't pin the
-  // event loop. No-op if the app was never initialized.
   dispatch.close = async () => {
     if (!initPromise) return
     try {
@@ -116,7 +103,6 @@ export function makeFcmDispatcher(
   return dispatch
 }
 
-/** Coerce a data bag to the all-string map FCM requires (non-strings are JSON-encoded). */
 function stringifyData(data: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(data)) {

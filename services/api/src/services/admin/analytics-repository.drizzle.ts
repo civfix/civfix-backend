@@ -16,6 +16,7 @@ import type {
   WeekBucket,
 } from "./analytics-types.js"
 import type { ReportCategory } from "@civfix/shared"
+import { jurisdictionHasAnyContactExpr } from "./sql-fragments.js"
 
 function num(value: string | null | undefined): number {
   if (value == null) return 0
@@ -23,8 +24,33 @@ function num(value: string | null | undefined): number {
   return Number.isFinite(n) ? n : 0
 }
 
-export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
-  return {
+export const ANALYTICS_CACHE_TTL_MS = 60_000
+
+interface AnalyticsCacheEntry {
+  at: number
+  value: Promise<unknown>
+}
+
+const analyticsCache = new Map<string, AnalyticsCacheEntry>()
+
+function withCache<T>(ttlMs: number, key: string, run: () => Promise<T>): Promise<T> {
+  if (ttlMs <= 0) return run()
+  const hit = analyticsCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at <= ttlMs) return hit.value as Promise<T>
+  const value = run()
+  analyticsCache.set(key, { at: Date.now(), value })
+  void value.catch(() => {
+    const cur = analyticsCache.get(key)
+    if (cur !== undefined && cur.value === value) analyticsCache.delete(key)
+  })
+  return value
+}
+
+export function makeDrizzleAnalyticsRepository(
+  sql: Sql,
+  opts?: { cacheTtlMs?: number },
+): AnalyticsRepository {
+  const base: AnalyticsRepository = {
     async kpis(): Promise<KpiAggregates> {
       const [reportRows, cleanupRows, newUserRows] = await Promise.all([
         sql<
@@ -72,6 +98,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
             )::text AS prev_planned,
             COUNT(*) FILTER (
               WHERE scheduled_at >= date_trunc('month', now())
+                AND scheduled_at < date_trunc('month', now()) + interval '1 month'
             )::text AS cur_events,
             COUNT(*) FILTER (
               WHERE scheduled_at >= date_trunc('month', now()) - interval '1 month'
@@ -166,13 +193,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
         FROM (
           SELECT
             j.geoid,
-            (
-              (j.contact_emails IS NOT NULL AND array_length(j.contact_emails, 1) > 0)
-              OR EXISTS (
-                SELECT 1 FROM jurisdiction_contacts jc
-                WHERE jc.geoid = j.geoid AND jc.email IS NOT NULL
-              )
-            ) AS has_contact
+            ${jurisdictionHasAnyContactExpr(sql, "j")} AS has_contact
           FROM jurisdictions j
         ) s
       `
@@ -181,14 +202,6 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     },
 
     async resolutionByCategory(): Promise<CategoryMedian[]> {
-      // "Time to resolution" is measured from submission to the RESOLVED TRANSITION (the newest
-      // report_timeline row at status='resolved'), falling back to published_at only for a resolved report
-      // with no transition row (pre-timeline rows). Never now(): the previous COALESCE(published_at, now())
-      // measured publish latency, and for a resolved-but-unpublished report it grew by a day every day, so
-      // the dashboard number inflated on its own and no two page loads agreed.
-      //
-      // A resolved report with neither a transition row nor published_at contributes NOTHING (rather than a
-      // wall-clock guess): percentile_cont ignores NULLs, so the median stays over rows we can actually time.
       const rows = await sql<{ category: ReportCategory; median_hours: string | null }[]>`
         SELECT
           r.category,
@@ -211,8 +224,14 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       const [headline, volunteers, byMonthRows] = await Promise.all([
         sql<{ this_month: string; bags: string }[]>`
           SELECT
-            COUNT(*) FILTER (WHERE scheduled_at >= date_trunc('month', now()))::text AS this_month,
-            COALESCE(SUM(bags) FILTER (WHERE scheduled_at >= date_trunc('month', now())), 0)::text AS bags
+            COUNT(*) FILTER (
+              WHERE scheduled_at >= date_trunc('month', now())
+                AND scheduled_at < date_trunc('month', now()) + interval '1 month'
+            )::text AS this_month,
+            COALESCE(SUM(bags) FILTER (
+              WHERE scheduled_at >= date_trunc('month', now())
+                AND scheduled_at < date_trunc('month', now()) + interval '1 month'
+            ), 0)::text AS bags
           FROM cleanups
         `,
         sql<{ vol: string }[]>`
@@ -220,6 +239,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           FROM cleanup_members m
           JOIN cleanups cl ON cl.id = m.cleanup_id
           WHERE cl.scheduled_at >= date_trunc('month', now())
+            AND cl.scheduled_at < date_trunc('month', now()) + interval '1 month'
         `,
         sql<{ y: string; m: string; n: string }[]>`
           SELECT
@@ -247,17 +267,31 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
 
     async topJurisdictions(limit: number): Promise<TopJurisdictionRow[]> {
       const rows = await sql<{ org: string; pins: string; resolved: string }[]>`
+        WITH agg AS (
+          SELECT
+            r.jurisdiction_geoid AS geoid,
+            j.name AS name,
+            j.layer AS layer,
+            COUNT(*) AS pins,
+            COUNT(*) FILTER (WHERE r.status = 'resolved') AS resolved
+          FROM reports r
+          LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+          WHERE r.deleted_at IS NULL
+            AND r.visibility = 'public'
+            AND r.jurisdiction_geoid IS NOT NULL
+          GROUP BY r.jurisdiction_geoid, j.name, j.layer
+        )
         SELECT
-          COALESCE(j.name, r.jurisdiction_geoid) AS org,
-          COUNT(*)::text AS pins,
-          COUNT(*) FILTER (WHERE r.status = 'resolved')::text AS resolved
-        FROM reports r
-        LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-        WHERE r.deleted_at IS NULL
-          AND r.visibility = 'public'
-          AND r.jurisdiction_geoid IS NOT NULL
-        GROUP BY 1
-        ORDER BY COUNT(*) DESC
+          CASE
+            WHEN name IS NULL THEN geoid
+            WHEN COUNT(*) OVER (PARTITION BY name) > 1
+              THEN name || ' (' || COALESCE(layer, geoid) || ')'
+            ELSE name
+          END AS org,
+          pins::text AS pins,
+          resolved::text AS resolved
+        FROM agg
+        ORDER BY pins DESC, geoid ASC
         LIMIT ${limit}
       `
       return rows.map((r) => ({ org: r.org, pins: num(r.pins), resolved: num(r.resolved) }))
@@ -278,26 +312,44 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           FROM cleanups
           GROUP BY organizer_user_id
         ),
+        top AS (
+          SELECT
+            t.user_id,
+            t.total,
+            COALESCE(rc.n, 0)::int AS reports,
+            COALESCE(cc.n, 0)::int AS cleanups
+          FROM (
+            SELECT user_id, SUM(n)::int AS total
+            FROM (
+              SELECT user_id, n FROM report_counts
+              UNION ALL
+              SELECT user_id, n FROM cleanup_counts
+            ) x
+            GROUP BY user_id
+          ) t
+          LEFT JOIN report_counts rc ON rc.user_id = t.user_id
+          LEFT JOIN cleanup_counts cc ON cc.user_id = t.user_id
+          WHERE t.total > 0
+          ORDER BY t.total DESC, t.user_id ASC
+          LIMIT ${limit}
+        ),
         user_city AS (
           SELECT DISTINCT ON (r.reporter_user_id)
             r.reporter_user_id AS user_id, j.name AS city
           FROM reports r
           JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-          WHERE r.reporter_user_id IS NOT NULL
+          WHERE r.reporter_user_id IN (SELECT user_id FROM top)
           ORDER BY r.reporter_user_id, r.created_at DESC
         )
         SELECT
           u.display_name AS name,
           uc.city AS city,
-          COALESCE(rc.n, 0)::text AS reports,
-          COALESCE(cc.n, 0)::text AS cleanups
-        FROM users u
-        LEFT JOIN report_counts rc ON rc.user_id = u.id
-        LEFT JOIN cleanup_counts cc ON cc.user_id = u.id
-        LEFT JOIN user_city uc ON uc.user_id = u.id
-        WHERE COALESCE(rc.n, 0) + COALESCE(cc.n, 0) > 0
-        ORDER BY COALESCE(rc.n, 0) + COALESCE(cc.n, 0) DESC
-        LIMIT ${limit}
+          top.reports::text AS reports,
+          top.cleanups::text AS cleanups
+        FROM top
+        JOIN users u ON u.id = top.user_id
+        LEFT JOIN user_city uc ON uc.user_id = top.user_id
+        ORDER BY top.total DESC, u.id ASC
       `
       return rows.map((r) => ({
         name: r.name,
@@ -311,20 +363,25 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       const rows = await sql<
         { geoid: string; name: string; density: string; lat: number; lng: number }[]
       >`
+        WITH agg AS (
+          SELECT r.jurisdiction_geoid AS geoid, COUNT(*) AS density
+          FROM reports r
+          WHERE r.deleted_at IS NULL
+            AND r.visibility = 'public'
+            AND r.jurisdiction_geoid IS NOT NULL
+          GROUP BY r.jurisdiction_geoid
+          ORDER BY COUNT(*) DESC
+          LIMIT ${limit}
+        )
         SELECT
           j.geoid,
           j.name,
-          COUNT(r.id)::text AS density,
+          agg.density::text AS density,
           ST_Y(ST_Centroid(j.geom)) AS lat,
           ST_X(ST_Centroid(j.geom)) AS lng
-        FROM jurisdictions j
-        JOIN reports r
-          ON r.jurisdiction_geoid = j.geoid
-          AND r.deleted_at IS NULL
-          AND r.visibility = 'public'
-        GROUP BY j.geoid, j.name, j.geom
-        ORDER BY COUNT(r.id) DESC
-        LIMIT ${limit}
+        FROM agg
+        JOIN jurisdictions j ON j.geoid = agg.geoid
+        ORDER BY agg.density DESC, j.geoid ASC
       `
       return rows.map((r) => ({
         geoid: r.geoid,
@@ -344,16 +401,19 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
             u.id AS user_id,
             date_trunc('month', u.created_at) AS cohort_month
           FROM users u
-          WHERE u.created_at >= date_trunc('month', now()) - make_interval(months => ${cohorts - 1})
+          WHERE u.deleted_at IS NULL
+            AND u.created_at >= date_trunc('month', now()) - make_interval(months => ${cohorts - 1})
         ),
         activity AS (
           SELECT reporter_user_id AS user_id, date_trunc('month', created_at) AS active_month
           FROM reports
           WHERE reporter_user_id IS NOT NULL AND deleted_at IS NULL
+            AND created_at >= date_trunc('month', now()) - make_interval(months => ${cohorts - 1})
           UNION ALL
           SELECT user_id, date_trunc('month', joined_at) AS active_month
           FROM cleanup_members
           WHERE joined_at IS NOT NULL
+            AND joined_at >= date_trunc('month', now()) - make_interval(months => ${cohorts - 1})
         ),
         cohort_sizes AS (
           SELECT cohort_month, COUNT(*)::int AS size
@@ -407,5 +467,25 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       result.sort((a, b) => b.year * 12 + b.month - (a.year * 12 + a.month))
       return result
     },
+  }
+
+  const ttl = opts?.cacheTtlMs ?? 0
+  if (ttl <= 0) return base
+
+  return {
+    kpis: () => withCache(ttl, "kpis", () => base.kpis()),
+    pinsByWeek: (weeks) => withCache(ttl, `pinsByWeek:${weeks}`, () => base.pinsByWeek(weeks)),
+    byCategory: () => withCache(ttl, "byCategory", () => base.byCategory()),
+    funnel: () => withCache(ttl, "funnel", () => base.funnel()),
+    coverage: () => withCache(ttl, "coverage", () => base.coverage()),
+    resolutionByCategory: () =>
+      withCache(ttl, "resolutionByCategory", () => base.resolutionByCategory()),
+    events: (months) => withCache(ttl, `events:${months}`, () => base.events(months)),
+    topJurisdictions: (limit) =>
+      withCache(ttl, `topJurisdictions:${limit}`, () => base.topJurisdictions(limit)),
+    topContributors: (limit) =>
+      withCache(ttl, `topContributors:${limit}`, () => base.topContributors(limit)),
+    heatmap: (limit) => withCache(ttl, `heatmap:${limit}`, () => base.heatmap(limit)),
+    retention: (cohorts) => withCache(ttl, `retention:${cohorts}`, () => base.retention(cohorts)),
   }
 }

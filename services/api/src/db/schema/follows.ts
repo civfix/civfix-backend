@@ -1,12 +1,3 @@
-/**
- * Social follow graph:
- *
- *   follows_people  user -> user follows. PK(follower_id, followee_id). Indexed by followee for
- *                   "who follows me" lookups.
- *
- * (The former report_follows table — user -> report notify-me subscriptions — was dropped with the
- * discussion system, 0044_drop_report_discussion.sql.)
- */
 
 import { index, pgTable, primaryKey, timestamp, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
@@ -25,6 +16,11 @@ export const followsPeople = pgTable(
   (t) => [
     primaryKey({ columns: [t.followerId, t.followeeId] }),
     index("follows_people_followee_idx").on(t.followeeId),
+    index("follows_people_follower_created_idx").on(
+      t.followerId,
+      t.createdAt.desc(),
+      t.followeeId.desc(),
+    ),
   ],
 )
 

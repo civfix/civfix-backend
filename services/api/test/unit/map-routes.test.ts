@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
@@ -141,5 +141,58 @@ describe("GET /map/cleanups bbox validation (P2)", () => {
       url: `/v1/map/cleanups?bbox=${encodeURIComponent(bbox)}`,
     })
     expect(res.statusCode).toBe(422)
+  })
+})
+
+describe("POST /map/suggest", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  /** Capture every outbound provider request; the body shape is Photon's (no MAPBOX_TOKEN in test env). */
+  function captureFetch(urls: string[]): void {
+    vi.stubGlobal("fetch", (input: string | URL) => {
+      urls.push(String(input))
+      return Promise.resolve(
+        new Response(JSON.stringify({ features: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+    })
+  }
+
+  /**
+   * F162: the contract's `language` field (the caller's app locale) has to REACH the provider. The route
+   * used to destructure only q/proximity/proximityZoom/limit, so every request was silently English and
+   * the drop was invisible (200 + plausible results). "de" is one of Photon's supported languages, so a
+   * forwarded value survives `photonLang` verbatim while a dropped one folds to the "en" default.
+   */
+  it("F162: forwards the caller's language to the suggest provider", async () => {
+    const urls: string[] = []
+    captureFetch(urls)
+    app = await buildServer({ env: loadEnv() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/map/suggest",
+      payload: { q: "Marienplatz", language: "de" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(urls).toHaveLength(1)
+    expect(new URL(urls[0]!).searchParams.get("lang")).toBe("de")
+    expect(new URL(urls[0]!).searchParams.get("q")).toBe("Marienplatz")
+  })
+
+  it("keeps the provider's \"en\" default when the caller sends no language", async () => {
+    const urls: string[] = []
+    captureFetch(urls)
+    app = await buildServer({ env: loadEnv() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/map/suggest",
+      payload: { q: "Main Street" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(new URL(urls[0]!).searchParams.get("lang")).toBe("en")
   })
 })

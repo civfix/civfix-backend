@@ -10,6 +10,8 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { readdirSync, readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import Fastify, { type FastifyInstance } from "fastify"
 import {
   registerRateLimit,
@@ -18,6 +20,7 @@ import {
   sensitiveRateLimitKey,
   wsUpgradeRateLimitKey,
   isSensitivePath,
+  isWriteSensitivePath,
   perIdentity,
   HOST_CEILING_MULTIPLIER,
 } from "../../src/plugins/rate-limit.js"
@@ -45,7 +48,10 @@ import {
   REPORT_DELETE_RATE_LIMIT,
   REPORT_CHAT_MEMBERSHIP_RATE_LIMIT,
 } from "../../src/routes/report-chat.routes.js"
-import { CONVERSATION_MUTE_RATE_LIMIT } from "../../src/routes/conversations.routes.js"
+import {
+  CONVERSATION_MUTE_RATE_LIMIT,
+  THREAD_READ_RATE_LIMIT,
+} from "../../src/routes/conversations.routes.js"
 import {
   CERTIFICATE_ISSUE_RATE_LIMIT,
   CERTIFICATE_REVOKE_RATE_LIMIT,
@@ -53,8 +59,14 @@ import {
 } from "../../src/routes/service-hours-certificates.routes.js"
 import { OTP_REQUEST_RATE_LIMIT, OTP_VERIFY_RATE_LIMIT, OAUTH_RATE_LIMIT } from "../../src/routes/auth.routes.js"
 import { HOME_TURF_RATE_LIMIT } from "../../src/routes/forms.routes.js"
-import { CREATE_POST_RATE_LIMIT } from "../../src/routes/posts.routes.js"
+import { CREATE_POST_RATE_LIMIT, POST_INTERACTION_RATE_LIMIT } from "../../src/routes/posts.routes.js"
 import { ROUTE_REPORT_RATE_LIMIT } from "../../src/routes/admin/reports.routes.js"
+import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "../../src/routes/admin/mail.routes.js"
+import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
+import { FOLLOW_RATE_LIMIT, FOLLOW_SUGGESTIONS_RATE_LIMIT } from "../../src/routes/social.routes.js"
+import { DATA_EXPORT_RATE_LIMIT, LIST_BLOCKS_RATE_LIMIT } from "../../src/routes/users.routes.js"
+import { CREATE_REPORT_RATE_LIMIT } from "../../src/routes/reports.routes.js"
+import { REPORT_CONTENT_RATE_LIMIT } from "../../src/routes/report-content.routes.js"
 import { ANON_CREATE_RATE_LIMIT } from "../../src/routes/anon.routes.js"
 import { MEDIA_WRITE_RATE_LIMIT } from "../../src/routes/media.routes.js"
 import { CLAIM_RATE_LIMIT } from "../../src/routes/claim.routes.js"
@@ -103,6 +115,20 @@ async function buildApp(
   app.get(
     "/v1/service-hours/verify/:code",
     { config: { rateLimit: CERTIFICATE_VERIFY_RATE_LIMIT } },
+    async () => ({ ok: true }),
+  )
+  app.post("/v1/reports", { config: { rateLimit: CREATE_REPORT_RATE_LIMIT } }, async () => ({
+    ok: true,
+  }))
+  app.get("/v1/admin/mail", async () => ({ ok: true }))
+  app.post(
+    "/v1/admin/mail",
+    { config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
+    async () => ({ ok: true }),
+  )
+  app.post(
+    "/v1/me/data-export",
+    { config: { rateLimit: DATA_EXPORT_RATE_LIMIT } },
     async () => ({ ok: true }),
   )
   await app.ready()
@@ -156,6 +182,86 @@ describe("rate limiter: sensitive prefixes fail closed (H4)", () => {
       "/v1/service-hours/verify/A1B2C3D4E5F6",
     ]) {
       expect(isSensitivePath(p)).toBe(false)
+    }
+  })
+})
+
+describe("rate limiter: mutating write paths fail closed too (F061/F093)", () => {
+  it("classifies exactly the write-sensitive paths", () => {
+    for (const p of ["/v1/reports", "/v1/admin", "/v1/admin/mail", "/v1/admin/reports/x/route"]) {
+      expect(isWriteSensitivePath(p), p).toBe(true)
+    }
+    for (const p of ["/v1/reports/search", "/v1/reports/abc", "/v1/administration", "/v1/posts"]) {
+      expect(isWriteSensitivePath(p), p).toBe(false)
+    }
+  })
+
+  it("refuses report creation and admin mail sends when the store errors, sparing the reads", async () => {
+    const app = await buildApp({ redis: brokenRedis() })
+    try {
+      const created = await app.inject({
+        method: "POST",
+        url: "/v1/reports",
+        headers: { "x-test-user": "u-1" },
+      })
+      expect(created.statusCode).toBe(429)
+      expect(created.json().code).toBe("RATE_LIMITED")
+
+      // The outbound-mail bucket ALSO sets skipOnError:false, and @fastify/rate-limit rethrows the
+      // store error from its own onRequest hook, which runs before the write-sensitive hook can turn
+      // it into a 429. The send is still refused — the property that matters — but the caller sees a
+      // 500 instead of a 429 + retry-after, so a client cannot back off correctly.
+      const sent = await app.inject({
+        method: "POST",
+        url: "/v1/admin/mail",
+        headers: { "x-test-user": "op-1" },
+      })
+      expect(sent.statusCode).toBe(500)
+
+      expect((await app.inject({ method: "GET", url: "/v1/reports" })).statusCode).toBe(200)
+      expect((await app.inject({ method: "GET", url: "/v1/admin/mail" })).statusCode).toBe(200)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it("counts report creation per account, so rotating egress no longer buys a fresh budget", async () => {
+    const app = await buildApp()
+    try {
+      const create = (user: string, ip: string) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/reports",
+          headers: { "x-test-user": user },
+          remoteAddress: ip,
+        })
+      for (let i = 0; i < CREATE_REPORT_RATE_LIMIT.max; i++) {
+        expect((await create("spammer", `203.0.113.${i + 1}`)).statusCode).toBe(200)
+      }
+      expect((await create("spammer", "198.51.100.7")).statusCode).toBe(429)
+      expect((await create("bystander", "203.0.113.1")).statusCode).toBe(200)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it("counts data exports per account, not per NAT, in both directions (F136)", async () => {
+    const app = await buildApp()
+    try {
+      const exportData = (user: string, ip: string) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/me/data-export",
+          headers: { "x-test-user": user },
+          remoteAddress: ip,
+        })
+      for (let i = 0; i < DATA_EXPORT_RATE_LIMIT.max; i++) {
+        expect((await exportData("exporter", `203.0.113.${i + 1}`)).statusCode).toBe(200)
+      }
+      expect((await exportData("exporter", "198.51.100.9")).statusCode).toBe(429)
+      expect((await exportData("housemate", "203.0.113.1")).statusCode).toBe(200)
+    } finally {
+      await app.close()
     }
   })
 })
@@ -317,6 +423,16 @@ const IDENTITY_SCOPED_LIMITS = {
   CERTIFICATE_REVOKE_RATE_LIMIT,
   CREATE_POST_RATE_LIMIT,
   ROUTE_REPORT_RATE_LIMIT,
+  THREAD_READ_RATE_LIMIT,
+  POST_INTERACTION_RATE_LIMIT,
+  PUSH_TOKEN_RATE_LIMIT,
+  ADMIN_OUTBOUND_MAIL_RATE_LIMIT,
+  FOLLOW_RATE_LIMIT,
+  FOLLOW_SUGGESTIONS_RATE_LIMIT,
+  DATA_EXPORT_RATE_LIMIT,
+  LIST_BLOCKS_RATE_LIMIT,
+  CREATE_REPORT_RATE_LIMIT,
+  REPORT_CONTENT_RATE_LIMIT,
 }
 
 const HOST_SCOPED_LIMITS = {
@@ -332,7 +448,74 @@ const HOST_SCOPED_LIMITS = {
   INBOUND_WEBHOOK_RATE_LIMIT,
 }
 
+interface DeclaredLimit {
+  name: string
+  helper: "perIdentity" | "perHost"
+  exported: boolean
+  file: string
+}
+
+/**
+ * Every rate limit declared with perIdentity()/perHost() anywhere under src/routes, read from source.
+ * The two enumerations above are hand-written, so without this scan a new limiter simply never gets
+ * asserted — which is exactly how CREATE_REPORT/REPORT_CONTENT/DATA_EXPORT stayed IP-keyed unnoticed.
+ */
+function declaredRouteLimits(): DeclaredLimit[] {
+  const root = fileURLToPath(new URL("../../src/routes/", import.meta.url))
+  const found: DeclaredLimit[] = []
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}${entry.name}`
+      if (entry.isDirectory()) {
+        walk(`${full}/`)
+        continue
+      }
+      if (!entry.name.endsWith(".ts")) continue
+      const source = readFileSync(full, "utf8")
+      const pattern = /(export\s+)?const\s+(\w+_RATE_LIMIT)\s*=\s*(perIdentity|perHost)\(/g
+      for (const m of source.matchAll(pattern)) {
+        found.push({
+          name: m[2]!,
+          helper: m[3] as "perIdentity" | "perHost",
+          exported: m[1] !== undefined,
+          file: full.slice(root.length),
+        })
+      }
+    }
+  }
+  walk(root)
+  return found
+}
+
 describe("rate limiter: route bucket scoping policy (CVX-012)", () => {
+  it("enumerates EVERY perIdentity()/perHost() bucket declared under src/routes", () => {
+    const declared = declaredRouteLimits()
+    expect(declared.length).toBeGreaterThan(20)
+    const missing = declared.filter((d) => {
+      const table = d.helper === "perIdentity" ? IDENTITY_SCOPED_LIMITS : HOST_SCOPED_LIMITS
+      return !Object.prototype.hasOwnProperty.call(table, d.name)
+    })
+    expect(
+      missing.map((d) => `${d.name} (${d.file}, ${d.helper})`),
+      "add these to IDENTITY_SCOPED_LIMITS / HOST_SCOPED_LIMITS in this file",
+    ).toEqual([])
+    const unexported = declared.filter((d) => !d.exported)
+    expect(
+      unexported.map((d) => `${d.name} (${d.file})`),
+      "export the bucket so the scoping policy above can assert it",
+    ).toEqual([])
+  })
+
+  it("bounds the per-host ceiling explicitly on the identity-keyed content-creation buckets", () => {
+    expect(CREATE_REPORT_RATE_LIMIT.hostMax).toBe(60)
+    expect(REPORT_CONTENT_RATE_LIMIT.hostMax).toBe(60)
+  })
+
+  it("keys the outbound-mail admin buckets by operator identity and fails CLOSED on a store error", () => {
+    expect(ADMIN_OUTBOUND_MAIL_RATE_LIMIT.skipOnError).toBe(false)
+    expect(ROUTE_REPORT_RATE_LIMIT.skipOnError).toBe(false)
+  })
+
   it("keys every authenticated-only mutation bucket by identity", () => {
     for (const [name, limit] of Object.entries(IDENTITY_SCOPED_LIMITS)) {
       expect((limit as { keyGenerator?: unknown }).keyGenerator, name).toBe(identityRateLimitKey)

@@ -16,17 +16,15 @@ export interface OutreachDigest {
 
 export interface OutreachRepository {
   loadDigest(geoid: string): Promise<OutreachDigest | null>
-  listCandidateGeoids(): Promise<string[]>
+  listCandidateGeoids(limit?: number): Promise<string[]>
   claimOutreachWindow?(
     geoid: string,
     window: { at: Date; windowStart: Date },
   ): Promise<boolean>
 }
 
-/**
- * Digest category order = the canonical ADMIN_CATEGORIES order (also the contact-preference order the
- * digest query's `array_position` uses). Kept as a named export because the outreach repository reads it.
- */
+export const OUTREACH_SWEEP_BATCH_SIZE = 200
+
 export const OUTREACH_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
 export function isThrottled(
@@ -79,15 +77,27 @@ export interface OutreachServiceDeps {
   outboundMail: OutboundMailService
   throttleDays: number
   now?: () => Date
+  sweepBatchSize?: number
 }
 
 export interface OutreachService {
   runForGeoid(geoid: string): Promise<OutreachRunResult>
   runSweep(): Promise<OutreachRunResult[]>
+  readonly sweepBatchSize: number
+}
+
+function isDeliveredError(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null && (err as { delivered?: unknown }).delivered === true
+  )
 }
 
 export function makeOutreachService(deps: OutreachServiceDeps): OutreachService {
   const now = deps.now ?? (() => new Date())
+  const sweepBatchSize =
+    deps.sweepBatchSize !== undefined && deps.sweepBatchSize > 0
+      ? deps.sweepBatchSize
+      : OUTREACH_SWEEP_BATCH_SIZE
 
   async function sendDigest(digest: OutreachDigest): Promise<string> {
     const thread = await deps.outboundMail.sendToCity({
@@ -126,14 +136,11 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
         const threadId = await sendDigest(digest)
         return { geoid, sent: true, reportCount: digest.total, threadId }
       } catch (err) {
-        // The claim stamped last_outreach_at BEFORE the send (that is what makes it a claim — it is the
-        // concurrency guard). If the mailer then fails, releasing the claim is what keeps a transient
-        // outage from silencing this jurisdiction for the whole throttle window: restore the timestamp the
-        // claim replaced (null when there was none) so the next tick retries. Best-effort — if the release
-        // itself fails the window simply stands, which is the pre-existing behavior.
-        await deps.mailRepo
-          .setOutreachState(geoid, { lastOutreachAt: state?.lastOutreachAt ?? null })
-          .catch(() => {})
+        if (!isDeliveredError(err)) {
+          await deps.mailRepo
+            .setOutreachState(geoid, { lastOutreachAt: state?.lastOutreachAt ?? null })
+            .catch(() => {})
+        }
         throw err
       }
     }
@@ -144,7 +151,7 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
   }
 
   async function runSweep(): Promise<OutreachRunResult[]> {
-    const geoids = await deps.outreachRepo.listCandidateGeoids()
+    const geoids = await deps.outreachRepo.listCandidateGeoids(sweepBatchSize)
     const results: OutreachRunResult[] = []
     for (const geoid of geoids) {
       try {
@@ -161,5 +168,5 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
     return results
   }
 
-  return { runForGeoid, runSweep }
+  return { runForGeoid, runSweep, sweepBatchSize }
 }

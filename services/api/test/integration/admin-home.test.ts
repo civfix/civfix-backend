@@ -150,4 +150,25 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
     expect(event?.attendees).toBe(0)
     expect(event?.eventKind).toBe("cleanup")
   })
+
+  it("F122: a per-category-only contact leaves a different-category report waiting", async () => {
+    await h.sql`
+      INSERT INTO jurisdiction_contacts (geoid, category, email)
+      VALUES (${GEOID}, 'graffiti', 'g@city.gov')
+    `
+    await insertReport(h, { status: "submitted" })
+    const d = await repo.discoverySummary()
+    expect(d.reportsWaiting).toBe(1)
+  })
+
+  it("F119: a flag on a soft-deleted report is not counted as flagged", async () => {
+    const r1 = await insertReport(h, { status: "in_progress" })
+    await h.sql`
+      INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
+      VALUES ('report', ${r1}, 'manual', 'api')
+    `
+    await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${r1}`
+    const s = await repo.reportsSummary()
+    expect(s.flagged).toBe(0)
+  })
 })

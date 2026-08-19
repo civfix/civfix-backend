@@ -1,14 +1,3 @@
-/**
- * Postgres-backed AdminReportRepository: the production binding of the admin reports seam, hand-written
- * over the raw postgres-js tag (`Sql`) because reads decode geometry (ST_X/ST_Y) and aggregate
- * flagged/confirmations/hasPhoto with correlated EXISTS/COUNT subqueries. Mutations run as single
- * transactions so a status change + its report_timeline row never drift.
- *
- * FLAGGED: a report is "flagged" when it has an OPEN abuse_flag (subject_type 'report', resolved_at
- * NULL). ROUTING CONTACT precedence: category-specific jurisdiction_contacts -> default (category NULL)
- * row -> legacy jurisdictions.contact_emails[]. AUDIT is the route's job (it holds the operator userId);
- * this repo writes the effect + timeline only.
- */
 
 import type { Queryable, Sql } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
@@ -36,16 +25,9 @@ import type {
   ReportOutreachStatus,
   ReportTimelineItem,
 } from "@civfix/shared"
-// A bucket count saturates at this cap so countByBucket scans at most ~cap*3 rows instead of running an
-// exact COUNT(*) over an unbounded reports table on every chip refresh (the chip just needs "this many or
-// more"). Above the cap the counts are an estimate.
-const FACET_COUNT_CAP = 999
 
-/**
- * A report is flagged when it has an OPEN abuse_flag (subject_type 'report', resolved_at NULL). Assumes the
- * query exposes `reports r`. Exported because the home dashboard's pin list projects the same flag and had
- * re-inlined it — two copies of "what flagged means" is how the home chip and the reports chip disagree.
- */
+const ROUTE_LOCK_NAMESPACE = 0x7cf17e01
+
 export function flaggedReportExpr(sql: Queryable): SqlFragment {
   return sql`EXISTS (
     SELECT 1 FROM abuse_flags af
@@ -53,14 +35,8 @@ export function flaggedReportExpr(sql: Queryable): SqlFragment {
   )`
 }
 
-/**
- * The report-search predicate (title / jurisdiction name / reporter display-name + handle, plus an exact
- * id match when `q` is a uuid), shared by listReports + countByBucket so the chip counts match the list
- * exactly. Assumes the query LEFT JOINs `jurisdictions j` and `users u`. Empty fragment when q is null.
- */
 function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
-  // ilikeAnyOf escapes the LIKE metacharacters so %/_ in q match literally (wildcard injection/trigram DoS).
   return sql`AND ${ilikeAnyOf(
     sql,
     [sql`r.title`, sql`j.name`, sql`u.display_name`, sql`u.handle::text`],
@@ -69,10 +45,8 @@ function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
   )}`
 }
 
-/** Max media assets returned for a report detail. */
 const MEDIA_CAP = 20
 
-/** A reports list/detail row as selected back (geom decoded, reporter joined, aggregates computed). */
 interface ReportRowSelect {
   id: string
   category: ReportCategory
@@ -99,7 +73,6 @@ interface ReportRowSelect {
   reporter_joined: Date | null
 }
 
-/** Project a selected report row into the structural record the service consumes. */
 function toRecord(r: ReportRowSelect): AdminReportRecord {
   const reporter: AdminReporterRecord | null = toPersonRecord(
     {
@@ -134,12 +107,6 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
   }
 }
 
-/**
- * The shared report SELECT (geom decoded, reporter joined, flagged/confirmations/hasPhoto computed). The
- * `extraWhere` clause narrows it (a single id for detail, the facet filters for the list). The address
- * label is the report's own reverse-geocoded `addr` (0011) when present, falling back to the
- * jurisdiction name when the report carries no address text (older rows / web submissions).
- */
 function reportSelect(
   sql: Queryable,
   extraWhere: SqlFragment,
@@ -188,8 +155,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const anchor = decodeCursor(args.cursor, true)
 
       const conds: SqlFragment[] = []
-      // A design bucket maps to a SET of civfix statuses (e.g. Submitted = submitted|held|published), so
-      // match with `= ANY(array)` rather than a single equality. postgres-js binds a JS string[] natively.
       if (args.statuses !== null && args.statuses.length > 0) {
         conds.push(sql`AND r.status = ANY(${args.statuses})`)
       }
@@ -207,36 +172,27 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     },
 
     async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
-      // One aggregate over the searched, non-removed reports: a count per design bucket + the orthogonal
-      // flagged count, each capped at FACET_COUNT_CAP so a huge table doesn't force an O(rows) exact count
-      // on a hot chip refresh. The FILTER predicates derive from the canonical STATUS_BUCKETS, so the
-      // chips and the list can't drift.
       const search = searchReportsFragment(sql, args.q)
-      const cap = FACET_COUNT_CAP
       const rows = await sql<
         { submitted: string; in_progress: string; completed: string; flagged: string }[]
       >`
         SELECT
-          LEAST(COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.submitted})), ${cap})::text AS submitted,
-          LEAST(COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress})), ${cap})::text AS in_progress,
-          LEAST(COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed})), ${cap})::text AS completed,
-          LEAST(COUNT(*) FILTER (WHERE ${flaggedReportExpr(sql)}), ${cap})::text AS flagged
-        FROM (
-          SELECT r.id, r.status
-          FROM reports r
-          LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-          LEFT JOIN users u ON u.id = r.reporter_user_id
-          WHERE r.deleted_at IS NULL
-          ${search}
-          LIMIT ${cap * 3 + 1}
-        ) r
+          COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.submitted}))::text AS submitted,
+          COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress}))::text AS in_progress,
+          COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed}))::text AS completed,
+          COUNT(*) FILTER (WHERE ${flaggedReportExpr(sql)})::text AS flagged
+        FROM reports r
+        LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+        LEFT JOIN users u ON u.id = r.reporter_user_id
+        WHERE r.deleted_at IS NULL
+        ${search}
       `
       const row = rows[0]
       const submitted = Number(row?.submitted ?? "0")
       const inProgress = Number(row?.in_progress ?? "0")
       const completed = Number(row?.completed ?? "0")
       const flagged = Number(row?.flagged ?? "0")
-      const all = Math.min(submitted + inProgress + completed, cap)
+      const all = submitted + inProgress + completed
       return { all, submitted, in_progress: inProgress, completed, flagged }
     },
 
@@ -273,9 +229,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       return rows.map((r) => ({
         status: r.status,
         note: r.note,
-        // 0031's `kind` is the row's OWN recorded kind; pre-0031 rows carry NULL and the service falls back
-        // to deriving one from the status. Narrowed on read: the column is plain text, so a value outside
-        // the contract's kind union is treated as absent rather than shipped into the DTO.
         kind: toTimelineKind(r.kind),
         who: r.who ?? "system",
         createdAt: r.created_at,
@@ -283,8 +236,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     },
 
     async getRouting(id: string): Promise<AdminReportRoutingRecord | null> {
-      // Resolve the routing contact with the precedence the routing path uses: a category-specific
-      // jurisdiction_contacts row -> the default (category NULL) row -> the legacy contact_emails[].
       const rows = await sql<
         {
           geoid: string | null
@@ -305,10 +256,12 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           j.forward_body_template,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category = r.category
-               AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS cat_email,
+               AND jc.email IS NOT NULL AND jc.email <> ''
+               AND jc.bounced_at IS NULL LIMIT 1) AS cat_email,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category IS NULL
-               AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS default_email,
+               AND jc.email IS NOT NULL AND jc.email <> ''
+               AND jc.bounced_at IS NULL LIMIT 1) AS default_email,
           (SELECT j.contact_emails[1]) AS legacy_email
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
@@ -330,8 +283,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     },
 
     async getOutreach(id: string): Promise<ReportOutreachState> {
-      // The newest per-report mail thread (report_id = id) + its OUT-message aggregates (latest to_addr,
-      // earliest created_at) and whether any inbound reply has landed. One row (or none -> not_sent).
       const rows = await sql<
         {
           thread_id: string
@@ -387,9 +338,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       id: string,
       input: { note: string; kind: ReportTimelineItem["kind"]; body?: string | null },
     ): Promise<void> {
-      // A non-transition system row at the report's CURRENT status, actor NULL, no audit (used by the
-      // inbound reply side-effects). D13: persist `kind` + the full `body` (0031 added both columns) so the
-      // public timeline can tag the entry + render the full reply collapsibly; `note` stays the preview.
       await sql`
         INSERT INTO report_timeline (report_id, status, note, kind, body, actor_id)
         SELECT ${id}, r.status, ${input.note}, ${input.kind ?? null}, ${input.body ?? null}, NULL
@@ -407,8 +355,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         ORDER BY created_at ASC
         LIMIT ${MEDIA_CAP}
       `
-      // Raw object-store keys; the service presigns them over the Storage seam. Only status='ready'
-      // assets are returned so the detail never points at a non-renderable upload.
       return rows.map((m) => ({
         id: m.id,
         kind: m.kind,
@@ -429,13 +375,14 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
-          UPDATE reports SET status = ${input.status}
+          UPDATE reports
+          SET status = ${input.status},
+              deleted_at = CASE WHEN ${input.status} = 'rejected'
+                                THEN COALESCE(deleted_at, now()) ELSE deleted_at END
           WHERE id = ${id} AND deleted_at IS NULL
           RETURNING id
         `
         if (updated.length === 0) return false
-        // D13: an inbound city reply that also advances the report persists kind + the full body alongside
-        // the transition; a plain operator transition passes neither (both default NULL).
         await tx`
           INSERT INTO report_timeline (report_id, status, note, kind, body, actor_id)
           VALUES (${id}, ${input.status}, ${input.note}, ${input.kind ?? null}, ${input.body ?? null}, ${input.actorId})
@@ -467,7 +414,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         `
         let nowFlagged: boolean
         if (open.length > 0) {
-          // Currently flagged -> resolve the open flag(s) (unflag).
           await tx`
             UPDATE abuse_flags SET resolved_at = now()
             WHERE subject_type = 'report' AND subject_id = ${id} AND resolved_at IS NULL
@@ -536,8 +482,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         destination: string
       },
     ): Promise<void> {
-      // The followup timeline row carries the report's current status (a follow-up is not a transition);
-      // audit the follow-up in the same transaction so the timeline + audit row never drift.
       await sql.begin(async (tx) => {
         await tx`
           INSERT INTO report_timeline (report_id, status, note, actor_id)
@@ -558,8 +502,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       input: { verdict: "approved" | "rejected"; actorId: string | null },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
-        // Write the verdict cols (idempotent: re-setting the same verdict re-stamps verified_by/at). Returns
-        // the reporter so an approved verdict can recompute that reporter's approved-count in the SAME tx.
         const updated = await tx<{ reporter_user_id: string | null }[]>`
           UPDATE reports
           SET verification_verdict = ${input.verdict},
@@ -577,16 +519,9 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           meta: { verdict: input.verdict },
         })
 
-        // Only an `approved` verdict for a non-anon reporter can earn report_verified. A `rejected` verdict
-        // never counts and never resets an earned flag (D7). An anonymous report writes the verdict above
-        // (bookkeeping) but the count query filters reporter_user_id IS NOT NULL, so it never flips.
         const reporter = row.reporter_user_id
         if (input.verdict !== "approved" || reporter === null) return true
 
-        // Recompute the reporter's approved, non-deleted report count. Re-approving an already-approved
-        // report is a no-op (the recompute is idempotent). At/above the threshold, flip report_verified to
-        // true if not already set — UPSERTing the user_moderation row (it is created lazily) and relying on
-        // its NOT NULL column defaults for the rest, exactly like the D8 grandfather / setUserReportVerified.
         const counted = await tx<{ n: number }[]>`
           SELECT count(*)::int AS n
           FROM reports
@@ -610,14 +545,22 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         return true
       })
     },
+
+    async withRouteLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+      const reserved = await sql.reserve()
+      try {
+        await reserved`SELECT pg_advisory_lock(${ROUTE_LOCK_NAMESPACE}, hashtext(${id}))`
+        return await fn()
+      } finally {
+        await reserved`SELECT pg_advisory_unlock(${ROUTE_LOCK_NAMESPACE}, hashtext(${id}))`.catch(
+          () => {},
+        )
+        reserved.release()
+      }
+    },
   }
 }
 
-/**
- * Map a per-report mail thread's status + whether an inbound reply landed onto the report's outreach
- * status. Precedence: bounced > replied (inbound message OR thread 'replied') > delivered
- * (delivered/opened) > sent. Imported by the memory repo so the two stay in lockstep.
- */
 export function mapOutreachStatus(
   threadStatus: string,
   hasInbound: boolean,

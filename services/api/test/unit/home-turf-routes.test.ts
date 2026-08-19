@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import type { FakeMailer } from "@civfix/shared/fakes"
+import type { FakeMailer, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
@@ -14,16 +14,11 @@ import {
   HOME_TURF_RATE_LIMIT,
 } from "../../src/routes/forms.routes.js"
 
-/**
- * Route-level tests for POST /forms/home-turf via the real Fastify app (app.inject) with NO database
- * and NO auth bundle (the route must mount + work without them). The test env defaults every fake ON,
- * so container.mailer is the FakeMailer (captures every sendOutbound envelope) and
- * container.abuseChecks is FakeAbuseChecks (verifyTurnstile succeeds unless the token is "fail").
- */
 
 interface Harness {
   app: FastifyInstance
   mailer: FakeMailer
+  container: ReturnType<typeof buildContainer>
 }
 
 let current: Harness | undefined
@@ -43,7 +38,7 @@ async function makeHarness(): Promise<Harness> {
     container,
     homeTurfOverrides: { counters: new InMemoryCounterStore(() => 0) },
   })
-  const h: Harness = { app, mailer: container.mailer as FakeMailer }
+  const h: Harness = { app, mailer: container.mailer as FakeMailer, container }
   current = h
   return h
 }
@@ -64,7 +59,6 @@ function formPayload(over: Record<string, unknown> = {}): Record<string, unknown
   }
 }
 
-/** All captured sendOutbound envelopes (this route never uses sendOtp/sendTransactional). */
 function outbounds(mailer: FakeMailer): OutboundEmail[] {
   return mailer.sent.map((m) => m.outbound).filter((o): o is OutboundEmail => o !== undefined)
 }
@@ -79,8 +73,6 @@ describe("POST /forms/home-turf", () => {
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(2)
 
-    // (1) The notification: env-default from/to, replyTo the submitter, subject names the school,
-    // and the body carries every field (HTML-escaped in the html part).
     const notify = sent[0]!
     expect(notify.from).toBe("donotreply@civfix.org")
     expect(notify.to).toBe("roman@reachoutla.org")
@@ -98,13 +90,9 @@ describe("POST /forms/home-turf", () => {
       expect(notify.text).toContain(value)
     }
     expect(notify.text).toContain("We practice Tuesdays & Thursdays <after 4pm>.")
-    // User values are HTML-escaped in the html body (no raw angle brackets from the notes).
     expect(notify.html).toContain("&lt;after 4pm&gt;")
     expect(notify.html).not.toContain("<after 4pm>")
 
-    // (2) The confirmation: FIXED COPY ONLY (M8). The recipient comes from the request body, so any
-    // request-derived CONTENT would make this endpoint a phishing amplifier that sends attacker-written
-    // prose from civfix's own DKIM-signed domain. Nothing submitted is echoed back.
     const confirm = sent[1]!
     expect(confirm.from).toBe("donotreply@civfix.org")
     expect(confirm.to).toBe("coach@example.org")
@@ -214,18 +202,10 @@ describe("POST /forms/home-turf", () => {
     const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
-    // Only the notification was captured (the confirmation attempt rejected).
     expect(outbounds(mailer)).toHaveLength(1)
     expect(outbounds(mailer)[0]!.to).toBe("roman@reachoutla.org")
   })
 
-  /**
-   * M8 ordering (routes-core MEDIUM + LOW/test-gap). The per-RECIPIENT daily cap is charged AFTER the
-   * awaited coordinator send, not before it. Charging first meant a transient SMTP blip on step (4) still
-   * consumed the submitter's entire 1/day budget, so their retry 429'd for 24 hours — a mailer hiccup
-   * locked a legitimate coach out for a day. The old test stopped at the 5xx and never retried, so
-   * neither the bug nor its fix was observable.
-   */
   it("does NOT consume the 1/day recipient budget when the coordinator send fails (the retry still 200s)", async () => {
     const { app, mailer } = await makeHarness()
     const original = mailer.sendOutbound.bind(mailer)
@@ -244,7 +224,6 @@ describe("POST /forms/home-turf", () => {
     expect(failed.statusCode).toBe(500)
     expect(outbounds(mailer)).toHaveLength(0)
 
-    // The SAME address retries: the daily budget must still be intact.
     const retry = await app.inject({
       method: "POST",
       url: "/forms/home-turf",
@@ -253,7 +232,6 @@ describe("POST /forms/home-turf", () => {
     expect(retry.statusCode).toBe(200)
     expect(retry.json()).toEqual({ ok: true })
 
-    // Exactly the retry's two envelopes were captured (the first attempt's notification rejected).
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(2)
     expect(sent[0]!.to).toBe("roman@reachoutla.org")
@@ -261,7 +239,6 @@ describe("POST /forms/home-turf", () => {
   })
 
   it(`still charges the budget on SUCCESS: a same-address resubmit 429s (limit ${HOME_TURF_EMAIL_LIMIT_PER_DAY}/day)`, async () => {
-    // The positive control for the reordering above: moving the charge later must not remove the cap.
     const { app, mailer } = await makeHarness()
     const first = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
     expect(first.statusCode).toBe(200)
@@ -270,9 +247,6 @@ describe("POST /forms/home-turf", () => {
     expect(second.statusCode).toBe(429)
     expect(second.json().code).toBe("RATE_LIMITED")
 
-    // ACCEPTED behavior change (A15): the cap now sits AFTER the coordinator notification, so a duplicate
-    // submit sends that one internal email before 429ing. No CONFIRMATION reaches the submitter — the
-    // request-addressed mail, which is the only thing this cap exists to bound, is still blocked.
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(3)
     expect(sent.map((e) => e.to)).toEqual([
@@ -281,7 +255,6 @@ describe("POST /forms/home-turf", () => {
       "roman@reachoutla.org",
     ])
 
-    // A different address is unaffected.
     const other = await app.inject({
       method: "POST",
       url: "/forms/home-turf",
@@ -297,8 +270,6 @@ describe("POST /forms/home-turf", () => {
       const res = await app.inject({
         method: "POST",
         url: "/forms/home-turf",
-        // A honeypot-tripped body keeps the handler outcome stable (200, no mail) so the signal is
-        // purely the rate limiter.
         payload: formPayload({ honeypot: "bot" }),
         remoteAddress: "203.0.113.88",
       })
@@ -320,8 +291,16 @@ describe("enforceHomeTurfIpCap", () => {
     await expect(enforceHomeTurfIpCap("198.51.100.7", counters)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
-    // A different IP still has its own budget.
     await expect(enforceHomeTurfIpCap("198.51.100.8", counters)).resolves.toBeUndefined()
+  })
+})
+
+describe("Turnstile action (F128)", () => {
+  it("verifies the token with the 'home-turf' widget action", async () => {
+    const { app, container } = await makeHarness()
+    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    expect(res.statusCode).toBe(200)
+    expect((container.abuseChecks as FakeAbuseChecks).lastVerifyExpect?.action).toBe("home-turf")
   })
 })
 
@@ -331,8 +310,6 @@ describe("enforceHomeTurfRecipientCap (M8)", () => {
     for (let i = 0; i < HOME_TURF_EMAIL_LIMIT_PER_DAY; i++) {
       await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).resolves.toBeUndefined()
     }
-    // The per-IP cap does not protect the VICTIM (the attacker rotates IPs); this bucket does, because
-    // it is keyed on the recipient address alone.
     await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
@@ -346,16 +323,34 @@ describe("enforceHomeTurfRecipientCap (M8)", () => {
       code: "RATE_LIMITED",
     })
   })
+
+  it("folds gmail +tags, dots and googlemail into one recipient bucket (F138)", async () => {
+    const counters = new InMemoryCounterStore(() => 0)
+    await enforceHomeTurfRecipientCap("victim@gmail.com", counters)
+    await expect(enforceHomeTurfRecipientCap("victim+abc@gmail.com", counters)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+    await expect(
+      enforceHomeTurfRecipientCap("v.i.c.t.i.m@googlemail.com", counters),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+  })
+
+  it("strips +tags for non-gmail providers, but keeps dots significant (F138)", async () => {
+    const counters = new InMemoryCounterStore(() => 0)
+    await enforceHomeTurfRecipientCap("victim@example.org", counters)
+    await expect(enforceHomeTurfRecipientCap("victim+1@example.org", counters)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+    await expect(enforceHomeTurfRecipientCap("v.ictim@example.org", counters)).resolves.toBeUndefined()
+  })
 })
 
 describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
   it("refuses to send when no counter store is available (empty REDIS_URL, no override)", async () => {
     const env = loadEnv({ NODE_ENV: "test" })
     const container = buildContainer(env)
-    // No homeTurfOverrides.counters and no REDIS_URL: the caps used to be SILENTLY SKIPPED here,
-    // leaving a public DKIM-signed-mail endpoint with no per-IP or per-recipient bound at all.
     const app = await buildServer({ env, container })
-    current = { app, mailer: container.mailer as FakeMailer }
+    current = { app, mailer: container.mailer as FakeMailer, container }
 
     const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
 
@@ -364,13 +359,8 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
   })
 
   it("counts through container.getCounterStore() when Redis IS configured (one shared client)", async () => {
-    // The route used to build its own RedisCounterStore, so container.close()'s reset of the shared client
-    // protected nothing and each plugin held a separate one. Pin the wiring: with a Redis-configured
-    // container and NO test override, both caps must count through the container's store.
     const env = loadEnv({ NODE_ENV: "test" })
     const counted: string[] = []
-    // env WITHOUT Redis is what the server itself sees (so the limiter stays in-memory and no connection is
-    // opened), while the CONTAINER reports a REDIS_URL — that is the branch production takes in counters().
     const container = {
       ...buildContainer(env),
       env: { ...env, REDIS_URL: "redis://cache:6379" },
@@ -382,12 +372,12 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
       }),
     } as unknown as ReturnType<typeof buildContainer>
     const app = await buildServer({ env, container })
-    current = { app, mailer: container.mailer as FakeMailer }
+    current = { app, mailer: container.mailer as FakeMailer, container }
 
     const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
     expect(res.statusCode).toBe(200)
-    // Both buckets: the per-IP hourly cap and the per-recipient daily cap.
     expect(counted.some((k) => k.startsWith("abuse:home-turf:ip:"))).toBe(true)
-    expect(counted.some((k) => k.includes("coach@example.org"))).toBe(true)
+    expect(counted.some((k) => k.startsWith("abuse:home-turf:email:"))).toBe(true)
+    expect(counted.every((k) => !k.includes("coach@example.org"))).toBe(true)
   })
 })

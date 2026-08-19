@@ -16,8 +16,6 @@ import {
 } from "./moderation-service.js"
 
 
-const MEDIA_URL_PREFIX = "/media/"
-
 function itemColumns(sql: Queryable): SqlFragment {
   return sql`
     id, kind, subject_type, subject_id, flag, reason, category, place, priority,
@@ -25,17 +23,6 @@ function itemColumns(sql: Queryable): SqlFragment {
   `
 }
 
-/**
- * The admin-page destination for a subject that is NOT its own destination: a chat message belongs to a
- * report, a cleanup event, or a standalone group (no page); media points at a report directly or inherits
- * its chat parent. Direct subjects (report/event/user/profile) resolve with no query at all — see
- * resolveDestination.
- *
- * ONE subquery per row instead of two. The kind and the id used to be fetched by two near-identical
- * correlated subqueries over the same row (each with a pointless ORDER BY on a primary-key equality
- * lookup), doubling the per-row work on every list page. They can never disagree — the kind IS whichever
- * id resolved — so the pair travels as one '<kind>:<uuid>' string and is split in TS (a uuid holds no ':').
- */
 function destinationRefColumn(sql: Queryable): SqlFragment {
   return sql`
     CASE
@@ -82,7 +69,6 @@ interface ModerationItemRow {
   similar: unknown
   meta: unknown
   created_at: Date
-  /** '<kind>:<uuid>' for a chat/photo subject; null when it has no admin page. Absent when not selected. */
   destination_ref?: string | null
 }
 
@@ -90,11 +76,6 @@ type Destination = { kind: ModerationItemRecord["destinationKind"]; id: string |
 
 const NO_DESTINATION: Destination = { kind: null, id: null }
 
-/**
- * A subject that IS its own destination resolves in TS; a chat/photo subject resolves from the
- * destination_ref the query fetched. A row that did not select it (the approve/remove/hold RETURNING lists
- * only the item columns) carries no destination, exactly as before.
- */
 function resolveDestination(row: ModerationItemRow): Destination {
   switch (row.subject_type) {
     case "report":
@@ -118,6 +99,46 @@ function parseDestinationRef(ref: string | null | undefined): Destination {
   if (kind === "report") return { kind: "report", id }
   if (kind === "event") return { kind: "event", id }
   return NO_DESTINATION
+}
+
+function refFor(reportId: string | null, cleanupId: string | null): string | null {
+  if (reportId !== null) return `report:${reportId}`
+  if (cleanupId !== null) return `event:${cleanupId}`
+  return null
+}
+
+async function attachDestinationRefs(sql: Queryable, page: ModerationItemRow[]): Promise<void> {
+  const chatIds = page
+    .filter((r) => r.subject_type === "chat")
+    .map((r) => r.subject_id)
+  const photoIds = page
+    .filter((r) => r.subject_type === "photo")
+    .map((r) => r.subject_id)
+  if (chatIds.length === 0 && photoIds.length === 0) return
+
+  const byId = new Map<string, string | null>()
+  if (chatIds.length > 0) {
+    const rows = await sql<{ id: string; report_id: string | null; cleanup_id: string | null }[]>`
+      SELECT id, report_id, cleanup_id FROM chat_messages WHERE id = ANY(${chatIds}::uuid[])
+    `
+    for (const r of rows) byId.set(r.id, refFor(r.report_id, r.cleanup_id))
+  }
+  if (photoIds.length > 0) {
+    const rows = await sql<{ id: string; report_id: string | null; cleanup_id: string | null }[]>`
+      SELECT ma.id,
+             COALESCE(ma.report_id, cm.report_id) AS report_id,
+             cm.cleanup_id
+      FROM media_assets ma
+      LEFT JOIN chat_messages cm ON cm.id = ma.chat_message_id
+      WHERE ma.id = ANY(${photoIds}::uuid[])
+    `
+    for (const r of rows) byId.set(r.id, refFor(r.report_id, r.cleanup_id))
+  }
+  for (const row of page) {
+    if (row.subject_type === "chat" || row.subject_type === "photo") {
+      row.destination_ref = byId.get(row.subject_id) ?? null
+    }
+  }
 }
 
 interface MediaRow {
@@ -236,8 +257,8 @@ async function loadMedia(
   return rows.map((m) => ({
     id: m.id,
     kind: m.kind,
-    url: MEDIA_URL_PREFIX + m.r2_key,
-    thumbUrl: m.thumb_key !== null ? MEDIA_URL_PREFIX + m.thumb_key : null,
+    r2Key: m.r2_key,
+    thumbKey: m.thumb_key,
   }))
 }
 
@@ -272,7 +293,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         : sql``
 
       const rows = (await sql`
-        SELECT ${itemColumns(sql)}, ${destinationRefColumn(sql)}
+        SELECT ${itemColumns(sql)}
         FROM moderation_items
         WHERE status = 'open'
         ${facet}
@@ -284,6 +305,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
 
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
+      await attachDestinationRefs(sql, page)
       const records = page.map((r) => toRecord(r, []))
       const last = page[page.length - 1]
       const nextCursor =
@@ -339,7 +361,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         })
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
         const record = toRecord(resolved, media)
-        // D-D1: signal the report-chat mirror ONLY when a held report actually became published.
         if (publishedReport) record.reportTimelineStatus = "published"
         return record
       })
@@ -376,7 +397,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         })
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
         const record = toRecord(resolved, media)
-        // D-D1: signal the report-chat mirror ONLY when a report was actually tombstoned.
         if (removedReport) record.reportTimelineStatus = "rejected"
         return record
       })
@@ -417,21 +437,35 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         `) as unknown as ModerationItemRow[]
         const resolved = rows[0]
         if (!resolved) return null
+        let restored = false
         if (input.decision === "overturn") {
+          restored = await restoreSubject(tx, resolved.subject_type, resolved.subject_id)
           await tx`
             UPDATE abuse_flags
             SET resolved_at = now()
-            WHERE subject_type = 'chat' AND subject_id = ${resolved.subject_id} AND resolved_at IS NULL
+            WHERE subject_type = ${abuseSubjectTypeFor(resolved.subject_type)}
+              AND subject_id = ${resolved.subject_id}
+              AND resolved_at IS NULL
           `
         }
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "moderation.appeal_decided",
           target: `moderation:${id}`,
-          meta: { decision: input.decision, subjectId: resolved.subject_id, note: input.note },
+          meta: {
+            decision: input.decision,
+            subjectId: resolved.subject_id,
+            subjectType: resolved.subject_type,
+            restored,
+            note: input.note,
+          },
         })
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
-        return toRecord(resolved, media)
+        const record = toRecord(resolved, media)
+        if (restored && isUserSubject(resolved.subject_type)) {
+          record.restoredUserId = resolved.subject_id
+        }
+        return record
       })
     },
 
@@ -445,7 +479,10 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
               AND subject_id = ${input.subjectId}
             LIMIT 1
           `
-          if (existing[0]) return null
+          if (existing[0]) {
+            await escalateOpenItem(tx, existing[0].id, input)
+            return null
+          }
           return insertModerationItem(tx, input, { dedupeOpen: true })
         }
         return insertModerationItem(tx, input)
@@ -537,8 +574,6 @@ async function resolveSubjectAuthor(
       return r[0]?.reporter_user_id ?? null
     }
     case "comment": {
-      // The per-report discussion system (report_discussion_messages) was removed; no new "comment"
-      // moderation subjects are created. Left inert so any legacy row resolves to no author.
       return null
     }
     case "chat": {
@@ -562,8 +597,6 @@ async function resolveSubjectAuthor(
       return r[0]?.author_id ?? null
     }
     case "photo": {
-      // media_assets.discussion_message_id was dropped with the discussion system; a photo's owner is now
-      // resolved via its report only.
       const r = await tx<{ reporter_user_id: string | null }[]>`
         SELECT rep.reporter_user_id
         FROM media_assets m
@@ -619,6 +652,51 @@ async function buildUserSnapshot(
   }
 }
 
+function isUserSubject(subjectType: SubjectType): boolean {
+  return subjectType === "user" || subjectType === "profile"
+}
+
+function abuseSubjectTypeFor(subjectType: SubjectType): string {
+  if (subjectType === "profile") return "user"
+  if (subjectType === "photo") return "media"
+  return subjectType
+}
+
+async function restoreSubject(
+  tx: Queryable,
+  subjectType: SubjectType,
+  subjectId: string,
+): Promise<boolean> {
+  switch (subjectType) {
+    case "chat": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE chat_messages SET deleted_at = NULL
+        WHERE id = ${subjectId} AND deleted_at IS NOT NULL RETURNING id`
+      return rows.length > 0
+    }
+    case "message": {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE dm_messages SET deleted_at = NULL
+        WHERE id = ${subjectId} AND deleted_at IS NOT NULL RETURNING id`
+      return rows.length > 0
+    }
+    case "profile":
+    case "user": {
+      const rows = await tx<{ user_id: string }[]>`
+        INSERT INTO user_moderation (user_id, account_status, flagged, updated_at)
+        SELECT u.id, 'active', false, now()
+        FROM users u
+        WHERE u.id = ${subjectId} AND u.deleted_at IS NULL
+        ON CONFLICT (user_id)
+        DO UPDATE SET account_status = 'active', flagged = false, updated_at = now()
+        RETURNING user_id`
+      return rows.length > 0
+    }
+    default:
+      return false
+  }
+}
+
 async function tombstoneSubject(
   tx: Queryable,
   subjectType: SubjectType,
@@ -632,7 +710,6 @@ async function tombstoneSubject(
       return rows.length > 0
     }
     case "comment": {
-      // report_discussion_messages was dropped with the discussion system; nothing to tombstone.
       return false
     }
     case "chat": {
@@ -674,6 +751,27 @@ async function tombstoneSubject(
     default:
       return false
   }
+}
+
+async function escalateOpenItem(
+  tx: Queryable,
+  itemId: string,
+  input: CreateModerationItemInput,
+): Promise<void> {
+  await tx`
+    UPDATE moderation_items
+    SET priority = 'high',
+        meta = CASE
+          WHEN ${input.reporterUserId ?? null}::text IS NULL THEN meta
+          WHEN meta->'reporters' @> to_jsonb(ARRAY[${input.reporterUserId ?? ""}::text]) THEN meta
+          ELSE jsonb_set(
+            meta,
+            '{reporters}',
+            COALESCE(meta->'reporters', '[]'::jsonb) || to_jsonb(${input.reporterUserId ?? ""}::text)
+          )
+        END
+    WHERE id = ${itemId} AND status = 'open'
+  `
 }
 
 async function incrementUserModeration(tx: Queryable, userId: string): Promise<void> {

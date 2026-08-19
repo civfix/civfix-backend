@@ -14,8 +14,8 @@ import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report
 
 export const MAX_PACKET_ATTACHMENTS = 10
 export const MAX_PACKET_ATTACHMENT_BYTES = 10 * 1024 * 1024
+export const MAX_PACKET_TOTAL_BYTES = 8 * 1024 * 1024
 
-/** File extension per MIME type media intake accepts; the packet's last resort is .jpg. */
 const ATTACHMENT_EXTENSIONS: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/png": ".png",
@@ -24,21 +24,10 @@ const ATTACHMENT_EXTENSIONS: Record<string, string> = {
 
 const EXTENSION_FALLBACK = ".jpg"
 
-/** Whether a filename already ends in something a mail client will read as an extension. */
 function hasExtension(name: string): boolean {
   return /\.[A-Za-z0-9]{2,5}$/.test(name)
 }
 
-/**
- * The filename to label a routed packet attachment with.
- *
- * The r2 key carries NO extension (media intake mints opaque keys), so the derived name used to reach the
- * city's inbox extension-less — which is precisely when a mail client falls back to "unknown attachment"
- * and refuses to preview the photo the packet exists to deliver. `contentType` is the already-resolved MIME
- * (admin-report-service.ts:attachmentContentType sniffs it from the bytes, since no MIME is stored), so the
- * extension and the Content-Type header can never disagree. A key tail that already carries an extension is
- * left alone.
- */
 export function attachmentFilename(r2Key: string, index: number, contentType?: string): string {
   const ext =
     ATTACHMENT_EXTENSIONS[(contentType ?? "").trim().toLowerCase()] ?? EXTENSION_FALLBACK
@@ -46,7 +35,6 @@ export function attachmentFilename(r2Key: string, index: number, contentType?: s
   const cleaned = tail.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
   if (cleaned.length === 0) return `photo-${index + 1}${ext}`
   if (hasExtension(cleaned)) return cleaned.slice(0, 120)
-  // Truncate the BASE so the extension always survives the 120-char cap.
   return `${cleaned.slice(0, 120 - ext.length)}${ext}`
 }
 
@@ -60,16 +48,10 @@ function mapLinkFor(lat: number, lng: number): string {
   return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat}/${lng}`
 }
 
-/** Format a report's created_at into a human "Submitted" date (e.g. "July 20, 2026"). */
 function formatSubmittedDate(d: Date): string {
   return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
 }
 
-/**
- * Build the full token->value map for the per-jurisdiction custom forward template (the 21
- * FORWARD_TEMPLATE_VARIABLES, keyed by BARE name). interpolateForwardTemplate replaces `{token}` with
- * `values[bareName] ?? ""`, so an unavailable value renders as an empty string (never the literal token).
- */
 function buildTemplateValues(
   record: AdminReportRecord,
   routing: AdminReportRoutingRecord | null,
@@ -106,15 +88,6 @@ function buildTemplateValues(
   }
 }
 
-/**
- * The report -> jurisdiction email, used by BOTH the manual Approve & send route and the auto-forward job.
- *
- * By default it renders the refined civfix packet (a scannable card + map button + description + photos).
- * When the jurisdiction has a custom `forwardSubjectTemplate` / `forwardBodyTemplate` on file (the two
- * new columns), THAT template is interpolated against the report's values and rendered through the same
- * HTML layout (card + footer + dark mode). Subject and body are independent: whichever is custom uses the
- * template, the other keeps the refined default.
- */
 export function buildReportPacket(
   record: AdminReportRecord,
   routing: AdminReportRoutingRecord | null,
@@ -137,7 +110,6 @@ export function buildReportPacket(
   const hasCustomSubject =
     typeof forwardSubjectTemplate === "string" && forwardSubjectTemplate.trim() !== ""
 
-  // Subject: interpolated custom (then sanitized for a header) or the refined default.
   const subject = hasCustomSubject
     ? sanitizeHeaderValue(
         interpolateForwardTemplate(
@@ -149,9 +121,6 @@ export function buildReportPacket(
 
   let blocks: EmailBlock[]
   if (hasCustomBody) {
-    // Interpolate the custom body, then split on blank lines into paragraph blocks so it keeps the civfix
-    // card/footer/dark-mode chrome. paragraph() HTML-escapes its text (email-blocks htmlText), so template
-    // content can never inject markup.
     const rendered = interpolateForwardTemplate(
       forwardBodyTemplate,
       buildTemplateValues(record, routing, mediaLinks, noteText),
@@ -163,7 +132,6 @@ export function buildReportPacket(
       .map((p) => paragraph(p))
     if (blocks.length === 0) blocks = [paragraph(rendered.trim())]
   } else {
-    // Refined default: concise, scannable, complete.
     blocks = [
       paragraph(
         `A resident reported a ${categoryLabel} issue in ${place} through civfix on ${submittedDate}. ` +

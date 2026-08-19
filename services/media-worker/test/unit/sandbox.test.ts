@@ -1,15 +1,3 @@
-/**
- * Sandbox wrapper unit tests (LOCAL: real binaries).
- *
- *   - ffprobe rejects a non-video and accepts a real h264 MP4.
- *   - the hardened runner's TIMEOUT actually kills a long-running child (real spawn + SIGKILL), proving
- *     a wedged decoder cannot hang the worker.
- *   - the image wrapper strips EXIF GPS while preserving dimensions, and produces a bounded thumbnail.
- *   - perceptual hashing is deterministic and implements the documented dHash bit rule.
- *   - the ffmpeg remux strips container/stream metadata (location) while keeping the video decodable.
- *   - the SSRF / demuxer boundaries: an HLS or ffconcat body cannot make a tool fetch a URL or read a
- *     local file, and a chatty child cannot outgrow maxBuffer.
- */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { createServer, type Server } from "node:http"
@@ -28,13 +16,12 @@ import {
 import { perceptualHash } from "../../src/sandbox/phash.js"
 import exifr from "exifr"
 import * as fx from "../fixtures/make.js"
-import { readContainerTags } from "../helpers/ffprobe-tags.js"
+import { readContainerTags, readStreamTags } from "../helpers/ffprobe-tags.js"
 
 const limits = loadLimits({})
 
 describe("sandbox/exec runTool", () => {
   it("enforces the timeout and SIGKILLs a long-running child", async () => {
-    // Use the Node binary itself as a guaranteed-present long-running child: sleep ~5s, time out at 200ms.
     const start = Date.now()
     let caught: unknown
     try {
@@ -48,7 +35,6 @@ describe("sandbox/exec runTool", () => {
     const elapsed = Date.now() - start
     expect(caught).toBeInstanceOf(SandboxToolError)
     expect((caught as SandboxToolError).timedOut).toBe(true)
-    // Killed promptly, nowhere near the 5s the child would otherwise run.
     expect(elapsed).toBeLessThan(3000)
   })
 
@@ -67,11 +53,6 @@ describe("sandbox/exec runTool", () => {
     expect((caught as SandboxToolError).exitCode).toBe(3)
   })
 
-  /**
-   * maxBuffer is the memory bound on a tool that streams to a pipe (ffmpeg writing to stdout, or a
-   * decoder spewing warnings per frame). Untested, a regression that dropped or widened it would only
-   * show up as the worker's RSS climbing in production.
-   */
   it("kills a child whose stdout outgrows maxBuffer instead of buffering it", async () => {
     let caught: unknown
     try {
@@ -85,7 +66,6 @@ describe("sandbox/exec runTool", () => {
       caught = err
     }
     expect(caught).toBeInstanceOf(SandboxToolError)
-    // Not a timeout: the cap fired, not the clock.
     expect((caught as SandboxToolError).timedOut).toBe(false)
   })
 
@@ -155,14 +135,12 @@ describe("sandbox/image", () => {
     const out = await processImage(input, limits)
     expect(out.meta.width).toBe(64)
     expect(out.meta.height).toBe(48)
-    expect(out.exifGps).not.toBeNull() // the ORIGINAL gps is surfaced for the report cross-check
-    // Stripped output and thumbnail carry no GPS.
+    expect(out.exifGps).not.toBeNull()
     expect(await hasNoGps(out.strippedBytes)).toBe(true)
     expect(await hasNoGps(out.thumbnailBytes)).toBe(true)
   })
 
   it("produces a thumbnail whose longest edge is <= the configured max", async () => {
-    // A large-ish image so the thumbnail must actually shrink.
     const sharp = (await import("sharp")).default
     const big = await sharp({
       create: { width: 1600, height: 1200, channels: 3, background: { r: 5, g: 5, b: 5 } },
@@ -192,14 +170,7 @@ describe("sandbox/phash", () => {
     expect(h1).toMatch(/^[0-9a-f]{16}$/)
   })
 
-  /**
-   * Pins the documented dHash bit rule (bit = left > right) with inputs whose every bit is predictable,
-   * which the previous `distance >= 0` assertion could not do (that is true of any two hashes, including
-   * two identical ones - and a solid-colour pair hashes to all-zero in BOTH directions, so "different
-   * images differ" needs structure, not just different colours).
-   */
   describe("dHash bit rule", () => {
-    /** A 64x64 greyscale horizontal ramp: `reverse` flips it so left>right instead of left<right. */
     function ramp(reverse: boolean): Promise<Buffer> {
       const w = 64
       const h = 64
@@ -221,14 +192,6 @@ describe("sandbox/phash", () => {
       expect(ascending).not.toBe(descending)
     })
 
-    /**
-     * A 72x64 greyscale TENT: brightness climbs to the middle column and falls again (`invert` mirrors it
-     * into a valley). 72 = 8 x (8 + 1), so each of the dHash's 9 sample columns averages an exact 8px band
-     * and every adjacent pair differs by ~57 grey levels — far more than resize interpolation or JPEG
-     * quantization can move. That is what makes the hash both NON-DEGENERATE and re-encode-stable:
-     *   tent   -> 0f0f... (4 rising comparisons then 4 falling, per row)
-     *   valley -> f0f0... (the exact bitwise mirror)
-     */
     function tent(invert: boolean): Promise<Buffer> {
       const w = 72
       const h = 64
@@ -242,30 +205,18 @@ describe("sandbox/phash", () => {
       return sharp(raw, { raw: { width: w, height: h, channels: 1 } }).png().toBuffer()
     }
 
-    /**
-     * Re-encode stability is the whole dedup mechanism: seams.ts matches on an EXACT `phash = $hash`, so a
-     * hash that shifts when a phone re-compresses the same photo silently disables near-duplicate
-     * detection. It must therefore be asserted on a STRUCTURED fixture — a monotone ramp hashes to
-     * all-zeros and so does every rescale of it, which makes the comparison all-zeros === all-zeros and
-     * unable to fail.
-     */
     it("is PERCEPTUAL: a downscaled, JPEG-re-encoded copy hashes identically", async () => {
       const original = await tent(false)
       const hash = await perceptualHash(original, limits)
-      // Non-degenerate: the assertions below compare real structure, not 64 zero bits with 64 zero bits.
       expect(hash).toBe("0f0f0f0f0f0f0f0f")
 
       const downscaled = await sharp(original).resize(32, 32).jpeg({ quality: 70 }).toBuffer()
       expect(await perceptualHash(downscaled, limits)).toBe(hash)
-      // Aggressively lossy AND off-grid (21x19 is not a multiple of the 9x8 sample grid).
       const lossy = await sharp(original).resize(21, 19).jpeg({ quality: 40 }).toBuffer()
       expect(await perceptualHash(lossy, limits)).toBe(hash)
-      // ...and upscaled, since a client may re-upload a blown-up copy.
       const upscaled = await sharp(original).resize(600, 400).jpeg({ quality: 90 }).toBuffer()
       expect(await perceptualHash(upscaled, limits)).toBe(hash)
 
-      // The mirror image is NOT that hash: the stability above is a property of this structure, not of a
-      // hash function that happens to return the same string for everything.
       const mirrored = await tent(true)
       expect(await perceptualHash(mirrored, limits)).toBe("f0f0f0f0f0f0f0f0")
     })
@@ -282,18 +233,11 @@ describe("sandbox/ffmpeg-remux", () => {
     const input = await fx.makeValidMp4()
     const remuxed = await remuxStripMetadata(input, limits)
     expect(remuxed.byteLength).toBeGreaterThan(0)
-    // The remuxed bytes must still probe as a valid h264 video.
     const probe = await probeBytes(remuxed, limits)
     expect(probe.isVideo).toBe(true)
     expect(probe.codec).toBe("h264")
   })
 
-  /**
-   * The "strips location" claim, actually verified. No fixture used to carry container metadata at all, so
-   * the old assertion (the output still decodes) would have passed with -map_metadata dropped entirely.
-   * The BEFORE half matters as much as the AFTER half: without it, a fixture that silently stopped
-   * carrying tags would make this test vacuous again.
-   */
   it("DROPS container location / comment tags (privacy: the mp4 GPS strip)", async () => {
     const input = await fx.makeMp4WithLocationMetadata()
 
@@ -313,16 +257,26 @@ describe("sandbox/ffmpeg-remux", () => {
     expect(frame.byteLength).toBeGreaterThan(0)
     expect(await hasNoGps(frame)).toBe(true)
   })
+
+  it("F077: drops per-stream tags and every non-video/audio track (device tag + GPS subtitle gone)", async () => {
+    const input = await fx.makeMp4WithSubtitleAndStreamTags()
+
+    const before = await readStreamTags(input)
+    expect(before.some((s) => Object.values(s.tags).includes("MyPhoneCam"))).toBe(true)
+    expect(before.some((s) => s.codecType === "subtitle")).toBe(true)
+    expect(Buffer.from(input).includes(Buffer.from("HOME ADDRESS"))).toBe(true)
+
+    const out = await remuxStripMetadata(input, limits)
+    const after = await readStreamTags(out)
+
+    expect(after.length).toBeGreaterThan(0)
+    expect(after.every((s) => s.codecType === "video" || s.codecType === "audio")).toBe(true)
+    expect(after.some((s) => s.codecType === "subtitle")).toBe(false)
+    expect(after.some((s) => Object.values(s.tags).includes("MyPhoneCam"))).toBe(false)
+    expect(out.includes(Buffer.from("HOME ADDRESS"))).toBe(false)
+  })
 })
 
-/**
- * SSRF + demuxer boundary (the guard in SAFE_INPUT_ARGS: `-protocol_whitelist file -f mov`).
- *
- * A body that is really an HLS playlist or an ffconcat script is a request for the tool to open something
- * ELSE - a URL (SSRF from inside the worker, e.g. cloud metadata) or an arbitrary local file (copied into
- * the "remuxed" object we then serve publicly). Nothing tested this, so removing either flag would have
- * stayed green.
- */
 describe("sandbox: HLS / ffconcat inputs cannot reach the network or the filesystem", () => {
   let server: Server
   let hits: string[] = []
@@ -353,9 +307,7 @@ describe("sandbox: HLS / ffconcat inputs cannot reach the network or the filesys
       caught = err
     }
     expect(caught).toBeInstanceOf(SandboxToolError)
-    // The protocol whitelist is the thing that stopped it (ffprobe cannot force -f, so this is its guard).
     expect((caught as SandboxToolError).stderrTail).toMatch(/not on whitelist/i)
-    // The real proof: the worker made no outbound request at all.
     expect(hits).toEqual([])
   })
 
@@ -373,8 +325,6 @@ describe("sandbox: HLS / ffconcat inputs cannot reach the network or the filesys
         caught = err
       }
       expect(caught, label).toBeInstanceOf(SandboxToolError)
-      // "moov atom not found" proves the mov demuxer was FORCED: had ffmpeg been allowed to auto-detect,
-      // it would have selected hls and complained about the protocol instead.
       expect((caught as SandboxToolError).stderrTail, label).toMatch(/moov atom not found/i)
     }
     expect(hits).toEqual([])
@@ -390,7 +340,6 @@ describe("sandbox: HLS / ffconcat inputs cannot reach the network or the filesys
       probeErr = err
     }
     expect(probeErr).toBeInstanceOf(SandboxToolError)
-    // ffmpeg's concat demuxer refuses absolute/unsafe paths unless -safe 0 is passed (we never pass it).
     expect((probeErr as SandboxToolError).stderrTail).toMatch(/unsafe file name/i)
 
     let remuxErr: unknown
@@ -400,23 +349,16 @@ describe("sandbox: HLS / ffconcat inputs cannot reach the network or the filesys
       remuxErr = err
     }
     expect(remuxErr).toBeInstanceOf(SandboxToolError)
-    // Forced -f mov: the concat demuxer is never even selected on the remux path.
     expect((remuxErr as SandboxToolError).stderrTail).toMatch(/moov atom not found/i)
   })
 })
 
-/**
- * L15 — the ALLOWED_DECODED_FORMATS check ran on `meta.format`, i.e. AFTER `metadata()` dispatched the
- * untrusted bytes to a libvips loader. So an SVG/PDF/TIFF header reached librsvg/poppler/libtiff before
- * we ever rejected it. The container is now sniffed in pure JS BEFORE any sharp instance is built.
- */
 describe("sandbox/image magic-byte container gate (L15)", () => {
   it("recognizes exactly JPEG / PNG / WebP signatures", () => {
     expect(sniffAllowedImageContainer(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0]))).toBe("jpeg")
     expect(
       sniffAllowedImageContainer(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
     ).toBe("png")
-    // "RIFF" + 4 size bytes + "WEBP"
     const webp = new Uint8Array([
       0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50,
     ])

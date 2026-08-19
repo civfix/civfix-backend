@@ -4,6 +4,7 @@ import {
   CachedJurisdictionLookup,
   CensusJurisdictionLookup,
   FakeJurisdictionLookup,
+  JurisdictionLookupUnavailableError,
   JURISDICTION_LOOKUP_CACHE_TTL_MS,
   type JurisdictionLookup,
   type JurisdictionLookupResult,
@@ -118,22 +119,22 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
     expect(calledUrl).toContain("format=json")
   })
 
-  it("returns null on a non-200 response", async () => {
+  it("THROWS unavailable on a non-200 response (F126: not a genuine miss)", async () => {
     const fetchImpl = (async () =>
       fakeResponse({ ok: false, json: () => ({}) })) as unknown as typeof fetch
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 50, fetchImpl })
-    await expect(lookup.lookup(1, 2)).resolves.toBeNull()
+    await expect(lookup.lookup(1, 2)).rejects.toBeInstanceOf(JurisdictionLookupUnavailableError)
   })
 
-  it("returns null when fetch rejects (network error) — never throws", async () => {
+  it("THROWS unavailable when fetch rejects (network error)", async () => {
     const fetchImpl = (async () => {
       throw new Error("ECONNREFUSED")
     }) as unknown as typeof fetch
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 50, fetchImpl })
-    await expect(lookup.lookup(1, 2)).resolves.toBeNull()
+    await expect(lookup.lookup(1, 2)).rejects.toBeInstanceOf(JurisdictionLookupUnavailableError)
   })
 
-  it("returns null when the body is malformed (json() throws) — never throws", async () => {
+  it("THROWS unavailable when the body is malformed (json() throws)", async () => {
     const fetchImpl = (async () =>
       fakeResponse({
         ok: true,
@@ -142,10 +143,10 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
         },
       })) as unknown as typeof fetch
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 50, fetchImpl })
-    await expect(lookup.lookup(1, 2)).resolves.toBeNull()
+    await expect(lookup.lookup(1, 2)).rejects.toBeInstanceOf(JurisdictionLookupUnavailableError)
   })
 
-  it("returns null when the request is aborted/times out — never throws", async () => {
+  it("THROWS unavailable when the request is aborted/times out", async () => {
     const fetchImpl = ((_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
       new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal
@@ -156,10 +157,10 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
         }
       })) as unknown as typeof fetch
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 1, fetchImpl })
-    await expect(lookup.lookup(1, 2)).resolves.toBeNull()
+    await expect(lookup.lookup(1, 2)).rejects.toBeInstanceOf(JurisdictionLookupUnavailableError)
   })
 
-  it("returns null when a 200 body parses to no jurisdiction", async () => {
+  it("returns null (genuine miss) when a 200 body parses to no jurisdiction", async () => {
     const fetchImpl = (async () =>
       fakeResponse({ ok: true, json: () => body({}) })) as unknown as typeof fetch
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 50, fetchImpl })
@@ -190,14 +191,9 @@ describe("FakeJurisdictionLookup", () => {
   })
 })
 
-/**
- * The memo that keeps the anon-ok POST /map/resolve-jurisdiction from firing one outbound Census request
- * per request. The wrapped lookup here COUNTS its calls, which is the whole assertion surface.
- */
 describe("CachedJurisdictionLookup", () => {
   const LA: JurisdictionLookupResult = { geoid: "0644000", name: "Los Angeles", layer: "place" }
 
-  /** A counting inner lookup: `calls` records every (lat, lng) that actually reached it. */
   function countingLookup(
     result: JurisdictionLookupResult | null = LA,
   ): JurisdictionLookup & { calls: Array<[number, number]> } {
@@ -237,7 +233,6 @@ describe("CachedJurisdictionLookup", () => {
     const cached = new CachedJurisdictionLookup(inner)
 
     await cached.lookup(34.0512345, -118.2512345)
-    // Same 4-decimal bucket (~11 m) -> no second outbound call.
     await cached.lookup(34.05123, -118.25124)
 
     expect(inner.calls).toEqual([[34.0512345, -118.2512345]])
@@ -315,7 +310,6 @@ describe("CachedJurisdictionLookup", () => {
     await cached.lookup(1, 1)
     await cached.lookup(2, 2)
     await cached.lookup(3, 3)
-    // (1,1) was evicted; (3,3) is still memoized.
     await cached.lookup(3, 3)
     expect(inner.calls).toHaveLength(3)
     await cached.lookup(1, 1)

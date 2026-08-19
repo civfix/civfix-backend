@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
   makeDrizzleMailRepository,
+  MAIL_BODY_DETAIL_CHARS,
   type MailRepository,
 } from "../../src/services/admin/mail-repository.drizzle.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
@@ -51,7 +52,7 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
       attachments: [{ key: "r2/a.pdf", filename: "a.pdf", size: 123 }],
     })
     const afterOut = await repo.getThreadRecord(t.id)
-    expect(afterOut?.lastMessageAt?.getTime()).toBe(out.createdAt.getTime())
+    expect(afterOut?.lastMessageAt?.getTime()).toBe(out!.createdAt.getTime())
     expect(afterOut?.unread).toBe(false)
 
     await repo.insertMessage({
@@ -72,11 +73,34 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     expect(dto?.dir).toBe("in")
   })
 
+  it("F025: an over-cap body comes back clipped + flagged, and the reply recipient resolves without the thread", async () => {
+    const t = await repo.createThread({ subject: "Huge" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: "outreach@civfix.org",
+      toAddr: "clerk@city.gov",
+      body: "small",
+    })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      toAddr: "outreach@civfix.org",
+      body: "x".repeat(MAIL_BODY_DETAIL_CHARS + 5000),
+    })
+
+    const dto = await repo.getThread(t.id)
+    const [small, huge] = dto!.messages
+    expect(small!.truncated).toBeUndefined()
+    expect(huge!.body!.length).toBe(MAIL_BODY_DETAIL_CHARS)
+    expect(huge!.truncated).toBe(true)
+
+    expect(await repo.getLastInboundSender(t.id)).toBe("clerk@city.gov")
+    expect(await repo.getLastOutboundRecipient(t.id)).toBe("clerk@city.gov")
+  })
+
   it("lists threads newest-first with a working keyset cursor + dir/geoid/q filters", async () => {
-    // 0039 enforces at most ONE geoid-only outreach thread per jurisdiction. So `a` is a
-    // report-LINKED thread (report_id set → the geoid-only unique index does not apply) while `b`
-    // is the single geoid-only thread. Both still carry jurisdiction_geoid = GEOID, so the geoid
-    // filter returns the pair {a, b} exactly as before.
     const [rpt] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
       VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash',

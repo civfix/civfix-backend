@@ -117,3 +117,44 @@ describe("threads service", () => {
     expect(items.map((t) => t.title)).toEqual(["B-newer-activity", "A-older-activity"])
   })
 })
+
+describe("threads cursor paging (F051 — no thread skipped at a same-ms boundary)", () => {
+  const ids = [
+    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+  ]
+
+  it("pages through every thread with no drops or duplicates, including a same-millisecond tie group", async () => {
+    const repo = new InMemoryThreadsRepository()
+    const activities = [
+      "2026-06-01T12:00:00.500Z",
+      "2026-06-01T12:00:00.500Z",
+      "2026-06-01T12:00:00.400Z",
+      "2026-06-01T12:00:00.400Z",
+      "2026-06-01T12:00:00.300Z",
+    ]
+    ids.forEach((id, i) => {
+      repo.seedCleanup(`room-${i}`, id)
+      repo.addMember(id, ME, new Date("2026-06-01T08:00:00.000Z"))
+      repo.addMessage(id, { senderId: OTHER, body: `m${i}`, createdAt: new Date(activities[i]!) })
+    })
+
+    const svc = makeThreadsService({ repo, readState: new InMemoryChatReadState(), now: () => NOW })
+
+    const seen: string[] = []
+    let cursor: string | null = null
+    for (let guard = 0; guard < 20; guard++) {
+      const page = await svc.list(ME, { limit: 2, cursor })
+      seen.push(...page.items.map((t) => t.id))
+      cursor = page.nextCursor
+      if (cursor === null) break
+    }
+
+    expect(seen).toHaveLength(ids.length)
+    expect(new Set(seen).size).toBe(ids.length)
+    expect([...seen].sort()).toEqual([...ids].sort())
+  })
+})

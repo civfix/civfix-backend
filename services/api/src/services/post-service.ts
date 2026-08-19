@@ -1,20 +1,3 @@
-/**
- * PostService: the social-feed post use-cases layered over PostRepository.
- *
- * Responsibilities (the repo does the SQL; the service owns policy):
- *   - run the slur filter over the post body on create (parity with report title/description and the
- *     chat write paths — a caption typed on the same screen as a report description must not be held to
- *     a looser standard);
- *   - validate attachments — event membership (cleanup_members organizer|cohost|member), report
- *     visibility, reply/quote target existence + block filtering;
- *   - resolve + record @-mentions (resolveMentionTargets → mentionedUserIds), block-filtering the
- *     mention notifications;
- *   - authorize delete (author only);
- *   - emit interaction notifications (like/repost/reply/quote/mention) best-effort, skipping self +
- *     blocked recipients (push additionally gated by notification_prefs in the notifier).
- *
- * Modeled on social-service.ts + chat-mentions.drizzle.ts.
- */
 
 import { AppError } from "@civfix/shared"
 import type { HomeFeedQuery, PaginationQuery, PostComposeInput, PostDTO } from "@civfix/shared"
@@ -56,7 +39,6 @@ export interface PostService {
 export function makePostService(deps: PostServiceDeps): PostService {
   const isBlocked = deps.isBlockedEitherWay ?? (() => Promise.resolve(false))
 
-  /** Best-effort notification: a failure must never fail the interaction that triggered it. */
   async function safeNotify(fn: () => Promise<void>): Promise<void> {
     if (!deps.notifier) return
     try {
@@ -87,15 +69,13 @@ export function makePostService(deps: PostServiceDeps): PostService {
       if (!target || target.deletedAt !== null || (await isBlocked(viewerId, target.authorId))) {
         throw AppError.notFound("Post not found")
       }
+      if (brief.kind === "repost") return target
     }
     return brief
   }
 
   return {
     async createPost(input: PostComposeInput, authorId: string): Promise<PostDTO> {
-      // Post bodies went through NO slur filter while report title/description (report-service.ts) and
-      // chat messages (chat-edit-service.ts) both do. A no-op for a null/blank body, so attachment-only
-      // posts stay legal.
       assertNoSlur(input.body ?? null, "body")
 
       if (input.kind === "repost") {
@@ -111,20 +91,15 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
       let replyParentAuthor: string | null = null
       if (input.replyToId !== undefined) {
-        const parent = await deps.repo.getPostBrief(input.replyToId)
-        if (!parent || parent.deletedAt !== null) throw AppError.notFound("Post not found")
-        if (await isBlocked(authorId, parent.authorId)) throw AppError.notFound("Post not found")
+        const parent = await requireReadable(input.replyToId, authorId)
         replyParentAuthor = parent.authorId
       }
       let quoteTargetAuthor: string | null = null
       if (input.repostOfId !== undefined) {
-        const target = await deps.repo.getPostBrief(input.repostOfId)
-        if (!target || target.deletedAt !== null) throw AppError.notFound("Post not found")
-        if (await isBlocked(authorId, target.authorId)) throw AppError.notFound("Post not found")
+        const target = await requireReadable(input.repostOfId, authorId)
         quoteTargetAuthor = target.authorId
       }
 
-      // --- validate attachments ---
       if (input.eventId !== undefined) {
         if (!(await deps.repo.isEventMember(input.eventId, authorId))) {
           throw AppError.forbidden("You can only attach an event you host or attend.")
@@ -136,7 +111,6 @@ export function makePostService(deps: PostServiceDeps): PostService {
         }
       }
 
-      // --- resolve mentions (excludes self / deleted / handle-less) ---
       const mentions = await resolveMentionTargets(deps.sql, {
         handles: [],
         userIds: input.mentionedUserIds,
@@ -155,7 +129,6 @@ export function makePostService(deps: PostServiceDeps): PostService {
         mentionedUserIds: mentions.map((m) => m.id),
       })
 
-      // --- notifications (best-effort) ---
       const actorName = await deps.repo.actorNameOf(authorId)
       if (replyParentAuthor !== null && (await shouldNotify(authorId, replyParentAuthor))) {
         await safeNotify(() =>
@@ -194,8 +167,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
       viewerId: string,
       pagination: PaginationQuery,
     ): Promise<FeedPage> {
-      await requireReadable(postId, viewerId)
-      return deps.repo.listReplies(postId, {
+      const subject = await requireReadable(postId, viewerId)
+      return deps.repo.listReplies(subject.id, {
         viewerId,
         cursor: pagination.cursor ?? null,
         limit: pagination.limit ?? POSTS_DEFAULT_LIMIT,
@@ -203,32 +176,32 @@ export function makePostService(deps: PostServiceDeps): PostService {
     },
 
     async likePost(id: string, viewerId: string): Promise<PostDTO> {
-      const brief = await requireReadable(id, viewerId)
-      const created = await deps.repo.like(id, viewerId)
-      if (created && (await shouldNotify(viewerId, brief.authorId))) {
+      const subject = await requireReadable(id, viewerId)
+      const created = await deps.repo.like(subject.id, viewerId)
+      if (created && (await shouldNotify(viewerId, subject.authorId))) {
         const actorName = await deps.repo.actorNameOf(viewerId)
         await safeNotify(() =>
-          deps.notifier!.onPostLike({ recipientId: brief.authorId, actorName, postId: id }),
+          deps.notifier!.onPostLike({ recipientId: subject.authorId, actorName, postId: subject.id }),
         )
       }
       return hydrateOrThrow(id, viewerId)
     },
 
     async unlikePost(id: string, viewerId: string): Promise<PostDTO> {
-      await requireReadable(id, viewerId)
-      await deps.repo.unlike(id, viewerId)
+      const subject = await requireReadable(id, viewerId)
+      await deps.repo.unlike(subject.id, viewerId)
       return hydrateOrThrow(id, viewerId)
     },
 
     async savePost(id: string, viewerId: string): Promise<PostDTO> {
-      await requireReadable(id, viewerId)
-      await deps.repo.save(id, viewerId)
+      const subject = await requireReadable(id, viewerId)
+      await deps.repo.save(subject.id, viewerId)
       return hydrateOrThrow(id, viewerId)
     },
 
     async unsavePost(id: string, viewerId: string): Promise<PostDTO> {
-      await requireReadable(id, viewerId)
-      await deps.repo.unsave(id, viewerId)
+      const subject = await requireReadable(id, viewerId)
+      await deps.repo.unsave(subject.id, viewerId)
       return hydrateOrThrow(id, viewerId)
     },
 
@@ -266,7 +239,6 @@ export function makePostService(deps: PostServiceDeps): PostService {
       })
     },
 
-    // The public/global feed served to signed-out readers (no viewer scope; all viewer flags false).
     async publicFeed(query: HomeFeedQuery): Promise<FeedPage> {
       return deps.repo.publicFeed({
         filter: query.filter,

@@ -29,20 +29,10 @@ import type {
 
 const MESSAGE_CAP = 100
 
-const FACET_COUNT_CAP = 1000
-
 const LINK_REPORTS_MAX = 100
 
 export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository {
   return {
-    /**
-     * KEYSET ON scheduled_at, deliberately: the events list is ordered by when the event HAPPENS, which is
-     * what an operator scans for, and a keyset must anchor on the column it sorts by. Unlike every other
-     * admin list (created_at) that column is MUTABLE — rescheduling an event while an operator pages can
-     * make it skip or repeat across page boundaries. Accepted: the alternative is paging in one order and
-     * displaying another. The anchor rides in the cursor's `createdAt` slot because that is the shared
-     * anchor shape, NOT because it is a creation time.
-     */
     async listEvents(
       args: ListEventsArgs,
     ): Promise<{ records: AdminEventRecord[]; nextCursor: string | null }> {
@@ -80,7 +70,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           LEFT JOIN users u ON u.id = c.organizer_user_id
           WHERE true
           ${search}
-          LIMIT ${FACET_COUNT_CAP + 1}
         )
         SELECT
           COUNT(*)::text AS all,
@@ -220,15 +209,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       })
     },
 
-    /**
-     * IDEMPOTENT (`true` = "this event is cancelled", `false` = no such event).
-     *
-     * The `status <> 'cancelled'` guard is the concurrency primitive — exactly one of N racing cancels
-     * matches a row, so exactly one writes the `'cancel'` row into the PUBLIC cleanup_timeline and the
-     * audit log. Without it every repeat operator cancel appended another public timeline entry. A miss
-     * must then be told apart from a missing event (`true` vs the service's 404), same shape as
-     * cleanup-repository.drizzle.ts:cancelCleanupTx.
-     */
     async cancel(id: string, input: { note: string; actorId: string | null }): Promise<boolean> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`

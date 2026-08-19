@@ -5,7 +5,7 @@ import {
   makeMediaIntakeService,
   MEDIA_PRIVATE_GET_URL_TTL_SEC,
   MEDIA_GET_URL_TTL_SEC,
-  quotaSubject,
+  quotaSubjects,
   type MediaIntakeService,
   type MediaAssetView,
   type MediaOwner,
@@ -168,6 +168,15 @@ describe("makeUnboundOnlyMediaViewAuthorizer (the fail-closed default)", () => {
 })
 
 describe("presigned-byte quota (M10)", () => {
+  function quotaService(meter: { add: (s: string, b: number) => Promise<number> }, limitBytes: number): MediaIntakeService {
+    return makeMediaIntakeService({
+      repo: new InMemoryMediaRepository(),
+      storage: new FakeStorage(),
+      jobs: new FakeJobs(),
+      byteQuota: { limitBytes, charge: (s, b) => meter.add(s, b) },
+    })
+  }
+
   it("rejects once cumulative presigned BYTES exceed the per-subject window budget", async () => {
     const repo = new InMemoryMediaRepository()
     const storage = new FakeStorage()
@@ -190,9 +199,101 @@ describe("presigned-byte quota (M10)", () => {
   })
 
   it("meters a signed-in user by ACCOUNT, so rotating IPs does not reset the budget", () => {
-    expect(quotaSubject({ userId: "u1", ipKey: "1.1.1.1" })).toBe("u:u1")
-    expect(quotaSubject({ userId: "u1", ipKey: "2.2.2.2" })).toBe("u:u1")
-    expect(quotaSubject({ anonSessionId: "a1", ipKey: "1.1.1.1" })).toBe("a:a1")
-    expect(quotaSubject({ ipKey: "1.1.1.1" })).toBe("ip:1.1.1.1")
+    expect(quotaSubjects({ userId: "u1", ipKey: "1.1.1.1" })).toEqual(["u:u1"])
+    expect(quotaSubjects({ userId: "u1", ipKey: "2.2.2.2" })).toEqual(["u:u1"])
+  })
+
+  it("F016: an anon caller is metered by IP as well as by the client-chosen anon cookie", () => {
+    expect(quotaSubjects({ anonSessionId: "a1", ipKey: "1.1.1.1" })).toEqual(["a:a1", "ip:1.1.1.1"])
+    expect(quotaSubjects({ ipKey: "1.1.1.1" })).toEqual(["ip:1.1.1.1"])
+    expect(quotaSubjects({})).toEqual(["ip:unknown"])
+  })
+
+  it("F016: rotating the civfix_anon cookie does NOT reset the budget (the IP bucket still caps)", async () => {
+    const meter = new InMemoryByteMeter()
+    const service = quotaService(meter, 2048)
+    // Every call presents a brand-new anon cookie value, which used to mint a fresh bucket per request.
+    await service.createUpload(imageReq({ byteSize: 1024 }), {
+      anonSessionId: "rotating-1",
+      ipKey: "203.0.113.9",
+    })
+    await service.createUpload(imageReq({ byteSize: 1024 }), {
+      anonSessionId: "rotating-2",
+      ipKey: "203.0.113.9",
+    })
+    await expect(
+      service.createUpload(imageReq({ byteSize: 1024 }), {
+        anonSessionId: "rotating-3",
+        ipKey: "203.0.113.9",
+      }),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+  })
+
+  it("F016: the anon bucket still caps a single browser that rotates its IP", async () => {
+    const meter = new InMemoryByteMeter()
+    const service = quotaService(meter, 2048)
+    await service.createUpload(imageReq({ byteSize: 1024 }), {
+      anonSessionId: "sticky",
+      ipKey: "203.0.113.1",
+    })
+    await service.createUpload(imageReq({ byteSize: 1024 }), {
+      anonSessionId: "sticky",
+      ipKey: "203.0.113.2",
+    })
+    await expect(
+      service.createUpload(imageReq({ byteSize: 1024 }), {
+        anonSessionId: "sticky",
+        ipKey: "203.0.113.3",
+      }),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+  })
+
+  it("F016: an over-budget anon bucket does not shield the IP bucket from being charged", async () => {
+    const charged: string[] = []
+    const meter = new InMemoryByteMeter()
+    const service = quotaService(
+      {
+        add: (subject, bytes) => {
+          charged.push(subject)
+          return meter.add(subject, bytes)
+        },
+      },
+      1024,
+    )
+    await service.createUpload(imageReq({ byteSize: 1024 }), {
+      anonSessionId: "a1",
+      ipKey: "203.0.113.9",
+    })
+    await expect(
+      service.createUpload(imageReq({ byteSize: 1024 }), {
+        anonSessionId: "a1",
+        ipKey: "203.0.113.9",
+      }),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    expect(charged).toEqual([
+      "a:a1",
+      "ip:203.0.113.9",
+      "a:a1",
+      "ip:203.0.113.9",
+    ])
+  })
+
+  it("meters a signed-in user on the account bucket ONLY (no IP bucket to share with strangers)", async () => {
+    const charged: string[] = []
+    const service = quotaService(
+      {
+        add: (subject, bytes) => {
+          charged.push(subject)
+          return Promise.resolve(bytes)
+        },
+      },
+      2048,
+    )
+    await service.createUpload(imageReq({ byteSize: 1024 }), {
+      userId: "u1",
+      anonSessionId: "a1",
+      ipKey: "203.0.113.9",
+    })
+    expect(charged).toEqual(["u:u1"])
   })
 })

@@ -2,7 +2,7 @@
 import type { Container } from "../di.js"
 import type { OAuthProvider, UserDTO } from "@civfix/shared"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
-import { SessionService } from "./session-service.js"
+import { SessionService, type SessionLogger } from "./session-service.js"
 import {
   OtpService,
   REVIEWER_OTP_EMAIL,
@@ -40,7 +40,7 @@ export interface BuildAuthServicesOptions {
   oauthConfig: OAuthConfig
   verifier?: JwksVerifier
   now?: () => number
-  logger?: OtpLogger
+  logger?: OtpLogger & SessionLogger
   reviewer?: ReviewerOtpConfig
 }
 
@@ -50,6 +50,7 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
     store: opts.stores.sessions,
     cache: opts.cache,
     ...(now ? { now } : {}),
+    ...(opts.logger ? { logger: opts.logger } : {}),
   })
   const otp = new OtpService({
     store: opts.stores.otps,
@@ -76,18 +77,10 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
   }
 }
 
-/**
- * Build the production auth bundle from the container. `logger` should be the server's pino instance:
- * the OTP service's only log line (P1-7's cooldown-release failure, which otherwise locks a user out for
- * 60s with no code and no signal) is a no-op without it.
- */
 export function buildAuthServicesFromContainer(
   container: Container,
-  opts: { logger?: OtpLogger } = {},
+  opts: { logger?: OtpLogger & SessionLogger } = {},
 ): AuthServices {
-  // `certificateObjects` is what lets account erasure reach the certificate PDFs in R2 (the rendered
-  // documents print the holder's legal name). Without it PgUserStore still scrubs the rows and logs the
-  // skipped objects — see docs/erasure-behavior.md.
   const stores = new PgAuthStores(container.getDb().db, {
     certificateObjects: container.storage,
     ...(opts.logger ? { logger: opts.logger } : {}),
@@ -104,26 +97,8 @@ export function buildAuthServicesFromContainer(
   })
 }
 
-/**
- * Minimum length of an environment-supplied reviewer code, RE-EXPORTED from the env loader so the wiring
- * gate and the boot-time validation can never enforce different floors (they used to be two independently
- * maintained 20s, so raising one silently left the other at the old value).
- */
 export const REVIEWER_OTP_MIN_CODE_LENGTH = REVIEWER_OTP_CODE_MIN_LENGTH
 
-/**
- * Decide whether to wire the reviewer-OTP bypass, from the environment ONLY (C1).
- *
- * Two independent things must BOTH be true, and the failure mode of either is "no bypass at all":
- *   1. REVIEWER_OTP_BYPASS is EXPLICITLY true. The old wiring tested `!== false`, so an unset, empty,
- *      misspelled or otherwise unparsed value left a production authentication bypass switched ON.
- *   2. REVIEWER_OTP_CODE is supplied by the environment and long enough to be a real secret. There is
- *      no default and no source constant to fall back to, so a deployment that forgets the code gets a
- *      disabled bypass rather than a guessable one.
- *
- * The env value is read defensively (the loaded Env type may not declare it yet) precisely because the
- * safe answer to "not present" is to disable the feature.
- */
 export function reviewerOtpConfigFromEnv(env: Container["env"]): ReviewerOtpConfig | null {
   if (env.REVIEWER_OTP_BYPASS !== true) return null
   const code = (env as { REVIEWER_OTP_CODE?: string }).REVIEWER_OTP_CODE
@@ -181,9 +156,6 @@ export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
     avatarUrl: user.avatarUrl,
     profileComplete: user.profileComplete === true,
     allowDirectMessages: user.allowDirectMessages,
-    // P6 tri-state (C18): emitted ONLY when the column is non-null, so an ABSENT field means "never
-    // chosen" — which is exactly what the settings toggle needs to render OFF without claiming the user
-    // opted out. `showVolunteerHours: false` on the wire is an explicit opt-out and nothing else.
     ...(user.showVolunteerHours !== null ? { showVolunteerHours: user.showVolunteerHours } : {}),
     role: user.role,
     createdAt: user.createdAt.toISOString(),

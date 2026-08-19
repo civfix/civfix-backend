@@ -1,11 +1,3 @@
-/**
- * Admin mail / outreach routes: stats, thread list/read, compose/reply/read/status/resend. The
- * requireOperator guard is applied by routes/admin/index.ts (this whole router runs inside the guarded
- * child context); mutations additionally carry csrfProtect. The service is built lazily from the container
- * (Drizzle mail repo + the OutboundMailService over container.mailer) or from a per-instance test override
- * (in-memory repo + a FakeMailer-backed outbound). See the in-handler comments for the in-tx-audit (H4)
- * invariant.
- */
 
 import {
   ComposeRequestSchema,
@@ -18,12 +10,16 @@ import {
   type MailStatsResponse,
   type MailThreadDTO,
 } from "@civfix/shared"
+import type { Storage } from "@civfix/shared/interfaces"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"
 import { idParam, overridableService, parse, parseBodyWithId, sendOk } from "./_route-utils.js"
 import { auditRead } from "./_audit-read.js"
 import { requireOperator } from "../../auth/admin-guard.js"
+import { perIdentity } from "../../plugins/rate-limit.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
+import { mapWithLimit, PRESIGN_CONCURRENCY } from "../../services/media-presign.js"
 import { makeMailService } from "../../services/admin/mail-service.js"
 import {
   makeContainerOutboundMailService,
@@ -34,21 +30,23 @@ import {
   type MailRepository,
 } from "../../services/admin/mail-repository.drizzle.js"
 
-/**
- * Optional injected mail dependencies (tests). When present the routes build the service from these (an
- * in-memory mail repo + a FakeMailer-backed OutboundMailService) instead of the container, so the whole
- * HTTP flow runs offline with no DB and no SMTP.
- */
+export const ADMIN_OUTBOUND_MAIL_RATE_LIMIT = perIdentity({
+  max: 20,
+  timeWindow: "1 minute",
+  skipOnError: false,
+})
+
+const MAX_MAIL_THREAD_ATTACHMENTS = 50
+
 export interface AdminMailRouteOverrides {
   repo: MailRepository
   outboundMail: OutboundMailService
-  /** The outbound From address (MAIL_FROM_OUTREACH); used to resolve a thread's reply recipient. */
   fromOutreach: string
+  storage?: Storage
 }
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected admin-mail route overrides (tests). See AdminMailRouteOverrides. */
     adminMailOverrides?: AdminMailRouteOverrides
   }
 }
@@ -59,7 +57,6 @@ export async function registerAdminMailRoutes(
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
 
-  /** Build the admin mail service from injected overrides (tests) or the container (production). */
   const service = overridableService(
     app,
     "adminMailOverrides",
@@ -81,8 +78,10 @@ export async function registerAdminMailRoutes(
     },
   )
 
-  // `stats` is a static segment, so find-my-way prefers it over getMailThread's `:id` regardless of
-  // registration order — the ordering here is stylistic, not load-bearing.
+  function storage(): Storage {
+    return app.adminMailOverrides?.storage ?? container.inboundStorage
+  }
+
   route(app, "getMailStats", async (_request, reply) => {
     const payload: MailStatsResponse = await service().stats()
     reply.status(200).send(payload)
@@ -94,29 +93,36 @@ export async function registerAdminMailRoutes(
     reply.status(200).send(payload)
   })
 
-  // L4: a per-subject read — the full correspondence of one thread. Audited (best-effort) so reading a
-  // citizen<->city conversation is attributable, like every write on this router already is.
   route(app, "getMailThread", async (request, reply) => {
     const { id } = idParam(request)
-    const payload: MailThreadDTO = await service().getThread(id)
+    const dto: MailThreadDTO = await service().getThread(id)
     await auditRead(request, container, requireOperator(request), {
       action: "mail.thread_viewed",
       target: `mail:${id}`,
     })
+    const store = storage()
+    const payload: MailThreadDTO = {
+      ...dto,
+      messages: await mapWithLimit(dto.messages, PRESIGN_CONCURRENCY, async (msg) => ({
+        ...msg,
+        attachments: await mapWithLimit(
+          msg.attachments.slice(0, MAX_MAIL_THREAD_ATTACHMENTS),
+          PRESIGN_CONCURRENCY,
+          async (att) => ({ ...att, key: await store.presignGet(att.key, MEDIA_GET_URL_TTL_SEC) }),
+        ),
+      })),
+    }
     reply.status(200).send(payload)
   })
 
-  // H4: the compose/reply/status/resend mutations each pass the resolved operator id into the service so
-  // the audit (mail.sent / mail.replied / mail.status_changed / mail.resent) is written in the SAME tx as
-  // its effect. Mark-read is a benign lifecycle toggle with no audit action.
-  route(app, "composeMail", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "composeMail", { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } }, async (request, reply) => {
     const actorId = requireOperator(request)
     const body = parse(ComposeRequestSchema, request.body)
     await service().compose({ to: body.to, subject: body.subject, body: body.body }, actorId)
     sendOk(reply)
   })
 
-  route(app, "replyMail", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "replyMail", { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(ReplyRequestSchema, request)
     await service().reply(id, { body: body.body }, actorId)
@@ -124,7 +130,7 @@ export async function registerAdminMailRoutes(
   })
 
   route(app, "markMailRead", { preHandler: csrfProtect }, async (request, reply) => {
-    const { id } = parseBodyWithId(MarkMailReadRequestSchema, request) // body is validate-only
+    const { id } = parseBodyWithId(MarkMailReadRequestSchema, request)
     await service().markRead(id)
     sendOk(reply)
   })
@@ -136,9 +142,9 @@ export async function registerAdminMailRoutes(
     sendOk(reply)
   })
 
-  route(app, "resendMail", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "resendMail", { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } }, async (request, reply) => {
     const actorId = requireOperator(request)
-    const { id } = parseBodyWithId(ResendRequestSchema, request) // body is validate-only
+    const { id } = parseBodyWithId(ResendRequestSchema, request)
     await service().resend(id, actorId)
     sendOk(reply)
   })

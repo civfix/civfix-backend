@@ -1,19 +1,9 @@
-/**
- * src/db/cursor-helpers.ts — the canonical keyset/cursor primitives (D27).
- *
- * Every repository that pages a keyset routes through these, and the cursor is an UNAUTHENTICATED,
- * client-supplied string that ends up interpolated as `${id}::uuid` downstream: a non-UUID id would raise
- * a Postgres 22P02 and surface as an unhandled 500. So the contract these tests pin is "malformed input
- * degrades to null (= from the start), never throws and never yields an id the SQL cannot cast".
- *
- * The three parsers deliberately differ (time splits on the FIRST "|", name on the LAST, near requires a
- * finite leading number) and one of them has a legacy timestamp-only shape — those differences are the
- * whole reason the module exists, so each is asserted here rather than assumed.
- */
 
 import { describe, it, expect } from "vitest"
 import {
   CURSOR_UUID_RE,
+  MAX_UUID,
+  MIN_UUID,
   encodeNameCursor,
   encodeNearCursor,
   encodeTimeCursor,
@@ -27,20 +17,17 @@ import {
 
 const UUID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 const UUID_2 = "9c858901-8a57-4791-81fe-4c455b099bc9"
-/** The sentinel parseTimeCursor anchors a legacy timestamp-only cursor at (the max uuid). */
-const MAX_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 const ISO = "2026-07-24T12:34:56.789Z"
 
 describe("isUuid / CURSOR_UUID_RE", () => {
   it("accepts a canonical uuid in either case and rejects near-misses", () => {
     expect(isUuid(UUID)).toBe(true)
     expect(isUuid(UUID.toUpperCase())).toBe(true)
-    // Near-misses that a substring/loose check would let through into `${id}::uuid`.
-    expect(isUuid(UUID.replace(/-/g, ""))).toBe(false) // unhyphenated
-    expect(isUuid(`${UUID}x`)).toBe(false) // trailing junk
-    expect(isUuid(` ${UUID}`)).toBe(false) // leading space
-    expect(isUuid("3f2504e0-4f89-11d3-9a0c-0305e82c330")).toBe(false) // one char short
-    expect(isUuid("zzzzzzzz-4f89-11d3-9a0c-0305e82c3301")).toBe(false) // non-hex
+    expect(isUuid(UUID.replace(/-/g, ""))).toBe(false)
+    expect(isUuid(`${UUID}x`)).toBe(false)
+    expect(isUuid(` ${UUID}`)).toBe(false)
+    expect(isUuid("3f2504e0-4f89-11d3-9a0c-0305e82c330")).toBe(false)
+    expect(isUuid("zzzzzzzz-4f89-11d3-9a0c-0305e82c3301")).toBe(false)
     expect(isUuid("")).toBe(false)
   })
 
@@ -66,12 +53,12 @@ describe("parseTimeCursor", () => {
     expect(parsed!.id).toBe(original.id)
   })
 
-  it("anchors a LEGACY timestamp-only cursor (no '|') at the max uuid", () => {
-    // An older client sends just the timestamp; the row-value comparison then degrades to created_at-only
-    // paging instead of 500ing. The sentinel must be the MAX uuid so no real row sorts after it.
-    const parsed = parseTimeCursor(ISO)
-    expect(parsed).toEqual({ at: new Date(ISO), id: MAX_UUID })
-    expect(isUuid(parsed!.id)).toBe(true)
+  it("anchors a legacy timestamp-only cursor with a DIRECTION-AWARE sentinel so no boundary row is skipped", () => {
+    expect(parseTimeCursor(ISO)).toEqual({ at: new Date(ISO), id: MAX_UUID })
+    expect(parseTimeCursor(ISO, { direction: "desc" })).toEqual({ at: new Date(ISO), id: MAX_UUID })
+    expect(parseTimeCursor(ISO, { direction: "asc" })).toEqual({ at: new Date(ISO), id: MIN_UUID })
+    expect(isUuid(parseTimeCursor(ISO)!.id)).toBe(true)
+    expect(isUuid(parseTimeCursor(ISO, { direction: "asc" })!.id)).toBe(true)
   })
 
   it("returns null for absent / empty cursors", () => {
@@ -100,16 +87,12 @@ describe("parseTimeCursor", () => {
   it("with requireUuid:false accepts a non-uuid id, but still rejects an EMPTY one", () => {
     const parsed = parseTimeCursor(`${ISO}|room-42`, { requireUuid: false })
     expect(parsed).toEqual({ at: new Date(ISO), id: "room-42" })
-    // The empty-id guard is independent of requireUuid: "" can never anchor a keyset.
     expect(parseTimeCursor(`${ISO}|`, { requireUuid: false })).toBeNull()
-    // A bad timestamp is still fatal.
     expect(parseTimeCursor("nope|room-42", { requireUuid: false })).toBeNull()
   })
 
   it("splits on the FIRST '|' (unlike parseNameCursor, which splits on the last)", () => {
-    // Extra delimiters land inside the id, so the uuid guard rejects them...
     expect(parseTimeCursor(`${ISO}|${UUID}|extra`)).toBeNull()
-    // ...and with the guard off, the id is everything after the FIRST delimiter.
     expect(parseTimeCursor(`${ISO}|${UUID}|extra`, { requireUuid: false })!.id).toBe(`${UUID}|extra`)
   })
 })
@@ -133,7 +116,7 @@ describe("parseNameCursor / encodeNameCursor", () => {
     expect(parseNameCursor(null)).toBeNull()
     expect(parseNameCursor(undefined)).toBeNull()
     expect(parseNameCursor("")).toBeNull()
-    expect(parseNameCursor("Ada Lovelace")).toBeNull() // no delimiter at all
+    expect(parseNameCursor("Ada Lovelace")).toBeNull()
     expect(parseNameCursor("Ada|not-a-uuid")).toBeNull()
     expect(parseNameCursor("Ada|")).toBeNull()
   })
@@ -192,7 +175,6 @@ describe("pageWith", () => {
   it("drops the has-more probe row and encodes from the LAST EMITTED row", () => {
     const page = pageWith([{ id: "a" }, { id: "b" }, { id: "c" }], 2, encode)
     expect(page.items).toEqual([{ id: "a" }, { id: "b" }])
-    // "c" was only the probe: it must NOT be emitted, and must NOT be the anchor either.
     expect(page.nextCursor).toBe("enc:b")
   })
 
@@ -225,7 +207,6 @@ describe("paginate", () => {
     const page = paginate(rows, 1, (r) => ({ at: r.at, id: r.id }))
     expect(page.items).toEqual([rows[0]])
     expect(page.nextCursor).toBe(`${ISO}|${UUID}`)
-    // The cursor it advertises is one its own parser can consume.
     expect(parseTimeCursor(page.nextCursor)).toEqual({ at: new Date(ISO), id: UUID })
   })
 

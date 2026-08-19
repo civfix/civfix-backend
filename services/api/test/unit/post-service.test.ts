@@ -1,15 +1,3 @@
-/**
- * PostService policy unit tests (no DB). A hand fake PostRepository + a spy PostNotifier exercise the
- * service's validation / authorization / notification-fan-out rules directly:
- *   - attach-event rejects a non-member (403); attach-report rejects a missing/hidden report (404);
- *   - createPost rejects kind:"repost" (that is the toggle route);
- *   - delete is author-only (403 for another user);
- *   - like notifies the post's author, NOT the actor themselves, and NOT across a block;
- *   - a reply notifies the parent's author.
- *
- * resolveMentionTargets is never reached (mentionedUserIds is empty in these cases), so `sql` is a
- * throwing stub — proving these paths need no database.
- */
 
 import { describe, expect, it } from "vitest"
 import { AppError } from "@civfix/shared"
@@ -29,7 +17,7 @@ const throwingSql = (() => {
 
 interface FakeConfig {
   briefs?: Record<string, PostBrief>
-  members?: Set<string> // `${eventId}:${userId}`
+  members?: Set<string>
   attachableReports?: Set<string>
   likeCreated?: boolean
 }
@@ -153,7 +141,7 @@ describe("PostService validation + authorization", () => {
   })
 
   it("rejects an attached event the author does not host/attend (403)", async () => {
-    const repo = fakeRepo({ members: new Set() }) // no membership
+    const repo = fakeRepo({ members: new Set() })
     const svc = makePostService({ repo, sql: throwingSql })
     await expect(
       svc.createPost(
@@ -264,6 +252,19 @@ describe("PostService notification fan-out", () => {
     expect(spy.replies).toEqual([
       { recipientId: "parentAuthor", actorName: "Actor Zed", postId: "new-post-id" },
     ])
+  })
+
+  it("liking a repost shell resolves to the original: like lands on the original and notifies its author", async () => {
+    const shell = brief({ id: "shell", authorId: "reposter", kind: "repost", repostOfId: "orig" })
+    const orig = brief({ id: "orig", authorId: "origAuthor", kind: "post" })
+    const base = fakeRepo({ briefs: { shell, orig }, likeCreated: true })
+    const likeCalls: string[] = []
+    const repo: typeof base = { ...base, like: (id: string) => (likeCalls.push(id), Promise.resolve(true)) }
+    const spy = spyNotifier()
+    const svc = makePostService({ repo, sql: throwingSql, notifier: spy.notifier })
+    await svc.likePost("shell", "liker")
+    expect(likeCalls).toEqual(["orig"])
+    expect(spy.likes).toEqual([{ recipientId: "origAuthor", actorName: "Actor Zed", postId: "orig" }])
   })
 })
 

@@ -1,18 +1,20 @@
-/**
- * Postgres-backed BlocksRepository: the persistence seam for user blocking.
- *
- * Blocks are directed edges (blocker_id -> blocked_id) in user_blocks. `block` is idempotent (ON CONFLICT
- * DO NOTHING on PK). `isBlockedEitherWay` is the bidirectional test the DM paths use: a thread is hidden
- * and sends are rejected whenever EITHER party blocked the other; `blockedIdsAmong` is its batch form for
- * the room fan-out (one query per message instead of one per member). `listBlocked` returns the viewer's
- * blocked users as PersonDTOs for the settings "Blocked accounts" list.
- *
- * Written against the raw postgres-js tag (`Sql`) to match the rest of the backend.
- */
 
 import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { PersonDTO } from "@civfix/shared"
+import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+
+export const LIST_BLOCKS_DEFAULT_LIMIT = 50
+
+export interface ListBlockedArgs {
+  cursor?: string | null
+  limit?: number
+}
+
+export interface ListBlockedPage {
+  blocked: PersonDTO[]
+  nextCursor: string | null
+}
 
 export interface BlockState {
   blockedByViewer: boolean
@@ -20,26 +22,12 @@ export interface BlockState {
 }
 
 export interface BlocksRepository {
-  /** Insert a block edge (blocker -> blocked). Idempotent. */
   block(blockerId: string, blockedId: string): Promise<void>
-  /** Remove a block edge (blocker -> blocked). Idempotent (deleting a missing edge is a no-op). */
   unblock(blockerId: string, blockedId: string): Promise<void>
-  /** Whether `a` blocked `b` OR `b` blocked `a`. */
   isBlockedEitherWay(a: string, b: string): Promise<boolean>
   blockState(viewerId: string, targetId: string): Promise<BlockState>
-  /**
-   * BATCH form of isBlockedEitherWay: of `candidateIds`, the subset blocked either way with `actorId` —
-   * ONE query for a whole room's candidate set instead of one per member. Feeds the room fan-out
-   * notifiers' optional `blockedIdsFor` seam (chat-room-fanout-notifier), which keeps the per-candidate
-   * path as its fallback.
-   *
-   * OPTIONAL on the seam on purpose: an implementation without a batch form (the in-memory repo backing
-   * the fake-chat dev path and the offline harnesses) simply leaves the notifier on its per-candidate
-   * `isBlockedEitherWay` gate — same verdicts, more round trips. Never a weaker gate.
-   */
   blockedIdsAmong?(actorId: string, candidateIds: string[]): Promise<Set<string>>
-  /** The users `blockerId` has blocked, as PersonDTOs (for the settings list). */
-  listBlocked(blockerId: string): Promise<PersonDTO[]>
+  listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage>
 }
 
 export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
@@ -82,9 +70,6 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
 
     async blockedIdsAmong(actorId: string, candidateIds: string[]): Promise<Set<string>> {
       if (candidateIds.length === 0) return new Set()
-      // Either direction counts (the bidirectional test above, expressed over a set): a row is emitted
-      // when the actor blocked the candidate OR the candidate blocked the actor. The projection picks
-      // the OTHER party's id off whichever side matched, so the result is always candidate ids.
       const rows = await sql<{ other_id: string }[]>`
         SELECT CASE WHEN b.blocker_id = ${actorId} THEN b.blocked_id ELSE b.blocker_id END AS other_id
         FROM user_blocks b
@@ -94,7 +79,13 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
       return new Set(rows.map((r) => r.other_id))
     },
 
-    async listBlocked(blockerId: string): Promise<PersonDTO[]> {
+    async listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage> {
+      const limit = args?.limit ?? LIST_BLOCKS_DEFAULT_LIMIT
+      const cursor = parseTimeCursor(args?.cursor ?? null)
+      const cursorFilter =
+        cursor !== null
+          ? sql`AND (b.created_at, b.blocked_id) < (${cursor.at}, ${cursor.id}::uuid)`
+          : sql``
       const rows = await sql<
         {
           id: string
@@ -102,25 +93,32 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
           handle: string | null
           bio: string | null
           avatar_url: string | null
+          created_at: Date
         }[]
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url
+        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url, b.created_at
         FROM user_blocks b
         JOIN users u ON u.id = b.blocked_id
         WHERE b.blocker_id = ${blockerId} AND u.deleted_at IS NULL
-        ORDER BY b.created_at DESC
+          ${cursorFilter}
+        ORDER BY b.created_at DESC, b.blocked_id DESC
+        LIMIT ${limit + 1}
       `
-      return rows.map((r) => ({
-        id: r.id,
-        name: r.display_name,
-        handle: r.handle,
-        bio: r.bio,
-        avatar: avatarGradient(r.id),
-        ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-        followers: 0,
-        following: 0,
-        isFollowing: false,
-      }))
+      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      return {
+        blocked: items.map((r) => ({
+          id: r.id,
+          name: r.display_name,
+          handle: r.handle,
+          bio: r.bio,
+          avatar: avatarGradient(r.id),
+          ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+          followers: 0,
+          following: 0,
+          isFollowing: false,
+        })),
+        nextCursor,
+      }
     },
   }
 }

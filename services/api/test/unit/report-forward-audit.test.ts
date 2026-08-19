@@ -1,15 +1,12 @@
-/**
- * Task D-C4: @city forward AUDIT orchestration (report_message_forwards).
- *
- * forwardReportCityMention is the choke point for a report-chat @city mention. This suite pins the pure
- * ordering it must follow against a spy audit + spy mailer (no DB): a mention records an audit row BEFORE
- * the send is attempted, a successful forward stamps it, a no-contact / deduped / failed forward leaves the
- * row unstamped, a non-mention writes nothing, and an audit-write failure never propagates (the chat message
- * already persisted). The DB-backed INSERT/UPDATE SQL is exercised by the Docker-gated pg suite.
- */
 
 import { describe, it, expect, vi } from "vitest"
-import { forwardReportCityMention } from "../../src/services/report-city-forward.js"
+import {
+  forwardReportCityMention,
+  makeCityForwardThrottle,
+  CITY_FORWARD_PER_SENDER_PER_HOUR,
+  CITY_FORWARD_PER_GEOID_PER_HOUR,
+} from "../../src/services/report-city-forward.js"
+import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import type { ReportForwardAudit } from "../../src/services/report-forward-audit.drizzle.js"
 import type {
   OutboundMailService,
@@ -82,6 +79,7 @@ const ctx = (jurisdiction: ReportJurisdictionView | null) => ({
   category: "graffiti",
   place: "SF",
   jurisdiction,
+  actorUserId: "actor-1",
 })
 
 describe("forwardReportCityMention audit writes (report_message_forwards)", () => {
@@ -98,7 +96,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     expect(audit.recordMention).toHaveBeenCalledWith(MSG, "0600001")
     expect(audit.markForwarded).toHaveBeenCalledOnce()
     expect(audit.markForwarded).toHaveBeenCalledWith(MSG, "0600001")
-    // Order: the mentioned-but-not-forwarded row is written before the forward is stamped.
     expect(audit.recordMention.mock.invocationCallOrder[0]!).toBeLessThan(
       audit.markForwarded.mock.invocationCallOrder[0]!,
     )
@@ -117,7 +114,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     expect(audit.recordMention).toHaveBeenCalledOnce()
     expect(audit.recordMention).toHaveBeenCalledWith(MSG, "0600001")
     expect(audit.markForwarded).not.toHaveBeenCalled()
-    // No contact => no send attempted.
     expect(mail.calls).toHaveLength(0)
   })
 
@@ -142,7 +138,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf again", CREATED, {
       audit,
       messageId: MSG,
-      canForward: () => false,
+      canForward: () => Promise.resolve(false),
     })
 
     expect(res).toMatchObject({ mentioned: true, forwarded: false })
@@ -170,7 +166,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const audit = spyAudit({
       recordMention: vi.fn(() => Promise.reject(new Error("db down"))),
     })
-    // The forward still proceeds and succeeds; only the audit write was lost.
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf now", CREATED, {
       audit,
       messageId: MSG,
@@ -182,9 +177,49 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
 
   it("skips auditing entirely when audit/messageId are omitted (opt-in seam)", async () => {
     const mail = mailer()
-    // No audit + no messageId: behaves exactly like the pre-D-C4 forward, no audit side effects.
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf please", CREATED, {})
     expect(res).toMatchObject({ mentioned: true, forwarded: true })
     expect(mail.calls).toHaveLength(1)
+  })
+})
+
+describe("makeCityForwardThrottle (F023: durable per-actor / per-geoid city-forward budget)", () => {
+  const R1 = "11111111-1111-1111-1111-111111111111"
+  const R2 = "22222222-2222-2222-2222-222222222222"
+  const GEO = "0600001"
+  const ACTOR = "actor-1"
+
+  it("dedups a repeat (actor, report, geoid) forward within the window", async () => {
+    const gate = makeCityForwardThrottle(new InMemoryCounterStore())
+    await expect(gate(R1, GEO, ACTOR)).resolves.toBe(true)
+    await expect(gate(R1, GEO, ACTOR)).resolves.toBe(false)
+  })
+
+  it("caps a single sender across DISTINCT reports (rotating report ids does not evade)", async () => {
+    const gate = makeCityForwardThrottle(new InMemoryCounterStore())
+    let allowed = 0
+    for (let i = 0; i < CITY_FORWARD_PER_SENDER_PER_HOUR + 3; i++) {
+      const reportId = `0000000${i}-0000-0000-0000-000000000000`
+      if (await gate(reportId, GEO, ACTOR)) allowed++
+    }
+    expect(allowed).toBe(CITY_FORWARD_PER_SENDER_PER_HOUR)
+  })
+
+  it("caps aggregate forwards into ONE jurisdiction across DISTINCT senders", async () => {
+    const gate = makeCityForwardThrottle(new InMemoryCounterStore())
+    let allowed = 0
+    for (let i = 0; i < CITY_FORWARD_PER_GEOID_PER_HOUR + 5; i++) {
+      const actor = `actor-${i}`
+      if (await gate(R1 + i, GEO, actor)) allowed++
+    }
+    expect(allowed).toBe(CITY_FORWARD_PER_GEOID_PER_HOUR)
+  })
+
+  it("FAILS CLOSED when the counter store throws", async () => {
+    const broken: CounterStore = {
+      incr: () => Promise.reject(new Error("redis down")),
+    }
+    const gate = makeCityForwardThrottle(broken)
+    await expect(gate(R2, GEO, ACTOR)).resolves.toBe(false)
   })
 })

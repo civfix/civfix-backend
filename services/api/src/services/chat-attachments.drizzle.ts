@@ -7,9 +7,9 @@ export function attachChatMedia(
   sql: Queryable,
   messageId: string,
   uploadIds: string[],
+  messageCreatedAt: Date,
 ): Promise<void> {
-  // The write runs on the CALLER's tag (the create/edit tx), which `attach` takes per call.
-  return makeAttachmentRepo("chat_message_id").attach(sql, messageId, uploadIds)
+  return makeAttachmentRepo("chat_message_id").attach(sql, messageId, uploadIds, messageCreatedAt)
 }
 
 export function loadChatAttachments(

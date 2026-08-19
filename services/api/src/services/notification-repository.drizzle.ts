@@ -15,6 +15,8 @@ import type { NotificationType, PushPlatform } from "@civfix/shared"
 
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
 
+export const MAX_ACTIVE_PUSH_TOKENS_PER_USER = 10
+
 interface NotificationRowSelect {
   id: string
   user_id: string
@@ -35,6 +37,7 @@ interface PrefsRowSelect {
   post_interactions: boolean
   quiet_start: string | null
   quiet_end: string | null
+  tz: string | null
 }
 
 function toRecord(r: NotificationRowSelect): NotificationRecord {
@@ -60,6 +63,7 @@ function toPrefsRecord(r: PrefsRowSelect): NotificationPrefsRecord {
     postInteractions: r.post_interactions,
     quietStart: r.quiet_start,
     quietEnd: r.quiet_end,
+    tz: r.tz,
   }
 }
 
@@ -121,7 +125,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
 
     async findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {
       const rows = await sql<PrefsRowSelect[]>`
-        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
+        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
         FROM notification_prefs
         WHERE user_id = ${userId}
         LIMIT 1
@@ -129,11 +133,19 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows[0] ? toPrefsRecord(rows[0]) : null
     },
 
+    async findPrefsMany(userIds: string[]): Promise<Map<string, NotificationPrefsRecord>> {
+      const out = new Map<string, NotificationPrefsRecord>()
+      if (userIds.length === 0) return out
+      const rows = await sql<(PrefsRowSelect & { user_id: string })[]>`
+        SELECT user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+        FROM notification_prefs
+        WHERE user_id = ANY(${userIds}::uuid[])
+      `
+      for (const row of rows) out.set(row.user_id, toPrefsRecord(row))
+      return out
+    },
+
     async createDefaultPrefs(userId: string): Promise<NotificationPrefsRecord> {
-      // EVERY pref column is written from DEFAULT_PREFS, exactly like upsertPrefs' insert branch. This
-      // used to name only push/cleanup_chat/report_updates/follows and leave mentions,
-      // post_interactions and quiet_* to their DB column defaults — so the two row-minting paths agreed
-      // only as long as those defaults happened to match DEFAULT_PREFS. DEFAULT_PREFS is the one source.
       const rows = await sql<PrefsRowSelect[]>`
         INSERT INTO notification_prefs (
           user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions,
@@ -151,11 +163,11 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           ${DEFAULT_PREFS.quietEnd}::time
         )
         ON CONFLICT (user_id) DO NOTHING
-        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
+        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
       `
       if (rows[0]) return toPrefsRecord(rows[0])
       const existing = await sql<PrefsRowSelect[]>`
-        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
+        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
         FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
       `
       return existing[0] ? toPrefsRecord(existing[0]) : DEFAULT_PREFS
@@ -169,11 +181,11 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         const inserted = await sql<PrefsRowSelect[]>`
           INSERT INTO notification_prefs (user_id) VALUES (${userId})
           ON CONFLICT (user_id) DO NOTHING
-          RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
+          RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
         `
         if (inserted[0]) return toPrefsRecord(inserted[0])
         const existing = await sql<PrefsRowSelect[]>`
-          SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
+          SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
           FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
         `
         return existing[0] ? toPrefsRecord(existing[0]) : DEFAULT_PREFS
@@ -197,18 +209,24 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         ) {
           throw AppError.validation({ quietHours: "invalid" }, "quietHours must be HH:MM (24-hour)")
         }
+        const tz = patch.quietHours === null ? null : (patch.quietHours.tz ?? null)
         setFragments.push(sql`quiet_start = ${start}::time`)
         setFragments.push(sql`quiet_end = ${end}::time`)
+        setFragments.push(sql`tz = ${tz}`)
       }
 
       const insStart =
         patch.quietHours !== undefined && patch.quietHours !== null ? patch.quietHours.start : null
       const insEnd =
         patch.quietHours !== undefined && patch.quietHours !== null ? patch.quietHours.end : null
+      const insTz =
+        patch.quietHours !== undefined && patch.quietHours !== null
+          ? (patch.quietHours.tz ?? null)
+          : null
 
       const rows = await sql<PrefsRowSelect[]>`
         INSERT INTO notification_prefs (
-          user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
+          user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
         ) VALUES (
           ${userId},
           ${patch.push ?? DEFAULT_PREFS.push},
@@ -218,10 +236,11 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           ${patch.mentions ?? DEFAULT_PREFS.mentions},
           ${patch.postInteractions ?? DEFAULT_PREFS.postInteractions},
           ${insStart}::time,
-          ${insEnd}::time
+          ${insEnd}::time,
+          ${insTz}
         )
         ON CONFLICT (user_id) DO UPDATE SET ${joinSet(sql, setFragments)}
-        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end
+        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
       `
       return toPrefsRecord(rows[0]!)
     },
@@ -240,10 +259,22 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           device_id = EXCLUDED.device_id,
           revoked_at = NULL
         WHERE push_tokens.user_id = EXCLUDED.user_id
-           OR (EXCLUDED.device_id IS NOT NULL AND push_tokens.device_id = EXCLUDED.device_id)
         RETURNING id
       `
-      return rows.length > 0 ? "stored" : "conflict"
+      if (rows.length === 0) return "conflict"
+      await sql`
+        UPDATE push_tokens
+        SET revoked_at = now()
+        WHERE user_id = ${args.userId}
+          AND revoked_at IS NULL
+          AND id NOT IN (
+            SELECT id FROM push_tokens
+            WHERE user_id = ${args.userId} AND revoked_at IS NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT ${MAX_ACTIVE_PUSH_TOKENS_PER_USER}
+          )
+      `
+      return "stored"
     },
 
     async revokeDeviceTokensForOtherUsers(args: {
@@ -252,24 +283,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       platform: PushPlatform
       deviceId: string | null
     }): Promise<number> {
-      // H12. The old query was `WHERE device_id = $1 AND user_id <> $2` — a caller-supplied string
-      // revoking every other account's token that carried it. One harvested device-id list was a
-      // fleet-wide push blackout, and the "device_id is the device's own secret" claim in the old
-      // comment was never verified by anything.
-      //
-      // The revoke is now anchored ONLY to something the caller provably holds: the push token itself,
-      // which they just presented and which is the address push is actually delivered to. The
-      // device_id-driven branch is GONE — no cross-account write is authorized by a self-declared
-      // string any more. In practice the upsert above already reassigns the (platform, token) row when
-      // the guard allows it, so this usually matches zero rows; it stays as the explicit, correct scope
-      // so a future change to the upsert cannot silently reintroduce a wider revoke.
-      //
-      // COST, stated plainly: a PREVIOUS account's token on a shared device is no longer force-revoked
-      // when the token value has rotated. Those tokens are pruned by delivery feedback instead (an
-      // Expo/APNs DeviceNotRegistered receipt) and by that account's own re-registration. Restoring an
-      // eager device-scoped revoke requires a real possession proof — a silent data push carrying a
-      // server nonce that the client echoes back over an authenticated call — which is the tracked
-      // follow-up. `deviceId` is retained on the row for support/debugging only; it authorizes nothing.
       const rows = await sql<{ id: string }[]>`
         UPDATE push_tokens
         SET revoked_at = now()
@@ -282,8 +295,44 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows.length
     },
 
+    async revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void> {
+      await sql`
+        UPDATE push_tokens
+        SET revoked_at = now()
+        WHERE user_id = ${userId}
+          AND platform = ${platform}
+          AND token = ${token}
+          AND revoked_at IS NULL
+      `
+    },
+
     async deletePushTokensForUser(userId: string): Promise<void> {
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
+    },
+
+    async findRecentDuplicate(args: {
+      userId: string
+      type: NotificationType
+      link: string | null
+      body: string | null
+      since: Date
+    }): Promise<NotificationRecord | null> {
+      const rows = await sql<NotificationRowSelect[]>`
+        SELECT id, user_id, type, title, body, link, read_at, created_at
+        FROM notifications
+        WHERE user_id = ${args.userId}
+          AND type = ${args.type}
+          AND link IS NOT DISTINCT FROM ${args.link}
+          AND body IS NOT DISTINCT FROM ${args.body}
+          AND created_at > ${args.since}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `
+      return rows[0] ? toRecord(rows[0]) : null
+    },
+
+    async deleteAllNotificationsForUser(userId: string): Promise<void> {
+      await sql`DELETE FROM notifications WHERE user_id = ${userId}`
     },
 
     async findUserLocale(userId: string): Promise<string | null> {

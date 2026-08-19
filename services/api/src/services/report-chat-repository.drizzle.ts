@@ -65,6 +65,8 @@ export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatPart
 
 export const REPORT_CHAT_ROSTER_CAP = 200
 
+export const REPORT_CHAT_MEMBER_SCAN_CAP = 2000
+
 export function mapSystemRow(row: SystemChatRow): ChatMessageDTO {
   const system: ChatSystemPayload = {
     status: row.system_status as ReportSystemStatus,
@@ -99,7 +101,7 @@ export interface ReportChatRepository {
     note?: string | null
     body?: string | null
   }): Promise<ChatMessageDTO>
-  listMemberIds(reportId: string): Promise<string[]>
+  listMemberIds(reportId: string, limit?: number): Promise<string[]>
   countMembers(reportId: string): Promise<number>
   listMembers(reportId: string, viewerId: string): Promise<ReportChatParticipantDTO[]>
 }
@@ -185,11 +187,15 @@ export function makeReportChatRepository(
       return mapSystemRow(rows[0]!)
     },
 
-    async listMemberIds(reportId: string): Promise<string[]> {
+    async listMemberIds(
+      reportId: string,
+      limit: number = REPORT_CHAT_MEMBER_SCAN_CAP,
+    ): Promise<string[]> {
       const rows = await sql<{ user_id: string }[]>`
         SELECT user_id FROM report_chat_members
         WHERE report_id = ${reportId}
         ORDER BY joined_at ASC, user_id ASC
+        LIMIT ${limit}
       `
       return rows.map((r) => r.user_id)
     },

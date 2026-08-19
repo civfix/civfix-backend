@@ -5,6 +5,7 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 import { makeDrizzleCertificateRepository } from "../../src/services/certificate-repository.drizzle.js"
 import { makeDataExportService } from "../../src/services/data-export-service.js"
+import { insertModerationItem } from "../../src/services/admin/moderation-repository.drizzle.js"
 import type { TranscriptModel } from "../../src/services/certificate-model.js"
 
 
@@ -17,7 +18,6 @@ async function insertUser(h: PgHarness, name: string, email?: string): Promise<s
   return rows[0]!.id
 }
 
-/** Captures the best-effort R2 deletes account erasure fires after the transaction commits. */
 class SpyObjectStore {
   readonly deleted: string[] = []
   failOn: string | null = null
@@ -74,8 +74,54 @@ async function insertCleanup(
   return rows[0]!.id
 }
 
+async function insertIdentity(
+  h: PgHarness,
+  opts: { name: string; handle: string; device?: string },
+): Promise<string> {
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO users (display_name, handle, email)
+    VALUES (${opts.name}, ${opts.handle}, ${`${opts.handle}@example.test`})
+    RETURNING id
+  `
+  const id = rows[0]!.id
+  if (opts.device !== undefined) {
+    await h.sql`
+      INSERT INTO user_moderation (user_id, strikes, removals, last_device, updated_at)
+      VALUES (${id}, 2, 1, ${opts.device}, now())
+    `
+  }
+  return id
+}
+
+async function insertPost(
+  h: PgHarness,
+  opts: { authorId: string; body: string; visibility?: string },
+): Promise<string> {
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO posts (author_id, kind, body, visibility)
+    VALUES (${opts.authorId}, 'post', ${opts.body}, ${opts.visibility ?? "public"})
+    RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function insertVerificationMedia(h: PgHarness, r2Key: string): Promise<string> {
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose, finalized_at)
+    VALUES (gen_random_uuid(), 'image', ${r2Key}, 'ready', 'verification', now())
+    RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function metaOf(h: PgHarness, itemId: string): Promise<Record<string, unknown>> {
+  const rows = await h.sql<{ meta: Record<string, unknown> }[]>`
+    SELECT meta FROM moderation_items WHERE id = ${itemId}
+  `
+  return rows[0]!.meta
+}
+
 describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAndAnonymize)", () => {
-  // Release this file's pools + drop its database (the shared container itself is globalSetup's).
   afterAll(async () => {
     await pg?.teardown()
   })
@@ -116,20 +162,9 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
     expect(rows[0]!.deleted_at).not.toBeNull()
     expect(rows[0]!.email).toBeNull()
     expect(rows[0]!.display_name).toBe("Deleted User")
-    expect(rows[0]!.handle).toMatch(/^user[0-9a-f]{12}$/)
+    expect(rows[0]!.handle).toMatch(/^deleted_[0-9a-f]{12}$/)
   })
 
-  /**
-   * `service_hours_certificates` has NO `ON DELETE CASCADE` to users, deliberately: account deletion in
-   * this product is a soft tombstone (docs/erasure-behavior.md), so the row must survive and keep
-   * answering the public verify lookup. What changes is the ANSWER — a registrar holding the paper is
-   * told the account was closed rather than being told the code does not exist, and the holder's name is
-   * no longer echoed back out of a record they asked to erase.
-   *
-   * This table is the ONLY place in the product that keeps a frozen copy of the holder's legal name plus
-   * an itemised record of where they physically were and when (`snapshot`), and the rendered PDF in R2
-   * prints all of it. Scrubbing `users.display_name` does not reach any of that, so erasure has to.
-   */
   it("revokes + scrubs issued certificates, keeps the verifiable facts, and drops their R2 objects", async () => {
     const h = pg!
     const victim = await insertUser(h, "Certified Victim")
@@ -160,8 +195,6 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
       return row.r2Key
     }
     const liveKey = await seed(victim, "V1CT1MC0DE00")
-    // A certificate the holder had ALREADY revoked themselves: its reason and timestamp must survive the
-    // COALESCE, and its PII must be scrubbed all the same.
     const alreadyRevokedKey = await seed(victim, "V1CT1MOLD001")
     const holderRevokedAt = new Date("2026-03-03T00:00:00.000Z")
     await repo.revoke(victim, "V1CT1MOLD001", "holder", holderRevokedAt)
@@ -170,13 +203,11 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
     const objects = new SpyObjectStore()
     await new PgUserStore(h.db, { certificateObjects: objects }).softDeleteAndAnonymize(victim)
 
-    // 1. The ROWS survive: revocation, not deletion, is the erasure primitive here (0064's banner).
     const counted = await h.sql<{ count: number }[]>`
       SELECT count(*)::int AS count FROM service_hours_certificates WHERE user_id = ${victim}
     `
     expect(counted[0]!.count).toBe(2)
 
-    // 2. Every one of them is REVOKED, with the reason the verify projection already synthesises.
     const victimRows = await h.sql<
       {
         code: string
@@ -199,29 +230,23 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
     const old = victimRows.find((r) => r.code === "V1CT1MOLD001")!
     expect(live.revoked_at).not.toBeNull()
     expect(live.revoked_reason).toBe("account_closed")
-    // COALESCE: the holder's own earlier revocation is not overwritten or re-dated.
     expect(old.revoked_reason).toBe("holder")
     expect(old.revoked_at?.toISOString()).toBe(holderRevokedAt.toISOString())
 
-    // 3. Every identity column is BLANKED — including on the already-revoked row.
     for (const row of victimRows) {
       expect(row.holder_name).toBe("Deleted User")
       expect(row.holder_handle).toBeNull()
       expect(row.snapshot).toEqual({})
     }
 
-    // 4. ...but the facts `verify` needs to keep answering "issued, then revoked" are KEPT.
     expect(live.document_sha256).toBe("b".repeat(64))
     expect(Number(live.total_hours)).toBe(8)
     expect(live.entry_count).toBe(3)
     expect(live.issued_at.toISOString()).toBe("2026-02-02T00:00:00.000Z")
 
-    // 5. The rendered PDFs — which print the erased name — are deleted from R2, best effort, and only
-    //    the victim's.
     expect(objects.deleted.sort()).toEqual([liveKey, alreadyRevokedKey].sort())
     expect(objects.deleted).not.toContain(bystanderKey)
 
-    // 6. The public answer: tombstoned holder, and a bystander's document is untouched.
     const victimCert = await repo.findByCode("V1CT1MC0DE00")
     expect(victimCert?.holderDeleted).toBe(true)
     const bystanderCert = await repo.findByCode("BYSTANDER001")
@@ -272,11 +297,6 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
     expect(row?.holderName).toBe("Deleted User")
   })
 
-  /**
-   * DSAR: the certificate rows are personal data twice over (a frozen name + an itinerary), so the
-   * export has to carry them — and it must do so BEFORE deletion, which is the only time the holder can
-   * still request one (erasure nulls the email the export is sent to).
-   */
   it("includes the certificates in the data export, without the snapshot or the object key", async () => {
     const h = pg!
     const email = `dsar-${randomUUID()}@example.test`
@@ -309,6 +329,7 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
       mailer,
       users: new PgUserStore(h.db),
       fromNoReply: "no-reply@civfix.org",
+      supportEmail: "support@civfix.org",
     })
     const result = await service.exportData(holder)
     expect(result).toEqual({ ok: true, email })
@@ -325,8 +346,158 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
     expect(cert.entry_count).toBe(4)
     expect(cert.document_sha256).toBe("d".repeat(64))
     expect(cert.revoked_at).toBeNull()
-    // The ~200 KB TOASTed model and the internal object key stay out of an emailed attachment.
     expect("snapshot" in cert).toBe(false)
     expect("r2_key" in cert).toBe(false)
+  })
+
+  it("scrubs the frozen identity snapshot moderation items froze, sparing other subjects", async () => {
+    const h = pg!
+    const victim = await insertIdentity(h, {
+      name: "Jane Q. Smith",
+      handle: `jqsmith${Date.now().toString(36)}`,
+      device: "iPhone 15 Pro / iOS 18.2",
+    })
+    const bystander = await insertIdentity(h, {
+      name: "Neighborly Nate",
+      handle: `nate${Date.now().toString(36)}`,
+      device: "Pixel 8 / Android 15",
+    })
+
+    const aboutVictim = await insertModerationItem(h.sql, {
+      kind: "pattern",
+      subjectType: "user",
+      subjectId: victim,
+      reporter: "Neighborly Nate",
+      reporterUserId: bystander,
+      desc: "keeps posting the same pin",
+    })
+    const bystanderReport = await insertReport(h, { reporterId: bystander })
+    const filedByVictim = await insertModerationItem(h.sql, {
+      kind: "image",
+      subjectType: "report",
+      subjectId: bystanderReport,
+      reporter: "Jane Q. Smith",
+      reporterUserId: victim,
+      desc: "my neighbour at 12 Elm St dumped this",
+    })
+    const unrelated = await insertModerationItem(h.sql, {
+      kind: "pattern",
+      subjectType: "user",
+      subjectId: bystander,
+      reporter: "Anonymous",
+      desc: "unrelated",
+    })
+    const unrelatedBefore = await metaOf(h, unrelated)
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(victim)
+
+    const scrubbed = await metaOf(h, aboutVictim)
+    const scrubbedUser = scrubbed.user as Record<string, unknown>
+    expect(scrubbedUser.id).toBe(victim)
+    expect(scrubbedUser.name).toBe("Deleted User")
+    expect(scrubbedUser.handle).toBe("")
+    expect(scrubbedUser.device).toBe("")
+    expect(scrubbedUser.joined).toBe("")
+    expect(scrubbedUser.strikes).toBe(2)
+    expect(scrubbed.reporter).toBe("Neighborly Nate")
+
+    const asReporter = await metaOf(h, filedByVictim)
+    expect(asReporter.reporter).toBe("Deleted User")
+    expect(asReporter.desc).toBe("")
+    expect((asReporter.user as Record<string, unknown>).name).toBe("Neighborly Nate")
+
+    expect(await metaOf(h, unrelated)).toEqual(unrelatedBefore)
+  })
+
+  it("blanks the verification application and deletes its document media + objects", async () => {
+    const h = pg!
+    const victim = await insertUser(h, "Applicant Victim")
+    const bystander = await insertUser(h, "Applicant Bystander")
+    const victimDocA = await insertVerificationMedia(h, "verification/2026/victim-a.jpg")
+    const victimDocB = await insertVerificationMedia(h, "verification/2026/victim-b.jpg")
+    const bystanderDoc = await insertVerificationMedia(h, "verification/2026/bystander.jpg")
+    const reportMedia = await h.sql<{ id: string }[]>`
+      INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose)
+      VALUES (gen_random_uuid(), 'image', 'reports/keep-me.jpg', 'ready', 'report')
+      RETURNING id
+    `
+    const appliedAt = new Date("2026-01-05T00:00:00.000Z")
+    await h.sql`
+      INSERT INTO user_verification (user_id, status, note, documents, rejection_reason, applied_at)
+      VALUES (
+        ${victim}, 'rejected', 'I am the block captain, DOB 1984-02-11',
+        ${h.sql.json([
+          { mediaId: victimDocA, status: "rejected" },
+          { mediaId: victimDocB, status: "rejected" },
+        ])}::jsonb,
+        'document illegible', ${appliedAt}
+      )
+    `
+    await h.sql`
+      INSERT INTO user_verification (user_id, status, note, documents)
+      VALUES (${bystander}, 'verified', 'bystander note', ${h.sql.json([
+        { mediaId: bystanderDoc, status: "verified" },
+      ])}::jsonb)
+    `
+
+    const objects = new SpyObjectStore()
+    await new PgUserStore(h.db, { certificateObjects: objects }).softDeleteAndAnonymize(victim)
+
+    const rows = await h.sql<
+      {
+        status: string
+        note: string | null
+        rejection_reason: string | null
+        documents: unknown
+        applied_at: Date
+      }[]
+    >`
+      SELECT status, note, rejection_reason, documents, applied_at
+      FROM user_verification WHERE user_id = ${victim}
+    `
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.note).toBeNull()
+    expect(rows[0]!.rejection_reason).toBeNull()
+    expect(rows[0]!.documents).toEqual([])
+    expect(rows[0]!.status).toBe("rejected")
+    expect(rows[0]!.applied_at.toISOString()).toBe(appliedAt.toISOString())
+
+    const survivors = await h.sql<{ id: string }[]>`
+      SELECT id FROM media_assets
+      WHERE id = ANY(${[victimDocA, victimDocB, bystanderDoc, reportMedia[0]!.id]}::uuid[])
+      ORDER BY id
+    `
+    expect(survivors.map((r) => r.id).sort()).toEqual([bystanderDoc, reportMedia[0]!.id].sort())
+    expect(objects.deleted.sort()).toEqual(
+      ["verification/2026/victim-a.jpg", "verification/2026/victim-b.jpg"].sort(),
+    )
+
+    const bystanderRow = await h.sql<{ note: string | null; documents: unknown }[]>`
+      SELECT note, documents FROM user_verification WHERE user_id = ${bystander}
+    `
+    expect(bystanderRow[0]!.note).toBe("bystander note")
+    expect(bystanderRow[0]!.documents).toEqual([{ mediaId: bystanderDoc, status: "verified" }])
+  })
+
+  it("unlists the deleted user's public posts, leaving other authors' posts in the feed", async () => {
+    const h = pg!
+    const victim = await insertUser(h, "Posting Victim")
+    const bystander = await insertUser(h, "Posting Bystander")
+    const victimPublic = await insertPost(h, { authorId: victim, body: "public post" })
+    const victimAlreadyHidden = await insertPost(h, {
+      authorId: victim,
+      body: "already hidden",
+      visibility: "hidden",
+    })
+    const bystanderPublic = await insertPost(h, { authorId: bystander, body: "bystander post" })
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(victim)
+
+    const visibilityOf = async (id: string) =>
+      (await h.sql<{ visibility: string }[]>`SELECT visibility FROM posts WHERE id = ${id}`)[0]!
+        .visibility
+    expect(await visibilityOf(victimPublic)).toBe("hidden")
+    expect(await visibilityOf(victimAlreadyHidden)).toBe("hidden")
+    expect(await visibilityOf(bystanderPublic)).toBe("public")
   })
 })

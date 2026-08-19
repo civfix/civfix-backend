@@ -1,19 +1,3 @@
-/**
- * In-memory OutreachRepository (Phase 2): the offline binding of the outreach pipeline's READ seam.
- *
- * Mirrors the Drizzle impl's observable contract so the outreach service is unit-testable with NO
- * database (no Docker):
- *   - loadDigest aggregates a geoid's waiting reports (non-deleted, still open) per category and resolves
- *     its routing contact (default -> per-category -> legacy default emails), returning null when there
- *     is nothing to send (no waiting reports or no contact);
- *   - listCandidateGeoids returns every geoid that has BOTH waiting reports and a usable contact;
- *   - claimOutreachWindow implements the atomic send-window claim, when the fake is constructed with the
- *     shared `outreach_state` store (see the member). It had NO offline binding at all, so
- *     OutreachService.runForGeoid's claim branch — and with it the claim-RELEASE path that stops a failed
- *     digest from silencing a jurisdiction for the whole throttle window — was reachable only through a
- *     hand-written stub in each test.
- * Seed helpers (seedJurisdiction, seedReport) let tests arrange state directly.
- */
 
 import { randomUUID } from "node:crypto"
 import {
@@ -24,19 +8,14 @@ import {
 import type { OutreachStateRecord } from "./mail-repository.js"
 import type { ReportCategory } from "@civfix/shared"
 
-/** A seeded jurisdiction's outreach-relevant routing posture. */
 interface SeededOutreachJurisdiction {
   geoid: string
   org: string | null
-  /** Category-agnostic default contact email (the digest recipient when present). */
   defaultEmail: string | null
-  /** Per-category contact emails (a fallback recipient when there is no default). */
   categoryContacts: Map<ReportCategory, string | null>
-  /** Legacy jurisdictions.contact_emails[] mirror (last-resort recipient). */
   legacyEmails: string[]
 }
 
-/** A seeded report (the subset the digest aggregation reads). */
 interface SeededOutreachReport {
   id: string
   geoid: string
@@ -46,53 +25,19 @@ interface SeededOutreachReport {
   createdAt: Date
 }
 
-/** Statuses that are NOT waiting (already closed). A waiting report is open + non-deleted. */
 const CLOSED = new Set(["rejected", "resolved"])
 
 export class InMemoryOutreachRepository implements OutreachRepository {
   readonly jurisdictions = new Map<string, SeededOutreachJurisdiction>()
   readonly reports: SeededOutreachReport[] = []
 
-  /**
-   * The `outreach_state` rows, or null when this fake was built without the shared store.
-   *
-   * Production has ONE table: MailRepository.getOutreachState/setOutreachState and the claim below all read
-   * and write it, so the claim can only be modeled when the SAME map is also handed to
-   * InMemoryMailRepository's constructor.
-   */
   readonly outreach: Map<string, OutreachStateRecord> | null
 
-  /**
-   * Atomically claim this geoid's send window. Mirrors the Drizzle statement exactly:
-   *
-   *   INSERT INTO outreach_state (geoid, last_outreach_at, suppressed) VALUES ($geoid, $at, false)
-   *   ON CONFLICT (geoid) DO UPDATE SET last_outreach_at = $at
-   *   WHERE outreach_state.suppressed = false
-   *     AND (outreach_state.last_outreach_at IS NULL OR outreach_state.last_outreach_at < $windowStart)
-   *   RETURNING geoid
-   *
-   * So: no row -> insert and WIN (the DO UPDATE ... WHERE never runs on the insert path, which is also why a
-   * suppressed jurisdiction cannot be created here — a suppressed one already has a row). An existing row ->
-   * stamp and WIN only when it is not suppressed AND its last send is outside the window; otherwise the
-   * conflicting UPDATE is filtered out, nothing is written, and the claim is LOST (false).
-   *
-   * PRESENT ONLY when the shared store was supplied. The member is OPTIONAL on the seam and OutreachService
-   * branches on it, and claiming into a private map nothing else reads would be worse than declining: the
-   * service would take the claim path while the digest's stamp stayed invisible to
-   * MailRepository.getOutreachState — an unthrottled fake. Without the shared store the service takes its
-   * documented no-claim fallback (send, then setOutreachState).
-   *
-   * A BOUND closure, not a prototype method: OutreachService reads the member off the repo and calls it
-   * DETACHED (`const claim = deps.outreachRepo.claimOutreachWindow; await claim(...)`) precisely because it
-   * is optional. That is fine for the Drizzle repo (an object literal of closures, no `this`) and would throw
-   * for a class method.
-   */
   readonly claimOutreachWindow?: (
     geoid: string,
     window: { at: Date; windowStart: Date },
   ) => Promise<boolean>
 
-  /** @param sharedOutreach the throttle store shared with the mail repo (the production single table). */
   constructor(sharedOutreach?: Map<string, OutreachStateRecord>) {
     this.outreach = sharedOutreach ?? null
     if (sharedOutreach) {
@@ -177,26 +122,32 @@ export class InMemoryOutreachRepository implements OutreachRepository {
     return Promise.resolve({ geoid, org: j.org, toAddr, perCategory, total, oldestWaitingAt })
   }
 
-  listCandidateGeoids(): Promise<string[]> {
+  listCandidateGeoids(limit?: number): Promise<string[]> {
     const out: string[] = []
     for (const j of this.jurisdictions.values()) {
       if (resolveContact(j) === null) continue
+      if (this.outreach?.get(j.geoid)?.suppressed) continue
       const hasWaiting = this.reports.some(
         (r) => r.geoid === j.geoid && r.deletedAt === null && !CLOSED.has(r.status),
       )
       if (hasWaiting) out.push(j.geoid)
     }
-    // Deterministic order for the tests (geoid asc).
-    out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    return Promise.resolve(out)
+    const lastAt = (geoid: string): number | null =>
+      this.outreach?.get(geoid)?.lastOutreachAt?.getTime() ?? null
+    out.sort((a, b) => {
+      const ta = lastAt(a)
+      const tb = lastAt(b)
+      if (ta === null && tb === null) return a < b ? -1 : a > b ? 1 : 0
+      if (ta === null) return -1
+      if (tb === null) return 1
+      if (ta !== tb) return ta - tb
+      return a < b ? -1 : a > b ? 1 : 0
+    })
+    const capped = limit !== undefined && limit > 0 ? out.slice(0, limit) : out
+    return Promise.resolve(capped)
   }
 }
 
-/**
- * Resolve a jurisdiction's routing recipient: default -> first per-category -> first legacy. The
- * per-category fallback iterates OUTREACH_CATEGORIES in canonical display order, which the Drizzle
- * loadDigest mirrors via `array_position(...)` so both bindings pick the SAME contact.
- */
 function resolveContact(j: SeededOutreachJurisdiction): string | null {
   if (j.defaultEmail && j.defaultEmail.trim() !== "") return j.defaultEmail.trim()
   for (const category of OUTREACH_CATEGORIES) {

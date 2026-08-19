@@ -207,6 +207,55 @@ describe("H2: operator authority is re-checked against ADMIN_EMAILS on EVERY adm
     expect([401, 403]).not.toContain(res.statusCode)
   })
 
+  /**
+   * F096: GET /admin/auth/session is the console's "am I signed in?" probe, and it lived OUTSIDE the
+   * DATA_ROUTES guard above — it answered from the session claim + users.role alone. So an off-boarded
+   * operator (or anyone who signed in through the PUBLIC citizen login while their row still said
+   * operator) was told authenticated:true, handed their identity back and given a live session-bound CSRF
+   * token, while every data route 403'd. The allowlist is the single source of operator truth on this
+   * route too: no operator payload, and no CSRF cookie handed to a caller who cannot use it.
+   */
+  it("F096: reports an off-boarded operator's session as UNAUTHENTICATED and sets no CSRF cookie", async () => {
+    harness = await makeHarness()
+    const token = await sessionFor(harness, "operator", NOT_ALLOWED)
+    const res = await harness.app.inject({
+      method: "GET",
+      url: "/v1/admin/auth/session",
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ authenticated: false })
+    expect(res.cookies.some((c) => c.name === "civfix_csrf")).toBe(false)
+  })
+
+  it("F096: an ALLOWLISTED operator's session still authenticates and receives its CSRF token", async () => {
+    harness = await makeHarness()
+    const token = await sessionFor(harness, "operator")
+    const res = await harness.app.inject({
+      method: "GET",
+      url: "/v1/admin/auth/session",
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { authenticated: boolean; operator?: { email: string }; csrfToken?: string }
+    expect(body.authenticated).toBe(true)
+    expect(body.operator?.email).toBe(ALLOWED)
+    expect(body.csrfToken).toBeTruthy()
+    expect(res.cookies.some((c) => c.name === "civfix_csrf")).toBe(true)
+  })
+
+  it("F096: a CITIZEN session is unauthenticated on the session probe", async () => {
+    harness = await makeHarness()
+    const token = await sessionFor(harness, "citizen")
+    const res = await harness.app.inject({
+      method: "GET",
+      url: "/v1/admin/auth/session",
+      headers: { authorization: `Bearer ${token}` },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ authenticated: false })
+  })
+
   it("still 401s an anonymous caller and 403s a citizen BEFORE any allowlist lookup", async () => {
     harness = await makeHarness()
     const anon = await harness.app.inject({ method: "GET", url: "/v1/admin/users" })

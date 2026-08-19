@@ -4,7 +4,6 @@ import type {
   MediaRepository,
   NewMediaAsset,
 } from "../../src/services/media-intake-service.js"
-import type { MediaStatus } from "@civfix/shared"
 
 type StoredMedia = MediaAssetView
 
@@ -33,6 +32,7 @@ export class InMemoryMediaRepository implements MediaRepository {
       reportId: null,
       chatMessageId: null,
       postId: null,
+      finalizedAt: null,
       createdAt: new Date(),
     }
     this.byId.set(row.id, stored)
@@ -52,17 +52,13 @@ export class InMemoryMediaRepository implements MediaRepository {
     return Promise.resolve(row ? { ...row } : null)
   }
 
-  setStatusByUploadId(
-    uploadId: string,
-    status: MediaStatus,
-    expectedStatus?: MediaStatus,
-  ): Promise<MediaAssetView | null> {
+  markFinalized(uploadId: string): Promise<MediaAssetView | null> {
     const id = this.uploadIndex.get(uploadId)
     if (!id) return Promise.resolve(null)
     const row = this.byId.get(id)
     if (!row) return Promise.resolve(null)
-    if (expectedStatus !== undefined && row.status !== expectedStatus) return Promise.resolve(null)
-    row.status = status
+    if (row.finalizedAt != null) return Promise.resolve(null)
+    row.finalizedAt = new Date()
     return Promise.resolve({ ...row })
   }
 

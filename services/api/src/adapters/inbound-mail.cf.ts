@@ -1,15 +1,3 @@
-/**
- * REAL InboundMail adapter for the Cloudflare Email Routing pipeline.
- *
- * The Cloudflare Email Worker writes the raw .eml to R2; the backend fetches it and calls parse() here.
- * parse() decodes the RFC822 bytes (via mailparser) into the vendor-neutral ParsedMail, including
- * attachments. extractThreadToken() recovers a (reply|report|event)+{token}@ thread token (or an
- * X-Thread-Token header) so the inbound processor can route a reply into its mail_threads thread;
- * catch-all mail with no token goes to the inbound_emails inbox instead.
- *
- * Seam rule: the MIME-parsing SDK (mailparser) is imported ONLY in this file, lazily, so constructing
- * the adapter during DI never loads it.
- */
 
 import type {
   InboundMail,
@@ -20,34 +8,44 @@ import type {
 import type { AddressObject, Attachment, EmailAddress } from "mailparser"
 import { domainOfOrNull } from "./mail-text.js"
 
-/**
- * Shape gate for a thread token. Deliberately PERMISSIVE (lowercase alphanumeric, 8-40 chars) so it
- * accepts both the current 12-char base32 token (mintThreadToken()) and the legacy 24-hex token, and so
- * a future mint tweak needs no change here. The token's entropy + the UNIQUE thread_token lookup are the
- * real protection; this gate just rejects obviously-malformed candidates (spaces, `@`, junk) early.
- */
 const THREAD_TOKEN_RE = /^[a-z0-9]{8,40}$/
 
 export interface CfInboundMailConfig {
-  // Carried for parity with the env wiring but intentionally unused HERE: the webhook HMAC is verified in
-  // the route (against the exact raw bytes), which is the correct place. Kept so di.ts can pass it without
-  // a special case; this adapter only parses already-authenticated bytes.
   webhookSecret?: string
-  // The domain our per-thread reply addresses live on (MAIL_REPLY_DOMAIN). extractThreadToken ONLY pulls
-  // a token from a `{kind}-{token}@{replyDomain}` recipient, so a city's own `report-*@city.gov`-style
-  // alias (or any foreign CC) can never be mis-read as a thread token. Defaults to civfix.org.
   replyDomain?: string
 }
 
 const DEFAULT_REPLY_DOMAIN = "civfix.org"
 
-/**
- * Anchored reply-address matcher: the local-part MUST START with a typed prefix (`reply`/`report`/`event`)
- * + a `-` (current) or `+` (legacy) separator, then the token, then `@domain`. Anchoring both ends + the
- * separate domain check (caller) stop a mid-string or foreign-domain false positive (e.g.
- * `noreply-list@x.com`, `report-publicworks@city.gov`).
- */
 const REPLY_ADDRESS_RE = /^(?:reply|report|event)[-+]([^@\s]+)@([^@\s]+)$/
+
+const MAX_MIME_PARTS = 200
+const MAX_DISTINCT_BOUNDARIES = 32
+const BOUNDARY_DECL_RE = /boundary\s*=\s*(?:"([^"\r\n]{1,200})"|([^;"\s\r\n]{1,200}))/gi
+
+function countMimeParts(raw: Uint8Array): number {
+  const text = Buffer.from(raw).toString("latin1")
+  const boundaries = new Set<string>()
+  BOUNDARY_DECL_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = BOUNDARY_DECL_RE.exec(text)) !== null) {
+    const b = (m[1] ?? m[2] ?? "").trim()
+    if (b.length === 0) continue
+    boundaries.add(b)
+    if (boundaries.size > MAX_DISTINCT_BOUNDARIES) return Number.POSITIVE_INFINITY
+  }
+  let count = 0
+  for (const b of boundaries) {
+    const delim = `--${b}`
+    let idx = text.indexOf(delim)
+    while (idx !== -1) {
+      count++
+      if (count > MAX_MIME_PARTS) return count
+      idx = text.indexOf(delim, idx + delim.length)
+    }
+  }
+  return count
+}
 
 export class CfInboundMail implements InboundMail {
   private readonly config: CfInboundMailConfig
@@ -57,10 +55,10 @@ export class CfInboundMail implements InboundMail {
   }
 
   async parse(raw: Uint8Array): Promise<ParsedMail> {
+    if (countMimeParts(raw) > MAX_MIME_PARTS) {
+      throw new Error("inbound mail: too many MIME parts")
+    }
     const { simpleParser } = await import("mailparser")
-    // SECURITY (DoS): bound the HTML-DOM parsing work on untrusted mail. maxHtmlLengthToParse caps the
-    // HTML body the parser will walk; skipImageLinks avoids extra cid-rewriting. The caller also enforces
-    // a hard raw-byte cap (INBOUND_OBJECT_MAX_BYTES) before this runs.
     const parsed = await simpleParser(Buffer.from(raw), {
       maxHtmlLengthToParse: 2 * 1024 * 1024,
       skipImageLinks: true,
@@ -81,17 +79,6 @@ export class CfInboundMail implements InboundMail {
   }
 
   extractThreadToken(mail: ParsedMail): string | null {
-    // SECURITY (M7): a thread token only ever lives in a `{kind}-{token}@{replyDomain}` recipient WE
-    // minted, so we ONLY pull a token from a recipient on our reply domain whose local-part is anchored
-    // to a typed prefix. That stops a city's own `report-*@city.gov` alias or a foreign CC from being
-    // mis-read as a token.
-    //
-    // The `X-Thread-Token` HEADER path is DELETED. It was a fully spoofable thread selector gated only
-    // by shape: anyone who had ever seen one outbound civfix email knew a live token (it is printed in
-    // the From address on purpose, to be human-readable), and could set that header on a forged message
-    // to steer it into that report's thread — which then flipped the report's status and posted the
-    // attacker's text into the PUBLIC report chat as an official city reply. Recipient-only means the
-    // token has to arrive at an address we control, which is a much harder thing to fake.
     const replyDomain = (this.config.replyDomain ?? DEFAULT_REPLY_DOMAIN).toLowerCase()
     for (const addr of mail.to) {
       const match = addr.address.match(REPLY_ADDRESS_RE)
@@ -103,30 +90,10 @@ export class CfInboundMail implements InboundMail {
   }
 }
 
-/**
- * MESSAGE AUTHENTICATION (M7).
- *
- * Nothing in this pipeline verified that inbound mail actually came from who it claimed. Anyone could
- * forge `From: publicworks@city.gov` and, with a known thread token, drive a jurisdiction-reply
- * side-effect chain: report status -> in_progress, attacker text mirrored into the PUBLIC report chat
- * as an official city reply, and a "Your report got a response" push to the reporter.
- *
- * Cloudflare Email Routing's MTA verifies SPF/DKIM/DMARC and stamps the standard RFC 8601
- * `Authentication-Results` header into the message before the Email Worker writes the .eml to R2, so
- * the verdict is available on the parsed headers with no contract change. We read the DMARC verdict
- * (the only one that is identifier-ALIGNED with the visible From) and fall back to "DKIM pass with a
- * d= aligned to the From domain" for MTAs that do not emit a dmarc= token.
- *
- * FAIL CLOSED: an ABSENT header is `unknown`, not `pass`. Callers must treat anything other than `pass`
- * as unauthenticated and route it to the Inbox with NO side effects — see
- * services/admin/inbound-processor.ts.
- */
 export type MailAuthVerdict = "pass" | "fail" | "unknown"
 
-/** RFC 8601 method/result token, e.g. `dmarc=pass`, `spf=softfail (…)`, `dkim=pass header.d=city.gov`. */
 const AUTH_RESULT_RE = /\b(dmarc|dkim|spf)\s*=\s*([a-z]+)/gi
 
-/** `header.d=` / `header.i=` parameter on a dkim= token, carrying the signing domain. */
 const DKIM_DOMAIN_RE = /header\.(?:d|i)\s*=\s*@?([a-z0-9.-]+)/i
 
 export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
@@ -134,18 +101,11 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   if (!raw || raw.trim().length === 0) return "unknown"
 
   const results = new Map<string, string>()
-  /** header.d= of the FIRST dkim clause — the only one whose verdict we honor (see below). */
   let firstDkimDomain: string | undefined
-  // RFC 8601 resinfo clauses are ';'-separated. Parse PER CLAUSE so a `header.d=` parameter is paired with
-  // the dkim verdict it actually belongs to: scanning the whole header for the first `header.d=` anywhere
-  // could pair our trusted `dkim=pass` with a DIFFERENT signer's domain (a mailing list re-signs on top of
-  // the origin signature), mis-failing legitimately aligned mail.
   for (const clause of raw.split(";")) {
     for (const m of clause.matchAll(AUTH_RESULT_RE)) {
       const method = (m[1] ?? "").toLowerCase()
       const result = (m[2] ?? "").toLowerCase()
-      // First verdict wins: a relay may append its own results, and the FIRST (closest to our MTA) is the
-      // one our own infrastructure produced. A later attacker-supplied "dmarc=pass" cannot override it.
       if (results.has(method)) continue
       results.set(method, result)
       if (method === "dkim") firstDkimDomain = DKIM_DOMAIN_RE.exec(clause)?.[1]?.toLowerCase()
@@ -156,43 +116,21 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   if (dmarc === "pass") return "pass"
   if (dmarc !== undefined) return "fail"
 
-  // No dmarc= token: accept DKIM only when the signing domain is ALIGNED with the visible From domain
-  // (relaxed alignment — equal, or an organizational-suffix match). A DKIM pass from an unrelated
-  // domain proves only that *somebody* signed the message, not that the sender is who From says.
-  //
-  // Only the FIRST dkim clause counts, deliberately: a later clause may be attacker-supplied (a forged
-  // Authentication-Results header the message itself carried), so a message whose first signature is an
-  // unaligned re-signer fails closed even if a later clause claims an aligned pass.
   if (results.get("dkim") === "pass") {
     const fromDomain = domainOfOrNull(mail.from?.address ?? null)
     if (firstDkimDomain && fromDomain && domainsAligned(firstDkimDomain, fromDomain)) return "pass"
   }
 
-  // SPF alone is deliberately NOT sufficient: it authenticates the envelope sender (Return-Path), not
-  // the From header the operator and the report chat actually see.
   return results.size > 0 ? "fail" : "unknown"
 }
 
-/**
- * Lowercased domain part of an email address, or null when absent/malformed. ONE implementation, in
- * mail-text (domainOfOrNull); re-exported here under the historical name for the inbound consumers.
- * Two same-named helpers in this directory with different null behavior was an easy import to get wrong —
- * mail-text's other export, `domainOf`, falls back to "civfix.org", which would silently ALIGN an
- * unparseable address with our own domain in the DKIM check below.
- */
 export const domainOf = domainOfOrNull
 
-/**
- * Relaxed identifier alignment: equal domains, or one is a subdomain of the other
- * (`mail.city.gov` vs `city.gov`). Suffix comparison is anchored on a dot so `evilcity.gov` never
- * aligns with `city.gov`.
- */
 export function domainsAligned(a: string, b: string): boolean {
   if (a === b) return true
   return a.endsWith(`.${b}`) || b.endsWith(`.${a}`)
 }
 
-/** Map a mailparser EmailAddress to the vendor-neutral ParsedMailAddress (name omitted when absent). */
 function toAddress(value: EmailAddress): ParsedMailAddress {
   const name = value.name && value.name.length > 0 ? value.name : undefined
   return name !== undefined
@@ -200,7 +138,6 @@ function toAddress(value: EmailAddress): ParsedMailAddress {
     : { address: value.address ?? "" }
 }
 
-/** Flatten mailparser's `to` (an AddressObject, an array of them, or undefined) into addresses. */
 function toAddresses(to: AddressObject | AddressObject[] | undefined): ParsedMailAddress[] {
   if (!to) return []
   const groups = Array.isArray(to) ? to : [to]
@@ -213,7 +150,6 @@ function toAddresses(to: AddressObject | AddressObject[] | undefined): ParsedMai
   return out
 }
 
-/** Map a mailparser Attachment to ParsedMailAttachment (bytes copied into a plain Uint8Array). */
 function toAttachment(att: Attachment): ParsedMailAttachment {
   const out: ParsedMailAttachment = {
     content: new Uint8Array(att.content),
@@ -224,10 +160,6 @@ function toAttachment(att: Attachment): ParsedMailAttachment {
   return out
 }
 
-/**
- * Reduce mailparser's headers Map to a Record<string,string> with lowercase keys (matching the fake).
- * Structured header values (addresses, dates, parameter objects) are stringified best-effort.
- */
 function flattenHeaders(headers: Map<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of headers) {
@@ -241,7 +173,10 @@ function stringifyHeader(value: unknown): string {
   if (value === null || value === undefined) return ""
   if (value instanceof Date) return value.toISOString()
   if (typeof value === "object") {
-    const v = value as { text?: unknown; value?: unknown }
+    const v = value as { text?: unknown; value?: unknown; params?: unknown }
+    if (typeof v.value === "string" && v.params !== null && typeof v.params === "object") {
+      return renderStructuredHeaderValue(v.value, v.params as Record<string, unknown>)
+    }
     if (typeof v.text === "string") return v.text
     try {
       return JSON.stringify(value)
@@ -250,4 +185,12 @@ function stringifyHeader(value: unknown): string {
     }
   }
   return String(value)
+}
+
+function renderStructuredHeaderValue(value: string, params: Record<string, unknown>): string {
+  let out = value
+  for (const [key, param] of Object.entries(params)) {
+    if (typeof param === "string") out += `; ${key}=${param}`
+  }
+  return out
 }

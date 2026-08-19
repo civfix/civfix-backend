@@ -1,16 +1,13 @@
-
 import type { Sql } from "../db/client.js"
 import type { Mailer } from "@civfix/shared/interfaces"
 import type { UserStore } from "../auth/stores.js"
 
-// No Storage dep: the export is assembled in memory and EMAILED as a single JSON attachment, so nothing
-// is ever written to R2 (a leftover `storage` field from an earlier upload-the-export design was injected
-// by the wiring and read by nothing).
 export interface DataExportServiceDeps {
   sql: Sql
   mailer: Mailer
-  users: UserStore
+  users?: UserStore
   fromNoReply: string
+  supportEmail: string
 }
 
 export interface DataExportService {
@@ -19,8 +16,12 @@ export interface DataExportService {
 
 export const DATA_EXPORT_MAX_ROWS = 50_000
 
+export const DATA_EXPORT_FREE_TEXT_MAX_ROWS = 5_000
+
+export const DATA_EXPORT_BYTE_BUDGET = 8_000_000
+
 export function makeDataExportService(deps: DataExportServiceDeps): DataExportService {
-  const { sql, mailer, users, fromNoReply } = deps
+  const { sql, mailer, users, fromNoReply, supportEmail } = deps
 
   return {
     async exportData(userId: string): Promise<{ ok: true; email: string | null }> {
@@ -60,18 +61,30 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
 
-      // `comments` was the user's per-report DISCUSSION messages; the discussion system (and its
-      // report_discussion_messages table) was removed. The kept `comments: []` field preserves the export
-      // shape. The user's report-CHAT messages (roomKind:"report") already ride chat_messages and are
-      // captured by the `chatMessages` query below (which filters only by sender_id).
+      const posts = sql<
+        {
+          id: string
+          kind: string
+          body: string | null
+          visibility: string
+          reply_to_id: string | null
+          repost_of_id: string | null
+          created_at: Date
+          updated_at: Date
+          deleted_at: Date | null
+        }[]
+      >`
+        SELECT id, kind, body, visibility, reply_to_id, repost_of_id, created_at, updated_at, deleted_at
+        FROM posts
+        WHERE author_id = ${userId}
+        ORDER BY created_at DESC
+        LIMIT ${DATA_EXPORT_FREE_TEXT_MAX_ROWS + 1}
+      `
+
       const comments = Promise.resolve<
         { id: string; report_id: string; body: string; created_at: Date; deleted_at: Date | null }[]
       >([])
 
-      // chat_messages carries all three room families; EXACTLY ONE of cleanup_id / report_id / group_id is
-      // set per row (see the roomKind discriminator). Exporting only cleanup_id left every report-chat and
-      // group message in the file with `cleanup_id: null` and no way for the user to tell which
-      // conversation it came from, so all three ride along, each nullable.
       const chatMessages = sql<
         {
           id: string
@@ -87,7 +100,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         FROM chat_messages
         WHERE sender_id = ${userId}
         ORDER BY created_at DESC
-        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+        LIMIT ${DATA_EXPORT_FREE_TEXT_MAX_ROWS + 1}
       `
 
       const dmMessages = sql<
@@ -102,6 +115,26 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         SELECT id, thread_id, body, created_at, deleted_at
         FROM dm_messages
         WHERE sender_id = ${userId}
+        ORDER BY created_at DESC
+        LIMIT ${DATA_EXPORT_FREE_TEXT_MAX_ROWS + 1}
+      `
+
+      const volunteerHours = sql<
+        {
+          id: string
+          source: string
+          report_id: string | null
+          cleanup_id: string | null
+          jurisdiction_geoid: string | null
+          hours: number
+          logged_by_user_id: string | null
+          created_at: Date
+        }[]
+      >`
+        SELECT id, source, report_id, cleanup_id, jurisdiction_geoid,
+          hours::float8 AS hours, logged_by_user_id, created_at
+        FROM volunteer_hours
+        WHERE user_id = ${userId}
         ORDER BY created_at DESC
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
@@ -163,21 +196,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         SELECT status, applied_at FROM user_verification WHERE user_id = ${userId} LIMIT 1
       `
 
-      /**
-       * Issued service-hours transcripts (P5). These are personal data twice over — a frozen copy of the
-       * holder's name and an itemised record of where they volunteered — so a DSAR that omitted them
-       * would be incomplete.
-       *
-       * TWO COLUMNS ARE DELIBERATELY EXCLUDED:
-       *   - `snapshot`: the exact rendered model, ~200 KB of TOASTed jsonb per row at the 1000-entry cap.
-       *     Including it would put tens of megabytes into an EMAIL ATTACHMENT and detoast on every
-       *     export. It is not withheld data — it is the content of the PDF the holder already has, and
-       *     the same entries are re-derivable from the ledger.
-       *   - `r2_key`: an internal object key, useless without a signed URL and never disclosed anywhere
-       *     else (see the verify projection's rule in certificate-service.ts). The holder fetches the
-       *     document itself from `GET /me/service-hours/certificates`.
-       * `code` IS included: it is printed on the document the holder is carrying, not a secret from them.
-       */
       const certificates = sql<
         {
           code: string
@@ -206,9 +224,11 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
       const [
         reportRows,
+        postRows,
         commentRows,
         chatRows,
         dmRows,
+        volunteerHourRows,
         cleanupsOrganizedRows,
         cleanupsJoinedRows,
         followingRows,
@@ -220,9 +240,11 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         certificateRows,
       ] = await Promise.all([
         reports,
+        posts,
         comments,
         chatMessages,
         dmMessages,
+        volunteerHours,
         cleanupsOrganized,
         cleanupsJoined,
         following,
@@ -235,15 +257,31 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
       ])
 
       const profile = profileRows[0] ?? null
-      const email = profile?.email ?? (await users.findById(userId))?.email ?? null
+      const email =
+        profile?.email ?? (users ? ((await users.findById(userId))?.email ?? null) : null)
 
       const truncatedSections: string[] = []
-      const clip = <T>(name: string, rows: T[]): T[] => {
-        if (rows.length > DATA_EXPORT_MAX_ROWS) {
-          truncatedSections.push(name)
-          return rows.slice(0, DATA_EXPORT_MAX_ROWS)
+      let usedBytes = 0
+
+      const fit = <T>(name: string, rows: T[], rowCap: number): T[] => {
+        let truncated = false
+        let source = rows
+        if (source.length > rowCap) {
+          source = source.slice(0, rowCap)
+          truncated = true
         }
-        return rows
+        const kept: T[] = []
+        for (const row of source) {
+          const size = Buffer.byteLength(JSON.stringify(row), "utf8") + 1
+          if (usedBytes + size > DATA_EXPORT_BYTE_BUDGET) {
+            truncated = true
+            break
+          }
+          usedBytes += size
+          kept.push(row)
+        }
+        if (truncated) truncatedSections.push(name)
+        return kept
       }
 
       const exportObject = {
@@ -251,31 +289,38 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         format: "civfix-data-export@1",
         userId,
         profile,
-        reports: clip("reports", reportRows),
-        comments: clip("comments", commentRows),
-        chatMessages: clip("chatMessages", chatRows),
-        dmMessages: clip("dmMessages", dmRows),
-        cleanupsOrganized: clip("cleanupsOrganized", cleanupsOrganizedRows),
-        cleanupsJoined: clip("cleanupsJoined", cleanupsJoinedRows),
-        following: clip("following", followingRows).map((f) => f.followee_id),
-        followers: clip("followers", followerRows).map((f) => f.follower_id),
-        blocks: clip("blocks", blockRows).map((b) => b.blocked_id),
+        reports: fit("reports", reportRows, DATA_EXPORT_MAX_ROWS),
+        posts: fit("posts", postRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
+        comments: fit("comments", commentRows, DATA_EXPORT_MAX_ROWS),
+        chatMessages: fit("chatMessages", chatRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
+        dmMessages: fit("dmMessages", dmRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
+        volunteerHours: fit("volunteerHours", volunteerHourRows, DATA_EXPORT_MAX_ROWS),
+        cleanupsOrganized: fit("cleanupsOrganized", cleanupsOrganizedRows, DATA_EXPORT_MAX_ROWS),
+        cleanupsJoined: fit("cleanupsJoined", cleanupsJoinedRows, DATA_EXPORT_MAX_ROWS),
+        following: fit("following", followingRows, DATA_EXPORT_MAX_ROWS).map((f) => f.followee_id),
+        followers: fit("followers", followerRows, DATA_EXPORT_MAX_ROWS).map((f) => f.follower_id),
+        blocks: fit("blocks", blockRows, DATA_EXPORT_MAX_ROWS).map((b) => b.blocked_id),
         notificationPrefs: notificationPrefRows[0] ?? null,
-        pushTokens: clip("pushTokens", pushTokenRows).map((t) => ({
-          id: t.id,
-          platform: t.platform,
-          token: "[REDACTED]",
-          createdAt: t.created_at,
-          revokedAt: t.revoked_at,
-        })),
+        pushTokens: fit(
+          "pushTokens",
+          pushTokenRows.map((t) => ({
+            id: t.id,
+            platform: t.platform,
+            token: "[REDACTED]",
+            createdAt: t.created_at,
+            revokedAt: t.revoked_at,
+          })),
+          DATA_EXPORT_MAX_ROWS,
+        ),
         verification: verificationRows[0] ?? null,
-        certificates: clip("certificates", certificateRows),
+        certificates: fit("certificates", certificateRows, DATA_EXPORT_MAX_ROWS),
         truncated:
           truncatedSections.length > 0
             ? {
                 sections: truncatedSections,
                 capPerSection: DATA_EXPORT_MAX_ROWS,
-                note: `These sections exceeded the per-section export cap and contain only your most recent ${DATA_EXPORT_MAX_ROWS} entries. Reply to this email to request a complete copy of the truncated sections.`,
+                byteBudget: DATA_EXPORT_BYTE_BUDGET,
+                note: `These sections were clipped because this export reached its per-section or overall size limit. Email ${supportEmail} to request a complete copy of the truncated sections.`,
               }
             : null,
       }
@@ -285,13 +330,13 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
       const bytes = new TextEncoder().encode(JSON.stringify(exportObject))
 
       const text =
-        "Attached is a copy of your civfix data (JSON). It includes your profile, reports, comments, " +
-        "messages, events, connections, and your issued service-hours transcripts. Secrets (login " +
-        "codes, session tokens, raw device tokens) are intentionally excluded." +
+        "Attached is a copy of your civfix data (JSON). It includes your profile, reports, posts, " +
+        "comments, messages, events, volunteer hours, connections, and your issued service-hours " +
+        "transcripts. Secrets (login codes, session tokens, raw device tokens) are intentionally " +
+        "excluded." +
         (truncatedSections.length > 0
           ? `\n\nNote: some sections (${truncatedSections.join(", ")}) were very large and this export ` +
-            `contains only your most recent ${DATA_EXPORT_MAX_ROWS} entries per section. Reply to this ` +
-            "email to request a complete copy of those sections."
+            `contains only part of them. Email ${supportEmail} to request a complete copy of those sections.`
           : "") +
         "\n\nIf you did not request this, you can ignore this email."
 

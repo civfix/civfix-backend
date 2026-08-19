@@ -7,12 +7,14 @@ import {
   ANON_HOLD_RELEASE_JOB,
   ANON_HOLD_RELEASE_SWEEP_JOB,
   RETENTION_SWEEP_JOB,
+  MEDIA_STUCK_SWEEP_JOB,
 } from "../../src/worker.js"
 import { buildJobs, type ScheduleOptions } from "../../src/jobs.js"
 import { buildSeams, type WorkerSeams } from "../../src/seams.js"
 import {
   CHAT_PARTITION_CRON,
   HOLD_RELEASE_SWEEP_CRON,
+  MEDIA_STUCK_SWEEP_CRON,
   ORPHAN_SWEEP_CRON,
   RETENTION_SWEEP_CRON,
   loadLimits,
@@ -76,7 +78,9 @@ describe("media-worker wiring", () => {
     const mediaQueue = calls.find((c) => c.name === MEDIA_CHECKS_JOB)
     expect(mediaQueue?.options).toEqual({ policy: "short", retryLimit: 5, retryBackoff: true })
     expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({ policy: "short" })
-    expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toBeUndefined()
+    expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
+    expect(calls.find((c) => c.name === RETENTION_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
+    expect(calls.find((c) => c.name === MEDIA_STUCK_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
 
     await worker.stop()
   })
@@ -84,8 +88,6 @@ describe("media-worker wiring", () => {
   it("creates a queue for EVERY job it registers a handler on (pg-boss v10 requires it first)", async () => {
     const handle = buildJobs()
     const queues: string[] = []
-    // A Set because the two work() entry points delegate to each other (which way round is the seam
-    // implementation's business); what matters is that every job name got a handler.
     const worked = new Set<string>()
     const originalCreate = handle.jobs.createQueue.bind(handle.jobs)
     handle.jobs.createQueue = (name, options) => {
@@ -113,6 +115,7 @@ describe("media-worker wiring", () => {
       ANON_HOLD_RELEASE_JOB,
       ANON_HOLD_RELEASE_SWEEP_JOB,
       RETENTION_SWEEP_JOB,
+      MEDIA_STUCK_SWEEP_JOB,
     ]
     expect(queues.sort()).toEqual([...expected].sort())
     expect([...worked].sort()).toEqual([...expected].sort())
@@ -120,15 +123,7 @@ describe("media-worker wiring", () => {
     await worker.stop()
   })
 
-  /**
-   * The cron registrations ARE the guarantee for two invariants that have no other enforcement: the
-   * hold-release sweep is the P2-8 self-healing backstop (an anon report whose inline release enqueue was
-   * lost stays held until this fires) and the retention sweep is privacy 7.1 (expired OTPs/sessions/anon
-   * tokens are deleted daily). Only two of the four names were asserted, and the per-schedule options were
-   * not asserted at all - so dropping either registration, or the single-flight singletonKey that keeps two
-   * fires of the same sweep from overlapping, would have passed.
-   */
-  it("schedules ALL FOUR crons with their expressions and single-flight expire/singleton options", async () => {
+  it("schedules ALL FIVE crons with their expressions and single-flight expire/singleton options", async () => {
     const handle = buildJobs()
     const scheduled: { name: string; cron: string; data: unknown; options?: ScheduleOptions }[] = []
     const original = handle.jobs.schedule.bind(handle.jobs)
@@ -140,8 +135,6 @@ describe("media-worker wiring", () => {
     const worker = await buildWorker(handle, seams)
     await worker.start()
 
-    // 25 minutes: comfortably above the worst-case sweep run, and BELOW the hourly orphan cron so a stuck
-    // job cannot block the next fire forever. singletonKey = the job name is the single-flight guarantee.
     const opts = { expireInSeconds: 1500, singletonKey: "" }
     expect(scheduled).toEqual([
       {
@@ -167,6 +160,12 @@ describe("media-worker wiring", () => {
         cron: RETENTION_SWEEP_CRON,
         data: undefined,
         options: { ...opts, singletonKey: RETENTION_SWEEP_JOB },
+      },
+      {
+        name: MEDIA_STUCK_SWEEP_JOB,
+        cron: MEDIA_STUCK_SWEEP_CRON,
+        data: undefined,
+        options: { ...opts, singletonKey: MEDIA_STUCK_SWEEP_JOB },
       },
     ])
 
@@ -268,6 +267,26 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
 
     expect(repo.get("m1")!.status).toBe("ready")
     expect(fake.jobsFor(ANON_HOLD_RELEASE_JOB)).toHaveLength(1)
+  })
+
+  it("F059: enqueues for a CLAIMED-but-still-held anon report (reporterUserId set, anonSessionId preserved)", async () => {
+    const anonHoldRepo = makeAnonHoldRepo(
+      heldView({ reporterUserId: "user-claimer", anonSessionId: "anontok-1", status: "held" }),
+    )
+    const { fake, repo } = await runMediaJobWith(anonHoldRepo)
+
+    expect(repo.get("m1")!.status).toBe("ready")
+    expect(fake.jobsFor(ANON_HOLD_RELEASE_JOB)).toHaveLength(1)
+  })
+
+  it("F059: does NOT enqueue for a non-anon held report (no anon_session_id audit trail)", async () => {
+    const anonHoldRepo = makeAnonHoldRepo(
+      heldView({ reporterUserId: "user-native", anonSessionId: null, status: "held" }),
+    )
+    const { fake, repo } = await runMediaJobWith(anonHoldRepo)
+
+    expect(repo.get("m1")!.status).toBe("ready")
+    expect(fake.jobsFor(ANON_HOLD_RELEASE_JOB)).toHaveLength(0)
   })
 })
 

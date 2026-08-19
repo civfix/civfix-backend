@@ -25,12 +25,9 @@ export const mediaAssets = pgTable(
       .primaryKey()
       .default(sql`gen_random_uuid()`),
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
-    // NOTE: bare uuid with NO .references() — matching the DDL (0025). chat_messages / dm_messages are
-    // RANGE-partitioned with a composite PK(id, created_at), so there is no single-column key to FK
-    // against, and this ONE column carries either room kind's message id.
     chatMessageId: uuid("chat_message_id"),
-    // Social-feed post media (0051): a claimed upload is stamped with post_id + purpose='post'.
-    postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
+    chatMessageCreatedAt: timestamp("chat_message_created_at", { withTimezone: true }),
+    postId: uuid("post_id").references(() => posts.id, { onDelete: "set null" }),
     uploadId: uuid("upload_id").notNull(),
     kind: text("kind").$type<MediaKind>().notNull(),
     codec: text("codec"),
@@ -42,6 +39,9 @@ export const mediaAssets = pgTable(
     height: integer("height"),
     byteSize: bigint("byte_size", { mode: "number" }),
     phash: text("phash"),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    stuckCheckedAt: timestamp("stuck_checked_at", { withTimezone: true }),
+    stuckCheckCount: integer("stuck_check_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [
@@ -54,6 +54,9 @@ export const mediaAssets = pgTable(
       .on(t.postId)
       .where(sql`${t.postId} is not null`),
     index("media_assets_status_idx").on(t.status),
+    index("media_assets_stuck_sweep_idx")
+      .on(sql`${t.stuckCheckedAt} asc nulls first`, t.finalizedAt)
+      .where(sql`${t.status} = 'validating' and ${t.finalizedAt} is not null`),
     index("media_assets_phash_idx").on(t.phash),
     index("media_assets_r2_key_idx").on(t.r2Key),
   ],

@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import {
   handleClientFrame,
+  MENTION_BELL_CONCURRENCY,
   type GatewaySession,
   type GatewayDeps,
   type GatewayChatMentions,
@@ -140,5 +141,49 @@ describe("chat @-mentions over the gateway send path", () => {
     const ackFrame = aConn.framesOfType("ack").at(-1) as { message: ChatMessageDTO } | undefined
     expect(ackFrame?.message.mentions).toEqual([])
     expect(notified).toHaveLength(0)
+  })
+})
+
+describe("F090 mention bell fan-out is bounded", () => {
+  it("never runs more than MENTION_BELL_CONCURRENCY bells at once and still notifies every target", async () => {
+    const TARGETS = 40
+    const targets: UserMentionDTO[] = Array.from({ length: TARGETS }, (_, i) => ({
+      id: `${String(i).padStart(8, "0")}-3333-3333-3333-333333333333`,
+      handle: `u${i}`,
+      displayName: `U${i}`,
+    }))
+    let inFlight = 0
+    let peak = 0
+    let done = 0
+    const seam: GatewayChatMentions = {
+      resolveChatMentions: () => Promise.resolve(targets),
+      recordChatMentions: () => Promise.resolve(),
+      notifyChatMention: async () => {
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        } finally {
+          inFlight -= 1
+          done += 1
+        }
+      },
+    }
+    const aConn = new MockConnection("A")
+    const aSession = sessionFor(ALICE, aConn, seam)
+    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "send", cleanupId: ROOM, body: "roll call @u0", clientId: "c4" }),
+    )
+
+    const deadline = Date.now() + 5000
+    while (done < TARGETS && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+
+    expect(done).toBe(TARGETS)
+    expect(peak).toBeGreaterThan(1)
+    expect(peak).toBeLessThanOrEqual(MENTION_BELL_CONCURRENCY)
   })
 })

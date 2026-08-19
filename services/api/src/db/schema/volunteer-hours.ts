@@ -28,6 +28,7 @@ export const volunteerHours = pgTable(
   },
   (t) => [
     index("volunteer_hours_user_idx").on(t.userId),
+    index("volunteer_hours_user_created_idx").on(t.userId, t.createdAt.desc(), t.id.desc()),
     uniqueIndex("volunteer_hours_report_uidx")
       .on(t.reportId)
       .where(sql`${t.source} = 'report'`),
@@ -58,19 +59,6 @@ export const userJurisdictionHours = pgTable(
   ],
 )
 
-/**
- * volunteer_hours_audit: append-only journal of every EVENT hours upsert.
- *
- * SECURITY (audit 2026-07-24, M21): logEventHours upserts with `DO UPDATE SET hours = EXCLUDED.hours`,
- * destroying the previous value, and the only actor trace (logged_by_user_id) is overwritten with it —
- * so an inflated credit could be silently restored later and leave no evidence. Hours feed the PUBLIC
- * jurisdiction leaderboard, which makes this a falsifiable public record. One row is written per
- * credited attendee per upsert, in the same transaction. Never updated, never deleted by app code.
- *
- * Intentionally NOT FK'd to volunteer_hours(id): the journal must outlive the row it describes.
- * (cleanup_id, user_id) is the stable natural key — the same pair the upsert conflicts on. Canonical
- * DDL: drizzle/0053_volunteer_hours_audit.sql.
- */
 export const volunteerHoursAudit = pgTable(
   "volunteer_hours_audit",
   {
@@ -83,11 +71,9 @@ export const volunteerHoursAudit = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id),
-    // The host who made the change. NOT NULL — an audit row with no actor is worthless.
     actorUserId: uuid("actor_user_id")
       .notNull()
       .references(() => users.id),
-    // NULL = no prior credit existed (first log for this attendee), distinct from a stored 0.
     previousHours: numeric("previous_hours", { precision: 6, scale: 2 }),
     newHours: numeric("new_hours", { precision: 6, scale: 2 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

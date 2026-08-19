@@ -185,14 +185,15 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
     await h.app.close()
   })
 
-  it("mints a fresh thread when the reply token is unknown (a stray inbound is not lost)", async () => {
+  it("an UNKNOWN reply token mints no thread — it lands in inbound_emails (finding #37)", async () => {
     const h = await harness()
     const { res } = await ingest(h, {
       eml: rfc822({ from: "x@city.gov", to: "reply+0b0b0b0b0b0b0b0b0b0b0b0b@civfix.org", body: "hi" }),
     })
     expect(res.statusCode).toBe(202)
-    expect(h.mailRepo.threads.size).toBe(1)
-    expect([...h.mailRepo.threads.values()][0]?.threadToken).toBe("0b0b0b0b0b0b0b0b0b0b0b0b")
+    expect(res.json()).toMatchObject({ accepted: true, outcome: "inbox" })
+    expect(h.mailRepo.threads.size).toBe(0)
+    expect(h.inboundRepo.rows).toHaveLength(1)
     await h.app.close()
   })
 

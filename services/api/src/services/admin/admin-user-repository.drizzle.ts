@@ -23,35 +23,30 @@ import type {
 } from "@civfix/shared"
 import { likeContains } from "./like.js"
 
-/**
- * A NULL `users.created_at` is impossible (the column is NOT NULL DEFAULT now() since 0001_core), but the
- * row type is nullable and the keyset anchor must be a Date: falling back here rather than omitting the
- * anchor means a surprise NULL could never make `paginate` return a null cursor while a probe row exists,
- * which silently ENDS pagination.
- */
 const EPOCH = new Date(0)
 
-/**
- * SEARCHED facet counts saturate here so a chip refresh never runs the per-row search probe over the whole
- * table. Matches the reports repo's FACET_COUNT_CAP. The UNFILTERED counts stay exact: they are the
- * dashboard's account totals and AdminUserCounts has no way to say "999+", so a cap there would report a
- * floor as a total.
- */
-const FACET_COUNT_CAP = 999
+const CITY_MATCH_USER_CAP = 5000
 
-/**
- * The user-search predicate (display name / handle, plus an EXISTS probe on the jurisdiction of the user's
- * reports — the "city" column is derived, not stored, so it can only be searched through that join). Shared
- * by listUsers + countByFacet so the chips and the list agree.
- */
-function searchUsersFragment(sql: Queryable, q: string | null): SqlFragment {
+function searchUsersFragment(
+  sql: Queryable,
+  q: string | null,
+  cityUserIds: readonly string[],
+): SqlFragment {
   if (q === null) return sql``
-  const cityProbe = sql`EXISTS (
-    SELECT 1 FROM reports r2
+  const extra: SqlFragment[] =
+    cityUserIds.length > 0 ? [sql`u.id = ANY(${cityUserIds}::uuid[])`] : []
+  return sql`AND ${ilikeAnyOf(sql, [sql`u.display_name`, sql`u.handle::text`], q, extra)}`
+}
+
+async function resolveCityMatchUserIds(sql: Queryable, q: string): Promise<string[]> {
+  const rows = await sql<{ id: string }[]>`
+    SELECT DISTINCT r2.reporter_user_id AS id
+    FROM reports r2
     JOIN jurisdictions j2 ON j2.geoid = r2.jurisdiction_geoid
-    WHERE r2.reporter_user_id = u.id AND j2.name ILIKE ${likeContains(q)} ESCAPE '\\'
-  )`
-  return sql`AND ${ilikeAnyOf(sql, [sql`u.display_name`, sql`u.handle::text`], q, [cityProbe])}`
+    WHERE r2.reporter_user_id IS NOT NULL AND j2.name ILIKE ${likeContains(q)} ESCAPE '\\'
+    LIMIT ${CITY_MATCH_USER_CAP}
+  `
+  return rows.map((r) => r.id)
 }
 
 interface UserRowSelect {
@@ -167,7 +162,10 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         conds.push(sql`AND COALESCE(um.account_status, 'active') = ${args.status}`)
       }
       if (args.flaggedOnly) conds.push(sql`AND COALESCE(um.flagged, false) = true`)
-      if (args.q !== null) conds.push(searchUsersFragment(sql, args.q))
+      if (args.q !== null) {
+        const cityUserIds = await resolveCityMatchUserIds(sql, args.q)
+        conds.push(searchUsersFragment(sql, args.q, cityUserIds))
+      }
       if (anchor !== null) {
         conds.push(sql`AND (u.created_at, u.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
@@ -183,11 +181,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     },
 
     async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
-      // UNFILTERED (no q): an EXACT count. AdminUserCounts is a plain 4-number contract with no truncation
-      // flag, so a capped total renders as if 999 WERE the account total on the dashboard's headline chips —
-      // wrong in a way the console cannot signal. This arm is a straight aggregate over users + its
-      // user_moderation PK join with no per-row subquery, which is the cheap half of the cost the cap was
-      // added for; the expensive half is the search probe below, which stays capped.
       if (args.q === null) {
         const rows = await sql<{ all: string; active: string; suspended: string; flagged: string }[]>`
           SELECT
@@ -207,32 +200,20 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         }
       }
 
-      // SEARCHED: counted over a CAPPED candidate set, like the reports/events facets. The chip only needs
-      // "this many or more", and searchUsersFragment's EXISTS-over-reports probe is evaluated per row, so an
-      // exact count here is an O(rows) scan with a correlated subquery on every chip refresh. Candidates are
-      // capped at (buckets x cap)+1 so each status bucket can still reach the cap (the reports repo's
-      // countByBucket uses the same shape for its three buckets). Above the cap the numbers are a floor.
-      const search = searchUsersFragment(sql, args.q)
-      const cap = FACET_COUNT_CAP
+      const cityUserIds = await resolveCityMatchUserIds(sql, args.q)
+      const search = searchUsersFragment(sql, args.q, cityUserIds)
       const rows = await sql<
         { all: string; active: string; suspended: string; flagged: string }[]
       >`
-        WITH candidates AS (
-          SELECT
-            COALESCE(um.account_status, 'active') AS account_status,
-            COALESCE(um.flagged, false) AS flagged
-          FROM users u
-          LEFT JOIN user_moderation um ON um.user_id = u.id
-          WHERE TRUE
-          ${search}
-          LIMIT ${cap * 2 + 1}
-        )
         SELECT
-          LEAST(COUNT(*), ${cap})::text AS all,
-          LEAST(COUNT(*) FILTER (WHERE account_status = 'active'), ${cap})::text AS active,
-          LEAST(COUNT(*) FILTER (WHERE account_status = 'suspended'), ${cap})::text AS suspended,
-          LEAST(COUNT(*) FILTER (WHERE flagged), ${cap})::text AS flagged
-        FROM candidates
+          COUNT(*)::text AS all,
+          COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
+          COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'suspended')::text AS suspended,
+          COUNT(*) FILTER (WHERE COALESCE(um.flagged, false))::text AS flagged
+        FROM users u
+        LEFT JOIN user_moderation um ON um.user_id = u.id
+        WHERE TRUE
+        ${search}
       `
       const r = rows[0]
       return {
@@ -244,8 +225,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     },
 
     async userExists(id: string): Promise<boolean> {
-      // Deliberately NOT filtered on deleted_at: getUser is not either, so a soft-deleted account the
-      // console can still open keeps resolving its sub-activity tabs.
       const rows = await sql<{ ok: number }[]>`SELECT 1 AS ok FROM users WHERE id = ${id} LIMIT 1`
       return rows.length > 0
     },
@@ -361,10 +340,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     ): Promise<{ records: UserMessageRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
       const anchor = decodeKeyset(cursor)
-      // PER-BRANCH keyset + window (the pattern activity-repository already uses): pushed inside each arm of
-      // the union rather than applied to its result. Outside, every message the user had EVER sent across
-      // four tables was materialized and sorted on every page. Each arm can contribute at most lim+1 rows
-      // and the final cut is also lim+1, so the narrowing is lossless.
       const branchCursor = (createdAt: SqlFragment, id2: SqlFragment): SqlFragment =>
         anchor !== null
           ? sql`AND (${createdAt}, ${id2}) < (${anchor.createdAt}, ${anchor.id}::uuid)`
@@ -511,18 +486,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       })
     },
 
-    /**
-     * L5: the role UPDATE and its audit row in ONE transaction.
-     *
-     * Previously the role write went through the auth UserStore on one connection and the audit through
-     * writeAudit(sql, ...) on another, so a crash (or a connection reset) between them committed a
-     * privilege change with NO audit trail — the one mutation in this codebase where that mattered most.
-     * Every other admin mutation here already does effect+audit inside sql.begin; this now matches.
-     *
-     * The prior role is read inside the same transaction and recorded on the audit meta, so the log says
-     * what the change actually was rather than only where it landed. Returns false when the user does not
-     * exist (or is soft-deleted), leaving the transaction with no effect.
-     */
     async applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean> {
       return sql.begin(async (tx) => {
         const existing = await tx<{ role: Role }[]>`

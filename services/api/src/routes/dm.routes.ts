@@ -1,17 +1,3 @@
-/**
- * Direct-message route plugin (1:1 DMs).
- *
- *   POST /dm                [auth][csrf][rate-limit]  open (or fetch) the DM thread with a user.
- *                           Idempotent. 404 missing/deleted target; 403 self / blocked / DM-disabled
- *                           (the 403s share one generic message so block and DM-off are indistinguishable).
- *   GET  /dm/:id/messages   [auth]  DM history (mirrors GET /cleanups/:id/messages). Authorized: the viewer
- *                           must be a thread participant AND not blocked either way, else 403.
- *
- * The dm + blocks repos come from the container's memoized singletons (Drizzle in prod, in-memory in the
- * all-fakes dev path), the SAME instances the WS gateway and the threads UNION use, so an open-then-chat
- * flow is consistent across HTTP + WS. The target-user lookup rides the auth bundle's UserStore (which now
- * reads allow_direct_messages). Tests inject the repos via chatOverrides.
- */
 
 import {
   OpenDmRequestSchema,
@@ -42,12 +28,10 @@ import {
   makeConversationMutesRepository,
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
-import { chatHistoryPayload } from "./chat-route-helpers.js"
+import { chatHistoryPayload, neutralizeChatViewerFields } from "./chat-route-helpers.js"
 
-/** Path param schema for routes taking a thread/user UUID in the URL. */
 const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-/** Path-param schema for the per-message routes (edit / react / delete share the `:threadId`/`:messageId` shape). */
 const ThreadMessageParamsSchema = z.object({ threadId: IdSchema, messageId: IdSchema }).strict()
 
 export const EditDmMessageBodySchema = trimTextFields(EditChatMessageRequestSchema, "body")
@@ -57,7 +41,6 @@ export const DM_OPEN_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" 
 export const DM_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 export const DM_MESSAGE_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
-/** Default DM history page size (shared cap is 50). Matches the cleanup chat default. */
 const DM_HISTORY_DEFAULT_LIMIT = 30
 
 export async function registerDmRoutes(app: FastifyInstance, container: Container): Promise<void> {
@@ -70,10 +53,8 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     return app.chatOverrides?.blocksRepo ?? container.getBlocksRepo()
   }
 
-  /** Thread-loading peer resolution, single-sourced with the gateway/edit/react lanes (services/dm-peer). */
   const peerOf = makeDmPeerOf({ getThread: (threadId) => dmRepo().getThread(threadId) })
 
-  /** Load a non-deleted target user (with their DM toggle) from the auth bundle's UserStore. */
   const loadUser: DmUserLookup = async (userId) => {
     const store = app.authServices?.users
     if (!store) return null
@@ -83,20 +64,12 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       id: u.id,
       displayName: u.displayName,
       handle: u.handle,
-      // The UserStore record carries no bio; the peer PersonDTO tolerates a null bio.
       bio: null,
       avatarUrl: u.avatarUrl,
       allowDirectMessages: u.allowDirectMessages,
     }
   }
 
-  /**
-   * The per-conversation mute store (D-E1) behind OpenDmResponse.thread.muted. Without it openDm reported
-   * `muted: false` unconditionally, so reopening a MUTED thread showed it unmuted until the inbox
-   * refreshed. Same override stance as the repos above, plus the all-fakes dev path: with chatOverrides
-   * present but no mutes fake — or under USE_FAKE_CHAT — there is no store and the lookup is skipped
-   * (fail open to unmuted, matching the threads inbox) rather than reaching getDb().
-   */
   let mutesRepo: ConversationMutesRepository | undefined
   function mutes(): ConversationMutesRepository | undefined {
     const overrides = app.chatOverrides
@@ -117,12 +90,6 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     })
   }
 
-  /**
-   * Authorize the viewer for a thread (history/edit/delete share this): they must be a participant AND not
-   * blocked either way. Returns the peer id on success; throws a single generic 403 so "not a participant"
-   * and "blocked" are indistinguishable (no leak). Derives participation from the thread row itself
-   * (getThread returns user_lo/user_hi) so no separate isParticipant round-trip is needed.
-   */
   async function authorizePeer(threadId: string, userId: string, action: string): Promise<string> {
     const peer = await peerOf(threadId, userId)
     if (peer === null) throw AppError.forbidden(action)
@@ -143,19 +110,13 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     },
   )
 
-  // Participant + not-blocked gated; derives participation from the thread row (one fewer round-trip).
   route(app, "dmMessages", async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(DmIdParamsSchema, request.params)
-    // Non-strict like the cleanup history query: tolerates the threadId path-param echo the typed client
-    // serializes into the query, and coerces `limit`. The authoritative id is the URL path.
     const q = parse(DmHistoryQuerySchema, request.query)
     await authorizePeer(id, userId, "You can't view this conversation.")
 
     const limit = q.limit ?? DM_HISTORY_DEFAULT_LIMIT
-    // Pass the viewer so each message's reactions resolve the viewer's own `mine` flag on the first page.
-    // `around` (P2 2.4) centers the page on a target message (schema rejects around+before together);
-    // the pins/prevCursor page contract lives in chatHistoryPayload.
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>
@@ -168,9 +129,6 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     reply.status(200).send(payload)
   })
 
-  // Sender-only edit, delegated to the unified chat-edit-service (P0 Task 0.2): the full gate ladder
-  // (room-ref 404, not_sender 403, deleted 409, kind 422, edit window 403, peer + block re-check, slur
-  // filter) plus the {type:"message_update"} broadcast live there. Route shape/response unchanged.
   route(
     app,
     "editDmMessage",
@@ -178,8 +136,6 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     async (request, reply) => {
       const userId = requireAuth(request)
       const { threadId, messageId } = parse(ThreadMessageParamsSchema, request.params)
-      // The body schema carries threadId/messageId (the typed client fills the path-param keys); the
-      // authoritative ids are the URL path, so stamp them before validating the bounded body.
       const body = parse(EditDmMessageBodySchema, { ...(request.body as object), threadId, messageId })
 
       const edits = makeChatEditService({
@@ -197,11 +153,11 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
         mentionedUserIds: body.mentionedUserIds,
       })
 
-      // LEGACY REALTIME compat: also re-broadcast the SAME {type:"message"} dm frame the gateway `send`
-      // uses, so pre-message_update clients still upsert the edit by id (the editor reconciles from this
-      // 200 response). Best-effort fire-and-forget. Removed once P0 clients are everywhere.
       void Promise.resolve(
-        container.chatService.broadcast(roomKeyFor("dm", threadId), updated),
+        container.chatService.broadcast(
+          roomKeyFor("dm", threadId),
+          neutralizeChatViewerFields(updated),
+        ),
       ).catch(() => {})
 
       reply.status(200).send(updated)
@@ -220,27 +176,24 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
         threadId,
         messageId,
       })
-      // DM-only build: the cleanup-chat deps are omitted (this route never toggles a cleanup reaction).
       const reactions = makeChatReactionService({
         dm: dmRepo(),
         dmPeerOf: peerOf,
         isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
       })
       const updated = await reactions.toggleDmReaction(threadId, messageId, userId, body.emoji)
-      // REALTIME: fan a {type:"reaction"} frame (roomKind:"dm") to the thread so connected sockets re-render.
       void Promise.resolve(
         container.chatService.broadcastEvent?.(roomKeyFor("dm", threadId), {
           type: "reaction",
           cleanupId: threadId,
           roomKind: "dm",
-          message: updated,
+          message: neutralizeChatViewerFields(updated),
         }),
       ).catch(() => {})
       reply.status(200).send(updated)
     },
   )
 
-  // Author self-delete: sender-only via the repo WHERE gate; a null return is a generic 403.
   route(
     app,
     "deleteDmMessage",
@@ -252,9 +205,6 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
 
       const tombstone: ChatMessageDTO | null = await dmRepo().softDelete(threadId, messageId, userId)
       if (tombstone === null) {
-        // Same idempotency stance as the room delete routes (chat-route-helpers deleteMessageWithPowers):
-        // a sender retrying a delete that already landed gets 409 rather than a misleading 403. Only the
-        // row's own sender learns the difference; everything else keeps the generic 403.
         const meta = await dmRepo().findMessageMeta(messageId)
         if (
           meta !== null &&
@@ -267,12 +217,11 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
         throw AppError.forbidden("You can't delete this message.")
       }
 
+      const roomView = neutralizeChatViewerFields(tombstone)
       void Promise.resolve(
-        container.chatService.broadcast(roomKeyFor("dm", threadId), tombstone),
+        container.chatService.broadcast(roomKeyFor("dm", threadId), roomView),
       ).catch(() => {})
-      // P0: {type:"message_update"} with the tombstoned DTO so connected clients drop the bubble live
-      // (previously they only learned of a delete on refetch). Best-effort, alongside the legacy frame.
-      broadcastMessageUpdate(container.chatService, "dm", threadId, tombstone)
+      broadcastMessageUpdate(container.chatService, "dm", threadId, roomView)
 
       reply.status(200).send(tombstone)
     },

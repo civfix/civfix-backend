@@ -13,6 +13,7 @@
  */
 
 import type { Sql } from "../db/client.js"
+import { TOMBSTONE_HANDLE_RE } from "./stores.js"
 
 /**
  * Static reserved-handle blocklist (lowercase, base forms). System / role / route names a citizen must
@@ -51,7 +52,8 @@ const RESERVED_SET = new Set(RESERVED_HANDLES.map((h) => h.toLowerCase()))
 
 /** True when `handle` is on the static reserved blocklist (case-insensitive). */
 export function isReservedHandle(handle: string): boolean {
-  return RESERVED_SET.has(handle.trim().toLowerCase())
+  const h = handle.trim().toLowerCase()
+  return RESERVED_SET.has(h) || TOMBSTONE_HANDLE_RE.test(h)
 }
 
 /**

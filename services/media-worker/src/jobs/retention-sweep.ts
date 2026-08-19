@@ -7,9 +7,8 @@ export interface RetentionSweepDeps extends JobObsDeps {
   sql: Sql
   graceMs?: number
   idempotencyRetentionMs?: number
-  /** Rows deleted per page, per table. */
+  notificationsRetentionMs?: number
   batchSize?: number
-  /** Bound on pages drained per table in one run (see RETENTION_MAX_PAGES). */
   maxPages?: number
 }
 
@@ -18,19 +17,14 @@ export interface RetentionSweepResult {
   anonTokens: number
   sessions: number
   idempotencyKeys: number
+  notifications: number
   errors: number
 }
 
 export const RETENTION_GRACE_MS = 60 * 60 * 1000
 export const RETENTION_BATCH = 5000
 export const RETENTION_IDEMPOTENCY_MS = 48 * 60 * 60 * 1000
-/**
- * Pages drained per table per run. The sweep runs ONCE A DAY, so a single fixed batch was a throughput
- * CEILING: any table whose daily expiry churn exceeded RETENTION_BATCH (sessions and idempotency_keys
- * plausibly do at scale) would grow a backlog the sweep could never catch up on — the same M10 failure the
- * orphan sweep was rewritten to fix. Draining while pages come back full removes the ceiling; this bound
- * keeps one run from holding the connection all night.
- */
+export const RETENTION_NOTIFICATIONS_MS = 90 * 24 * 60 * 60 * 1000
 export const RETENTION_MAX_PAGES = 20
 
 export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<RetentionSweepResult> {
@@ -43,19 +37,19 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
   const idempotencyCutoff = new Date(
     now.getTime() - (deps.idempotencyRetentionMs ?? RETENTION_IDEMPOTENCY_MS),
   )
+  const notificationsCutoff = new Date(
+    now.getTime() - (deps.notificationsRetentionMs ?? RETENTION_NOTIFICATIONS_MS),
+  )
 
   const result: RetentionSweepResult = {
     otps: 0,
     anonTokens: 0,
     sessions: 0,
     idempotencyKeys: 0,
+    notifications: 0,
     errors: 0,
   }
 
-  /**
-   * Drain one table. The count is accumulated PER PAGE so a mid-drain failure still reports the rows it
-   * did delete. A table failure is counted + reported and the remaining tables still run (never throws).
-   */
   async function drainTable(
     table: string,
     deletePage: (limit: number) => Promise<unknown[]>,
@@ -116,8 +110,8 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     "idempotency_keys",
     (limit) => deps.sql<{ key: string }[]>`
       DELETE FROM idempotency_keys
-      WHERE key IN (
-        SELECT key FROM idempotency_keys
+      WHERE ctid IN (
+        SELECT ctid FROM idempotency_keys
         WHERE created_at < ${idempotencyCutoff}
         LIMIT ${limit}
       )
@@ -126,11 +120,26 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     (n) => (result.idempotencyKeys += n),
   )
 
+  await drainTable(
+    "notifications",
+    (limit) => deps.sql<{ id: string }[]>`
+      DELETE FROM notifications
+      WHERE id IN (
+        SELECT id FROM notifications
+        WHERE created_at < ${notificationsCutoff}
+        LIMIT ${limit}
+      )
+      RETURNING id
+    `,
+    (n) => (result.notifications += n),
+  )
+
   log("retention.sweep: done", {
     otps: result.otps,
     anonTokens: result.anonTokens,
     sessions: result.sessions,
     idempotencyKeys: result.idempotencyKeys,
+    notifications: result.notifications,
     errors: result.errors,
     cutoff: cutoff.toISOString(),
   })

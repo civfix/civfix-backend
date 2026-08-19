@@ -1,17 +1,3 @@
-/**
- * Postgres-backed PostRepository: all SQL for the social-feed posts feature.
- *
- * Repost / quote / reply are `posts` rows disambiguated by `kind` (+ repost_of_id / reply_to_id), so
- * the home timeline is one keyset scan. Interaction toggles (like / save / repost) insert-or-delete the
- * thin interaction row AND bump the denormalized posts.<x>_count IN THE SAME txn (precedent:
- * cleanups.bags, report chat counts). Post media reuses media_assets (post_id + purpose='post');
- * @-mentions reuse the table-parameterized makeMentionRepo(sql,'post_mentions'). Hydration joins the
- * author PersonDTO, the LinkedEventRef / LinkedReportRef attachment cards, media, mentions, the
- * repost/quote target preview (PostRefDTO), and the viewer's {liked,reposted,saved} flags.
- *
- * Written against the raw postgres-js tag (`Sql`), matching report-repository.drizzle.ts /
- * social-repository.drizzle.ts / chat-reactions.drizzle.ts.
- */
 
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
@@ -28,34 +14,27 @@ import type { POST_KIND_VALUES } from "../db/schema/types.js"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
+import { publicAuthorIdentity } from "./public-author.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
 
 type PostKind = (typeof POST_KIND_VALUES)[number]
 
-/** Default page size when a list request omits `limit` (shared caps `limit` at 50). */
 export const POSTS_DEFAULT_LIMIT = 20
 
-/**
- * The nil UUID used as the "viewer" when hydrating the PUBLIC feed for a signed-out reader. No user row
- * carries the nil id, so every viewer-scoped subquery (likes / saves / reposts / is_following) matches
- * nothing and returns false — the correct not-signed-in viewer state — without threading a nullable
- * viewer through hydrate/pageOf.
- */
 export const NIL_VIEWER_ID = "00000000-0000-0000-0000-000000000000"
 
 export interface CreatePostArgs {
   authorId: string
-  kind: PostKind // 'post' | 'quote' | 'reply' (a pure repost uses repost(), not this)
+  kind: PostKind
   body: string | null
-  replyToId: string | null // set for kind='reply'
-  repostOfId: string | null // set for kind='quote'
+  replyToId: string | null
+  repostOfId: string | null
   eventId: string | null
   reportId: string | null
   mediaUploadIds: string[]
-  mentionedUserIds: string[] // already resolved, deduped, self-excluded by the caller
+  mentionedUserIds: string[]
 }
 
-/** Minimal shape used for authorization + notification targeting (no hydration). */
 export interface PostBrief {
   id: string
   authorId: string
@@ -80,7 +59,6 @@ export interface HomeFeedArgs extends PostListArgs {
   filter: "all" | "events" | "fixes"
 }
 
-/** The public/global feed (signed-out viewers): no personal viewer, so no follow scope + no viewer flags. */
 export interface PublicFeedArgs {
   filter: "all" | "events" | "fixes"
   cursor: string | null
@@ -100,7 +78,6 @@ export interface PostRepository {
   unlike(postId: string, userId: string): Promise<boolean>
   save(postId: string, userId: string): Promise<boolean>
   unsave(postId: string, userId: string): Promise<boolean>
-  /** Resolve to the ORIGINAL target (walking a pure-repost chain) and toggle a repost row. */
   repost(postId: string, userId: string): Promise<{ targetId: string; created: boolean }>
   unrepost(postId: string, userId: string): Promise<{ targetId: string; removed: boolean }>
 
@@ -112,9 +89,6 @@ export interface PostRepository {
   listSaves(args: PostListArgs): Promise<FeedPage>
 }
 
-// ---------------------------------------------------------------------------
-// Row shapes
-// ---------------------------------------------------------------------------
 
 interface PostRowSelect {
   id: string
@@ -145,6 +119,7 @@ interface AuthorRow {
   avatar_r2_key: string | null
   avatar_url: string | null
   is_following: boolean
+  deleted_at: Date | null
 }
 
 interface EventRow {
@@ -183,6 +158,10 @@ interface RefRow {
   body: string | null
   event_id: string | null
   report_id: string | null
+  like_count: number
+  repost_count: number
+  reply_count: number
+  save_count: number
   created_at: Date
   deleted_at: Date | null
   author_id: string | null
@@ -191,6 +170,13 @@ interface RefRow {
   bio: string | null
   verified: boolean | null
   avatar_url: string | null
+}
+
+interface PostCounts {
+  likes: number
+  reposts: number
+  replies: number
+  saves: number
 }
 
 interface MediaRow {
@@ -242,19 +228,12 @@ export async function tombstonePostInTx(tx: Queryable, postId: string): Promise<
 }
 
 export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRepository {
-  // -- author PersonDTO ------------------------------------------------------
   async function loadAuthors(
     ids: string[],
     viewerId: string,
   ): Promise<Map<string, PersonDTO>> {
     const out = new Map<string, PersonDTO>()
     if (ids.length === 0) return out
-    // M-follow-counts: the follower/following totals are the denormalized users.follower_count /
-    // users.following_count (0059_users_follow_counters.sql), maintained by addFollow/removeFollow. They
-    // started as correlated count(*) subqueries per author row (a popular account's whole edge list on
-    // every feed render), then became two grouped index scans per page; now they are two columns of a
-    // row this query already reads. Only `is_following` is still viewer-relative, and that is a single
-    // PK probe per author.
     const rows = await sql<AuthorRow[]>`
       SELECT
         u.id,
@@ -266,6 +245,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
         am.r2_key AS avatar_r2_key,
         u.avatar_url,
+        u.deleted_at,
         EXISTS (
           SELECT 1 FROM follows_people f WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
         ) AS is_following
@@ -274,18 +254,29 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       WHERE u.id = ANY(${ids}::uuid[])
     `
     const resolved = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {
-      const avatarUrl = r.avatar_r2_key !== null ? await deps.presignAvatar(r.avatar_r2_key) : r.avatar_url
+      const rawAvatarUrl =
+        r.deleted_at === null && r.avatar_r2_key !== null
+          ? await deps.presignAvatar(r.avatar_r2_key)
+          : r.avatar_url
+      const identity = publicAuthorIdentity({
+        id: r.id,
+        displayName: r.display_name,
+        handle: r.handle,
+        avatarUrl: rawAvatarUrl,
+        deletedAt: r.deleted_at,
+      })
       const dto: PersonDTO = {
         id: r.id,
-        name: r.display_name,
-        handle: r.handle,
-        bio: r.bio,
-        avatar: avatarGradient(r.id),
-        ...(avatarUrl !== null ? { avatarUrl } : {}),
-        followers: Number(r.followers),
-        following: Number(r.following),
-        isFollowing: r.is_following,
-        ...(r.verified ? { verified: true } : {}),
+        name: identity.name,
+        handle: identity.handle,
+        bio: identity.deleted ? null : r.bio,
+        avatar: identity.avatar,
+        ...(identity.avatarUrl !== undefined ? { avatarUrl: identity.avatarUrl } : {}),
+        followers: identity.deleted ? 0 : Number(r.followers),
+        following: identity.deleted ? 0 : Number(r.following),
+        isFollowing: identity.deleted ? false : r.is_following,
+        ...(!identity.deleted && r.verified ? { verified: true } : {}),
+        ...(identity.deleted ? { deleted: true } : {}),
       }
       return dto
     })
@@ -293,13 +284,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  // -- attachment cards ------------------------------------------------------
-  // H8 (events, VERIFIED no leak): unlike `reports`, the `cleanups` table has NO `visibility` column and
-  // NO `deleted_at` — an event has exactly one lifecycle axis, `status`, and `cancelled` is a PUBLIC
-  // state that the LinkedEventRef contract carries through to the client so the card can render
-  // "Cancelled". There is therefore no hidden/soft-deleted event this read could leak, and no status
-  // gate belongs here. If a future migration adds a hidden/removed event state, this read MUST gain the
-  // same treatment loadReports got above.
   async function loadEvents(ids: string[]): Promise<Map<string, Omit<LinkedEventRef, "linkedAt">>> {
     const out = new Map<string, Omit<LinkedEventRef, "linkedAt">>()
     if (ids.length === 0) return out
@@ -351,11 +335,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  // H8 (read half): the attachment card is re-read from `reports` on EVERY render, so the visibility
-  // gate has to be re-applied here too — a check done only at attach time is a TOCTOU hole. Without
-  // this the owner's later `unlist` (or a moderator's un-publish) was silently ineffective for as long
-  // as the post existed. Filtered-out ids simply never enter the map and `hydrate` emits `report: null`,
-  // so the post degrades gracefully to a body-only post rather than 404ing the whole feed page.
   async function loadReports(ids: string[]): Promise<Map<string, Omit<LinkedReportRef, "linkedAt">>> {
     const out = new Map<string, Omit<LinkedReportRef, "linkedAt">>()
     if (ids.length === 0) return out
@@ -401,13 +380,18 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  // -- repost/quote target preview -------------------------------------------
-  async function loadRefs(ids: string[], viewerId: string): Promise<Map<string, PostRefDTO>> {
+  async function loadRefs(
+    ids: string[],
+    viewerId: string,
+  ): Promise<{ refs: Map<string, PostRefDTO>; counts: Map<string, PostCounts> }> {
     const out = new Map<string, PostRefDTO>()
-    if (ids.length === 0) return out
+    const counts = new Map<string, PostCounts>()
+    if (ids.length === 0) return { refs: out, counts }
     const rows = await sql<RefRow[]>`
       SELECT
-        p.id, p.kind, p.body, p.event_id, p.report_id, p.created_at, p.deleted_at,
+        p.id, p.kind, p.body, p.event_id, p.report_id,
+        p.like_count, p.repost_count, p.reply_count, p.save_count,
+        p.created_at, p.deleted_at,
         u.id AS author_id, u.display_name, u.handle, u.bio, u.avatar_url,
         EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified
       FROM posts p
@@ -443,15 +427,18 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         excerpt: deleted ? "" : excerptOf(r.body, r.event_id !== null, r.report_id !== null),
         createdAt: r.created_at.toISOString(),
         ...(deleted ? { deleted: true } : {}),
-        // Filled by the caller from the shared media load (one query covers posts + refs). A tombstoned
-        // post shows no media even if its rows survive the soft delete.
         media: [],
       })
+      counts.set(r.id, {
+        likes: Number(r.like_count),
+        reposts: Number(r.repost_count),
+        replies: Number(r.reply_count),
+        saves: Number(r.save_count),
+      })
     }
-    return out
+    return { refs: out, counts }
   }
 
-  // -- media -----------------------------------------------------------------
   async function loadMedia(ids: string[]): Promise<Map<string, MediaDTO[]>> {
     const out = new Map<string, MediaDTO[]>()
     if (ids.length === 0) return out
@@ -483,29 +470,27 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  // -- viewer interaction flags ----------------------------------------------
   async function loadViewerFlags(
     rows: PostRowSelect[],
     viewerId: string,
   ): Promise<{ liked: Set<string>; saved: Set<string>; repostedTargets: Set<string> }> {
     const ids = rows.map((r) => r.id)
-    // A repost row's "reposted" flag reflects the ORIGINAL target; other rows use their own id.
-    const targetIds = rows.map((r) => (r.kind === "repost" && r.repost_of_id ? r.repost_of_id : r.id))
+    const subjectIds = rows.map((r) => (r.kind === "repost" && r.repost_of_id ? r.repost_of_id : r.id))
     const liked = new Set<string>()
     const saved = new Set<string>()
     const repostedTargets = new Set<string>()
     if (ids.length === 0) return { liked, saved, repostedTargets }
     const [likeRows, saveRows, repostRows] = await Promise.all([
       sql<{ post_id: string }[]>`
-        SELECT post_id FROM post_likes WHERE user_id = ${viewerId} AND post_id = ANY(${ids}::uuid[])
+        SELECT post_id FROM post_likes WHERE user_id = ${viewerId} AND post_id = ANY(${subjectIds}::uuid[])
       `,
       sql<{ post_id: string }[]>`
-        SELECT post_id FROM post_saves WHERE user_id = ${viewerId} AND post_id = ANY(${ids}::uuid[])
+        SELECT post_id FROM post_saves WHERE user_id = ${viewerId} AND post_id = ANY(${subjectIds}::uuid[])
       `,
       sql<{ repost_of_id: string }[]>`
         SELECT repost_of_id FROM posts
         WHERE kind = 'repost' AND author_id = ${viewerId}
-          AND repost_of_id = ANY(${targetIds}::uuid[]) AND deleted_at IS NULL
+          AND repost_of_id = ANY(${subjectIds}::uuid[]) AND deleted_at IS NULL
       `,
     ])
     for (const r of likeRows) liked.add(r.post_id)
@@ -514,16 +499,12 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return { liked, saved, repostedTargets }
   }
 
-  // -- hydrate rows -> PostDTO[] ---------------------------------------------
   async function hydrate(rows: PostRowSelect[], viewerId: string): Promise<PostDTO[]> {
     if (rows.length === 0) return []
     const postIds = rows.map((r) => r.id)
     const authorIds = [...new Set(rows.map((r) => r.author_id))]
     const eventIds = [...new Set(rows.map((r) => r.event_id).filter((x): x is string => x !== null))]
     const reportIds = [...new Set(rows.map((r) => r.report_id).filter((x): x is string => x !== null))]
-    // Refs cover BOTH the repost/quote target and the REPLY PARENT: `replyTo` is the parent preview a
-    // "Replying to @handle" line needs, and it is loaded through the same blocked-author-filtered path, so
-    // a parent from a blocked account resolves to null instead of leaking that it exists.
     const refIds = [
       ...new Set(
         rows
@@ -531,11 +512,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
           .filter((x): x is string => x !== null),
       ),
     ]
-    // ONE media query for posts AND refs. Splitting them would double the presign fan-out for a feed page
-    // where a quote's target is also a post on the same page.
     const mediaIds = [...new Set([...postIds, ...refIds])]
 
-    const [authors, media, mentions, events, reports, refs, flags] = await Promise.all([
+    const [authors, media, mentions, events, reports, refsResult, flags] = await Promise.all([
       loadAuthors(authorIds, viewerId),
       loadMedia(mediaIds),
       loadMentionsFor(sql, "post_mentions", postIds, "post_id"),
@@ -544,10 +523,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       loadRefs(refIds, viewerId),
       loadViewerFlags(rows, viewerId),
     ])
+    const refs = refsResult.refs
+    const refCounts = refsResult.counts
 
-    // Attach each ref's own media now that both loads have resolved. A tombstoned ref keeps its empty
-    // list: `loadRefs` already blanks the excerpt for a deleted post, and showing its photos would undo
-    // exactly what the delete was for.
     for (const ref of refs.values()) {
       if (ref.deleted) continue
       ref.media = media.get(ref.id) ?? []
@@ -556,13 +534,22 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     const out: PostDTO[] = []
     for (const r of rows) {
       const author = authors.get(r.author_id)
-      if (!author) continue // author soft-deleted between select + hydrate: drop the row
-      const targetId = r.kind === "repost" && r.repost_of_id ? r.repost_of_id : r.id
+      if (!author) continue
+      const isRepost = r.kind === "repost" && r.repost_of_id !== null
+      const targetId = isRepost ? r.repost_of_id! : r.id
       const editedAt = r.updated_at.getTime() > r.created_at.getTime() ? r.updated_at.toISOString() : null
       const eventBase = r.event_id !== null ? events.get(r.event_id) : undefined
       const reportBase = r.report_id !== null ? reports.get(r.report_id) : undefined
       const repostOf = r.repost_of_id !== null ? (refs.get(r.repost_of_id) ?? null) : null
       const postMentions: UserMentionDTO[] = mentions.get(r.id) ?? []
+      const counts: PostCounts = isRepost
+        ? (refCounts.get(targetId) ?? { likes: 0, reposts: 0, replies: 0, saves: 0 })
+        : {
+            likes: Number(r.like_count),
+            reposts: Number(r.repost_count),
+            replies: Number(r.reply_count),
+            saves: Number(r.save_count),
+          }
       const dto: PostDTO = {
         id: r.id,
         author,
@@ -570,16 +557,11 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         body: r.body,
         createdAt: r.created_at.toISOString(),
         editedAt,
-        counts: {
-          likes: Number(r.like_count),
-          reposts: Number(r.repost_count),
-          replies: Number(r.reply_count),
-          saves: Number(r.save_count),
-        },
+        counts,
         viewer: {
-          liked: flags.liked.has(r.id),
+          liked: flags.liked.has(targetId),
           reposted: flags.repostedTargets.has(targetId),
-          saved: flags.saved.has(r.id),
+          saved: flags.saved.has(targetId),
         },
         media: media.get(r.id) ?? [],
         mentions: postMentions,
@@ -609,7 +591,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     `
     const row = rows[0]
     if (!row) return null
-    // A pure repost is not content of its own — reposting it targets the ORIGINAL (walk repost_of_id).
     if (row.kind === "repost" && row.repost_of_id) return row.repost_of_id
     return row.id
   }
@@ -661,11 +642,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return rows.length > 0
     },
 
-    // H8 (attach half): a report may be attached to a post ONLY if it is already publicly readable.
-    // This previously checked `visibility` but NOT `status`, so an anonymous submitter could attach
-    // their own HELD (pre-moderation) report and publish its title, exact lat/lng, address and photo
-    // into the signed-out public feed before any moderator saw it. The predicate now comes from the
-    // shared publicReportFilter() fragment so it can never drift from the read paths again.
     async isReportAttachable(reportId: string): Promise<boolean> {
       const rows = await sql<{ one: number }[]>`
         SELECT 1 AS one FROM reports r
@@ -677,10 +653,18 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
 
     async createPost(args: CreatePostArgs): Promise<string> {
       return sql.begin(async (tx) => {
+        const replyToId =
+          args.replyToId !== null
+            ? ((await resolveOriginalTarget(tx, args.replyToId)) ?? args.replyToId)
+            : null
+        const repostOfId =
+          args.repostOfId !== null
+            ? ((await resolveOriginalTarget(tx, args.repostOfId)) ?? args.repostOfId)
+            : null
         let threadRootId: string | null = null
-        if (args.replyToId !== null) {
+        if (replyToId !== null) {
           const parentRows = await tx<{ id: string; thread_root_id: string | null }[]>`
-            SELECT id, thread_root_id FROM posts WHERE id = ${args.replyToId}
+            SELECT id, thread_root_id FROM posts WHERE id = ${replyToId}
           `
           const parent = parentRows[0]
           threadRootId = parent?.thread_root_id ?? parent?.id ?? null
@@ -688,22 +672,20 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const inserted = await tx<{ id: string }[]>`
           INSERT INTO posts (author_id, kind, body, reply_to_id, thread_root_id, repost_of_id, event_id, report_id)
           VALUES (
-            ${args.authorId}, ${args.kind}, ${args.body}, ${args.replyToId}, ${threadRootId},
-            ${args.repostOfId}, ${args.eventId}, ${args.reportId}
+            ${args.authorId}, ${args.kind}, ${args.body}, ${replyToId}, ${threadRootId},
+            ${repostOfId}, ${args.eventId}, ${args.reportId}
           )
           RETURNING id
         `
         const postId = inserted[0]!.id
 
         if (args.mediaUploadIds.length > 0) {
-          // Capability-based claim (knowing the unguessable uploadId is the proof): only finalize uploads
-          // that are not already bound to a report / chat message / another post.
           const claimed = await tx<{ upload_id: string }[]>`
             UPDATE media_assets
             SET post_id = ${postId}, purpose = 'post'
             WHERE upload_id IN ${tx(args.mediaUploadIds)}
               AND post_id IS NULL AND chat_message_id IS NULL AND report_id IS NULL
-              AND status IN ('ready', 'validating')
+              AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
             RETURNING upload_id
           `
           if (claimed.length !== new Set(args.mediaUploadIds).size) {
@@ -719,8 +701,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
           )
         }
 
-        if (args.replyToId !== null) {
-          await tx`UPDATE posts SET reply_count = reply_count + 1 WHERE id = ${args.replyToId}`
+        if (replyToId !== null) {
+          await tx`UPDATE posts SET reply_count = reply_count + 1 WHERE id = ${replyToId}`
         }
 
         return postId
@@ -783,9 +765,19 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return sql.begin(async (tx) => {
         const targetId = await resolveOriginalTarget(tx, postId)
         if (targetId === null) return { targetId: postId, created: false }
+        const revived = await tx<{ id: string }[]>`
+          UPDATE posts SET deleted_at = NULL, updated_at = now()
+          WHERE author_id = ${userId} AND kind = 'repost' AND repost_of_id = ${targetId}
+            AND deleted_at IS NOT NULL
+          RETURNING id
+        `
+        if (revived.length > 0) {
+          await tx`UPDATE posts SET repost_count = repost_count + 1 WHERE id = ${targetId}`
+          return { targetId, created: true }
+        }
         const ins = await tx<{ id: string }[]>`
           INSERT INTO posts (author_id, kind, repost_of_id) VALUES (${userId}, 'repost', ${targetId})
-          ON CONFLICT (author_id, repost_of_id) WHERE kind = 'repost' DO NOTHING
+          ON CONFLICT (author_id, repost_of_id) WHERE kind = 'repost' AND deleted_at IS NULL DO NOTHING
           RETURNING id
         `
         if (ins.length === 0) return { targetId, created: false }
@@ -799,8 +791,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const targetId = await resolveOriginalTarget(tx, postId)
         if (targetId === null) return { targetId: postId, removed: false }
         const del = await tx<{ id: string }[]>`
-          DELETE FROM posts
+          UPDATE posts SET deleted_at = now()
           WHERE author_id = ${userId} AND kind = 'repost' AND repost_of_id = ${targetId}
+            AND deleted_at IS NULL
           RETURNING id
         `
         if (del.length === 0) return { targetId, removed: false }
@@ -820,20 +813,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return hydrated[0] ?? null
     },
 
-    // The signed-in home timeline: the viewer's own posts + the people they follow, newest first.
-    // TOP-LEVEL ONLY (`reply_to_id IS NULL`) — byte-identical to the predicate publicFeed carries below,
-    // so the signed-in and signed-out timelines show the same SHAPE of content and differ only in scope.
-    // THE BUG THIS FIXES: the predicate shipped with publicFeed and was never backfilled here, so a
-    // signed-out reader got a clean timeline while a signed-in reader got a reply dump — every reply the
-    // viewer or anyone they followed wrote arrived as a top-level row. A reply is thread content: out of
-    // its thread it reads as a non-sequitur (a bare "count me in" with no referent), it belongs to
-    // listReplies() and the thread view, and leaving it here let one chatty conversation bury the feed.
-    // REPOSTS AND QUOTES OF A REPLY DO STILL APPEAR, deliberately: repost()/quote rows never set
-    // reply_to_id, so their OWN row is top-level and survives this filter. Amplifying is a deliberate act
-    // by someone the viewer follows, exactly as on Twitter — see the integration test that pins it.
-    // FILTERING IN SQL, NOT IN THE CLIENT, is load-bearing twice over: `LIMIT ${limit + 1}` + the keyset
-    // cursor means every page still returns a full `limit` items with no gaps or duplicates (a client-side
-    // filter would hand back short pages), and it reaches every already-shipped binary on the next deploy.
     async homeFeed(args: HomeFeedArgs): Promise<FeedPage> {
       const cursor = parseTimeCursor(args.cursor)
       const cursorFilter =
@@ -869,11 +848,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return pageOf(rows, args.limit, args.viewerId)
     },
 
-    // The PUBLIC/global feed for signed-out viewers: every non-deleted top-level post, newest first, with
-    // NO follow scope (there is no viewer to follow anyone) and NO block filter. It hydrates with the nil
-    // UUID as the "viewer", which matches no like/save/repost/follow row, so every viewer flag comes back
-    // false — exactly right for a not-signed-in reader. Top-level only (reply_to_id IS NULL) so the public
-    // feed reads like the home timeline, not a flat reply dump.
     async publicFeed(args: PublicFeedArgs): Promise<FeedPage> {
       const cursor = parseTimeCursor(args.cursor)
       const cursorFilter =
@@ -892,6 +866,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         FROM posts p
         WHERE p.deleted_at IS NULL
           AND p.reply_to_id IS NULL
+          AND p.visibility = 'public'
           ${filterClause}
           ${cursorFilter}
         ORDER BY p.created_at DESC, p.id DESC
@@ -901,8 +876,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     },
 
     async listReplies(postId: string, args: PostListArgs): Promise<FeedPage> {
-      const cursor = parseTimeCursor(args.cursor)
-      // Replies read oldest-first (thread order); keyset advances forward.
+      const cursor = parseTimeCursor(args.cursor, { direction: "asc" })
       const cursorFilter =
         cursor !== null ? sql`AND (p.created_at, p.id) > (${cursor.at}, ${cursor.id}::uuid)` : sql``
       const rows = await sql<PostRowSelect[]>`
@@ -928,7 +902,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       const cursor = parseTimeCursor(args.cursor)
       const cursorFilter =
         cursor !== null ? sql`AND (p.created_at, p.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
-      // The profile "Posts" tab excludes replies (matches Twitter's Posts vs Replies split).
       const rows = await sql<PostRowSelect[]>`
         SELECT
           p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
@@ -945,7 +918,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
 
     async listSaves(args: PostListArgs): Promise<FeedPage> {
       const cursor = parseTimeCursor(args.cursor)
-      // Keyset over the SAVE time (newest-saved first), not the post's own created_at.
       const cursorFilter =
         cursor !== null ? sql`AND (ps.created_at, ps.post_id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
       const rows = await sql<(PostRowSelect & { saved_at: Date })[]>`
@@ -965,8 +937,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         ORDER BY ps.created_at DESC, ps.post_id DESC
         LIMIT ${args.limit + 1}
       `
-      // Keyset anchor is the SAVE time + the saved post's id — (ps.created_at, ps.post_id), which the
-      // cursorFilter above consumes; ps.post_id is p.id by the join.
       const { items: pageRows, nextCursor } = paginate(rows, args.limit, (r) => ({
         at: r.saved_at,
         id: r.id,

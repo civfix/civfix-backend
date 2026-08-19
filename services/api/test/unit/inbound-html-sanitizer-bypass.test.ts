@@ -46,6 +46,41 @@ describe("sanitizer bypass attempts", () => {
       ),
     ).toContain("<p>hi</p>")
   })
+  it("F103: an UNCLOSED non-raw-text drop element no longer swallows the rest of the body", () => {
+    const out = sanitizeInboundHtml(
+      "<p>before the form</p><form action=x><p>the municipality's actual reply</p>",
+    )
+    expect(out).toContain("before the form")
+    expect(out).toContain("the municipality's actual reply")
+    expect(out?.toLowerCase()).not.toContain("<form")
+  })
+
+  it("F103: a NON-CANONICAL closing tag still closes the swallow instead of running to end-of-document", () => {
+    const out = sanitizeInboundHtml(
+      '<form action=x><p>hidden</p></form data-x="1"><p>kept after the form</p>',
+    )
+    expect(out).toContain("kept after the form")
+    expect(out).not.toContain("hidden")
+  })
+
+  it("F103: unclosed head/iframe drop the tag but keep the surrounding body", () => {
+    const head = sanitizeInboundHtml("<head><p>still here</p>")
+    expect(head).toContain("still here")
+    expect(head?.toLowerCase()).not.toContain("<head")
+
+    const frame = sanitizeInboundHtml("<p>a</p><iframe src=https://evil.example><p>b</p>")
+    expect(frame).toContain("a")
+    expect(frame).toContain("b")
+    expect(frame?.toLowerCase()).not.toContain("<iframe")
+  })
+
+  it("F103: raw-text elements STILL swallow to end-of-document when unclosed (browser semantics)", () => {
+    const out = sanitizeInboundHtml("<p>before</p><script>alert(1)<p>after</p>")
+    expect(out).toContain("before")
+    expect(out?.toLowerCase()).not.toContain("alert(1)")
+    expect(out).not.toContain("after")
+  })
+
   it("no catastrophic backtracking on pathological input", () => {
     const t0 = Date.now()
     sanitizeInboundHtml("<" + "a".repeat(50000) + " " + "b=1 ".repeat(20000))

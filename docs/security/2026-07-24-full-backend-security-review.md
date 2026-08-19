@@ -320,12 +320,13 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **67 files**, `0000_extensions.sql` … `0066_backfill_post_reply_counts.sql`. The nine rows
+`drizzle/` holds **96 files**, `0000_extensions.sql` … `0095_media_stuck_sweep_rotation.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
 later still, with the service-hours feature set, and have their own table in §1a below; `0065` and `0066`
-are DATA migrations and have §1b and §1c to themselves.) Both backfills live **inside** their own migration file
+are DATA migrations and have §1b and §1c to themselves. `0067`–`0095` arrived later still, with the
+production-readiness fix change set, and have their own table in §1d below.) Both backfills live **inside** their own migration file
 (`0058`'s `sessions.created_at`, `0059`'s follow counters; §2 and §6 below), so there is no separate
 backfill step to remember: the three `db:backfill*` scripts in `services/api/package.json` (report
 jurisdiction geoids, reference codes, ACS population) are boundary/ingest tooling and are not part of this
@@ -446,6 +447,46 @@ bookkeeping INSERT. A file that opens its own ends the runner's mid-flight: the 
 separately, the runner's trailing `commit` only warns, and the catch branch's `rollback` becomes a no-op —
 a half-applied file recorded as applied, with no error anywhere.
 `test/unit/migrations-transaction-control.test.ts` asserts this over the real directory.
+
+## 1d. Production-readiness fix change set (`0067`–`0095`)
+
+The 29 migrations this change set adds, in lexical (apply) order. Several are **hard dependencies** of the
+new images (a new column, table or constraint the code now reads or writes on every request); the rest are
+index-only (a query path that gets slow, never wrong) or one-shot DATA recoveries. All forward-only and
+idempotent on re-apply. The `CHECK`/`FK` pairs (`0072`+`0073`, `0076`+`0077`) add the constraint `NOT VALID`
+first, then `VALIDATE` in a separate file so the validation scan never blocks writes on the hot table.
+
+| File | What it does | If skipped |
+|---|---|---|
+| `0067_chat_partition_window.sql` | creates the current + next-two monthly partitions for the RANGE-partitioned `chat_messages` / `dm_messages` (F001) | **HARD** — once wall-clock passes the newest existing partition bound, every chat/DM insert fails (no partition for range); the worker cron keeps the window open thereafter |
+| `0068_resolve_unscored_nsfw_flags.sql` | DATA recovery: resolves media abuse flags left `unscored` by the pre-fix pipeline (F076) | Assets stuck in the dead "unscored" state stay held/mis-flagged; no new damage, but the backlog never clears itself |
+| `0069_posts_repost_unique_softdelete.sql` | makes unrepost a SOFT delete + partial unique on a live repost `(actor, original) WHERE deleted_at IS NULL` (F003/F148/F054) | **HARD** — repost/unrepost/re-repost double-counts or 500s on the unique the new code assumes |
+| `0070_posts_reply_to_fk_idx.sql` | index on the `posts.reply_to_id` self-FK (F151) | Slow reply-cascade deletes only; no correctness impact |
+| `0071_posts_toplevel_recent_idx.sql` | partial index for the top-level (replies-excluded) feed page (F013) | Home/public feed pages sequential-scan; slow, correct |
+| `0072_posts_media_fk_swap.sql` | swaps the posts self-FKs and `media_assets→posts` FK to explicit `RESTRICT`/`SET NULL`, added `NOT VALID` (F148) | **HARD** — deletes cascade the wrong way (orphaned or over-deleted rows) versus what the new code expects |
+| `0073_posts_media_fk_validate.sql` | `VALIDATE`s the four constraints `0072` added (F148) | The FKs stay unvalidated — enforced for new rows, but existing violations go undetected |
+| `0074_repost_count_reconcile.sql` | DATA: recomputes `posts.repost_count` from live reposts (F054) | Denormalized repost counters keep any pre-fix drift until next mutated |
+| `0075_media_chat_created_at.sql` | adds `media_assets.chat_created_at` (F072) | **HARD** — the chat/DM media-stamp path writes this column; absent → 42703 on those inserts |
+| `0076_media_single_claim_check.sql` | `media_single_claim_chk`: an asset binds at most ONE subject, added `NOT VALID` (F017/F049) | **HARD** — the single-claim invariant the attach path relies on is unenforced; double-claims slip through |
+| `0077_media_single_claim_validate.sql` | `VALIDATE`s `0076` (F017/F049) | Constraint enforced for new rows only; existing double-claims undetected |
+| `0078_idempotency_owner_unique.sql` | partial unique on `(COALESCE(owner…), key)` for per-owner idempotency (F028) | **HARD** — with `0079`, the per-owner idempotency the new code assumes; a shared key collides across users |
+| `0079_idempotency_drop_key_pk.sql` | drops the old key-ONLY primary key on `idempotency_keys` (F028) | **HARD** — the global key PK keeps two users' same idempotency key colliding |
+| `0080_chat_group_bans.sql` | `chat_group_bans` table (F044) | **HARD** — the group ban/unban path reads/writes this table; absent → 42P01 |
+| `0081_mail_messages_dedupe.sql` | DATA: collapses duplicate inbound `mail_messages` by Message-ID (F102) | Pre-existing inbound duplicates remain; `0082`'s unique index would fail to build until deduped |
+| `0082_mail_messages_message_id_uk.sql` | unique on the RFC `Message-ID` so a re-delivered webhook can't double-insert (F102) | **HARD** — inbound-mail dedup relies on this; a retried webhook re-inserts a reply |
+| `0083_jurisdiction_contacts_email_lower_idx.sql` | `lower(email)` index for case-insensitive contact/routing lookup (F111) | Reply routing and the contacts directory sequential-scan; slow |
+| `0084_notifications_feed_idx.sql` | index for the notifications feed (inbox-surfaced kinds excluded) (F089) | Notification feed reads sequential-scan; slow |
+| `0085_user_blocks_blocker_created_idx.sql` | `(blocker_id, created_at)` index for the paginated block list (F014) | `GET /me/blocks` sequential-scans the block table; slow |
+| `0086_notification_prefs_tz.sql` | adds `notification_prefs.tz` for timezone-aware quiet hours (F086) | **HARD** — quiet-hours evaluation reads this column; absent → 42703 |
+| `0087_media_finalized_at.sql` | adds `media_assets.finalized_at` for idempotent finalize (F071) | **HARD** — the finalize path stamps/guards on this column; absent → 42703 |
+| `0088_reports_hold_release_checked_at.sql` | adds `reports.hold_release_checked_at` so the held-anon sweep can cursor forward (F019) | **HARD** — the release sweep updates this column; absent → 42703 and a stalled sweep |
+| `0089_reports_reporter_created_idx.sql` | `(reporter_id, created_at)` index for "my reports" (F026) | The signed-in user's own-reports list sequential-scans; slow |
+| `0090_chat_groups_avatar_media_idx.sql` | index on `chat_groups.avatar_media_id` FK (F002) | Slow avatar-media reference checks only; no correctness impact |
+| `0091_report_claim_code_hash.sql` | adds `reports.claim_code_hash` (the claim secret stored hashed) (F150) | **HARD** — the claim path writes/verifies the hash; absent → 42703 |
+| `0092_anon_tokens_claim_code_null.sql` | makes the dead plaintext `anon_tokens.claim_code` nullable so the code stops writing it (F150) | Insert of a new anon token with a non-null-constrained dead column fails once the code stops populating it |
+| `0093_follows_people_pagination_idx.sql` | index for the outbound-follows ("following") pagination (F158) | The following list sequential-scans; slow |
+| `0094_notifications_created_idx.sql` | bare `created_at` index backing the retention sweep's notifications lane (every other index on the table is `user_id`-leading) | The nightly sweep sequential-scans the whole notifications table once per page; slow, correct |
+| `0095_media_stuck_sweep_rotation.sql` | `media_assets.stuck_checked_at` + `stuck_check_count` (rotation watermark + give-up counter for `media.stuck.sweep`, F087b, same pattern as `0088`), the partial index `media_assets_stuck_sweep_idx` serving that sweep's claim query, and a scoped backfill adopting BOUND rows still stuck at `validating` with no `finalized_at` (the set no sweep could reach) | The stuck sweep re-picks the same permanent residents every 15 min — genuinely stuck media starve behind them and hopeless rows are re-enqueued forever |
 
 ## 2. `sessions.created_at` backfill (`0058`, shipped in wave 3)
 

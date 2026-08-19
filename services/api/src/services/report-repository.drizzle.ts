@@ -49,19 +49,6 @@ function isUniqueViolation(err: unknown): boolean {
   )
 }
 
-/**
- * L12 — what a NON-owner mutation attempt reveals.
- *
- * These owner-only mutations used to answer a flat `forbidden` (403) for every report that exists but
- * isn't yours, INCLUDING held (pre-moderation, anonymous) reports and reports the owner had unlisted.
- * That is an existence oracle: the READ path (report-service.getReport) correctly 404s anything not
- * visible to the caller, so a 403 here confirmed the existence — and the exact reference id — of content
- * the caller was never allowed to know about. A report that is ALREADY publicly readable leaks nothing
- * by admitting it exists, so that case keeps the honest 403 ("this exists, you don't own it"); every
- * other case now mirrors the read path's 404. Deliberately reuses the same predicate as
- * report-sql.ts:publicReportFilter / report-visibility.ts:isReportVisibleTo (the deleted_at term is
- * already handled by the caller before this is reached).
- */
 function notOwnerOutcome(row: {
   status: ReportStatus
   visibility: ReportVisibility
@@ -71,11 +58,17 @@ function notOwnerOutcome(row: {
 }
 
 export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
-  async function readSnapshot(key: string, scope: string): Promise<ReportDTO | null> {
+  async function readSnapshot(
+    key: string,
+    scope: string,
+    userOrAnon: string | null,
+  ): Promise<ReportDTO | null> {
     const rows = await sql<{ response_snapshot: ReportDTO }[]>`
       SELECT response_snapshot
       FROM idempotency_keys
-      WHERE key = ${key} AND scope = ${scope}
+      WHERE key = ${key}
+        AND scope = ${scope}
+        AND user_or_anon IS NOT DISTINCT FROM ${userOrAnon}
       LIMIT 1
     `
     return rows[0]?.response_snapshot ?? null
@@ -140,8 +133,12 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
   }
 
   return {
-    async findIdempotentSnapshot(key: string, scope: string): Promise<ReportDTO | null> {
-      return readSnapshot(key, scope)
+    async findIdempotentSnapshot(
+      key: string,
+      scope: string,
+      userOrAnon: string | null,
+    ): Promise<ReportDTO | null> {
+      return readSnapshot(key, scope, userOrAnon)
     },
 
     async createReportTx(args: CreateReportTxArgs): Promise<CreateReportTxResult> {
@@ -184,13 +181,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
                 -- report. Guarding only report_id let the holder of an uploadId cross-publish an image from
                 -- a private DM into a public report gallery. Mirrors the post path's claim predicate.
                 AND post_id IS NULL AND chat_message_id IS NULL
-                AND status IN ('ready', 'validating')
+                AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
               RETURNING upload_id
             `
-            // M-media-claim: an unclaimable id (unknown, rejected, or already bound elsewhere) used to be
-            // silently ignored — the reporter got a 201 with their photo missing and no way to tell. Fail
-            // the whole create instead, exactly as post-repository.createPost does for the same condition.
-            // Compared against the DEDUPED input because one repeated id claims one row.
             if (claimed.length !== new Set(args.mediaUploadIds).size) {
               throw AppError.validation({
                 mediaUploadIds: "One or more media uploads are unavailable.",
@@ -226,7 +219,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         return { kind: "created", snapshot }
       } catch (err) {
         if (isUniqueViolation(err)) {
-          const stored = await readSnapshot(args.idempotency.key, args.idempotency.scope)
+          const stored = await readSnapshot(
+            args.idempotency.key,
+            args.idempotency.scope,
+            args.idempotency.userOrAnon,
+          )
           if (stored) return { kind: "replayed", snapshot: stored }
           throw AppError.conflict("Report create is still settling; retry")
         }
@@ -373,7 +370,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       reportId: string,
       userId: string,
       input: { status: ReportStatus; note: string },
-    ): Promise<"updated" | "not_found" | "forbidden"> {
+    ): Promise<"updated" | "not_found" | "forbidden" | "invalid_state"> {
       return sql.begin(async (tx) => {
         const rows = await tx<
           {
@@ -392,6 +389,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         const row = rows[0]
         if (!row || row.deleted_at !== null) return "not_found"
         if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
+        if (!isPubliclyVisibleStatus(row.status)) return "invalid_state"
 
         await tx`UPDATE reports SET status = ${input.status} WHERE id = ${reportId}`
         await tx`

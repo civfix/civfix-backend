@@ -1,30 +1,3 @@
-/**
- * Volunteer-hours integration test (Docker-gated). Exercises the Drizzle VolunteerHoursRepository's
- * WS5 per-attendee logEventHours against a live PostGIS container:
- *
- *   - the unnest(uuid[], float8[]) pairing credits each attendee THEIR OWN hours in one statement,
- *     upserting on the 0035 partial-unique index (cleanup_id, user_id) WHERE source='event';
- *   - a re-log OVERWRITES per row and adjusts the user_jurisdiction_hours rollup by the per-row delta
- *     (no double-count), including a mixed re-log that raises one attendee and lowers another;
- *   - the geoid-less branch writes the ledger and adds nothing to the rollup, but DOES reverse a prior
- *     credit out of the jurisdiction the event has moved out of.
- *
- * ...and, since P4, the reads that sit on top of that ledger:
- *
- *   - `listEntries` keyset paging on `(created_at DESC, id DESC)` with EXACT ties, the `voided_at`
- *     filter, the source filter and the title/reference-code/jurisdiction/creditedBy joins;
- *   - the C18 privacy tri-state, whose tripwire is the leaderboard filter: `IS NOT FALSE` keeps every
- *     existing (NULL) account on the board, while a bare `AND u.show_volunteer_hours` would empty it
- *     in every jurisdiction on deploy day;
- *   - `viewerRank` across a tie, `participantCount` against a raw count, and the fact that both are
- *     opt-in so the 3-row Discovery preview stays a single indexed read;
- *   - `listEventHours` + `anyLogged`, and the full three-state public projection through the service.
- *
- * The leaderboard blocks deliberately use LA_COUNTY / CALIFORNIA rather than LA_CITY: this file shares
- * ONE database across all its tests, and the earlier logEventHours cases leave rollups in LA_CITY.
- *
- * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
- */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -49,7 +22,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -57,7 +29,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     return u!.id
   }
 
-  /** Insert a minimal done cleanup owned by `organizerId` and return its id. */
   async function newCleanup(organizerId: string): Promise<string> {
     const id = randomUUID()
     await h.sql`
@@ -86,7 +57,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const cleanupId = await newCleanup(org)
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
-    // First log: three DIFFERENT amounts through the single unnest-paired statement.
     const credited = await repo.logEventHours({
       actorId: org,
       cleanupId,
@@ -98,8 +68,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       ],
     })
     expect(credited.credited).toBe(3)
-    // B33b: the audit INSERT's pre-image comes back out for the hours_logged bell. First log = no prior
-    // credit for anybody, which is NULL and deliberately distinct from a stored 0.
     expect(credited.changed.map((c) => [c.userId, c.hours, c.previousHours]).sort()).toEqual(
       [
         [org, 2, null],
@@ -121,8 +89,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(await rollupFor(alice)).toBe(4.5)
     expect(await rollupFor(bob)).toBe(1)
 
-    // Mixed re-log for a SUBSET: alice goes DOWN (4.5 -> 3), bob goes UP (1 -> 2). Still one row each
-    // (the 0035 partial-unique conflict target), and the rollup moves by the per-row delta.
     const relogged = await repo.logEventHours({
       actorId: org,
       cleanupId,
@@ -133,7 +99,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       ],
     })
     expect(relogged.credited).toBe(2)
-    // The pre-image is what makes the bell fire for bob (1 -> 2) and stay SILENT for alice (4.5 -> 3).
     expect(relogged.changed.map((c) => [c.userId, c.previousHours, c.hours]).sort()).toEqual(
       [
         [alice, 4.5, 3],
@@ -148,10 +113,8 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(rows[0]!.count).toBe(3)
     expect(await rollupFor(alice)).toBe(3)
     expect(await rollupFor(bob)).toBe(2)
-    // Untouched attendee keeps their credit.
     expect(await rollupFor(org)).toBe(2)
 
-    // totalsFor reads the rollup consistently.
     const totals = await repo.totalsFor(alice)
     expect(totals.totalHours).toBe(3)
     expect(totals.byJurisdiction).toEqual([{ geoid: GEOID, name: LA_CITY.name, hours: 3 }])
@@ -185,13 +148,34 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(await rollupFor(org)).toBe(0)
   })
 
-  /**
-   * The event MOVED OUT of all coverage (a host edited its location, so cleanup-service re-resolved
-   * jurisdiction_geoid to null) and the hours were re-logged. The geoid-less branch used to upsert the
-   * ledger row and return, leaving the prior credit on the OLD jurisdiction's PUBLIC leaderboard forever —
-   * with the ledger row that backed it now saying "no jurisdiction". The in-memory twin
-   * (volunteer-hours-repository.memory.ts) always reversed in this case, so fake and prod disagreed.
-   */
+  it("F066: geoid-less hours are counted in totalHours/totalsFor, not silently zeroed by the rollup", async () => {
+    const org = await newUser("Hours F066 Org")
+    const alice = await newUser("Hours F066 Alice")
+    const mapped = await newCleanup(org)
+    const unmapped = randomUUID()
+    await h.sql`
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
+      VALUES (
+        ${unmapped}, ${org}, 'site', 'Unmapped sweep',
+        ST_SetSRID(ST_MakePoint(-118.3, 34.1), 4326),
+        now() - interval '1 day', 'done'
+      )
+    `
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+    await repo.logEventHours({ actorId: org, cleanupId: mapped, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+    await repo.logEventHours({ actorId: org, cleanupId: unmapped, geoid: null, entries: [{ userId: alice, hours: 1.5 }] })
+
+    const ledgerRows = await h.sql<{ total: number }[]>`
+      SELECT COALESCE(SUM(hours), 0)::float8 AS total FROM volunteer_hours
+      WHERE user_id = ${alice} AND voided_at IS NULL AND source <> 'report'
+    `
+    const totals = await repo.totalsFor(alice)
+    expect(totals.totalHours).toBe(3.5)
+    expect(totals.totalHours).toBe(ledgerRows[0]!.total)
+    expect(await repo.totalHoursFor(alice)).toBe(3.5)
+    expect(totals.byJurisdiction).toEqual([{ geoid: GEOID, name: LA_CITY.name, hours: 2 }])
+  })
+
   it("re-logging after the event moves OUT of coverage reverses the old jurisdiction's rollup", async () => {
     const org = await newUser("Hours Moved Org")
     const alice = await newUser("Hours Moved Alice")
@@ -210,7 +194,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(await rollupFor(org)).toBe(2)
     expect(await rollupFor(alice)).toBe(3)
 
-    // Same event, now outside coverage, re-logged with new amounts.
     const credited = await repo.logEventHours({
       actorId: org,
       cleanupId,
@@ -222,7 +205,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     })
     expect(credited.credited).toBe(2)
 
-    // The ledger keeps ONE row per attendee, with the new hours and NO jurisdiction.
     const ledger = await h.sql<{ user_id: string; hours: number; geoid: string | null }[]>`
       SELECT user_id, hours::float8 AS hours, jurisdiction_geoid AS geoid
       FROM volunteer_hours WHERE cleanup_id = ${cleanupId} AND source = 'event'
@@ -234,18 +216,13 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       [alice]: 1,
     })
 
-    // ...and the old jurisdiction's leaderboard no longer carries the withdrawn credit.
     expect(await rollupFor(org)).toBe(0)
     expect(await rollupFor(alice)).toBe(0)
     const totals = await repo.totalsFor(alice)
     expect(totals.byJurisdiction).toEqual([])
-    expect(totals.totalHours).toBe(0)
+    expect(totals.totalHours).toBe(1)
   })
 
-  /**
-   * Re-logging an event that NEVER had a jurisdiction must still be a plain overwrite: the reversal arm
-   * only fires for a prior credit that was actually booked somewhere.
-   */
   it("re-logging a never-mapped event just overwrites (no phantom reversal)", async () => {
     const org = await newUser("Hours NoGeo Twice")
     const cleanupId = randomUUID()
@@ -280,11 +257,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(rows[0]!.count).toBe(0)
   })
 
-  // --- M21: the upsert overwrote hours in place with no history ------------------------------------
-  // `DO UPDATE SET hours = EXCLUDED.hours, logged_by_user_id = EXCLUDED.logged_by_user_id` destroyed
-  // both the previous value AND the only trace of who set it, so a host could inflate a credit and
-  // later quietly restore it with the row left indistinguishable from one never touched — against a
-  // number that feeds the PUBLIC jurisdiction leaderboard.
   it("M21: every upsert appends an immutable audit row carrying the previous + new value", async () => {
     const org = await newUser("Audit Org")
     const alice = await newUser("Audit Alice")
@@ -306,12 +278,9 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
     let rows = await auditRows()
     expect(rows).toHaveLength(1)
-    // NULL previous_hours = there was no prior credit, deliberately distinct from a stored 0.
     expect(rows[0]).toMatchObject({ user_id: alice, actor_user_id: org, previous_hours: null, new_hours: 2 })
 
-    // The inflation...
     await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 40 }] })
-    // ...and the quiet restore, by a different host.
     await repo.logEventHours({ actorId: cohost, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
 
     rows = await auditRows()
@@ -323,7 +292,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     ])
     expect(rows.map((r) => r.actor_user_id)).toEqual([org, org, cohost])
 
-    // The live ledger is back where it started — the journal is the ONLY evidence it ever moved.
     const ledger = await h.sql<{ hours: number }[]>`
       SELECT hours::float8 AS hours FROM volunteer_hours
       WHERE cleanup_id = ${cleanupId} AND source = 'event' AND user_id = ${alice}
@@ -357,11 +325,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     ])
   })
 
-  // ===================================================================================================
-  // P4 — the itemised ledger, the privacy tri-state and the per-event read-back, against real SQL.
-  // ===================================================================================================
 
-  /** A user with an explicit show_volunteer_hours value (null = never chosen, the pre-migration state). */
   async function newUserWithFlag(name: string, flag: boolean | null): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name, show_volunteer_hours)
@@ -370,7 +334,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     return u!.id
   }
 
-  /** Insert a ledger row directly so `created_at` (the keyset anchor) is exactly controllable. */
   async function insertEntry(args: {
     id: string
     userId: string
@@ -397,11 +360,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     `
   }
 
-  /**
-   * B30a — keyset paging on `(created_at DESC, id DESC)`, with EVERY row sharing one instant so the
-   * assertion can only pass if the id half of the row-value comparison actually participates. A keyset
-   * that ordered on created_at alone would either repeat rows across the page boundary or skip them.
-   */
   it("listEntries pages the keyset newest-first, tie-breaking on the id", async () => {
     const owner = await newUser("Ledger Owner")
     const at = "2026-05-01T12:00:00.000Z"
@@ -452,8 +410,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
-    // Unfiltered means ITEMISED_SOURCES = ["event", "manual"]: the pre-0065 report row is NOT itemised,
-    // even to its owner, because filing a report is not volunteer service.
     const all = await repo.listEntries({ userId: owner, cursor: null, limit: 50 })
     expect(all.items.map((e) => e.source)).toEqual(["event"])
 
@@ -465,8 +421,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     })
     expect(eventsOnly.items.map((e) => e.hours)).toEqual([3])
 
-    // The row is still THERE — it is the DEFAULT source filter that hides it, not its absence. (The
-    // voided event row stays hidden under any source filter.)
     const reportsOnly = await repo.listEntries({
       userId: owner,
       cursor: null,
@@ -476,12 +430,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(reportsOnly.items.map((e) => e.hours)).toEqual([0.1])
   })
 
-  /**
-   * The single most important read filter in this feature: a certificate is a signed, publicly verifiable
-   * PDF handed to a school, an employer or a court, and 0064 freezes its totals at issue time — a wrong
-   * one CANNOT be corrected afterwards. So the transcript read excludes `source='report'` in its own
-   * right, without depending on 0065's void having run.
-   */
   it("entriesForCertificate excludes report rows from BOTH the items and the count", async () => {
     const owner = await newUser("Certificate Ledger Owner")
     await insertEntry({
@@ -509,8 +457,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       limit: 50,
     })
     expect(page.items.map((e) => e.source)).toEqual(["event"])
-    // entryCount is the FULL matching count, so it must not count the report row either — otherwise the
-    // document would print "1 of 2 entries" and imply a hidden credit.
     expect(page.entryCount).toBe(1)
     expect(page.totalHours).toBe(2.5)
   })
@@ -548,7 +494,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(row.cleanupTitle).toBe("Ocean Beach sweep")
     expect(row.cleanupReferenceCode).toBe("EVENT-LA-000999")
     expect(row.jurisdictionName).toBe(LA_CITY.name)
-    // occurredAt is the event's scheduled day, NOT the day the host got round to logging it.
     expect(row.occurredAt.toISOString()).toBe("2026-04-10T17:00:00.000Z")
     expect(row.createdAt.toISOString()).toBe("2026-04-11T09:00:00.000Z")
     expect(row.creditedBy).toEqual({
@@ -559,12 +504,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     })
   })
 
-  /**
-   * C18's tripwire, and the single most expensive mistake available in this feature set: the leaderboard
-   * predicate is `show_volunteer_hours IS NOT FALSE`. A bare `AND u.show_volunteer_hours` is
-   * three-valued, so it drops EVERY account that exists today (all NULL) and the board is empty in every
-   * jurisdiction the morning after deploy. This test is the thing that catches that.
-   */
   it("C18: the leaderboard excludes FALSE, includes NULL and TRUE, and skips tombstones", async () => {
     const geoid = LA_COUNTY.geoid
     const neverChose = await newUserWithFlag("Board Null", null)
@@ -589,7 +528,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const page = await repo.leaderboard(geoid, 25, 0, null, true)
     expect(page.entries.map((e) => e.userId)).toEqual([neverChose, optedIn])
     expect(page.entries.map((e) => e.rank)).toEqual([1, 2])
-    // participantCount counts the same filtered set the page ranks over.
     const [raw] = await h.sql<{ count: number }[]>`
       SELECT count(*)::int AS count
       FROM user_jurisdiction_hours ujh JOIN users u ON u.id = ujh.user_id
@@ -599,7 +537,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(page.participantCount).toBe(raw!.count)
     expect(page.participantCount).toBe(2)
 
-    // A viewer who opted OUT is not on the board at all, so they have no standing on it either.
     const hiddenViewer = await repo.leaderboard(geoid, 25, 0, optedOut, true)
     expect(hiddenViewer.viewerRank).toBeNull()
     expect(hiddenViewer.viewerHours).toBeNull()
@@ -624,7 +561,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
 
     const asTieA = await repo.leaderboard(geoid, 25, 0, tieA, true)
     const asTieB = await repo.leaderboard(geoid, 25, 0, tieB, true)
-    // Both tied users are joint 2nd, even though the PAGE necessarily lists one of them 3rd.
     expect(asTieA.viewerRank).toBe(2)
     expect(asTieB.viewerRank).toBe(2)
     expect(asTieA.viewerHours).toBe(5)
@@ -633,12 +569,10 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const asTop = await repo.leaderboard(geoid, 25, 0, top, true)
     expect(asTop.viewerRank).toBe(1)
 
-    // Extras are opt-in: the Discovery preview must not pay for either query.
     const preview = await repo.leaderboard(geoid, 3, 0, tieA, false)
     expect(preview.participantCount).toBeNull()
     expect(preview.viewerRank).toBeNull()
 
-    // ...and participantCount is first-page only.
     const deep = await repo.leaderboard(geoid, 25, 25, tieA, true)
     expect(deep.participantCount).toBeNull()
     expect(deep.viewerRank).toBe(2)
@@ -652,13 +586,10 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const gone = await newUserWithFlag("Vis Deleted", true)
     await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${gone}`
 
-    // NULL: the aggregate stays public (byte-identical to today) while the itemised list stays closed.
     expect(await repo.hoursVisibilityFor(neverChose)).toEqual({ aggregate: true, items: false })
     expect(await repo.hoursVisibilityFor(optedIn)).toEqual({ aggregate: true, items: true })
     expect(await repo.hoursVisibilityFor(optedOut)).toEqual({ aggregate: false, items: false })
-    // A tombstoned account stops being publicly enumerable without any extra code (B32d)...
     expect(await repo.hoursVisibilityFor(gone)).toEqual({ aggregate: false, items: false })
-    // ...and an id with no row at all is hidden rather than an oracle.
     expect(await repo.hoursVisibilityFor(randomUUID())).toEqual({
       aggregate: false,
       items: false,
@@ -694,18 +625,11 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const mine = await repo.listEventHours(cleanupId, alice)
     expect(mine.entries.map((e) => [e.userId, e.hours])).toEqual([[alice, 2]])
 
-    // The attendee nobody credited: an EMPTY self scope, but anyLogged TRUE — which is the only thing
-    // that lets their receipt say "not credited" instead of "the host hasn't logged yet" forever.
     const uncredited = await repo.listEventHours(cleanupId, dave)
     expect(uncredited.entries).toEqual([])
     expect(uncredited.anyLogged).toBe(true)
   })
 
-  /**
-   * The whole public projection end to end, through the service, in all three C18 states — including
-   * that a NULL user's aggregate is unchanged from today while their itemised list is empty, which is
-   * the single behavioural promise migration 0061's banner makes.
-   */
   it("the public projection is aggregate-visible for NULL, itemised for TRUE, empty-identical for FALSE", async () => {
     const geoid = GEOID
     const host = await newUser("Public Host")
@@ -743,12 +667,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const nullUser = await seedHolder(null, "Public Null")
     const nullRes = await service.getPublicHours({ id: nullUser }, viewer)
     expect(nullRes.visible).toBe(true)
-    // 3.1 is the seeded ROLLUP verbatim — these holders are seeded in the pre-0065 shape (an event credit
-    // plus a report credit, both booked into the rollup). This block is about the C18 gates; 0065's
-    // recompute of the rollup is covered in void-report-hours-pg.test.ts.
     expect(nullRes.totalHours).toBe(3.1)
-    // A hard 0, no longer a ledger read: report filings are not volunteer service, so there is no honest
-    // aggregate to publish. The wire field stays for shipped clients.
     expect(nullRes.reportHours).toBe(0)
     expect(nullRes.items).toEqual([])
     expect(nullRes.nextCursor).toBeNull()
@@ -756,7 +675,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const trueUser = await seedHolder(true, "Public True")
     const trueRes = await service.getPublicHours({ id: trueUser }, viewer)
     expect(trueRes.visible).toBe(true)
-    // Only the EVENT row is itemised; the historical report row is published nowhere at all.
     expect(trueRes.items.map((e) => e.source)).toEqual(["event"])
     expect(trueRes.items[0]?.creditedBy?.id).toBe(host)
     expect(trueRes.reportHours).toBe(0)
@@ -771,13 +689,11 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       reportHours: 0,
       nextCursor: null,
     })
-    // ...but the owner themselves always sees their own data (P4).
     const selfRes = await service.getPublicHours({ id: falseUser }, falseUser)
     expect(selfRes.visible).toBe(true)
     expect(selfRes.items.map((e) => e.source)).toEqual(["event"])
   })
 
-  /** A published report row, so the report-source ledger entries satisfy their FK. */
   async function newReport(reporterId: string): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (

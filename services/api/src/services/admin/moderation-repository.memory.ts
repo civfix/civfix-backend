@@ -1,19 +1,3 @@
-/**
- * In-memory ModerationRepository (Phase 2): the offline binding of the moderation persistence seam.
- *
- * Mirrors the Drizzle impl's OBSERVABLE contract so the moderation service can be unit-tested with NO
- * database (no Docker), the same way InMemoryDiscoveryRepository backs the discovery tests:
- *   - listOpen pages only OPEN items, applying the search (flag/reporter/reason) + the kind/priority
- *     facet, newest-first by createdAt with an id tiebreak;
- *   - getItem returns the seeded record at any status;
- *   - approve/remove/hold/decideAppeal transition an OPEN item's status and record the underlying-effect
- *     intent on a paired "subject" map the tests can assert (published / rejected report status, lifted
- *     suspension), faithfully to what the Drizzle impl does in SQL;
- *   - createItem appends an item (honoring dedupeOpen against an existing OPEN item for the subject);
- *   - backfillFromHeldReports creates one item per seeded held report lacking an open item.
- * Seed/inspect helpers (seedItem, seedHeldReport, the public items/reportStatus/suspensions maps) let
- * tests arrange + assert state directly.
- */
 
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
@@ -24,7 +8,6 @@ import {
   type ModerationRepository,
 } from "./moderation-service.js"
 
-/** A held report seeded for the backfill test (the Drizzle impl reads these from the reports table). */
 export interface SeededHeldReport {
   id: string
   category: ModerationItemRecord["category"]
@@ -34,18 +17,15 @@ export interface SeededHeldReport {
   createdAt: Date
 }
 
-/** An in-memory ModerationRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryModerationRepository implements ModerationRepository {
-  /** Seeded items keyed by id (insertion order preserved for stable paging). */
   readonly items = new Map<string, ModerationItemRecord>()
-  /** Held reports seeded for the backfill, keyed by report id. */
   readonly heldReports = new Map<string, SeededHeldReport>()
-  /** Observable report status after an action (reportId -> 'published' | 'rejected'). */
   readonly reportStatus = new Map<string, "published" | "rejected">()
-  /** Observable chat suspension state after an appeal (chatSubjectId -> active?). */
   readonly suspensions = new Map<string, boolean>()
+  readonly tombstoned = new Set<string>()
+  readonly accountStatus = new Map<string, "active" | "suspended">()
+  readonly deletedUserIds = new Set<string>()
 
-  /** Deterministic clock; each created item advances by one millisecond for stable ordering. */
   now = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 0))
   private tick = 0
 
@@ -66,7 +46,6 @@ export class InMemoryModerationRepository implements ModerationRepository {
     return { destinationKind: null, destinationId: null }
   }
 
-  /** Seed an item. Defaults fill the shaping fields so a test only sets what it asserts on. */
   seedItem(input: Partial<ModerationItemRecord> & { id?: string }): ModerationItemRecord {
     const id = input.id ?? randomUUID()
     const subjectType = input.subjectType ?? "report"
@@ -100,7 +79,6 @@ export class InMemoryModerationRepository implements ModerationRepository {
     return record
   }
 
-  /** Seed a held report for the backfill test. */
   seedHeldReport(input: Partial<SeededHeldReport> & { id?: string }): SeededHeldReport {
     const id = input.id ?? randomUUID()
     const report: SeededHeldReport = {
@@ -120,7 +98,6 @@ export class InMemoryModerationRepository implements ModerationRepository {
   ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }> {
     let rows = [...this.items.values()].filter((r) => r.status === "open")
 
-    // Search: flag OR reporter OR reason, case-insensitive.
     if (args.q !== null) {
       const needle = args.q.toLowerCase()
       rows = rows.filter(
@@ -131,15 +108,12 @@ export class InMemoryModerationRepository implements ModerationRepository {
       )
     }
 
-    // Facet: a kind narrows by kind; "high" narrows by priority; "all" keeps everything.
     if (args.filter === "high") {
       rows = rows.filter((r) => r.priority === "high")
     } else if (args.filter !== "all") {
       rows = rows.filter((r) => r.kind === args.filter)
     }
 
-    // Newest-first by createdAt; id is the stable tiebreak (desc) so the keyset cursor pages
-    // deterministically.
     rows.sort((a, b) => {
       const primary = b.createdAt.getTime() - a.createdAt.getTime()
       if (primary !== 0) return primary
@@ -148,9 +122,6 @@ export class InMemoryModerationRepository implements ModerationRepository {
 
     const limit = clampLimit(args.limit)
     const anchor = decodeCursor(args.cursor)
-    // Compare (createdAt, id) tuples like the SQL keyset — NOT the anchor's index. Anchoring by index
-    // dead-ended the moment the anchor item left the OPEN set (the normal operator workflow: resolve the
-    // items on page 1, then ask for page 2), returning an empty page where Postgres keeps paging.
     const remaining =
       anchor === null
         ? rows
@@ -172,7 +143,6 @@ export class InMemoryModerationRepository implements ModerationRepository {
     return this.items.get(id) ?? null
   }
 
-  /** Shared transition: only an OPEN item resolves; records the resolved status + clears it from open. */
   private resolve(
     id: string,
     status: "approved" | "removed" | "held",
@@ -189,13 +159,8 @@ export class InMemoryModerationRepository implements ModerationRepository {
   ): Promise<ModerationItemRecord | null> {
     const item = this.resolve(id, "approved")
     if (!item) return null
-    // Underlying effect: publish the held report subject. Prod's UPDATE is guarded on status = 'held', so a
-    // subject this repo already resolved transitions nothing and — crucially — fires NO chat-mirror signal;
-    // asserting the signal unconditionally would assert behavior prod does not have. A test models an
-    // already-resolved (non-held) subject by pre-setting reportStatus.
     if (item.subjectType === "report" && !this.reportStatus.has(item.subjectId)) {
       this.reportStatus.set(item.subjectId, "published")
-      // D-D1: signal the report-chat mirror (a HELD report subject transitioned to published).
       item.reportTimelineStatus = "published"
     }
     return item
@@ -207,12 +172,15 @@ export class InMemoryModerationRepository implements ModerationRepository {
   ): Promise<ModerationItemRecord | null> {
     const item = this.resolve(id, "removed")
     if (!item) return null
-    // Underlying effect: reject the report subject. Prod's tombstone is guarded on deleted_at IS NULL — an
-    // already-rejected subject flips nothing and fires no signal, but a published one still can.
     if (item.subjectType === "report" && this.reportStatus.get(item.subjectId) !== "rejected") {
       this.reportStatus.set(item.subjectId, "rejected")
-      // D-D1: signal the report-chat mirror (a report subject was tombstoned).
       item.reportTimelineStatus = "rejected"
+    }
+    if (item.subjectType === "chat" || item.subjectType === "message") {
+      this.tombstoned.add(item.subjectId)
+    }
+    if (item.subjectType === "user" || item.subjectType === "profile") {
+      this.accountStatus.set(item.subjectId, "suspended")
     }
     return item
   }
@@ -221,8 +189,6 @@ export class InMemoryModerationRepository implements ModerationRepository {
     id: string,
     _input: { actorId: string | null; note: string | null },
   ): Promise<ModerationItemRecord | null> {
-    // Hold extends the hold: the item leaves the OPEN queue but the report is neither published nor
-    // rejected (no reportStatus change).
     return this.resolve(id, "held")
   }
 
@@ -233,9 +199,29 @@ export class InMemoryModerationRepository implements ModerationRepository {
     const item = this.items.get(id)
     if (!item || item.status !== "open" || item.kind !== "appeal") return null
     item.status = "approved"
-    // overturn lifts the suspension (suspension no longer active); uphold keeps it active.
     this.suspensions.set(item.subjectId, input.decision === "uphold")
+    delete item.restoredUserId
+    if (input.decision === "overturn" && this.restoreSubject(item.subjectType, item.subjectId)) {
+      if (item.subjectType === "user" || item.subjectType === "profile") {
+        item.restoredUserId = item.subjectId
+      }
+    }
     return item
+  }
+
+  private restoreSubject(
+    subjectType: ModerationItemRecord["subjectType"],
+    subjectId: string,
+  ): boolean {
+    if (subjectType === "chat" || subjectType === "message") {
+      return this.tombstoned.delete(subjectId)
+    }
+    if (subjectType === "user" || subjectType === "profile") {
+      if (this.deletedUserIds.has(subjectId)) return false
+      this.accountStatus.set(subjectId, "active")
+      return true
+    }
+    return false
   }
 
   async createItem(input: CreateModerationItemInput): Promise<string | null> {
@@ -246,6 +232,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
           r.subjectType === input.subjectType &&
           r.subjectId === input.subjectId
         ) {
+          r.priority = "high"
           return null
         }
       }
@@ -261,8 +248,6 @@ export class InMemoryModerationRepository implements ModerationRepository {
       priority: input.priority ?? "med",
       autoAction: input.autoAction ?? null,
       reporter: input.reporter ?? null,
-      // Thread the FLAGGING reporter's id (CreateModerationItemInput.reporterUserId) into the row's
-      // reporterId, mirroring the Drizzle impl's meta persistence — distinct from the subject-author `user`.
       reporterId: input.reporterUserId ?? null,
       desc: input.desc ?? null,
       status: "open",

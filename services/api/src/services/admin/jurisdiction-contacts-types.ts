@@ -144,11 +144,16 @@ export interface JurisdictionContactsRepository {
   /** Whether the jurisdiction exists (so the route can 404 an unknown geoid). */
   jurisdictionExists(geoid: string): Promise<boolean>
   /**
-   * Persist contacts + route, atomically: upsert jurisdiction_contacts (+ legacy mirror), set
-   * contact_updated_at, mark the open discovery task done, route every waiting report (-> acknowledged
-   * + a routed timeline row), AND write the discovery.contacts_saved audit row - all in ONE transaction
-   * (H4: "did + recorded" is atomic; an audit failure rolls the whole save back). Does NOT enqueue
-   * outreach (the service does, via Jobs, after the write commits).
+   * Persist contacts + route. ONE short transaction commits the operator's input: upsert
+   * jurisdiction_contacts (+ legacy mirror), set contact_updated_at, mark the open discovery task done,
+   * route the FIRST bounded batch of waiting reports (-> acknowledged + a routed timeline row), AND
+   * write the discovery.contacts_saved audit row (H4: "did + recorded" is atomic; an audit failure rolls
+   * the save back). Routing the rest of the backlog is deliberately OUTSIDE that transaction, in bounded
+   * batches committed one at a time (F094): an unbounded UPDATE over every waiting report of a large
+   * jurisdiction blew the 15s statement_timeout and rolled the operator's contacts back, and held row
+   * locks on the whole backlog meanwhile. Each batch commits on its own, so a timeout or a dropped
+   * connection loses only the un-drained tail - re-saving resumes it. Does NOT enqueue outreach (the
+   * service does, via Jobs, after the write commits).
    */
   saveAndRoute(
     geoid: string,

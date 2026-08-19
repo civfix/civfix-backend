@@ -1,12 +1,6 @@
-/**
- * abuse_flags: moderation flags raised against any subject (a report, user, media, cleanup, ...).
- * `subject_type` + `subject_id` is a polymorphic reference (subject_id is text to span uuid + string
- * keys). `source` records who/what raised it (user_report, automated_nsfw, ...). `resolved_at` null
- * means open; a PARTIAL index on the open rows (created in 0001_core.sql) keeps the mod queue fast.
- */
 
 import { sql } from "drizzle-orm"
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import type {
   ABUSE_REASON_VALUES,
   ABUSE_SOURCE_VALUES,
@@ -35,6 +29,9 @@ export const abuseFlags = pgTable(
     index("abuse_flags_open_idx")
       .on(t.createdAt)
       .where(sql`${t.resolvedAt} is null`),
+    uniqueIndex("abuse_flags_worker_open_subject_reason_key")
+      .on(t.subjectType, t.subjectId, t.reason)
+      .where(sql`${t.resolvedAt} IS NULL AND source = 'worker'`),
   ],
 )
 

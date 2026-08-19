@@ -1,37 +1,11 @@
-/**
- * Crafted media fixtures for the safe-failure tests.
- *
- * Everything is GENERATED at test time (no committed binaries) so the inputs are deterministic and the
- * generators document exactly what each fixture is:
- *   validJpeg          a tiny valid JPEG (sharp) with a hand-built EXIF GPS block (proves strip works).
- *   validPng           a small valid PNG (sharp).
- *   truncatedImage     a valid JPEG cut in half (decoder must error, not produce a partial image).
- *   garbageImage       random bytes (no image at all).
- *   textAsJpg          a UTF-8 text file (wrong magic; named .jpg by the client) -> must be rejected.
- *   oversizeImage      a buffer just over the download cap -> must be rejected before decode.
- *   nsfwJpeg           a valid JPEG whose bytes contain the FakeAbuseChecks "NSFW" marker -> held.
- *   pixelBombHeader    a tiny image header DECLARING enormous dimensions (decode-bomb guard).
- *   validMp4()         a 1s h264 testsrc MP4 (ffmpeg) -> the happy video path.
- *   audioOnlyMp4()     an audio-only MP4 (no video stream) -> rejected (not a video).
- *   nonVideoAsMp4      a text/garbage buffer labeled video -> ffprobe fails -> rejected.
- *   mp4WithLocation()  an h264 MP4 carrying container location/comment tags (proves the remux STRIPS them).
- *   mpeg4Mp4()         an MP4 whose video codec is mpeg4, i.e. OUTSIDE ALLOWED_VIDEO_CODECS -> rejected.
- *   h264Mp4OfSeconds() an h264 MP4 of an arbitrary duration (drives the duration-cap branch).
- *   hlsPlaylist        an HLS (m3u8) body whose segment URL the caller chooses (SSRF boundary).
- *   ffconcatList       an ffconcat demuxer script referencing local files (arbitrary-file-read boundary).
- *
- * The EXIF GPS builder writes a minimal big-endian TIFF/EXIF APP1 segment with a GPS IFD; it is
- * verified to round-trip through exifr in the unit tests.
- */
 
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
 import { execa } from "execa"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-/** Build a minimal big-endian EXIF APP1 segment carrying a GPS lat/lng. */
 export function buildExifGpsApp1(lat: number, lng: number): Buffer {
   const toRat = (deg: number): [number, number][] => {
     const d = Math.floor(deg)
@@ -48,18 +22,18 @@ export function buildExifGpsApp1(lat: number, lng: number): Buffer {
   const tiff = Buffer.alloc(8)
   tiff.write("MM", 0, "ascii")
   tiff.writeUInt16BE(0x002a, 2)
-  tiff.writeUInt32BE(8, 4) // IFD0 at offset 8
+  tiff.writeUInt32BE(8, 4)
 
   const ifd0 = Buffer.alloc(18)
-  ifd0.writeUInt16BE(1, 0) // 1 entry
-  ifd0.writeUInt16BE(0x8825, 2) // GPS IFD pointer
-  ifd0.writeUInt16BE(4, 4) // type LONG
-  ifd0.writeUInt32BE(1, 6) // count
-  ifd0.writeUInt32BE(26, 10) // GPS IFD offset
-  ifd0.writeUInt32BE(0, 14) // next IFD = 0
+  ifd0.writeUInt16BE(1, 0)
+  ifd0.writeUInt16BE(0x8825, 2)
+  ifd0.writeUInt16BE(4, 4)
+  ifd0.writeUInt32BE(1, 6)
+  ifd0.writeUInt32BE(26, 10)
+  ifd0.writeUInt32BE(0, 14)
 
   const gps = Buffer.alloc(54)
-  gps.writeUInt16BE(4, 0) // 4 entries
+  gps.writeUInt16BE(4, 0)
   let o = 2
   gps.writeUInt16BE(0x0001, o)
   gps.writeUInt16BE(2, o + 2)
@@ -81,7 +55,7 @@ export function buildExifGpsApp1(lat: number, lng: number): Buffer {
   gps.writeUInt32BE(3, o + 4)
   gps.writeUInt32BE(104, o + 8)
   o += 12
-  gps.writeUInt32BE(0, o) // next IFD = 0
+  gps.writeUInt32BE(0, o)
 
   const ratBuf = (rats: [number, number][]): Buffer => {
     const b = Buffer.alloc(24)
@@ -106,12 +80,10 @@ export function buildExifGpsApp1(lat: number, lng: number): Buffer {
   return Buffer.concat([app1, payload])
 }
 
-/** Insert an APP1 segment immediately after the JPEG SOI marker. */
 function spliceApp1(jpeg: Buffer, app1: Buffer): Buffer {
   return Buffer.concat([jpeg.subarray(0, 2), app1, jpeg.subarray(2)])
 }
 
-/** A tiny valid JPEG with embedded EXIF GPS (San Francisco-ish). */
 export async function makeValidJpegWithGps(): Promise<Buffer> {
   const base = await sharp({
     create: { width: 64, height: 48, channels: 3, background: { r: 20, g: 120, b: 200 } },
@@ -121,7 +93,6 @@ export async function makeValidJpegWithGps(): Promise<Buffer> {
   return spliceApp1(base, buildExifGpsApp1(37.7672, -122.4308))
 }
 
-/** A small valid PNG. */
 export async function makeValidPng(): Promise<Buffer> {
   return sharp({
     create: { width: 40, height: 30, channels: 4, background: { r: 200, g: 30, b: 30, alpha: 1 } },
@@ -130,7 +101,6 @@ export async function makeValidPng(): Promise<Buffer> {
     .toBuffer()
 }
 
-/** A valid JPEG truncated to half its length (decoder must error). */
 export async function makeTruncatedImage(): Promise<Buffer> {
   const full = await sharp({
     create: { width: 200, height: 200, channels: 3, background: { r: 10, g: 10, b: 10 } },
@@ -140,14 +110,12 @@ export async function makeTruncatedImage(): Promise<Buffer> {
   return full.subarray(0, Math.max(8, Math.floor(full.length / 2)))
 }
 
-/** Random bytes that are not an image. */
 export function makeGarbageImage(size = 2048): Buffer {
   const b = Buffer.alloc(size)
   for (let i = 0; i < size; i++) b[i] = (i * 131 + 7) & 0xff
   return b
 }
 
-/** A UTF-8 text file (wrong magic) that the client mislabeled as .jpg. */
 export function makeTextAsJpg(): Buffer {
   return Buffer.from(
     "this is definitely not a jpeg, it is plain text pretending to be one\n",
@@ -155,45 +123,34 @@ export function makeTextAsJpg(): Buffer {
   )
 }
 
-/** A buffer just over `cap` bytes (cheap; content is irrelevant since it is rejected pre-decode). */
 export function makeOversize(cap: number): Buffer {
   return Buffer.alloc(cap + 1024, 0x41)
 }
 
-/** A valid JPEG whose trailing bytes contain the FakeAbuseChecks "NSFW" marker. */
 export async function makeNsfwJpeg(): Promise<Buffer> {
   const base = await sharp({
     create: { width: 50, height: 50, channels: 3, background: { r: 90, g: 90, b: 90 } },
   })
     .jpeg()
     .toBuffer()
-  // Append the marker AFTER EOI so the JPEG still decodes; FakeAbuseChecks scans raw bytes for "NSFW".
   return Buffer.concat([base, Buffer.from("NSFW", "ascii")])
 }
 
-/**
- * A pixel-bomb PNG header: a real PNG IHDR declaring enormous dimensions but almost no pixel data. The
- * decode guard (limitInputPixels) must reject it at header parse. We craft only the signature + IHDR,
- * which is enough for a decoder to read the declared dimensions and refuse.
- */
 export function makePixelBombPng(width = 100000, height = 100000): Buffer {
   const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-  const ihdr = Buffer.alloc(25) // 4 len + 4 type + 13 data + 4 crc
-  ihdr.writeUInt32BE(13, 0) // IHDR data length
+  const ihdr = Buffer.alloc(25)
+  ihdr.writeUInt32BE(13, 0)
   ihdr.write("IHDR", 4, "ascii")
   ihdr.writeUInt32BE(width, 8)
   ihdr.writeUInt32BE(height, 12)
-  ihdr.writeUInt8(8, 16) // bit depth
-  ihdr.writeUInt8(2, 17) // color type 2 (truecolor)
-  ihdr.writeUInt8(0, 18) // compression
-  ihdr.writeUInt8(0, 19) // filter
-  ihdr.writeUInt8(0, 20) // interlace
-  // CRC left zero: sharp/libvips reads dimensions before validating downstream chunks and rejects on
-  // the pixel limit; an invalid CRC also yields a decode error. Either way -> rejected.
+  ihdr.writeUInt8(8, 16)
+  ihdr.writeUInt8(2, 17)
+  ihdr.writeUInt8(0, 18)
+  ihdr.writeUInt8(0, 19)
+  ihdr.writeUInt8(0, 20)
   return Buffer.concat([sig, ihdr])
 }
 
-/** Run ffmpeg to produce bytes from a lavfi/output spec, returning the output file bytes. */
 async function ffmpegProduce(
   args: (outPath: string) => string[],
   outName: string,
@@ -209,7 +166,6 @@ async function ffmpegProduce(
   }
 }
 
-/** A 1-second 320x240 h264 testsrc MP4 (yuv420p, faststart, no audio). */
 export async function makeValidMp4(): Promise<Buffer> {
   return ffmpegProduce(
     (out) => [
@@ -233,7 +189,6 @@ export async function makeValidMp4(): Promise<Buffer> {
   )
 }
 
-/** An audio-only MP4 (AAC, no video stream) -> must be rejected as "not a video". */
 export async function makeAudioOnlyMp4(): Promise<Buffer> {
   return ffmpegProduce(
     (out) => [
@@ -255,17 +210,10 @@ export async function makeAudioOnlyMp4(): Promise<Buffer> {
   )
 }
 
-/** A non-video buffer labeled as video (ffprobe must fail to read it as media). */
 export function makeNonVideoAsMp4(): Buffer {
   return Buffer.from("ftypnotreallyanmp4 this is garbage masquerading as video\n".repeat(8), "utf8")
 }
 
-/**
- * A 1s h264 MP4 carrying the container metadata the remux is supposed to destroy: an ISO 6709
- * `location` (+ its `location-eng` twin, which is what phones actually write) and a device-ish
- * `comment`. ffprobe reports these under format.tags, so a test can assert they are present here and
- * ABSENT after remuxStripMetadata - which is the only way to prove the "strips location" claim.
- */
 export async function makeMp4WithLocationMetadata(): Promise<Buffer> {
   return ffmpegProduce(
     (out) => [
@@ -295,7 +243,6 @@ export async function makeMp4WithLocationMetadata(): Promise<Buffer> {
   )
 }
 
-/** An MP4 whose video stream is mpeg4 (ffprobe codec_name "mpeg4"): a real video, disallowed codec. */
 export async function makeMpeg4Mp4(): Promise<Buffer> {
   return ffmpegProduce(
     (out) => [
@@ -319,7 +266,6 @@ export async function makeMpeg4Mp4(): Promise<Buffer> {
   )
 }
 
-/** An h264 MP4 of `durationSec` seconds (160x120, cheap): drives the duration-cap branch. */
 export async function makeH264Mp4OfSeconds(durationSec: number): Promise<Buffer> {
   return ffmpegProduce(
     (out) => [
@@ -343,11 +289,6 @@ export async function makeH264Mp4OfSeconds(durationSec: number): Promise<Buffer>
   )
 }
 
-/**
- * An HLS playlist body whose single segment is `segmentUrl`. Uploaded as "video", this is the classic
- * SSRF probe: if ffmpeg/ffprobe were allowed to auto-select the hls demuxer over an unrestricted
- * protocol set it would FETCH that URL from inside the worker.
- */
 export function makeHlsPlaylist(segmentUrl: string): Buffer {
   return Buffer.from(
     [
@@ -363,11 +304,68 @@ export function makeHlsPlaylist(segmentUrl: string): Buffer {
   )
 }
 
-/** An ffconcat demuxer script referencing local paths (arbitrary local-file read if it were honored). */
 export function makeFfconcatList(paths: string[]): Buffer {
   const lines = ["ffconcat version 1.0"]
   for (const p of paths) {
     lines.push(`file '${p}'`, "duration 1")
   }
   return Buffer.from(`${lines.join("\n")}\n`, "utf8")
+}
+
+export async function makeMp4WithSubtitleAndStreamTags(): Promise<Buffer> {
+  const bin = ffmpegPath as unknown as string
+  const dir = await mkdtemp(join(tmpdir(), "civfix-fixt-"))
+  const srt = join(dir, "sub.srt")
+  const out = join(dir, "tracks.mp4")
+  try {
+    await writeFile(
+      srt,
+      "1\n00:00:00,000 --> 00:00:01,000\nLAT 37.77 LNG -122.41 HOME ADDRESS\n\n",
+      "utf8",
+    )
+    await execa(
+      bin,
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=160x120:rate=10:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=1000:duration=1",
+        "-i",
+        srt,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-map",
+        "2:s:0",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-c:s",
+        "mov_text",
+        "-metadata:s:v:0",
+        "title=DeviceCam",
+        "-metadata:s:v:0",
+        "handler_name=MyPhoneCam",
+        "-movflags",
+        "+faststart",
+        "-y",
+        out,
+      ],
+      { timeout: 30000, reject: true },
+    )
+    return await readFile(out)
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
 }

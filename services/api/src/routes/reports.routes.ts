@@ -23,7 +23,8 @@ import type { Container } from "../di.js"
 import type { Sql } from "../db/client.js"
 import { requireAuth } from "../auth/context.js"
 import { makeGeoidResolver, makeReverseGeocoder } from "../services/route-geo-helpers.js"
-import { makeMediaPresigner } from "../services/media-presign.js"
+import { makeMediaPresigner, makePrivateMediaPresigner } from "../services/media-presign.js"
+import { perIdentity } from "../plugins/rate-limit.js"
 import {
   makeReportService,
   type ReportRepository,
@@ -42,13 +43,8 @@ import { route } from "../versioning/route.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { CappedBBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
 
-const CREATE_REPORT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+export const CREATE_REPORT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute", hostMax: 60 })
 
-// M14: per-IP caps on the two anon-ok, DB+presign-backed public reads. Neither had ANY route-level
-// limit, so they sat at the global 300/min/IP while each request can cost up to MAP_REPORTS_CANDIDATE_CAP
-// rows (and, pre-fix, that many presigns). Sized in the spirit of map.routes' GEOCODER_RATE_LIMIT (30/min)
-// but the map read is allowed more headroom because a genuine pan/zoom session fires several requests per
-// second while the 60s Cache-Control warms; search is a deliberate user action, so it keeps the tight 30.
 const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
@@ -58,11 +54,11 @@ export interface ReportServiceOverrides {
   resolveJurisdictionCode?: ReportServiceDeps["resolveJurisdictionCode"]
   reverseGeocode?: ReportServiceDeps["reverseGeocode"]
   presignMedia?: ReportServiceDeps["presignMedia"]
+  presignPrivateMedia?: ReportServiceDeps["presignPrivateMedia"]
   loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
   loadDiscussionMeta?: ReportServiceDeps["loadDiscussionMeta"]
   loadReportChatMeta?: ReportServiceDeps["loadReportChatMeta"]
   joinReportChatAsOwner?: ReportServiceDeps["joinReportChatAsOwner"]
-  /** D-D1: inject a fake timeline emitter in tests; the real path builds one from container primitives. */
   reportChatEmitter?: ReportServiceDeps["reportChatEmitter"]
   newId?: ReportServiceDeps["newId"]
   now?: ReportServiceDeps["now"]
@@ -89,7 +85,6 @@ const ZoomQueryParam = z.coerce.number().int().min(0).max(22)
 
 const MapReportsQuerySchema = z
   .object({
-    // M14 area cap (./query-encoding.ts) behind the zoom clamp in services/report-clustering.ts.
     bbox: CappedBBoxQueryParam,
     categories: CategoriesQueryParam.optional(),
     types: TypesQueryParam.optional(),
@@ -187,6 +182,8 @@ export async function registerReportRoutes(
           ? { resolveJurisdictionCode: overrides.resolveJurisdictionCode }
           : {}),
         presignMedia: overrides.presignMedia ?? makeMediaPresigner(container.storage),
+        presignPrivateMedia:
+          overrides.presignPrivateMedia ?? makePrivateMediaPresigner(container.storage),
         ...(overrides.reverseGeocode !== undefined ? { reverseGeocode: overrides.reverseGeocode } : {}),
         ...(overrides.loadLinkedEventsForReports !== undefined
           ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
@@ -239,13 +236,6 @@ export async function registerReportRoutes(
             jurisdiction.contactEmail !== "",
         }
       },
-      // D-Fmeta: viewer-scoped report-chat metadata for the report-DETAIL DTO only. joined + counts +
-      // unread in ONE query via correlated subqueries. member/message counts are report-wide (viewer
-      // independent). Unread mirrors the threads report source (threads-repository.drizzle.ts): non-deleted
-      // messages from OTHERS (`sender_id IS DISTINCT FROM` so system rows count) strictly after the
-      // viewer's watermark GREATEST(joined_at, COALESCE(last_read_at, epoch)); it is 0 for a non-member /
-      // anonymous viewer (no membership row). The message-count + unread subqueries ride
-      // chat_messages_report_created_idx (report_id, created_at DESC).
       loadReportChatMeta: async (reportId, viewerUserId) => {
         const rows = await sql<
           { joined: boolean; member_count: number; message_count: number; unread: number }[]
@@ -286,15 +276,10 @@ export async function registerReportRoutes(
       resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
       reverseGeocode: makeReverseGeocoder(container),
       presignMedia: makeMediaPresigner(container.storage),
+      presignPrivateMedia: makePrivateMediaPresigner(container.storage),
       jobs: container.jobs,
       isReportVerified: (userId) => isReportVerified(sql, userId),
-      // NO volunteer-hours award here. Filing a report is not volunteer SERVICE, and crediting it put
-      // report hours on the public leaderboard and on signed PDF transcripts. The capability was removed
-      // from VolunteerHoursRepository outright (see drizzle/0065_void_report_volunteer_hours.sql) so it
-      // cannot be re-wired from this seam; `logEventHours` is now the only writer of credited hours.
       joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
-      // D-D1: owner resolve/reopen/hide/re-list posts a system message into the report chat (best-effort,
-      // no-op under fake-chat). Built from container primitives — no chat-gateway wiring instances needed.
       reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
       logger: app.log,
     })

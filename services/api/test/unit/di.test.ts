@@ -15,6 +15,10 @@ import {
 import { R2Storage } from "../../src/adapters/storage.r2.js"
 import { PgBossJobs } from "../../src/adapters/jobs.pgboss.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
+import {
+  InMemoryBlocksRepository,
+  InMemoryDmRepository,
+} from "../../src/services/dm-repository.memory.js"
 
 describe("DI container", () => {
   it("selects all fakes in dev/test mode and leaves db/redis uncreated", () => {
@@ -28,7 +32,6 @@ describe("DI container", () => {
     expect(c.geocoder).toBeInstanceOf(FakeGeocoder)
     expect(c.inboundMail).toBeInstanceOf(FakeInboundMail)
     expect(c.routingProvider).toBeInstanceOf(FakeRoutingProvider)
-    // No real seam needed db/redis, so handles stay undefined (server boots with no infra).
     expect(c.dbHandle).toBeUndefined()
     expect(c.redis).toBeUndefined()
   })
@@ -44,7 +47,6 @@ describe("DI container", () => {
     })
     const c = buildContainer(env)
     expect(c.storage).toBeInstanceOf(R2Storage)
-    // Still a fake everywhere else.
     expect(c.mailer).toBeInstanceOf(FakeMailer)
   })
 
@@ -56,7 +58,6 @@ describe("DI container", () => {
       REDIS_URL: "redis://localhost:6379",
     })
     const c = buildContainer(env)
-    // The real chat service builds over the lazily-created db + redis handles (no connection opens yet).
     expect(c.chatService).toBeInstanceOf(WsChatService)
     expect(c.dbHandle).toBeDefined()
     expect(c.redis).toBeDefined()
@@ -77,10 +78,28 @@ describe("DI container", () => {
     await expect(c.close()).resolves.toBeUndefined()
   })
 
+  it("selects in-memory blocks/DM repos only when there is no database (F030)", () => {
+    const c = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    expect(c.getBlocksRepo()).toBeInstanceOf(InMemoryBlocksRepository)
+    expect(c.getDmRepo()).toBeInstanceOf(InMemoryDmRepository)
+    expect(c.dbHandle).toBeUndefined()
+  })
+
+  it("selects Drizzle blocks/DM repos when a database is configured, even with USE_FAKE_CHAT on (F030)", () => {
+    const c = buildContainer(
+      loadEnv({
+        NODE_ENV: "test",
+        USE_FAKE_CHAT: "1",
+        DATABASE_URL: "postgres://u:p@localhost:5432/civfix",
+        REDIS_URL: "redis://localhost:6379",
+      }),
+    )
+    expect(c.getBlocksRepo()).not.toBeInstanceOf(InMemoryBlocksRepository)
+    expect(c.getDmRepo()).not.toBeInstanceOf(InMemoryDmRepository)
+    expect(c.dbHandle).toBeDefined()
+  })
+
   it("threads CF_TURNSTILE_HOSTNAMES into RealAbuseChecks, and omits it when unset (L16)", () => {
-    // The hostname assertion existed in abuse-checks but nothing ever supplied the list, so a token minted
-    // on another origin using our sitekey could be replayed. Read back off the constructed instance: the
-    // wiring IS the fix, so asserting the env value reaches the adapter is the only meaningful pin.
     const configOf = (checks: unknown): { turnstileHostnames?: readonly string[] } =>
       (checks as { config: { turnstileHostnames?: readonly string[] } }).config
 
@@ -94,8 +113,6 @@ describe("DI container", () => {
     )
     expect(configOf(wired.abuseChecks).turnstileHostnames).toEqual(["civfix.org", "www.civfix.org"])
 
-    // Unset -> the key is OMITTED rather than passed as [], so abuse-checks still logs its one-time
-    // "not configured" notice instead of reading as "configured with an empty allowlist".
     const unwired = buildContainer(
       loadEnv({ NODE_ENV: "test", USE_FAKE_ABUSE_NSFW: "0", CF_TURNSTILE_SECRET: "ts-secret" }),
     )
@@ -103,11 +120,6 @@ describe("DI container", () => {
   })
 })
 
-/**
- * H10: raw inbound email (.eml + attachments) must never be reachable on the public CDN. Two guarantees
- * live in di.ts — the inbound Storage is built WITHOUT a publicBase, and the old silent
- * `R2_INBOUND_BUCKET ?? R2_BUCKET` fallback cannot route inbound mail into the published media bucket.
- */
 describe("DI container: inbound-mail storage is never public", () => {
   const realStorageEnv = {
     NODE_ENV: "test" as const,
@@ -118,7 +130,6 @@ describe("DI container: inbound-mail storage is never public", () => {
     R2_BUCKET: "civfix-media",
   }
 
-  /** R2Storage keeps its config privately; read what we assert on without widening the public type. */
   type WithConfig = { config: { bucket: string; publicBase?: string } }
 
   it("builds the inbound storage on its own bucket and with no publicBase", () => {
@@ -132,14 +143,11 @@ describe("DI container: inbound-mail storage is never public", () => {
     const inbound = (c.inboundStorage as unknown as WithConfig).config
     expect(inbound.bucket).toBe("civfix-inbound")
     expect(inbound.bucket).not.toBe(media.bucket)
-    // The media bucket keeps its CDN base; the inbound one must NOT have one at all.
     expect(media.publicBase).toBe("https://cdn.civfix.org")
     expect(inbound.publicBase).toBeUndefined()
   })
 
   it("throws rather than falling back to the media bucket when a public base is set", () => {
-    // loadEnv is the first line of defence; construct the env object directly to prove di.ts also
-    // refuses, so no future env change can reintroduce the leak silently.
     const env = { ...loadEnv(realStorageEnv), R2_PUBLIC_BASE: "https://cdn.civfix.org" }
     expect(() => buildContainer(env)).toThrow(/R2_INBOUND_BUCKET is required/)
   })

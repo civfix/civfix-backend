@@ -96,6 +96,25 @@ describe("media.checks IMAGE path", () => {
     env = makeDeps()
   })
 
+  it("F075: the ready log NEVER carries EXIF GPS coordinates, only a derived exifGpsPresent boolean", async () => {
+    const logged: { line: string; extra: Record<string, unknown> }[] = []
+    const local = makeDeps({ log: (line, extra) => logged.push({ line, extra: extra ?? {} }) })
+    const input = await fx.makeValidJpegWithGps()
+    const { id, uploadId, r2Key } = await seedAsset(local.storage, local.repo, "image", input)
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, local.deps)
+    expect(status).toBe("ready")
+
+    const ready = logged.find((l) => l.line === "media.checks: ready")
+    expect(ready).toBeDefined()
+    expect(ready!.extra.exifGpsPresent).toBe(true)
+    const serialized = JSON.stringify(logged)
+    expect(serialized).not.toContain("exifGps\"")
+    expect(serialized).not.toContain("latitude")
+    expect(serialized).not.toContain("longitude")
+    expect(serialized).not.toContain("37.76")
+  })
+
   it("valid JPEG -> ready, EXIF/GPS stripped, thumbnail written, width/height/phash set", async () => {
     const input = await fx.makeValidJpegWithGps()
     const inGps = await exifr.gps(input)
@@ -344,7 +363,7 @@ describe("media.checks IMAGE path", () => {
       expect(local.repo.get(id)!.status, `${b.name}`).toBe("rejected")
       expect(local.reports.length, `${b.name} reported`).toBeGreaterThan(0)
       expect(local.storage.get(`processed/${r2Key}.img`)).toBeNull()
-      expect(local.storage.get(r2Key)).not.toBeNull()
+      expect(local.storage.get(r2Key)).toBeNull()
     }
   })
 
@@ -564,7 +583,7 @@ describe("media.checks orchestration robustness", () => {
     expect(sawAbort).toBe(true)
   })
 
-  it("P2-1: the wall-clock budget REJECTS a wedged PROCESS (no hang, no infra throw for bad bytes)", async () => {
+  it("F079: a wedged PROCESS THROWS (infra retry, no hang) and leaves the row validating, NOT rejected", async () => {
     const tightLimits: WorkerLimits = { ...limits, jobTimeoutMs: 50 }
     const env = makeDeps({ limits: tightLimits })
     const input = await fx.makeValidPng()
@@ -573,12 +592,13 @@ describe("media.checks orchestration robustness", () => {
       new Promise<number>(() => {})
 
     const start = Date.now()
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    await expect(
+      runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps),
+    ).rejects.toBeInstanceOf(MediaInfraError)
     const elapsed = Date.now() - start
 
-    expect(status).toBe("rejected")
     expect(elapsed).toBeLessThan(2_000)
-    expect(env.repo.get(id)!.status).toBe("rejected")
+    expect(env.repo.get(id)!.status).toBe("validating")
     expect(env.reports.length).toBeGreaterThan(0)
   })
 
@@ -591,6 +611,107 @@ describe("media.checks orchestration robustness", () => {
       r2Key: "c",
       kind: "image",
     })
+  })
+})
+
+describe("media.checks terminal-status CAS (F087d)", () => {
+  it("loses the CAS to the stuck sweep: the row stays rejected and the re-uploaded bytes are deleted", async () => {
+    const env = makeDeps()
+    const input = await fx.makeValidPng()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+    const thumb = `thumbs/${r2Key}.jpg`
+
+    // The exact interleaving the CAS exists for: the sweep terminalizes the row and deletes its objects
+    // while this job is between processing and persisting, so the job's put lands AFTER the delete.
+    const realPut = env.storage.put.bind(env.storage)
+    let swept = false
+    ;(env.storage as unknown as { put: typeof env.storage.put }).put = async (key, bytes, opts) => {
+      if (!swept) {
+        swept = true
+        await env.repo.terminalizeStuck(id)
+        await env.storage.delete(r2Key)
+        await env.storage.delete(thumb)
+      }
+      return realPut(key, bytes, opts)
+    }
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+
+    // Never throws, and the terminal state the sweep wrote is authoritative: without the CAS this job
+    // would have written status=ready over it, leaving a permanently ready asset whose bytes are gone.
+    expect(status).toBe("rejected")
+    expect(env.repo.get(id)!.status).toBe("rejected")
+    // ...and nothing it re-uploaded survives the terminalized row (a bound row is invisible to the
+    // orphan sweep, so these objects would have been retained forever).
+    expect(env.storage.get(r2Key)).toBeNull()
+    expect(env.storage.get(thumb)).toBeNull()
+  })
+
+  it("loses the CAS to a concurrent job that already wrote READY: the bytes are LEFT IN PLACE", async () => {
+    const env = makeDeps()
+    const input = await fx.makeValidPng()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+
+    const realPut = env.storage.put.bind(env.storage)
+    let raced = false
+    ;(env.storage as unknown as { put: typeof env.storage.put }).put = async (key, bytes, opts) => {
+      if (!raced) {
+        raced = true
+        await env.repo.applyResult(id, { status: "ready" })
+      }
+      return realPut(key, bytes, opts)
+    }
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+
+    // The winner is a ready row pointing AT these keys: deleting them here would 404 a published photo.
+    expect(status).toBe("ready")
+    expect(env.repo.get(id)!.status).toBe("ready")
+    expect(env.storage.get(r2Key)).not.toBeNull()
+    expect(env.storage.get(`thumbs/${r2Key}.jpg`)).not.toBeNull()
+  })
+
+  it("a rejection that loses the CAS does not clobber the winner, and leaves the winner's bytes alone", async () => {
+    const env = makeDeps()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", fx.makeGarbageImage())
+    const inner = makeDownloader(env.storage)
+    const download: DownloadFn = async (key, maxBytes, signal) => {
+      const bytes = await inner(key, maxBytes, signal)
+      await env.repo.applyResult(id, { status: "ready" })
+      return bytes
+    }
+
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      { ...env.deps, download },
+    )
+
+    expect(status).toBe("ready")
+    expect(env.repo.get(id)!.status).toBe("ready")
+    expect(env.storage.get(r2Key)).not.toBeNull()
+  })
+
+  it("completes cleanly when the row vanished mid-job, reclaiming the bytes it re-uploaded", async () => {
+    const env = makeDeps()
+    const input = await fx.makeValidPng()
+    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", input)
+
+    const realPut = env.storage.put.bind(env.storage)
+    let deleted = false
+    ;(env.storage as unknown as { put: typeof env.storage.put }).put = async (key, bytes, opts) => {
+      if (!deleted) {
+        deleted = true
+        await env.repo.deleteById(id)
+      }
+      return realPut(key, bytes, opts)
+    }
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+
+    expect(status).toBe("rejected")
+    expect(env.repo.get(id)).toBeUndefined()
+    expect(env.storage.get(r2Key)).toBeNull()
+    expect(env.storage.get(`thumbs/${r2Key}.jpg`)).toBeNull()
   })
 })
 
@@ -630,15 +751,10 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     expect(row.status).toBe("ready")
     expect((row.phash as string)).toMatch(/^[0-9a-f]{16}$/)
     expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)
-    // M9: the NSFW gate was INERT in production — no model is vendored, USE_REAL_NSFW defaults false,
-    // so nsfwScore always returned 0 and every unauthenticated upload auto-published with the entire
-    // held/review branch dead. A missing scorer now raises the flag so the moderation queue actually
-    // receives the asset; MEDIA_UNSCORED_POLICY=hold makes it fail fully closed.
-    expect(repo.flags).toHaveLength(1)
-    expect(repo.flags[0]).toMatchObject({ subjectId: id, reason: "nsfw" })
+    expect(repo.flags).toHaveLength(0)
   })
 
-  it("M9: a clean PNG -> READY, flagged for review while no NSFW model is configured", async () => {
+  it("M9: a clean PNG -> READY, NO blocking flag raised while no NSFW model is configured", async () => {
     const { deps, storage, repo } = realDeps()
     const input = await fx.makeValidPng()
     const id = `media-real-2`
@@ -650,8 +766,23 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
     expect(status).toBe("ready")
     expect(repo.get(id)!.status).toBe("ready")
-    expect(repo.flags).toHaveLength(1)
-    expect(repo.flags[0]).toMatchObject({ subjectId: id, reason: "nsfw" })
+    expect(repo.flags).toHaveLength(0)
+  })
+
+  it("M9/F076: a clean anon-report image PUBLISHES (no unscored flag blocks the hold-release gate)", async () => {
+    const { deps, storage, repo } = realDeps()
+    const input = await fx.makeValidPng()
+    const id = `media-real-anon`
+    const uploadId = `up-real-anon`
+    const r2Key = `uploads/2026/06/${id}`
+    repo.seed({ id, uploadId, kind: "image", r2Key, reportId: "report-anon-1" })
+    await storage.put(r2Key, Buffer.from(input), { contentType: "image/png" })
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+    expect(status).toBe("ready")
+    expect(repo.get(id)!.status).toBe("ready")
+    expect(repo.flags).toHaveLength(0)
+    expect(repo.moderationEnqueues).toHaveLength(0)
   })
 
   it("M9: MEDIA_UNSCORED_POLICY=hold fails CLOSED — an unscored asset is HELD, not published", async () => {

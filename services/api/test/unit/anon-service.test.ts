@@ -6,17 +6,14 @@ import { abuseH3Cell } from "../../src/abuse/h3-cap.js"
 import { ANON_TOKEN_REPORT_CAP, signAnonToken } from "../../src/abuse/anon-token.js"
 import {
   makeAnonService,
+  ANON_TURNSTILE_ACTION,
+  ANON_MAX_MEDIA_UPLOADS,
   type AnonService,
   type AnonServiceDeps,
 } from "../../src/services/anon-service.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"
+import { sha256Hex } from "../../src/auth/crypto.js"
 
-/**
- * Offline unit tests for the anonymous-report service: the abuse-stack ORDER, the held create in one
- * transaction, idempotency replay, and the claim-code-gated status. All run against the in-memory anon
- * store + FakeAbuseChecks + an in-memory CounterStore - no DB, no Docker. The Drizzle transaction path
- * is covered by the Docker-gated integration suite.
- */
 
 const SIGNING_KEY = "test-anon-signing-key"
 const KEY_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -35,9 +32,6 @@ function makeHarness(over: Partial<AnonServiceDeps> = {}): Harness {
   const abuse = new FakeAbuseChecks()
   const counters = new InMemoryCounterStore(() => 0)
   const flags: Harness["flags"] = []
-  // Independent per-factory counters so ids are deterministic regardless of call order (the token id is
-  // minted before the report id within a single submit). The first submit yields report-1/claim-1 and,
-  // when it issues a fresh token, anontok-1.
   let reportN = 0
   let claimN = 0
   let tokenN = 0
@@ -77,9 +71,6 @@ function req(over: Partial<AnonReportRequest> = {}): AnonReportRequest {
 
 const ctx = { ip: "203.0.113.10", cfGeo: {} as Record<string, string | string[] | undefined> }
 
-// ---------------------------------------------------------------------------
-// Happy path: held create
-// ---------------------------------------------------------------------------
 
 describe("submitAnonReport: held create", () => {
   it("creates a HELD report, issues an anon token, stamps a claim code, bumps report_count", async () => {
@@ -89,10 +80,8 @@ describe("submitAnonReport: held create", () => {
     expect(result.response.status).toBe("held")
     expect(result.response.reportId).toBe("report-1")
     expect(result.response.claimCode).toBe("claim-1")
-    // A fresh anon token was issued (no token was presented) and handed back.
     expect(result.issuedAnonToken).toBe(signAnonToken("anontok-1", SIGNING_KEY))
 
-    // The report row is held + public, published_at null, reporter null, anon_session_id = token id.
     const stored = store.reports.get("report-1")!
     expect(stored.status).toBe("held")
     expect(stored.visibility).toBe("public")
@@ -101,36 +90,30 @@ describe("submitAnonReport: held create", () => {
     expect(stored.anonSessionId).toBe("anontok-1")
     expect(stored.jurisdictionGeoid).toBe("0644000")
 
-    // The token got report_count = 1 (the cap is a token property). The claim code is stored PER REPORT
-    // now (0005), so it is on the report row, NOT the token row.
     const token = store.tokens.get("anontok-1")!
     expect(token.reportCount).toBe(1)
     expect(token.claimCode).toBeNull()
-    expect(store.reports.get("report-1")!.claimCode).toBe("claim-1")
+    // F150: only the DIGEST of the per-report code is persisted; the plaintext lives solely in the
+    // one-time response above.
+    expect(store.reports.get("report-1")!.claimCodeHash).toBe(await sha256Hex("claim-1"))
 
-    // Timeline: submitted + held.
     const tl = store.timeline.filter((t) => t.reportId === "report-1")
     expect(tl.map((t) => t.status)).toEqual(["submitted", "held"])
 
-    // The snapshot was stored under the idempotency key.
     expect(store.idempotency.size).toBe(1)
   })
 
   it("reuses a presented valid token (no re-issue) and bumps its count", async () => {
     const { store, service } = makeHarness()
-    // Seed a valid token and present it.
     const token = store.seedToken({ id: "anontok-1", reportCount: 0 })
     const signed = signAnonToken(token.id, SIGNING_KEY)
 
     const result = await service.submitAnonReport(req({ anonToken: signed }), ctx)
-    expect(result.issuedAnonToken).toBeUndefined() // existing token reused
+    expect(result.issuedAnonToken).toBeUndefined()
     expect(store.tokens.get("anontok-1")!.reportCount).toBe(1)
   })
 })
 
-// ---------------------------------------------------------------------------
-// Abuse stack ordering + individual controls
-// ---------------------------------------------------------------------------
 
 describe("submitAnonReport: Turnstile", () => {
   it("rejects a failed Turnstile FIRST with TURNSTILE_FAILED and creates nothing", async () => {
@@ -139,7 +122,7 @@ describe("submitAnonReport: Turnstile", () => {
       service.submitAnonReport(req({ turnstileToken: "fail" }), ctx),
     ).rejects.toMatchObject({ code: "TURNSTILE_FAILED" })
     expect(store.reports.size).toBe(0)
-    expect(store.tokens.size).toBe(0) // no token issued before Turnstile clears
+    expect(store.tokens.size).toBe(0)
   })
 })
 
@@ -152,7 +135,6 @@ describe("submitAnonReport: honeypot", () => {
       service.submitAnonReport(req({ honeypot: "gotcha", anonToken: signed }), ctx),
     ).rejects.toMatchObject({ code: "VALIDATION" })
     expect(store.reports.size).toBe(0)
-    // A best-effort abuse_flag was raised against the presented token.
     expect(flags).toEqual([{ subjectType: "anon_token", subjectId: "anontok-1", reason: "honeypot" }])
   })
 
@@ -160,6 +142,64 @@ describe("submitAnonReport: honeypot", () => {
     const { store, service } = makeHarness()
     await service.submitAnonReport(req({ honeypot: "   " }), ctx)
     expect(store.reports.size).toBe(1)
+  })
+
+  it("F134: the rejection body does NOT name the honeypot field (trap stays undetectable)", async () => {
+    const { service } = makeHarness()
+    try {
+      await service.submitAnonReport(req({ honeypot: "gotcha" }), ctx)
+      throw new Error("expected to throw")
+    } catch (err) {
+      expect((err as { code?: string }).code).toBe("VALIDATION")
+      const fields = (err as { fields?: Record<string, string> }).fields ?? {}
+      expect(fields).not.toHaveProperty("honeypot")
+    }
+  })
+})
+
+describe("submitAnonReport: slur filter (F130)", () => {
+  it("rejects a slur in the title with VALIDATION and creates nothing", async () => {
+    const { store, service } = makeHarness()
+    await expect(
+      service.submitAnonReport({ ...req(), title: "you faggot" }, ctx),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(store.reports.size).toBe(0)
+  })
+
+  it("rejects a slur in the description and spends NO quota", async () => {
+    const { store, service, counters } = makeHarness()
+    await expect(
+      service.submitAnonReport(req({ description: "go back tranny" }), ctx),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(store.reports.size).toBe(0)
+    expect(counters.peek("abuse:ip:203.0.113.10")).toBe(0)
+  })
+})
+
+describe("submitAnonReport: derived category (F060)", () => {
+  it("stores the category DERIVED from type, ignoring a mismatched client category", async () => {
+    const { store, service } = makeHarness()
+    await service.submitAnonReport(req({ type: "pavement", category: "trash" }), ctx)
+    expect(store.reports.get("report-1")!.category).toBe("hazard")
+  })
+})
+
+describe("submitAnonReport: media cap (F161)", () => {
+  it("rejects more than the allowed media uploads with VALIDATION, creating nothing", async () => {
+    const { store, service } = makeHarness()
+    const tooMany = Array.from({ length: ANON_MAX_MEDIA_UPLOADS + 1 }, (_u, i) => uuid(i))
+    await expect(
+      service.submitAnonReport(req({ mediaUploadIds: tooMany }), ctx),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(store.reports.size).toBe(0)
+  })
+})
+
+describe("submitAnonReport: Turnstile action binding (F128)", () => {
+  it("passes the anon-report action expectation to verifyTurnstile", async () => {
+    const { service, abuse } = makeHarness()
+    await service.submitAnonReport(req(), ctx)
+    expect(abuse.lastVerifyExpect).toEqual({ action: ANON_TURNSTILE_ACTION })
   })
 })
 
@@ -177,8 +217,6 @@ describe("submitAnonReport: per-token cap", () => {
 
 describe("submitAnonReport: per-IP cap", () => {
   it("rejects after the hard hourly IP cap is exceeded across distinct tokens", async () => {
-    // Tighten via a shared CounterStore but rely on the real IP limit (10/hr). Use distinct idempotency
-    // keys + fresh tokens each time so only the IP cap can trip.
     const { service, store } = makeHarness()
     for (let i = 0; i < 10; i++) {
       await service.submitAnonReport(req({ idempotencyKey: uuid(i) }), ctx)
@@ -192,8 +230,6 @@ describe("submitAnonReport: per-IP cap", () => {
 
 describe("submitAnonReport: per-H3-cell cap", () => {
   it("rejects once the cell's hourly cap is exceeded (same point, fresh tokens + keys)", async () => {
-    // Make the IP cap effectively unlimited by spreading IPs, so only the H3 cell cap can trip. The
-    // H3 default cap is 30; push past it.
     const { service } = makeHarness()
     let i = 0
     const submit = (): Promise<unknown> =>
@@ -212,7 +248,6 @@ describe("submitAnonReport: per-H3-cell cap", () => {
 describe("submitAnonReport: GPS sanity", () => {
   it("rejects a point implausibly far from the coarse IP geo (GPS_IMPLAUSIBLE), TRUSTED edge", async () => {
     const { store, service } = makeHarness()
-    // CF geo near LA; point far north (> 50 km). Headers are trusted (came through the edge).
     const cfGeo = { "cf-iplatitude": "34.1", "cf-iplongitude": "-118.35" }
     await expect(
       service.submitAnonReport(req({ lat: 35.0, lng: -118.35 }), {
@@ -243,24 +278,18 @@ describe("submitAnonReport: GPS sanity", () => {
 
   it("P1-2: IGNORES spoofed CF geo headers from an UNTRUSTED source (does NOT reject)", async () => {
     const { store, service } = makeHarness()
-    // An attacker submits a point far from where the (forged) CF headers claim, but the request did NOT
-    // come through the trusted edge, so the headers are ignored and the check fails open: the report is
-    // created (held) rather than blocked. The point being: the spoofed headers cannot be used to PASS a
-    // bogus location check either - they simply are not trusted as a signal at all.
     const cfGeo = { "cf-iplatitude": "34.1", "cf-iplongitude": "-118.35" }
     await service.submitAnonReport(req({ lat: 35.0, lng: -118.35 }), {
       ip: "203.0.113.10",
       cfGeo,
-      cfGeoTrusted: false, // untrusted source (the default)
+      cfGeoTrusted: false,
     })
-    // No GPS_IMPLAUSIBLE rejection happened (headers ignored) -> the report exists.
     expect(store.reports.size).toBe(1)
   })
 
   it("P1-2: an implausible point that WOULD reject if trusted is ignored when the source is untrusted", async () => {
     const { store, service } = makeHarness()
-    const cfGeo = { "cf-iplatitude": "10.0", "cf-iplongitude": "10.0" } // far from the submitted point
-    // Untrusted: ignored -> passes. (Same input WITH cfGeoTrusted:true would be GPS_IMPLAUSIBLE.)
+    const cfGeo = { "cf-iplatitude": "10.0", "cf-iplongitude": "10.0" }
     await service.submitAnonReport(req({ lat: 34.2, lng: -118.35 }), {
       ip: "203.0.113.10",
       cfGeo,
@@ -270,9 +299,6 @@ describe("submitAnonReport: GPS sanity", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Idempotency replay
-// ---------------------------------------------------------------------------
 
 describe("submitAnonReport: idempotency replay", () => {
   it("returns the ORIGINAL AnonReportResponse for a duplicate key, with NO second report", async () => {
@@ -281,7 +307,6 @@ describe("submitAnonReport: idempotency replay", () => {
     expect(store.reports.size).toBe(1)
     const countAfterFirst = store.tokens.get("anontok-1")!.reportCount
 
-    // Same key again (even with a different category) -> same response, no new row, no extra quota.
     const second = await service.submitAnonReport(
       req({ idempotencyKey: KEY_A, category: "hazard", anonToken: signAnonToken("anontok-1", SIGNING_KEY) }),
       ctx,
@@ -289,7 +314,6 @@ describe("submitAnonReport: idempotency replay", () => {
     expect(second.response).toEqual(first.response)
     expect(second.issuedAnonToken).toBeUndefined()
     expect(store.reports.size).toBe(1)
-    // The replay did NOT bump report_count again (it short-circuited before the create tx).
     expect(store.tokens.get("anontok-1")!.reportCount).toBe(countAfterFirst)
   })
 
@@ -308,7 +332,6 @@ describe("submitAnonReport: idempotency replay", () => {
     const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A, lat: 34.1, lng: -118.35 }), ctx)
     expect(store.reports.size).toBe(1)
 
-    // Snapshot the counters AFTER the genuine first submit (it consumed exactly one IP + one cell slot).
     const ipKey = "abuse:ip:203.0.113.10"
     const h3Key = `abuse:h3:${abuseH3Cell(34.1, -118.35)}`
     const ipAfterFirst = counters.peek(ipKey)
@@ -316,8 +339,6 @@ describe("submitAnonReport: idempotency replay", () => {
     expect(ipAfterFirst).toBe(1)
     expect(h3AfterFirst).toBe(1)
 
-    // Replay the SAME key several times. Each must short-circuit on the idempotency snapshot BEFORE the
-    // counter increments, so the budgets do not move (the replay is free, per the documented contract).
     for (let i = 0; i < 4; i++) {
       const replay = await service.submitAnonReport(
         req({ idempotencyKey: KEY_A, lat: 34.1, lng: -118.35, anonToken: signAnonToken("anontok-1", SIGNING_KEY) }),
@@ -325,21 +346,16 @@ describe("submitAnonReport: idempotency replay", () => {
       )
       expect(replay.response).toEqual(first.response)
     }
-    expect(counters.peek(ipKey)).toBe(ipAfterFirst) // unchanged
-    expect(counters.peek(h3Key)).toBe(h3AfterFirst) // unchanged
+    expect(counters.peek(ipKey)).toBe(ipAfterFirst)
+    expect(counters.peek(h3Key)).toBe(h3AfterFirst)
     expect(store.reports.size).toBe(1)
   })
 })
 
-// ---------------------------------------------------------------------------
-// Concurrency: per-token cap is atomic (bugs P0-1)
-// ---------------------------------------------------------------------------
 
 describe("submitAnonReport: per-token cap is atomic under concurrency (bugs P0-1)", () => {
   it("fires N concurrent submits on a token with ONE slot left; at most one is created", async () => {
     const { store, service } = makeHarness()
-    // Token at cap-1 (one report allowed). Distinct IPs per request so the per-IP cap never trips and
-    // only the per-token cap can bound the outcome.
     const signed = signAnonToken(
       store.seedToken({ id: "anontok-1", reportCount: ANON_TOKEN_REPORT_CAP - 1 }).id,
       SIGNING_KEY,
@@ -359,17 +375,14 @@ describe("submitAnonReport: per-token cap is atomic under concurrency (bugs P0-1
       (r) => r.status === "rejected" && (r.reason as { code?: string }).code === "RATE_LIMITED",
     ).length
 
-    // Exactly the one remaining slot is consumed; every other concurrent submit is rate-limited.
     expect(created).toBe(1)
     expect(rejected).toBe(N - 1)
     expect(store.reports.size).toBe(1)
-    // The token never overshoots the cap.
     expect(store.tokens.get("anontok-1")!.reportCount).toBe(ANON_TOKEN_REPORT_CAP)
   })
 
   it("the atomic cap is enforced in the create tx, not just the pre-check (cap reached -> rollback)", async () => {
     const { store, service } = makeHarness()
-    // Token already AT the cap: the tx-level UPDATE ... WHERE report_count < cap matches 0 rows.
     const signed = signAnonToken(
       store.seedToken({ id: "anontok-1", reportCount: ANON_TOKEN_REPORT_CAP }).id,
       SIGNING_KEY,
@@ -382,9 +395,6 @@ describe("submitAnonReport: per-token cap is atomic under concurrency (bugs P0-1
   })
 })
 
-// ---------------------------------------------------------------------------
-// Status (claim-code-gated)
-// ---------------------------------------------------------------------------
 
 describe("anonReportStatus", () => {
   it("returns the status for the matching claim code", async () => {
@@ -392,7 +402,7 @@ describe("anonReportStatus", () => {
     const created = await service.submitAnonReport(req(), ctx)
     const status = await service.anonReportStatus(created.response.reportId, created.response.claimCode)
     expect(status.status).toBe("held")
-    expect(status.publishedAt).toBeUndefined() // not yet published
+    expect(status.publishedAt).toBeUndefined()
   })
 
   it("404s a WRONG claim code (no enumeration)", async () => {
@@ -413,7 +423,6 @@ describe("anonReportStatus", () => {
   it("reflects publishedAt once the report is published", async () => {
     const { store, service } = makeHarness()
     const created = await service.submitAnonReport(req(), ctx)
-    // Simulate a release.
     const r = store.reports.get(created.response.reportId)!
     r.status = "published"
     r.publishedAt = new Date("2026-02-01T00:00:00Z")
@@ -424,7 +433,6 @@ describe("anonReportStatus", () => {
 
   it("P2-5: two reports under ONE token are each status-queryable by their OWN claim code", async () => {
     const { service } = makeHarness()
-    // First submit (issues anontok-1, report-1/claim-1). Second submit on the SAME token presents it.
     const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A }), ctx)
     const second = await service.submitAnonReport(
       req({ idempotencyKey: KEY_B, anonToken: signAnonToken("anontok-1", SIGNING_KEY) }),
@@ -435,14 +443,11 @@ describe("anonReportStatus", () => {
     expect(second.response.reportId).toBe("report-2")
     expect(second.response.claimCode).toBe("claim-2")
 
-    // The FIRST report's status is still queryable with the FIRST report's code (the bug was that the
-    // second submit overwrote the shared token code, 404ing the first). Both resolve independently.
     const s1 = await service.anonReportStatus("report-1", "claim-1")
     expect(s1.status).toBe("held")
     const s2 = await service.anonReportStatus("report-2", "claim-2")
     expect(s2.status).toBe("held")
 
-    // A report cannot be queried with the OTHER report's code.
     await expect(service.anonReportStatus("report-1", "claim-2")).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
@@ -452,7 +457,89 @@ describe("anonReportStatus", () => {
   })
 })
 
-/** Build a valid-looking UUID for distinct idempotency keys in the rate-limit loops. */
+describe("claim codes are persisted as a digest only (F150)", () => {
+  it("stores sha256(code) - never the plaintext - and the digest matches the returned code", async () => {
+    const { store, service } = makeHarness()
+    const created = await service.submitAnonReport(req(), ctx)
+    const stored = store.reports.get(created.response.reportId)!
+
+    expect(stored.claimCodeHash).toBe(await sha256Hex(created.response.claimCode))
+    expect(stored.claimCodeHash).not.toBe(created.response.claimCode)
+    expect(JSON.stringify(stored)).not.toContain(created.response.claimCode)
+  })
+
+  it("resolves a row that carries ONLY a backfilled digest (a pre-0091 plaintext-era report)", async () => {
+    const { store, service } = makeHarness()
+    // Exactly what 0091's backfill leaves behind: claim_code_hash = sha256(the old plaintext code).
+    store.seedReport({
+      id: "legacy-1",
+      anonSessionId: "anontok-legacy",
+      status: "held",
+      claimCodeHash: await sha256Hex("legacy-code"),
+    })
+
+    const status = await service.anonReportStatus("legacy-1", "legacy-code")
+    expect(status.status).toBe("held")
+    await expect(service.anonReportStatus("legacy-1", "legacy-cod3")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+
+  it("404s a report whose code was already consumed (digest cleared)", async () => {
+    const { store, service } = makeHarness()
+    const created = await service.submitAnonReport(req(), ctx)
+    store.reports.get(created.response.reportId)!.claimCodeHash = null
+    await expect(
+      service.anonReportStatus(created.response.reportId, created.response.claimCode),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+})
+
+
+describe("submitAnonReport: idempotency is scoped to the anon session (F028)", () => {
+  it("does NOT replay one session's snapshot (or its claim code) to a DIFFERENT session", async () => {
+    const { store, service } = makeHarness()
+    const squatter = signAnonToken(store.seedToken({ id: "anontok-squatter" }).id, SIGNING_KEY)
+    const victim = signAnonToken(store.seedToken({ id: "anontok-victim" }).id, SIGNING_KEY)
+
+    const first = await service.submitAnonReport(
+      req({ idempotencyKey: KEY_A, anonToken: squatter }),
+      ctx,
+    )
+
+    // The squatter owns the key, so the victim gets the retryable conflict the authenticated lane
+    // answers - NOT the squatter's reportId + claim code.
+    await expect(
+      service.submitAnonReport(req({ idempotencyKey: KEY_A, anonToken: victim }), ctx),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+
+    expect(store.reports.size).toBe(1)
+    expect(store.reports.get(first.response.reportId)!.anonSessionId).toBe("anontok-squatter")
+  })
+
+  it("still replays the original response for the SAME anon session", async () => {
+    const { store, service } = makeHarness()
+    const signed = signAnonToken(store.seedToken({ id: "anontok-owner" }).id, SIGNING_KEY)
+    const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A, anonToken: signed }), ctx)
+    const replay = await service.submitAnonReport(req({ idempotencyKey: KEY_A, anonToken: signed }), ctx)
+
+    expect(replay.response).toEqual(first.response)
+    expect(store.reports.size).toBe(1)
+  })
+
+  it("a caller presenting NO anon token cannot replay a session-owned snapshot", async () => {
+    const { store, service } = makeHarness()
+    const signed = signAnonToken(store.seedToken({ id: "anontok-owner" }).id, SIGNING_KEY)
+    const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A, anonToken: signed }), ctx)
+
+    await expect(service.submitAnonReport(req({ idempotencyKey: KEY_A }), ctx)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(store.reports.size).toBe(1)
+    expect(store.reports.get(first.response.reportId)!.anonSessionId).toBe("anontok-owner")
+  })
+})
+
 function uuid(n: number): string {
   const h = n.toString(16).padStart(12, "0")
   return `00000000-0000-4000-8000-${h}`

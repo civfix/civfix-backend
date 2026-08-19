@@ -1,24 +1,3 @@
-/**
- * Admin analytics data-layer integration test (Docker-gated). Exercises the REAL raw-SQL
- * AnalyticsRepository (makeDrizzleAnalyticsRepository) against a live Postgres/PostGIS container via
- * withPg, which applies the canonical migrations + the jurisdiction seed (so reports / cleanups /
- * cleanup_members / jurisdictions / jurisdiction_contacts / users all exist with their real constraints).
- *
- * Proven here against the real schema (the queries that can only run on Postgres - date_trunc windows,
- * percentile_cont medians, ST_Centroid, the cohort math):
- *   - kpis: pins this/last month + resolved ratio + cleanups planned + events + new users;
- *   - pinsByWeek: weekly date_trunc buckets within the trailing window;
- *   - byCategory: grouped category counts (public, non-deleted only);
- *   - funnel: dropped / routed / acknowledged / resolved stage counts;
- *   - coverage: mapped (has a contact) vs needs-mapping jurisdictions;
- *   - resolutionByCategory: percentile_cont median hours for resolved reports;
- *   - events: thisMonth + bags + volunteers + the byMonth trend;
- *   - topJurisdictions / topContributors: ranked aggregates with the joined names;
- *   - heatmap: per-jurisdiction density with the ST_Centroid lat/lng;
- *   - retention: monthly-cohort active counts.
- *
- * When Docker is unavailable the whole describe block SKIPS, so the local suite stays green; CI runs it.
- */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -29,7 +8,6 @@ import { LA_CITY } from "../../src/db/seed-fixtures.js"
 const pg = await withPg()
 const GEOID = LA_CITY.geoid
 
-/** Insert a user, return its id. */
 async function insertUser(h: PgHarness, name: string): Promise<string> {
   const rows = await h.sql<{ id: string }[]>`
     INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -37,7 +15,6 @@ async function insertUser(h: PgHarness, name: string): Promise<string> {
   return rows[0]!.id
 }
 
-/** Insert a report at a fixed point in the seeded jurisdiction, return its id. `createdAt` overrides now. */
 async function insertReport(
   h: PgHarness,
   opts: {
@@ -73,7 +50,6 @@ async function insertReport(
   return rows[0]!.id
 }
 
-/** Insert a cleanup, return its id. */
 async function insertCleanup(
   h: PgHarness,
   opts: {
@@ -104,7 +80,6 @@ async function insertCleanup(
   return rows[0]!.id
 }
 
-/** Add a member to a cleanup. */
 async function addMember(h: PgHarness, cleanupId: string, userId: string): Promise<void> {
   await h.sql`
     INSERT INTO cleanup_members (cleanup_id, user_id, role)
@@ -137,7 +112,6 @@ describe.skipIf(!pg)("admin analytics repository (integration: real schema)", ()
   it("kpis: pins this month + resolved ratio over public, non-deleted reports", async () => {
     await insertReport(h, { status: "resolved" })
     await insertReport(h, { status: "submitted" })
-    // A hidden report is not a pin.
     await insertReport(h, { status: "submitted", visibility: "hidden" })
 
     const agg = await repo.kpis()
@@ -158,10 +132,10 @@ describe.skipIf(!pg)("admin analytics repository (integration: real schema)", ()
   })
 
   it("funnel: dropped / routed / acknowledged / resolved", async () => {
-    await insertReport(h, { status: "submitted" }) // routed (has geoid)
-    await insertReport(h, { status: "in_progress" }) // routed + acknowledged
-    await insertReport(h, { status: "resolved" }) // routed + acknowledged + resolved
-    await insertReport(h, { status: "submitted", geoid: null }) // dropped but not routed
+    await insertReport(h, { status: "submitted" })
+    await insertReport(h, { status: "in_progress" })
+    await insertReport(h, { status: "resolved" })
+    await insertReport(h, { status: "submitted", geoid: null })
 
     const f = await repo.funnel()
     expect(f.dropped).toBe(4)
@@ -171,16 +145,14 @@ describe.skipIf(!pg)("admin analytics repository (integration: real schema)", ()
   })
 
   it("coverage: mapped vs needs-mapping by contact presence", async () => {
-    // Seed jurisdictions exist (the seed). Give LA_CITY a contact -> mapped; the others have none.
     await h.sql`UPDATE jurisdictions SET contact_emails = ARRAY['x@city.gov'] WHERE geoid = ${GEOID}`
     const c = await repo.coverage()
     expect(c.mapped).toBeGreaterThanOrEqual(1)
-    expect(c.mapped + c.needsMapping).toBeGreaterThanOrEqual(3) // 3 seeded jurisdictions
+    expect(c.mapped + c.needsMapping).toBeGreaterThanOrEqual(3)
   })
 
   it("resolutionByCategory: percentile_cont median hours for resolved reports", async () => {
     const created = new Date("2026-06-01T00:00:00Z")
-    // Two resolved trash reports, 10h and 20h to resolution -> median 15h.
     await insertReport(h, {
       category: "trash",
       status: "resolved",
@@ -252,12 +224,74 @@ describe.skipIf(!pg)("admin analytics repository (integration: real schema)", ()
 
   it("retention: a signup-month cohort with its size + active counts", async () => {
     const u = await insertUser(h, "Cohort User")
-    // The user is active this month (a report).
     await insertReport(h, { reporterId: u, createdAt: new Date() })
     const rows = await repo.retention(6)
     expect(rows.length).toBeGreaterThanOrEqual(1)
     const cohort = rows.find((r) => r.size >= 1)
     expect(cohort).toBeDefined()
     expect(cohort!.activeByPeriod[0]).toBeGreaterThanOrEqual(1)
+  })
+
+  it("F117: events this-month excludes a cleanup scheduled in a future month", async () => {
+    const org = await insertUser(h, "Organizer")
+    await insertCleanup(h, { organizerId: org, bags: 5, scheduledAt: new Date() })
+    const future = new Date()
+    future.setUTCMonth(future.getUTCMonth() + 3)
+    await insertCleanup(h, { organizerId: org, bags: 99, scheduledAt: future })
+
+    const e = await repo.events(8)
+    expect(e.thisMonth).toBe(1)
+    expect(e.bags).toBe(5)
+
+    const k = await repo.kpis()
+    expect(k.events.current).toBe(1)
+  })
+
+  it("F120: a blank-email contact does not mark a jurisdiction as mapped", async () => {
+    const before = await repo.coverage()
+    await h.sql`
+      INSERT INTO jurisdiction_contacts (geoid, category, email)
+      VALUES (${GEOID}, 'graffiti', '')
+    `
+    const after = await repo.coverage()
+    expect(after.mapped).toBe(before.mapped)
+  })
+
+  it("F121: two jurisdictions sharing a name stay separate rows (grouped by geoid)", async () => {
+    const dupGeoid = "TESTDUP01"
+    await h.sql`
+      INSERT INTO jurisdictions (geoid, name, layer, priority, geom)
+      VALUES (
+        ${dupGeoid}, ${LA_CITY.name}, 'county', 5,
+        ST_Multi(ST_SetSRID(ST_GeomFromText('POLYGON((-118 34,-118 34.1,-118.1 34.1,-118.1 34,-118 34))'), 4326))
+      )
+    `
+    await insertReport(h, {})
+    await insertReport(h, {})
+    await insertReport(h, { geoid: dupGeoid })
+    await insertReport(h, { geoid: dupGeoid })
+    await insertReport(h, { geoid: dupGeoid })
+
+    const rows = await repo.topJurisdictions(10)
+    const named = rows.filter((r) => r.org.startsWith(LA_CITY.name))
+    expect(named.length).toBe(2)
+    expect(named.some((r) => r.pins === 2)).toBe(true)
+    expect(named.some((r) => r.pins === 3)).toBe(true)
+    expect(named.some((r) => r.pins === 5)).toBe(false)
+
+    await h.sql`DELETE FROM reports WHERE jurisdiction_geoid = ${dupGeoid}`
+    await h.sql`DELETE FROM jurisdictions WHERE geoid = ${dupGeoid}`
+  })
+
+  it("F124: soft-deleted users are excluded from retention cohort sizes", async () => {
+    const active = await insertUser(h, "Active")
+    await insertReport(h, { reporterId: active, createdAt: new Date() })
+    const deleted = await insertUser(h, "Deleted User")
+    await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${deleted}`
+
+    const rows = await repo.retention(6)
+    const cohort = rows.find((r) => r.size >= 1)
+    expect(cohort).toBeDefined()
+    expect(cohort!.size).toBe(1)
   })
 })

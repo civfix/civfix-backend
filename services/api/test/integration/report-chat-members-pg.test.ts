@@ -16,7 +16,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
+import {
+  makeReportChatRepository,
+  REPORT_CHAT_MEMBER_SCAN_CAP,
+} from "../../src/services/report-chat-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 
 const pg = await withPg()
@@ -170,5 +173,32 @@ describe.skipIf(!pg)("report chat membership + system messages (integration)", (
     expect(ids).toContain(a)
     expect(ids).toContain(b)
     expect(ids).toHaveLength(2)
+  })
+
+  /**
+   * F154: the roster read drives the per-message bell fan-out and the mention resolver, and report chat
+   * is join-on-view — so an unbounded `SELECT user_id FROM report_chat_members` on a viral report both
+   * loads the whole roster into memory and hands the notifier an unbounded recipient list. The query
+   * carries a real LIMIT (default REPORT_CHAT_MEMBER_SCAN_CAP, mirroring the group lane), and the
+   * caller-supplied limit narrows it further.
+   */
+  it("F154: listMemberIds honors the caller's limit and is deterministic at the boundary", async () => {
+    const repo = makeReportChatRepository(h.sql)
+    const reportId = await newReport()
+    const members: string[] = []
+    for (let i = 0; i < 5; i++) members.push(await newUser(`Roster ${i}`))
+    for (const m of members) await repo.join(reportId, m)
+
+    expect(await repo.countMembers(reportId)).toBe(5)
+
+    const capped = await repo.listMemberIds(reportId, 2)
+    expect(capped).toHaveLength(2)
+    expect(await repo.listMemberIds(reportId, 2)).toEqual(capped)
+    for (const id of capped) expect(members).toContain(id)
+
+    const all = await repo.listMemberIds(reportId)
+    expect(all).toHaveLength(5)
+    expect(all.slice(0, 2)).toEqual(capped)
+    expect(REPORT_CHAT_MEMBER_SCAN_CAP).toBeGreaterThan(0)
   })
 })

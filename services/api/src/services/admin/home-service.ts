@@ -79,6 +79,30 @@ export function toMapPin(record: HomeMapPinRecord): HomeMapPin {
 
 export const HOME_MAP_PIN_LIMIT = 200
 
+export const HOME_SUMMARY_CONCURRENCY = 3
+
+type SectionTasks = readonly (() => Promise<unknown>)[]
+
+type SectionResults<T extends SectionTasks> = {
+  -readonly [K in keyof T]: Awaited<ReturnType<T[K]>>
+}
+
+export async function runBounded<T extends SectionTasks>(
+  limit: number,
+  tasks: T,
+): Promise<SectionResults<T>> {
+  const results = new Array<unknown>(tasks.length)
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    for (let index = cursor++; index < tasks.length; index = cursor++) {
+      results[index] = await tasks[index]!()
+    }
+  }
+  const lanes = Math.max(1, Math.min(limit, tasks.length))
+  await Promise.all(Array.from({ length: lanes }, worker))
+  return results as SectionResults<T>
+}
+
 export interface HomeServiceDeps {
   repo: HomeRepository
   analytics: AnalyticsRepository
@@ -95,26 +119,11 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
   const now = deps.now ?? (() => new Date())
   const report = (section: string) => (err: unknown) => deps.onSectionError?.(section, err)
 
-  async function analyticsMini(): Promise<AnalyticsMini> {
-    const ref = now()
-    const [kpis, coverage, pinsByWeek] = await Promise.all([
-      safeSection(() => deps.analytics.kpis(), null, report("analytics.kpis")),
-      safeSection<AnalyticsCoverageResponse | null>(
-        async () => buildCoverage(await deps.analytics.coverage()),
-        null,
-        report("analytics.coverage"),
-      ),
-      safeSection(
-        async () =>
-          buildPinsByWeek(
-            await deps.analytics.pinsByWeek(PINS_BY_WEEK_WEEKS),
-            PINS_BY_WEEK_WEEKS,
-            ref,
-          ).weeks,
-        ZERO_ANALYTICS_MINI.pinsByWeek,
-        report("analytics.pinsByWeek"),
-      ),
-    ])
+  function toAnalyticsMini(
+    kpis: Awaited<ReturnType<AnalyticsRepository["kpis"]>> | null,
+    coverage: AnalyticsCoverageResponse | null,
+    pinsByWeek: number[],
+  ): AnalyticsMini {
     return {
       pinsThisMonth: kpis ? kpis.pins.current : 0,
       resolvedPct: kpis ? round1Pct(kpis.resolvedRatio.current) : 0,
@@ -128,16 +137,43 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
 
   return {
     async summary(): Promise<HomeSummaryResponse> {
-      const [discovery, reports, events, mail, users, livePins24h, analytics] = await Promise.all([
-        safeSection(() => deps.repo.discoverySummary(), ZERO_DISCOVERY, report("discovery")),
-        safeSection(() => deps.repo.reportsSummary(), ZERO_REPORTS, report("reports")),
-        safeSection(() => deps.repo.eventsSummary(), ZERO_EVENTS, report("events")),
-        safeSection(() => deps.repo.mailSummary(), ZERO_MAIL, report("mail")),
-        safeSection(() => deps.repo.usersSummary(), ZERO_USERS, report("users")),
-        safeSection(() => deps.repo.livePins24h(), 0, report("livePins24h")),
-        analyticsMini(),
-      ])
-      return { discovery, reports, events, mail, users, analytics, livePins24h }
+      const ref = now()
+      const [discovery, reports, events, mail, users, livePins24h, kpis, coverage, pinsByWeek] =
+        await runBounded(HOME_SUMMARY_CONCURRENCY, [
+          () => safeSection(() => deps.repo.discoverySummary(), ZERO_DISCOVERY, report("discovery")),
+          () => safeSection(() => deps.repo.reportsSummary(), ZERO_REPORTS, report("reports")),
+          () => safeSection(() => deps.repo.eventsSummary(), ZERO_EVENTS, report("events")),
+          () => safeSection(() => deps.repo.mailSummary(), ZERO_MAIL, report("mail")),
+          () => safeSection(() => deps.repo.usersSummary(), ZERO_USERS, report("users")),
+          () => safeSection(() => deps.repo.livePins24h(), 0, report("livePins24h")),
+          () => safeSection(() => deps.analytics.kpis(), null, report("analytics.kpis")),
+          () =>
+            safeSection<AnalyticsCoverageResponse | null>(
+              async () => buildCoverage(await deps.analytics.coverage()),
+              null,
+              report("analytics.coverage"),
+            ),
+          () =>
+            safeSection(
+              async () =>
+                buildPinsByWeek(
+                  await deps.analytics.pinsByWeek(PINS_BY_WEEK_WEEKS),
+                  PINS_BY_WEEK_WEEKS,
+                  ref,
+                ).weeks,
+              ZERO_ANALYTICS_MINI.pinsByWeek,
+              report("analytics.pinsByWeek"),
+            ),
+        ] as const)
+      return {
+        discovery,
+        reports,
+        events,
+        mail,
+        users,
+        analytics: toAnalyticsMini(kpis, coverage, pinsByWeek),
+        livePins24h,
+      }
     },
 
     async map(): Promise<HomeMapResponse> {

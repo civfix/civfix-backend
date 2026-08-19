@@ -209,6 +209,137 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
    * ONLY record of a leak whose media row has already been deleted, so a throw here strands the object in
    * the bucket permanently. Nothing exercised the dedupe on either side of the seam.
    */
+  it("F087b: findStuckValidating skips never-finalized intents, rotates oldest-checked-first, and counts picks", async () => {
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000)
+
+    async function seedStuck(finalized: boolean, checkedAt: Date | null): Promise<string> {
+      const id = randomUUID()
+      const uploadId = randomUUID()
+      await h.sql`
+        INSERT INTO media_assets (id, upload_id, kind, r2_key, status, byte_size, created_at,
+                                  finalized_at, stuck_checked_at)
+        VALUES (${id}, ${uploadId}, 'image', ${`uploads/stuck/${id}`}, 'validating', 0, ${old},
+                ${finalized ? old : null}, ${checkedAt})
+      `
+      return id
+    }
+
+    // Only rows the API actually FINALIZED are in scope: a row is created 'validating' at PRESIGN time,
+    // so an unfinalized one is an upload intent whose bytes never arrived — the orphan sweep's job.
+    const neverFinalized = await seedStuck(false, null)
+    const checkedRecently = await seedStuck(true, new Date(Date.now() - 60_000))
+    const neverChecked = await seedStuck(true, null)
+
+    const first = await repo.findStuckValidating(cutoff, 1)
+    expect(first.map((r) => r.id)).toEqual([neverChecked])
+    expect(first[0]!.checkCount).toBe(1)
+
+    // The pick stamped stuck_checked_at, so the next run serves the OTHER row: no permanent resident can
+    // pin the batch and starve the rest (the starvation 0088 fixed for hold-release).
+    const second = await repo.findStuckValidating(cutoff, 1)
+    expect(second.map((r) => r.id)).toEqual([checkedRecently])
+    expect(second[0]!.checkCount).toBe(1)
+
+    const third = await repo.findStuckValidating(cutoff, 1)
+    expect(third.map((r) => r.id)).toEqual([neverChecked])
+    expect(third[0]!.checkCount).toBe(2)
+
+    const [intent] = await h.sql<{ stuck_check_count: number }[]>`
+      SELECT stuck_check_count FROM media_assets WHERE id = ${neverFinalized}
+    `
+    expect(intent!.stuck_check_count).toBe(0)
+  })
+
+  it("F087d: findStuckValidating is keyed on finalized_at age, so a LATE-finalized row is not instantly stuck", async () => {
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000)
+
+    async function seedFinalizedAt(finalizedAt: Date): Promise<string> {
+      const id = randomUUID()
+      await h.sql`
+        INSERT INTO media_assets (id, upload_id, kind, r2_key, status, byte_size, created_at, finalized_at)
+        VALUES (${id}, ${randomUUID()}, 'image', ${`uploads/late/${id}`}, 'validating', 0, ${old}, ${finalizedAt})
+      `
+      return id
+    }
+
+    // Both rows were PRESIGNED a day ago; only one has owed a verdict for longer than the TTL. Keyed on
+    // created_at (the old predicate) the late-finalized upload was stuck the instant it finalized, and
+    // burned its whole attempt budget while the worker was still on its first pass.
+    const lateFinalized = await seedFinalizedAt(new Date(Date.now() - 60_000))
+    const genuinelyStuck = await seedFinalizedAt(old)
+
+    const picked = await repo.findStuckValidating(cutoff, 10)
+    const ids = picked.map((r) => r.id)
+    expect(ids).toContain(genuinelyStuck)
+    expect(ids).not.toContain(lateFinalized)
+
+    const [late] = await h.sql<{ stuck_check_count: number }[]>`
+      SELECT stuck_check_count FROM media_assets WHERE id = ${lateFinalized}
+    `
+    expect(late!.stuck_check_count).toBe(0)
+  })
+
+  it("F087d: applyResult is a CAS on 'validating' - a terminal row is never re-opened by a late job", async () => {
+    const id = randomUUID()
+    const r2Key = `uploads/2026/06/${randomUUID()}`
+    await h.sql`
+      INSERT INTO media_assets (id, upload_id, kind, r2_key, status, byte_size)
+      VALUES (${id}, ${randomUUID()}, 'image', ${r2Key}, 'validating', 0)
+    `
+
+    const won = await repo.applyResult(id, { status: "ready", width: 10, height: 20 })
+    expect(won?.status).toBe("ready")
+
+    // The stuck sweep terminalized this row and deleted its objects; a media.checks job that finished a
+    // moment later must NOT flip it back to ready — that asset would presign a 404 forever.
+    await h.sql`UPDATE media_assets SET status = 'rejected' WHERE id = ${id}`
+    expect(await repo.applyResult(id, { status: "ready", width: 99 })).toBeNull()
+
+    const [row] = await h.sql<{ status: string; width: number }[]>`
+      SELECT status, width FROM media_assets WHERE id = ${id}
+    `
+    expect(row!.status).toBe("rejected")
+    expect(row!.width).toBe(10)
+  })
+
+  it("F087b: the claim cannot steal a row another writer is finishing, and the give-up is a CAS on 'validating'", async () => {
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000)
+    const id = randomUUID()
+    const uploadId = randomUUID()
+    await h.sql`
+      INSERT INTO media_assets (id, upload_id, kind, r2_key, status, byte_size, created_at, finalized_at)
+      VALUES (${id}, ${uploadId}, 'image', ${`uploads/race/${id}`}, 'validating', 0, ${old}, ${old})
+    `
+
+    // A concurrent media.checks handler is mid-write on this exact row. The sweep's claim takes
+    // FOR UPDATE SKIP LOCKED, so it steps over the locked row instead of blocking on it and then
+    // overwriting the terminal status the other writer is about to commit.
+    let commit = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      commit = resolve
+    })
+    const writer = h.sql.begin(async (tx) => {
+      await tx`UPDATE media_assets SET status = 'ready' WHERE id = ${id}`
+      await held
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    const duringLock = await repo.findStuckValidating(cutoff, 10)
+    expect(duringLock.map((r) => r.id)).not.toContain(id)
+    commit()
+    await writer
+
+    // ...and once that writer committed, the row is no longer 'validating', so neither the claim nor the
+    // give-up can touch it. A terminal status the sweep never observed is never clobbered.
+    const afterCommit = await repo.findStuckValidating(cutoff, 10)
+    expect(afterCommit.map((r) => r.id)).not.toContain(id)
+    expect(await repo.terminalizeStuck(id)).toBeNull()
+    const [row] = await h.sql<{ status: string }[]>`SELECT status FROM media_assets WHERE id = ${id}`
+    expect(row!.status).toBe("ready")
+  })
+
   it("records a duplicated leaked key ONCE instead of aborting with 21000", async () => {
     const key = `uploads/2026/06/${randomUUID()}`
     const mediaId = randomUUID()

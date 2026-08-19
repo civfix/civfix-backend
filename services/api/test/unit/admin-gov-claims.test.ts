@@ -11,13 +11,6 @@ import {
   type GovClaimsService,
 } from "../../src/services/admin/gov-claims-service.js"
 
-/**
- * Offline unit tests for the admin gov-provisioning service over the in-memory GovClaimsRepository +
- * UserProvisioner (no DB, no Docker). They cover the pending queue (list + search), the detail
- * projection (verified[]/pending[] derived from the checks map), verify (toggles a check in the checks
- * jsonb), approve (provisions the user as gov_admin + links the jurisdiction + status approved), and
- * reject (status + reason), plus the pure check-partition helpers.
- */
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
@@ -25,7 +18,6 @@ function harness(): {
   repo: InMemoryGovClaimsRepository
   users: InMemoryUserProvisioner
   svc: GovClaimsService
-  /** M4: userIds whose sessions the approve path revoked. */
   revoked: string[]
 } {
   const repo = new InMemoryGovClaimsRepository()
@@ -44,7 +36,6 @@ function harness(): {
   return { repo, users, svc, revoked }
 }
 
-/** A timestamp `hours` before NOW. */
 function hoursAgo(hours: number): Date {
   return new Date(NOW.getTime() - hours * 60 * 60 * 1000)
 }
@@ -165,13 +156,11 @@ describe("gov claim verify", () => {
     })
 
     const detail = await svc.getClaim("GOV-1")
-    // The new check is written.
     expect(detail.checks.directory).toEqual({
       status: "verified",
       evidence: "https://directory",
       note: "found",
     })
-    // The pre-existing check is preserved.
     expect(detail.checks.linkedin.status).toBe("verified")
     expect(detail.verified).toEqual(["linkedin", "directory"])
   })
@@ -205,14 +194,28 @@ describe("gov claim approve", () => {
 
     const claim = repo.claims.get("GOV-1")!
     expect(claim.status).toBe("approved")
-    // The provisioned user is linked on the claim (the claim row binds the user to its jurisdiction).
     expect(claim.userId).not.toBeNull()
     expect(claim.jurisdictionGeoid).toBe("5182672")
-    // A user was created with role gov_admin for the contact email.
     const created = await users.findByEmail("dana@waynesboro-va.gov")
     expect(created).not.toBeNull()
     expect(created?.role).toBe("gov_admin")
     expect(claim.userId).toBe(created?.id)
+  })
+
+  it("F118: a raced/non-pending approve conflicts and leaves the placeholder a plain citizen (no unjustified gov_admin)", async () => {
+    const { repo, users, svc } = harness()
+    repo.seedClaim({
+      id: "GOV-1",
+      contactEmail: "dana@waynesboro-va.gov",
+      status: "approved",
+    })
+
+    await expect(
+      svc.approve("GOV-1", { actorId: "op-1", note: null }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+
+    const placeholder = await users.findByEmail("dana@waynesboro-va.gov")
+    expect(placeholder?.role ?? "citizen").toBe("citizen")
   })
 
   it("reuses an existing user by email and grants gov_admin (idempotent)", async () => {
@@ -222,19 +225,11 @@ describe("gov claim approve", () => {
 
     await svc.approve("GOV-1", { actorId: "op-1", note: null })
 
-    expect(users.users.size).toBe(1) // no duplicate user
+    expect(users.users.size).toBe(1)
     expect(users.users.get(existing.id)?.role).toBe("gov_admin")
     expect(repo.claims.get("GOV-1")?.userId).toBe(existing.id)
   })
 
-  /**
-   * M4: a role change is only half a privilege change — the OLD role stays baked into every live session's
-   * Redis projection until it expires (and sliding expiry defers that indefinitely). The escalation
-   * direction needs the revoke as much as a demotion would: the account's warm sessions keep serving
-   * roles:["citizen"], so without the revoke the new gov_admin keeps browsing as a plain citizen until it
-   * re-logs in. The grant goes through applyRoleChange (services/admin/role-change.ts), which always
-   * revokes. (The operator-demotion case this used to cover is now refused outright — see H3 below.)
-   */
   it("M4: revokes ALL the elevated user's sessions after the role change", async () => {
     const { repo, users, svc, revoked } = harness()
     const existing = users.seedUser({ email: "dana@waynesboro-va.gov", role: "citizen" })
@@ -243,7 +238,6 @@ describe("gov claim approve", () => {
     await svc.approve("GOV-1", { actorId: "op-1", note: null })
 
     expect(users.users.get(existing.id)?.role).toBe("gov_admin")
-    // Without this the elevated user keeps the OLD role in every warm session, indefinitely.
     expect(revoked).toEqual([existing.id])
   })
 
@@ -258,19 +252,10 @@ describe("gov claim approve", () => {
       now: () => NOW,
     })
     await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toThrow("redis down")
-    // applyRoleChange writes BEFORE revoking, so the failure must surface with the role already changed —
-    // the recoverable direction (retry; the revoke is idempotent). The reverse order would leave a window
-    // where the sessions are gone but a re-login re-mints the OLD role.
     expect(users.users.get(existing.id)?.role).toBe("gov_admin")
     expect(repo.claims.get("GOV-1")?.status).toBe("approved")
   })
 
-  /**
-   * H3: an OPERATOR account is not changeable from the console (the same rule admin-user-service.setRole
-   * enforces). Approving a claim whose contact_email happens to be an operator's address would demote them
-   * to gov_admin and revoke all their sessions — one operator stripping another through the gov queue
-   * instead of the role endpoint. Refused before any write.
-   */
   it("H3: refuses to re-role an OPERATOR account through the gov queue (403, nothing written)", async () => {
     const { repo, users, svc, revoked } = harness()
     const operator = users.seedUser({ email: "op@city.gov", role: "operator" })
@@ -279,18 +264,12 @@ describe("gov claim approve", () => {
     await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
       httpStatus: 403,
     })
-    // No half-applied change: the role stands, the claim stays pending, no sessions were revoked.
     expect(users.users.get(operator.id)?.role).toBe("operator")
     expect(repo.claims.get("GOV-1")?.status).toBe("pending")
     expect(repo.claims.get("GOV-1")?.userId).toBeNull()
     expect(revoked).toEqual([])
   })
 
-  /**
-   * A claim's contact_email is unverified free text typed into the form: elevating a PRE-EXISTING account
-   * whose email is not verified would let an operator (or a duped one) grant gov_admin on an ARBITRARY
-   * victim account by entering its address.
-   */
   it("refuses to elevate a pre-existing account whose email is NOT verified (422)", async () => {
     const { repo, users, svc, revoked } = harness()
     const victim = users.seedUser({
@@ -316,15 +295,11 @@ describe("gov claim approve", () => {
     })
   })
 
-  // M2: if the claim transition does NOT commit (a concurrent decision -> approve returns null), the user
-  // must NOT have been elevated to gov_admin. The grant now happens only AFTER a successful transition.
   it("M2: a concurrent decision (approve returns null) does NOT leave the user elevated", async () => {
     const repo = new InMemoryGovClaimsRepository()
     repo.now = NOW
     repo.seedClaim({ id: "GOV-1", contactEmail: "dana@waynesboro-va.gov", status: "pending" })
     const users = new InMemoryUserProvisioner()
-    // Simulate the race: getClaim still sees 'pending' (passes the precheck) but the transactional approve
-    // finds the row already decided and returns null.
     const racingRepo = {
       ...repo,
       getClaim: (id: string) => repo.getClaim(id),
@@ -344,7 +319,6 @@ describe("gov claim approve", () => {
     await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
       httpStatus: 409,
     })
-    // The user may have been found-or-created (harmless), but it must NOT be gov_admin: no orphan grant.
     const u = await users.findByEmail("dana@waynesboro-va.gov")
     expect(u?.role).not.toBe("gov_admin")
   })

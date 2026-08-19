@@ -1,19 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { FakeMailer } from "@civfix/shared/fakes"
+import { FakeMailer, type FakeJobs } from "@civfix/shared/fakes"
 import { buildServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeInMemoryStores, type InMemoryUserStore } from "../../src/auth/stores.js"
+import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import type { DataExportService } from "../../src/services/data-export-service.js"
-
-/**
- * Route-level robustness tests for POST /me/data-export (privacy §7.2): instead of a misleading ok:true
- * when nothing was delivered, the route surfaces a CLEAR error when the account has no email (422) or the
- * send fails (500). Uses the dataExportOverride seam to inject a fake service (no DB / no real mailer).
- */
+import { DATA_EXPORT_JOB } from "../../src/services/data-export-jobs.js"
 
 let current: FastifyInstance | undefined
 afterEach(async () => {
@@ -23,15 +17,16 @@ afterEach(async () => {
   }
 })
 
-async function harness(service: DataExportService): Promise<{
+async function harness(): Promise<{
   app: FastifyInstance
   mailer: FakeMailer
+  services: AuthServices
 }> {
   const env = loadEnv({ NODE_ENV: "test" })
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const services = buildAuthServices({
     stores,
     cache,
     mailer,
@@ -39,9 +34,13 @@ async function harness(service: DataExportService): Promise<{
     verifier: new StubJwksVerifier(),
     now: () => Date.now(),
   })
-  const app = await buildServer({ env, authServices, dataExportOverride: { service } })
+  const app = await buildServer({ env, authServices: services })
   current = app
-  return { app, mailer }
+  return { app, mailer, services }
+}
+
+function jobs(app: FastifyInstance): FakeJobs {
+  return app.container.jobs as unknown as FakeJobs
 }
 
 async function signIn(app: FastifyInstance, mailer: FakeMailer, email: string): Promise<string> {
@@ -56,7 +55,6 @@ async function signIn(app: FastifyInstance, mailer: FakeMailer, email: string): 
   return verify.json().token
 }
 
-// Bearer (mobile) transport is CSRF-exempt, so no x-csrf-token header is needed.
 function post(app: FastifyInstance, token: string) {
   return app.inject({
     method: "POST",
@@ -66,42 +64,38 @@ function post(app: FastifyInstance, token: string) {
   })
 }
 
-describe("POST /me/data-export robustness", () => {
-  it("200 + email when the export was delivered", async () => {
-    const service: DataExportService = {
-      exportData: async () => ({ ok: true, email: "jane@example.com" }),
-    }
-    const { app, mailer } = await harness(service)
+describe("POST /me/data-export", () => {
+  it("200 + email and enqueues a deduped data.export job for the account (F018)", async () => {
+    const { app, mailer, services } = await harness()
     const token = await signIn(app, mailer, "jane@example.com")
+    const userId = (await services.users.findByEmail("jane@example.com"))!.id
+
     const res = await post(app, token)
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true, email: "jane@example.com" })
+
+    const enqueued = jobs(app).jobsFor(DATA_EXPORT_JOB)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]!.data).toEqual({ userId })
+    expect(enqueued[0]!.opts?.singletonKey).toBe(userId)
   })
 
-  it("422 with a clear message when the account has no email (not a silent ok:true)", async () => {
-    const service: DataExportService = {
-      exportData: async () => ({ ok: true, email: null }),
-    }
-    const { app, mailer } = await harness(service)
+  it("422 with a support-contact message when the account has no email, and enqueues nothing (F137)", async () => {
+    const { app, mailer, services } = await harness()
     const token = await signIn(app, mailer, "jane@example.com")
+    const user = await services.users.findByEmail("jane@example.com")
+    ;(services.users as unknown as InMemoryUserStore).seed(null, {
+      ...user!,
+      email: null,
+      emailVerified: false,
+    })
+
     const res = await post(app, token)
     expect(res.statusCode).toBe(422)
     const body = res.json()
     expect(body.code).toBe("VALIDATION")
     expect(body.message).toMatch(/no email address/i)
-  })
-
-  it("500 with a retryable message when the send fails (not a silent ok:true)", async () => {
-    const service: DataExportService = {
-      exportData: async () => {
-        throw new Error("mailer down")
-      },
-    }
-    const { app, mailer } = await harness(service)
-    const token = await signIn(app, mailer, "jane@example.com")
-    const res = await post(app, token)
-    expect(res.statusCode).toBe(500)
-    const body = res.json()
-    expect(body.message).toMatch(/try again/i)
+    expect(body.message).toMatch(/support@/i)
+    expect(jobs(app).jobsFor(DATA_EXPORT_JOB)).toHaveLength(0)
   })
 })

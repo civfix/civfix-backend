@@ -5,6 +5,7 @@ import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
+import { perIdentity } from "../plugins/rate-limit.js"
 import { writeAudit } from "../services/admin/audit.js"
 import {
   makeModerationService,
@@ -18,7 +19,7 @@ import {
   type ContentSubjectGate,
 } from "../services/content-report-subject.js"
 
-const REPORT_CONTENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
+export const REPORT_CONTENT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute", hostMax: 60 })
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -80,8 +81,6 @@ export async function registerReportContentRoutes(
         flag: isOwnerTakedown ? "Owner takedown request" : "User report",
         reason: body.reason,
         reporter,
-        // The authed FLAGGING user's id (distinct from the flagged content's author), so the moderation
-        // queue's reporterId deep-links to the actual reporter rather than the subject's owner.
         reporterUserId: userId,
         desc: body.details ?? null,
         priority: isOwnerTakedown ? "high" : "med",

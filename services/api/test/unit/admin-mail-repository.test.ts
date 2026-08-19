@@ -123,7 +123,7 @@ describe("InMemoryMailRepository: insertMessage side effects", () => {
       body: "Hello",
     })
     const after = await repo.getThreadRecord(t.id)
-    expect(after?.lastMessageAt?.getTime()).toBe(m.createdAt.getTime())
+    expect(after?.lastMessageAt?.getTime()).toBe(m!.createdAt.getTime())
     expect(after?.unread).toBe(false)
   })
 
@@ -145,10 +145,10 @@ describe("InMemoryMailRepository: insertMessage side effects", () => {
     const t = await repo.createThread({ subject: "S" })
     const newer = await repo.insertMessage({ threadId: t.id, direction: "out", body: "newer" })
     const after1 = await repo.getThreadRecord(t.id)
-    expect(after1?.lastMessageAt?.getTime()).toBe(newer.createdAt.getTime())
+    expect(after1?.lastMessageAt?.getTime()).toBe(newer!.createdAt.getTime())
     const newest = await repo.insertMessage({ threadId: t.id, direction: "out", body: "newest" })
     const after2 = await repo.getThreadRecord(t.id)
-    expect(after2?.lastMessageAt?.getTime()).toBe(newest.createdAt.getTime())
+    expect(after2?.lastMessageAt?.getTime()).toBe(newest!.createdAt.getTime())
     expect(after2!.lastMessageAt!.getTime()).toBeGreaterThan(after1!.lastMessageAt!.getTime())
   })
 })

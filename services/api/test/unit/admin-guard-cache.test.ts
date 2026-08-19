@@ -1,26 +1,3 @@
-/**
- * src/auth/admin-guard.ts — the CACHE semantics of the H2 operator-allowlist check (auth finding #17 / D33).
- *
- * admin-auth-guard.test.ts already covers accept/reject/ordering. What nothing exercised is the Redis layer
- * that makes the check affordable, and every property of it is security- or availability-relevant:
- *
- *   - BOTH verdicts are cached. A negative verdict must be cached too, or a stranger's request storm turns
- *     into a Postgres read storm (the reason the check is allowed to touch the user table at all).
- *   - The TTL is the OFF-BOARDING WINDOW the file header promises. Within it a revoked operator keeps
- *     access; the moment it lapses the verdict is re-derived. Without a test, a cache with no expiry (or a
- *     wrong TTL unit) would make "dropping an address revokes access on the next request" silently false.
- *   - A cache failure must FAIL CLOSED (propagate, 500) and never degrade into a pass — the exact way a
- *     Redis outage could otherwise disable the whole allowlist control.
- *
- * Everything is asserted through real HTTP (`app.inject`) against a real admin data route. `GET
- * /v1/admin/moderation` is used because `moderationOverrides` makes it answer 200 with no database, so
- * "passed the guard" (200) is distinguishable from "denied" (403) and from "cache error" (500) — an
- * always-500 route could not tell those apart.
- *
- * Off-boarding is simulated by flipping the stored user's EMAIL out of the allowlist rather than mutating
- * `env.ADMIN_EMAILS` (loaded once at boot): `isAllowlistedOperator` resolves `user.email` per lookup, so
- * the two are the same input to `isAdminEmail`.
- */
 
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
@@ -38,11 +15,8 @@ const ALLOWED = "ops@civfix.org"
 const NOT_ALLOWED = "stranger@example.com"
 const ALLOWLIST_KEY_PREFIX = "opallow:"
 
-/** A UserStore delegate that counts findById calls and can rewrite a user's email (off-boarding). */
 class SpyUserStore implements UserStore {
-  /** How many times the allowlist resolution actually reached the user store. */
   lookups = 0
-  /** userId -> email to report instead of the stored one. */
   readonly emailOverrides = new Map<string, string | null>()
 
   constructor(private readonly inner: UserStore) {}
@@ -77,13 +51,11 @@ class SpyUserStore implements UserStore {
   softDeleteAndAnonymize(id: string): Promise<UserRecord> {
     return this.inner.softDeleteAndAnonymize(id)
   }
+  accountStatus(id: string): Promise<import("../../src/auth/stores.js").AccountStatus> {
+    return this.inner.accountStatus(id)
+  }
 }
 
-/**
- * A CacheClient over InMemoryCacheClient that records the allowlist keys it is asked about and can be made
- * to throw on get/set for those keys only (the session write-through cache must keep working, or the
- * request would fail before the guard even runs).
- */
 class SpyCache implements CacheClient {
   readonly gets: string[] = []
   readonly sets: Array<{ key: string; value: string; ttlSeconds: number }> = []
@@ -129,9 +101,7 @@ interface Harness {
   users: SpyUserStore
   cache: SpyCache
   clock: { ms: number }
-  /** Advance the shared clock (cache TTLs + session clock) by `seconds`. */
   advanceSeconds(seconds: number): void
-  /** Seed an operator-role user + a bearer session for it. */
   operator(email: string | null): Promise<{ userId: string; token: string }>
 }
 
@@ -160,7 +130,6 @@ async function makeHarness(): Promise<Harness> {
   const app = await buildServer({
     env,
     authServices: services,
-    // Makes GET /v1/admin/moderation answer 200 offline, so a guard PASS is observable.
     moderationOverrides: { repo: new InMemoryModerationRepository() },
   })
 
@@ -187,7 +156,6 @@ async function makeHarness(): Promise<Harness> {
   return h
 }
 
-/** GET an admin data route with a bearer operator session. 200 = passed the guard, 403 = denied. */
 function get(h: Harness, token: string) {
   return h.app.inject({
     method: "GET",
@@ -209,7 +177,6 @@ describe("operator allowlist verdict caching", () => {
     for (let i = 0; i < 4; i++) {
       expect((await get(h, token)).statusCode).toBe(200)
     }
-    // Still ONE lookup: the console's request stream costs ~1 user read per TTL, not one per request.
     expect(h.users.lookups).toBe(1)
     expect(h.cache.sets).toEqual([
       { key: ALLOWLIST_KEY_PREFIX + userId, value: "1", ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS },
@@ -218,7 +185,6 @@ describe("operator allowlist verdict caching", () => {
 
   it("caches a NEGATIVE verdict: a denied caller's storm costs ONE user lookup, not one per request", async () => {
     const h = await makeHarness()
-    // A real users.role='operator' row + a live session, but the address is not (or no longer) allowlisted.
     const { userId, token } = await h.operator(NOT_ALLOWED)
 
     for (let i = 0; i < 5; i++) {
@@ -242,7 +208,7 @@ describe("operator allowlist verdict caching", () => {
     expect((await get(h, bad.token)).statusCode).toBe(403)
     expect((await get(h, good.token)).statusCode).toBe(200)
 
-    expect(h.users.lookups).toBe(2) // one per user, then both cached
+    expect(h.users.lookups).toBe(2)
     expect(h.cache.sets.map((s) => s.key).sort()).toEqual(
       [ALLOWLIST_KEY_PREFIX + bad.userId, ALLOWLIST_KEY_PREFIX + good.userId].sort(),
     )
@@ -265,21 +231,16 @@ describe("the off-boarding window IS the cache TTL", () => {
     expect((await get(h, token)).statusCode).toBe(200)
     expect(h.users.lookups).toBe(1)
 
-    // OFF-BOARD: the address is no longer allowlisted.
     h.users.emailOverrides.set(userId, NOT_ALLOWED)
 
-    // Inside the window the cached positive verdict still wins — this is the documented, deliberate
-    // staleness trade, not a bug. Pinned so shortening/lengthening it is a conscious change.
     h.advanceSeconds(OPERATOR_ALLOWLIST_TTL_SECONDS - 1)
     expect((await get(h, token)).statusCode).toBe(200)
     expect(h.users.lookups).toBe(1)
 
-    // Past the TTL the verdict is re-derived from the (now non-allowlisted) email.
     h.advanceSeconds(2)
     const after = await get(h, token)
     expect(after.statusCode).toBe(403)
     expect(h.users.lookups).toBe(2)
-    // And the fresh NEGATIVE verdict is cached in turn.
     expect(h.cache.sets.at(-1)).toEqual({
       key: ALLOWLIST_KEY_PREFIX + userId,
       value: "0",
@@ -295,7 +256,6 @@ describe("the off-boarding window IS the cache TTL", () => {
     expect((await get(h, token)).statusCode).toBe(403)
 
     h.users.emailOverrides.set(userId, ALLOWED)
-    // The negative verdict is sticky for the same window (no special-casing of "0").
     h.advanceSeconds(OPERATOR_ALLOWLIST_TTL_SECONDS - 1)
     expect((await get(h, token)).statusCode).toBe(403)
     expect(h.users.lookups).toBe(1)
@@ -315,7 +275,6 @@ describe("fail-closed", () => {
     const res = await get(h, token)
     expect(res.statusCode).toBe(500)
     expect(res.statusCode).not.toBe(200)
-    // The guard threw before resolving the user: a Redis outage does not silently disable the check.
     expect(h.users.lookups).toBe(0)
     expect(h.cache.sets).toHaveLength(0)
   })
@@ -327,7 +286,6 @@ describe("fail-closed", () => {
 
     const res = await get(h, token)
     expect(res.statusCode).toBe(500)
-    // The lookup DID happen (the failure is on the write-back), and nothing was persisted.
     expect(h.users.lookups).toBe(1)
     expect(h.cache.expiryOf(ALLOWLIST_KEY_PREFIX + userId)).toBeNull()
   })
@@ -344,7 +302,6 @@ describe("fail-closed", () => {
   it("403s when the session's user row is GONE (a deleted operator with a warm session)", async () => {
     const h = await makeHarness()
     const { userId, token } = await h.operator(ALLOWED)
-    // No user row resolves => no operator authority, even though the session still carries the claim.
     h.users.emailOverrides.set(userId, null)
     expect((await get(h, token)).statusCode).toBe(403)
   })
@@ -361,8 +318,6 @@ describe("fail-closed", () => {
     )
     expect((await get(h, inner)).statusCode).toBe(403)
 
-    // The cheap session-claim check rejects both BEFORE any allowlist resolution: no `opallow:` cache
-    // traffic and no user read at all, so an anonymous request storm cannot cost anything.
     expect(h.cache.gets).toHaveLength(0)
     expect(h.cache.sets).toHaveLength(0)
     expect(h.users.lookups).toBe(0)

@@ -154,23 +154,36 @@ export function assertUnderReportCap(
 }
 
 /**
- * Resolve OR issue an anon token, then enforce the per-token cap. The single entry point the
- * anon-service uses before creating a report:
- *   - a valid presented token resolves to its row (and must be under the cap);
- *   - an absent/invalid token causes a fresh one to be issued (which is trivially under the cap).
+ * Enforce the per-token cap on an ALREADY-RESOLVED row, or issue a fresh token when there is none:
+ *   - a resolved row must still be under the cap (throws 429 otherwise);
+ *   - a null row (absent/invalid/expired presented token) causes a fresh one to be issued, which is
+ *     trivially under the cap.
  * Returns the row to bind as anon_session_id plus, when freshly minted, the signed token to hand back
  * to the client (undefined when an existing token was reused, since the client already holds it).
+ *
+ * Split out of resolveOrIssueAnonToken because the anon-service must resolve the presented token
+ * BEFORE its idempotency lookup (the stored idempotency row is owner-scoped by the token id, F028)
+ * and must not re-read or re-issue the row afterwards.
+ */
+export async function ensureAnonToken(
+  existing: AnonTokenRecord | null,
+  deps: AnonTokenDeps,
+): Promise<{ record: AnonTokenRecord; issuedToken?: string }> {
+  if (existing) {
+    assertUnderReportCap(existing)
+    return { record: existing }
+  }
+  const issued = await issueAnonToken(deps)
+  return { record: issued.record, issuedToken: issued.token }
+}
+
+/**
+ * Resolve OR issue an anon token, then enforce the per-token cap: resolveAnonToken composed with
+ * ensureAnonToken, for callers that hold only the wire token and need nothing in between.
  */
 export async function resolveOrIssueAnonToken(
   presented: string | undefined | null,
   deps: AnonTokenDeps,
 ): Promise<{ record: AnonTokenRecord; issuedToken?: string }> {
-  const existing = await resolveAnonToken(presented, deps)
-  if (existing) {
-    assertUnderReportCap(existing)
-    return { record: existing }
-  }
-  // A freshly-issued token has report_count 0, so it is trivially under the cap — no assert needed.
-  const issued = await issueAnonToken(deps)
-  return { record: issued.record, issuedToken: issued.token }
+  return ensureAnonToken(await resolveAnonToken(presented, deps), deps)
 }

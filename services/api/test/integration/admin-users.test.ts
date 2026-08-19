@@ -20,6 +20,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleAdminUserRepository } from "../../src/services/admin/admin-user-repository.drizzle.js"
 import type { AdminUserRepository } from "../../src/services/admin/admin-user-service.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
@@ -120,6 +121,40 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     const ids = records.map((r) => r.id)
     expect(ids).toContain(inLa)
     expect(ids).not.toContain(elsewhere)
+  })
+
+  it("F095: a city search resolves a capped user-id set instead of a correlated EXISTS", async () => {
+    const inLa = await insertUser(h, { name: "Cora", handle: "cora" })
+    await insertReport(h, inLa)
+    const elsewhere = await insertUser(h, { name: "Dana", handle: "dana" })
+
+    const statements: string[] = []
+    const recorder = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+      const raw = (strings as unknown as { raw?: unknown }).raw
+      if (Array.isArray(raw)) statements.push((raw as string[]).join("?"))
+      return (h.sql as unknown as (s: TemplateStringsArray, ...a: unknown[]) => unknown)(
+        strings,
+        ...args,
+      )
+    }) as unknown as Sql
+    Object.setPrototypeOf(recorder, h.sql)
+
+    const { records } = await makeDrizzleAdminUserRepository(recorder).listUsers({
+      q: LA_CITY.name,
+      status: null,
+      flaggedOnly: false,
+      cursor: null,
+      limit: 25,
+    })
+    const ids = records.map((r) => r.id)
+    expect(ids).toContain(inLa)
+    expect(ids).not.toContain(elsewhere)
+
+    const cityResolution = statements.find((sqlText) => sqlText.includes("FROM reports r2"))
+    expect(cityResolution).toBeDefined()
+    expect(cityResolution).toContain("LIMIT")
+    expect(statements.some((sqlText) => sqlText.includes("u.id = ANY("))).toBe(true)
+    expect(statements.some((sqlText) => sqlText.includes("EXISTS (SELECT 1"))).toBe(false)
   })
 
   it("getUser returns the role", async () => {

@@ -64,14 +64,6 @@ export function errNote(prefix: string, err: unknown): string {
   return `${prefix}: ${msg}`.slice(0, 300)
 }
 
-/**
- * True when the AbuseChecks implementation actually has a working NSFW verdict (M9).
- *
- * RealAbuseChecks exposes `hasNsfwScorer()`; the interface does not, so this is a structural probe. An
- * implementation WITHOUT the method (the fakes) is treated as scored: a fake returns a deliberate,
- * deterministic verdict, which is a verdict. Only the real adapter can be in the "configured to score,
- * nothing wired" state that M9 is about.
- */
 function hasNsfwScorer(checks: unknown): boolean {
   const probe = checks as { hasNsfwScorer?: () => boolean }
   return typeof probe.hasNsfwScorer === "function" ? probe.hasNsfwScorer() : true
@@ -87,10 +79,6 @@ async function applyAbuseSeams(
   const flags: PipelineFlag[] = []
   let note: string | null = null
 
-  // M9: a score of 0 from an UNCONFIGURED scorer is "no verdict", not "benign". Detect that case up
-  // front so the outcome is driven by policy instead of silently auto-approving. `hasNsfwScorer` is
-  // present on RealAbuseChecks; a seam implementation without it (the fakes) is treated as scored,
-  // which is correct — a fake explicitly returns a real, deterministic verdict.
   const scorerAvailable = hasNsfwScorer(deps.abuseChecks)
 
   let nsfw = 0
@@ -107,15 +95,11 @@ async function applyAbuseSeams(
     return { status: "held", flags: [{ reason: "nsfw" }], note: `nsfw score ${nsfw.toFixed(3)}` }
   }
   if (!scorerAvailable) {
-    // No model configured. Either fail closed (hold for operator review) or publish but make the gap
-    // VISIBLE by raising the flag anyway, so the moderation queue receives the asset instead of the
-    // absence of a model being an invisible auto-approve. See WorkerLimits.nsfwUnscoredPolicy.
     const unscored = "nsfw scorer not configured (no verdict)"
     if (deps.limits.nsfwUnscoredPolicy === "hold") {
       return { status: "held", flags: [{ reason: "nsfw" }], note: `${unscored}; held for review` }
     }
-    flags.push({ reason: "nsfw" })
-    note = `${unscored}; flagged for review`
+    note = `${unscored}; published without a blocking flag`
   }
 
   if (phash !== null) {

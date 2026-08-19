@@ -1,26 +1,28 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import type { ChatMessageDTO, PersonDTO, ReplyToDTO, UserMentionDTO } from "@civfix/shared"
-import { makeReportChatNotifier } from "../../src/services/report-chat-notifier.js"
+import {
+  makeReportChatNotifier,
+  REPORT_CHAT_FANOUT_MEMBER_CAP,
+} from "../../src/services/report-chat-notifier.js"
+import {
+  makeRoomFanoutNotifier,
+  ROOM_FANOUT_MEMBER_CAP,
+} from "../../src/services/chat-room-fanout-notifier.js"
 import { makeDmBellNotifier } from "../../src/services/chat-bells.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import type { NotificationPrefsRecord } from "../../src/services/notification-service.js"
 import {
   makeNotificationService,
+  PUSH_FANOUT_BATCH_SIZE,
   type NotificationService,
 } from "../../src/services/notification-service.js"
+import type { PushSender } from "@civfix/shared/interfaces"
 import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import type { ConversationMuteRoomKind } from "../../src/db/schema/conversation_mutes.js"
 
-/**
- * In-memory ConversationMutesRepository mirroring the Drizzle one's isMuted semantics (row exists ⇒ muted).
- *
- * Deliberately does NOT implement the OPTIONAL `mutedUserIdsFor` batch member lookup: it is the stand-in
- * for the pre-batch fakes the interface keeps that member optional for, and the fan-out's per-candidate
- * `isMuted` fallback has to keep working for them (pinned below in "report fan-out mute seam").
- */
 class InMemoryConversationMutes implements ConversationMutesRepository {
   private readonly muted = new Set<string>()
-  /** Every isMuted lookup, so a test can tell the per-user fallback from the batch path. */
   readonly isMutedCalls: string[] = []
   protected key(u: string, k: ConversationMuteRoomKind, r: string): string {
     return `${u}|${k}|${r}`
@@ -43,7 +45,6 @@ class InMemoryConversationMutes implements ConversationMutesRepository {
   }
 }
 
-/** The same store, plus the batch member lookup the Drizzle repo implements. */
 class InMemoryConversationMutesBatch extends InMemoryConversationMutes {
   readonly batchCalls: Array<{ roomKind: ConversationMuteRoomKind; roomId: string }> = []
   mutedUserIdsFor(
@@ -86,7 +87,6 @@ function userMessage(
   }
 }
 
-/** A hydrated reply preview whose target was sent by `senderId`. */
 function replyPreviewFrom(senderId: string, senderName: string): ReplyToDTO {
   return { id: "target-1", from: { id: senderId, displayName: senderName }, excerpt: "orig", kind: "text" }
 }
@@ -125,8 +125,8 @@ beforeEach(() => {
 describe("makeReportChatNotifier (D-E2)", () => {
   it("notifies only members who are not the actor, not present, and not muted; user message uses sender name + report link", async () => {
     const members = [A, B, C, ACTOR]
-    const present = new Set([B]) // B is viewing the room live
-    const muted = new Set([C]) // C muted this report chat
+    const present = new Set([B])
+    const muted = new Set([C])
 
     const notify = makeReportChatNotifier({
       notificationService: notifications,
@@ -134,16 +134,15 @@ describe("makeReportChatNotifier (D-E2)", () => {
       isMuted: (userId) => Promise.resolve(muted.has(userId)),
       presence: { online: () => Promise.resolve([...present]) },
       roomKeyFor,
-      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
+      isBlockedEitherWay: () => Promise.resolve(false),
     })
 
     await notify(REPORT, userMessage(ACTOR, "Dana", "hello everyone"))
 
-    // Only A gets a bell.
     expect(reportNotifs(A)).toHaveLength(1)
-    expect(reportNotifs(B)).toHaveLength(0) // present
-    expect(reportNotifs(C)).toHaveLength(0) // muted
-    expect(reportNotifs(ACTOR)).toHaveLength(0) // sender
+    expect(reportNotifs(B)).toHaveLength(0)
+    expect(reportNotifs(C)).toHaveLength(0)
+    expect(reportNotifs(ACTOR)).toHaveLength(0)
 
     const bell = reportNotifs(A)[0]!
     expect(bell.type).toBe("report_chat")
@@ -163,17 +162,15 @@ describe("makeReportChatNotifier (D-E2)", () => {
       isMuted: (userId) => Promise.resolve(muted.has(userId)),
       presence: { online: () => Promise.resolve([...present]) },
       roomKeyFor,
-      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
+      isBlockedEitherWay: () => Promise.resolve(false),
     })
 
     await notify(REPORT, systemMessage())
 
-    // A and C get bells (B is present); no sender to skip.
     expect(reportNotifs(A)).toHaveLength(1)
     expect(reportNotifs(C)).toHaveLength(1)
     expect(reportNotifs(B)).toHaveLength(0)
 
-    // System message has no author name -> localized fallback title ("New message" in en).
     expect(reportNotifs(A)[0]!.title).toBe("New message")
     expect(reportNotifs(A)[0]!.link).toBe(`/messages/report/${REPORT}`)
   })
@@ -184,7 +181,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
-      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
+      isBlockedEitherWay: () => Promise.resolve(false),
     })
 
     await notify(REPORT, userMessage(ACTOR, "Dana", "hi"))
@@ -200,10 +197,9 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
-      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
+      isBlockedEitherWay: () => Promise.resolve(false),
     })
 
-    // ACTOR replies to A's message: A is excluded from the member fan-out; B still gets it.
     await notify(REPORT, userMessage(ACTOR, "Dana", "replying", { replyTo: replyPreviewFrom(A, "Ann") }))
 
     expect(reportNotifs(A)).toHaveLength(0)
@@ -216,7 +212,7 @@ describe("makeReportChatNotifier (D-E2)", () => {
       reportChatRepo: { listMemberIds: () => Promise.resolve([A, B, ACTOR]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor,
-      isBlockedEitherWay: () => Promise.resolve(false), // offline harness: no blocks store
+      isBlockedEitherWay: () => Promise.resolve(false),
     })
 
     const mention: UserMentionDTO = { id: B, handle: "bee", displayName: "Bee" }
@@ -227,19 +223,6 @@ describe("makeReportChatNotifier (D-E2)", () => {
   })
 })
 
-/**
- * The mute seam has TWO shapes and the fan-out must honour a mute through either. `mutedUserIdsFor` is
- * OPTIONAL on ConversationMutesRepository (the offline fakes predate it), and the fan-out treats a PRESENT
- * batch lookup as authoritative — skipping the per-candidate `isMuted` entirely. So:
- *
- *   - a repo WITHOUT the batch method must not be wired into the batch slot at all (a bound-but-absent
- *     method resolving to an empty Set would silently unmute the entire room), and the per-user fallback
- *     must carry the mute;
- *   - a repo WITH it must be used, once, for the whole candidate set.
- *
- * `mutedUserIdsForRoom` below is the production probe from chat-gateway-wiring.ts, copied so the wiring
- * decision itself is under test rather than assumed.
- */
 describe("report fan-out mute seam (batch lookup vs per-user fallback)", () => {
   function mutedUserIdsForRoom(
     repo: ConversationMutesRepository,
@@ -270,7 +253,6 @@ describe("report fan-out mute seam (batch lookup vs per-user fallback)", () => {
 
     expect(reportNotifs(A)).toHaveLength(1)
     expect(reportNotifs(B)).toHaveLength(0)
-    // The fallback really ran: one lookup per candidate (the actor is filtered out before the gate).
     expect(mutes.isMutedCalls.sort()).toEqual([`${A}|report|${REPORT}`, `${B}|report|${REPORT}`].sort())
   })
 
@@ -298,19 +280,14 @@ describe("report fan-out mute seam (batch lookup vs per-user fallback)", () => {
 
     await notifierOver(exploding)(REPORT, userMessage(ACTOR, "Dana", "poll time"))
 
-    // Everyone gets the bell — including B, whose mute could not be read.
     expect(reportNotifs(A)).toHaveLength(1)
     expect(reportNotifs(B)).toHaveLength(1)
   })
 })
 
-// The DM delivered bell — the REAL production factory (chat-bells makeDmBellNotifier, wired as
-// onDmDelivered) over the real notification service + the in-memory mute repo mirroring the Drizzle
-// isMuted. P2 2.5 adds the reply override: a reply TO the recipient pierces a muted thread.
 describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () => {
   const THREAD = "22222222-2222-2222-2222-222222222222"
 
-  // Mirrors the production `isMutedFor` helper in chat-gateway-wiring.ts (absent repo ⇒ false; swallow errors).
   function makeIsMutedFor(mutes: ConversationMutesRepository | undefined) {
     return async (userId: string, kind: ConversationMuteRoomKind, roomId: string): Promise<boolean> => {
       if (!mutes) return false
@@ -389,9 +366,238 @@ describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () =
     mutes.mute(B, "dm", THREAD)
     const onDmDelivered = makeOnDmDelivered(mutes)
 
-    // A replies to A's own earlier message: not a reply TO B, so the mute holds.
     await onDmDelivered(THREAD, B, userMessage(A, "Alice", "self-thread", { replyTo: replyPreviewFrom(A, "Alice") }))
 
     expect(dmNotifs(B)).toHaveLength(0)
+  })
+})
+
+describe("F154: the room fan-out asks for a BOUNDED member slice", () => {
+  it("passes REPORT_CHAT_FANOUT_MEMBER_CAP to listMemberIds", async () => {
+    const limits: (number | undefined)[] = []
+    const notify = makeReportChatNotifier({
+      notificationService: notifications,
+      reportChatRepo: {
+        listMemberIds: (_reportId: string, limit?: number) => {
+          limits.push(limit)
+          return Promise.resolve([A, ACTOR])
+        },
+      },
+      isMuted: () => Promise.resolve(false),
+      roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false),
+    })
+
+    await notify(REPORT, userMessage(ACTOR, "Dana", "hi"))
+
+    expect(limits).toEqual([REPORT_CHAT_FANOUT_MEMBER_CAP])
+    expect(REPORT_CHAT_FANOUT_MEMBER_CAP).toBeLessThanOrEqual(500)
+  })
+
+  it("delivers at most one bell per member of the capped slice", async () => {
+    const roster = Array.from(
+      { length: REPORT_CHAT_FANOUT_MEMBER_CAP },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    )
+    const notify = makeReportChatNotifier({
+      notificationService: notifications,
+      reportChatRepo: {
+        listMemberIds: (_reportId: string, limit?: number) =>
+          Promise.resolve(roster.slice(0, limit ?? roster.length)),
+      },
+      isMuted: () => Promise.resolve(false),
+      roomKeyFor,
+      isBlockedEitherWay: () => Promise.resolve(false),
+    })
+
+    await notify(REPORT, systemMessage())
+
+    expect(notifRepo.notifications.filter((n) => n.type === "report_chat")).toHaveLength(
+      REPORT_CHAT_FANOUT_MEMBER_CAP,
+    )
+  })
+})
+
+describe("F084: the shared room fan-out caps the recipient set", () => {
+  it("delivers at most ROOM_FANOUT_MEMBER_CAP bells for an over-sized roster", async () => {
+    const roster = Array.from(
+      { length: ROOM_FANOUT_MEMBER_CAP + 250 },
+      (_, i) => `00000000-0000-4000-9000-${String(i).padStart(12, "0")}`,
+    )
+    const notify = makeRoomFanoutNotifier(
+      { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
+      {
+        notificationService: notifications,
+        listMemberIds: () => Promise.resolve(roster),
+        isMuted: () => Promise.resolve(false),
+        roomKey: (id) => `group:${id}`,
+        isBlockedEitherWay: () => Promise.resolve(false),
+      },
+    )
+
+    await notify(REPORT, systemMessage())
+
+    expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(
+      ROOM_FANOUT_MEMBER_CAP,
+    )
+  })
+})
+
+class BatchCountingPushSender implements PushSender {
+  readonly singleSends: string[] = []
+  readonly batches: number[] = []
+
+  registerToken(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  send(userId: string): Promise<void> {
+    this.singleSends.push(userId)
+    return Promise.resolve()
+  }
+
+  sendMany(userIds: string[]): Promise<void> {
+    this.batches.push(userIds.length)
+    return Promise.resolve()
+  }
+}
+
+describe("F084: the shared room fan-out batches push delivery", () => {
+  it("delivers an over-100-recipient roster in sendMany batches, never one send per recipient", async () => {
+    const roster = Array.from(
+      { length: 250 },
+      (_, i) => `00000000-0000-4000-a000-${String(i).padStart(12, "0")}`,
+    )
+    const pushSpy = new BatchCountingPushSender()
+    const service = makeNotificationService({ repo: notifRepo, pushSender: pushSpy })
+    const notify = makeRoomFanoutNotifier(
+      { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
+      {
+        notificationService: service,
+        listMemberIds: () => Promise.resolve(roster),
+        isMuted: () => Promise.resolve(false),
+        roomKey: (id) => `group:${id}`,
+        isBlockedEitherWay: () => Promise.resolve(false),
+      },
+    )
+
+    await notify(REPORT, systemMessage())
+
+    expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    expect(pushSpy.singleSends).toHaveLength(0)
+    expect(pushSpy.batches).toEqual([PUSH_FANOUT_BATCH_SIZE, PUSH_FANOUT_BATCH_SIZE, 50])
+    expect(pushSpy.batches.reduce((a, b) => a + b, 0)).toBe(roster.length)
+  })
+
+  it("honours per-recipient prefs when grouping: opted-out members are left out of the batch", async () => {
+    const roster = Array.from(
+      { length: 120 },
+      (_, i) => `00000000-0000-4000-b000-${String(i).padStart(12, "0")}`,
+    )
+    for (const userId of roster.slice(0, 20)) {
+      await notifRepo.upsertPrefs(userId, { cleanupChat: false })
+    }
+    const pushSpy = new BatchCountingPushSender()
+    const service = makeNotificationService({ repo: notifRepo, pushSender: pushSpy })
+    const notify = makeRoomFanoutNotifier(
+      { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
+      {
+        notificationService: service,
+        listMemberIds: () => Promise.resolve(roster),
+        isMuted: () => Promise.resolve(false),
+        roomKey: (id) => `group:${id}`,
+        isBlockedEitherWay: () => Promise.resolve(false),
+      },
+    )
+
+    await notify(REPORT, systemMessage())
+
+    expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    expect(pushSpy.singleSends).toHaveLength(0)
+    expect(pushSpy.batches).toEqual([PUSH_FANOUT_BATCH_SIZE])
+  })
+})
+
+class UnreadablePrefsRepository extends InMemoryNotificationRepository {
+  override findPrefs(): Promise<NotificationPrefsRecord | null> {
+    return Promise.reject(new Error("prefs read failed"))
+  }
+}
+
+class UnreadableBatchPrefsRepository extends InMemoryNotificationRepository {
+  findPrefsMany(): Promise<Map<string, NotificationPrefsRecord>> {
+    return Promise.reject(new Error("batched prefs read failed"))
+  }
+}
+
+class BatchPrefsRepository extends InMemoryNotificationRepository {
+  readonly batchCalls: number[] = []
+
+  findPrefsMany(userIds: string[]): Promise<Map<string, NotificationPrefsRecord>> {
+    this.batchCalls.push(userIds.length)
+    const out = new Map<string, NotificationPrefsRecord>()
+    for (const userId of userIds) {
+      const prefs = this.prefs.get(userId)
+      if (prefs) out.set(userId, prefs)
+    }
+    return Promise.resolve(out)
+  }
+}
+
+describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOSED)", () => {
+  const rosterOf = (n: number, tag: string): string[] =>
+    Array.from({ length: n }, (_, i) => `00000000-0000-4000-${tag}-${String(i).padStart(12, "0")}`)
+
+  const fanOutWith = (
+    repo: InMemoryNotificationRepository,
+    pushSpy: BatchCountingPushSender,
+    roster: string[],
+  ): ((roomId: string, message: ChatMessageDTO) => Promise<void>) =>
+    makeRoomFanoutNotifier(
+      { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
+      {
+        notificationService: makeNotificationService({ repo, pushSender: pushSpy }),
+        listMemberIds: () => Promise.resolve(roster),
+        isMuted: () => Promise.resolve(false),
+        roomKey: (id) => `group:${id}`,
+        isBlockedEitherWay: () => Promise.resolve(false),
+      },
+    )
+
+  it("per-recipient prefs read failure: bells are still written, but nothing is pushed", async () => {
+    const roster = rosterOf(120, "c000")
+    const repo = new UnreadablePrefsRepository()
+    const pushSpy = new BatchCountingPushSender()
+
+    await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
+
+    expect(repo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    expect(pushSpy.batches).toEqual([])
+    expect(pushSpy.singleSends).toHaveLength(0)
+  })
+
+  it("batched prefs read failure: the whole fan-out's push is suppressed, not defaulted open", async () => {
+    const roster = rosterOf(120, "d000")
+    const repo = new UnreadableBatchPrefsRepository()
+    const pushSpy = new BatchCountingPushSender()
+
+    await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
+
+    expect(repo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    expect(pushSpy.batches).toEqual([])
+    expect(pushSpy.singleSends).toHaveLength(0)
+  })
+
+  it("the batched prefs lane is used when the repo offers it, and its opt-outs are honoured", async () => {
+    const roster = rosterOf(120, "e000")
+    const repo = new BatchPrefsRepository()
+    for (const userId of roster.slice(0, 20)) await repo.upsertPrefs(userId, { cleanupChat: false })
+    const pushSpy = new BatchCountingPushSender()
+
+    await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
+
+    expect(repo.batchCalls).toEqual([roster.length])
+    expect(pushSpy.batches).toEqual([PUSH_FANOUT_BATCH_SIZE])
+    expect(pushSpy.singleSends).toHaveLength(0)
   })
 })

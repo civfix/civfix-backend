@@ -1,27 +1,3 @@
-/**
- * Admin moderation service (Phase 2): the operator moderation queue.
- *
- * The queue is fed by `moderation_items` (one row per held media / coordinated-report cluster / appeal
- * / gps / duplicate). The operator works the OPEN items and applies an action that both transitions the
- * item's status AND applies the underlying effect on its subject:
- *   - approve -> publish the held report (reports.status held -> published) + item status 'approved';
- *   - remove  -> reject the report (reports.status -> rejected, soft-delete) + item status 'removed';
- *   - hold    -> extend the hold (item stays held, NOT open) so it leaves the open queue;
- *   - appeal  -> decide a chat suspension appeal (uphold|overturn) + item status 'approved'.
- * Items must CLEAR from the queue on any action (status <> 'open'), per the civfixplan done-gate. Every
- * action is audited via writeAudit (moderation.approved|removed|held|appeal_decided).
- *
- * REPOSITORY SEAM: every read/write goes through ModerationRepository (Drizzle impl in
- * moderation-repository.drizzle.ts; an in-memory impl in moderation-repository.memory.ts for the offline
- * unit tests), mirroring the Phase 1 report-service/report-repository split so the service is testable
- * with no database and no Docker. The list/detail PROJECTIONS (relative-age labels, the signals/user/
- * similar shaping) live here and are pure + clock-injected.
- *
- * PRODUCER: `createItem` is the single entrypoint the producers use to enqueue a moderation item (the
- * anon hold-then-publish path, the media-worker hold path, and abuse detection). The backfill
- * (backfillFromHeldReports) creates items for every currently-held report that does not already have an
- * open item, so the queue is populated from the existing hold backlog. See moderation-repository.drizzle.
- */
 
 import { AppError, relativeAgo } from "@civfix/shared"
 import type {
@@ -40,16 +16,12 @@ import type {
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 import { timelineKindForStatus } from "./admin-report-status.js"
+import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 
-// ---------------------------------------------------------------------------
-// Repository seam (structural records; faked in tests)
-// ---------------------------------------------------------------------------
 
-/** The OPEN-queue facet (mirrors the shared ModerationListQuery filter). */
 export type ModerationFilter = "all" | ModerationKind | "high"
 
-/** Normalized list arguments the repo consumes (search + facet + page window). */
 export interface ListModerationArgs {
   q: string | null
   filter: ModerationFilter
@@ -57,9 +29,7 @@ export interface ListModerationArgs {
   limit: number
 }
 
-/** The user-context snapshot carried on an item's `meta` jsonb (set by the producer). */
 export interface ModerationUserSnapshot {
-  /** The moderated user's id (the subject's owner/author), or null when it could not be resolved. */
   id: string | null
   handle: string
   name: string
@@ -70,26 +40,18 @@ export interface ModerationUserSnapshot {
   device: string
 }
 
-/** A held media reference shown in the detail (the actual asset, by kind). */
 export interface ModerationMediaRecord {
   id: string
   kind: "image" | "video"
-  url: string
-  thumbUrl: string | null
+  r2Key: string
+  thumbKey: string | null
 }
 
-/**
- * A moderation_items row projected into the service's record shape. `signals` / `similar` are the parsed
- * jsonb arrays; `user` is the parsed meta snapshot (null when the producer did not record one, in which
- * case the service substitutes a neutral default so the strict DTO still validates). `media` is the held
- * media for the subject (joined from media_assets for report subjects).
- */
 export interface ModerationItemRecord {
   id: string
   kind: ModerationKind
   subjectType: ModerationSubjectType
   subjectId: string
-  /** Repository-backed admin page destination, distinct from the moderated subject itself. */
   destinationKind: ModerationDestinationKind | null
   destinationId: string | null
   flag: string | null
@@ -99,12 +61,6 @@ export interface ModerationItemRecord {
   priority: Priority
   autoAction: string | null
   reporter: string | null
-  /**
-   * The user id of the FLAGGING reporter (the person behind the `reporter` display string), or null when
-   * there is no explicit flagger (system-originated / anonymous). This is DISTINCT from `user.id`, which is
-   * the moderated subject's owner/author — for a citizen `user_report` the flagger and the flagged
-   * content's author are two different people, so the two ids must not be conflated.
-   */
   reporterId: string | null
   desc: string | null
   status: "open" | "approved" | "removed" | "held"
@@ -113,17 +69,10 @@ export interface ModerationItemRecord {
   user: ModerationUserSnapshot | null
   media: ModerationMediaRecord[]
   createdAt: Date
-  /**
-   * D-D1: set by approve()/remove() ONLY when the action actually wrote a report_timeline row for a report
-   * subject (approve: a held report was published; remove: a report was tombstoned). Carries the status
-   * that row got ('published' | 'rejected'), so the service can mirror the SAME event into the report chat
-   * and skip the no-op case (e.g. approving an item whose report was already published). Absent on reads
-   * and on non-report / no-transition actions; DTO projections ignore it.
-   */
   reportTimelineStatus?: "published" | "rejected"
+  restoredUserId?: string
 }
 
-/** What a producer supplies to enqueue a moderation item. Defaults fill the optional shaping fields. */
 export interface CreateModerationItemInput {
   kind: ModerationKind
   subjectType: ModerationSubjectType
@@ -135,83 +84,40 @@ export interface CreateModerationItemInput {
   priority?: Priority
   autoAction?: string | null
   reporter?: string | null
-  /**
-   * The FLAGGING reporter's user id (the account behind the `reporter` display string), persisted so the
-   * queue's `reporterId` deep-links to the actual flagger — NOT the flagged content's author. Null when no
-   * explicit flagger exists (system/anonymous producers).
-   */
   reporterUserId?: string | null
   desc?: string | null
   signals?: ModerationSignal[]
   similar?: ModerationSimilar[]
   user?: ModerationUserSnapshot | null
-  /** When true, do NOT create a duplicate if an OPEN item already exists for (subjectType, subjectId). */
   dedupeOpen?: boolean
 }
 
-/**
- * Persistence seam for the moderation domain. The Drizzle impl runs raw SQL (joins media_assets +
- * reports + abuse_flags for the detail); the offline tests pass an in-memory impl. Action methods return
- * a small result so the service can build the audit + decide the not-found 404.
- */
 export interface ModerationRepository {
-  /** Page the OPEN items applying the search + kind/priority facet, newest-first keyset paged. */
   listOpen(
     args: ListModerationArgs,
   ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }>
-  /** Load one item's full detail by id (any status), or null when it does not exist. */
   getItem(id: string): Promise<ModerationItemRecord | null>
-  /**
-   * Approve an OPEN item: set status 'approved' (+ resolved_at/by) AND publish the held report subject
-   * (reports.status held -> published, published_at = now, report_timeline 'published'). Returns the
-   * resolved item record, or null when the item does not exist / is not open.
-   */
   approve(
     id: string,
     input: { actorId: string | null; note: string | null },
   ): Promise<ModerationItemRecord | null>
-  /**
-   * Remove an OPEN item: set status 'removed' (+ resolved_at/by) AND reject the report subject
-   * (reports.status -> rejected, deleted_at = now, report_timeline 'rejected'). Returns the resolved
-   * item record, or null when the item does not exist / is not open.
-   */
   remove(
     id: string,
     input: { actorId: string | null; reason: string | null },
   ): Promise<ModerationItemRecord | null>
-  /**
-   * Extend the hold on an OPEN item: set status 'held' (+ resolved_at/by) so it leaves the open queue
-   * but is NOT published or rejected (a later sweep / re-review can re-open). Returns the resolved item
-   * record, or null when the item does not exist / is not open.
-   */
   hold(
     id: string,
     input: { actorId: string | null; note: string | null },
   ): Promise<ModerationItemRecord | null>
-  /**
-   * Decide an appeal item (kind 'appeal', subject_type 'chat'): uphold keeps the suspension; overturn
-   * lifts it (clears the suspending abuse_flag for the chat subject). Either way the item leaves the
-   * queue with status 'approved' (resolved). Returns the resolved item record, or null when the item
-   * does not exist / is not open / is not an appeal.
-   */
   decideAppeal(
     id: string,
     input: { decision: "uphold" | "overturn"; actorId: string | null; note: string | null },
   ): Promise<ModerationItemRecord | null>
-  /** Enqueue a moderation item (the producer entrypoint). Returns the new item id, or null when deduped. */
   createItem(input: CreateModerationItemInput): Promise<string | null>
-  /**
-   * Backfill: create one moderation item per currently-held report (reports.status = 'held', not
-   * deleted) that does not already have an OPEN item. Returns the number of items created.
-   */
   backfillFromHeldReports(): Promise<number>
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers (no DB, no IO)
-// ---------------------------------------------------------------------------
 
-/** A neutral user snapshot used when an item has no recorded meta (keeps the strict DTO valid). */
 export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
   id: null,
   handle: "",
@@ -223,7 +129,6 @@ export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
   device: "",
 }
 
-/** Project the user snapshot (or the neutral default) into the strict ModerationUser DTO. */
 function toUserDTO(snapshot: ModerationUserSnapshot | null): ModerationUser {
   const s = snapshot ?? NEUTRAL_USER_SNAPSHOT
   return {
@@ -238,22 +143,17 @@ function toUserDTO(snapshot: ModerationUserSnapshot | null): ModerationUser {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
+
+export interface ModerationSessionControl {
+  clearBan(userId: string): Promise<void>
+}
 
 export interface ModerationServiceDeps {
   repo: ModerationRepository
-  /** Injectable clock (defaults to Date.now) so the relative-age labels are deterministic. */
+  presignMedia?: PresignMedia
   now?: () => Date
-  /**
-   * D-D1: the report-chat SYSTEM-message emitter (the timeline choke point). When a queue action publishes
-   * (approve) or tombstones (remove) a REPORT subject, the service mirrors that timeline event into the
-   * report's group chat + pushes the members ("your report is now live" / "removed"). OPTIONAL + fully
-   * best-effort (the emitter swallows its own errors), and only fires when the repo actually wrote a report
-   * timeline row (result.reportTimelineStatus set) — so the queue action is independent of the reflection.
-   */
   reportChatEmitter?: ReportChatSystemEmitter
+  sessions?: ModerationSessionControl
 }
 
 export interface ModerationService {
@@ -266,16 +166,17 @@ export interface ModerationService {
     id: string,
     input: { decision: "uphold" | "overturn"; actorId: string | null; note: string | null },
   ): Promise<void>
-  /** Producer entrypoint: enqueue a moderation item. Returns the new id, or null when deduped. */
   createItem(input: CreateModerationItemInput): Promise<string | null>
-  /** Backfill items from the currently-held reports. Returns the count created. */
   backfill(): Promise<number>
 }
 
 export function makeModerationService(deps: ModerationServiceDeps): ModerationService {
   const now = deps.now ?? (() => new Date())
+  const presignMedia: PresignMedia =
+    deps.presignMedia ??
+    (async (r2Key: string, thumbKey: string | null) =>
+      thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
 
-  /** Project a record into the queue list DTO (the row shape). */
   function toListDTO(record: ModerationItemRecord, ref: Date) {
     return {
       id: record.id,
@@ -286,20 +187,15 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       age: relativeAgo(record.createdAt, ref),
       priority: record.priority,
       kind: record.kind,
-      // Surface the subject kind so the operator UI can label a citizen `user_report` (report|comment|
-      // message|event|profile|photo|user|chat). Additive + optional in the contract.
       subjectType: record.subjectType,
       subjectId: record.subjectId,
       destinationKind: record.destinationKind,
       destinationId: record.destinationId,
-      // The FLAGGING reporter's user id (the account behind `reporter`), so the operator UI can deep-link
-      // to the flagger — distinct from `user.id` (the moderated subject's author). Null when unknown.
       reporterId: record.reporterId,
     }
   }
 
-  /** Project a record into the full detail DTO (the list shape + the detail extras). */
-  function toDetailDTO(record: ModerationItemRecord, ref: Date): ModerationItemDTO {
+  async function toDetailDTO(record: ModerationItemRecord, ref: Date): Promise<ModerationItemDTO> {
     const signals: ModerationSignal[] = record.signals.map((s) => ({
       label: s.label,
       val: s.val,
@@ -310,12 +206,14 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       note: s.note,
       when: s.when,
     }))
-    const media: ModerationMedia[] = record.media.map((m) => ({
-      id: m.id,
-      kind: m.kind,
-      url: m.url,
-      thumbUrl: m.thumbUrl,
-    }))
+    const media: ModerationMedia[] = await mapWithLimit(
+      record.media,
+      PRESIGN_CONCURRENCY,
+      async (m) => {
+        const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
+        return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
+      },
+    )
     return {
       ...toListDTO(record, ref),
       desc: record.desc ?? "",
@@ -354,8 +252,6 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.approve(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
-      // D-D1: a held report that just became published — mirror "Approved in moderation" into its chat.
-      // POST-commit, best-effort, and only when the repo actually published it (result.reportTimelineStatus).
       if (deps.reportChatEmitter && result.reportTimelineStatus === "published") {
         await deps.reportChatEmitter.emit({
           reportId: result.subjectId,
@@ -372,7 +268,6 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.remove(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
-      // D-D1: a report just tombstoned — mirror the removal into its chat (note matches the timeline row).
       if (deps.reportChatEmitter && result.reportTimelineStatus === "rejected") {
         await deps.reportChatEmitter.emit({
           reportId: result.subjectId,
@@ -394,6 +289,9 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.decideAppeal(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
+      if (result.restoredUserId && deps.sessions) {
+        await deps.sessions.clearBan(result.restoredUserId)
+      }
     },
 
     async createItem(input: CreateModerationItemInput): Promise<string | null> {

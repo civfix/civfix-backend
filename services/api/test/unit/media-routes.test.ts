@@ -141,6 +141,47 @@ describe("media byte quota wiring", () => {
     expect(charges).toHaveLength(1)
     expect(charges[0]!.bytes).toBe(4096)
   })
+
+  it("F016: a rotating civfix_anon cookie still charges the caller's IP bucket on every request", async () => {
+    // resolveAuthContext lifts the RAW civfix_anon cookie into auth.anonSessionId with no store lookup,
+    // so the cookie is attacker-chosen. The quota must therefore charge ip: on EVERY anon request; when
+    // the anon lane was preferred, each rotation minted a fresh 512 MB/day bucket.
+    const env = loadEnv({ NODE_ENV: "test" })
+    const charges: { subject: string; bytes: number }[] = []
+    const container = {
+      ...buildContainer(env),
+      env: { ...env, REDIS_URL: "redis://cache:6379" },
+      getByteMeter: () => ({
+        add: (subject: string, bytes: number) => {
+          charges.push({ subject, bytes })
+          return Promise.resolve(bytes)
+        },
+      }),
+    } as unknown as ReturnType<typeof buildContainer>
+    const repo = new InMemoryMediaRepository()
+    const app = await buildServer({ env, container, mediaRepo: repo })
+    current = {
+      app,
+      repo,
+      storage: container.storage as unknown as FakeStorage,
+      jobs: container.jobs as unknown as FakeJobs,
+    }
+
+    for (const anon of ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/media/upload",
+        headers: { cookie: `civfix_anon=${anon}` },
+        payload: { kind: "image", contentType: "image/jpeg", byteSize: 4096, sha256: SHA },
+      })
+      expect(res.statusCode).toBe(200)
+    }
+
+    const ipSubjects = charges.filter((c) => c.subject.startsWith("ip:"))
+    expect(ipSubjects).toHaveLength(2)
+    expect(new Set(ipSubjects.map((c) => c.subject)).size).toBe(1)
+    expect(charges.filter((c) => c.subject.startsWith("a:"))).toHaveLength(2)
+  })
 })
 
 describe("POST /media/:uploadId/finalize", () => {

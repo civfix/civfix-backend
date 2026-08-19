@@ -1,23 +1,3 @@
-/**
- * Admin reports data-layer integration test (Docker-gated). Exercises the REAL Drizzle/raw-SQL
- * AdminReportRepository (makeDrizzleAdminReportRepository) against a live Postgres/PostGIS container via
- * withPg, which applies the canonical migrations + the jurisdiction seed (so reports / report_timeline /
- * media_assets / abuse_flags / jurisdiction_contacts / notifications / audit_log all exist with their
- * real constraints).
- *
- * Proven here against the real schema:
- *   - listReports computes flagged (open abuse_flag), confirmations (deprecated, always 0 since
- *     report_follows was dropped), hasPhoto (media_assets), and the status/flagged facet;
- *   - getReport + getRouting resolve the per-category -> default -> legacy contact precedence;
- *   - setStatus writes report_timeline + an audit_log row;
- *   - toggleFlag opens/resolves an abuse_flag + a timeline row + audit;
- *   - remove sets status rejected (soft-delete) + a timeline row + audit;
- *   - notifyReporter inserts a notifications row; appendFollowup writes a timeline row + a
- *     report.followup_sent audit.
- *
- * When Docker is unavailable the whole describe block SKIPS (describe.skipIf), so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
- */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
@@ -28,7 +8,6 @@ import { LA_CITY } from "../../src/db/seed-fixtures.js"
 const pg = await withPg()
 const GEOID = LA_CITY.geoid
 
-/** Insert a user and return its id. */
 async function insertUser(
   h: PgHarness,
   opts: { name?: string; handle?: string; emailVerified?: boolean } = {},
@@ -46,7 +25,6 @@ async function insertUser(
   return rows[0]!.id
 }
 
-/** Insert a report in the seeded jurisdiction and return its id. */
 async function insertReport(
   h: PgHarness,
   opts: { category?: string; status?: string; reporterId?: string | null; title?: string },
@@ -90,10 +68,35 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     await h.teardown()
   })
 
+  it("F114: setStatus('rejected') stamps deleted_at so the report leaves every admin read", async () => {
+    const id = await insertReport(h, { status: "submitted" })
+    const changed = await repo.setStatus(id, {
+      status: "rejected",
+      note: "Rejected by an operator",
+      actorId: null,
+    })
+    expect(changed).toBe(true)
+
+    const rows = await h.sql<{ status: string; deleted_at: Date | null }[]>`
+      SELECT status, deleted_at FROM reports WHERE id = ${id}
+    `
+    expect(rows[0]?.status).toBe("rejected")
+    expect(rows[0]?.deleted_at).toBeInstanceOf(Date)
+
+    const listed = await repo.listReports({
+      q: null,
+      statuses: ["rejected"],
+      flaggedOnly: false,
+      cursor: null,
+      limit: 25,
+    })
+    expect(listed.records.some((r) => r.id === id)).toBe(false)
+    expect(await repo.getReport(id)).toBeNull()
+  })
+
   it("lists a report with confirmations, hasPhoto, and the flagged facet", async () => {
     const reporter = await insertUser(h, { name: "Jane", handle: "jane", emailVerified: true })
     const id = await insertReport(h, { reporterId: reporter, title: "Overflowing bin" })
-    // A photo.
     await h.sql`
       INSERT INTO media_assets (report_id, upload_id, kind, r2_key, status)
       VALUES (${id}, gen_random_uuid(), 'image', 'k/photo.jpg', 'ready')
@@ -107,14 +110,11 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     })
     expect(records).toHaveLength(1)
     const r = records[0]!
-    // `confirmations` was the report_follows count; that table was dropped with the discussion system, so
-    // the field is a deprecated always-0 value now.
     expect(r.confirmations).toBe(0)
     expect(r.hasPhoto).toBe(true)
     expect(r.flagged).toBe(false)
     expect(r.reporter?.emailVerified).toBe(true)
 
-    // Flag it, then the flagged facet returns it.
     await repo.toggleFlag(id, { reason: "x", actorId: null })
     const flagged = await repo.listReports({
       q: null,
@@ -128,13 +128,10 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
 
   it("getRouting resolves the per-category -> default -> legacy contact precedence", async () => {
     const id = await insertReport(h, { category: "hazard" })
-    // Legacy only first.
     await h.sql`UPDATE jurisdictions SET contact_emails = ARRAY['311@lacity.gov'] WHERE geoid = ${GEOID}`
     expect((await repo.getRouting(id))?.contact).toBe("311@lacity.gov")
-    // A default row beats legacy.
     await h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email) VALUES (${GEOID}, NULL, 'default@lacity.gov')`
     expect((await repo.getRouting(id))?.contact).toBe("default@lacity.gov")
-    // A category-specific row beats the default.
     await h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email) VALUES (${GEOID}, 'hazard', 'hazard@lacity.gov')`
     const routing = await repo.getRouting(id)
     expect(routing?.contact).toBe("hazard@lacity.gov")
@@ -217,19 +214,11 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     expect(audit).toHaveLength(1)
   })
 
-  /**
-   * getOutreach's `sendFailed` is the signal the route endpoint's re-send gate needs and the ONLY thing
-   * that separates "the packet went out" from "every attempt threw": the per-report thread row is created
-   * with status 'sent' BEFORE the mailer is called, so the thread status alone reports a lost send as a real
-   * one and the gate would 409 the operator's retry forever. It is derived here against the real schema
-   * (mail_events.type 'failed' exists since 0029) because the SQL is where it can silently drift.
-   */
   it("getOutreach derives sendFailed from the mail_events trail ('failed' recorded, no 'sent')", async () => {
     const id = await insertReport(h, {})
     await h.sql`DELETE FROM mail_events`
     await h.sql`DELETE FROM mail_threads WHERE report_id = ${id}`
 
-    // No thread at all -> not_sent, and never "failed".
     expect(await repo.getOutreach(id)).toMatchObject({ status: "not_sent", sendFailed: false })
 
     const threads = await h.sql<{ id: string }[]>`
@@ -245,7 +234,6 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     `
     const messageId = messages[0]!.id
 
-    // A thread + OUT message with NO delivery event yet: the send is in flight, not known-failed.
     expect(await repo.getOutreach(id)).toMatchObject({
       status: "sent",
       threadId,
@@ -253,24 +241,44 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       sendFailed: false,
     })
 
-    // The mailer threw: deliverAndRecord records 'failed' and never 'sent'.
     await h.sql`
       INSERT INTO mail_events (thread_id, message_id, type) VALUES (${threadId}, ${messageId}, 'failed')
     `
     expect(await repo.getOutreach(id)).toMatchObject({ status: "sent", sendFailed: true })
 
-    // A later attempt delivered: one 'sent' event anywhere on the thread means the packet reached the city,
-    // so the gate closes again even though the old 'failed' row is still there.
     await h.sql`
       INSERT INTO mail_events (thread_id, message_id, type) VALUES (${threadId}, ${messageId}, 'sent')
     `
     expect(await repo.getOutreach(id)).toMatchObject({ status: "sent", sendFailed: false })
 
-    // A hard bounce is reported as `bounced` (the gate's other recovery arm) and is NOT a send failure.
     await h.sql`UPDATE mail_threads SET status = 'bounced' WHERE id = ${threadId}`
     expect(await repo.getOutreach(id)).toMatchObject({ status: "bounced", sendFailed: false })
 
     await h.sql`DELETE FROM mail_events`
     await h.sql`DELETE FROM mail_threads WHERE id = ${threadId}`
+  })
+
+  it("F008: facet counts stay EXACT past the old saturation cap", async () => {
+    await h.sql`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, title, status, h3_cell, jurisdiction_geoid)
+      SELECT gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash',
+             'Bulk ' || g, 'submitted', 'h0', ${GEOID}
+      FROM generate_series(1, 1050) AS g
+    `
+    await h.sql`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, title, status, h3_cell, jurisdiction_geoid)
+      SELECT gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash',
+             'Done ' || g, 'resolved', 'h0', ${GEOID}
+      FROM generate_series(1, 7) AS g
+    `
+
+    const counts = await repo.countByBucket({ q: null })
+    expect(counts.submitted).toBe(1050)
+    expect(counts.completed).toBe(7)
+    expect(counts.all).toBe(1057)
+
+    const searched = await repo.countByBucket({ q: "Bulk" })
+    expect(searched.submitted).toBe(1050)
+    expect(searched.completed).toBe(0)
   })
 })

@@ -59,8 +59,50 @@ describe("system health assembly", () => {
     const { services } = await svc.health()
     const pg = row(services, "Postgres")!
     expect(pg.status).toBe("down")
-    expect(pg.val).toContain("connection refused")
+    expect(pg.val).toBe("Unavailable")
     expect(row(services, "Redis")?.status).toBe("ok")
+  })
+
+  it("F125: probe failures map to a fixed vocabulary and never leak driver detail", async () => {
+    const cases: { err: unknown; val: string }[] = [
+      { err: Object.assign(new Error("connect ECONNREFUSED 10.0.0.7:5432"), { code: "ECONNREFUSED" }), val: "Unreachable" },
+      { err: Object.assign(new Error("getaddrinfo ENOTFOUND compose-postgres-1"), { code: "ENOTFOUND" }), val: "Unreachable" },
+      { err: Object.assign(new Error('password authentication failed for user "civfix"'), { code: "28P01" }), val: "Auth failed" },
+      { err: new Error("probe timed out after 2000ms"), val: "Timed out" },
+      { err: Object.assign(new Error('relation "pgboss.job" does not exist'), { code: "42P01" }), val: "Not provisioned" },
+    ]
+    for (const { err, val } of cases) {
+      const svc = makeSystemHealthService({
+        probes: {
+          postgres: async () => {
+            throw err
+          },
+        },
+        env: FULL_ENV,
+      })
+      const pg = row((await svc.health()).services, "Postgres")!
+      expect(pg.status).toBe("down")
+      expect(pg.val).toBe(val)
+      expect(pg.val).not.toMatch(/10\.0\.0\.7|compose-postgres-1|civfix|5432/)
+    }
+  })
+
+  it("F125: the full probe error is logged server-side", async () => {
+    const logged: { err: unknown; probe: string }[] = []
+    const boom = Object.assign(new Error("connect ECONNREFUSED 10.0.0.7:5432"), {
+      code: "ECONNREFUSED",
+    })
+    const svc = makeSystemHealthService({
+      probes: {
+        postgres: async () => {
+          throw boom
+        },
+      },
+      env: FULL_ENV,
+      log: (err, meta) => logged.push({ err, probe: meta.probe }),
+    })
+    await svc.health()
+    expect(logged).toContainEqual({ err: boom, probe: "Postgres" })
   })
 
   it("an absent probe yields a fallback row (down 'No probe')", async () => {

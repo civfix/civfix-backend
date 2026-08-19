@@ -69,8 +69,8 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
   async function seedMedia(): Promise<{ id: string; uploadId: string }> {
     const uploadId = randomUUID()
     const [row] = await h.sql<{ id: string }[]>`
-      INSERT INTO media_assets (upload_id, kind, r2_key, status, byte_size)
-      VALUES (${uploadId}, 'image', ${`uploads/2026/01/${"f".repeat(64)}`}, 'validating', 1024)
+      INSERT INTO media_assets (upload_id, kind, r2_key, status, byte_size, finalized_at)
+      VALUES (${uploadId}, 'image', ${`uploads/2026/01/${"f".repeat(64)}`}, 'validating', 1024, now())
       RETURNING id
     `
     return { id: row!.id, uploadId }
@@ -172,6 +172,43 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     `
     expect(mediaRows).toHaveLength(1)
     expect(mediaRows[0]!.report_id).toBe(first.id)
+  })
+
+  it("F087e: REJECTS (422) a create whose media is VALIDATING but never finalized, leaving the row unbound", async () => {
+    // A row is created 'validating' at PRESIGN time, before any bytes exist. Binding one of those made a
+    // permanently stranded asset: bound (so findOrphans skips it), unfinalized (so the stuck sweep skips
+    // it), with no media.checks job behind it — and for an anon report it wedged the hold-release gate
+    // forever, because the report waits on media that will never resolve.
+    const uploadId = randomUUID()
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO media_assets (upload_id, kind, r2_key, status, byte_size)
+      VALUES (${uploadId}, 'image', ${`uploads/2026/01/${uploadId}`}, 'validating', 1024)
+      RETURNING id
+    `
+
+    await expect(
+      service.createReport(createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [uploadId] }), {
+        userId,
+      }),
+    ).rejects.toMatchObject({
+      httpStatus: 422,
+      code: "VALIDATION",
+      fields: { mediaUploadIds: "One or more media uploads are unavailable." },
+    })
+
+    const [after] = await h.sql<{ report_id: string | null }[]>`
+      SELECT report_id FROM media_assets WHERE id = ${row!.id}
+    `
+    expect(after!.report_id).toBeNull()
+
+    // ...and the SAME upload binds fine the moment finalize stamps the watermark, so this is a timing
+    // gate on the intake handshake, not a new restriction on what may be attached.
+    await h.sql`UPDATE media_assets SET finalized_at = now() WHERE id = ${row!.id}`
+    const ok = await service.createReport(
+      createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [uploadId] }),
+      { userId },
+    )
+    expect(ok.media.map((m) => m.id)).toEqual([row!.id])
   })
 
   it("REJECTS (422) a create whose media is already attached to a different report, and leaves it on A", async () => {

@@ -2,11 +2,17 @@ import { describe, it, expect } from "vitest"
 import { InMemoryHomeRepository } from "../../src/services/admin/home-repository.memory.js"
 import { InMemoryAnalyticsRepository } from "../../src/services/admin/analytics-repository.memory.js"
 import {
+  HOME_SUMMARY_CONCURRENCY,
   makeHomeService,
   safeSection,
   toMapPin,
+  type HomeRepository,
   type HomeService,
 } from "../../src/services/admin/home-service.js"
+import {
+  PINS_BY_WEEK_WEEKS,
+  type AnalyticsRepository,
+} from "../../src/services/admin/analytics-types.js"
 
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
@@ -40,6 +46,53 @@ describe("safeSection", () => {
     )
     expect(result).toBe(-1)
     expect((reported as Error).message).toBe("boom")
+  })
+})
+
+describe("F119 home summary fan-out is bounded", () => {
+  it("never runs more than HOME_SUMMARY_CONCURRENCY sections at once and still assembles every one", async () => {
+    const repo = new InMemoryHomeRepository()
+    const analytics = new InMemoryAnalyticsRepository()
+    repo.livePinsValue = 9
+    let inFlight = 0
+    let peak = 0
+    let started = 0
+    const track =
+      <T>(produce: () => Promise<T>) =>
+      async (): Promise<T> => {
+        inFlight += 1
+        started += 1
+        peak = Math.max(peak, inFlight)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          return await produce()
+        } finally {
+          inFlight -= 1
+        }
+      }
+    const trackedRepo: HomeRepository = {
+      discoverySummary: track(() => repo.discoverySummary()),
+      reportsSummary: track(() => repo.reportsSummary()),
+      eventsSummary: track(() => repo.eventsSummary()),
+      mailSummary: track(() => repo.mailSummary()),
+      usersSummary: track(() => repo.usersSummary()),
+      livePins24h: track(() => repo.livePins24h()),
+      recentPins: (limit) => repo.recentPins(limit),
+    }
+    const trackedAnalytics = {
+      kpis: track(() => analytics.kpis()),
+      coverage: track(() => analytics.coverage()),
+      pinsByWeek: track(() => analytics.pinsByWeek(PINS_BY_WEEK_WEEKS)),
+    } as unknown as AnalyticsRepository
+
+    const svc = makeHomeService({ repo: trackedRepo, analytics: trackedAnalytics, now: () => NOW })
+    const res = await svc.summary()
+
+    expect(started).toBe(9)
+    expect(peak).toBeGreaterThan(1)
+    expect(peak).toBeLessThanOrEqual(HOME_SUMMARY_CONCURRENCY)
+    expect(res.livePins24h).toBe(9)
+    expect(res.analytics.pinsByWeek).toHaveLength(8)
   })
 })
 
