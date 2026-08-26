@@ -130,6 +130,98 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(newer.id).not.toBe(older.id)
   })
 
+  it("profile: an upcoming event the owner HOSTS is public, one they only ATTEND is self-only", async () => {
+    const socialRepo = makeDrizzleSocialRepository(h.sql)
+    const cleanupService = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+
+    const owner = await newUser("Upcoming Owner", "upcown")
+    const stranger = await newUser("Upcoming Stranger", "upcstr")
+    const host = await newUser("Upcoming Host", "upchost")
+
+    await cleanupService.createCleanup(
+      {
+        title: "Hosted Future",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.0,
+        lng: -118.0,
+        scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      owner,
+    )
+    const theirs = await cleanupService.createCleanup(
+      {
+        title: "Someone Elses Future",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.2,
+        lng: -118.2,
+        scheduledAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+      },
+      host,
+    )
+    await cleanupService.joinCleanup(theirs.id, owner)
+
+    const socialService = makeSocialService({ repo: socialRepo })
+
+    for (const viewer of [null, stranger]) {
+      const seen = (await socialService.getProfile(owner, { userId: viewer })).profile
+      expect(seen.upcomingEvents?.map((e) => e.title)).toEqual(["Hosted Future"])
+      expect(seen.pastEvents).toEqual([])
+    }
+
+    const own = (await socialService.getProfile(owner, { userId: owner })).profile
+    expect(own.upcomingEvents?.map((e) => e.title)).toEqual([
+      "Someone Elses Future",
+      "Hosted Future",
+    ])
+  })
+
+  it("profile events: the keyset cursor walks every past event exactly once and terminates", async () => {
+    const socialRepo = makeDrizzleSocialRepository(h.sql)
+    const cleanupService = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+    const owner = await newUser("Cursor Owner", "curown")
+
+    const total = 23
+    for (let i = 0; i < total; i++) {
+      await cleanupService.createCleanup(
+        {
+          title: `Cursor Sweep ${i}`,
+          type: "site",
+          eventKind: "cleanup",
+          lat: 34.0,
+          lng: -118.0,
+          scheduledAt: new Date(Date.now() - (i + 1) * 86_400_000).toISOString(),
+        },
+        owner,
+      )
+    }
+
+    const socialService = makeSocialService({ repo: socialRepo })
+    const profile = (await socialService.getProfile(owner, { userId: null })).profile
+    expect(profile.pastEvents).toHaveLength(20)
+    expect(profile.pastEventsCursor).toEqual(expect.any(String))
+
+    const seen: string[] = []
+    let cursor: string | undefined
+    let pages = 0
+    do {
+      const page = await socialService.listProfileEvents(
+        owner,
+        { userId: null },
+        cursor !== undefined ? { cursor } : {},
+      )
+      for (const item of page.items) seen.push(item.id)
+      cursor = page.nextCursor ?? undefined
+      pages++
+      expect(pages).toBeLessThan(6)
+    } while (cursor !== undefined)
+
+    expect(seen).toHaveLength(total)
+    expect(new Set(seen).size).toBe(total)
+    expect(seen.slice(0, 20)).toEqual(profile.pastEvents.map((e) => e.id))
+  })
+
   it("notifications: insert + newest-first paging + markRead own-only", async () => {
     const repo = makeDrizzleNotificationRepository(h.sql)
     const user = await newUser("Notif User")
