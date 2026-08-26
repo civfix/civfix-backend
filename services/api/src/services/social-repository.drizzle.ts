@@ -19,6 +19,7 @@ import {
   parseTimeCursor,
 } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
+import { goingScalar } from "./cleanup-sql.js"
 
 export {
   searchByHandlePrefix,
@@ -164,7 +165,7 @@ function profileEventRows(
       c.jurisdiction_geoid,
       c.reference_code,
       c.created_at,
-      (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id) AS going,
+      ${goingScalar(sql)} AS going,
       u.display_name AS org_display_name,
       u.handle AS org_handle,
       u.bio AS org_bio

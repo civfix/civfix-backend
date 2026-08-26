@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleGuestRsvpRepository } from "../../src/services/guest-rsvp-repository.drizzle.js"
+import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-service.js"
 
 const pg = await withPg()
@@ -165,6 +166,33 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     await repo.cancelGuest(guestId, new Date())
     await expect(repo.goingCount(cleanupId)).resolves.toBe(2)
     await expect(repo.countActiveGuests(cleanupId)).resolves.toBe(1)
+  })
+
+  it("profile event strips report the same going count as the event surfaces", async () => {
+    const scheduledAt = new Date(Date.now() + 7 * 86_400_000)
+    const cleanupId = await newCleanup({ scheduledAt })
+    const [host] = await h.sql<{ organizer_user_id: string }[]>`
+      SELECT organizer_user_id FROM cleanups WHERE id = ${cleanupId}
+    `
+    const hostId = host!.organizer_user_id
+
+    const guestId = await verifyGuest(cleanupId, "profile-ada@example.org", "h-profile-1")
+    await verifyGuest(cleanupId, "profile-grace@example.org", "h-profile-2")
+
+    const social = makeDrizzleSocialRepository(h.sql)
+    const upcoming = await social.upcomingEventsFor(hostId, { limit: 10, includeAttending: true })
+    const strip = upcoming.find((r) => r.id === cleanupId)
+    expect(strip).toBeDefined()
+    expect(strip!.going).toBe(await repo.goingCount(cleanupId))
+    expect(strip!.going).toBe(3)
+
+    await repo.cancelGuest(guestId, new Date())
+    const afterCancel = await social.upcomingEventsFor(hostId, { limit: 10, includeAttending: true })
+    expect(afterCancel.find((r) => r.id === cleanupId)!.going).toBe(2)
+
+    await h.sql`UPDATE cleanups SET scheduled_at = now() - interval '2 days' WHERE id = ${cleanupId}`
+    const past = await social.pastEventsPageFor(hostId, { limit: 10, cursor: null })
+    expect(past.items.find((r) => r.id === cleanupId)!.going).toBe(2)
   })
 
   it("pages the roster newest-first with a keyset cursor, visiting every row once", async () => {
