@@ -32,16 +32,27 @@ describe("loadEnv: outbound SMS", () => {
     expect(loadEnv(validProdEnv()).USE_FAKE_SMS).toBe(false)
   })
 
-  it("requires the Twilio triple in production when the real sender is selected", () => {
+  it("requires the Twilio triple in production once the guest SMS channel is switched ON", () => {
     const source = validProdEnv()
+    source.SMS_GUEST_ENABLED = "true"
     delete source.TWILIO_ACCOUNT_SID
     delete source.TWILIO_AUTH_TOKEN
     delete source.TWILIO_SMS_FROM
     expect(() => loadEnv(source)).toThrow(/TWILIO_ACCOUNT_SID/)
   })
 
+  it("boots a production box with NO Twilio account while the channel stays off", () => {
+    const source = validProdEnv()
+    delete source.TWILIO_ACCOUNT_SID
+    delete source.TWILIO_AUTH_TOKEN
+    delete source.TWILIO_SMS_FROM
+    expect(source.SMS_GUEST_ENABLED).toBeUndefined()
+    expect(() => loadEnv(source)).not.toThrow()
+  })
+
   it("allows a production box with NO Twilio account when USE_FAKE_SMS is set", () => {
     const source = validProdEnv()
+    source.SMS_GUEST_ENABLED = "true"
     delete source.TWILIO_ACCOUNT_SID
     delete source.TWILIO_AUTH_TOKEN
     delete source.TWILIO_SMS_FROM

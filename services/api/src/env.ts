@@ -243,11 +243,12 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const OCI_EMAIL_SMTP_USER = reqStr("OCI_EMAIL_SMTP_USER", { gatedOff: fakeFlags.USE_FAKE_MAILER })
   const OCI_EMAIL_SMTP_PASS = reqStr("OCI_EMAIL_SMTP_PASS", { gatedOff: fakeFlags.USE_FAKE_MAILER })
 
-  const TWILIO_ACCOUNT_SID = reqStr("TWILIO_ACCOUNT_SID", { gatedOff: fakeFlags.USE_FAKE_SMS })
-  const TWILIO_AUTH_TOKEN = reqStr("TWILIO_AUTH_TOKEN", { gatedOff: fakeFlags.USE_FAKE_SMS })
-  const TWILIO_SMS_FROM = reqStr("TWILIO_SMS_FROM", { gatedOff: fakeFlags.USE_FAKE_SMS })
   const SMS_GUEST_ENABLED = parseBool(source.SMS_GUEST_ENABLED, false)
   const SMS_DAILY_CAP = parsePositiveIntOr(source.SMS_DAILY_CAP, 50)
+  const smsCredentialsUnused = fakeFlags.USE_FAKE_SMS || !SMS_GUEST_ENABLED
+  const TWILIO_ACCOUNT_SID = reqStr("TWILIO_ACCOUNT_SID", { gatedOff: smsCredentialsUnused })
+  const TWILIO_AUTH_TOKEN = reqStr("TWILIO_AUTH_TOKEN", { gatedOff: smsCredentialsUnused })
+  const TWILIO_SMS_FROM = reqStr("TWILIO_SMS_FROM", { gatedOff: smsCredentialsUnused })
 
   const OUTREACH_DIGEST_CRON = reqCron("OUTREACH_DIGEST_CRON", "0 14 * * *")
   const GUEST_RETENTION_CRON = reqCron("GUEST_RETENTION_CRON", "15 4 * * *")

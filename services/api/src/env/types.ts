@@ -86,7 +86,9 @@ export interface Env {
   /** Cron for the guest-contact scrub + guest-OTP reap ("guest.retention.sweep" pg-boss job). */
   GUEST_RETENTION_CRON: string
 
-  // Twilio outbound SMS (the SmsSender seam): [BOOT] unless USE_FAKE_SMS.
+  // Twilio outbound SMS (the SmsSender seam). [BOOT] only when the channel is actually in use, i.e.
+  // SMS_GUEST_ENABLED is on AND USE_FAKE_SMS is off - credentials are required by CAPABILITY, not by
+  // environment, so a production box that never offers the SMS channel boots without a Twilio account.
   TWILIO_ACCOUNT_SID: string
   TWILIO_AUTH_TOKEN: string
   /** The E.164 number every guest verification text is sent From. */
