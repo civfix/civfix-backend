@@ -262,6 +262,81 @@ describe("listCleanups filters", () => {
     expect(all.items.map((c) => c.title).sort()).toEqual(["Future", "Past"])
   })
 
+  it("keeps an in-progress event in the upcoming list after its start time passes", async () => {
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000021",
+      organizerUserId: ORG,
+      title: "InProgress",
+      scheduledAt: new Date("2026-05-31T00:00:00.000Z"),
+      status: "active",
+    })
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000022",
+      organizerUserId: ORG,
+      title: "StalePlanned",
+      scheduledAt: new Date("2026-05-31T00:00:00.000Z"),
+      status: "upcoming",
+    })
+
+    const upcoming = await service.listCleanups({ when: "upcoming" }, { userId: null })
+    expect(upcoming.items.map((c) => c.title)).toEqual(["InProgress"])
+  })
+
+  it("drops a finished event from the upcoming list even when it is future-dated", async () => {
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000023",
+      organizerUserId: ORG,
+      title: "FinishedButFutureDated",
+      scheduledAt: new Date("2026-06-15T00:00:00.000Z"),
+      status: "done",
+    })
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000024",
+      organizerUserId: ORG,
+      title: "StillPlanned",
+      scheduledAt: new Date("2026-06-15T00:00:00.000Z"),
+      status: "upcoming",
+    })
+
+    const upcoming = await service.listCleanups({ when: "upcoming" }, { userId: null })
+    expect(upcoming.items.map((c) => c.title)).toEqual(["StillPlanned"])
+  })
+
+  it("when=attending applies the same live-event predicate as when=upcoming", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice", handle: "alice" })
+    const inProgress = repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000025",
+      organizerUserId: ORG,
+      title: "AttendingInProgress",
+      scheduledAt: new Date("2026-05-31T00:00:00.000Z"),
+      status: "active",
+    })
+    const finished = repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000026",
+      organizerUserId: ORG,
+      title: "AttendingFinished",
+      scheduledAt: new Date("2026-06-15T00:00:00.000Z"),
+      status: "done",
+    })
+    repo.members.push({ cleanupId: inProgress.id, userId: ALICE, role: "member" })
+    repo.members.push({ cleanupId: finished.id, userId: ALICE, role: "member" })
+
+    const attending = await service.listCleanups({ when: "attending" }, { userId: ALICE })
+    expect(attending.items.map((c) => c.title)).toEqual(["AttendingInProgress"])
+  })
+
+  it("keeps finished events in the past list (they are the civic history)", async () => {
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000027",
+      organizerUserId: ORG,
+      title: "FinishedPast",
+      scheduledAt: new Date("2026-05-10T00:00:00.000Z"),
+      status: "done",
+    })
+    const past = await service.listCleanups({ when: "past" }, { userId: null })
+    expect(past.items.map((c) => c.title)).toEqual(["FinishedPast"])
+  })
+
   it("F070: a cancelled event whose date has passed stays out of the past list", async () => {
     repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000011",

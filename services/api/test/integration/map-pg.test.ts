@@ -18,6 +18,7 @@ import { FakeGeocoder, FakeJobs } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { clientQuery } from "../helpers/query.js"
 import { buildServer } from "../../src/server.js"
+import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { makeJurisdictionService } from "../../src/services/jurisdiction-service.js"
@@ -157,6 +158,83 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(near1Pin.going).toBe(2)
     expect(near1Pin.lat).toBeCloseTo(insideLat, 5)
     expect(near1Pin.lng).toBeCloseTo(insideLng, 5)
+  })
+
+  it("map pins and listCleanups agree on the live-event predicate", async () => {
+    const [organizer] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name) VALUES ('Predicate Organizer') RETURNING id
+    `
+    const organizerId = organizer!.id
+    const lng = PROBE_INSIDE_CITY.lng
+    const lat = PROBE_INSIDE_CITY.lat
+
+    const insert = async (title: string, offset: string, status: string): Promise<string> => {
+      const [row] = await h.sql<{ id: string }[]>`
+        INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
+        VALUES (
+          ${organizerId}, 'site', ${title},
+          ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326),
+          now() + ${offset}::interval, ${status}
+        ) RETURNING id
+      `
+      return row!.id
+    }
+
+    const stalePlanned = await insert('Stale Planned', '-3 days', 'upcoming')
+    const finishedFutureDated = await insert('Finished Future Dated', '3 days', 'done')
+    const inProgress = await insert('In Progress', '-2 hours', 'active')
+    const stillPlanned = await insert('Still Planned', '4 days', 'upcoming')
+
+    const [west, south, east, north] = LA_CITY.bbox
+    const bbox = { west, south, east, north }
+
+    const noWhen = await app.inject({
+      method: "GET",
+      url: `/v1/map/cleanups${clientQuery({ bbox })}`,
+    })
+    expect(noWhen.statusCode).toBe(200)
+    const noWhenIds: string[] = noWhen.json().pins.map((pin: { id: string }) => pin.id)
+    expect(noWhenIds).not.toContain(stalePlanned)
+    expect(noWhenIds).not.toContain(finishedFutureDated)
+    expect(noWhenIds).toContain(inProgress)
+    expect(noWhenIds).toContain(stillPlanned)
+
+    const upcoming = await app.inject({
+      method: "GET",
+      url: `/v1/map/cleanups${clientQuery({ bbox, when: "upcoming" })}`,
+    })
+    expect(upcoming.statusCode).toBe(200)
+    const upcomingIds: string[] = upcoming.json().pins.map((pin: { id: string }) => pin.id)
+    expect(upcomingIds).not.toContain(stalePlanned)
+    expect(upcomingIds).not.toContain(finishedFutureDated)
+    expect(upcomingIds).toContain(inProgress)
+    expect(upcomingIds).toContain(stillPlanned)
+
+    const repo = makeDrizzleCleanupRepository(h.sql)
+    const listed = await repo.listCleanups({
+      when: "upcoming",
+      bbox,
+      near: undefined,
+      cursor: null,
+      limit: 50,
+    })
+    const listedIds = listed.records.map((r) => r.id)
+    expect(listedIds).not.toContain(stalePlanned)
+    expect(listedIds).not.toContain(finishedFutureDated)
+    expect(listedIds).toContain(inProgress)
+    expect(listedIds).toContain(stillPlanned)
+
+    const listedPast = await repo.listCleanups({
+      when: "past",
+      bbox,
+      near: undefined,
+      cursor: null,
+      limit: 50,
+    })
+    const pastIds = listedPast.records.map((r) => r.id)
+    expect(pastIds).toContain(stalePlanned)
+    expect(pastIds).toContain(inProgress)
+    expect(pastIds).not.toContain(finishedFutureDated)
   })
 
   it("POST /map/jurisdictions/:geoid/suggest-contact 404s an unknown geoid", async () => {

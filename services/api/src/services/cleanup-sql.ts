@@ -132,7 +132,8 @@ export function goingJoin(sql: Queryable) {
 
 export function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending" | undefined) {
   if (when === "upcoming" || when === "attending")
-    return sql`AND c.scheduled_at >= now() AND c.status <> 'cancelled'`
+    return sql`AND (c.scheduled_at >= now() OR c.status = 'active')
+      AND c.status NOT IN ('cancelled', 'done')`
   if (when === "past")
     return sql`AND c.scheduled_at < now() AND c.status <> 'cancelled'`
   return sql`AND c.status <> 'cancelled'`

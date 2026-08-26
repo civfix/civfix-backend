@@ -18,7 +18,7 @@ export interface CleanupMapRepository {
 export function makeCleanupMapRepository(sql: Sql): CleanupMapRepository {
   return {
     async listCleanupPins(bbox, when): Promise<CleanupPinDTO[]> {
-      const whenFilter = buildWhenFilter(sql, when)
+      const whenFilter = buildWhenFilter(sql, when ?? "upcoming")
       const bboxFilter = buildBboxFilter(sql, bbox)
 
       // The going count IS a per-pin count: a LEFT JOIN LATERAL runs its subquery once per outer row,

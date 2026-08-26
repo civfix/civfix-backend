@@ -500,7 +500,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
     let all = [...this.cleanups.values()].filter((c) => {
       if (filters.when === "upcoming" || filters.when === "attending") {
-        if (!(c.scheduledAt.getTime() >= nowMs && c.status !== "cancelled")) return false
+        const live = c.scheduledAt.getTime() >= nowMs || c.status === "active"
+        if (!live || c.status === "cancelled" || c.status === "done") return false
       } else if (filters.when === "past") {
         if (!(c.scheduledAt.getTime() < nowMs && c.status !== "cancelled")) return false
       } else if (c.status === "cancelled") {
