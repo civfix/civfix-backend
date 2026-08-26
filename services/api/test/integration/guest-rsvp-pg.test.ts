@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { parseTimeCursor, type TimeCursor } from "../../src/db/cursor-helpers.js"
 import { makeDrizzleGuestRsvpRepository } from "../../src/services/guest-rsvp-repository.drizzle.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-service.js"
@@ -201,9 +202,15 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     for (let i = 0; i < 5; i++) {
       ids.push(await verifyGuest(cleanupId, `guest${i}@example.org`, `page-h${i}`, `Guest ${i}`))
     }
+    const base = Date.now() - 5 * 60_000
+    for (const [i, id] of ids.entries()) {
+      await h.sql`
+        UPDATE cleanup_guests SET created_at = ${new Date(base + i * 1_000)} WHERE id = ${id}::uuid
+      `
+    }
 
     const seen: string[] = []
-    let cursor: string | null = null
+    let cursor: TimeCursor | null = null
     for (let page = 0; page < 5; page++) {
       const result: { rows: { id: string }[]; nextCursor: string | null } = await repo.listGuests({
         cleanupId,
@@ -211,7 +218,7 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
         limit: 2,
       })
       seen.push(...result.rows.map((r) => r.id))
-      cursor = result.nextCursor
+      cursor = parseTimeCursor(result.nextCursor, { direction: "desc" })
       if (cursor === null) break
     }
 
