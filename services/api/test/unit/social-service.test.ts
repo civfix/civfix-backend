@@ -3,6 +3,7 @@ import { avatarGradient, stableHash, AVATAR_PALETTE } from "@civfix/shared"
 import {
   makeSocialService,
   toPersonDTO,
+  PROFILE_PAST_EVENTS_LIMIT,
   type SocialNotifier,
   type SocialService,
   type PersonView,
@@ -188,8 +189,6 @@ describe("listPeople", () => {
     expect(page2.nextCursor).toBeNull()
   })
 
-  // M-people-blocks: the block filter on people SEARCH is symmetric — a block hides both accounts from
-  // each other's search results, in whichever direction it was created.
   it("excludes an account the viewer blocked", async () => {
     const { repo, service } = makeHarness()
     repo.seedUser({ id: A, displayName: "Alice" })
@@ -211,7 +210,6 @@ describe("listPeople", () => {
 
     const asA = await service.listPeople({ limit: 20 }, { userId: A })
     expect(asA.items.map((p) => p.id)).not.toContain(B)
-    // ...and the block hides the blocker from the blocked user too.
     const asB = await service.listPeople({ limit: 20 }, { userId: B })
     expect(asB.items.map((p) => p.id)).not.toContain(A)
   })
@@ -393,9 +391,6 @@ describe("getProfile", () => {
     expect(profile.stats).toEqual({ reports: 4, fixed: 3, cleanups: 2 })
     expect(profile.pastEvents.map((e) => e.title)).toEqual(["Newer", "Older"])
     expect(profile.avatar).toEqual(avatarGradient(A))
-    // `joined` is the VIEWER's membership, not the profile owner's: C is looking at A's events, so the
-    // cards must not claim C is attending them (and myRole stays omitted). See the next test for the
-    // owner's own view, where every card IS genuinely joined.
     expect(profile.pastEvents[0]!.joined).toBe(false)
     expect(profile.pastEvents[0]!.myRole).toBeUndefined()
     expect(profile.pastEvents[0]!.organizer.id).toBe(A)
@@ -408,12 +403,10 @@ describe("getProfile", () => {
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: A, title: "Organized" }))
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Attended" }), [A])
 
-    // A's own profile: every card is an event A organized or attended, so `joined` is true for all.
     const own = await service.getProfile(A, { userId: A })
     expect(own.profile.pastEvents).toHaveLength(2)
     expect(own.profile.pastEvents.map((e) => e.joined)).toEqual([true, true])
 
-    // C (and an anonymous viewer) has no membership in A's events, so none of the cards are joined.
     const other = await service.getProfile(A, { userId: C })
     expect(other.profile.pastEvents.map((e) => e.joined)).toEqual([false, false])
     expect(other.profile.pastEvents.map((e) => e.myRole)).toEqual([undefined, undefined])
@@ -467,24 +460,12 @@ describe("getProfile", () => {
   })
 })
 
-/**
- * P6 hours privacy — `users.show_volunteer_hours` is a NULLABLE TRI-STATE (C18), not a boolean, and the
- * profile has to keep all three arms apart:
- *   null  = never chosen  -> hours visible, flag ABSENT (the response every existing account already gets)
- *   true  = explicit opt-in  -> hours visible, flag true
- *   false = explicit opt-out -> hours OMITTED, flag false
- * The (omitted hours + `showVolunteerHours: false`) PAIR is load-bearing: without the flag a hidden
- * profile is indistinguishable from someone who genuinely has no hours yet, and emitting `0` would be a
- * lie. `in` rather than `=== undefined` throughout, because "absent from the payload" is the actual
- * contract — a present-but-undefined key would serialize differently.
- */
 describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
   const HOURS = 12.5
 
   function makeHoursHarness(): {
     repo: InMemorySocialRepository
     service: SocialService
-    /** Every userId `volunteerHoursTotalFor` was asked about — empty means the query never ran. */
     calls: string[]
   } {
     const repo = new InMemorySocialRepository()
@@ -529,7 +510,6 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
     const { profile } = await service.getProfile(A, { userId: C })
     expect("volunteerHours" in profile).toBe(false)
     expect(profile.showVolunteerHours).toBe(false)
-    // Not merely stripped from the response — the read is skipped entirely.
     expect(calls).toEqual([])
   })
 
@@ -549,7 +529,6 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
 
     const own = await service.getProfile(A, { userId: A })
     expect(own.profile.volunteerHours).toBe(HOURS)
-    // The RAW tri-state rides along so the settings toggle renders the honest position.
     expect(own.profile.showVolunteerHours).toBe(false)
 
     const mine = await service.getMyProfile(A)
@@ -589,17 +568,7 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
     expect(profile.showVolunteerHours).toBe(true)
   })
 
-  /**
-   * FAIL-CLOSED on a projection that FORGOT the column.
-   *
-   * The four PersonView-producing reads in social-repository.drizzle.ts are raw postgres.js templates
-   * typed by `sql<PersonRowSelect[]>` — an UNCHECKED assertion. A projection that drops
-   * `u.show_volunteer_hours` therefore typechecks and yields `undefined` at runtime, and `undefined`
-   * would sail through `view.showVolunteerHours === false`, publishing the hours of a user who
-   * explicitly hid them. `toPersonView` coerces that `undefined` to an explicit opt-out.
-   */
   describe("toPersonView: a projection missing show_volunteer_hours fails CLOSED", () => {
-    /** Exactly what postgres.js hands back when the SELECT list omits the column: no such key. */
     function rowWithoutTheColumn(): PersonRowSelect {
       return {
         id: A,
@@ -638,7 +607,6 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
 
       const { profile } = await service.getProfile(A, { userId: C })
       expect("volunteerHours" in profile).toBe(false)
-      // ...and the total is never even queried, the same as a genuine opt-out.
       expect(calls).toEqual([])
     })
   })
@@ -909,7 +877,6 @@ describe("followSuggestions", () => {
   const D = "44444444-4444-4444-4444-444444444444"
   const E = "55555555-5555-5555-5555-555555555555"
 
-  // Santa Monica-ish viewer point; "far" = New York.
   const NEAR = { lat: 34.01, lng: -118.49 }
   const FAR = { lat: 40.7, lng: -74.0 }
 
@@ -920,18 +887,16 @@ describe("followSuggestions", () => {
     repo.seedUser({ id: C, displayName: "Far organizer", handle: "org_far" })
     repo.seedUser({ id: D, displayName: "Nearby neighbor", handle: "neighbor" })
     repo.seedUser({ id: E, displayName: "Random person", handle: "random" })
-    // The viewer's area: they attended B's cleanup at NEAR. C hosts an event far away. D and E have
-    // no activity signal at all (no known location, not organizers) so they land in the last tier.
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, ...NEAR }), [A])
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: C, ...FAR }))
 
     const { results } = await service.followSuggestions(A, 10)
     const ids = results.map((r) => r.id)
-    expect(ids[0]).toBe(B) // nearby organizer first
+    expect(ids[0]).toBe(B)
     expect(ids).toContain(C)
-    expect(ids.indexOf(B)).toBeLessThan(ids.indexOf(C)) // nearby organizer beats far organizer
-    expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(E)) // organizer beats no-signal person
-    expect(ids).not.toContain(A) // never self
+    expect(ids.indexOf(B)).toBeLessThan(ids.indexOf(C))
+    expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(E))
+    expect(ids).not.toContain(A)
   })
 
   it("excludes already-followed and blocked users, and returns isFollowing=false rows", async () => {
@@ -953,7 +918,7 @@ describe("followSuggestions", () => {
   it("excludes handle-less and deleted users and respects the limit", async () => {
     const { repo, service } = makeHarness()
     repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
-    repo.seedUser({ id: B, displayName: "No handle" }) // handle defaults to null
+    repo.seedUser({ id: B, displayName: "No handle" })
     repo.seedUser({ id: C, displayName: "Deleted", handle: "gone", deletedAt: new Date() })
     repo.seedUser({ id: D, displayName: "One", handle: "one" })
     repo.seedUser({ id: E, displayName: "Two", handle: "two" })
@@ -972,10 +937,278 @@ describe("followSuggestions", () => {
     repo.seedUser({ id: C, displayName: "Popular", handle: "pop" })
     repo.seedUser({ id: D, displayName: "Fan", handle: "fan" })
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, ...FAR }))
-    repo.seedFollow(D, C) // C has a follower, but B is an organizer
+    repo.seedFollow(D, C)
     const { results } = await service.followSuggestions(A, 10)
     const ids = results.map((r) => r.id)
     expect(ids.indexOf(B)).toBeLessThan(ids.indexOf(C))
-    expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(D)) // follower count breaks the tie in the last tier
+    expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(D))
+  })
+})
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function futureAt(days: number): Date {
+  return new Date(Date.now() + days * DAY_MS)
+}
+
+function pastAt(days: number): Date {
+  return new Date(Date.now() - days * DAY_MS)
+}
+
+describe("profile upcoming events", () => {
+  it("shows an upcoming event the owner ORGANIZED to another viewer, and keeps it out of pastEvents", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: A,
+        title: "Next Saturday sweep",
+        status: "upcoming",
+        scheduledAt: futureAt(7),
+      }),
+    )
+    repo.seedCleanup(
+      makeCleanupRecord({ organizerUserId: A, title: "Last month", scheduledAt: pastAt(30) }),
+    )
+
+    const { profile } = await service.getProfile(A, { userId: B })
+    expect(profile.upcomingEvents?.map((e) => e.title)).toEqual(["Next Saturday sweep"])
+    expect(profile.pastEvents.map((e) => e.title)).toEqual(["Last month"])
+  })
+
+  it("orders upcoming events soonest-first and drops cancelled ones", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: A,
+        title: "Later",
+        status: "upcoming",
+        scheduledAt: futureAt(20),
+      }),
+    )
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: A,
+        title: "Sooner",
+        status: "upcoming",
+        scheduledAt: futureAt(2),
+      }),
+    )
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: A,
+        title: "Called off",
+        status: "cancelled",
+        scheduledAt: futureAt(5),
+      }),
+    )
+
+    const { profile } = await service.getProfile(A, { userId: null })
+    expect(profile.upcomingEvents?.map((e) => e.title)).toEqual(["Sooner", "Later"])
+  })
+
+  it("hides an upcoming event the owner only RSVP'd to from everyone but the owner", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: B,
+        title: "Bob's future sweep",
+        status: "upcoming",
+        scheduledAt: futureAt(3),
+      }),
+      [A],
+    )
+
+    const other = await service.getProfile(A, { userId: B })
+    expect(other.profile.upcomingEvents).toEqual([])
+
+    const anon = await service.getProfile(A, { userId: null })
+    expect(anon.profile.upcomingEvents).toEqual([])
+
+    const own = await service.getProfile(A, { userId: A })
+    expect(own.profile.upcomingEvents?.map((e) => e.title)).toEqual(["Bob's future sweep"])
+    expect(own.profile.upcomingEvents?.[0]!.joined).toBe(true)
+
+    const mine = await service.getMyProfile(A)
+    expect(mine.profile.upcomingEvents?.map((e) => e.title)).toEqual(["Bob's future sweep"])
+  })
+
+  it("still lists BOTH hosted and attended events in pastEvents, newest first", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedCleanup(
+      makeCleanupRecord({ organizerUserId: A, title: "Hosted", scheduledAt: pastAt(2) }),
+    )
+    repo.seedCleanup(
+      makeCleanupRecord({ organizerUserId: B, title: "Attended", scheduledAt: pastAt(9) }),
+      [A],
+    )
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: A,
+        title: "Cancelled",
+        status: "cancelled",
+        scheduledAt: pastAt(4),
+      }),
+    )
+
+    const { profile } = await service.getProfile(A, { userId: null })
+    expect(profile.pastEvents.map((e) => e.title)).toEqual(["Hosted", "Attended"])
+    expect(profile.upcomingEvents).toEqual([])
+  })
+})
+
+describe("listProfileEvents pagination", () => {
+  function seedPastEvents(repo: InMemorySocialRepository, userId: string, count: number): void {
+    for (let i = 0; i < count; i++) {
+      repo.seedCleanup(
+        makeCleanupRecord({
+          organizerUserId: userId,
+          title: `Event ${i}`,
+          scheduledAt: new Date(Date.now() - (i + 1) * DAY_MS),
+        }),
+      )
+    }
+  }
+
+  it("carries a pastEventsCursor on the profile only when more past events exist", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    seedPastEvents(repo, A, PROFILE_PAST_EVENTS_LIMIT)
+    const exact = await service.getProfile(A, { userId: null })
+    expect(exact.profile.pastEvents).toHaveLength(PROFILE_PAST_EVENTS_LIMIT)
+    expect(exact.profile.pastEventsCursor ?? null).toBeNull()
+
+    repo.seedCleanup(
+      makeCleanupRecord({ organizerUserId: A, title: "One more", scheduledAt: pastAt(100) }),
+    )
+    const overflowing = await service.getProfile(A, { userId: null })
+    expect(overflowing.profile.pastEventsCursor).toEqual(expect.any(String))
+  })
+
+  it("walks every past event exactly once and terminates", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    seedPastEvents(repo, A, 47)
+
+    const seen: string[] = []
+    let cursor: string | undefined
+    let pages = 0
+    do {
+      const page = await service.listProfileEvents(
+        A,
+        { userId: null },
+        cursor !== undefined ? { cursor } : {},
+      )
+      expect(page.items.length).toBeLessThanOrEqual(PROFILE_PAST_EVENTS_LIMIT)
+      for (const item of page.items) seen.push(item.id)
+      cursor = page.nextCursor ?? undefined
+      pages++
+      expect(pages).toBeLessThan(10)
+    } while (cursor !== undefined)
+
+    expect(seen).toHaveLength(47)
+    expect(new Set(seen).size).toBe(47)
+    const first = await service.listProfileEvents(A, { userId: null }, {})
+    expect(first.items.map((i) => i.id)).toEqual(seen.slice(0, PROFILE_PAST_EVENTS_LIMIT))
+  })
+
+  it("honours an explicit limit and never leaks upcoming events into the page", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    seedPastEvents(repo, A, 5)
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: A,
+        title: "Upcoming",
+        status: "upcoming",
+        scheduledAt: futureAt(4),
+      }),
+    )
+
+    const page = await service.listProfileEvents(A, { userId: null }, { limit: 2 })
+    expect(page.items).toHaveLength(2)
+    expect(page.nextCursor).toEqual(expect.any(String))
+    expect(page.items.map((i) => i.title)).not.toContain("Upcoming")
+  })
+
+  it("marks joined only on the owner's own page", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    seedPastEvents(repo, A, 2)
+    const own = await service.listProfileEvents(A, { userId: A }, {})
+    expect(own.items.map((i) => i.joined)).toEqual([true, true])
+    const other = await service.listProfileEvents(A, { userId: B }, {})
+    expect(other.items.map((i) => i.joined)).toEqual([false, false])
+  })
+})
+
+describe("profile events block gate", () => {
+  function makeBlockedHarness(edges: Array<{ blocker: string; blocked: string }>): {
+    repo: InMemorySocialRepository
+    service: SocialService
+  } {
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({
+      repo,
+      blockState: (viewerId, targetId) =>
+        Promise.resolve({
+          blockedByViewer: edges.some((e) => e.blocker === viewerId && e.blocked === targetId),
+          blockedByTarget: edges.some((e) => e.blocker === targetId && e.blocked === viewerId),
+        }),
+    })
+    return { repo, service }
+  }
+
+  it("returns an empty page to a viewer who blocked the owner", async () => {
+    const { repo, service } = makeBlockedHarness([{ blocker: A, blocked: B }])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Past", scheduledAt: pastAt(3) }))
+    const page = await service.listProfileEvents(B, { userId: A }, {})
+    expect(page).toEqual({ items: [], nextCursor: null })
+  })
+
+  it("404s the page when the owner blocked the viewer", async () => {
+    const { repo, service } = makeBlockedHarness([{ blocker: B, blocked: A }])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    await expect(service.listProfileEvents(B, { userId: A }, {})).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+
+  it("empties BOTH profile event arrays and drops the cursor for a blocked viewer", async () => {
+    const { repo, service } = makeBlockedHarness([{ blocker: A, blocked: B }])
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    for (let i = 0; i < 25; i++) {
+      repo.seedCleanup(
+        makeCleanupRecord({
+          organizerUserId: B,
+          title: `Past ${i}`,
+          scheduledAt: new Date(Date.now() - (i + 1) * DAY_MS),
+        }),
+      )
+    }
+    repo.seedCleanup(
+      makeCleanupRecord({
+        organizerUserId: B,
+        title: "Future",
+        status: "upcoming",
+        scheduledAt: futureAt(6),
+      }),
+    )
+
+    const { profile } = await service.getProfile(B, { userId: A })
+    expect(profile.pastEvents).toEqual([])
+    expect(profile.upcomingEvents).toEqual([])
+    expect(profile.pastEventsCursor ?? null).toBeNull()
   })
 })

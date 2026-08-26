@@ -2,12 +2,22 @@
 import type { Sql } from "../db/client.js"
 import type {
   PersonView,
+  ProfileEventsPage,
+  ProfileEventsPageArgs,
   ProfileStats,
   SocialRepository,
+  UpcomingEventsArgs,
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
 import type { CleanupStatus, CleanupType, EventKind, SocialLinks } from "@civfix/shared"
-import { encodeNameCursor, pageWith, paginate, parseNameCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import {
+  encodeNameCursor,
+  encodeTimeCursor,
+  pageWith,
+  paginate,
+  parseNameCursor,
+  parseTimeCursor,
+} from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
 
 export {
@@ -118,6 +128,54 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     dist: null,
     organizer,
   }
+}
+
+function organizedIds(sql: Sql, userId: string): ReturnType<Sql> {
+  return sql`SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}`
+}
+
+function organizedOrAttendedIds(sql: Sql, userId: string): ReturnType<Sql> {
+  return sql`
+    SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}
+    UNION
+    SELECT cleanup_id FROM cleanup_members WHERE user_id = ${userId}
+  `
+}
+
+function profileEventRows(
+  sql: Sql,
+  args: { ids: ReturnType<Sql>; where: ReturnType<Sql>; order: ReturnType<Sql>; limit: number },
+): Promise<CleanupRowSelect[]> {
+  return sql<CleanupRowSelect[]>`
+    WITH ids AS (${args.ids})
+    SELECT
+      c.id,
+      c.organizer_user_id,
+      c.type,
+      c.event_kind,
+      c.title,
+      c.description,
+      ST_X(c.geom) AS lng,
+      ST_Y(c.geom) AS lat,
+      c.scheduled_at,
+      c.status,
+      c.bring,
+      c.address,
+      c.jurisdiction_geoid,
+      c.reference_code,
+      c.created_at,
+      (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id) AS going,
+      u.display_name AS org_display_name,
+      u.handle AS org_handle,
+      u.bio AS org_bio
+    FROM cleanups c
+    JOIN ids ON ids.cleanup_id = c.id
+    JOIN users u ON u.id = c.organizer_user_id
+    WHERE c.status <> 'cancelled'
+      ${args.where}
+    ${args.order}
+    LIMIT ${args.limit}
+  `
 }
 
 type ConnectionRow = PersonRowSelectWithFollow & { edge_created_at: Date }
@@ -472,45 +530,31 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       return rows[0]?.count ?? 0
     },
 
-    async pastEventsFor(userId: string, limit: number): Promise<CleanupRecord[]> {
-      const rows = await sql<CleanupRowSelect[]>`
-        WITH ids AS (
-          SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}
-          UNION
-          SELECT cleanup_id FROM cleanup_members WHERE user_id = ${userId}
-        )
-        SELECT
-          c.id,
-          c.organizer_user_id,
-          c.type,
-          c.event_kind,
-          c.title,
-          c.description,
-          ST_X(c.geom) AS lng,
-          ST_Y(c.geom) AS lat,
-          c.scheduled_at,
-          c.status,
-          c.bring,
-          c.address,
-          c.jurisdiction_geoid,
-          c.reference_code,
-          c.created_at,
-          (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id) AS going,
-          u.display_name AS org_display_name,
-          u.handle AS org_handle,
-          u.bio AS org_bio
-        FROM cleanups c
-        JOIN ids ON ids.cleanup_id = c.id
-        JOIN users u ON u.id = c.organizer_user_id
-        -- L-past-events: the profile strip is PAST events (UserProfileDTO.pastEvents). Without these two
-        -- terms it was "the 20 most recent by scheduled_at", so an upcoming event the user had merely RSVP'd
-        -- to — and a cancelled one they never attended — rendered as civic history. status is NOT NULL, so
-        -- the <> is safe.
-        WHERE c.scheduled_at < now()
-          AND c.status <> 'cancelled'
-        ORDER BY c.scheduled_at DESC, c.id DESC
-        LIMIT ${limit}
-      `
+    async pastEventsPageFor(userId: string, args: ProfileEventsPageArgs): Promise<ProfileEventsPage> {
+      const cursor = parseTimeCursor(args.cursor)
+      const rows = await profileEventRows(sql, {
+        ids: organizedOrAttendedIds(sql, userId),
+        where: cursor !== null
+          ? sql`AND c.scheduled_at < now() AND (c.scheduled_at, c.id) < (${cursor.at}, ${cursor.id}::uuid)`
+          : sql`AND c.scheduled_at < now()`,
+        order: sql`ORDER BY c.scheduled_at DESC, c.id DESC`,
+        limit: args.limit + 1,
+      })
+      const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
+        encodeTimeCursor({ at: last.scheduled_at, id: last.id }),
+      )
+      return { items: items.map(toCleanupRecord), nextCursor }
+    },
+
+    async upcomingEventsFor(userId: string, args: UpcomingEventsArgs): Promise<CleanupRecord[]> {
+      const rows = await profileEventRows(sql, {
+        ids: args.includeAttending
+          ? organizedOrAttendedIds(sql, userId)
+          : organizedIds(sql, userId),
+        where: sql`AND c.scheduled_at >= now()`,
+        order: sql`ORDER BY c.scheduled_at ASC, c.id ASC`,
+        limit: args.limit,
+      })
       return rows.map(toCleanupRecord)
     },
 

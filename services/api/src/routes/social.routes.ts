@@ -9,6 +9,8 @@ import {
   type ListPeopleResponse,
   type FollowPersonResponse,
   type GetProfileResponse,
+  ProfileEventsRequestSchema,
+  type ProfileEventsResponse,
 } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -155,6 +157,17 @@ export async function registerSocialRoutes(
     const payload: GetProfileResponse = UUID_RE.test(id)
       ? await svc.getProfile(id, viewerOf(request))
       : await svc.getProfileByHandle(id, viewerOf(request))
+    reply.status(200).send(payload)
+  })
+
+  route(app, "getProfileEvents", async (request, reply) => {
+    const input = mergeIdParam(ProfileEventsRequestSchema, request)
+    const userId = await resolvePersonId(input.id)
+    const payload: ProfileEventsResponse = await service().listProfileEvents(
+      userId,
+      viewerOf(request),
+      input,
+    )
     reply.status(200).send(payload)
   })
 

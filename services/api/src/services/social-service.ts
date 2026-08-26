@@ -5,7 +5,9 @@ import type {
   ConnectionsListQuery,
   ListPeopleRequest,
   ListPeopleResponse,
+  PaginationQuery,
   PersonDTO,
+  ProfileEventsResponse,
   SocialLinks,
   UserProfileDTO,
 } from "@civfix/shared"
@@ -14,6 +16,8 @@ import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
 export const PEOPLE_DEFAULT_LIMIT = 20
 
 export const PROFILE_PAST_EVENTS_LIMIT = 20
+
+export const PROFILE_UPCOMING_EVENTS_LIMIT = 20
 
 export type ProfileWithBlock = UserProfileDTO & { blockedByMe?: boolean }
 
@@ -28,11 +32,6 @@ export interface PersonView {
   avatarR2Key: string | null
   avatarUrl: string | null
   socialLinks: SocialLinks | null
-  /**
-   * P6 hours privacy — the `users.show_volunteer_hours` TRI-STATE (C18), carried raw:
-   *   null = never chosen, true = explicit opt-in, false = explicit opt-out.
-   * EVERY SQL projection that builds a PersonView selects it; see buildProfile for the three arms.
-   */
   showVolunteerHours: boolean | null
 }
 
@@ -40,6 +39,21 @@ export interface ProfileStats {
   reports: number
   fixed: number
   cleanups: number
+}
+
+export interface ProfileEventsPageArgs {
+  cursor: string | null
+  limit: number
+}
+
+export interface ProfileEventsPage {
+  items: CleanupRecord[]
+  nextCursor: string | null
+}
+
+export interface UpcomingEventsArgs {
+  includeAttending: boolean
+  limit: number
 }
 
 export interface SocialRepository {
@@ -64,12 +78,6 @@ export interface SocialRepository {
     limit: number
   }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
 
-  /**
-   * Follow suggestions for the viewer. The repo returns candidates ALREADY filtered (no self, no
-   * already-followed, no blocked-either-way, no deleted/handle-less users) and ALREADY ranked:
-   * people active near the viewer's own recent activity first — community organizers (cleanup/event
-   * hosts) ahead of ordinary nearby users — then organizers elsewhere, then everyone else by reach.
-   */
   suggestFollows(args: {
     viewerId: string
     limit: number
@@ -90,7 +98,9 @@ export interface SocialRepository {
 
   followerCount(userId: string): Promise<number>
 
-  pastEventsFor(userId: string, limit: number): Promise<CleanupRecord[]>
+  pastEventsPageFor(userId: string, args: ProfileEventsPageArgs): Promise<ProfileEventsPage>
+
+  upcomingEventsFor(userId: string, args: UpcomingEventsArgs): Promise<CleanupRecord[]>
 
   statsFor(userId: string): Promise<ProfileStats>
 }
@@ -143,6 +153,11 @@ export interface SocialService {
   getProfile(id: string, viewer: SocialViewer): Promise<{ profile: ProfileWithBlock }>
   getProfileByHandle(handle: string, viewer: SocialViewer): Promise<{ profile: ProfileWithBlock }>
   getMyProfile(viewerId: string): Promise<{ profile: ProfileWithBlock }>
+  listProfileEvents(
+    id: string,
+    viewer: SocialViewer,
+    req: PaginationQuery,
+  ): Promise<ProfileEventsResponse>
   resolveHandleToId(handle: string): Promise<string>
 }
 
@@ -199,32 +214,25 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     viewer: SocialViewer,
     isSelf: boolean,
   ): Promise<UserProfileDTO> {
-    // P6 hours privacy, the THREE-STATE gate (C18). `show_volunteer_hours` is nullable on purpose:
-    //   false -> explicit opt-out: `volunteerHours` is OMITTED and `showVolunteerHours: false` is emitted.
-    //            That PAIR is how the client tells "hidden" apart from "genuinely zero hours" — a bare
-    //            omission is ambiguous, and a 0 would be a lie.
-    //   null  -> never chosen: `volunteerHours` exactly as before the column existed, and
-    //            `showVolunteerHours` OMITTED. This response is byte-identical to today's for every
-    //            account that already exists; only the new ITEMISED ledger stays closed.
-    //   true  -> explicit opt-in: both.
-    // isSelf BYPASSES the flag entirely — your own profile always shows your own hours, and your own DTO
-    // still carries the raw tri-state so the settings toggle can render the honest position.
     const hoursHidden = !isSelf && view.showVolunteerHours === false
-    const [isFollowing, pastEventRecords, stats, volunteerHours] = await Promise.all([
-      isSelf ? Promise.resolve(false) : viewerFollows(view.id, viewer),
-      deps.repo.pastEventsFor(view.id, PROFILE_PAST_EVENTS_LIMIT),
-      deps.repo.statsFor(view.id),
-      // Not merely dropped from the response: the total is never ASKED FOR when it is hidden, which
-      // saves the query and keeps the opt-out from being observable as a timing difference.
-      deps.volunteerHoursTotalFor && !hoursHidden
-        ? deps.volunteerHoursTotalFor(view.id)
-        : Promise.resolve(undefined),
-    ])
-    // CleanupDTO.joined is the VIEWER's membership, not the profile owner's. These records are the OWNER's
-    // events (organized or attended), so on your own profile every card is genuinely `joined`; on someone
-    // else's it is unknown without a per-event membership lookup, and `false` is the honest answer rather
-    // than telling the viewer they are attending events they never joined (myRole stays omitted either way).
-    const pastEvents: CleanupDTO[] = pastEventRecords.map((r) => toCleanupDTO(r, isSelf))
+    const [isFollowing, pastEventsPage, upcomingEventRecords, stats, volunteerHours] =
+      await Promise.all([
+        isSelf ? Promise.resolve(false) : viewerFollows(view.id, viewer),
+        deps.repo.pastEventsPageFor(view.id, {
+          cursor: null,
+          limit: PROFILE_PAST_EVENTS_LIMIT,
+        }),
+        deps.repo.upcomingEventsFor(view.id, {
+          includeAttending: isSelf,
+          limit: PROFILE_UPCOMING_EVENTS_LIMIT,
+        }),
+        deps.repo.statsFor(view.id),
+        deps.volunteerHoursTotalFor && !hoursHidden
+          ? deps.volunteerHoursTotalFor(view.id)
+          : Promise.resolve(undefined),
+      ])
+    const pastEvents: CleanupDTO[] = pastEventsPage.items.map((r) => toCleanupDTO(r, isSelf))
+    const upcomingEvents: CleanupDTO[] = upcomingEventRecords.map((r) => toCleanupDTO(r, isSelf))
     const avatarUrl =
       view.avatarR2Key !== null
         ? await presignAvatar(view.avatarR2Key)
@@ -242,10 +250,12 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       verified: view.verified,
       ...(view.socialLinks ? { socialLinks: view.socialLinks } : {}),
       pastEvents,
+      upcomingEvents,
+      ...(pastEventsPage.nextCursor !== null
+        ? { pastEventsCursor: pastEventsPage.nextCursor }
+        : {}),
       stats,
       ...(volunteerHours !== undefined ? { volunteerHours } : {}),
-      // Emitted only when the user has actually CHOSEN. Absent = never chosen, on your own profile as
-      // much as on anyone else's.
       ...(view.showVolunteerHours !== null
         ? { showVolunteerHours: view.showVolunteerHours }
         : {}),
@@ -264,6 +274,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       isFollowing: false,
       verified: view.verified,
       pastEvents: [],
+      upcomingEvents: [],
       stats: { reports: 0, fixed: 0, cleanups: 0 },
       blockedByMe: true,
     }
@@ -299,7 +310,6 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
 
     async followSuggestions(viewerId: string, limit: number): Promise<{ results: PersonDTO[] }> {
       const items = await deps.repo.suggestFollows({ viewerId, limit })
-      // The repo already excludes followed users, but keep the DTO honest either way.
       return { results: items.map((it) => toPersonDTO(it, it.isFollowing)) }
     },
 
@@ -385,6 +395,24 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       const view = await deps.repo.findPersonById(viewerId)
       if (!view) throw AppError.notFound("Person not found")
       return { profile: await buildProfile(view, { userId: viewerId }, true) }
+    },
+
+    async listProfileEvents(
+      id: string,
+      viewer: SocialViewer,
+      req: PaginationQuery,
+    ): Promise<ProfileEventsResponse> {
+      if (viewer.userId !== null && viewer.userId !== id && deps.blockState) {
+        const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, id)
+        if (blockedByViewer) return { items: [], nextCursor: null }
+        if (blockedByTarget) throw AppError.notFound("Person not found")
+      }
+      const { items, nextCursor } = await deps.repo.pastEventsPageFor(id, {
+        cursor: req.cursor ?? null,
+        limit: req.limit ?? PROFILE_PAST_EVENTS_LIMIT,
+      })
+      const isSelf = viewer.userId === id
+      return { items: items.map((r) => toCleanupDTO(r, isSelf)), nextCursor }
     },
 
     async resolveHandleToId(handle: string): Promise<string> {

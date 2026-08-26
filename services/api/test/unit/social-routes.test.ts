@@ -246,6 +246,56 @@ describe("GET /people/:id (profile)", () => {
   })
 })
 
+describe("GET /people/:id/events", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+
+  it("pages a person's past events anonymously and resolves an @handle", async () => {
+    const { app } = await makeHarness((repo) => {
+      repo.seedUser({ id: OTHER, displayName: "Pro", handle: "pro_neighbor" })
+      for (let i = 0; i < 3; i++) {
+        repo.seedCleanup(
+          makeCleanupRecord({
+            organizerUserId: OTHER,
+            title: `Sweep ${i}`,
+            scheduledAt: new Date(Date.now() - (i + 1) * DAY_MS),
+          }),
+        )
+      }
+    })
+
+    const first = await app.inject({ method: "GET", url: `/v1/people/${OTHER}/events?limit=2` })
+    expect(first.statusCode).toBe(200)
+    const firstBody = first.json()
+    expect(firstBody.items.map((e: { title: string }) => e.title)).toEqual(["Sweep 0", "Sweep 1"])
+    expect(typeof firstBody.nextCursor).toBe("string")
+
+    const second = await app.inject({
+      method: "GET",
+      url: `/v1/people/Pro_Neighbor/events?limit=2&cursor=${encodeURIComponent(firstBody.nextCursor)}`,
+    })
+    expect(second.statusCode).toBe(200)
+    expect(second.json().items.map((e: { title: string }) => e.title)).toEqual(["Sweep 2"])
+    expect(second.json().nextCursor).toBeNull()
+  })
+
+  it("404s an unknown person", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/people/00000000-0000-0000-0000-000000000000/events",
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("rejects an out-of-range limit", async () => {
+    const { app } = await makeHarness((repo) => {
+      repo.seedUser({ id: OTHER, displayName: "Pro" })
+    })
+    const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}/events?limit=500` })
+    expect(res.statusCode).toBe(422)
+  })
+})
+
 describe("GET /people/:id/followers and /following", () => {
   for (const rel of ["followers", "following"] as const) {
     it(`${rel}: resolves a non-UUID :id as an @handle (same body as the UUID form)`, async () => {
@@ -340,7 +390,6 @@ describe("GET /users/follow-suggestions", () => {
     expect(ids).toContain(OTHER)
     expect(ids).not.toContain(userId)
 
-    // Following ORGANIZER removes them from the next fetch.
     repo.seedFollow(userId, ORGANIZER)
     const res2 = await app.inject({
       method: "GET",
