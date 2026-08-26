@@ -114,7 +114,7 @@ from `services/api/drizzle/0096_cleanup_guests.sql` each carry an explicit rule.
 
 | Table | Rule | Enforced by |
 |---|---|---|
-| `cleanup_guests` (`email`, `phone`, `contact_key`) | NULLed ~**30 days** after the event's `scheduled_at` passes, or 30 days after the RSVP when the event was cancelled. Also NULLed **immediately** when the guest cancels their own RSVP. | `guest.retention.sweep` cron + `guestRsvpCancel` |
+| `cleanup_guests` (`email`, `phone`, `contact_key`) | NULLed ~**30 days** after the event's `scheduled_at` passes. For a **cancelled** event the clock is the guest row's own `created_at`, NOT the moment of cancellation — a guest who RSVPd more than 30 days before the host cancelled is scrubbed on the next sweep, and one who RSVPd yesterday keeps their contact until 30 days after that RSVP. Also NULLed **immediately** when the guest cancels their own RSVP. | `guest.retention.sweep` cron + `guestRsvpCancel` |
 | `cleanup_guests` (the row itself) | Kept indefinitely, contact-free. It is the record that someone RSVPd (and whether they withdrew); `contact_scrubbed_at` marks that the means of contacting them is gone. | — |
 | `guest_otps` | Deleted **24 hours** after `created_at`. A guest OTP is dead the moment it is consumed or expires (5 min); 24h is pure operational slack. | `guest.retention.sweep` cron |
 | `sms_opt_outs` | **Indefinite, deliberately.** A suppression list that expires re-enables texting someone who replied STOP. Never add a TTL here. | — |
