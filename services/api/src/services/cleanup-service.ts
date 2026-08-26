@@ -238,14 +238,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     reason: string | null,
   ): Promise<void> {
     if (deps.guestNotifier === undefined) return
-    try {
-      await deps.guestNotifier.notifyEventCancelled(cleanupId, reason)
-    } catch (err) {
-      deps.logger?.warn(
-        { err, cleanupId },
-        "cleanup_cancelled guest fanout failed (suppressed)",
-      )
-    }
+    await deps.guestNotifier.notifyEventCancelled(cleanupId, reason)
   }
 
   async function dispatchGuestUpdateFanout(cleanupId: string): Promise<void> {

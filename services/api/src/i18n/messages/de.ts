@@ -125,7 +125,7 @@ export const de: Partial<Record<MessageKey, string>> = {
     "{{title}} wurde von der Veranstalterin oder dem Veranstalter abgesagt. Grund: {{reason}}",
   "sms.guest_otp.body":
     "{{code}} ist dein civfix-Code für die Anmeldung zu {{title}}. Es können Nachrichten- und Datengebühren anfallen. Antworte mit STOP, um dich abzumelden.",
-    "sms.guest_confirmed.body":
+  "sms.guest_confirmed.body":
     "Du stehst auf der Liste für {{title}}. Stornieren: {{link}} Antworte mit STOP, um dich abzumelden.",
   "sms.guest_updated.body":
     "{{title}} geändert: jetzt {{when}} an folgendem Ort: {{place}}. Antworte mit STOP, um dich abzumelden.",

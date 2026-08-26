@@ -7,6 +7,7 @@ import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { smsFailure } from "../../src/errors/sms-failure.js"
+import { generateToken } from "../../src/auth/crypto.js"
 import {
   GUEST_CONTACT_MAX_PER_DAY,
   GUEST_TURNSTILE_ACTION,
@@ -42,6 +43,7 @@ function build(
     counters?: CounterStore
     reviewer?: { email: string; code: string } | null
     sms?: FakeSmsSender
+    newToken?: () => string
   } = {},
 ): Harness {
   let clock = Date.parse("2026-08-25T12:00:00.000Z")
@@ -73,7 +75,7 @@ function build(
     ...(reviewer !== undefined ? { reviewer } : {}),
     now,
     newCode: () => CODE,
-    newToken: () => `manage-token-${randomUUID()}`,
+    newToken: opts.newToken ?? (() => `manage-token-${randomUUID()}`),
   })
 
   return {
@@ -581,6 +583,39 @@ describe("guest rsvp: fanout to guests", () => {
     return h
   }
 
+  it("keeps the confirmation SMS to one GSM-7 segment when the event title is long", async () => {
+    const h = build({ smsGuestEnabled: true, newToken: () => generateToken() })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      title: "Annual Ballona Creek Wetlands Restoration and Cleanup Day",
+    })
+    await h.service.requestCode(smsRequest(), ctx)
+    await h.service.verifyCode(
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      ctx,
+    )
+
+    const body = h.sms.sent.at(-1)?.body ?? ""
+    expect(body).toContain("Annual Ballona Creek")
+    expect(body).toContain("...")
+    expect(body).not.toContain("Restoration")
+    expect(body).toContain("Reply STOP to opt out")
+    expect(body.length).toBeLessThanOrEqual(160)
+  })
+
+  it("leaves a short event title intact in the confirmation SMS", async () => {
+    const h = build({ smsGuestEnabled: true })
+    await h.service.requestCode(smsRequest(), ctx)
+    await h.service.verifyCode(
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      ctx,
+    )
+
+    const body = h.sms.sent.at(-1)?.body ?? ""
+    expect(body).toContain("Beach cleanup")
+    expect(body).not.toContain("...")
+  })
+
   it("tells every contactable guest the event was cancelled, on their own channel", async () => {
     const h = await withGuests()
     await h.service.notifyEventCancelled(EVENT_ID, "storm warning")
@@ -743,7 +778,24 @@ describe("guest rsvp: fanout is gated and throttled", () => {
     expect(h.sms.sent).toHaveLength(0)
   })
 
-  it("throttles repeated fanouts for one event so an edit loop cannot text-bomb guests", async () => {
+  function seedEmailGuest(h: Harness, email: string): void {
+    h.repo.guests.push({
+      id: randomUUID(),
+      cleanupId: EVENT_ID,
+      name: "Ada",
+      channel: "email",
+      email,
+      phone: null,
+      contactKey: email,
+      manageTokenHash: `h-${email}`,
+      verifiedAt: new Date(),
+      cancelledAt: null,
+      contactScrubbedAt: null,
+      createdAt: new Date(),
+    })
+  }
+
+  it("throttles repeated UPDATE fanouts for one event so an edit loop cannot text-bomb guests", async () => {
     const h = await seeded(true)
 
     for (let i = 0; i < 3; i++) {
@@ -752,30 +804,96 @@ describe("guest rsvp: fanout is gated and throttled", () => {
     expect(h.sms.sent).toHaveLength(3)
 
     await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
-    await h.service.notifyEventCancelled(EVENT_ID, null)
     expect(h.sms.sent).toHaveLength(3)
   })
 
-  it("fails the fanout CLOSED when the throttle counter is unreachable", async () => {
-    const broken: CounterStore = { incr: () => Promise.reject(new Error("redis is down")) }
-    const h = build({ smsGuestEnabled: true, counters: broken })
-    h.repo.guests.push({
-      id: randomUUID(),
-      cleanupId: EVENT_ID,
-      name: "Ada",
-      channel: "email",
-      email: "ada@example.org",
-      phone: null,
-      contactKey: "ada@example.org",
-      manageTokenHash: "h",
-      verifiedAt: new Date(),
-      cancelledAt: null,
-      contactScrubbedAt: null,
-      createdAt: new Date(),
-    })
+  it("still delivers the CANCELLATION on both channels after the update throttle is spent", async () => {
+    const h = await seeded(true)
+    seedEmailGuest(h, "ada@example.org")
+
+    for (let i = 0; i < 4; i++) {
+      await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
+    }
+    expect(h.sms.sent).toHaveLength(3)
+    const mailedUpdates = h.mailer.sent.length
 
     await h.service.notifyEventCancelled(EVENT_ID, null)
+    expect(h.sms.sent).toHaveLength(4)
+    expect(h.mailer.sent).toHaveLength(mailedUpdates + 1)
+    expect(h.mailer.sent.at(-1)?.to).toBe("ada@example.org")
+  })
+
+  it("fails the UPDATE fanout CLOSED when the throttle counter is unreachable", async () => {
+    const broken: CounterStore = { incr: () => Promise.reject(new Error("redis is down")) }
+    const h = build({ smsGuestEnabled: true, counters: broken })
+    seedEmailGuest(h, "ada@example.org")
+
+    await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
     expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("sends the CANCELLATION even when the throttle counter is unreachable", async () => {
+    const broken: CounterStore = { incr: () => Promise.reject(new Error("redis is down")) }
+    const h = build({ smsGuestEnabled: true, counters: broken })
+    seedEmailGuest(h, "ada@example.org")
+
+    await h.service.notifyEventCancelled(EVENT_ID, null)
+    expect(h.mailer.sent).toHaveLength(1)
+  })
+
+  it("throws out of the CANCELLATION fanout so the job redelivers a transient send failure", async () => {
+    const failing = new FakeSmsSender()
+    failing.send = () => Promise.reject(smsFailure("temporary", "provider down"))
+    const h = await seeded(true)
+    h.service = makeGuestRsvpService({
+      repo: h.repo,
+      mailer: h.mailer,
+      smsSender: failing,
+      abuseChecks: h.abuse,
+      cache: h.cache,
+      counters: h.counters,
+      roleOf: () => Promise.resolve(null),
+      smsGuestEnabled: true,
+      smsDailyCap: 50,
+      manageLinkBase: "https://civfix.org",
+      newCode: () => CODE,
+      newToken: () => `manage-token-${randomUUID()}`,
+    })
+
+    await expect(h.service.notifyEventCancelled(EVENT_ID, null)).rejects.toMatchObject({
+      fields: { smsDelivery: "temporary" },
+    })
+  })
+
+  it("does NOT redeliver the CANCELLATION for a recipient-terminal failure", async () => {
+    const optedOut = new FakeSmsSender()
+    optedOut.send = () => Promise.reject(smsFailure("opted_out", "recipient opted out"))
+    const h = await seeded(true)
+    h.service = makeGuestRsvpService({
+      repo: h.repo,
+      mailer: h.mailer,
+      smsSender: optedOut,
+      abuseChecks: h.abuse,
+      cache: h.cache,
+      counters: h.counters,
+      roleOf: () => Promise.resolve(null),
+      smsGuestEnabled: true,
+      smsDailyCap: 50,
+      manageLinkBase: "https://civfix.org",
+      newCode: () => CODE,
+      newToken: () => `manage-token-${randomUUID()}`,
+    })
+
+    await expect(h.service.notifyEventCancelled(EVENT_ID, null)).resolves.toBeUndefined()
+    expect(h.repo.optOuts.has("+15552223333")).toBe(true)
+  })
+
+  it("does not burn an update throttle slot when the roster read fails", async () => {
+    const h = await seeded(true)
+    h.repo.listContactableGuests = () => Promise.reject(new Error("db down"))
+
+    await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
+    expect(h.counters.peek(`guest:fanout:${EVENT_ID}`)).toBe(0)
   })
 })
 

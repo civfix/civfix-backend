@@ -122,7 +122,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "email.guest_cancelled.body_reason": "El organizador ha cancelado {{title}}. Motivo: {{reason}}",
   "sms.guest_otp.body":
     "{{code}} es tu código de civfix para confirmar tu asistencia a {{title}}. Pueden aplicarse tarifas de mensajes y datos. Responde STOP para darte de baja.",
-    "sms.guest_confirmed.body":
+  "sms.guest_confirmed.body":
     "Estás en la lista de {{title}}. Cancelar: {{link}} Responde STOP para darte de baja.",
   "sms.guest_updated.body":
     "{{title}} ha cambiado: ahora {{when}} en {{place}}. Responde STOP para darte de baja.",
