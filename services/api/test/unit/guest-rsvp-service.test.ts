@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
-import type { GuestRsvpRequestRequest, GuestRsvpVerifyRequest } from "@civfix/shared"
+import {
+  GUEST_OTP_ERROR_FIELD,
+  GuestOtpErrorReason,
+  type GuestRsvpRequestRequest,
+  type GuestRsvpVerifyRequest,
+} from "@civfix/shared"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
@@ -12,6 +17,7 @@ import {
   GUEST_CONTACT_MAX_PER_DAY,
   GUEST_TURNSTILE_ACTION,
   MAX_GUESTS_PER_EVENT,
+  SMS_BUDGET_KEY_PREFIX,
   makeGuestRsvpService,
   type GuestRsvpService,
 } from "../../src/services/guest-rsvp-service.js"
@@ -348,24 +354,42 @@ describe("guest rsvp: verifying a code", () => {
     )
   })
 
-  it("rejects a wrong code without joining", async () => {
+  it("rejects a wrong code without joining, naming the reason in fields", async () => {
     await expect(h.service.verifyCode(emailVerify({ code: "000000" }), ctx)).rejects.toMatchObject({
       code: "UNAUTHORIZED",
+      fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.invalidCode },
     })
     expect(h.repo.guests).toHaveLength(0)
   })
 
-  it("burns the code after three wrong attempts", async () => {
-    for (let i = 0; i < 3; i++) {
+  it("rejects an absent or expired code as invalid_code, not as a generic failure", async () => {
+    const fresh = build()
+    await expect(fresh.service.verifyCode(emailVerify(), ctx)).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.invalidCode },
+    })
+  })
+
+  it("burns the code after three wrong attempts, and the burning attempt says start over", async () => {
+    for (let i = 0; i < 2; i++) {
       await expect(
         h.service.verifyCode(emailVerify({ code: "000000" }), ctx),
-      ).rejects.toMatchObject({ code: "UNAUTHORIZED" })
+      ).rejects.toMatchObject({
+        code: "UNAUTHORIZED",
+        fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.invalidCode },
+      })
     }
+    await expect(h.service.verifyCode(emailVerify({ code: "000000" }), ctx)).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.attemptsExhausted },
+    })
     await expect(h.service.verifyCode(emailVerify(), ctx)).rejects.toMatchObject({
       code: "UNAUTHORIZED",
+      fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.invalidCode },
     })
     expect(h.repo.guests).toHaveLength(0)
   })
+
 
   it("refuses to join when the single-use consume is lost to a concurrent verify", async () => {
     h.repo.markOtpConsumed = () => Promise.resolve(false)
@@ -387,12 +411,15 @@ describe("guest rsvp: verifying a code", () => {
     expect(second.going).toBe(4)
   })
 
-  it("accepts the reviewer long code for the reviewer contact only", async () => {
-    const result = await h.service.verifyCode(
+  it("accepts the reviewer long code for the reviewer contact only, sending nothing", async () => {
+    const fresh = build()
+    const result = await fresh.service.verifyCode(
       emailVerify({ email: REVIEWER_EMAIL, code: REVIEWER_CODE }),
       ctx,
     )
     expect(result.joined).toBe(true)
+    expect(fresh.mailer.sent).toHaveLength(0)
+    expect(fresh.sms.sent).toHaveLength(0)
 
     await expect(
       h.service.verifyCode(emailVerify({ email: "someone@example.org", code: REVIEWER_CODE }), ctx),
@@ -583,6 +610,21 @@ describe("guest rsvp: fanout to guests", () => {
     return h
   }
 
+  it("truncates a long event title in the CODE text too, not just the confirmation", async () => {
+    const h = build({ smsGuestEnabled: true })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      title: "Annual Ballona Creek Wetlands Restoration and Cleanup Day",
+    })
+
+    await h.service.requestCode(smsRequest(), ctx)
+
+    const body = h.sms.sent.at(-1)?.body ?? ""
+    expect(body).toContain("...")
+    expect(body).not.toContain("Restoration")
+    expect(body.length).toBeLessThanOrEqual(160)
+  })
+
   it("keeps the confirmation SMS to one GSM-7 segment when the event title is long", async () => {
     const h = build({ smsGuestEnabled: true, newToken: () => generateToken() })
     h.repo.seedEvent({
@@ -634,6 +676,21 @@ describe("guest rsvp: fanout to guests", () => {
 
     expect(String(h.mailer.sent[0]?.vars?.message)).toContain("500 New Pier Rd")
     expect(h.sms.sent[0]?.body).toContain("500 New Pier Rd")
+  })
+
+  it("prints the new time in Pacific Time, not as a raw ISO timestamp", async () => {
+    const h = await withGuests()
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-09-05T17:00:00.000Z")),
+    })
+
+    await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
+
+    const message = String(h.mailer.sent[0]?.vars?.message)
+    expect(message).toContain("Sat, Sep 5")
+    expect(message).toContain("10:00 AM PT")
+    expect(message).not.toContain("2026-09-05T17:00:00.000Z")
   })
 
   it("skips cancelled, scrubbed and opted-out guests", async () => {
@@ -728,7 +785,9 @@ describe("going: members plus verified, non-cancelled guests", () => {
   })
 })
 
-describe("guest rsvp: the SMS budget measures messages actually sent", () => {
+describe("guest rsvp: one global SMS budget covers every outbound text", () => {
+  const BUDGET_KEY = `${SMS_BUDGET_KEY_PREFIX}2026-08-25`
+
   it("does not burn global budget on a request the throttles refuse", async () => {
     const h = build({ smsGuestEnabled: true, smsDailyCap: 2 })
 
@@ -736,11 +795,93 @@ describe("guest rsvp: the SMS budget measures messages actually sent", () => {
     await expect(h.service.requestCode(smsRequest(), ctx)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
-    expect(h.counters.peek(`sms:otp:day:2026-08-25`)).toBe(1)
+    expect(h.counters.peek(BUDGET_KEY)).toBe(1)
 
     h.advance(61_000)
     await expect(h.service.requestCode(smsRequest(), ctx)).resolves.toMatchObject({ sent: true })
     expect(h.sms.sent).toHaveLength(2)
+  })
+
+  it("charges the confirmation text to the same budget as the code", async () => {
+    const h = build({ smsGuestEnabled: true, smsDailyCap: 50 })
+
+    await h.service.requestCode(smsRequest(), ctx)
+    await h.service.verifyCode(
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      ctx,
+    )
+
+    expect(h.counters.peek(BUDGET_KEY)).toBe(2)
+    expect(h.sms.sent).toHaveLength(2)
+  })
+
+  it("keeps the RSVP when the budget refuses the confirmation text", async () => {
+    const h = build({ smsGuestEnabled: true, smsDailyCap: 1 })
+
+    await h.service.requestCode(smsRequest(), ctx)
+    const result = await h.service.verifyCode(
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      ctx,
+    )
+
+    expect(result.joined).toBe(true)
+    expect(h.repo.guests).toHaveLength(1)
+    expect(h.sms.sent).toHaveLength(1)
+  })
+
+  it("charges every fanout text to the budget, and stops texting once it is spent", async () => {
+    const h = build({ smsGuestEnabled: true, smsDailyCap: 3 })
+    await h.service.requestCode(smsRequest(), ctx)
+    await h.service.verifyCode(
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      ctx,
+    )
+    expect(h.counters.peek(BUDGET_KEY)).toBe(2)
+    h.sms.reset()
+
+    await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
+    expect(h.sms.sent).toHaveLength(1)
+    expect(h.counters.peek(BUDGET_KEY)).toBe(3)
+
+    await h.service.notifyEventCancelled(EVENT_ID, null)
+    expect(h.sms.sent).toHaveLength(1)
+  })
+
+  it("keeps emailing guests when the SMS budget is spent", async () => {
+    const h = build({ smsGuestEnabled: true, smsDailyCap: 0 })
+    h.repo.guests.push({
+      id: randomUUID(),
+      cleanupId: EVENT_ID,
+      name: "Ada",
+      channel: "email",
+      email: "ada@example.org",
+      phone: null,
+      contactKey: "ada@example.org",
+      manageTokenHash: "budget-email",
+      verifiedAt: new Date(),
+      cancelledAt: null,
+      contactScrubbedAt: null,
+      createdAt: new Date(),
+    })
+    h.repo.guests.push({
+      id: randomUUID(),
+      cleanupId: EVENT_ID,
+      name: "Grace",
+      channel: "sms",
+      email: null,
+      phone: "+15552223333",
+      contactKey: "+15552223333",
+      manageTokenHash: "budget-sms",
+      verifiedAt: new Date(),
+      cancelledAt: null,
+      contactScrubbedAt: null,
+      createdAt: new Date(),
+    })
+
+    await h.service.notifyEventCancelled(EVENT_ID, null)
+
+    expect(h.mailer.sent).toHaveLength(1)
+    expect(h.sms.sent).toHaveLength(0)
   })
 
   it("releases the per-contact cooldown when the cap refuses the send", async () => {

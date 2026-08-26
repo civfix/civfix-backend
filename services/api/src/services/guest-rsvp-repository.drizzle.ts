@@ -1,7 +1,6 @@
 import type { CleanupStatus, GuestContactChannel } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
-import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
-import { pageWith } from "../db/cursor-helpers.js"
+import { encodeTimeCursor, pageWith, type TimeCursor } from "../db/cursor-helpers.js"
 import type {
   GuestEventView,
   GuestOtpRecord,
@@ -237,13 +236,12 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
 
     async listGuests(args: {
       cleanupId: string
-      cursor: string | null
+      cursor: TimeCursor | null
       limit: number
     }): Promise<{ rows: GuestRosterRow[]; nextCursor: string | null }> {
-      const cursor = parseTimeCursor(args.cursor, { direction: "desc" })
       const cursorFilter =
-        cursor !== null
-          ? sql`AND (created_at, id) < (${cursor.at}, ${cursor.id}::uuid)`
+        args.cursor !== null
+          ? sql`AND (created_at, id) < (${args.cursor.at}, ${args.cursor.id}::uuid)`
           : sql``
       const rows = await sql<GuestRowSelect[]>`
         SELECT id, name, channel, email, phone, verified_at, cancelled_at, created_at

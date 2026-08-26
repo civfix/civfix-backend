@@ -1,6 +1,8 @@
 import {
   AppError,
   ErrorCode,
+  GUEST_OTP_ERROR_FIELD,
+  GuestOtpErrorReason,
   MAX_GUEST_NAME,
   type CleanupGuestDTO,
   type CleanupMemberRole,
@@ -40,7 +42,7 @@ import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { smsFailureKind } from "../errors/sms-failure.js"
 import { renderMessage } from "../i18n/renderMessage.js"
-import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
+import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import { isCleanupTerminal } from "./cleanup-rules.js"
 import { mapWithLimit } from "./media-presign.js"
 
@@ -65,6 +67,12 @@ export const GUESTS_DEFAULT_LIMIT = 25
 export const GUEST_FANOUT_CONCURRENCY = 8
 
 type GuestFanoutLane = "throttled" | "critical"
+
+type SmsPurpose = "otp" | "confirmation" | "fanout"
+
+export const SMS_BUDGET_KEY_PREFIX = "sms:day:"
+
+const GUEST_TIME_ZONE = "America/Los_Angeles"
 
 export const SMS_TITLE_MAX_CHARS = 20
 
@@ -165,7 +173,7 @@ export interface GuestRsvpRepository {
   cancelGuest(guestId: string, now: Date): Promise<void>
   listGuests(args: {
     cleanupId: string
-    cursor: string | null
+    cursor: TimeCursor | null
     limit: number
   }): Promise<{ rows: GuestRosterRow[]; nextCursor: string | null }>
   listContactableGuests(cleanupId: string, limit: number): Promise<GuestRecipient[]>
@@ -176,6 +184,7 @@ export interface GuestRsvpRepository {
 export interface GuestRsvpLogger {
   warn(obj: unknown, msg?: string): void
   info(obj: unknown, msg?: string): void
+  error(obj: unknown, msg?: string): void
 }
 
 export interface GuestRsvpServiceDeps {
@@ -248,7 +257,28 @@ function eventClosedError(): AppError {
 }
 
 function invalidCodeError(): AppError {
-  return AppError.unauthorized("Invalid or expired code.")
+  return new AppError(ErrorCode.UNAUTHORIZED, "Invalid or expired code.", {
+    fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.invalidCode },
+  })
+}
+
+function attemptsExhaustedError(): AppError {
+  return new AppError(ErrorCode.UNAUTHORIZED, "Too many incorrect attempts. Request a new code.", {
+    fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.attemptsExhausted },
+  })
+}
+
+const GUEST_WHEN_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: GUEST_TIME_ZONE,
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+})
+
+function formatGuestWhen(at: Date): string {
+  return `${GUEST_WHEN_FORMAT.format(at)} PT`
 }
 
 function utcDayKey(nowMs: number): string {
@@ -335,24 +365,25 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     }
   }
 
-  async function reserveSmsBudget(): Promise<void> {
+  async function reserveSmsBudget(purpose: SmsPurpose): Promise<boolean> {
     let used: number
     try {
-      used = await deps.counters.incr(`sms:otp:day:${utcDayKey(now())}`, DAY_SECONDS)
+      used = await deps.counters.incr(`${SMS_BUDGET_KEY_PREFIX}${utcDayKey(now())}`, DAY_SECONDS)
     } catch (err) {
       deps.logger?.warn(
-        { err },
+        { err, purpose },
         "guest rsvp: SMS daily-cap counter unavailable; refusing SMS (fail closed)",
       )
-      throw smsUnavailableError()
+      return false
     }
     if (used > deps.smsDailyCap) {
       deps.logger?.warn(
-        { used, cap: deps.smsDailyCap },
+        { used, cap: deps.smsDailyCap, purpose },
         "guest rsvp: global SMS daily cap reached; refusing SMS",
       )
-      throw smsUnavailableError()
+      return false
     }
+    return true
   }
 
   async function releaseCooldown(key: string): Promise<void> {
@@ -398,7 +429,10 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     }
     await deps.smsSender.send(
       args.contact,
-      renderMessage("en", "sms.guest_otp.body", { title: args.eventTitle, code: args.code }),
+      renderMessage("en", "sms.guest_otp.body", {
+        title: smsTitle(args.eventTitle),
+        code: args.code,
+      }),
     )
   }
 
@@ -434,6 +468,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     name: string
     channel: GuestContactChannel
     contact: string
+    confirm: boolean
   }): Promise<GuestRsvpVerifyResponse> {
     const rawToken = newToken()
     const manageTokenHash = await sha256Hex(rawToken)
@@ -448,12 +483,14 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       now: new Date(now()),
     })
     const going = await deps.repo.goingCount(args.cleanupId)
-    await sendConfirmation({ ...args, rawToken }).catch((err: unknown) => {
-      deps.logger?.warn(
-        { err, cleanupId: args.cleanupId },
-        "guest rsvp: confirmation message failed (suppressed; the RSVP stands)",
-      )
-    })
+    if (args.confirm) {
+      await sendConfirmation({ ...args, rawToken }).catch((err: unknown) => {
+        deps.logger?.warn(
+          { err, cleanupId: args.cleanupId },
+          "guest rsvp: confirmation message failed (suppressed; the RSVP stands)",
+        )
+      })
+    }
     return { joined: true, going, manageToken: rawToken }
   }
 
@@ -471,6 +508,14 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
           title: args.eventTitle,
           link: manageLink(args.rawToken),
         }),
+      )
+      return
+    }
+    if (!deps.smsGuestEnabled) return
+    if (!(await reserveSmsBudget("confirmation"))) {
+      deps.logger?.warn(
+        { contactChannel: args.channel },
+        "guest rsvp: SMS budget refused the confirmation text (the RSVP stands)",
       )
       return
     }
@@ -533,6 +578,13 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         }
         if (recipient.channel === "sms" && recipient.phone !== null) {
           if (!deps.smsGuestEnabled) return
+          if (!(await reserveSmsBudget("fanout"))) {
+            const line = { cleanupId, guestId: recipient.id, lane }
+            const msg = "guest fanout: SMS budget refused this recipient's text"
+            if (critical) deps.logger?.error(line, msg)
+            else deps.logger?.warn(line, msg)
+            return
+          }
           await deps.smsSender.send(recipient.phone, copy.sms)
         }
       } catch (err) {
@@ -612,10 +664,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         throw AppError.conflict("This event has reached its guest limit.")
       }
 
-      if (input.channel === "sms") {
-        if (!deps.smsGuestEnabled) throw smsUnavailableError()
-        if (await deps.repo.isPhoneOptedOut(contact)) throw smsOptedOutError()
-      }
+      if (input.channel === "sms" && !deps.smsGuestEnabled) throw smsUnavailableError()
 
       const digest = await contactDigest(contact)
       const bucket = ctx.ip === null ? null : normalizeIp(ctx.ip)
@@ -629,19 +678,20 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       if (daily > GUEST_CONTACT_MAX_PER_DAY) {
         throw AppError.rateLimited("Too many code requests for this contact today.")
       }
+
+      if (input.channel === "sms" && (await deps.repo.isPhoneOptedOut(contact))) {
+        throw smsOptedOutError()
+      }
+
       const cooldown = cooldownKey(event.id, digest)
       const cooldownHits = await deps.cache.incr(cooldown, GUEST_CONTACT_COOLDOWN_SECONDS)
       if (cooldownHits > 1) {
         throw AppError.rateLimited("Please wait before requesting another code.")
       }
 
-      if (input.channel === "sms") {
-        try {
-          await reserveSmsBudget()
-        } catch (err) {
-          await releaseCooldown(cooldown)
-          throw err
-        }
+      if (input.channel === "sms" && !(await reserveSmsBudget("otp"))) {
+        await releaseCooldown(cooldown)
+        throw smsUnavailableError()
       }
 
       try {
@@ -687,6 +737,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
             name: REVIEWER_DISPLAY_NAME,
             channel: input.channel,
             contact,
+            confirm: false,
           })
         }
         await bumpVerifyFailure(null, bucket)
@@ -701,23 +752,22 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
 
       if ((await readCounter(codeFailKey(record.id))) >= OTP_VERIFY_CODE_FAIL_MAX) {
         await deps.repo.markOtpConsumed(record.id, at)
-        throw AppError.unauthorized("Too many incorrect attempts. Request a new code.")
+        throw attemptsExhaustedError()
       }
 
       const attempts = await deps.repo.incrementOtpAttempts(record.id)
       if (attempts > OTP_MAX_ATTEMPTS) {
         await deps.repo.markOtpConsumed(record.id, at)
         await bumpVerifyFailure(record.id, bucket)
-        throw AppError.unauthorized("Too many incorrect attempts. Request a new code.")
+        throw attemptsExhaustedError()
       }
 
       const ok = await verifyOtpCode(record.codeHash, input.code)
       if (!ok) {
-        if (attempts >= OTP_MAX_ATTEMPTS) {
-          await deps.repo.markOtpConsumed(record.id, at)
-        }
+        const burned = attempts >= OTP_MAX_ATTEMPTS
+        if (burned) await deps.repo.markOtpConsumed(record.id, at)
         await bumpVerifyFailure(record.id, bucket)
-        throw invalidCodeError()
+        throw burned ? attemptsExhaustedError() : invalidCodeError()
       }
 
       const claimed = await deps.repo.markOtpConsumed(record.id, at)
@@ -737,6 +787,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         name: record.name,
         channel: input.channel,
         contact,
+        confirm: true,
       })
     },
 
@@ -765,10 +816,9 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       }
 
       const limit = query.limit ?? GUESTS_DEFAULT_LIMIT
-      const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
       const { rows, nextCursor } = await deps.repo.listGuests({
         cleanupId: event.id,
-        cursor: cursor === null ? null : encodeTimeCursor(cursor),
+        cursor: parseTimeCursor(query.cursor, { direction: "desc" }),
         limit,
       })
       const count = await deps.repo.countGuests(event.id)
@@ -793,7 +843,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     async notifyEventUpdated(job: GuestUpdateFanoutJob): Promise<void> {
       const event = await deps.repo.findEvent(job.cleanupId)
       if (event === null || isCleanupTerminal(event.status)) return
-      const when = event.scheduledAt.toISOString()
+      const when = formatGuestWhen(event.scheduledAt)
       const place = event.address ?? `${event.lat.toFixed(5)}, ${event.lng.toFixed(5)}`
       const subject = renderMessage("en", "email.guest_updated.subject", { title: event.title })
       const message = renderMessage("en", "email.guest_updated.body", {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { GuestContactChannel } from "@civfix/shared"
-import { encodeTimeCursor, parseTimeCursor, pageWith } from "../../src/db/cursor-helpers.js"
+import { encodeTimeCursor, pageWith, type TimeCursor } from "../../src/db/cursor-helpers.js"
 import type {
   GuestEventView,
   GuestOtpRecord,
@@ -225,10 +225,10 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
 
   listGuests(args: {
     cleanupId: string
-    cursor: string | null
+    cursor: TimeCursor | null
     limit: number
   }): Promise<{ rows: GuestRosterRow[]; nextCursor: string | null }> {
-    const cursor = parseTimeCursor(args.cursor, { direction: "desc" })
+    const cursor = args.cursor
     const ordered = this.guests
       .filter((g) => g.cleanupId === args.cleanupId)
       .sort(
