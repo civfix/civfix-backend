@@ -390,6 +390,7 @@ describe("GET /users/follow-suggestions", () => {
     expect(ids).toContain(OTHER)
     expect(ids).not.toContain(userId)
 
+    // Following ORGANIZER removes them from the next fetch.
     repo.seedFollow(userId, ORGANIZER)
     const res2 = await app.inject({
       method: "GET",
