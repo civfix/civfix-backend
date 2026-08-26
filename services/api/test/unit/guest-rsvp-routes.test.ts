@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
+import { GUEST_OTP_ERROR_FIELD, GuestOtpErrorReason } from "@civfix/shared"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -51,6 +52,19 @@ describe("guest rsvp over HTTP", () => {
       payload: { name: "Ada", channel: "sms", email: "a@b.co", turnstileToken: "ok" },
     })
     expect(res.statusCode).toBe(422)
+  })
+
+  it("carries the otp refusal reason through the 401 body the client parses", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${EVENT_ID}/guest-rsvp/verify`,
+      payload: { channel: "email", email: "ada@example.org", code: "000000" },
+    })
+    expect(res.statusCode, res.body).toBe(401)
+    expect(res.json()).toMatchObject({
+      code: "UNAUTHORIZED",
+      fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.invalidCode },
+    })
   })
 
   it("requires auth on the host-only roster", async () => {
