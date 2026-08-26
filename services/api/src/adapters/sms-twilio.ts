@@ -94,8 +94,7 @@ async function readJsonPayload(response: Response): Promise<TwilioMessageRespons
 
 export function classifyTwilioError(status: number, payload: TwilioMessageResponse): AppError {
   const providerCode = typeof payload.code === "number" ? payload.code : undefined
-  const providerMessage = typeof payload.message === "string" ? payload.message : undefined
-  const detail = providerMessage !== undefined ? ` (${providerMessage})` : ""
+  const detail = providerCode !== undefined ? ` (provider code ${providerCode})` : ""
 
   if (providerCode === TWILIO_OPTED_OUT_CODE) {
     return smsFailure(

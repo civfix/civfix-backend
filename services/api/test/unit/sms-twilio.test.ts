@@ -71,7 +71,7 @@ describe("TwilioSmsSender", () => {
     const err = await sender.send("+15552223333", "x").catch((e: unknown) => e)
     expect(smsFailureKind(err)).toBe("opted_out")
     expect(err).toMatchObject({ code: "CONFLICT" })
-    expect(String((err as Error).message)).toContain("unsubscribed recipient")
+    expect(String((err as Error).message)).toContain("provider code 21610")
   })
 
   it("maps 21211 and 21614 (bad destination) to an invalid-number failure", async () => {
@@ -124,5 +124,17 @@ describe("TwilioSmsSender", () => {
     const { sender } = senderWith(() => jsonResponse(401, { code: 20003, message: "Authenticate" }))
     const err = await sender.send("+15552223333", "x").catch((e: unknown) => e)
     expect(String((err as Error).message)).not.toContain("super-secret-token")
+  })
+
+  it("never echoes the provider's message, which quotes the destination phone number", async () => {
+    const { sender } = senderWith(() =>
+      jsonResponse(400, {
+        code: 21211,
+        message: "The 'To' number +15552223333 is not a valid phone number.",
+      }),
+    )
+    const err = await sender.send("+15552223333", "x").catch((e: unknown) => e)
+    expect(String((err as Error).message)).not.toContain("+15552223333")
+    expect(String((err as Error).message)).toContain("provider code 21211")
   })
 })
