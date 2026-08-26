@@ -1,9 +1,9 @@
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import { cleanups } from "./cleanups.js"
-import { citext } from "./types.js"
+import { citext, type GUEST_CONTACT_CHANNEL_VALUES } from "./types.js"
 
-export type GuestContactChannel = "email" | "sms"
+export type GuestContactChannel = (typeof GUEST_CONTACT_CHANNEL_VALUES)[number]
 
 export const cleanupGuests = pgTable(
   "cleanup_guests",

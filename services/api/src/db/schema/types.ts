@@ -192,6 +192,9 @@ export const REPORT_CHAT_ROLE_VALUES = ["owner", "member"] as const
  */
 export const GROUP_MEMBER_ROLE_VALUES = ["owner", "admin", "member"] as const
 
+/** cleanup_guests.channel + guest_otps.channel. Matches the CHECKs in drizzle/0096_cleanup_guests.sql. */
+export const GUEST_CONTACT_CHANNEL_VALUES = ["email", "sms"] as const
+
 /** abuse_flags.subject_type. Mirrors shared AbuseSubjectTypeSchema. */
 export const ABUSE_SUBJECT_TYPE_VALUES = ["report", "media", "user", "anon_token"] as const
 
