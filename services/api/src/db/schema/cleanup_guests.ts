@@ -23,7 +23,9 @@ export const cleanupGuests = pgTable(
     verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull().defaultNow(),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     contactScrubbedAt: timestamp("contact_scrubbed_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("cleanup_guests_manage_token_uidx").on(t.manageTokenHash),

@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS cleanup_guests (
   verified_at timestamptz NOT NULL DEFAULT now(),
   cancelled_at timestamptz,
   contact_scrubbed_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz(3) NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS cleanup_guests_manage_token_uidx
