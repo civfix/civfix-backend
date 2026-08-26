@@ -25,6 +25,7 @@ export interface CleanupRecord {
   referenceCode: string | null
   createdAt: Date
   going: number
+  guestCount?: number
   dist: number | null
   organizer: CleanupPersonView
 }
@@ -215,7 +216,7 @@ export interface CleanupRepository {
   isBanned(cleanupId: string, userId: string): Promise<boolean>
   unbanMember(cleanupId: string, userId: string): Promise<boolean>
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
-  memberCount(cleanupId: string): Promise<number>
+  goingCount(cleanupId: string): Promise<number>
   organizerOf(cleanupId: string): Promise<string | null>
   joinCleanupTx(
     cleanupId: string,

@@ -13,6 +13,7 @@ import type { Queryable, Sql } from "../db/client.js"
 import type { POST_KIND_VALUES } from "../db/schema/types.js"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
+import { goingScalar } from "./cleanup-sql.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
@@ -296,7 +297,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         c.scheduled_at,
         ST_Y(c.geom) AS lat,
         ST_X(c.geom) AS lng,
-        (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id) AS going,
+        ${goingScalar(sql)} AS going,
         u.id AS org_id,
         u.display_name AS org_name,
         u.handle AS org_handle,

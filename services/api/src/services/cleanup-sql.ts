@@ -24,6 +24,7 @@ export interface CleanupRowSelect {
   reference_code: string | null
   created_at: Date
   going: number
+  guest_count: number
   dist: number | null
   knn?: number | null
   org_display_name: string
@@ -66,6 +67,7 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     referenceCode: r.reference_code,
     createdAt: r.created_at,
     going: r.going,
+    guestCount: r.guest_count,
     dist: r.dist === null ? null : Number(r.dist),
     organizer,
   }
@@ -92,7 +94,8 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.jurisdiction_geoid,
     c.reference_code,
     c.created_at,
-    COALESCE(g.going, 0) AS going,
+    (COALESCE(g.member_count, 0) + COALESCE(g.guest_count, 0)) AS going,
+    COALESCE(g.guest_count, 0) AS guest_count,
     ${distExpr} AS dist,
     u.display_name AS org_display_name,
     u.handle AS org_handle,
@@ -104,9 +107,26 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
   `
 }
 
+export function memberCountScalar(sql: Queryable) {
+  return sql`(SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id)`
+}
+
+export function activeGuestCountScalar(sql: Queryable) {
+  return sql`(
+    SELECT count(*)::int FROM cleanup_guests cg
+    WHERE cg.cleanup_id = c.id AND cg.cancelled_at IS NULL
+  )`
+}
+
+export function goingScalar(sql: Queryable) {
+  return sql`(${memberCountScalar(sql)} + ${activeGuestCountScalar(sql)})`
+}
+
 export function goingJoin(sql: Queryable) {
   return sql`LEFT JOIN LATERAL (
-    SELECT count(*)::int AS going FROM cleanup_members m WHERE m.cleanup_id = c.id
+    SELECT
+      ${memberCountScalar(sql)} AS member_count,
+      ${activeGuestCountScalar(sql)} AS guest_count
   ) g ON true`
 }
 

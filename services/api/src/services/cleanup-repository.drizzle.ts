@@ -39,6 +39,7 @@ import {
   buildWhenFilter,
   cleanupColumns,
   goingJoin,
+  goingScalar,
   toRecord,
   type AttendeeRowSelect,
   type CleanupRowSelect,
@@ -317,7 +318,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             c.scheduled_at,
             ST_X(c.geom) AS lng,
             ST_Y(c.geom) AS lat,
-            COALESCE(g.going, 0) AS going,
+            ${goingScalar(sql)} AS going,
             u.id AS org_id,
             u.display_name AS org_display_name,
             u.handle AS org_handle,
@@ -329,9 +330,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           FROM cleanup_reports cr
           JOIN cleanups c ON c.id = cr.cleanup_id
           JOIN users u ON u.id = c.organizer_user_id
-          LEFT JOIN LATERAL (
-            SELECT count(*)::int AS going FROM cleanup_members m WHERE m.cleanup_id = c.id
-          ) g ON true
           WHERE cr.report_id = ANY(${reportIds}::uuid[])
         ) ranked
         WHERE rn <= ${LINKED_EVENTS_PER_REPORT_CAP}
@@ -522,7 +520,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           `
         }
         const counted = await tx<{ count: number }[]>`
-          SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
+          SELECT
+            (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = ${cleanupId})
+            + (
+              SELECT count(*)::int FROM cleanup_guests cg
+              WHERE cg.cleanup_id = ${cleanupId} AND cg.cancelled_at IS NULL
+            ) AS count
         `
         const going = counted[0]?.count ?? 0
         return deleted.length > 0 ? { kind: "removed", going } : { kind: "not_member", going }
@@ -557,9 +560,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows.map((r) => r.user_id)
     },
 
-    async memberCount(cleanupId: string): Promise<number> {
+    async goingCount(cleanupId: string): Promise<number> {
       const rows = await sql<{ count: number }[]>`
-        SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${cleanupId}
+        SELECT
+          (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = ${cleanupId})
+          + (
+            SELECT count(*)::int FROM cleanup_guests cg
+            WHERE cg.cleanup_id = ${cleanupId} AND cg.cancelled_at IS NULL
+          ) AS count
       `
       return rows[0]?.count ?? 0
     },

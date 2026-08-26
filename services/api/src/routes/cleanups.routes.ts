@@ -36,6 +36,7 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { makeContainerGuestRsvpService } from "../services/guest-rsvp-wiring.js"
 import {
   SCHEDULE_MAX_AHEAD_MS,
   SCHEDULE_MAX_BACKDATE_MS,
@@ -64,6 +65,7 @@ export interface CleanupServiceOverrides {
   outboundMail?: CleanupServiceDeps["outboundMail"]
   isVerified?: CleanupServiceDeps["isVerified"]
   notifier?: CleanupServiceDeps["notifier"]
+  guestNotifier?: CleanupServiceDeps["guestNotifier"]
   counters?: CleanupServiceDeps["counters"]
 }
 
@@ -206,6 +208,7 @@ export async function registerCleanupRoutes(
             isVerified: (userId: string) =>
               makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
             notifier: makeRouteNotificationService(container, app.log),
+            guestNotifier: makeContainerGuestRsvpService(container, undefined, app.log),
             counters: lazyCounters,
             jobs: container.jobs,
           }),
@@ -213,6 +216,9 @@ export async function registerCleanupRoutes(
       ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
       ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
       ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      ...(overrides?.guestNotifier !== undefined
+        ? { guestNotifier: overrides.guestNotifier }
+        : {}),
       ...(overrides?.counters !== undefined ? { counters: overrides.counters } : {}),
       logger: app.log,
     })

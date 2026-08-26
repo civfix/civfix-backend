@@ -45,6 +45,11 @@ import type {
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
 import { SCHEDULE_MAX_BACKDATE_MS, isCleanupTerminal } from "./cleanup-rules.js"
+import {
+  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+  type GuestRsvpService,
+  type GuestUpdateFanoutJob,
+} from "./guest-rsvp-service.js"
 
 export * from "./cleanup-repository.types.js"
 export * from "./cleanup-rules.js"
@@ -121,6 +126,7 @@ export interface CleanupServiceDeps {
   outboundMail?: OutboundMailService
   isVerified?: (userId: string) => Promise<boolean>
   notifier?: Pick<NotificationService, "createNotification">
+  guestNotifier?: Pick<GuestRsvpService, "notifyEventCancelled" | "notifyEventUpdated">
   counters?: CounterStore
   jobs?: Jobs
   logger?: { warn(obj: unknown, msg?: string): void }
@@ -219,6 +225,54 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   }
 
   async function notifyCancellation(
+    cleanup: { id: string; title: string },
+    reason: string | null,
+    actorId: string,
+  ): Promise<void> {
+    await notifyMembersOfCancellation(cleanup, reason, actorId)
+    await notifyGuestsOfCancellation(cleanup.id, reason)
+  }
+
+  async function notifyGuestsOfCancellation(
+    cleanupId: string,
+    reason: string | null,
+  ): Promise<void> {
+    if (deps.guestNotifier === undefined) return
+    try {
+      await deps.guestNotifier.notifyEventCancelled(cleanupId, reason)
+    } catch (err) {
+      deps.logger?.warn(
+        { err, cleanupId },
+        "cleanup_cancelled guest fanout failed (suppressed)",
+      )
+    }
+  }
+
+  async function dispatchGuestUpdateFanout(cleanupId: string): Promise<void> {
+    if (deps.jobs !== undefined) {
+      try {
+        await deps.jobs.enqueue(
+          CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+          { cleanupId } satisfies GuestUpdateFanoutJob,
+          { singletonKey: cleanupId },
+        )
+        return
+      } catch (err) {
+        deps.logger?.warn(
+          { err, cleanupId },
+          "cleanup.guest.update.fanout enqueue failed; ringing inline",
+        )
+      }
+    }
+    if (deps.guestNotifier === undefined) return
+    try {
+      await deps.guestNotifier.notifyEventUpdated({ cleanupId })
+    } catch (err) {
+      deps.logger?.warn({ err, cleanupId }, "cleanup guest update fanout failed (suppressed)")
+    }
+  }
+
+  async function notifyMembersOfCancellation(
     cleanup: { id: string; title: string },
     reason: string | null,
     actorId: string,
@@ -553,6 +607,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (slotDiff !== null && slotDiff.removed.length > 0) {
         await notifySlotRemoved(record, slotDiff.removed)
       }
+      if (!isCleanupTerminal(record.status) && guestVisibleChange(current, patch)) {
+        await dispatchGuestUpdateFanout(record.id)
+      }
       const [linkedReports, slotBoard] = await Promise.all([
         hydrateLinkedReports(id, record.eventKind),
         hydrateSlots(id, requesterUserId),
@@ -693,7 +750,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
       }
       if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
-      const going = await deps.repo.memberCount(id)
+      const going = await deps.repo.goingCount(id)
       return { joined: true, going }
     },
 
@@ -706,7 +763,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const outcome = await deps.repo.leaveCleanup(id, userId)
       if (outcome === "not_found") notFoundCleanup()
       if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
-      const going = await deps.repo.memberCount(id)
+      const going = await deps.repo.goingCount(id)
       return { joined: false, going }
     },
 
@@ -936,6 +993,20 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       )
     },
   }
+}
+
+function guestVisibleChange(
+  current: { scheduledAt: Date; address: string | null; lat: number; lng: number },
+  patch: UpdateCleanupRequest,
+): boolean {
+  if (patch.scheduledAt !== undefined) {
+    const next = Date.parse(patch.scheduledAt)
+    if (!Number.isNaN(next) && next !== current.scheduledAt.getTime()) return true
+  }
+  if (patch.address !== undefined && (patch.address ?? null) !== current.address) return true
+  if (patch.lat !== undefined && patch.lat !== current.lat) return true
+  if (patch.lng !== undefined && patch.lng !== current.lng) return true
+  return false
 }
 
 function resourceRequestNote(message: string): string {

@@ -1,7 +1,7 @@
 import type { CleanupPinDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import type { CleanupBBox } from "./cleanup-repository.types.js"
-import { buildBboxFilter, buildWhenFilter } from "./cleanup-sql.js"
+import { buildBboxFilter, buildWhenFilter, goingScalar } from "./cleanup-sql.js"
 
 /** Max cleanup pins returned for a single bbox query. Bounds the payload for a wide bbox. */
 export const MAP_CLEANUPS_LIMIT = 500
@@ -43,11 +43,8 @@ export function makeCleanupMapRepository(sql: Sql): CleanupMapRepository {
           ST_Y(c.geom) AS lat,
           c.scheduled_at,
           c.event_kind,
-          COALESCE(g.going, 0) AS going
+          ${goingScalar(sql)} AS going
         FROM cleanups c
-        LEFT JOIN LATERAL (
-          SELECT count(*)::int AS going FROM cleanup_members m WHERE m.cleanup_id = c.id
-        ) g ON true
         WHERE TRUE
           ${bboxFilter}
           ${whenFilter}

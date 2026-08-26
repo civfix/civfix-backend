@@ -84,6 +84,7 @@ export function toCleanupDTO(
     status: record.status,
     organizer: toOrganizerPerson(record.organizer),
     going: record.going,
+    ...(record.guestCount !== undefined ? { guestCount: record.guestCount } : {}),
     joined,
     ...(myRole !== null ? { myRole } : {}),
     bring: record.bring ?? [],

@@ -124,7 +124,12 @@ export function haversineMeters(a: NearPoint, b: NearPoint): number {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
 }
 
+export interface GuestCountSource {
+  activeGuestCount(cleanupId: string): number
+}
+
 export class InMemoryCleanupRepository implements CleanupRepository {
+  guestSource: GuestCountSource | null = null
   readonly cleanups = new Map<string, StoredCleanup>()
   readonly members: StoredMember[] = []
   readonly bans: StoredBan[] = []
@@ -249,6 +254,14 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return this.members.filter((m) => m.cleanupId === cleanupId).length
   }
 
+  private guestCountOf(cleanupId: string): number {
+    return this.guestSource?.activeGuestCount(cleanupId) ?? 0
+  }
+
+  private goingOf(cleanupId: string): number {
+    return this.memberCountOf(cleanupId) + this.guestCountOf(cleanupId)
+  }
+
   private toRecord(c: StoredCleanup, near: NearPoint | null): CleanupRecord {
     return {
       id: c.id,
@@ -266,7 +279,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       jurisdictionGeoid: c.jurisdictionGeoid,
       referenceCode: c.referenceCode,
       createdAt: c.createdAt,
-      going: this.memberCountOf(c.id),
+      going: this.goingOf(c.id),
+      guestCount: this.guestCountOf(c.id),
       dist: near !== null ? haversineMeters(near, { lat: c.lat, lng: c.lng }) : null,
       organizer: this.personView(c.organizerUserId),
     }
@@ -457,7 +471,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
         scheduledAt: c.scheduledAt,
         lat: c.lat,
         lng: c.lng,
-        going: this.memberCountOf(c.id),
+        going: this.goingOf(c.id),
         organizer: this.personView(c.organizerUserId),
         linkedAt: link.linkedAt,
       }
@@ -584,7 +598,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       }
       this.deleteClaim(cleanupId, userId)
     }
-    const going = this.memberCountOf(cleanupId)
+    const going = this.goingOf(cleanupId)
     return Promise.resolve(idx >= 0 ? { kind: "removed", going } : { kind: "not_member", going })
   }
 
@@ -606,8 +620,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(ids)
   }
 
-  memberCount(cleanupId: string): Promise<number> {
-    return Promise.resolve(this.memberCountOf(cleanupId))
+  goingCount(cleanupId: string): Promise<number> {
+    return Promise.resolve(this.goingOf(cleanupId))
   }
 
   organizerOf(cleanupId: string): Promise<string | null> {
