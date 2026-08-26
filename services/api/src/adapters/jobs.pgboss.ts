@@ -16,6 +16,8 @@ export const API_QUEUE_NAMES = [
   "data.export",
   "anon.hold.release",
   "cleanup.cancel.fanout",
+  "cleanup.guest.update.fanout",
+  "guest.retention.sweep",
 ] as const
 
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {

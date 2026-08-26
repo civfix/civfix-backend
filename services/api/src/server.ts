@@ -17,6 +17,7 @@ import type { AnonServiceOverride } from "./routes/anon.routes.js"
 import type { HomeTurfOverrides } from "./routes/forms.routes.js"
 import type { ClaimServiceOverride } from "./routes/claim.routes.js"
 import type { CleanupServiceOverrides } from "./routes/cleanups.routes.js"
+import type { GuestRsvpOverrides } from "./routes/guest-rsvp.routes.js"
 import type { ChatGatewayOverrides } from "./routes/chat.routes.js"
 import type { DiscussionServiceOverrides } from "./routes/report-chat.routes.js"
 import type { SocialServiceOverrides } from "./routes/social.routes.js"
@@ -33,6 +34,7 @@ import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
+import { registerGuestJobs } from "./services/guest-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 
 declare module "fastify" {
@@ -51,6 +53,7 @@ export interface BuildServerOptions {
   homeTurfOverrides?: HomeTurfOverrides
   claimOverride?: ClaimServiceOverride
   cleanupOverrides?: CleanupServiceOverrides
+  guestRsvpOverrides?: GuestRsvpOverrides
   chatOverrides?: ChatGatewayOverrides
   discussionOverrides?: DiscussionServiceOverrides
   socialOverrides?: SocialServiceOverrides
@@ -69,6 +72,7 @@ const OVERRIDE_KEYS = [
   "homeTurfOverrides",
   "claimOverride",
   "cleanupOverrides",
+  "guestRsvpOverrides",
   "chatOverrides",
   "discussionOverrides",
   "socialOverrides",
@@ -207,6 +211,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerAutoForwardJobs(app.container, app.log)
     await registerDataExportJobs(app.container, { logger: app.log })
     await registerCleanupCancelFanoutJob(app.container, app.log)
+    await registerGuestJobs(app.container, app.log)
   }
 
   async function shutdown(signal: string): Promise<void> {

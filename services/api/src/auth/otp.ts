@@ -34,7 +34,15 @@ const ARGON_OPTS_TEST = {
   parallelism: 1,
 } as const
 
-const ARGON_OPTS = process.env.NODE_ENV === "test" ? ARGON_OPTS_TEST : ARGON_OPTS_FULL
+export const ARGON_OPTS = process.env.NODE_ENV === "test" ? ARGON_OPTS_TEST : ARGON_OPTS_FULL
+
+export function hashOtpCode(code: string): Promise<string> {
+  return argonHash(code, ARGON_OPTS)
+}
+
+export function verifyOtpCode(codeHash: string, code: string): Promise<boolean> {
+  return argonVerify(codeHash, code)
+}
 
 export const REVIEWER_OTP_EMAIL = "reviewer@civfix.org"
 export const REVIEWER_HANDLE = "reviewer"
@@ -117,7 +125,7 @@ export class OtpService {
     try {
       await this.store.invalidateActiveForEmail(normalized)
       const code = generateNumericCode(OTP_CODE_LENGTH)
-      const codeHash = await argonHash(code, ARGON_OPTS)
+      const codeHash = await hashOtpCode(code)
       await this.store.insert({
         email: normalized,
         codeHash,
@@ -172,7 +180,7 @@ export class OtpService {
       throw AppError.unauthorized("Too many incorrect attempts. Request a new code.")
     }
 
-    const ok = await argonVerify(record.codeHash, code)
+    const ok = await verifyOtpCode(record.codeHash, code)
     if (!ok) {
       if (attempts >= OTP_MAX_ATTEMPTS) {
         await this.store.markConsumed(record.id, now)

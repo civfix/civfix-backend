@@ -9,6 +9,7 @@ import { registerReportRoutes } from "./reports.routes.js"
 import { registerAnonRoutes } from "./anon.routes.js"
 import { registerClaimRoutes } from "./claim.routes.js"
 import { registerCleanupRoutes } from "./cleanups.routes.js"
+import { registerGuestRsvpRoutes } from "./guest-rsvp.routes.js"
 import { registerChatRoutes } from "./chat.routes.js"
 import { registerChatGroupRoutes } from "./chat-groups.routes.js"
 import { registerReportChatRoutes } from "./report-chat.routes.js"
@@ -49,6 +50,7 @@ export async function registerRoutes(
   await registerAnonRoutes(app, container)
   await registerClaimRoutes(app, container)
   await registerCleanupRoutes(app, container)
+  await registerGuestRsvpRoutes(app, container)
   await registerChatRoutes(app, container)
   await registerChatGroupRoutes(app, container)
   await registerReportChatRoutes(app, container)
