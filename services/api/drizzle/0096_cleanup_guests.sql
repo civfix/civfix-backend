@@ -64,6 +64,10 @@ CREATE INDEX IF NOT EXISTS cleanup_guests_unscrubbed_idx
   ON cleanup_guests (cleanup_id)
   WHERE contact_scrubbed_at IS NULL;
 
+CREATE INDEX IF NOT EXISTS cleanup_guests_active_idx
+  ON cleanup_guests (cleanup_id)
+  WHERE cancelled_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS guest_otps (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   cleanup_id uuid NOT NULL REFERENCES cleanups(id) ON DELETE CASCADE,

@@ -36,6 +36,7 @@ export const cleanupGuests = pgTable(
     index("cleanup_guests_unscrubbed_idx")
       .on(t.cleanupId)
       .where(sql`contact_scrubbed_at IS NULL`),
+    index("cleanup_guests_active_idx").on(t.cleanupId).where(sql`cancelled_at IS NULL`),
   ],
 )
 
