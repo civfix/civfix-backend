@@ -107,4 +107,29 @@ export const de: Partial<Record<MessageKey, string>> = {
   "certificate.footer.page": "Seite {{page}} von {{total}}",
   "certificate.footer.timezone": "Datumsangaben in Pazifikzeit (America/Los_Angeles).",
   "certificate.error.no_hours": "Du hast noch keine erfassten Einsatzstunden.",
+
+  // ---- Guest event RSVP -------------------------------------------------------------------------
+  "email.guest_otp.subject": "Dein Code für die Anmeldung zu {{title}}",
+  "email.guest_otp.body":
+    "Dein Code für die Anmeldung zu {{title}} lautet {{code}}. Er läuft in {{minutes}} Minuten ab. Wenn du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
+  "email.guest_confirmed.subject": "Du stehst auf der Liste für {{title}}",
+  "email.guest_confirmed.body":
+    "Du bist für {{title}} angemeldet. Anders entschieden? Hier kannst du deine Anmeldung stornieren: {{link}}",
+  "email.guest_updated.subject": "{{title}} hat neue Angaben",
+  "email.guest_updated.body":
+    "Die Angaben zu {{title}} haben sich geändert. Es beginnt jetzt um {{when}} an folgendem Ort: {{place}}. Nutze den Stornierungslink aus deiner Bestätigung, falls du nicht mehr kommen kannst.",
+  "email.guest_cancelled.subject": "{{title}} wurde abgesagt",
+  "email.guest_cancelled.body":
+    "{{title}} wurde von der Veranstalterin oder dem Veranstalter abgesagt. Du musst nichts weiter tun.",
+  "email.guest_cancelled.body_reason":
+    "{{title}} wurde von der Veranstalterin oder dem Veranstalter abgesagt. Grund: {{reason}}",
+  "sms.guest_otp.body":
+    "{{code}} ist dein civfix-Code für die Anmeldung zu {{title}}. Es können Nachrichten- und Datengebühren anfallen. Antworte mit STOP, um dich abzumelden.",
+  "sms.guest_confirmed.body":
+    "Du stehst auf der Liste für {{title}}. Antworte mit STOP, um dich abzumelden, oder storniere über den Link in deiner Bestätigung.",
+  "sms.guest_updated.body":
+    "{{title}} geändert: jetzt {{when}} an folgendem Ort: {{place}}. Antworte mit STOP, um dich abzumelden.",
+  "sms.guest_cancelled.body":
+    "{{title}} wurde von der Veranstalterin oder dem Veranstalter abgesagt. Antworte mit STOP, um dich abzumelden.",
+
 }

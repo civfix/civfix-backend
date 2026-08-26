@@ -106,4 +106,26 @@ export const es: Partial<Record<MessageKey, string>> = {
   "certificate.footer.page": "Página {{page}} de {{total}}",
   "certificate.footer.timezone": "Las fechas se muestran en hora del Pacífico (America/Los_Angeles).",
   "certificate.error.no_hours": "Todavía no tienes horas de servicio registradas.",
+
+  // ---- Guest event RSVP -------------------------------------------------------------------------
+  "email.guest_otp.subject": "Tu código para confirmar tu asistencia a {{title}}",
+  "email.guest_otp.body":
+    "Tu código para confirmar tu asistencia a {{title}} es {{code}}. Caduca en {{minutes}} minutos. Si no lo solicitaste, puedes ignorar este correo.",
+  "email.guest_confirmed.subject": "Estás en la lista de {{title}}",
+  "email.guest_confirmed.body":
+    "Te has apuntado a {{title}}. ¿Cambiaste de opinión? Cancela tu asistencia aquí: {{link}}",
+  "email.guest_updated.subject": "{{title}} tiene nuevos detalles",
+  "email.guest_updated.body":
+    "Los detalles de {{title}} han cambiado. Ahora empieza a las {{when}} en {{place}}. Usa el enlace de cancelación de tu mensaje de confirmación si ya no puedes asistir.",
+  "email.guest_cancelled.subject": "{{title}} ha sido cancelado",
+  "email.guest_cancelled.body": "El organizador ha cancelado {{title}}. No tienes que hacer nada.",
+  "email.guest_cancelled.body_reason": "El organizador ha cancelado {{title}}. Motivo: {{reason}}",
+  "sms.guest_otp.body":
+    "{{code}} es tu código de civfix para confirmar tu asistencia a {{title}}. Pueden aplicarse tarifas de mensajes y datos. Responde STOP para darte de baja.",
+  "sms.guest_confirmed.body":
+    "Estás en la lista de {{title}}. Responde STOP para darte de baja, o usa el enlace de tu confirmación para cancelar.",
+  "sms.guest_updated.body":
+    "{{title}} ha cambiado: ahora {{when}} en {{place}}. Responde STOP para darte de baja.",
+  "sms.guest_cancelled.body": "El organizador ha cancelado {{title}}. Responde STOP para darte de baja.",
+
 }

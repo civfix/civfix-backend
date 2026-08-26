@@ -166,6 +166,30 @@ export const en = {
   // Generic transactional fallback (unknown template). {{subject}}/{{message}} supplied by the caller.
   "email.generic.subject": "A civfix notification",
   "email.generic.body": "You have a new civfix notification.",
+
+  // ---- Guest event RSVP (contract 0.38.0) --------------------------------------------------------
+  // Sent to people who are NOT users, so there is no users.locale to key off: the guest service renders
+  // these in "en". They are catalogued anyway so a future guest-locale field needs no code change.
+  "email.guest_otp.subject": "Your code to RSVP for {{title}}",
+  "email.guest_otp.body":
+    "Your code to RSVP for {{title}} is {{code}}. It expires in {{minutes}} minutes. If you did not request it, you can ignore this email.",
+  "email.guest_confirmed.subject": "You are on the list for {{title}}",
+  "email.guest_confirmed.body":
+    "You are signed up for {{title}}. Change your mind? Cancel your RSVP here: {{link}}",
+  "email.guest_updated.subject": "{{title}} has new details",
+  "email.guest_updated.body":
+    "The details for {{title}} changed. It now starts at {{when}} at {{place}}. Use the cancel link in your confirmation message if you can no longer make it.",
+  "email.guest_cancelled.subject": "{{title}} has been cancelled",
+  "email.guest_cancelled.body":
+    "{{title}} has been cancelled by the host. There is nothing you need to do.",
+  "email.guest_cancelled.body_reason": "{{title}} has been cancelled by the host. Reason: {{reason}}",
+  "sms.guest_otp.body":
+    "{{code}} is your civfix code to RSVP for {{title}}. Msg&data rates may apply. Reply STOP to opt out.",
+  "sms.guest_confirmed.body":
+    "You are on the list for {{title}}. Reply STOP to opt out, or use the link in your confirmation to cancel.",
+  "sms.guest_updated.body": "{{title}} changed: now {{when}} at {{place}}. Reply STOP to opt out.",
+  "sms.guest_cancelled.body": "{{title}} has been cancelled by the host. Reply STOP to opt out.",
+
 } satisfies MessageCatalog
 
 /** The exhaustive set of message keys, derived from the EN source so es/de/ko can be checked complete. */

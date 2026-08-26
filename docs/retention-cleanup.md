@@ -103,3 +103,43 @@ poison object.
   `SCRATCH/wiring/adminmail-a.md` (F106).
 - **No new PII surface:** the bytes are already the raw inbound message; this
   documents an existing store and bounds its lifetime, it does not add data.
+
+---
+
+## Guest event RSVP — new TTLs (contract 0.38.0, DECISIONS §18)
+
+Guest RSVP is the first PII the platform holds for people who are NOT users,
+and phone numbers are a class it has never held at all, so the three new tables
+from `services/api/drizzle/0096_cleanup_guests.sql` each carry an explicit rule.
+
+| Table | Rule | Enforced by |
+|---|---|---|
+| `cleanup_guests` (`email`, `phone`, `contact_key`) | NULLed ~**30 days** after the event's `scheduled_at` passes, or 30 days after the RSVP when the event was cancelled. Also NULLed **immediately** when the guest cancels their own RSVP. | `guest.retention.sweep` cron + `guestRsvpCancel` |
+| `cleanup_guests` (the row itself) | Kept indefinitely, contact-free. It is the record that someone RSVPd (and whether they withdrew); `contact_scrubbed_at` marks that the means of contacting them is gone. | — |
+| `guest_otps` | Deleted **24 hours** after `created_at`. A guest OTP is dead the moment it is consumed or expires (5 min); 24h is pure operational slack. | `guest.retention.sweep` cron |
+| `sms_opt_outs` | **Indefinite, deliberately.** A suppression list that expires re-enables texting someone who replied STOP. Never add a TTL here. | — |
+
+### Where it lives
+
+- Job logic: `services/api/src/services/guest-rsvp-service.ts` (`runRetentionSweep`),
+  backed by `scrubExpiredGuestContacts` / `deleteStaleOtps` in
+  `services/api/src/services/guest-rsvp-repository.drizzle.ts`. Both run in
+  bounded batches (`GUEST_RETENTION_BATCH`, 500 rows/run) so a backlog drains
+  over several daily runs rather than one long-locking statement.
+- Registration: `services/api/src/services/guest-jobs.ts` — the
+  `guest.retention.sweep` queue + worker + `jobs.schedule(...)`, started from
+  `server.ts` alongside the other API crons.
+- Schedule: `GUEST_RETENTION_CRON` env var (default `15 4 * * *`, 04:15 UTC).
+
+This sweep lives in the **API** (like `outreach.digest` and `inbound.sweep`),
+not in the media-worker's `retention.sweep`, because it reads the guest domain's
+own repository rather than the auth artifacts that sweep owns.
+
+### Deletion semantics
+
+`cleanup_guests` has **no** `users` FK by design — a guest is not an account and
+account deletion does not touch guest rows. `ON DELETE CASCADE` on `cleanup_id`
+means deleting an event (which the product does not currently do) removes its
+guests with it. There is no way to look a guest up by contact, so there is no
+guest-facing erasure endpoint: cancelling the RSVP is the erasure path, and it
+is capability-based (the manage token), needing no identity check.

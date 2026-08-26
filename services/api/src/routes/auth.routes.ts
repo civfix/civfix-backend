@@ -62,6 +62,10 @@ export const OTP_REQUEST_RATE_LIMIT = perHost({ max: 5, timeWindow: "1 minute" }
 export const OTP_VERIFY_RATE_LIMIT = perHost({ max: 10, timeWindow: "1 minute" })
 export const OAUTH_RATE_LIMIT = perHost({ max: 20, timeWindow: "1 minute" })
 
+export function guestSmsEnabledFor(env: Container["env"]): boolean {
+  return env.SMS_GUEST_ENABLED && (env.USE_FAKE_SMS || env.TWILIO_SMS_FROM.length > 0)
+}
+
 const OAUTH_NONCE_TTL_SECONDS = 10 * 60
 const OAUTH_NONCE_PREFIX = "oauthnonce:"
 
@@ -109,6 +113,7 @@ export async function registerAuthRoutes(
   container: Container,
 ): Promise<void> {
   const services = app.authServices
+  const guestSmsEnabled = guestSmsEnabledFor(container.env)
   const webOrigins = container.env.WEB_ORIGINS
   const csrf = container.csrf
   const csrfProtect = csrf.protect
@@ -129,7 +134,7 @@ export async function registerAuthRoutes(
   route(app, "otpVerify", { config: { rateLimit: OTP_VERIFY_RATE_LIMIT } }, async (request, reply) => {
     const body = parse(EmailOtpVerifyRequestSchema, request.body)
     const userId = await services.otp.verifyOtp(body.email, body.code, request.ip || null)
-    await issueSession(services, csrf, request, reply, userId)
+    await issueSession(services, csrf, request, reply, userId, { guestSmsEnabled })
   })
 
   app.post(
@@ -152,7 +157,7 @@ export async function registerAuthRoutes(
       body.fullName,
       expectedNonce,
     )
-    await issueSessionForUser(services, csrf, request, reply, user)
+    await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
   })
 
   route(app, "googleSignIn", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
@@ -162,7 +167,7 @@ export async function registerAuthRoutes(
       log: request.log,
     })
     const user = await services.oauth.signInWithGoogleIdToken(body.idToken, expectedNonce)
-    await issueSessionForUser(services, csrf, request, reply, user)
+    await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
   })
 
   route(app, "googleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
@@ -199,6 +204,7 @@ export async function registerAuthRoutes(
     await issueSessionForUser(services, csrf, request, reply, user, {
       forceKind: "web",
       webRedirectTo: target,
+      guestSmsEnabled,
     })
   })
 
@@ -249,13 +255,14 @@ export async function registerAuthRoutes(
       await issueSessionForUser(services, csrf, request, reply, user, {
         forceKind: "web",
         webRedirectTo: target,
+        guestSmsEnabled,
       })
     })
   })
 
   route(app, "session", async (request, reply) => {
     const payload = await buildSessionCheck(services, csrf, request, reply)
-    reply.status(200).send(payload)
+    reply.status(200).send({ ...payload, guestSmsEnabled: guestSmsEnabledFor(container.env) })
   })
 
   route(app, "logout", { preHandler: csrfProtect }, async (request, reply) => {
@@ -339,6 +346,7 @@ export async function registerAuthRoutes(
 interface IssueSessionOptions {
   forceKind?: ClientKind
   webRedirectTo?: string
+  guestSmsEnabled?: boolean
 }
 
 async function issueSession(
@@ -375,8 +383,11 @@ async function issueSessionForUser(
   const dto: UserDTO = toUserDTO(user)
   const ttl = services.sessions.ttl
 
+  const guestSms =
+    opts.guestSmsEnabled !== undefined ? { guestSmsEnabled: opts.guestSmsEnabled } : {}
+
   if (kind === "mobile") {
-    const payload: SessionResponse = { user: dto, token }
+    const payload: SessionResponse = { user: dto, token, ...guestSms }
     reply.status(200).send(payload)
     return
   }
@@ -388,7 +399,7 @@ async function issueSessionForUser(
     reply.redirect(opts.webRedirectTo)
     return
   }
-  const payload: SessionResponse = { user: dto, csrfToken }
+  const payload: SessionResponse = { user: dto, csrfToken, ...guestSms }
   reply.status(200).send(payload)
 }
 

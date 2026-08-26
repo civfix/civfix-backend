@@ -320,7 +320,7 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **96 files**, `0000_extensions.sql` … `0095_media_stuck_sweep_rotation.sql`. The nine rows
+`drizzle/` holds **97 files**, `0000_extensions.sql` … `0096_cleanup_guests.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
@@ -487,6 +487,7 @@ first, then `VALIDATE` in a separate file so the validation scan never blocks wr
 | `0093_follows_people_pagination_idx.sql` | index for the outbound-follows ("following") pagination (F158) | The following list sequential-scans; slow |
 | `0094_notifications_created_idx.sql` | bare `created_at` index backing the retention sweep's notifications lane (every other index on the table is `user_id`-leading) | The nightly sweep sequential-scans the whole notifications table once per page; slow, correct |
 | `0095_media_stuck_sweep_rotation.sql` | `media_assets.stuck_checked_at` + `stuck_check_count` (rotation watermark + give-up counter for `media.stuck.sweep`, F087b, same pattern as `0088`), the partial index `media_assets_stuck_sweep_idx` serving that sweep's claim query, and a scoped backfill adopting BOUND rows still stuck at `validating` with no `finalized_at` (the set no sweep could reach) | The stuck sweep re-picks the same permanent residents every 15 min — genuinely stuck media starve behind them and hopeless rows are re-enqueued forever |
+| `0096_cleanup_guests.sql` | guest event RSVP (contract 0.38.0): `cleanup_guests` (event-scoped, contact-bearing attendance rows; SHA-256 manage-token hash only; partial unique on the active `(cleanup_id, contact_key)`), `guest_otps` (event-scoped one-time codes, hash only), `sms_opt_outs` (STOP suppression list, kept indefinitely). Three brand-new empty tables; no existing table touched | `POST /v1/cleanups/:id/guest-rsvp/*` and `GET /v1/cleanups/:id/guests` 500 on a missing relation, and `going` cannot include guests |
 
 ## 2. `sessions.created_at` backfill (`0058`, shipped in wave 3)
 

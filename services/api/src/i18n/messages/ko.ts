@@ -106,4 +106,24 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "certificate.footer.page": "{{total}}페이지 중 {{page}}페이지",
   "certificate.footer.timezone": "날짜는 태평양 시간(America/Los_Angeles) 기준이에요.",
   "certificate.error.no_hours": "아직 기록된 봉사 시간이 없어요.",
+
+  // ---- Guest event RSVP -------------------------------------------------------------------------
+  "email.guest_otp.subject": "{{title}} 참가 신청 코드",
+  "email.guest_otp.body":
+    "{{title}} 참가 신청 코드는 {{code}}입니다. {{minutes}}분 후에 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하셔도 됩니다.",
+  "email.guest_confirmed.subject": "{{title}} 참가자 명단에 등록되었습니다",
+  "email.guest_confirmed.body": "{{title}}에 참가 신청이 완료되었습니다. 마음이 바뀌셨나요? 여기에서 취소하세요: {{link}}",
+  "email.guest_updated.subject": "{{title}} 세부 정보가 변경되었습니다",
+  "email.guest_updated.body":
+    "{{title}}의 세부 정보가 변경되었습니다. 이제 {{when}}에 {{place}}에서 시작합니다. 참석이 어려우시면 확인 메시지의 취소 링크를 이용하세요.",
+  "email.guest_cancelled.subject": "{{title}}이(가) 취소되었습니다",
+  "email.guest_cancelled.body": "주최자가 {{title}}을(를) 취소했습니다. 따로 하실 일은 없습니다.",
+  "email.guest_cancelled.body_reason": "주최자가 {{title}}을(를) 취소했습니다. 사유: {{reason}}",
+  "sms.guest_otp.body":
+    "{{code}}은(는) {{title}} 참가 신청을 위한 civfix 코드입니다. 메시지 및 데이터 요금이 부과될 수 있습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
+  "sms.guest_confirmed.body":
+    "{{title}} 참가자 명단에 등록되었습니다. 수신을 원하지 않으시면 STOP으로 답장하시고, 취소는 확인 메시지의 링크를 이용하세요.",
+  "sms.guest_updated.body": "{{title}} 변경: 이제 {{when}}, 장소 {{place}}. 수신을 원하지 않으시면 STOP으로 답장하세요.",
+  "sms.guest_cancelled.body": "주최자가 {{title}}을(를) 취소했습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
+
 }
