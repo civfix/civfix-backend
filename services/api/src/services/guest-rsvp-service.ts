@@ -525,8 +525,8 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     if (!critical && !(await fanoutAllowed(cleanupId))) return
 
     await mapWithLimit(recipients, GUEST_FANOUT_CONCURRENCY, async (recipient) => {
-      const copy = build(recipient)
       try {
+        const copy = build(recipient)
         if (recipient.channel === "email" && recipient.email !== null) {
           await sendGuestEmail(recipient.email, copy.subject, copy.message)
           return
@@ -786,7 +786,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
               reason,
             })
           : renderMessage("en", "email.guest_cancelled.body", { title: event.title })
-      const sms = renderMessage("en", "sms.guest_cancelled.body", { title: event.title })
+      const sms = renderMessage("en", "sms.guest_cancelled.body", { title: smsTitle(event.title) })
       await fanOutToGuests(cleanupId, "critical", () => ({ subject, message, sms }))
     },
 
@@ -802,7 +802,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         place,
       })
       const sms = renderMessage("en", "sms.guest_updated.body", {
-        title: event.title,
+        title: smsTitle(event.title),
         when,
         place,
       })

@@ -1498,6 +1498,52 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     expect(enqueued[0]?.opts?.singletonKey).toBe(created.id)
   })
 
+  function dedupingBellHarness(jobs: FakeJobs) {
+    const bells: string[] = []
+    const seen = new Set<string>()
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      jobs,
+      notifier: {
+        createNotification: (userId, input) => {
+          const record = {
+            id: "n1",
+            type: input.type,
+            title: "",
+            read: false,
+            createdAt: new Date().toISOString(),
+          }
+          const key = `${userId}|${input.type}|${input.link ?? ""}`
+          if (input.dedupeWindowMs !== undefined && seen.has(key)) return Promise.resolve(record)
+          seen.add(key)
+          bells.push(userId)
+          return Promise.resolve(record)
+        },
+      },
+    })
+    return { svc, bells }
+  }
+
+  it("a redelivered cancel fan-out does not re-bell the members it already rang", async () => {
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    repo.seedUser({ id: BOB, displayName: "Bob" })
+    const jobs = new FakeJobs()
+    const { svc, bells } = dedupingBellHarness(jobs)
+    const created = await svc.createCleanup(baseInput(), ORG)
+    await svc.joinCleanup(created.id, ALICE)
+    await svc.joinCleanup(created.id, BOB)
+    await svc.cancelCleanup(created.id, "Storm warning", ORG)
+    expect(bells).toEqual([])
+
+    const job = { cleanupId: created.id, reason: "Storm warning", actorId: ORG }
+    await svc.runCancelFanout(job)
+    expect(bells.sort()).toEqual([ALICE, BOB].sort())
+
+    await svc.runCancelFanout(job)
+    expect(bells.sort()).toEqual([ALICE, BOB].sort())
+  })
+
   it("does not surface a guest-fanout failure to the organizer when the enqueue rings inline", async () => {
     const jobs = new FakeJobs()
     jobs.enqueue = () => Promise.reject(new Error("pg-boss unavailable"))
