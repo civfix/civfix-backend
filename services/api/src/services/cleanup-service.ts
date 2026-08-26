@@ -131,7 +131,7 @@ export interface CleanupServiceDeps {
   guestNotifier?: Pick<GuestRsvpService, "notifyEventCancelled" | "notifyEventUpdated">
   counters?: CounterStore
   jobs?: Jobs
-  logger?: { warn(obj: unknown, msg?: string): void }
+  logger?: { warn(obj: unknown, msg?: string): void; error(obj: unknown, msg?: string): void }
   newId?: () => string
 }
 
@@ -244,26 +244,24 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   }
 
   async function dispatchGuestUpdateFanout(cleanupId: string): Promise<void> {
-    if (deps.jobs !== undefined) {
-      try {
-        await deps.jobs.enqueue(
-          CLEANUP_GUEST_UPDATE_FANOUT_JOB,
-          { cleanupId } satisfies GuestUpdateFanoutJob,
-          { singletonKey: cleanupId },
-        )
-        return
-      } catch (err) {
-        deps.logger?.warn(
-          { err, cleanupId },
-          "cleanup.guest.update.fanout enqueue failed; ringing inline",
-        )
-      }
+    if (deps.jobs === undefined) {
+      deps.logger?.warn(
+        { cleanupId },
+        "cleanup.guest.update.fanout: no job queue wired; guests are not notified",
+      )
+      return
     }
-    if (deps.guestNotifier === undefined) return
     try {
-      await deps.guestNotifier.notifyEventUpdated({ cleanupId })
+      await deps.jobs.enqueue(
+        CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+        { cleanupId } satisfies GuestUpdateFanoutJob,
+        { singletonKey: cleanupId },
+      )
     } catch (err) {
-      deps.logger?.warn({ err, cleanupId }, "cleanup guest update fanout failed (suppressed)")
+      deps.logger?.error(
+        { err, cleanupId },
+        "cleanup.guest.update.fanout enqueue failed; guests are not notified",
+      )
     }
   }
 
@@ -321,18 +319,18 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         )
         return
       } catch (err) {
-        deps.logger?.warn(
+        deps.logger?.error(
           { err, cleanupId: cleanup.id },
-          "cleanup.cancel.fanout enqueue failed; ringing inline",
+          "cleanup.cancel.fanout enqueue failed; ringing members inline, guests are not notified",
         )
       }
     }
     try {
-      await notifyCancellation(cleanup, reason, actorId)
+      await notifyMembersOfCancellation(cleanup, reason, actorId)
     } catch (err) {
       deps.logger?.warn(
         { err, cleanupId: cleanup.id },
-        "cleanup_cancelled inline fanout failed (suppressed; the cancellation itself stands)",
+        "cleanup_cancelled inline member fanout failed (suppressed; the cancellation itself stands)",
       )
     }
   }

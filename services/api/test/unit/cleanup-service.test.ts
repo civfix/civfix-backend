@@ -1311,6 +1311,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
         warn: (obj) => {
           warned.push(obj as { userId?: string; cleanupId?: string })
         },
+        error: () => {},
       },
       notifier: {
         createNotification: async (userId, input) => {
@@ -1544,16 +1545,25 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     expect(bells.sort()).toEqual([ALICE, BOB].sort())
   })
 
-  it("does not surface a guest-fanout failure to the organizer when the enqueue rings inline", async () => {
+  it("never fans out to guests from the request path when the enqueue fails", async () => {
     const jobs = new FakeJobs()
     jobs.enqueue = () => Promise.reject(new Error("pg-boss unavailable"))
+    const guestCalls: string[] = []
+    const errors: unknown[] = []
     const svc = makeCleanupService({
       repo,
       counters: new InMemoryCounterStore(),
       jobs,
+      logger: { warn: () => {}, error: (obj) => errors.push(obj) },
       guestNotifier: {
-        notifyEventCancelled: () => Promise.reject(new Error("guest roster read failed")),
-        notifyEventUpdated: () => Promise.resolve(),
+        notifyEventCancelled: (cleanupId) => {
+          guestCalls.push(cleanupId)
+          return Promise.resolve()
+        },
+        notifyEventUpdated: ({ cleanupId }) => {
+          guestCalls.push(cleanupId)
+          return Promise.resolve()
+        },
       },
     })
     const created = await svc.createCleanup(baseInput(), ORG)
@@ -1562,6 +1572,32 @@ describe("F157: cancellation fan-out leaves the request path", () => {
       status: "cancelled",
     })
     expect(repo.cleanups.get(created.id)?.status).toBe("cancelled")
+    expect(guestCalls).toEqual([])
+    expect(errors).toHaveLength(1)
+  })
+
+  it("does not fan out to guests inline when no job queue is wired at all", async () => {
+    const guestCalls: string[] = []
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      guestNotifier: {
+        notifyEventCancelled: (cleanupId) => {
+          guestCalls.push(cleanupId)
+          return Promise.resolve()
+        },
+        notifyEventUpdated: ({ cleanupId }) => {
+          guestCalls.push(cleanupId)
+          return Promise.resolve()
+        },
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+
+    await svc.updateCleanup(created.id, { address: "500 New Pier Rd" }, ORG)
+    await svc.cancelCleanup(created.id, null, ORG)
+
+    expect(guestCalls).toEqual([])
   })
 
   it("lets a guest-fanout failure escape the JOB path so pg-boss can redeliver", async () => {
@@ -1595,7 +1631,7 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     expect(bells.sort()).toEqual([ALICE, BOB].sort())
   })
 
-  it("falls back to the inline fan-out when the queue refuses the job", async () => {
+  it("falls back to the inline MEMBER fan-out when the queue refuses the job", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     const failing = new FakeJobs()
     failing.enqueue = () => Promise.reject(new Error("queue down"))
