@@ -64,6 +64,12 @@ export const GUESTS_DEFAULT_LIMIT = 25
 
 export const GUEST_FANOUT_CONCURRENCY = 8
 
+export const GUEST_FANOUT_PER_EVENT_PER_HOUR = 3
+
+export const GUEST_FANOUT_WINDOW_SECONDS = 60 * 60
+
+export const GUEST_RETENTION_MAX_PAGES = 20
+
 export const GUEST_CONTACT_RETENTION_DAYS = 30
 
 export const GUEST_OTP_RETENTION_HOURS = 24
@@ -135,6 +141,7 @@ export interface GuestRetentionResult {
 export interface GuestRsvpRepository {
   findEvent(cleanupId: string): Promise<GuestEventView | null>
   countActiveGuests(cleanupId: string): Promise<number>
+  countGuests(cleanupId: string): Promise<number>
   goingCount(cleanupId: string): Promise<number>
   isPhoneOptedOut(phone: string): Promise<boolean>
   recordPhoneOptOut(phone: string): Promise<void>
@@ -344,6 +351,15 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     }
   }
 
+  async function releaseCooldown(key: string): Promise<void> {
+    await deps.cache.del(key).catch((err: unknown) => {
+      deps.logger?.warn(
+        { err },
+        "guest rsvp: failed to release the per-contact cooldown after a refused send",
+      )
+    })
+  }
+
   function manageLink(rawToken: string): string {
     return `${deps.manageLinkBase}/guest?token=${encodeURIComponent(rawToken)}`
   }
@@ -450,14 +466,42 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     }
     await deps.smsSender.send(
       args.contact,
-      renderMessage("en", "sms.guest_confirmed.body", { title: args.eventTitle }),
+      renderMessage("en", "sms.guest_confirmed.body", {
+        title: args.eventTitle,
+        link: manageLink(args.rawToken),
+      }),
     )
+  }
+
+  async function fanoutAllowed(cleanupId: string): Promise<boolean> {
+    let sends: number
+    try {
+      sends = await deps.counters.incr(
+        `guest:fanout:${cleanupId}`,
+        GUEST_FANOUT_WINDOW_SECONDS,
+      )
+    } catch (err) {
+      deps.logger?.warn(
+        { err, cleanupId },
+        "guest fanout: throttle counter unavailable; refusing the fanout (fail closed)",
+      )
+      return false
+    }
+    if (sends > GUEST_FANOUT_PER_EVENT_PER_HOUR) {
+      deps.logger?.warn(
+        { cleanupId, sends },
+        "guest fanout: per-event hourly throttle reached; skipping",
+      )
+      return false
+    }
+    return true
   }
 
   async function fanOutToGuests(
     cleanupId: string,
     build: (recipient: GuestRecipient) => { subject: string; message: string; sms: string },
   ): Promise<void> {
+    if (!(await fanoutAllowed(cleanupId))) return
     let recipients: GuestRecipient[]
     try {
       recipients = await deps.repo.listContactableGuests(cleanupId, MAX_GUESTS_PER_EVENT)
@@ -473,6 +517,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
           return
         }
         if (recipient.channel === "sms" && recipient.phone !== null) {
+          if (!deps.smsGuestEnabled) return
           await deps.smsSender.send(recipient.phone, copy.sms)
         }
       } catch (err) {
@@ -485,6 +530,29 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         )
       }
     })
+  }
+
+  async function drainPages(
+    lane: string,
+    page: (batchSize: number) => Promise<number>,
+  ): Promise<number> {
+    let total = 0
+    for (let i = 0; i < GUEST_RETENTION_MAX_PAGES; i++) {
+      let done: number
+      try {
+        done = await page(GUEST_RETENTION_BATCH)
+      } catch (err) {
+        deps.logger?.warn({ err, lane, total }, "guest retention: lane failed (suppressed)")
+        return total
+      }
+      total += done
+      if (done < GUEST_RETENTION_BATCH) return total
+    }
+    deps.logger?.warn(
+      { lane, total },
+      "guest retention: hit the page ceiling with rows still pending; the next run continues",
+    )
+    return total
   }
 
   return {
@@ -532,7 +600,6 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       if (input.channel === "sms") {
         if (!deps.smsGuestEnabled) throw smsUnavailableError()
         if (await deps.repo.isPhoneOptedOut(contact)) throw smsOptedOutError()
-        await reserveSmsBudget()
       }
 
       const digest = await contactDigest(contact)
@@ -553,6 +620,15 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         throw AppError.rateLimited("Please wait before requesting another code.")
       }
 
+      if (input.channel === "sms") {
+        try {
+          await reserveSmsBudget()
+        } catch (err) {
+          await releaseCooldown(cooldown)
+          throw err
+        }
+      }
+
       try {
         const at = new Date(now())
         await deps.repo.invalidateActiveOtps(event.id, contact, at)
@@ -568,12 +644,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         })
         await deliverCode({ channel: input.channel, contact, code, eventTitle: event.title })
       } catch (err) {
-        await deps.cache.del(cooldown).catch((delErr: unknown) => {
-          deps.logger?.warn(
-            { err: delErr },
-            "guest rsvp: failed to release the per-contact cooldown after a send error",
-          )
-        })
+        await releaseCooldown(cooldown)
         throw await mapDeliveryError(err, input.channel === "sms" ? contact : null)
       }
 
@@ -685,7 +756,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         cursor: cursor === null ? null : encodeTimeCursor(cursor),
         limit,
       })
-      const count = await deps.repo.countActiveGuests(event.id)
+      const count = await deps.repo.countGuests(event.id)
       return { guests: rows.map(toCleanupGuestDTO), count, nextCursor }
     },
 
@@ -727,15 +798,12 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       const at = new Date(now())
       const contactCutoff = new Date(now() - GUEST_CONTACT_RETENTION_DAYS * DAY_SECONDS * 1000)
       const otpCutoff = new Date(now() - GUEST_OTP_RETENTION_HOURS * 60 * 60 * 1000)
-      const scrubbedGuests = await deps.repo.scrubExpiredGuestContacts({
-        cutoff: contactCutoff,
-        now: at,
-        batchSize: GUEST_RETENTION_BATCH,
-      })
-      const deletedOtps = await deps.repo.deleteStaleOtps({
-        cutoff: otpCutoff,
-        batchSize: GUEST_RETENTION_BATCH,
-      })
+      const scrubbedGuests = await drainPages("guest contact scrub", (batchSize) =>
+        deps.repo.scrubExpiredGuestContacts({ cutoff: contactCutoff, now: at, batchSize }),
+      )
+      const deletedOtps = await drainPages("guest otp reap", (batchSize) =>
+        deps.repo.deleteStaleOtps({ cutoff: otpCutoff, batchSize }),
+      )
       return { scrubbedGuests, deletedOtps }
     },
   }

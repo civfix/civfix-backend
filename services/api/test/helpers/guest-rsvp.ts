@@ -89,6 +89,10 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
     return Promise.resolve(this.activeGuestCount(cleanupId))
   }
 
+  countGuests(cleanupId: string): Promise<number> {
+    return Promise.resolve(this.guests.filter((g) => g.cleanupId === cleanupId).length)
+  }
+
   goingCount(cleanupId: string): Promise<number> {
     return Promise.resolve((this.memberCounts.get(cleanupId) ?? 0) + this.activeGuestCount(cleanupId))
   }

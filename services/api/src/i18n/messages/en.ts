@@ -185,8 +185,8 @@ export const en = {
   "email.guest_cancelled.body_reason": "{{title}} has been cancelled by the host. Reason: {{reason}}",
   "sms.guest_otp.body":
     "{{code}} is your civfix code to RSVP for {{title}}. Msg&data rates may apply. Reply STOP to opt out.",
-  "sms.guest_confirmed.body":
-    "You are on the list for {{title}}. Reply STOP to opt out, or use the link in your confirmation to cancel.",
+    "sms.guest_confirmed.body":
+    "You are on the list for {{title}}. Cancel: {{link}} Reply STOP to opt out.",
   "sms.guest_updated.body": "{{title}} changed: now {{when}} at {{place}}. Reply STOP to opt out.",
   "sms.guest_cancelled.body": "{{title}} has been cancelled by the host. Reply STOP to opt out.",
 

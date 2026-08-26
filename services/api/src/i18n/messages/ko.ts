@@ -121,8 +121,8 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "email.guest_cancelled.body_reason": "주최자가 {{title}}을(를) 취소했습니다. 사유: {{reason}}",
   "sms.guest_otp.body":
     "{{code}}은(는) {{title}} 참가 신청을 위한 civfix 코드입니다. 메시지 및 데이터 요금이 부과될 수 있습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
-  "sms.guest_confirmed.body":
-    "{{title}} 참가자 명단에 등록되었습니다. 수신을 원하지 않으시면 STOP으로 답장하시고, 취소는 확인 메시지의 링크를 이용하세요.",
+    "sms.guest_confirmed.body":
+    "{{title}} 참가자 명단에 등록되었습니다. 취소: {{link}} 수신을 원하지 않으시면 STOP으로 답장하세요.",
   "sms.guest_updated.body": "{{title}} 변경: 이제 {{when}}, 장소 {{place}}. 수신을 원하지 않으시면 STOP으로 답장하세요.",
   "sms.guest_cancelled.body": "주최자가 {{title}}을(를) 취소했습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
 

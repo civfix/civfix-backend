@@ -493,7 +493,7 @@ describe("guest rsvp: the host roster", () => {
 
     const page = await h.service.listGuests({ id: EVENT_ID }, HOST_ID)
     expect(page.guests).toHaveLength(2)
-    expect(page.count).toBe(1)
+    expect(page.count).toBe(2)
     const cancelled = page.guests.find((g) => g.cancelledAt !== null)
     expect(cancelled?.email).toBeNull()
     expect(cancelled?.phone).toBeNull()
@@ -690,5 +690,129 @@ describe("going: members plus verified, non-cancelled guests", () => {
     expect(reread?.going).toBe(2)
     expect(reread?.guestCount).toBe(1)
     await expect(cleanups.goingCount(EVENT_ID)).resolves.toBe(2)
+  })
+})
+
+describe("guest rsvp: the SMS budget measures messages actually sent", () => {
+  it("does not burn global budget on a request the throttles refuse", async () => {
+    const h = build({ smsGuestEnabled: true, smsDailyCap: 2 })
+
+    await h.service.requestCode(smsRequest(), ctx)
+    await expect(h.service.requestCode(smsRequest(), ctx)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+    expect(h.counters.peek(`sms:otp:day:2026-08-25`)).toBe(1)
+
+    h.advance(61_000)
+    await expect(h.service.requestCode(smsRequest(), ctx)).resolves.toMatchObject({ sent: true })
+    expect(h.sms.sent).toHaveLength(2)
+  })
+
+  it("releases the per-contact cooldown when the cap refuses the send", async () => {
+    const h = build({ smsGuestEnabled: true, smsDailyCap: 0 })
+
+    await expect(h.service.requestCode(smsRequest(), ctx)).rejects.toMatchObject({
+      fields: { channel: "sms_unavailable" },
+    })
+    await expect(h.service.requestCode(emailRequest(), ctx)).resolves.toMatchObject({ sent: true })
+  })
+})
+
+describe("guest rsvp: fanout is gated and throttled", () => {
+  async function seeded(smsGuestEnabled: boolean): Promise<Harness> {
+    const h = build({ smsGuestEnabled: true })
+    await h.service.requestCode(smsRequest(), ctx)
+    await h.service.verifyCode(
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      ctx,
+    )
+    h.mailer.sent.length = 0
+    h.sms.reset()
+    if (!smsGuestEnabled) {
+      const off = build({ smsGuestEnabled: false })
+      off.repo.guests.push(...h.repo.guests)
+      off.repo.events.set(EVENT_ID, h.repo.events.get(EVENT_ID)!)
+      return off
+    }
+    return h
+  }
+
+  it("does not text guests when the SMS channel is switched off", async () => {
+    const h = await seeded(false)
+    await h.service.notifyEventCancelled(EVENT_ID, null)
+    expect(h.sms.sent).toHaveLength(0)
+  })
+
+  it("throttles repeated fanouts for one event so an edit loop cannot text-bomb guests", async () => {
+    const h = await seeded(true)
+
+    for (let i = 0; i < 3; i++) {
+      await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
+    }
+    expect(h.sms.sent).toHaveLength(3)
+
+    await h.service.notifyEventUpdated({ cleanupId: EVENT_ID })
+    await h.service.notifyEventCancelled(EVENT_ID, null)
+    expect(h.sms.sent).toHaveLength(3)
+  })
+
+  it("fails the fanout CLOSED when the throttle counter is unreachable", async () => {
+    const broken: CounterStore = { incr: () => Promise.reject(new Error("redis is down")) }
+    const h = build({ smsGuestEnabled: true, counters: broken })
+    h.repo.guests.push({
+      id: randomUUID(),
+      cleanupId: EVENT_ID,
+      name: "Ada",
+      channel: "email",
+      email: "ada@example.org",
+      phone: null,
+      contactKey: "ada@example.org",
+      manageTokenHash: "h",
+      verifiedAt: new Date(),
+      cancelledAt: null,
+      contactScrubbedAt: null,
+      createdAt: new Date(),
+    })
+
+    await h.service.notifyEventCancelled(EVENT_ID, null)
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+})
+
+describe("guest rsvp: retention drains rather than shaving one batch", () => {
+  it("keeps paging until the backlog is gone", async () => {
+    const h = build()
+    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    for (let i = 0; i < 1200; i++) {
+      h.repo.guests.push({
+        id: randomUUID(),
+        cleanupId: EVENT_ID,
+        name: `Guest ${i}`,
+        channel: "email",
+        email: `g${i}@example.org`,
+        phone: null,
+        contactKey: `g${i}@example.org`,
+        manageTokenHash: `drain-${i}`,
+        verifiedAt: new Date(),
+        cancelledAt: null,
+        contactScrubbedAt: null,
+        createdAt: new Date(),
+      })
+    }
+
+    const result = await h.service.runRetentionSweep()
+    expect(result.scrubbedGuests).toBe(1200)
+    expect(h.repo.guests.every((g) => g.email === null)).toBe(true)
+  })
+
+  it("keeps reaping OTPs even when the contact scrub lane throws", async () => {
+    const h = build()
+    h.repo.scrubExpiredGuestContacts = () => Promise.reject(new Error("scrub exploded"))
+    await h.service.requestCode(emailRequest(), ctx)
+    h.advance(25 * 60 * 60 * 1000)
+
+    const result = await h.service.runRetentionSweep()
+    expect(result.scrubbedGuests).toBe(0)
+    expect(result.deletedOtps).toBe(1)
   })
 })

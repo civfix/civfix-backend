@@ -124,8 +124,13 @@ from `services/api/drizzle/0096_cleanup_guests.sql` each carry an explicit rule.
 - Job logic: `services/api/src/services/guest-rsvp-service.ts` (`runRetentionSweep`),
   backed by `scrubExpiredGuestContacts` / `deleteStaleOtps` in
   `services/api/src/services/guest-rsvp-repository.drizzle.ts`. Both run in
-  bounded batches (`GUEST_RETENTION_BATCH`, 500 rows/run) so a backlog drains
-  over several daily runs rather than one long-locking statement.
+  bounded pages (`GUEST_RETENTION_BATCH`, 500 rows) and DRAINED to the cutoff
+  each run (up to `GUEST_RETENTION_MAX_PAGES` = 20 pages, i.e. 10k rows/lane/run)
+  rather than one long-locking statement. The two lanes are independent: a
+  failure in the contact scrub is logged and still lets the OTP reap run, and a
+  run that hits the page ceiling logs the remaining backlog and continues on the
+  next run. A single capped page would NOT meet the TTLs below once daily inflow
+  exceeded it, so the drain is load-bearing, not an optimization.
 - Registration: `services/api/src/services/guest-jobs.ts` — the
   `guest.retention.sweep` queue + worker + `jobs.schedule(...)`, started from
   `server.ts` alongside the other API crons.
