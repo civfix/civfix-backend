@@ -83,6 +83,28 @@ export interface Env {
   OUTREACH_DIGEST_CRON: string
   /** Cron for the inbound-mail reconciliation sweep ("inbound.sweep" pg-boss job). */
   INBOUND_SWEEP_CRON: string
+  /** Cron for the guest-contact scrub + guest-OTP reap ("guest.retention.sweep" pg-boss job). */
+  GUEST_RETENTION_CRON: string
+
+  // Twilio outbound SMS (the SmsSender seam): [BOOT] unless USE_FAKE_SMS.
+  TWILIO_ACCOUNT_SID: string
+  TWILIO_AUTH_TOKEN: string
+  /** The E.164 number every guest verification text is sent From. */
+  TWILIO_SMS_FROM: string
+  /**
+   * Master switch for the SMS guest-RSVP channel. Defaults to FALSE in EVERY environment: each send
+   * costs money and US SMS consent is a compliance surface, so a deployment offers the channel only
+   * when someone deliberately turns it on. Advertised to clients as
+   * SessionResponse/SessionCheckResponse.guestSmsEnabled so a client hides the channel instead of
+   * showing a button that always fails. [OPT]
+   */
+  SMS_GUEST_ENABLED: boolean
+  /**
+   * Global ceiling on guest-RSVP verification texts per UTC day, counted in Redis. FAILS CLOSED: at
+   * the cap, or when the counter store is unreachable, SMS is refused and the caller is told to use
+   * email. Email verification is unaffected either way. [OPT]
+   */
+  SMS_DAILY_CAP: number
 
   /**
    * Cloudflare Access team domain — BOTH the expected JWT `iss` and the JWKS base. The admin Access
@@ -212,6 +234,14 @@ export interface Env {
    * only the LA-area fixtures returns null (-> "" on /map/reverse-label) for points outside them.
    */
   USE_FAKE_GEOCODER: boolean
+
+  /**
+   * Use the in-memory FakeSmsSender instead of TwilioSmsSender. Defaults ON outside production and is
+   * deliberately NOT in loadEnv's production-forbidden fake list: SMS is an optional PAID channel and
+   * a production box with no Twilio account is a legitimate state. SMS_GUEST_ENABLED is what decides
+   * whether the channel is offered at all; this only decides which adapter backs it.
+   */
+  USE_FAKE_SMS: boolean
 
   /**
    * Opt-in real NSFW scoring. Default false EVEN in production: with the flag off (or on but with no

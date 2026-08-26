@@ -52,6 +52,7 @@ type FakeFlags = Pick<
   | "USE_FAKE_JOBS"
   | "USE_FAKE_USER_CHANNEL"
   | "USE_FAKE_GEOCODER"
+  | "USE_FAKE_SMS"
   | "USE_REAL_NSFW"
 >
 
@@ -65,6 +66,7 @@ function deriveFakeFlags(source: NodeJS.ProcessEnv, isProd: boolean): FakeFlags 
     USE_FAKE_JOBS: parseBool(source.USE_FAKE_JOBS, !isProd),
     USE_FAKE_USER_CHANNEL: parseBool(source.USE_FAKE_USER_CHANNEL, !isProd),
     USE_FAKE_GEOCODER: parseBool(source.USE_FAKE_GEOCODER, !isProd),
+    USE_FAKE_SMS: parseBool(source.USE_FAKE_SMS, !isProd),
     USE_REAL_NSFW: parseBool(source.USE_REAL_NSFW, false),
   }
 }
@@ -241,7 +243,14 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const OCI_EMAIL_SMTP_USER = reqStr("OCI_EMAIL_SMTP_USER", { gatedOff: fakeFlags.USE_FAKE_MAILER })
   const OCI_EMAIL_SMTP_PASS = reqStr("OCI_EMAIL_SMTP_PASS", { gatedOff: fakeFlags.USE_FAKE_MAILER })
 
+  const TWILIO_ACCOUNT_SID = reqStr("TWILIO_ACCOUNT_SID", { gatedOff: fakeFlags.USE_FAKE_SMS })
+  const TWILIO_AUTH_TOKEN = reqStr("TWILIO_AUTH_TOKEN", { gatedOff: fakeFlags.USE_FAKE_SMS })
+  const TWILIO_SMS_FROM = reqStr("TWILIO_SMS_FROM", { gatedOff: fakeFlags.USE_FAKE_SMS })
+  const SMS_GUEST_ENABLED = parseBool(source.SMS_GUEST_ENABLED, false)
+  const SMS_DAILY_CAP = parsePositiveIntOr(source.SMS_DAILY_CAP, 50)
+
   const OUTREACH_DIGEST_CRON = reqCron("OUTREACH_DIGEST_CRON", "0 14 * * *")
+  const GUEST_RETENTION_CRON = reqCron("GUEST_RETENTION_CRON", "15 4 * * *")
   const INBOUND_SWEEP_CRON = reqCron("INBOUND_SWEEP_CRON", "*/5 * * * *")
 
   const OAUTH_REQUIRE_NONCE = parseBool(source.OAUTH_REQUIRE_NONCE, false)
@@ -318,6 +327,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OUTREACH_THROTTLE_DAYS: parsePositiveIntOr(source.OUTREACH_THROTTLE_DAYS, 7),
     OUTREACH_DIGEST_CRON,
     INBOUND_SWEEP_CRON,
+    GUEST_RETENTION_CRON,
+
+    TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN,
+    TWILIO_SMS_FROM,
+    SMS_GUEST_ENABLED,
+    SMS_DAILY_CAP,
 
     CF_ACCESS_SERVICE_TOKENS: parseCsv(source.CF_ACCESS_SERVICE_TOKENS),
 

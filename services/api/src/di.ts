@@ -7,6 +7,7 @@ import type {
   Mailer,
   PushSender,
   RoutingProvider,
+  SmsSender,
   Storage,
   UserChannel,
 } from "@civfix/shared/interfaces"
@@ -19,6 +20,7 @@ import {
   FakeMailer,
   FakePushSender,
   FakeRoutingProvider,
+  FakeSmsSender,
   FakeStorage,
   FakeUserChannel,
 } from "@civfix/shared/fakes"
@@ -27,6 +29,7 @@ import type { FastifyBaseLogger } from "fastify"
 
 import type { Env } from "./env.js"
 import { makeCsrf, type Csrf } from "./auth/csrf.js"
+import { RedisCacheClient, type CacheClient } from "./auth/cache.js"
 import { makeDb, type DbHandle } from "./db/client.js"
 import { makeRedis, type RedisClient } from "./adapters/redis.js"
 
@@ -37,6 +40,7 @@ import {
   type LocalStorageNamespace,
 } from "./adapters/storage.local.js"
 import { OciMailer } from "./adapters/mailer.oci.js"
+import { TwilioSmsSender } from "./adapters/sms-twilio.js"
 import { CfInboundMail } from "./adapters/inbound-mail.cf.js"
 import { TigerGeocoder } from "./adapters/geocoder.tiger.js"
 import { makePhotonReverseGeocode } from "./adapters/reverse-geocode.photon.js"
@@ -89,6 +93,7 @@ export interface Container {
   readonly inboundStorage: Storage
   readonly developmentOnlyLocalObjectStores: readonly LocalDiskStorage[] | undefined
   readonly mailer: Mailer
+  readonly smsSender: SmsSender
   readonly inboundMail: InboundMail
   readonly geocoder: Geocoder
   readonly streetReverseGeocode: ReverseGeocode
@@ -114,6 +119,7 @@ export interface Container {
   getPostService(): PostService
   getNotificationService(logger?: NotificationLogger): NotificationService
   getCounterStore(): CounterStore
+  getCache(): CacheClient
   getByteMeter(): ByteMeter
 
   close(): Promise<void>
@@ -228,6 +234,12 @@ export function buildContainer(env: Env): Container {
     return lazyCounters
   }
 
+  let cacheClient: CacheClient | undefined
+  function getCache(): CacheClient {
+    if (!cacheClient) cacheClient = new RedisCacheClient(getRedis())
+    return cacheClient
+  }
+
   let redisByteMeter: ByteMeter | undefined
   const lazyByteMeter: ByteMeter = {
     add: (subject, bytes) => (redisByteMeter ??= new RedisByteMeter(getRedis())).add(subject, bytes),
@@ -305,6 +317,14 @@ export function buildContainer(env: Env): Container {
         pass: env.OCI_EMAIL_SMTP_PASS,
         fromNoReply: env.MAIL_FROM_NOREPLY,
         fromOutreach: env.MAIL_FROM_OUTREACH,
+      })
+
+  const smsSender: SmsSender = env.USE_FAKE_SMS
+    ? new FakeSmsSender()
+    : new TwilioSmsSender({
+        accountSid: env.TWILIO_ACCOUNT_SID,
+        authToken: env.TWILIO_AUTH_TOKEN,
+        from: env.TWILIO_SMS_FROM,
       })
 
   const geocoder: Geocoder = env.USE_FAKE_GEOCODER
@@ -422,6 +442,7 @@ export function buildContainer(env: Env): Container {
       await redis.quit().catch(() => redis?.disconnect())
       redis = undefined
       redisCounters = undefined
+      cacheClient = undefined
       redisByteMeter = undefined
     }
     if (dbHandle) {
@@ -437,6 +458,7 @@ export function buildContainer(env: Env): Container {
     inboundStorage,
     developmentOnlyLocalObjectStores: localObjectStores,
     mailer,
+    smsSender,
     inboundMail,
     geocoder,
     streetReverseGeocode,
@@ -467,6 +489,7 @@ export function buildContainer(env: Env): Container {
     getPostService,
     getNotificationService,
     getCounterStore,
+    getCache,
     getByteMeter,
     close,
   }
