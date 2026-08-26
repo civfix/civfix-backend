@@ -31,6 +31,7 @@ import {
 import { MAX_LINKED_REPORTS } from "@civfix/shared"
 import type { CleanupMemberRole, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
+import { IN_PROGRESS_GRACE_HOURS } from "../../src/services/cleanup-sql.js"
 import {
   encodeNearCursor,
   encodeTimeCursor,
@@ -500,8 +501,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
     let all = [...this.cleanups.values()].filter((c) => {
       if (filters.when === "upcoming" || filters.when === "attending") {
-        const live = c.scheduledAt.getTime() >= nowMs || c.status === "active"
-        if (!live || c.status === "cancelled" || c.status === "done") return false
+        const at = c.scheduledAt.getTime()
+        if (at < nowMs - IN_PROGRESS_GRACE_HOURS * 60 * 60 * 1000) return false
+        if (!(at >= nowMs || c.status === "active")) return false
+        if (c.status === "cancelled" || c.status === "done") return false
       } else if (filters.when === "past") {
         if (!(c.scheduledAt.getTime() < nowMs && c.status !== "cancelled")) return false
       } else if (c.status === "cancelled") {

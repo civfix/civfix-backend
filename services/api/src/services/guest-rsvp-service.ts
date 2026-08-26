@@ -38,7 +38,7 @@ import type { CounterStore } from "../abuse/counter-store.js"
 import { honeypotTripped } from "../abuse/honeypot.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import { smsFailureKind, type SmsFailureKind } from "../errors/sms-failure.js"
+import { smsFailureKind } from "../errors/sms-failure.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { encodeTimeCursor, parseTimeCursor } from "../db/cursor-helpers.js"
 import { isCleanupTerminal } from "./cleanup-rules.js"
@@ -66,7 +66,7 @@ export const GUEST_FANOUT_CONCURRENCY = 8
 
 type GuestFanoutLane = "throttled" | "critical"
 
-export const SMS_TITLE_MAX_CHARS = 24
+export const SMS_TITLE_MAX_CHARS = 20
 
 export const GUEST_FANOUT_PER_EVENT_PER_HOUR = 3
 
@@ -365,8 +365,9 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
   }
 
   function smsTitle(title: string): string {
-    if (title.length <= SMS_TITLE_MAX_CHARS) return title
-    return `${title.slice(0, SMS_TITLE_MAX_CHARS).trimEnd()}...`
+    const points = Array.from(title)
+    if (points.length <= SMS_TITLE_MAX_CHARS) return title
+    return `${points.slice(0, SMS_TITLE_MAX_CHARS).join("").trimEnd()}...`
   }
 
   function manageLink(rawToken: string): string {
@@ -482,10 +483,6 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     )
   }
 
-  function isTerminalRecipientFailure(kind: SmsFailureKind | null): boolean {
-    return kind === "opted_out" || kind === "invalid_number" || kind === "permanent"
-  }
-
   async function fanoutAllowed(cleanupId: string): Promise<boolean> {
     let sends: number
     try {
@@ -527,7 +524,6 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     if (recipients.length === 0) return
     if (!critical && !(await fanoutAllowed(cleanupId))) return
 
-    const undelivered: unknown[] = []
     await mapWithLimit(recipients, GUEST_FANOUT_CONCURRENCY, async (recipient) => {
       const copy = build(recipient)
       try {
@@ -540,18 +536,15 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
           await deps.smsSender.send(recipient.phone, copy.sms)
         }
       } catch (err) {
-        const kind = smsFailureKind(err)
-        if (kind === "opted_out" && recipient.phone !== null) {
+        if (smsFailureKind(err) === "opted_out" && recipient.phone !== null) {
           await deps.repo.recordPhoneOptOut(recipient.phone).catch(() => {})
         }
         deps.logger?.warn(
           { err, cleanupId, guestId: recipient.id, lane },
-          "guest fanout: message failed",
+          "guest fanout: message failed (suppressed)",
         )
-        if (critical && !isTerminalRecipientFailure(kind)) undelivered.push(err)
       }
     })
-    if (undelivered[0] !== undefined) throw undelivered[0]
   }
 
   async function drainPages(

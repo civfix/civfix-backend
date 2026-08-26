@@ -841,50 +841,44 @@ describe("guest rsvp: fanout is gated and throttled", () => {
     expect(h.mailer.sent).toHaveLength(1)
   })
 
-  it("throws out of the CANCELLATION fanout so the job redelivers a transient send failure", async () => {
+  function withSmsSender(h: Harness, smsSender: FakeSmsSender): GuestRsvpService {
+    return makeGuestRsvpService({
+      repo: h.repo,
+      mailer: h.mailer,
+      smsSender,
+      abuseChecks: h.abuse,
+      cache: h.cache,
+      counters: h.counters,
+      roleOf: () => Promise.resolve(null),
+      smsGuestEnabled: true,
+      smsDailyCap: 50,
+      manageLinkBase: "https://civfix.org",
+      newCode: () => CODE,
+      newToken: () => `manage-token-${randomUUID()}`,
+    })
+  }
+
+  it("throws out of the CANCELLATION fanout when the roster read fails, so the job redelivers", async () => {
+    const h = await seeded(true)
+    h.repo.listContactableGuests = () => Promise.reject(new Error("db down"))
+
+    await expect(h.service.notifyEventCancelled(EVENT_ID, null)).rejects.toThrow("db down")
+  })
+
+  it("suppresses a per-recipient send failure rather than redelivering the whole fanout", async () => {
     const failing = new FakeSmsSender()
     failing.send = () => Promise.reject(smsFailure("temporary", "provider down"))
     const h = await seeded(true)
-    h.service = makeGuestRsvpService({
-      repo: h.repo,
-      mailer: h.mailer,
-      smsSender: failing,
-      abuseChecks: h.abuse,
-      cache: h.cache,
-      counters: h.counters,
-      roleOf: () => Promise.resolve(null),
-      smsGuestEnabled: true,
-      smsDailyCap: 50,
-      manageLinkBase: "https://civfix.org",
-      newCode: () => CODE,
-      newToken: () => `manage-token-${randomUUID()}`,
-    })
 
-    await expect(h.service.notifyEventCancelled(EVENT_ID, null)).rejects.toMatchObject({
-      fields: { smsDelivery: "temporary" },
-    })
+    await expect(withSmsSender(h, failing).notifyEventCancelled(EVENT_ID, null)).resolves.toBeUndefined()
   })
 
-  it("does NOT redeliver the CANCELLATION for a recipient-terminal failure", async () => {
+  it("records an opt-out reported during the CANCELLATION fanout without failing it", async () => {
     const optedOut = new FakeSmsSender()
     optedOut.send = () => Promise.reject(smsFailure("opted_out", "recipient opted out"))
     const h = await seeded(true)
-    h.service = makeGuestRsvpService({
-      repo: h.repo,
-      mailer: h.mailer,
-      smsSender: optedOut,
-      abuseChecks: h.abuse,
-      cache: h.cache,
-      counters: h.counters,
-      roleOf: () => Promise.resolve(null),
-      smsGuestEnabled: true,
-      smsDailyCap: 50,
-      manageLinkBase: "https://civfix.org",
-      newCode: () => CODE,
-      newToken: () => `manage-token-${randomUUID()}`,
-    })
 
-    await expect(h.service.notifyEventCancelled(EVENT_ID, null)).resolves.toBeUndefined()
+    await expect(withSmsSender(h, optedOut).notifyEventCancelled(EVENT_ID, null)).resolves.toBeUndefined()
     expect(h.repo.optOuts.has("+15552223333")).toBe(true)
   })
 

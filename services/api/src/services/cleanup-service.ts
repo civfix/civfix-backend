@@ -112,6 +112,8 @@ const fallbackCounters = new InMemoryCounterStore()
 
 export const CLEANUP_CANCEL_FANOUT_JOB = "cleanup.cancel.fanout"
 
+export const CANCEL_FANOUT_DEDUPE_WINDOW_MS = 60 * 60 * 1000
+
 export interface CleanupCancelFanoutJob {
   cleanupId: string
   reason: string | null
@@ -294,6 +296,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
               : "notification.cleanup_cancelled.body",
           ...(reason !== null ? { vars: { reason } } : {}),
           link: `/cleanups/${cleanup.id}`,
+          dedupeWindowMs: CANCEL_FANOUT_DEDUPE_WINDOW_MS,
         })
       } catch (err) {
         deps.logger?.warn(
@@ -324,7 +327,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         )
       }
     }
-    await notifyCancellation(cleanup, reason, actorId)
+    try {
+      await notifyCancellation(cleanup, reason, actorId)
+    } catch (err) {
+      deps.logger?.warn(
+        { err, cleanupId: cleanup.id },
+        "cleanup_cancelled inline fanout failed (suppressed; the cancellation itself stands)",
+      )
+    }
   }
 
   async function hydrateLinkedReports(

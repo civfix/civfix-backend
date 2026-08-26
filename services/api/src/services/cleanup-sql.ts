@@ -130,9 +130,12 @@ export function goingJoin(sql: Queryable) {
   ) g ON true`
 }
 
+export const IN_PROGRESS_GRACE_HOURS = 24
+
 export function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending" | undefined) {
   if (when === "upcoming" || when === "attending")
-    return sql`AND (c.scheduled_at >= now() OR c.status = 'active')
+    return sql`AND c.scheduled_at >= now() - make_interval(hours => ${IN_PROGRESS_GRACE_HOURS})
+      AND (c.scheduled_at >= now() OR c.status = 'active')
       AND c.status NOT IN ('cancelled', 'done')`
   if (when === "past")
     return sql`AND c.scheduled_at < now() AND c.status <> 'cancelled'`

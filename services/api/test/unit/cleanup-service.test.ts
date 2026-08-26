@@ -267,19 +267,39 @@ describe("listCleanups filters", () => {
       id: "aaaaaaaa-0000-0000-0000-000000000021",
       organizerUserId: ORG,
       title: "InProgress",
-      scheduledAt: new Date("2026-05-31T00:00:00.000Z"),
+      scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
       status: "active",
     })
     repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000022",
       organizerUserId: ORG,
       title: "StalePlanned",
-      scheduledAt: new Date("2026-05-31T00:00:00.000Z"),
+      scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
       status: "upcoming",
     })
 
     const upcoming = await service.listCleanups({ when: "upcoming" }, { userId: null })
     expect(upcoming.items.map((c) => c.title)).toEqual(["InProgress"])
+  })
+
+  it("drops a stale in-progress event once it falls outside the grace window", async () => {
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000028",
+      organizerUserId: ORG,
+      title: "StaleActive",
+      scheduledAt: new Date("2026-05-28T00:00:00.000Z"),
+      status: "active",
+    })
+    repo.seedCleanup({
+      id: "aaaaaaaa-0000-0000-0000-000000000029",
+      organizerUserId: ORG,
+      title: "RecentActive",
+      scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
+      status: "active",
+    })
+
+    const upcoming = await service.listCleanups({ when: "upcoming" }, { userId: null })
+    expect(upcoming.items.map((c) => c.title)).toEqual(["RecentActive"])
   })
 
   it("drops a finished event from the upcoming list even when it is future-dated", async () => {
@@ -308,7 +328,7 @@ describe("listCleanups filters", () => {
       id: "aaaaaaaa-0000-0000-0000-000000000025",
       organizerUserId: ORG,
       title: "AttendingInProgress",
-      scheduledAt: new Date("2026-05-31T00:00:00.000Z"),
+      scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
       status: "active",
     })
     const finished = repo.seedCleanup({
@@ -1476,6 +1496,42 @@ describe("F157: cancellation fan-out leaves the request path", () => {
       actorId: ORG,
     })
     expect(enqueued[0]?.opts?.singletonKey).toBe(created.id)
+  })
+
+  it("does not surface a guest-fanout failure to the organizer when the enqueue rings inline", async () => {
+    const jobs = new FakeJobs()
+    jobs.enqueue = () => Promise.reject(new Error("pg-boss unavailable"))
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      jobs,
+      guestNotifier: {
+        notifyEventCancelled: () => Promise.reject(new Error("guest roster read failed")),
+        notifyEventUpdated: () => Promise.resolve(),
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+
+    await expect(svc.cancelCleanup(created.id, "Storm warning", ORG)).resolves.toMatchObject({
+      status: "cancelled",
+    })
+    expect(repo.cleanups.get(created.id)?.status).toBe("cancelled")
+  })
+
+  it("lets a guest-fanout failure escape the JOB path so pg-boss can redeliver", async () => {
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      guestNotifier: {
+        notifyEventCancelled: () => Promise.reject(new Error("guest roster read failed")),
+        notifyEventUpdated: () => Promise.resolve(),
+      },
+    })
+    const created = await svc.createCleanup(baseInput(), ORG)
+
+    await expect(
+      svc.runCancelFanout({ cleanupId: created.id, reason: null, actorId: ORG }),
+    ).rejects.toThrow("guest roster read failed")
   })
 
   it("the enqueued job delivers exactly the bells the inline path used to", async () => {
