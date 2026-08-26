@@ -153,7 +153,6 @@ export interface GuestRetentionResult {
 export interface GuestRsvpRepository {
   findEvent(cleanupId: string): Promise<GuestEventView | null>
   countActiveGuests(cleanupId: string): Promise<number>
-  countGuests(cleanupId: string): Promise<number>
   goingCount(cleanupId: string): Promise<number>
   isPhoneOptedOut(phone: string): Promise<boolean>
   recordPhoneOptOut(phone: string): Promise<void>
@@ -265,6 +264,12 @@ function invalidCodeError(): AppError {
 function attemptsExhaustedError(): AppError {
   return new AppError(ErrorCode.UNAUTHORIZED, "Too many incorrect attempts. Request a new code.", {
     fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.attemptsExhausted },
+  })
+}
+
+function verifyLockedOutError(): AppError {
+  return new AppError(ErrorCode.UNAUTHORIZED, "Too many attempts. Try again later.", {
+    fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.lockedOut },
   })
 }
 
@@ -723,7 +728,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       const at = new Date(now())
       const bucket = ctx.ip === null ? null : normalizeIp(ctx.ip)
       if (bucket !== null && (await readCounter(ipFailKey(bucket))) >= OTP_VERIFY_IP_FAIL_MAX) {
-        throw AppError.unauthorized("Too many attempts. Try again later.")
+        throw verifyLockedOutError()
       }
 
       const event = await loadOpenEvent(input.id)
@@ -821,7 +826,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         cursor: parseTimeCursor(query.cursor, { direction: "desc" }),
         limit,
       })
-      const count = await deps.repo.countGuests(event.id)
+      const count = await deps.repo.countActiveGuests(event.id)
       return { guests: rows.map(toCleanupGuestDTO), count, nextCursor }
     },
 

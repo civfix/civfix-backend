@@ -522,7 +522,7 @@ describe("guest rsvp: the host roster", () => {
 
     const page = await h.service.listGuests({ id: EVENT_ID }, HOST_ID)
     expect(page.guests).toHaveLength(2)
-    expect(page.count).toBe(2)
+    expect(page.count).toBe(1)
     const cancelled = page.guests.find((g) => g.cancelledAt !== null)
     expect(cancelled?.email).toBeNull()
     expect(cancelled?.phone).toBeNull()

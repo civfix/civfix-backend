@@ -10,6 +10,7 @@ import {
   ROLE_CHANGES_PER_TARGET_PER_WINDOW,
   type CleanupService,
 } from "../../src/services/cleanup-service.js"
+import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/services/guest-rsvp-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { CreateCleanupRequest } from "@civfix/shared"
@@ -1574,6 +1575,29 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     expect(repo.cleanups.get(created.id)?.status).toBe("cancelled")
     expect(guestCalls).toEqual([])
     expect(errors).toHaveLength(1)
+  })
+
+  it("enqueues cleanup.guest.update.fanout when a guest-visible detail changes", async () => {
+    const jobs = new FakeJobs()
+    const { svc } = bellHarness(jobs)
+    const created = await svc.createCleanup(baseInput(), ORG)
+
+    await svc.updateCleanup(created.id, { address: "500 New Pier Rd" }, ORG)
+
+    const enqueued = jobs.jobsFor(CLEANUP_GUEST_UPDATE_FANOUT_JOB)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]?.data).toEqual({ cleanupId: created.id })
+    expect(enqueued[0]?.opts?.singletonKey).toBe(created.id)
+  })
+
+  it("does not enqueue a guest fanout for an edit no guest can see", async () => {
+    const jobs = new FakeJobs()
+    const { svc } = bellHarness(jobs)
+    const created = await svc.createCleanup(baseInput(), ORG)
+
+    await svc.updateCleanup(created.id, { title: "Beach sweep (renamed)" }, ORG)
+
+    expect(jobs.jobsFor(CLEANUP_GUEST_UPDATE_FANOUT_JOB)).toHaveLength(0)
   })
 
   it("does not fan out to guests inline when no job queue is wired at all", async () => {

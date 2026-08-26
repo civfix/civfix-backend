@@ -82,13 +82,6 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
       return rows[0]?.n ?? 0
     },
 
-    async countGuests(cleanupId: string): Promise<number> {
-      const rows = await sql<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM cleanup_guests WHERE cleanup_id = ${cleanupId}
-      `
-      return rows[0]?.n ?? 0
-    },
-
     async goingCount(cleanupId: string): Promise<number> {
       const rows = await sql<{ n: number }[]>`
         SELECT
