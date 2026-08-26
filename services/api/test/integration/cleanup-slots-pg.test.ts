@@ -543,12 +543,12 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const winner = await newUser("Seat winner")
     const loser = await newUser("Seat loser")
     await repo.claimSlot(cleanupId, winner, slotId)
-    const going = await repo.memberCount(cleanupId)
+    const going = await repo.goingCount(cleanupId)
 
     expect(await repo.claimSlot(cleanupId, loser, slotId)).toEqual({ kind: "full" })
 
     expect(await membershipCount(cleanupId, loser)).toBe(0)
-    expect(await repo.memberCount(cleanupId)).toBe(going)
+    expect(await repo.goingCount(cleanupId)).toBe(going)
     // The winner's own auto-RSVP still happened — the fix is about WHICH outcomes write it.
     expect(await repo.isMember(cleanupId, winner)).toBe(true)
   })

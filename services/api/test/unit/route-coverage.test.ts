@@ -17,6 +17,7 @@ import { makeClaimService } from "../../src/services/claim-service.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 import { InMemoryAnonStore } from "../helpers/anon.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
+import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemorySocialRepository } from "../helpers/social.js"
 import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
@@ -96,6 +97,8 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
   })
 
   const cleanupRepo = new InMemoryCleanupRepository()
+  const guestRepo = new InMemoryGuestRsvpRepository()
+  cleanupRepo.guestSource = guestRepo
   const socialRepo = new InMemorySocialRepository()
   const notificationRepo = new InMemoryNotificationRepository()
   const mediaRepo = new InMemoryMediaRepository()
@@ -114,6 +117,12 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     anonOverride: { service: anonService },
     claimOverride: { service: claimService },
     cleanupOverrides: { repo: cleanupRepo },
+    guestRsvpOverrides: {
+      repo: guestRepo,
+      roleOf: () => Promise.resolve(null),
+      cache: cache,
+      counters,
+    },
     socialOverrides: { repo: socialRepo },
     volunteerOverrides: { repo: new InMemoryVolunteerHoursRepository() },
     notificationOverrides: { repo: notificationRepo },
@@ -170,8 +179,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 205 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(205)
+  it("covers ALL 210 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(210)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

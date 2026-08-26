@@ -19,8 +19,57 @@ function validProdEnv(): NodeJS.ProcessEnv {
     OCI_EMAIL_SMTP_PORT: "587",
     OCI_EMAIL_SMTP_USER: "smtp-user",
     OCI_EMAIL_SMTP_PASS: "smtp-pass",
+    TWILIO_ACCOUNT_SID: "ACtest",
+    TWILIO_AUTH_TOKEN: "twilio-token",
+    TWILIO_SMS_FROM: "+15550001111",
   }
 }
+
+
+describe("loadEnv: outbound SMS", () => {
+  it("defaults to the fake sender outside production and the real one in production", () => {
+    expect(loadEnv({ NODE_ENV: "test" }).USE_FAKE_SMS).toBe(true)
+    expect(loadEnv(validProdEnv()).USE_FAKE_SMS).toBe(false)
+  })
+
+  it("requires the Twilio triple in production when the real sender is selected", () => {
+    const source = validProdEnv()
+    delete source.TWILIO_ACCOUNT_SID
+    delete source.TWILIO_AUTH_TOKEN
+    delete source.TWILIO_SMS_FROM
+    expect(() => loadEnv(source)).toThrow(/TWILIO_ACCOUNT_SID/)
+  })
+
+  it("allows a production box with NO Twilio account when USE_FAKE_SMS is set", () => {
+    const source = validProdEnv()
+    delete source.TWILIO_ACCOUNT_SID
+    delete source.TWILIO_AUTH_TOKEN
+    delete source.TWILIO_SMS_FROM
+    source.USE_FAKE_SMS = "true"
+    expect(() => loadEnv(source)).not.toThrow()
+  })
+
+  it("does NOT forbid the fake sender in production (unlike storage/mailer/chat/nsfw)", () => {
+    const source = validProdEnv()
+    source.USE_FAKE_SMS = "true"
+    expect(loadEnv(source).USE_FAKE_SMS).toBe(true)
+  })
+
+  it("keeps the guest SMS channel off and the daily cap bounded by default", () => {
+    const env = loadEnv(validProdEnv())
+    expect(env.SMS_GUEST_ENABLED).toBe(false)
+    expect(env.SMS_DAILY_CAP).toBe(50)
+  })
+
+  it("reads an explicit guest-SMS switch and daily cap", () => {
+    const source = validProdEnv()
+    source.SMS_GUEST_ENABLED = "true"
+    source.SMS_DAILY_CAP = "250"
+    const env = loadEnv(source)
+    expect(env.SMS_GUEST_ENABLED).toBe(true)
+    expect(env.SMS_DAILY_CAP).toBe(250)
+  })
+})
 
 describe("loadEnv", () => {
   it("loads a complete production env", () => {

@@ -59,6 +59,12 @@ import {
 } from "../../src/routes/service-hours-certificates.routes.js"
 import { OTP_REQUEST_RATE_LIMIT, OTP_VERIFY_RATE_LIMIT, OAUTH_RATE_LIMIT } from "../../src/routes/auth.routes.js"
 import { HOME_TURF_RATE_LIMIT } from "../../src/routes/forms.routes.js"
+import {
+  GUEST_RSVP_REQUEST_RATE_LIMIT,
+  GUEST_RSVP_VERIFY_RATE_LIMIT,
+  GUEST_RSVP_CANCEL_RATE_LIMIT,
+  GUEST_LIST_RATE_LIMIT,
+} from "../../src/routes/guest-rsvp.routes.js"
 import { CREATE_POST_RATE_LIMIT, POST_INTERACTION_RATE_LIMIT } from "../../src/routes/posts.routes.js"
 import { ROUTE_REPORT_RATE_LIMIT } from "../../src/routes/admin/reports.routes.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "../../src/routes/admin/mail.routes.js"
@@ -441,6 +447,10 @@ const HOST_SCOPED_LIMITS = {
   OTP_VERIFY_RATE_LIMIT,
   OAUTH_RATE_LIMIT,
   HOME_TURF_RATE_LIMIT,
+  GUEST_RSVP_REQUEST_RATE_LIMIT,
+  GUEST_RSVP_VERIFY_RATE_LIMIT,
+  GUEST_RSVP_CANCEL_RATE_LIMIT,
+  GUEST_LIST_RATE_LIMIT,
   ANON_CREATE_RATE_LIMIT,
   MEDIA_WRITE_RATE_LIMIT,
   CLAIM_RATE_LIMIT,

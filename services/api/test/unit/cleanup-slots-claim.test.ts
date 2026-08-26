@@ -222,7 +222,7 @@ describe("auto-RSVP (B28b)", () => {
   it("claiming inserts the membership row and bumps `going`", async () => {
     const id = seedEvent()
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
-    const before = await repo.memberCount(id)
+    const before = await repo.goingCount(id)
     expect(await repo.isMember(id, OUTSIDER)).toBe(false)
 
     const dto = await service.claimEventSlot(id, OUTSIDER, slot.id)
@@ -238,7 +238,7 @@ describe("auto-RSVP (B28b)", () => {
     const id = seedEvent()
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 1 })
     await service.claimEventSlot(id, MEMBER, slot.id)
-    const before = await repo.memberCount(id)
+    const before = await repo.goingCount(id)
 
     await expect(service.claimEventSlot(id, OUTSIDER, slot.id)).rejects.toMatchObject({
       code: "CONFLICT",
@@ -249,7 +249,7 @@ describe("auto-RSVP (B28b)", () => {
     // is already full" and a cache that says not-joined, while the user is silently on the roster,
     // counted in `going`, ringing on every event bell and inside the private event group chat.
     expect(await repo.isMember(id, OUTSIDER)).toBe(false)
-    expect(await repo.memberCount(id)).toBe(before)
+    expect(await repo.goingCount(id)).toBe(before)
   })
 
   it("an unknown slot id commits NO membership row either", async () => {
