@@ -318,6 +318,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OCI_EMAIL_SMTP_PORT,
     OCI_EMAIL_SMTP_USER,
     OCI_EMAIL_SMTP_PASS,
+    OCI_EMAIL_SMTP_TIMEOUT_MS: parsePositiveIntOr(source.OCI_EMAIL_SMTP_TIMEOUT_MS, 15_000),
     MAIL_FROM_NOREPLY: (source.MAIL_FROM_NOREPLY ?? "").trim() || "no-reply@civfix.org",
     MAIL_FROM_OUTREACH: (source.MAIL_FROM_OUTREACH ?? "").trim() || "outreach@civfix.org",
     HOME_TURF_MAIL_FROM: (source.HOME_TURF_MAIL_FROM ?? "").trim() || "donotreply@civfix.org",

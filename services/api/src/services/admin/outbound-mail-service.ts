@@ -73,8 +73,23 @@ export interface SendEventInput {
   html?: string
 }
 
+/**
+ * A report packet whose THREAD + outbound message row are already committed (the claim another concurrent
+ * route sees via getOutreach), with the network send deferred to `deliver()`.
+ *
+ * Splitting the two lets the report-route path hold its `pg_advisory_lock` (on a RESERVED pool
+ * connection, pool max 10) across the DB claim only, instead of across an SMTP round trip that had no
+ * timeout of its own — a stalled provider used to pin a connection and the route lock for as long as it
+ * took. The double-send guarantee is unchanged: the claim is what `assertRoutable` re-checks.
+ */
+export interface PreparedReportOutbound {
+  thread: MailThreadRecord
+  deliver(): Promise<{ thread: MailThreadRecord; messageId: string }>
+}
+
 export interface OutboundMailService {
   sendToCity(input: SendToCityInput): Promise<MailThreadRecord>
+  prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound>
   sendReportToJurisdiction(
     input: SendReportInput,
   ): Promise<{ thread: MailThreadRecord; messageId: string }>
@@ -200,54 +215,71 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     }
   }
 
+  async function prepareReport(input: SendReportInput): Promise<PreparedReportOutbound> {
+    const thread = await repo.findOrCreateReportThread(input.reportId, {
+      jurisdictionGeoid: input.geoid,
+      org: input.org ?? null,
+      subject: input.subject,
+      status: "sent",
+    })
+    const message = await insertOut({
+      threadId: thread.id,
+      direction: "out",
+      fromAddr: env.MAIL_FROM_OUTREACH,
+      toAddr: input.toAddr,
+      subject: input.subject,
+      body: input.text,
+      ...(input.audit
+        ? {
+            audit: {
+              ...input.audit,
+              meta: { ...(input.audit.meta ?? {}), threadId: thread.id, to: input.toAddr },
+            },
+          }
+        : {}),
+    })
+    return {
+      thread,
+      async deliver(): Promise<{ thread: MailThreadRecord; messageId: string }> {
+        const messageId = await deliverAndRecord({
+          threadId: thread.id,
+          messageId: message.id,
+          fromHeader: fromHeaderForThread(thread),
+          toAddr: input.toAddr,
+          subject: input.subject,
+          body: input.text,
+          ...(input.html !== undefined ? { html: input.html } : {}),
+          ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+          eventMeta: {
+            reportId: input.reportId,
+            ...(input.geoid != null ? { geoid: input.geoid } : {}),
+          },
+        })
+        if (thread.status === "bounced") {
+          try {
+            await repo.setThreadStatus(thread.id, "sent")
+          } catch (err) {
+            logger.warn(
+              { err, threadId: thread.id },
+              "report re-route delivered but clearing the thread's 'bounced' status failed",
+            )
+          }
+        }
+        return { thread: await freshThread(thread), messageId }
+      },
+    }
+  }
+
   return {
+    prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound> {
+      return prepareReport(input)
+    },
+
     async sendReportToJurisdiction(
       input: SendReportInput,
     ): Promise<{ thread: MailThreadRecord; messageId: string }> {
-      const thread = await repo.findOrCreateReportThread(input.reportId, {
-        jurisdictionGeoid: input.geoid,
-        org: input.org ?? null,
-        subject: input.subject,
-        status: "sent",
-      })
-      const message = await insertOut({
-        threadId: thread.id,
-        direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
-        toAddr: input.toAddr,
-        subject: input.subject,
-        body: input.text,
-        ...(input.audit
-          ? {
-              audit: {
-                ...input.audit,
-                meta: { ...(input.audit.meta ?? {}), threadId: thread.id, to: input.toAddr },
-              },
-            }
-          : {}),
-      })
-      const messageId = await deliverAndRecord({
-        threadId: thread.id,
-        messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
-        toAddr: input.toAddr,
-        subject: input.subject,
-        body: input.text,
-        ...(input.html !== undefined ? { html: input.html } : {}),
-        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
-        eventMeta: { reportId: input.reportId, ...(input.geoid != null ? { geoid: input.geoid } : {}) },
-      })
-      if (thread.status === "bounced") {
-        try {
-          await repo.setThreadStatus(thread.id, "sent")
-        } catch (err) {
-          logger.warn(
-            { err, threadId: thread.id },
-            "report re-route delivered but clearing the thread's 'bounced' status failed",
-          )
-        }
-      }
-      return { thread: await freshThread(thread), messageId }
+      const prepared = await prepareReport(input)
+      return prepared.deliver()
     },
 
     async sendEventToJurisdiction(

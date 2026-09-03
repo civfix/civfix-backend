@@ -32,6 +32,7 @@ export const inboundEmails = pgTable(
     hasAttachments: boolean("has_attachments").notNull().default(false),
     status: text("status").$type<InboundEmailStatus>().notNull().default("unread"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -39,6 +40,9 @@ export const inboundEmails = pgTable(
     index("inbound_emails_received_idx").on(t.receivedAt.desc(), t.id.desc()),
     index("inbound_emails_status_received_idx").on(t.status, t.receivedAt.desc(), t.id.desc()),
     index("inbound_emails_recipient_idx").on(t.recipient),
+    index("inbound_emails_archived_at_idx")
+      .on(t.archivedAt)
+      .where(sql`archived_at IS NOT NULL`),
   ],
 )
 

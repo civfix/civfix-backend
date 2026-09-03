@@ -317,6 +317,7 @@ export function buildContainer(env: Env): Container {
         pass: env.OCI_EMAIL_SMTP_PASS,
         fromNoReply: env.MAIL_FROM_NOREPLY,
         fromOutreach: env.MAIL_FROM_OUTREACH,
+        timeoutMs: env.OCI_EMAIL_SMTP_TIMEOUT_MS,
       })
 
   const smsSender: SmsSender = env.USE_FAKE_SMS

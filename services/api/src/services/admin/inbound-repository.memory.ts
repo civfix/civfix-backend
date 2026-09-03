@@ -25,6 +25,7 @@ interface StoredInbound extends InboundEmailInsert {
   id: string
   status: InboundEmailStatus
   receivedAt: Date
+  archivedAt: Date | null
 }
 
 /**
@@ -58,6 +59,7 @@ export class InMemoryInboundRepository implements InboundRepository {
       id: randomUUID(),
       status: "unread",
       receivedAt: input.receivedAt ?? this.nextDate(),
+      archivedAt: null,
     }
     this.rows.push(row)
     return Promise.resolve({ id: row.id, inserted: true })
@@ -111,6 +113,7 @@ export class InMemoryInboundRepository implements InboundRepository {
     if (!row) return Promise.resolve(false)
     const priorStatus = row.status
     row.status = status
+    row.archivedAt = status === "archived" ? (row.archivedAt ?? this.nextDate()) : null
     this.audits.push({
       actorId,
       action: "inbox.status_changed",

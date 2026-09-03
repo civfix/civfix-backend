@@ -39,6 +39,13 @@ import { makeDownloader, type DownloadFn } from "./download.js"
 
 export interface WorkerSeams {
   storage: Storage
+  /**
+   * The bucket holding raw inbound-email artifacts (`inbound-emails/**` attachments). Separate from
+   * `storage` because the API refuses to write inbound mail into the PUBLIC media bucket whenever
+   * R2_PUBLIC_BASE is set (di.ts), so the retention lane that reaps archived inbound_emails rows has to
+   * delete their objects from the SAME bucket the API wrote them to, not the media bucket.
+   */
+  inboundStorage: Storage
   abuseChecks: AbuseChecks
   limits: WorkerLimits
   download: DownloadFn
@@ -161,8 +168,28 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
 
   const download = makeDownloader(storage)
 
+  const inboundBucket =
+    (source.R2_INBOUND_BUCKET ?? "").trim() ||
+    ((source.R2_PUBLIC_BASE ?? "").trim().length === 0 ? (source.R2_BUCKET ?? "").trim() : "")
+  const usesR2 = localStorageDir.length === 0 && !fakeStorage
+  if (usesR2 && inboundBucket.length === 0) {
+    throw new Error(
+      "media-worker: R2_INBOUND_BUCKET is required when R2_PUBLIC_BASE is set (raw inbound email is " +
+        "never kept in the public media bucket).",
+    )
+  }
+  const inboundStorage: Storage = usesR2
+    ? new R2Storage({
+        accountId: req(source, "R2_ACCOUNT_ID"),
+        accessKeyId: req(source, "R2_ACCESS_KEY_ID"),
+        secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
+        bucket: inboundBucket,
+      })
+    : storage
+
   return {
     storage,
+    inboundStorage,
     abuseChecks,
     limits,
     download,

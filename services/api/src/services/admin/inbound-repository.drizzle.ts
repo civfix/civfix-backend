@@ -234,7 +234,12 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
         `
         const prior = existing[0]?.status
         if (prior === undefined) return false
-        await tx`UPDATE inbound_emails SET status = ${status} WHERE id = ${id}`
+        await tx`
+          UPDATE inbound_emails
+          SET status = ${status},
+              archived_at = CASE WHEN ${status === "archived"} THEN COALESCE(archived_at, now()) ELSE NULL END
+          WHERE id = ${id}
+        `
         await writeAudit(tx, {
           actorId,
           action: "inbox.status_changed",

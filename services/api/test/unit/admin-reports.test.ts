@@ -768,7 +768,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
 
     let sends = 0
     const outboundMail = {
-      async sendReportToJurisdiction(input: { reportId: string; toAddr: string }) {
+      async prepareReportToJurisdiction(input: { reportId: string; toAddr: string }) {
         await Promise.resolve()
         sends += 1
         const marker = sends
@@ -783,7 +783,11 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             sendFailed: false,
           }
         }
-        return { thread: { id: `t-${marker}` }, messageId: `m-${marker}` }
+        return {
+          thread: { id: `t-${marker}` },
+          deliver: () =>
+            Promise.resolve({ thread: { id: `t-${marker}` }, messageId: `m-${marker}` }),
+        }
       },
     } as unknown as OutboundMailService
 
@@ -800,6 +804,85 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     expect(fulfilled).toHaveLength(1)
     expect(rejected).toHaveLength(1)
     expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ httpStatus: 409 })
+  })
+
+  /**
+   * MEDIUM (route lock held across the mailer): `withRouteLock` reserves a pool connection and holds a
+   * blocking `pg_advisory_lock` for the whole callback. With the SMTP send inside it, a provider that
+   * accepts the connection and then stalls pinned a connection (pool max 10) and the report's route lock
+   * for the length of the stall. The claim (thread + outbound row, which is what `assertRoutable`
+   * re-checks) stays inside the lock; only the network send moved out.
+   */
+  it("does NOT hold the route lock across the mailer network send", async () => {
+    const repo = new InMemoryAdminReportRepository()
+    repo.now = NOW
+    repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+
+    let lockDepth = 0
+    let maxLockDepthDuringSend = 0
+    const realLock = repo.withRouteLock.bind(repo)
+    repo.withRouteLock = async <T,>(id: string, fn: () => Promise<T>): Promise<T> => {
+      return realLock(id, async () => {
+        lockDepth += 1
+        try {
+          return await fn()
+        } finally {
+          lockDepth -= 1
+        }
+      })
+    }
+
+    let releaseSend: () => void = () => {}
+    const hung = new Promise<void>((resolve) => {
+      releaseSend = resolve
+    })
+    const outboundMail = {
+      prepareReportToJurisdiction(input: { reportId: string; toAddr: string }) {
+        const seeded = repo.reports.get(input.reportId)
+        if (seeded) {
+          seeded.outreach = {
+            threadId: "t-1",
+            threadStatus: "sent",
+            hasInbound: false,
+            routedTo: input.toAddr,
+            routedAt: NOW,
+            sendFailed: false,
+          }
+        }
+        return Promise.resolve({
+          thread: { id: "t-1" },
+          deliver: async () => {
+            maxLockDepthDuringSend = Math.max(maxLockDepthDuringSend, lockDepth)
+            await hung
+            return { thread: { id: "t-1" }, messageId: "m-1" }
+          },
+        })
+      },
+    } as unknown as OutboundMailService
+
+    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+    const routing = svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(maxLockDepthDuringSend).toBe(0)
+    expect(lockDepth).toBe(0)
+
+    releaseSend()
+    await expect(routing).resolves.toMatchObject({ threadId: "t-1", routedTo: "311@lacity.gov" })
   })
 })
 

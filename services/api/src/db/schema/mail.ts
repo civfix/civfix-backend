@@ -68,10 +68,17 @@ export const mailMessages = pgTable(
     attachments: jsonb("attachments").notNull().default([]),
     messageId: text("message_id"),
     inReplyTo: text("in_reply_to"),
+    unaffiliated: boolean("unaffiliated").notNull().default(false),
+    effectsAppliedAt: timestamp("effects_applied_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("mail_messages_thread_created_idx").on(t.threadId, t.createdAt),
+    index("mail_messages_effects_pending_idx")
+      .on(t.createdAt)
+      .where(
+        sql`direction = 'in' AND unaffiliated = false AND effects_applied_at IS NULL`,
+      ),
     index("mail_messages_message_id_idx")
       .on(t.messageId)
       .where(sql`message_id IS NOT NULL`),

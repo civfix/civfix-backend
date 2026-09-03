@@ -92,6 +92,34 @@ describe("buildReportPacket", () => {
     expect(packet.text).toContain("3 neighbors")
   })
 
+  /**
+   * H6: the packet used to invite the city to "respond directly to the resident" and carried
+   * `Reported by: <display name>`. Both were wrong: a reply lands in the operator mail thread (nothing
+   * the city types is published), and the reporter's display name is not on the public report either, so
+   * naming them to the city was disclosure the resident never agreed to.
+   *
+   * Coordinates STAY. `docs/location-coarsening-assessment.md` ("Keep `geom` precise for jurisdiction
+   * routing") is the standing decision: a crew cannot be dispatched to an approximate pin.
+   */
+  it("H6: the packet never names the reporter and never offers a direct line to them", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null)
+    for (const part of [packet.text, packet.html]) {
+      expect(part).not.toContain("Dana Reporter")
+      expect(part).not.toContain("Reported by")
+      expect(part.toLowerCase()).not.toContain("directly to the resident")
+      expect(part.toLowerCase()).not.toContain("to reach the resident")
+    }
+    expect(packet.text).toContain("Replies to this email go to the civfix operators")
+    expect(packet.text).toContain("replies to this email reach the civfix operators")
+  })
+
+  it("H6: precise coordinates and the map link stay (jurisdiction routing needs the exact spot)", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null)
+    expect(packet.text).toContain("39.5, -98.35")
+    expect(packet.html).toContain("mlat=39.5")
+    expect(packet.text).toContain("100 Main St")
+  })
+
   it("strips CRLF from the subject to block header injection", () => {
     const packet = buildReportPacket(reportRecord({ title: "Hi\r\nBcc: evil@x" }), null, [], null)
     expect(packet.subject).not.toContain("\n")

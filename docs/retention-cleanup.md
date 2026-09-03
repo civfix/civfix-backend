@@ -1,7 +1,7 @@
 # Retention cleanup jobs (civfix-backend)
 
 **Audience:** internal (engineering + ops). Not served publicly.
-**Last updated:** 2026-06-20 (privacy/backend-hardening).
+**Last updated:** 2026-09-02 (audit-fix pass: inbound_emails TTL + doc-drift corrections).
 
 Backs the "written retention schedule + scheduled cleanup jobs" item in
 `documents/21-privacy-compliance.md` §7.1 for the TTL-able auth artifacts that
@@ -9,15 +9,19 @@ previously accumulated forever (no existing path deleted them).
 
 ## What runs
 
-A new `retention.sweep` cron in the **media-worker** (the same process that runs
-`orphan.sweep` and `chat.partition.maintenance`) deletes expired rows from three
-existing tables. **No new schema** — it only deletes already-expired rows.
+A `retention.sweep` cron in the **media-worker** (the same process that runs
+`orphan.sweep` and `chat.partition.maintenance`) deletes expired rows from the
+tables below. Every lane but `inbound_emails` deletes already-expired rows only
+and needs no schema of its own.
 
 | Table | Rows deleted | Source schema |
 |---|---|---|
 | `email_otps` | `consumed_at IS NOT NULL` OR `expires_at < cutoff` | `services/api/src/db/schema/otp.ts` |
 | `anon_tokens` | `expires_at < cutoff` | `services/api/src/db/schema/anon.ts` |
 | `sessions` | `expires_at < cutoff` | `services/api/src/db/schema/sessions.ts` |
+| `idempotency_keys` | `created_at < now - 48h` (`RETENTION_IDEMPOTENCY_MS`) | `services/api/src/db/schema/idempotency.ts` |
+| `notifications` | `created_at < now - 90d` (see F088 below) | `services/api/src/db/schema/notifications.ts` |
+| `inbound_emails` | `archived_at < now - 180d` (see H10 below) | `services/api/src/db/schema/inbound_emails.ts` |
 
 `cutoff = now - grace`, where `grace` defaults to **1 hour** past expiry (so a
 just-expired row is never raced out from under an in-flight request). Each table
@@ -33,7 +37,7 @@ so a backlog drains over several daily runs rather than one long-locking DELETE.
 - Registration: `services/media-worker/src/worker.ts` — `RETENTION_SWEEP_JOB`
   queue + worker + `jobs.schedule(RETENTION_SWEEP_JOB, RETENTION_SWEEP_CRON)`.
 - Schedule: `services/media-worker/src/config.ts` — `RETENTION_SWEEP_CRON`
-  = `30 3 * * *` (daily, 03:30 UTC, off-peak).
+  = `37 4 * * *` (daily, 04:37 UTC, off-peak).
 - Tests: `services/media-worker/test/unit/retention-sweep.test.ts`.
 
 ## Scheduling mechanism
@@ -76,11 +80,10 @@ DECIDED TTL: 90 days (single lane for all notification types). If a shorter
 TTL is later wanted for `FEED_HIDDEN_NOTIFICATION_TYPES` (chat/DM bells never
 shown in the feed), split into a second drain — no schema change needed.
 
-FOLLOW-UP (not in this change): the drain query is `WHERE created_at < cutoff
-LIMIT n`. At scale a `notifications(created_at)` index would help; the F089
-`notifications_feed_idx` is `(user_id, created_at DESC, id DESC) WHERE type <>
-…` and does not cover a bare `created_at` scan. Pre-launch tables are tiny, so
-this is deferred, not blocking. The `DELETE /me` erasure cleanup step and the
+INDEX: `notifications_created_idx` (migration `0094_notifications_created_idx.sql`)
+now covers the bare `created_at` drain — this was previously listed as deferred.
+The F089 `notifications_feed_idx` is `(user_id, created_at DESC, id DESC) WHERE
+type <> …` and does NOT cover it. The `DELETE /me` erasure cleanup step and the
 `docs/erasure-behavior.md` row are owned by the users/erasure workstream.
 
 ---
@@ -148,3 +151,47 @@ means deleting an event (which the product does not currently do) removes its
 guests with it. There is no way to look a guest up by contact, so there is no
 guest-facing erasure endpoint: cancelling the RSVP is the erasure path, and it
 is capability-based (the manage token), needing no identity check.
+
+---
+
+## H10 — `inbound_emails` retention (audit-fix 2026-09)
+
+`inbound_emails` holds the catch-all inbox: complete third-party correspondence
+(`body_text`, sanitized `body_html`, allowlisted headers) plus the R2 keys of
+every attachment. It had **no TTL and no sweep**, so it was on track to become the
+largest unbounded PII store on the box, with no way to honour a DSAR from a
+resident who had emailed support.
+
+**DECIDED RULE (product owner, 2026-09-02):** an **archived** thread is purged
+**180 days after `archived_at`**. Unread and read rows are untouched — they are
+still open operator work, and ageing them out would silently drop live
+correspondence. The attachment objects in the inbound R2 bucket are deleted with
+the row.
+
+| What | Value |
+|---|---|
+| Table | `inbound_emails` |
+| Predicate | `archived_at IS NOT NULL AND archived_at < now() - 180 days` |
+| Objects deleted | every `attachments[].key` on the deleted rows, from the **inbound** bucket |
+| Cron | the existing `retention.sweep` (`37 4 * * *`, daily) |
+| Batching | `WHERE id IN (SELECT … ORDER BY archived_at ASC LIMIT n) RETURNING id, attachments`, drained page-wise up to `RETENTION_MAX_PAGES` |
+| Tuning | `runRetentionSweep({ inboundEmailsRetentionMs })`, constant `RETENTION_INBOUND_EMAILS_MS` |
+
+**Schema:** `drizzle/0101_inbound_emails_archived_at.sql` adds `archived_at`
+(plus a partial index for the sweep predicate) and backfills existing archived
+rows from `received_at`. `InboundRepository.setStatus` stamps `archived_at` on
+the transition into `archived` and clears it on any transition out, so
+un-archiving restarts the clock rather than leaving a stale deadline.
+
+**Bucket:** inbound attachments are written by the API through
+`container.inboundStorage`, which is the dedicated `R2_INBOUND_BUCKET` whenever
+`R2_PUBLIC_BASE` is set (raw inbound mail is never kept in the public media
+bucket). The worker therefore builds its own `inboundStorage` seam
+(`services/media-worker/src/seams.ts`) instead of reusing the media `storage`
+seam, and the lane is **skipped entirely** when no inbound store is wired (rows
+are kept, never orphaned). A failed object delete is counted
+(`inboundEmailObjectsLeaked`) and reported to GlitchTip; the row still goes.
+
+**Not covered:** `mail_threads` / `mail_messages` (the operator outreach record
+for reports and events) are civic-record correspondence about a public report and
+are deliberately kept, like the reports themselves.

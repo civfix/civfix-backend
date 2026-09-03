@@ -7,6 +7,17 @@ import {
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionDiscoveryJob,
 } from "../../services/jurisdiction-service.js"
+import { domainOf, domainsAligned, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
+
+function ourMailDomains(container: Container): string[] {
+  const env = container.env as { MAIL_FROM_OUTREACH?: string; MAIL_REPLY_DOMAIN?: string }
+  const out: string[] = []
+  const from = domainOf(env.MAIL_FROM_OUTREACH ?? null)
+  if (from !== null) out.push(from)
+  const reply = (env.MAIL_REPLY_DOMAIN ?? "").trim().toLowerCase()
+  if (reply.length > 0 && !out.includes(reply)) out.push(reply)
+  return out
+}
 
 const DSN_SCAN_PREFIX_BYTES = 64 * 1024
 
@@ -38,13 +49,41 @@ export function detectBounce(mail: ParsedMail): BounceDetection {
   return { isBounce: true, failedRecipient, originalMessageId }
 }
 
+export function isPlausibleBounceSender(input: {
+  fromAddr: string | null
+  failedRecipient: string
+  ourMailDomains: readonly string[]
+  authVerdict: MailAuthVerdict
+}): boolean {
+  if (input.authVerdict === "fail") return false
+  const fromDomain = domainOf(input.fromAddr)
+  if (fromDomain === null) return false
+  const failedDomain = domainOf(input.failedRecipient)
+  if (failedDomain !== null && domainsAligned(fromDomain, failedDomain)) return true
+  for (const own of input.ourMailDomains) {
+    if (own.length > 0 && domainsAligned(fromDomain, own)) return true
+  }
+  return false
+}
+
 export async function handleBounce(
   container: Container,
   mailRepo: MailRepository,
   bounce: BounceDetection,
+  sender: { fromAddr: string | null; authVerdict: MailAuthVerdict },
 ): Promise<void> {
   if (bounce.originalMessageId === null) return
   if (bounce.failedRecipient === null) return
+  if (
+    !isPlausibleBounceSender({
+      fromAddr: sender.fromAddr,
+      failedRecipient: bounce.failedRecipient,
+      ourMailDomains: ourMailDomains(container),
+      authVerdict: sender.authVerdict,
+    })
+  ) {
+    return
+  }
   const thread = await mailRepo
     .findThreadByOutboundMessageIds([bounce.originalMessageId])
     .catch(() => null)

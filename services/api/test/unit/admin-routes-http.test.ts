@@ -260,7 +260,6 @@ async function makeHarness(): Promise<Harness> {
   app.adminMailOverrides = {
     repo: fakes.mail,
     outboundMail,
-    fromOutreach: FROM_OUTREACH,
     storage: new FakeStorage(),
   }
   app.adminInboxOverrides = { repo: fakes.inbox, storage: new FakeStorage() }

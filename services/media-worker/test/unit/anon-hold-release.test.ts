@@ -82,6 +82,7 @@ function makeSeams(opts: {
   const limits = loadLimits({})
   return {
     storage: opts.storage,
+    inboundStorage: opts.storage,
     abuseChecks: opts.abuse,
     limits,
     download: makeDownloader(opts.storage),

@@ -96,7 +96,6 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     expect(huge!.body!.length).toBe(MAIL_BODY_DETAIL_CHARS)
     expect(huge!.truncated).toBe(true)
 
-    expect(await repo.getLastInboundSender(t.id)).toBe("clerk@city.gov")
     expect(await repo.getLastOutboundRecipient(t.id)).toBe("clerk@city.gov")
   })
 

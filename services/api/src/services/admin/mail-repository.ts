@@ -34,6 +34,8 @@ export interface MailMessageRecord {
   attachments: MailAttachment[]
   messageId: string | null
   inReplyTo: string | null
+  unaffiliated: boolean
+  effectsAppliedAt: Date | null
   createdAt: Date
   truncated?: boolean
 }
@@ -84,6 +86,7 @@ export interface InsertMessageInput {
   attachments?: MailAttachment[]
   messageId?: string | null
   inReplyTo?: string | null
+  unaffiliated?: boolean
   audit?: MailAuditInput
 }
 
@@ -134,8 +137,21 @@ export interface MailRepository {
   findThreadByToken(token: string): Promise<MailThreadRecord | null>
   findThreadByOutboundMessageIds(messageIds: string[]): Promise<MailThreadRecord | null>
   getLastOutboundRecipient(threadId: string): Promise<string | null>
-  getLastInboundSender(threadId: string): Promise<string | null>
   outboundRecipients(threadId: string): Promise<string[]>
+  findMessageByMessageId(messageId: string): Promise<MailMessageRecord | null>
+  claimMessageEffects(id: string): Promise<boolean>
+  releaseMessageEffects(id: string): Promise<void>
+  findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]>
+}
+
+export interface PendingEffectsQuery {
+  before: Date
+  limit: number
+}
+
+export interface PendingEffects {
+  message: MailMessageRecord
+  thread: MailThreadRecord
 }
 
 export const MAIL_STATS_WINDOW_DAYS = 7

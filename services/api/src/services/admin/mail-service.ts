@@ -16,7 +16,6 @@ import type { OutboundMailService } from "./outbound-mail-service.js"
 export interface MailServiceDeps {
   repo: MailRepository
   outboundMail: OutboundMailService
-  fromOutreach: string
 }
 
 export interface MailService {
@@ -31,18 +30,12 @@ export interface MailService {
 }
 
 export function makeMailService(deps: MailServiceDeps): MailService {
-  const { repo, outboundMail, fromOutreach } = deps
+  const { repo, outboundMail } = deps
 
   async function requireThreadDTO(id: string): Promise<MailThreadDTO> {
     const dto = await repo.getThread(id)
     if (!dto) throw AppError.notFound("Mail thread not found")
     return dto
-  }
-
-  async function resolveRecipient(threadId: string): Promise<string | null> {
-    const inbound = await repo.getLastInboundSender(threadId)
-    if (inbound !== null && !addressesEqual(inbound, fromOutreach)) return inbound
-    return repo.getLastOutboundRecipient(threadId)
   }
 
   async function requireRecipient(
@@ -52,7 +45,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
   ): Promise<string> {
     const record = await repo.getThreadRecord(id)
     if (!record) throw AppError.notFound("Mail thread not found")
-    const toAddr = await resolveRecipient(id)
+    const toAddr = await repo.getLastOutboundRecipient(id)
     if (toAddr === null) throw AppError.validation({ [noRecipientField]: noRecipientMsg })
     return toAddr
   }
@@ -120,7 +113,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
     async resend(id: string, actorId: string): Promise<MailThreadDTO> {
       const dto = await repo.getThread(id)
       if (!dto) throw AppError.notFound("Mail thread not found")
-      const toAddr = await resolveRecipient(id)
+      const toAddr = await repo.getLastOutboundRecipient(id)
       if (toAddr === null) {
         throw AppError.validation({ to: "No recipient address on this thread to resend to." })
       }

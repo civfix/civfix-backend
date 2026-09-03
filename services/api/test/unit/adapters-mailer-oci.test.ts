@@ -2,7 +2,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
-import { OciMailer } from "../../src/adapters/mailer.oci.js"
+import {
+  OciMailer,
+  OCI_MAILER_DEFAULT_TIMEOUT_MS,
+} from "../../src/adapters/mailer.oci.js"
 
 interface SentMailArgs {
   from: string
@@ -255,5 +258,34 @@ describe("OciMailer.sendTransactional", () => {
       subject: "Hi\r\nX-Evil: yes",
     })
     expect(sendMail.mock.calls[0]![0].subject).not.toMatch(/[\r\n]/)
+  })
+})
+
+/**
+ * MEDIUM (mailer hang): nodemailer arms NO timeout of its own, so a provider that completes the TCP
+ * connection and then stalls held the caller forever. The report-route path used to run this send inside
+ * a `pg_advisory_lock` on a RESERVED pool connection (pool max 10), so ~10 concurrent routes against a
+ * stalled provider pinned the whole pool.
+ */
+describe("OciMailer transport timeouts", () => {
+  it("arms connect/greeting/socket timeouts with the configured value", async () => {
+    const mailer = new OciMailer({ ...CONFIG, timeoutMs: 4321 })
+    await mailer.sendOutbound(outbound())
+    expect(lastTransportOpts).toMatchObject({
+      connectionTimeout: 4321,
+      greetingTimeout: 4321,
+      socketTimeout: 4321,
+    })
+  })
+
+  it("falls back to the default timeout when none is configured (never unbounded)", async () => {
+    const mailer = new OciMailer(CONFIG)
+    await mailer.sendOutbound(outbound())
+    expect(OCI_MAILER_DEFAULT_TIMEOUT_MS).toBeGreaterThan(0)
+    expect(lastTransportOpts).toMatchObject({
+      connectionTimeout: OCI_MAILER_DEFAULT_TIMEOUT_MS,
+      greetingTimeout: OCI_MAILER_DEFAULT_TIMEOUT_MS,
+      socketTimeout: OCI_MAILER_DEFAULT_TIMEOUT_MS,
+    })
   })
 })

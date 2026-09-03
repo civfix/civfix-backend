@@ -186,6 +186,7 @@ function makeRetentionSweepHandler(seams: WorkerSeams): JobHandler {
     if (!dbHandle) return
     await runRetentionSweep({
       sql: dbHandle.sql,
+      storage: seams.inboundStorage,
       batchSize: seams.limits.retentionSweepBatch,
       maxPages: seams.limits.retentionSweepMaxPages,
       report: seams.report,

@@ -61,6 +61,7 @@ export interface Env {
   // OCI SMTP mailer: [BOOT] unless USE_FAKE_MAILER.
   OCI_EMAIL_SMTP_HOST: string
   OCI_EMAIL_SMTP_PORT: number
+  OCI_EMAIL_SMTP_TIMEOUT_MS: number
   OCI_EMAIL_SMTP_USER: string
   OCI_EMAIL_SMTP_PASS: string
   MAIL_FROM_NOREPLY: string

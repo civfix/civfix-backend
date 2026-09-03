@@ -219,6 +219,7 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
 
     const seams: WorkerSeams = {
       storage,
+      inboundStorage: storage,
       abuseChecks: new FakeAbuseChecks(),
       limits: loadLimits({}),
       download: makeDownloader(storage),

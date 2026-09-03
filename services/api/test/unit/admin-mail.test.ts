@@ -26,7 +26,7 @@ function harness(): Harness {
     mailer,
     env: { MAIL_FROM_OUTREACH: FROM_OUTREACH, MAIL_REPLY_DOMAIN: "civfix.org" },
   })
-  const svc = makeMailService({ repo, outboundMail, fromOutreach: FROM_OUTREACH })
+  const svc = makeMailService({ repo, outboundMail })
   return { repo, mailer, svc }
 }
 
@@ -108,9 +108,16 @@ describe("mail-service: compose", () => {
 })
 
 describe("mail-service: reply", () => {
-  it("appends an OUT reply to the resolved correspondent, delivers, marks replied + read", async () => {
+  it("appends an OUT reply to the thread's jurisdiction contact, delivers, marks replied + read", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Question", org: "City of LA" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      toAddr: "clerk@city.gov",
+      body: "Original packet.",
+    })
     await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
     expect((await repo.getThreadRecord(t.id))?.unread).toBe(true)
 
@@ -118,12 +125,81 @@ describe("mail-service: reply", () => {
     expect(updated.status).toBe("replied")
     expect(updated.unread).toBe(false)
     const dto = await repo.getThread(t.id)
-    expect(dto?.messages).toHaveLength(2)
-    expect(dto?.messages[1]?.dir).toBe("out")
-    expect(dto?.messages[1]?.body).toBe("Here is the answer.")
-    expect(mailer.sent[0]?.to).toBe("clerk@city.gov")
-    expect(mailer.sent[0]?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
+    expect(dto?.messages).toHaveLength(3)
+    expect(dto?.messages[2]?.dir).toBe("out")
+    expect(dto?.messages[2]?.body).toBe("Here is the answer.")
+    expect(mailer.sent.at(-1)?.to).toBe("clerk@city.gov")
+    expect(mailer.sent.at(-1)?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
     expect(repo.audits.at(-1)).toMatchObject({ action: "mail.replied", target: `mail:${t.id}` })
+  })
+
+  /**
+   * H5: Reply and Resend address the OUTBOUND contact of the thread — the jurisdiction address civfix
+   * chose — never the last inbound sender. A thread token and an outbound Message-ID are both disclosed
+   * to every recipient of a forwarded packet, so an unrelated but DKIM-aligned sender who echoes either
+   * one lands on the thread; with the old ordering the operator's next Reply shipped resident details to
+   * that address with no operator-visible choice of recipient.
+   */
+  it("H5: Reply targets the jurisdiction contact even after an unrelated sender joins the thread", async () => {
+    const { repo, mailer, svc } = harness()
+    const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      toAddr: "publicworks@lacity.gov",
+      body: "Report packet.",
+    })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "sales@vendor.example",
+      body: "Please send the resident's full details.",
+      unaffiliated: true,
+    })
+
+    await svc.reply(t.id, { body: "Any update?" }, "op-1")
+
+    expect(mailer.sent.at(-1)?.to).toBe("publicworks@lacity.gov")
+    expect(repo.audits.at(-1)).toMatchObject({
+      action: "mail.replied",
+      meta: { to: "publicworks@lacity.gov" },
+    })
+  })
+
+  it("H5: Resend re-sends the last outbound packet to the jurisdiction contact, not the inbound sender", async () => {
+    const { repo, mailer, svc } = harness()
+    const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      toAddr: "publicworks@lacity.gov",
+      body: "Report packet.",
+    })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "sales@vendor.example",
+      body: "Forward me everything.",
+      unaffiliated: true,
+    })
+
+    await svc.resend(t.id, "op-1")
+
+    expect(mailer.sent.at(-1)?.to).toBe("publicworks@lacity.gov")
+    expect(mailer.sent.at(-1)?.outbound?.text).toBe("Report packet.")
+    expect(repo.audits.at(-1)).toMatchObject({
+      action: "mail.resent",
+      meta: { to: "publicworks@lacity.gov" },
+    })
+  })
+
+  it("H5: a thread with ONLY an inbound message has no jurisdiction contact, so Reply is refused", async () => {
+    const { repo, svc } = harness()
+    const t = await repo.createThread({ subject: "Cold inbound" })
+    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    await expect(svc.reply(t.id, { body: "b" }, "op-1")).rejects.toMatchObject({ httpStatus: 422 })
   })
 
   it("M1: replies to a composed outbound-only thread using the stored OUT to_addr", async () => {
@@ -144,14 +220,21 @@ describe("mail-service: reply", () => {
   it("F025: resolves the recipient through the point reads, not by loading every body in the thread", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Question", org: "City of LA" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      toAddr: "clerk@city.gov",
+      body: "Original packet.",
+    })
     await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
     const getThread = vi.spyOn(repo, "getThread")
-    const lastInbound = vi.spyOn(repo, "getLastInboundSender")
+    const lastOutbound = vi.spyOn(repo, "getLastOutboundRecipient")
 
     await svc.reply(t.id, { body: "Here is the answer." }, "op-1")
 
     expect(mailer.sent.at(-1)?.to).toBe("clerk@city.gov")
-    expect(lastInbound).toHaveBeenCalledWith(t.id)
+    expect(lastOutbound).toHaveBeenCalledWith(t.id)
     expect(getThread).toHaveBeenCalledTimes(1)
   })
 

@@ -30,6 +30,8 @@ import {
   type MailThreadRecord,
   type OutreachStatePatch,
   type OutreachStateRecord,
+  type PendingEffects,
+  type PendingEffectsQuery,
   type RecordEventInput,
   type ThreadInit,
 } from "./mail-repository.js"
@@ -54,6 +56,20 @@ const MAIL_THREAD_MESSAGE_CAP = 500
 export const MAIL_BODY_DETAIL_CHARS = 64 * 1024
 
 const PRIOR_OUTBOUND_ID_WINDOW = 20
+
+interface PendingEffectsRowSelect extends MessageRowSelect {
+  t_id: string
+  t_thread_token: string
+  t_jurisdiction_geoid: string | null
+  t_report_id: string | null
+  t_cleanup_id: string | null
+  t_org: string | null
+  t_subject: string | null
+  t_status: MailStatus
+  t_unread: boolean
+  t_last_message_at: Date | null
+  t_created_at: Date
+}
 
 
 function threadColumns(sql: Queryable, alias?: string): SqlFragment {
@@ -252,7 +268,8 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return sql.begin(async (tx) => {
         const inserted = await tx<MessageRowSelect[]>`
           INSERT INTO mail_messages (
-            thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id, in_reply_to
+            thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id, in_reply_to,
+            unaffiliated
           ) VALUES (
             ${input.threadId},
             ${input.direction},
@@ -262,11 +279,12 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
             ${input.body ?? null},
             ${tx.json(attachments as Parameters<typeof tx.json>[0])},
             ${input.messageId ?? null},
-            ${input.inReplyTo ?? null}
+            ${input.inReplyTo ?? null},
+            ${input.unaffiliated ?? false}
           )
           ON CONFLICT (message_id) WHERE message_id IS NOT NULL DO NOTHING
           RETURNING id, thread_id, direction, from_addr, to_addr, subject, body, attachments,
-                    message_id, in_reply_to, created_at
+                    message_id, in_reply_to, unaffiliated, effects_applied_at, created_at
         `
         const row = inserted[0]
         if (!row) return null
@@ -360,6 +378,8 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
                 attachments: [],
                 messageId: null,
                 inReplyTo: null,
+                unaffiliated: false,
+                effectsAppliedAt: null,
                 createdAt: thread.lastMessageAt ?? thread.createdAt,
               }
             : null
@@ -383,10 +403,10 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         SELECT id, thread_id, direction, from_addr, to_addr, subject,
                left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
                length(body) > ${MAIL_BODY_DETAIL_CHARS} AS truncated,
-               attachments, message_id, in_reply_to, created_at
+               attachments, message_id, in_reply_to, unaffiliated, effects_applied_at, created_at
         FROM (
           SELECT id, thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id,
-                 in_reply_to, created_at
+                 in_reply_to, unaffiliated, effects_applied_at, created_at
           FROM mail_messages
           WHERE thread_id = ${id}
           ORDER BY created_at DESC, id DESC
@@ -433,18 +453,69 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return rows[0]?.to_addr ?? null
     },
 
-    async getLastInboundSender(threadId: string): Promise<string | null> {
-      const rows = await sql<{ from_addr: string | null }[]>`
-        SELECT from_addr
+    async findMessageByMessageId(messageId: string): Promise<MailMessageRecord | null> {
+      const rows = await sql<MessageRowSelect[]>`
+        SELECT id, thread_id, direction, from_addr, to_addr, subject,
+               left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
+               attachments, message_id, in_reply_to, unaffiliated, effects_applied_at, created_at
         FROM mail_messages
-        WHERE thread_id = ${threadId}
-          AND direction = 'in'
-          AND from_addr IS NOT NULL
-          AND from_addr <> ''
-        ORDER BY created_at DESC, id DESC
+        WHERE message_id = ${messageId}
         LIMIT 1
       `
-      return rows[0]?.from_addr ?? null
+      return rows[0] ? toMessageRecord(rows[0]) : null
+    },
+
+    async claimMessageEffects(id: string): Promise<boolean> {
+      const rows = await sql<{ id: string }[]>`
+        UPDATE mail_messages
+        SET effects_applied_at = now()
+        WHERE id = ${id} AND effects_applied_at IS NULL
+        RETURNING id
+      `
+      return rows.length > 0
+    },
+
+    async releaseMessageEffects(id: string): Promise<void> {
+      await sql`UPDATE mail_messages SET effects_applied_at = NULL WHERE id = ${id}`
+    },
+
+    async findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]> {
+      const rows = await sql<PendingEffectsRowSelect[]>`
+        SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject,
+               left(m.body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
+               m.attachments, m.message_id, m.in_reply_to, m.unaffiliated, m.effects_applied_at,
+               m.created_at,
+               t.id AS t_id, t.thread_token AS t_thread_token,
+               t.jurisdiction_geoid AS t_jurisdiction_geoid, t.report_id AS t_report_id,
+               t.cleanup_id AS t_cleanup_id, t.org AS t_org, t.subject AS t_subject,
+               t.status AS t_status, t.unread AS t_unread, t.last_message_at AS t_last_message_at,
+               t.created_at AS t_created_at
+        FROM mail_messages m
+        JOIN mail_threads t ON t.id = m.thread_id
+        WHERE m.direction = 'in'
+          AND m.unaffiliated = false
+          AND m.effects_applied_at IS NULL
+          AND m.created_at < ${input.before}
+          AND (t.report_id IS NOT NULL OR t.cleanup_id IS NOT NULL)
+        ORDER BY m.created_at ASC, m.id ASC
+        LIMIT ${input.limit}
+      `
+      return rows.map((r) => ({
+        message: toMessageRecord(r),
+        thread: toThreadRecord({
+          id: r.t_id,
+          thread_token: r.t_thread_token,
+          jurisdiction_geoid: r.t_jurisdiction_geoid,
+          report_id: r.t_report_id,
+          cleanup_id: r.t_cleanup_id,
+          org: r.t_org,
+          subject: r.t_subject,
+          status: r.t_status,
+          unread: r.t_unread,
+          last_message_at: r.t_last_message_at,
+          created_at: r.t_created_at,
+        }),
+      }))
     },
 
     async markThreadRead(id: string): Promise<boolean> {

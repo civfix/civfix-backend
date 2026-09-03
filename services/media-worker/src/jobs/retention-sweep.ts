@@ -1,4 +1,5 @@
 
+import type { Storage } from "@civfix/shared/interfaces"
 import type { Sql } from "@civfix/api/db"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
@@ -8,8 +9,11 @@ export interface RetentionSweepDeps extends JobObsDeps {
   graceMs?: number
   idempotencyRetentionMs?: number
   notificationsRetentionMs?: number
+  inboundEmailsRetentionMs?: number
   batchSize?: number
   maxPages?: number
+  /** Object store holding inbound-email attachments; omit to keep the rows and skip that lane. */
+  storage?: Pick<Storage, "delete">
 }
 
 export interface RetentionSweepResult {
@@ -18,6 +22,8 @@ export interface RetentionSweepResult {
   sessions: number
   idempotencyKeys: number
   notifications: number
+  inboundEmails: number
+  inboundEmailObjectsLeaked: number
   errors: number
 }
 
@@ -25,7 +31,28 @@ export const RETENTION_GRACE_MS = 60 * 60 * 1000
 export const RETENTION_BATCH = 5000
 export const RETENTION_IDEMPOTENCY_MS = 48 * 60 * 60 * 1000
 export const RETENTION_NOTIFICATIONS_MS = 90 * 24 * 60 * 60 * 1000
+export const RETENTION_INBOUND_EMAILS_MS = 180 * 24 * 60 * 60 * 1000
+export const RETENTION_INBOUND_EMAILS_BATCH = 200
 export const RETENTION_MAX_PAGES = 20
+
+interface InboundEmailAttachment {
+  key?: unknown
+}
+
+interface ArchivedInboundEmailRow {
+  id: string
+  attachments: InboundEmailAttachment[] | null
+}
+
+function attachmentKeys(rows: ArchivedInboundEmailRow[]): string[] {
+  const keys: string[] = []
+  for (const row of rows) {
+    for (const att of row.attachments ?? []) {
+      if (typeof att?.key === "string" && att.key.length > 0) keys.push(att.key)
+    }
+  }
+  return keys
+}
 
 export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<RetentionSweepResult> {
   const { log, report, now: clock } = resolveJobObs(deps)
@@ -40,6 +67,9 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
   const notificationsCutoff = new Date(
     now.getTime() - (deps.notificationsRetentionMs ?? RETENTION_NOTIFICATIONS_MS),
   )
+  const inboundEmailsCutoff = new Date(
+    now.getTime() - (deps.inboundEmailsRetentionMs ?? RETENTION_INBOUND_EMAILS_MS),
+  )
 
   const result: RetentionSweepResult = {
     otps: 0,
@@ -47,16 +77,27 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     sessions: 0,
     idempotencyKeys: 0,
     notifications: 0,
+    inboundEmails: 0,
+    inboundEmailObjectsLeaked: 0,
     errors: 0,
   }
 
-  async function drainTable(
+  async function drainTable<T>(
     table: string,
-    deletePage: (limit: number) => Promise<unknown[]>,
+    deletePage: (limit: number) => Promise<T[]>,
     onDeleted: (n: number) => void,
+    handlePage?: (rows: T[]) => Promise<void>,
+    tablePageSize: number = pageSize,
   ): Promise<void> {
     try {
-      await drainPages(deletePage, (rows) => onDeleted(rows.length), { pageSize, maxPages })
+      await drainPages(
+        deletePage,
+        async (rows) => {
+          onDeleted(rows.length)
+          if (handlePage) await handlePage(rows)
+        },
+        { pageSize: tablePageSize, maxPages },
+      )
     } catch (err) {
       result.errors++
       report(err, { job: "retention.sweep", table })
@@ -134,12 +175,43 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     (n) => (result.notifications += n),
   )
 
+  const inboundStorage = deps.storage
+  if (inboundStorage !== undefined) {
+    await drainTable(
+      "inbound_emails",
+      (limit) => deps.sql<ArchivedInboundEmailRow[]>`
+        DELETE FROM inbound_emails
+        WHERE id IN (
+          SELECT id FROM inbound_emails
+          WHERE archived_at IS NOT NULL AND archived_at < ${inboundEmailsCutoff}
+          ORDER BY archived_at ASC
+          LIMIT ${limit}
+        )
+        RETURNING id, attachments
+      `,
+      () => {},
+      async (rows) => {
+        result.inboundEmails += rows.length
+        for (const key of attachmentKeys(rows)) {
+          try {
+            await inboundStorage.delete(key)
+          } catch (err) {
+            result.inboundEmailObjectsLeaked += 1
+            report(err, { job: "retention.sweep", table: "inbound_emails", phase: "attachment" })
+          }
+        }
+      },
+    )
+  }
+
   log("retention.sweep: done", {
     otps: result.otps,
     anonTokens: result.anonTokens,
     sessions: result.sessions,
     idempotencyKeys: result.idempotencyKeys,
     notifications: result.notifications,
+    inboundEmails: result.inboundEmails,
+    inboundEmailObjectsLeaked: result.inboundEmailObjectsLeaked,
     errors: result.errors,
     cutoff: cutoff.toISOString(),
   })

@@ -358,9 +358,9 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           : "Sent to jurisdiction"
       const advances = ROUTABLE_FROM_STATUSES.has(record.status)
 
-      const threadId = await deps.repo.withRouteLock(id, async () => {
+      const prepared = await deps.repo.withRouteLock(id, async () => {
         assertRoutable(await deps.repo.getOutreach(id), toAddr)
-        const { thread } = await deps.outboundMail.sendReportToJurisdiction({
+        return deps.outboundMail.prepareReportToJurisdiction({
           reportId: id,
           geoid: routing?.geoid ?? null,
           org: routing?.dept ?? null,
@@ -376,22 +376,25 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
             meta: { override: override !== null },
           },
         })
-        await retryOnce(async () => {
-          if (advances) {
-            await deps.repo.setStatus(id, {
-              status: "acknowledged",
-              note: routeNote,
-              actorId: input.actorId,
-            })
-          } else {
-            await deps.repo.appendSystemTimeline(id, {
-              note: routeNote,
-              kind: "route",
-            })
-          }
-        })
-        return thread.id
       })
+
+      await prepared.deliver()
+
+      await retryOnce(async () => {
+        if (advances) {
+          await deps.repo.setStatus(id, {
+            status: "acknowledged",
+            note: routeNote,
+            actorId: input.actorId,
+          })
+        } else {
+          await deps.repo.appendSystemTimeline(id, {
+            note: routeNote,
+            kind: "route",
+          })
+        }
+      })
+      const threadId = prepared.thread.id
 
       await emitTimeline({
         reportId: id,
