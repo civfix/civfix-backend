@@ -1,5 +1,8 @@
 import type { FastifyRequest } from "fastify"
 import type { SessionService } from "../auth/session-service.js"
+import type { AccountStatus } from "../auth/stores.js"
+import type { WsTicketPayload } from "../auth/ws-ticket.js"
+import { sha256Hex } from "../auth/crypto.js"
 import { presentedSessionToken, sessionCookieValue } from "../auth/transport.js"
 import { isProd } from "../env.js"
 import type { WsHandshakeResult } from "./types.js"
@@ -51,33 +54,50 @@ function queryTokenAllowed(): boolean {
 }
 
 /**
- * Resolve the upgrade's user AND the session token it authenticated with (M1: the socket keeps the token
- * so the heartbeat can re-check that the session still exists and the account is not banned — before
- * this, a socket authenticated ONCE at connect and a logged-out or banned user kept full read/write
- * access to every joined room until they closed the tab).
+ * Resolve the upgrade's user AND the sha256 of the session that authenticated it (M1/H2: the socket keeps
+ * the session HASH — never the raw token — so the heartbeat can re-check that the session still exists,
+ * has not been revoked, and the account is not banned. Before this, a socket authenticated ONCE at connect
+ * and a logged-out or banned user kept full read/write access to every joined room until they closed the
+ * tab; and the ?ticket= (mobile) path had no session to re-check at all, so admin revoke, logout, role
+ * change and the absolute session cap were all invisible to it.
  *
- * `token` is deliberately absent on the ?ticket= path: a connect ticket is single-use and already
- * redeemed, so there is nothing to re-resolve — those sockets fall back to the banned-account check.
+ * A connect ticket is bound at mint time to the hash of the session that requested it, so the ticket path
+ * yields the same `sessionHash` the cookie path does and re-validates identically.
  */
 export async function resolveWsUser(
   request: FastifyRequest,
   sessions: SessionService | undefined,
-  redeemTicket?: (ticket: string) => Promise<string | null>,
-): Promise<{ userId: string; token?: string } | null> {
+  redeemTicket?: (ticket: string) => Promise<WsTicketPayload | null>,
+): Promise<{ userId: string; sessionHash?: string; accountStatus?: AccountStatus } | null> {
   // The cookie path: the auth onRequest hook already resolved the httpOnly session cookie. Re-read the
-  // presented token anyway so the live-socket re-check has a credential to resolve.
+  // presented token anyway so the live-socket re-check has a session hash to resolve.
   const cookieOrBearer = presentedSessionToken(request)
   const fromContext = request.auth?.userId ?? null
   if (fromContext !== null) {
-    return cookieOrBearer ? { userId: fromContext, token: cookieOrBearer } : { userId: fromContext }
+    const status = request.accountStatus
+    const base = status !== undefined ? { accountStatus: status } : {}
+    return cookieOrBearer
+      ? { userId: fromContext, sessionHash: await sha256Hex(cookieOrBearer), ...base }
+      : { userId: fromContext, ...base }
   }
 
   const query = request.query as { token?: unknown; ticket?: unknown } | undefined
 
   const ticket = typeof query?.ticket === "string" && query.ticket.length > 0 ? query.ticket : null
   if (ticket && redeemTicket) {
-    const userId = await redeemTicket(ticket)
-    if (userId) return { userId }
+    const redeemed = await redeemTicket(ticket)
+    if (redeemed) {
+      if (redeemed.sessionHash === null || !sessions) return { userId: redeemed.userId }
+      const resolved = await sessions.resolveSessionByHash(redeemed.sessionHash)
+      if (resolved !== null && resolved.userId === redeemed.userId) {
+        return {
+          userId: redeemed.userId,
+          sessionHash: redeemed.sessionHash,
+          accountStatus: resolved.accountStatus,
+        }
+      }
+      return null
+    }
   }
 
   const queryToken =
@@ -87,7 +107,13 @@ export async function resolveWsUser(
   const presented = queryToken ?? cookieOrBearer
   if (presented && sessions) {
     const resolved = await sessions.resolveSession(presented)
-    if (resolved) return { userId: resolved.userId, token: presented }
+    if (resolved) {
+      return {
+        userId: resolved.userId,
+        sessionHash: await sha256Hex(presented),
+        accountStatus: resolved.accountStatus,
+      }
+    }
   }
   return null
 }
@@ -97,7 +123,7 @@ export async function checkWsHandshake(
   opts: {
     sessions: SessionService | undefined
     webOrigins: readonly string[]
-    redeemTicket?: (ticket: string) => Promise<string | null>
+    redeemTicket?: (ticket: string) => Promise<WsTicketPayload | null>
   },
 ): Promise<WsHandshakeResult> {
   const hasSessionCookie = wsHasSessionCookie(request)
@@ -118,11 +144,14 @@ export async function checkWsHandshake(
       reason: "unauthenticated",
     }
   }
-  // The token (when there is one) rides along so socket-lifecycle can re-authorize the LIVE socket on
-  // each heartbeat (M1) — it is never sent to the client.
-  return resolved.token !== undefined
-    ? { ok: true, userId: resolved.userId, token: resolved.token }
-    : { ok: true, userId: resolved.userId }
+  // The session hash (when there is one) rides along so socket-lifecycle can re-authorize the LIVE socket
+  // on each heartbeat (M1/H2) — it is never sent to the client and is not a usable credential.
+  return {
+    ok: true,
+    userId: resolved.userId,
+    ...(resolved.sessionHash !== undefined ? { sessionHash: resolved.sessionHash } : {}),
+    ...(resolved.accountStatus !== undefined ? { accountStatus: resolved.accountStatus } : {}),
+  }
 }
 
 export { originHeader, wsHasSessionCookie }

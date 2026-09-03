@@ -56,6 +56,7 @@ export class PgSessionStore implements SessionStore {
         id: sessions.id,
         userId: sessions.userId,
         role: users.role,
+        accountStatus: userModeration.accountStatus,
         createdAt: sessions.createdAt,
         expiresAt: sessions.expiresAt,
         lastSeenAt: sessions.lastSeenAt,
@@ -64,6 +65,7 @@ export class PgSessionStore implements SessionStore {
       })
       .from(sessions)
       .innerJoin(users, eq(users.id, sessions.userId))
+      .leftJoin(userModeration, eq(userModeration.userId, sessions.userId))
       .where(eq(sessions.id, hash))
       .limit(1)
 
@@ -73,6 +75,7 @@ export class PgSessionStore implements SessionStore {
       id: r.id,
       userId: r.userId,
       roles: rolesFor(r.role),
+      accountStatus: r.accountStatus ?? "active",
       createdAt: r.createdAt ?? new Date(0),
       expiresAt: r.expiresAt,
       lastSeenAt: r.lastSeenAt,

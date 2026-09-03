@@ -26,6 +26,7 @@ import {
   WS_REAUTH_JITTER_MS,
 } from "./types.js"
 import type { SessionService } from "../auth/session-service.js"
+import type { AccountStatus } from "../auth/stores.js"
 
 const READY_STATE_OPEN = 1
 
@@ -98,23 +99,38 @@ export async function subscribeUserChannel(
   }
 }
 
+export interface SocketAuthCheck {
+  authorized: boolean
+  accountStatus?: AccountStatus
+}
+
+export async function checkSocketAuthorization(
+  sessions: SessionService | undefined,
+  userId: string,
+  sessionHash: string | undefined,
+  fullCheck: boolean,
+): Promise<SocketAuthCheck> {
+  if (!sessions) return { authorized: true }
+  try {
+    if (!(await sessions.isUserActive(userId))) return { authorized: false }
+    if (fullCheck && sessionHash !== undefined) {
+      const resolved = await sessions.resolveSessionByHash(sessionHash)
+      if (resolved === null || resolved.userId !== userId) return { authorized: false }
+      return { authorized: true, accountStatus: resolved.accountStatus }
+    }
+    return { authorized: true }
+  } catch {
+    return { authorized: true }
+  }
+}
+
 export async function isSocketStillAuthorized(
   sessions: SessionService | undefined,
   userId: string,
-  token: string | undefined,
+  sessionHash: string | undefined,
   fullCheck: boolean,
 ): Promise<boolean> {
-  if (!sessions) return true
-  try {
-    if (!(await sessions.isUserActive(userId))) return false
-    if (fullCheck && token !== undefined) {
-      const resolved = await sessions.resolveSession(token)
-      if (resolved === null || resolved.userId !== userId) return false
-    }
-    return true
-  } catch {
-    return true
-  }
+  return (await checkSocketAuthorization(sessions, userId, sessionHash, fullCheck)).authorized
 }
 
 export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayOptions): void {
@@ -192,6 +208,9 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
 
       const session: GatewaySession = {
         userId,
+        ...(handshake.accountStatus !== undefined
+          ? { accountStatus: handshake.accountStatus }
+          : {}),
         conn: wrapSocket(socket),
         joined: new Set<string>(),
         typingThrottle: new Map<string, number>(),
@@ -231,7 +250,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
 
       let alive = true
       let overBufferTicks = 0
-      const sessionToken = handshake.token
+      const sessionHash = handshake.sessionHash
       const nextReauthInterval = (): number =>
         WS_REAUTH_INTERVAL_MS + Math.floor(Math.random() * WS_REAUTH_JITTER_MS)
       let reauthIntervalMs = nextReauthInterval()
@@ -252,7 +271,14 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
             lastFullReauthAt = now
             reauthIntervalMs = nextReauthInterval()
           }
-          if (await isSocketStillAuthorized(opts.sessions, userId, sessionToken, fullCheck)) {
+          const check = await checkSocketAuthorization(
+            opts.sessions,
+            userId,
+            sessionHash,
+            fullCheck,
+          )
+          if (check.authorized) {
+            if (check.accountStatus !== undefined) session.accountStatus = check.accountStatus
             if (fullCheck && !closingForAuth && !session.closed) {
               await reauthorizeJoinedRooms(session)
             }

@@ -246,8 +246,7 @@ async function makeHarness(): Promise<Harness> {
   app.adminUserOverrides = {
     repo: fakes.users,
     sessions: {
-      ban: () => Promise.resolve(0),
-      clearBan: () => Promise.resolve(),
+      applyStatus: () => Promise.resolve(0),
       revokeAll: () => Promise.resolve(0),
     },
   }

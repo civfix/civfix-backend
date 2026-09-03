@@ -398,6 +398,9 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
         const record = toRecord(resolved, media)
         if (removedReport) record.reportTimelineStatus = "rejected"
+        if (removed && isUserSubject(resolved.subject_type)) {
+          record.suspendedUserId = resolved.subject_id
+        }
         return record
       })
     },

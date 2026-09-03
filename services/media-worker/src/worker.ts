@@ -302,23 +302,36 @@ export async function buildWorker(
 
 let shuttingDown = false
 
-export async function start(): Promise<Worker> {
-  const worker = await buildWorker()
-  await worker.start()
-  console.log("civfix media-worker started")
-
-  async function shutdown(signal: string): Promise<void> {
+/**
+ * The graceful-stop path, shared by the signal handlers and by main.ts's process-fault handlers.
+ * `exitCode` is the code used for a CLEAN stop: 0 for a signal, non-zero for a fatal process fault, so a
+ * worker that died from an unhandled rejection never looks healthy to its supervisor.
+ */
+export function makeShutdown(
+  worker: Worker,
+  opts: { exitCode?: number } = {},
+): (reason: string) => Promise<void> {
+  const cleanExitCode = opts.exitCode ?? 0
+  return async function shutdown(reason: string): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
-    console.log(`media-worker: ${signal} received, stopping`)
+    console.log(`media-worker: ${reason} received, stopping`)
     try {
       await worker.stop()
-      process.exit(0)
+      process.exit(cleanExitCode)
     } catch (err) {
       console.error("media-worker: error during shutdown", err)
       process.exit(1)
     }
   }
+}
+
+export async function start(): Promise<Worker> {
+  const worker = await buildWorker()
+  await worker.start()
+  console.log("civfix media-worker started")
+
+  const shutdown = makeShutdown(worker)
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
   process.on("SIGINT", () => void shutdown("SIGINT"))

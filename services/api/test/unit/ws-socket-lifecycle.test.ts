@@ -18,6 +18,12 @@ import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository } from "../helpers/chat.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
+import { makeInMemoryStores } from "../../src/auth/stores.js"
+import { SessionService } from "../../src/auth/session-service.js"
+import { makeWsTicketStore } from "../../src/auth/ws-ticket.js"
+import { sha256Hex } from "../../src/auth/crypto.js"
+import { WS_CLOSE_POLICY_VIOLATION } from "../../src/ws/types.js"
 
 
 const WS_OPEN = 1
@@ -109,6 +115,16 @@ function authedRequest(userId: string, ip = "203.0.113.7"): FastifyRequest {
   } as unknown as FastifyRequest
 }
 
+function ticketRequest(ticket: string, ip = "203.0.113.9"): FastifyRequest {
+  return {
+    ip,
+    headers: {},
+    cookies: {},
+    query: { ticket },
+    log: { warn() {}, error() {}, info() {}, debug() {} },
+  } as unknown as FastifyRequest
+}
+
 function anonRequest(ip = "203.0.113.8"): FastifyRequest {
   return {
     ip,
@@ -156,6 +172,13 @@ function flush(): Promise<void> {
 
 async function microflush(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await Promise.resolve()
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(1)
+    else await flush()
+  }
 }
 
 describe("frames sent during the async handshake are buffered, not dropped", () => {
@@ -718,5 +741,96 @@ describe("F022: the heartbeat re-authorizes joined rooms and evicts a revoked me
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe("H2: a ?ticket socket is re-validated against session revocation, exactly like a cookie socket", () => {
+  const REAUTH_TICKS = 5
+
+  async function ticketSocket(): Promise<{
+    sessions: SessionService
+    socket: MockSocket
+    token: string
+  }> {
+    const stores = makeInMemoryStores()
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const sessions = new SessionService({ store: stores.sessions, cache, now: () => Date.now() })
+    const token = await sessions.createSession(ALICE, ["citizen"])
+    const tickets = makeWsTicketStore(cache)
+    const { ticket } = await tickets.mint(ALICE, await sha256Hex(token))
+
+    const handler = captureGatewayHandler(
+      baseOpts({ sessions, redeemTicket: (t) => tickets.redeem(t) }),
+    )
+    const socket = new MockSocket()
+    handler(socket as unknown as WebSocket, ticketRequest(ticket))
+    await settle()
+    return { sessions, socket, token }
+  }
+
+  async function beatHeartbeat(): Promise<void> {
+    for (let i = 0; i < REAUTH_TICKS; i += 1) await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
+  }
+
+  it("closes the socket after revokeAllForUser (admin revoke / role change)", async () => {
+    vi.useFakeTimers()
+    try {
+      const { sessions, socket } = await ticketSocket()
+      expect(socket.closes).toHaveLength(0)
+
+      await sessions.revokeAllForUser(ALICE)
+      await beatHeartbeat()
+
+      expect(socket.closes).toHaveLength(1)
+      expect(socket.closes[0]?.reason).toBe("session no longer valid")
+      expect(socket.framesOfType("error").at(-1)).toMatchObject({ code: "UNAUTHORIZED" })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("closes the socket after the minting session is revoked by logout", async () => {
+    vi.useFakeTimers()
+    try {
+      const { sessions, socket, token } = await ticketSocket()
+      await sessions.revokeSession(token)
+      await beatHeartbeat()
+      expect(socket.closes).toHaveLength(1)
+      expect(socket.closes[0]?.code).toBe(WS_CLOSE_POLICY_VIOLATION)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("leaves a live ticket socket open, and refreshes its account status from the re-check", async () => {
+    vi.useFakeTimers()
+    try {
+      const { sessions, socket } = await ticketSocket()
+      await beatHeartbeat()
+      expect(socket.closes).toHaveLength(0)
+      expect(await sessions.isUserActive(ALICE)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("refuses the handshake outright when the bound session is already gone", async () => {
+    const stores = makeInMemoryStores()
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const sessions = new SessionService({ store: stores.sessions, cache, now: () => Date.now() })
+    const token = await sessions.createSession(ALICE, ["citizen"])
+    const tickets = makeWsTicketStore(cache)
+    const { ticket } = await tickets.mint(ALICE, await sha256Hex(token))
+    await sessions.revokeAllForUser(ALICE)
+
+    const handler = captureGatewayHandler(
+      baseOpts({ sessions, redeemTicket: (t) => tickets.redeem(t) }),
+    )
+    const socket = new MockSocket()
+    handler(socket as unknown as WebSocket, ticketRequest(ticket))
+    await settle()
+
+    expect(socket.closes).toHaveLength(1)
+    expect(socket.closes[0]?.reason).toBe("unauthenticated")
   })
 })

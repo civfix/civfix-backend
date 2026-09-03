@@ -69,7 +69,10 @@ export async function registerAdminModerationRoutes(
         repo,
         presignMedia: makePrivateMediaPresigner(container.storage),
         reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
-        sessions: { clearBan: (userId) => app.authServices.sessions.clearBan(userId) },
+        sessions: {
+          applyStatus: (userId, status) =>
+            app.authServices.sessions.applyAccountStatus(userId, status),
+        },
       })
     },
   )

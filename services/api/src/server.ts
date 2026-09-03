@@ -10,6 +10,7 @@ import { registerCookie } from "./plugins/cookie.js"
 import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
+import { registerAccountStatusGuard } from "./auth/account-status.js"
 import { buildAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
 import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
@@ -167,6 +168,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   }
 
   await registerAuthContext(app)
+  registerAccountStatusGuard(app)
 
   if (env.DATABASE_URL) container.getNotificationService(app.log)
 
@@ -189,6 +191,44 @@ function resolveAuthServices(
 }
 
 let shuttingDown = false
+
+/**
+ * The graceful-drain path, shared by the signal handlers and by main.ts's process-fault handlers: close
+ * Fastify, close the container (pg-boss, pubsub, redis, db), flush error reporting, exit — with a 20 s
+ * watchdog that forces a non-zero exit if the drain hangs. `shuttingDown` is module-level so a fault that
+ * arrives during a SIGTERM drain (or a second signal) does not start a second drain.
+ *
+ * `exitCode` is the code used for a CLEAN drain: 0 for a signal, non-zero for a fatal process fault,
+ * because a process that died from an unhandled rejection must never look healthy to its supervisor.
+ */
+export function makeShutdown(
+  app: FastifyInstance,
+  opts: { exitCode?: number } = {},
+): (reason: string) => Promise<void> {
+  const cleanExitCode = opts.exitCode ?? 0
+  return async function shutdown(reason: string): Promise<void> {
+    if (shuttingDown) return
+    shuttingDown = true
+    app.log.info({ signal: reason }, "shutdown: draining")
+    const watchdog = setTimeout(() => {
+      app.log.error("shutdown: drain timed out; forcing exit")
+      process.exit(1)
+    }, 20000)
+    watchdog.unref()
+    try {
+      await app.close()
+      await app.container.close()
+      await flushErrorReporting()
+      clearTimeout(watchdog)
+      app.log.info("shutdown: complete")
+      process.exit(cleanExitCode)
+    } catch (err) {
+      clearTimeout(watchdog)
+      app.log.error({ err }, "shutdown: error during drain")
+      process.exit(1)
+    }
+  }
+}
 
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   await initErrorReporting({
@@ -214,28 +254,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerGuestJobs(app.container, app.log)
   }
 
-  async function shutdown(signal: string): Promise<void> {
-    if (shuttingDown) return
-    shuttingDown = true
-    app.log.info({ signal }, "shutdown: draining")
-    const watchdog = setTimeout(() => {
-      app.log.error("shutdown: drain timed out; forcing exit")
-      process.exit(1)
-    }, 20000)
-    watchdog.unref()
-    try {
-      await app.close()
-      await app.container.close()
-      await flushErrorReporting()
-      clearTimeout(watchdog)
-      app.log.info("shutdown: complete")
-      process.exit(0)
-    } catch (err) {
-      clearTimeout(watchdog)
-      app.log.error({ err }, "shutdown: error during drain")
-      process.exit(1)
-    }
-  }
+  const shutdown = makeShutdown(app)
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
   process.on("SIGINT", () => void shutdown("SIGINT"))

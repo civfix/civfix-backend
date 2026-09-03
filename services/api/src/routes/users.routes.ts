@@ -156,7 +156,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  route(app, "deleteAccount", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "deleteAccount", { preHandler: csrfProtect, config: { allowSuspended: true } }, async (request, reply) => {
     const userId = requireAuth(request)
     const store = app.authServices?.users
     const sessions = app.authServices?.sessions

@@ -13,6 +13,7 @@ import type {
   ModerationUser,
   Priority,
   ReportCategory,
+  UserStatus,
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 import { timelineKindForStatus } from "./admin-report-status.js"
@@ -71,6 +72,7 @@ export interface ModerationItemRecord {
   createdAt: Date
   reportTimelineStatus?: "published" | "rejected"
   restoredUserId?: string
+  suspendedUserId?: string
 }
 
 export interface CreateModerationItemInput {
@@ -145,7 +147,7 @@ function toUserDTO(snapshot: ModerationUserSnapshot | null): ModerationUser {
 
 
 export interface ModerationSessionControl {
-  clearBan(userId: string): Promise<void>
+  applyStatus(userId: string, status: UserStatus): Promise<number>
 }
 
 export interface ModerationServiceDeps {
@@ -268,6 +270,9 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.remove(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
+      if (result.suspendedUserId && deps.sessions) {
+        await deps.sessions.applyStatus(result.suspendedUserId, "suspended")
+      }
       if (deps.reportChatEmitter && result.reportTimelineStatus === "rejected") {
         await deps.reportChatEmitter.emit({
           reportId: result.subjectId,
@@ -290,7 +295,7 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       const result = await deps.repo.decideAppeal(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
       if (result.restoredUserId && deps.sessions) {
-        await deps.sessions.clearBan(result.restoredUserId)
+        await deps.sessions.applyStatus(result.restoredUserId, "active")
       }
     },
 

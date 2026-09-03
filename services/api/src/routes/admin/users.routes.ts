@@ -96,8 +96,7 @@ export async function registerAdminUsersRoutes(
       // auth bundle (present whenever the admin routes are mounted).
       const sessionSvc = app.authServices.sessions
       const sessions: SessionControl = {
-        ban: (userId) => sessionSvc.banUser(userId),
-        clearBan: (userId) => sessionSvc.clearBan(userId),
+        applyStatus: (userId, status) => sessionSvc.applyAccountStatus(userId, status),
         revokeAll: (userId) => sessionSvc.revokeAllForUser(userId),
       }
       // L5: the role write itself now lives in the repo (users.role UPDATE + audit in ONE tx), so there is

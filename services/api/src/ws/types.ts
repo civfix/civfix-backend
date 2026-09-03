@@ -150,13 +150,15 @@ export interface GatewaySession {
   readonly typingThrottle: Map<string, number>
   frameLimiter?: RateLimiter
   closed?: boolean
+  accountStatus?: import("../auth/stores.js").AccountStatus
 }
 
 export type WsHandshakeResult =
   | {
       ok: true
       userId: string
-      token?: string
+      sessionHash?: string
+      accountStatus?: import("../auth/stores.js").AccountStatus
     }
   | { ok: false; code: "FORBIDDEN" | "UNAUTHORIZED"; message: string; reason: string }
 
@@ -164,7 +166,9 @@ export interface RegisterGatewayOptions {
   chat: ChatService
   isMember: IsMemberFn
   sessions: import("../auth/session-service.js").SessionService | undefined
-  redeemTicket?: ((ticket: string) => Promise<string | null>) | undefined
+  redeemTicket?:
+    | ((ticket: string) => Promise<import("../auth/ws-ticket.js").WsTicketPayload | null>)
+    | undefined
   markRead?: MarkReadFn | undefined
   markReadOnOpen?: MarkReadOnOpenFn | undefined
   presence?: ChatPresence | undefined

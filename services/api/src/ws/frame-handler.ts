@@ -12,6 +12,7 @@ import { parseUserMentions } from "../services/discussion-mentions.js"
 import { mapWithLimit } from "../services/media-presign.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { containsSlur } from "../abuse/slur-filter.js"
+import { SUSPENDED_MESSAGE } from "../auth/account-status.js"
 import {
   type GatewayDeps,
   type GatewaySession,
@@ -271,6 +272,10 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
+  if (session.accountStatus === "suspended") {
+    sendError(conn, "FORBIDDEN", SUSPENDED_MESSAGE, { kind, id })
+    return
+  }
   if (frame.kind !== undefined && !CLIENT_AUTHORABLE_KINDS.has(frame.kind)) {
     sendError(conn, "BAD_FRAME", "That message kind can't be sent by a client.", { kind, id })
     return

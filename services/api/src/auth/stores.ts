@@ -30,6 +30,7 @@ export interface SessionRecord {
   id: string
   userId: string
   roles: Role[]
+  accountStatus: AccountStatus
   createdAt: Date
   expiresAt: Date
   lastSeenAt: Date
@@ -56,7 +57,8 @@ export interface SessionStore {
 }
 
 export class InMemorySessionStore implements SessionStore {
-  private readonly rows = new Map<string, SessionRecord>()
+  private readonly rows = new Map<string, Omit<SessionRecord, "accountStatus">>()
+  private readonly statuses = new Map<string, AccountStatus>()
 
   insert(row: SessionInsert): Promise<void> {
     this.rows.set(row.id, {
@@ -67,9 +69,21 @@ export class InMemorySessionStore implements SessionStore {
     return Promise.resolve()
   }
 
+  setAccountStatus(userId: string, status: AccountStatus): void {
+    this.statuses.set(userId, status)
+  }
+
   findById(hash: string): Promise<SessionRecord | null> {
     const row = this.rows.get(hash)
-    return Promise.resolve(row ? { ...row, roles: [...row.roles] } : null)
+    return Promise.resolve(
+      row
+        ? {
+            ...row,
+            roles: [...row.roles],
+            accountStatus: this.statuses.get(row.userId) ?? "active",
+          }
+        : null,
+    )
   }
 
   updateExpiry(hash: string, expiresAt: Date, lastSeen: Date): Promise<void> {

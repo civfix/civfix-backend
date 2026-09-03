@@ -13,6 +13,8 @@ import { clientQuery } from "../helpers/query.js"
 import { resolveWsUser, isAllowedWsOrigin, checkWsHandshake } from "../../src/ws/gateway.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { SESSION_COOKIE } from "../../src/auth/transport.js"
+import { sha256Hex } from "../../src/auth/crypto.js"
+import type { WsTicketPayload } from "../../src/auth/ws-ticket.js"
 
 /**
  * Tests for the chat plugin: GET /threads (auth) over an injected in-memory ThreadsRepository, and the
@@ -184,11 +186,16 @@ describe("resolveWsUser (dual handshake auth)", () => {
     expect(await resolveWsUser(req, sessions)).toEqual({ userId: ME })
   })
 
-  it("accepts a bearer token presented in the session cookie, and RETAINS it for the live re-check", async () => {
+  it("accepts a bearer token presented in the session cookie, and RETAINS its hash for the live re-check", async () => {
     const { sessions, token } = await withSession()
     const req = fakeReq({ cookies: { [SESSION_COOKIE]: token } })
-    // M1: the resolved token rides back so socket-lifecycle can re-authorize the open socket.
-    expect(await resolveWsUser(req, sessions)).toEqual({ userId: ME, token })
+    // M1/H2: the session HASH rides back (never the raw token) so socket-lifecycle can re-authorize the
+    // open socket.
+    expect(await resolveWsUser(req, sessions)).toEqual({
+      userId: ME,
+      sessionHash: await sha256Hex(token),
+      accountStatus: "active",
+    })
   })
 
   it("H5: REJECTS a ?token query param by default (the session bearer must never ride in a URL)", async () => {
@@ -204,7 +211,8 @@ describe("resolveWsUser (dual handshake auth)", () => {
     try {
       expect(await resolveWsUser(fakeReq({ query: { token } }), sessions)).toEqual({
         userId: ME,
-        token,
+        sessionHash: await sha256Hex(token),
+        accountStatus: "active",
       })
     } finally {
       if (prev === undefined) delete process.env.WS_ALLOW_QUERY_TOKEN
@@ -212,11 +220,36 @@ describe("resolveWsUser (dual handshake auth)", () => {
     }
   })
 
-  it("accepts a single-use ?ticket and does NOT retain a token for it", async () => {
-    const { sessions } = await withSession()
+  it("H2: a ?ticket bound to a live session retains that session's hash for the live re-check", async () => {
+    const { sessions, token } = await withSession()
+    const hash = await sha256Hex(token)
     const req = fakeReq({ query: { ticket: "t-1" } })
-    const redeem = (t: string): Promise<string | null> => Promise.resolve(t === "t-1" ? ME : null)
-    expect(await resolveWsUser(req, sessions, redeem)).toEqual({ userId: ME })
+    const redeem = (t: string): Promise<WsTicketPayload | null> =>
+      Promise.resolve(t === "t-1" ? { userId: ME, sessionHash: hash } : null)
+    expect(await resolveWsUser(req, sessions, redeem)).toEqual({
+      userId: ME,
+      sessionHash: hash,
+      accountStatus: "active",
+    })
+  })
+
+  it("H2: a ?ticket whose bound session was revoked is REJECTED at the handshake", async () => {
+    const { sessions, token } = await withSession()
+    const hash = await sha256Hex(token)
+    await sessions.revokeAllForUser(ME)
+    const req = fakeReq({ query: { ticket: "t-1" } })
+    const redeem = (t: string): Promise<WsTicketPayload | null> =>
+      Promise.resolve(t === "t-1" ? { userId: ME, sessionHash: hash } : null)
+    expect(await resolveWsUser(req, sessions, redeem)).toBeNull()
+  })
+
+  it("H2: a ?ticket claiming a DIFFERENT user than its bound session is REJECTED", async () => {
+    const { sessions, token } = await withSession()
+    const hash = await sha256Hex(token)
+    const req = fakeReq({ query: { ticket: "t-1" } })
+    const redeem = (t: string): Promise<WsTicketPayload | null> =>
+      Promise.resolve(t === "t-1" ? { userId: "someone-else", sessionHash: hash } : null)
+    expect(await resolveWsUser(req, sessions, redeem)).toBeNull()
   })
 
   it("rejects (null) an unauthenticated handshake with no cookie and no token", async () => {
@@ -332,15 +365,21 @@ describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
   })
 
   it("accepts a NO-Origin handshake with a ?ticket (native mobile, not CSWSH-exposed)", async () => {
-    const { sessions } = await withSession()
+    const { sessions, token } = await withSession()
+    const hash = await sha256Hex(token)
     const req = fakeReq({ query: { ticket: "t-1" } }) // no Origin header at all
     const result = await checkWsHandshake(req, {
       sessions,
       webOrigins: ALLOW,
-      redeemTicket: (t) => Promise.resolve(t === "t-1" ? ME : null),
+      redeemTicket: (t) => Promise.resolve(t === "t-1" ? { userId: ME, sessionHash: hash } : null),
     })
-    // No `token` on the ticket path: a connect ticket is not a re-checkable session credential.
-    expect(result).toEqual({ ok: true, userId: ME })
+    // H2: the ticket is bound to the session that minted it, so the socket stays re-checkable.
+    expect(result).toEqual({
+      ok: true,
+      userId: ME,
+      sessionHash: hash,
+      accountStatus: "active",
+    })
   })
 
   it("H5: a NO-Origin handshake carrying only ?token is UNAUTHORIZED (query bearer disabled)", async () => {
@@ -378,8 +417,8 @@ describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
       auth: { userId: ME, roles: [], anon: false },
     })
     const result = await checkWsHandshake(req, { sessions, webOrigins: ALLOW })
-    // M1: the cookie's token is retained so the heartbeat can re-resolve the live socket's session.
-    expect(result).toEqual({ ok: true, userId: ME, token })
+    // M1/H2: the cookie session's HASH is retained so the heartbeat can re-resolve the live socket.
+    expect(result).toEqual({ ok: true, userId: ME, sessionHash: await sha256Hex(token) })
   })
 
   it("passes the Origin gate but rejects UNAUTHORIZED when no credential is presented", async () => {
@@ -403,7 +442,12 @@ describe("checkWsHandshake (origin gate + auth gate, in order)", () => {
       }),
       { sessions, webOrigins: [] },
     )
-    expect(ok).toEqual({ ok: true, userId: ME, token })
+    expect(ok).toEqual({
+      ok: true,
+      userId: ME,
+      sessionHash: await sha256Hex(token),
+      accountStatus: "active",
+    })
 
     const unauth = await checkWsHandshake(
       fakeReq({ headers: { origin: "https://anything.example.com" } }),

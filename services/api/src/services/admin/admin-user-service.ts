@@ -145,8 +145,7 @@ export interface AdminUserRepository {
 }
 
 export interface SessionControl {
-  ban(userId: string): Promise<number>
-  clearBan(userId: string): Promise<void>
+  applyStatus(userId: string, status: UserStatus): Promise<number>
   revokeAll(userId: string): Promise<number>
 }
 
@@ -342,12 +341,8 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       await assertTargetIsNotOperator(deps.repo, id, "ban or change the status of")
       const ok = await deps.repo.setStatus(id, input)
       if (!ok) throw AppError.notFound("User not found")
-      if (input.status === "banned") {
-        const revokedSessions = await deps.sessions.ban(id)
-        return { revokedSessions }
-      }
-      await deps.sessions.clearBan(id)
-      return { revokedSessions: 0 }
+      const revokedSessions = await deps.sessions.applyStatus(id, input.status)
+      return { revokedSessions }
     },
 
     async setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void> {

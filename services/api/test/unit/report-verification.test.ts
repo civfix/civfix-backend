@@ -175,8 +175,7 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
     const svc = makeAdminUserService({
       repo,
       sessions: {
-        ban: async () => 0,
-        clearBan: async () => {},
+        applyStatus: async () => 0,
         revokeAll: async () => 0,
       },
       now: () => NOW,

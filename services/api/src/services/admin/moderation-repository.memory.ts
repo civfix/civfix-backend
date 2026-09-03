@@ -172,6 +172,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
   ): Promise<ModerationItemRecord | null> {
     const item = this.resolve(id, "removed")
     if (!item) return null
+    delete item.suspendedUserId
     if (item.subjectType === "report" && this.reportStatus.get(item.subjectId) !== "rejected") {
       this.reportStatus.set(item.subjectId, "rejected")
       item.reportTimelineStatus = "rejected"
@@ -181,6 +182,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
     }
     if (item.subjectType === "user" || item.subjectType === "profile") {
       this.accountStatus.set(item.subjectId, "suspended")
+      item.suspendedUserId = item.subjectId
     }
     return item
   }

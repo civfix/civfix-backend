@@ -5,7 +5,7 @@ import {
   resolveUserFilter,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
-import { avatarGradient } from "@civfix/shared"
+import { avatarGradient, type UserStatus } from "@civfix/shared"
 
 /**
  * Offline unit tests for the admin users service over the in-memory AdminUserRepository (no DB, no
@@ -20,29 +20,22 @@ const NOW = new Date("2026-06-06T00:00:00.000Z")
 interface Harness {
   repo: InMemoryAdminUserRepository
   svc: AdminUserService
-  /** Records of sessions.ban(userId) calls (H2). */
-  banned: string[]
-  /** Records of sessions.clearBan(userId) calls (H2). */
-  cleared: string[]
+  /** Records of sessions.applyStatus(userId, status) calls (H2/H4). */
+  applied: Array<{ userId: string; status: UserStatus }>
   /** Records of sessions.revokeAll(userId) calls (H2). */
   revoked: string[]
 }
 
 function harness(): Harness {
   const repo = new InMemoryAdminUserRepository()
-  const banned: string[] = []
-  const cleared: string[] = []
+  const applied: Array<{ userId: string; status: UserStatus }> = []
   const revoked: string[] = []
   const svc = makeAdminUserService({
     repo,
     sessions: {
-      ban: (userId) => {
-        banned.push(userId)
-        return Promise.resolve(1) // pretend 1 session revoked
-      },
-      clearBan: (userId) => {
-        cleared.push(userId)
-        return Promise.resolve()
+      applyStatus: (userId, status) => {
+        applied.push({ userId, status })
+        return Promise.resolve(status === "banned" || status === "suspended" ? 1 : 0)
       },
       revokeAll: (userId) => {
         revoked.push(userId)
@@ -51,7 +44,7 @@ function harness(): Harness {
     },
     now: () => NOW,
   })
-  return { repo, svc, banned, cleared, revoked }
+  return { repo, svc, applied, revoked }
 }
 
 /** A timestamp `hours` before NOW. */
@@ -272,33 +265,55 @@ describe("admin users mutations", () => {
     })
   })
 
-  it("setStatus to suspended sets account_status, audits, clears the ban marker, and does NOT revoke sessions", async () => {
-    const { repo, svc, banned, cleared } = harness()
+  it("H4: setStatus to suspended sets account_status, audits, and revokes every session", async () => {
+    const { repo, svc, applied } = harness()
     repo.seedUser({ id: "u-1", accountStatus: "active" })
     const result = await svc.setStatus("u-1", {
       status: "suspended",
       reason: "warnings",
       actorId: "op-1",
     })
-    expect(result.revokedSessions).toBe(0)
+    expect(result.revokedSessions).toBe(1)
     expect(repo.users.get("u-1")?.accountStatus).toBe("suspended")
-    expect(banned).toHaveLength(0)
-    // H2: a non-ban status lifts any stale ban marker (idempotent) but does not revoke sessions.
-    expect(cleared).toEqual(["u-1"])
+    expect(applied).toEqual([{ userId: "u-1", status: "suspended" }])
     expect(repo.audits.at(-1)).toMatchObject({
       action: "user.status_changed",
       meta: { status: "suspended" },
     })
   })
 
+  it("H4: banned -> suspended keeps the account restricted (the ban marker is lifted by the suspension itself)", async () => {
+    const { repo, svc, applied } = harness()
+    repo.seedUser({ id: "u-1", accountStatus: "banned" })
+    const result = await svc.setStatus("u-1", {
+      status: "suspended",
+      reason: "downgrade",
+      actorId: "op-1",
+    })
+    expect(result.revokedSessions).toBe(1)
+    expect(applied).toEqual([{ userId: "u-1", status: "suspended" }])
+  })
+
+  it("H4: suspended -> active clears every restriction", async () => {
+    const { repo, svc, applied } = harness()
+    repo.seedUser({ id: "u-1", accountStatus: "suspended" })
+    const result = await svc.setStatus("u-1", {
+      status: "active",
+      reason: null,
+      actorId: "op-1",
+    })
+    expect(result.revokedSessions).toBe(0)
+    expect(repo.users.get("u-1")?.accountStatus).toBe("active")
+    expect(applied).toEqual([{ userId: "u-1", status: "active" }])
+  })
+
   it("setStatus to banned sets account_status, BANS (revoke + marker), and audits user.banned (H2)", async () => {
-    const { repo, svc, banned, cleared } = harness()
+    const { repo, svc, applied } = harness()
     repo.seedUser({ id: "u-1", accountStatus: "active" })
     const result = await svc.setStatus("u-1", { status: "banned", reason: "tos", actorId: "op-1" })
     expect(repo.users.get("u-1")?.accountStatus).toBe("banned")
-    // H2: ban revokes all sessions AND sets the banned marker (via sessions.ban); does not clearBan.
-    expect(banned).toEqual(["u-1"])
-    expect(cleared).toHaveLength(0)
+    // H2: ban revokes all sessions AND sets the banned marker (via sessions.applyStatus).
+    expect(applied).toEqual([{ userId: "u-1", status: "banned" }])
     expect(result.revokedSessions).toBeGreaterThanOrEqual(1)
     expect(repo.audits.at(-1)).toMatchObject({ action: "user.banned", target: "user:u-1" })
   })
@@ -309,8 +324,7 @@ describe("admin users mutations", () => {
     const svc = makeAdminUserService({
       repo,
       sessions: {
-        ban: () => Promise.reject(new Error("redis down")),
-        clearBan: () => Promise.resolve(),
+        applyStatus: () => Promise.reject(new Error("redis down")),
         revokeAll: () => Promise.resolve(0),
       },
       now: () => NOW,
@@ -385,13 +399,13 @@ describe("admin users mutations", () => {
   })
 
   it("H3: REFUSES to ban an existing operator", async () => {
-    const { repo, svc, banned } = harness()
+    const { repo, svc, applied } = harness()
     repo.seedUser({ id: "u-1", role: "operator", accountStatus: "active" })
     await expect(
       svc.setStatus("u-1", { status: "banned", reason: "hostile takeover", actorId: "op-2" }),
     ).rejects.toMatchObject({ httpStatus: 403 })
     expect(repo.users.get("u-1")?.accountStatus).toBe("active")
-    expect(banned).toHaveLength(0)
+    expect(applied).toHaveLength(0)
   })
 
   it("H3: still allows a normal non-operator role change (the guards are not a blanket refusal)", async () => {

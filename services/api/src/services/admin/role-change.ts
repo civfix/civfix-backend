@@ -26,9 +26,12 @@
  *
  * Ordering: write first, then revoke. The reverse would leave a window in which the old sessions are gone
  * but the old role is still live (a re-login inside that window re-mints the OLD role). Writing first means
- * a failure of the revoke surfaces to the caller with the role already changed — the recoverable direction:
- * the operator retries and the revoke is idempotent. A swallowed revoke error is NOT acceptable here, so
- * this helper deliberately does not catch.
+ * a failure of the revoke surfaces to the caller with the role already changed — the recoverable direction,
+ * because the revoke IS idempotent: SessionService.revokeAllForUser bumps the user's revocation epoch
+ * BEFORE it deletes any row, and every cached session projection is checked against that epoch on every
+ * hit, so the privilege is gone the instant the epoch moves — whether or not the Redis eviction that
+ * follows succeeds, and whether or not a retry ever runs. A swallowed revoke error is still NOT acceptable
+ * here, so this helper deliberately does not catch.
  */
 
 import type { Role } from "@civfix/shared"
