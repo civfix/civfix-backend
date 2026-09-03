@@ -67,7 +67,12 @@ export interface Env {
   MAIL_FROM_OUTREACH: string
   /** From address for Home Turf form mail (notification + confirmation). Defaults to "donotreply@civfix.org". */
   HOME_TURF_MAIL_FROM: string
-  /** Recipient of the Home Turf sign-up notification email. Defaults to "roman@reachoutla.org". */
+  /**
+   * Recipient of the Home Turf sign-up notification email. NO DEFAULT — an operator address is
+   * deployment configuration, never a literal in the source. Empty DISABLES the /forms/home-turf
+   * endpoint (it answers "temporarily unavailable"), because the alternative is silently mailing a
+   * resident's name, school, email and phone to whatever address happened to be compiled in.
+   */
   HOME_TURF_NOTIFY_TO: string
 
   /**

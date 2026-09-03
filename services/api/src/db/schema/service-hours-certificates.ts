@@ -15,8 +15,7 @@
  * `ledgerFingerprint` + the partial unique index on (user_id, ledger_fingerprint) WHERE revoked_at IS
  * NULL give double-tap idempotency: a second "Prepare transcript" over an unchanged ledger returns the
  * SAME code and renders nothing. Revoking frees the slot so the holder can re-issue over the same ledger.
- * That index is intentionally NOT mirrored below (partial/expression indexes stay SQL-only in this repo),
- * so a repo relying on the ON CONFLICT must name it in raw SQL.
+ * That index IS mirrored below, exactly as 0064 defines it.
  *
  * v1 issues over the WHOLE ledger: there are deliberately no issue-time filter columns (no
  * jurisdiction_geoid FK, no caller-supplied from/to) and no `recipient` — periodStart/periodEnd are the
@@ -87,6 +86,11 @@ export const serviceHoursCertificates = pgTable(
   },
   (t) => [
     uniqueIndex("service_hours_certificates_code_uidx").on(t.code),
+    // Idempotency (0064): at most ONE live certificate per (holder, ledger fingerprint); revoking frees
+    // the slot. certificate-repository.drizzle.ts relies on this partial unique for its ON CONFLICT.
+    uniqueIndex("service_hours_certificates_live_fp_uidx")
+      .on(t.userId, t.ledgerFingerprint)
+      .where(sql`${t.revokedAt} is null`),
     index("service_hours_certificates_user_issued_idx").on(t.userId, t.issuedAt.desc()),
   ],
 )
