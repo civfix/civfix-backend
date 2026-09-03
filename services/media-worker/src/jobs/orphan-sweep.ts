@@ -4,8 +4,8 @@
  * A media_assets row is created at upload time with no binding of any kind and gains one only when some
  * subject COMMITS it — a report, a chat/DM message, a social post, or an avatar/verification document
  * that points AT the row. A row that is STILL bound to nothing after the TTL is an orphan: the client
- * started an upload that never became anything. This sweep deletes the orphan's R2 objects (source +
- * legacy processed + thumbnail, all derivable from r2_key) and then the row.
+ * started an upload that never became anything. This sweep deletes the orphan's R2 objects (upload +
+ * served + legacy processed + thumbnail, all derivable from r2_key) and then the row.
  *
  * THE ORPHAN PREDICATE IS THE SAFETY BOUNDARY, AND IT LIVES IN THE REPO, NOT HERE — see
  * MediaWorkerRepo.findOrphans (services/api/src/services/media-worker-repo.ts) for the full lane
@@ -28,7 +28,7 @@ import type { LeakedObjectRow, MediaWorkerRepo, OrphanRow } from "@civfix/api/me
 import type { WorkerLimits } from "../config.js"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
-import { thumbnailKey } from "./media-keys.js"
+import { servedKey, thumbnailKey } from "./media-keys.js"
 
 /** Bounded-concurrency map: at most `limit` of `fn` in flight at once. Preserves per-item isolation. */
 async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -66,6 +66,8 @@ export interface OrphanSweepDeps extends JobObsDeps {
 export interface OrphanSweepResult {
   scanned: number
   deleted: number
+  /** Rows a report/post/message/avatar claimed between the SELECT and the conditional DELETE (H13). */
+  boundMeanwhile: number
   errors: number
   /** R2 objects whose row was reaped but whose physical delete failed (tombstoned; see deleteObjects). */
   leaked: number
@@ -84,12 +86,14 @@ export interface OrphanSweepResult {
 function derivedKeys(o: OrphanRow): string[] {
   const keys = [
     o.r2Key,
+    servedKey(o.r2Key),
     // LEGACY processed/* objects from before the worker overwrote r2_key in place. Remove-after note:
     // safe to drop once no media_assets row predates that switch (deleting a missing key is a no-op).
     `processed/${o.r2Key}.img`,
     `processed/${o.r2Key}.mp4`,
     thumbnailKey(o.r2Key),
   ]
+  if (o.servedKey && !keys.includes(o.servedKey)) keys.push(o.servedKey)
   if (o.thumbKey && !keys.includes(o.thumbKey)) keys.push(o.thumbKey)
   return keys
 }
@@ -105,6 +109,7 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
   let errors = 0
   let scanned = 0
   let leaked = 0
+  let boundMeanwhile = 0
 
   // Retry the objects EARLIER runs failed to delete, before reaping anything new: a key tombstoned by this
   // run has just failed a delete, so retrying it in the same run only burns an attempt.
@@ -123,8 +128,9 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
         // Counted per page (not from drainPages' total) so a find failure on a LATER page still reports
         // the rows this run did handle.
         scanned += orphans.length
-        await sweepPage(orphans, deps, {
+        await sweepPage(orphans, cutoff, deps, {
           onDeleted: () => deleted++,
+          onBoundMeanwhile: () => boundMeanwhile++,
           onError: (err, id) => {
             errors++
             report(err, { job: "orphan.sweep", phase: "delete", mediaId: id })
@@ -155,13 +161,22 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
   log("orphan.sweep: done", {
     scanned,
     deleted,
+    boundMeanwhile,
     errors,
     leaked,
     retried: retry.retried,
     reclaimed: retry.reclaimed,
     cutoff: cutoff.toISOString(),
   })
-  return { scanned, deleted, errors, leaked, retried: retry.retried, reclaimed: retry.reclaimed }
+  return {
+    scanned,
+    deleted,
+    boundMeanwhile,
+    errors,
+    leaked,
+    retried: retry.retried,
+    reclaimed: retry.reclaimed,
+  }
 }
 
 /**
@@ -231,6 +246,8 @@ async function retryTombstonedLeaks(
 
 interface SweepPageHooks {
   onDeleted: () => void
+  /** The row stopped matching the orphan predicate before the reap (a bind won the race). */
+  onBoundMeanwhile: () => void
   onError: (err: unknown, id: string) => void
   /** The row was reaped but these keys survived in R2 (see deleteObjects). */
   onLeak: (keys: string[], id: string) => void
@@ -239,6 +256,7 @@ interface SweepPageHooks {
 /** Reap one page of orphans. Never throws: per-row failures are reported through `hooks.onError`. */
 async function sweepPage(
   orphans: OrphanRow[],
+  cutoff: Date,
   deps: OrphanSweepDeps,
   hooks: SweepPageHooks,
 ): Promise<void> {
@@ -261,9 +279,19 @@ async function sweepPage(
       // delete would lose the shared object out from under the just-committed report. Checking AFTER the
       // row is gone means a concurrent commit that landed before our delete is seen and we skip the
       // physical delete (the surviving reference reclaims the object when it becomes the last one).
-      await deps.repo.deleteById(o.id)
-      const stillShared = await deps.repo.r2KeyReferencedByOthers(o.id, o.r2Key)
-      const leaked = stillShared ? [] : await deleteObjects(o, deps, log)
+      // H13: CONDITIONAL reap. The DELETE re-applies the FULL orphan predicate (same cutoff the SELECT
+      // used), so a report/post/message that bound this row in the seconds since findOrphans wins: zero
+      // rows come back, nothing is deleted, and the just-attached media survives. The old unconditional
+      // `DELETE WHERE id = $1` destroyed the row AND its objects after the binding transaction had
+      // already committed — silent, irreversible civic-record loss.
+      const reaped = await deps.repo.deleteOrphan(o.id, cutoff)
+      if (reaped === null) {
+        hooks.onBoundMeanwhile()
+        log("orphan.sweep: row bound between select and reap, skipped", { mediaId: o.id })
+        return
+      }
+      const stillShared = await deps.repo.r2KeyReferencedByOthers(reaped.id, reaped.r2Key)
+      const leaked = stillShared ? [] : await deleteObjects(reaped, deps, log)
       // The ROW is gone either way, so the reap counts as done; the leak is reported separately.
       hooks.onDeleted()
       if (leaked.length > 0) {

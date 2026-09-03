@@ -55,6 +55,7 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
       purpose: row.purpose ?? "report",
       kind: row.kind,
       r2Key: row.r2Key,
+      servedKey: row.servedKey ?? null,
       thumbKey: row.thumbKey ?? null,
       status: row.status ?? "validating",
       byteSize: row.byteSize ?? null,
@@ -88,6 +89,7 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     const row = this.byId.get(id)
     if (!row || row.status !== "validating") return Promise.resolve(null)
     row.status = patch.status
+    if (patch.servedKey !== undefined) row.servedKey = patch.servedKey
     if (patch.thumbKey !== undefined) row.thumbKey = patch.thumbKey
     if (patch.byteSize !== undefined) row.byteSize = patch.byteSize
     const loose = row as StoredWorkerMedia & {
@@ -112,20 +114,40 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     return Promise.resolve()
   }
 
+  private isOrphan(row: StoredWorkerMedia, olderThan: Date): boolean {
+    if (row.reportId !== null) return false
+    if (row.chatMessageId !== null) return false
+    if (row.postId !== null) return false
+    if (this.avatarMediaIds.has(row.id)) return false
+    if (row.purpose === "verification") return false
+    return row.createdAt < olderThan
+  }
+
   findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {
     const out: OrphanRow[] = []
     for (const row of this.byId.values()) {
-      if (row.reportId !== null) continue
-      if (row.chatMessageId !== null) continue
-      if (row.postId !== null) continue
-      if (this.avatarMediaIds.has(row.id)) continue
-      if (row.purpose === "verification") continue
-      if (row.createdAt < olderThan) {
-        out.push({ id: row.id, r2Key: row.r2Key, thumbKey: row.thumbKey })
-        if (out.length >= limit) break
-      }
+      if (!this.isOrphan(row, olderThan)) continue
+      out.push({
+        id: row.id,
+        r2Key: row.r2Key,
+        servedKey: row.servedKey,
+        thumbKey: row.thumbKey,
+      })
+      if (out.length >= limit) break
     }
     return Promise.resolve(out)
+  }
+
+  deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null> {
+    const row = this.byId.get(id)
+    if (!row || !this.isOrphan(row, olderThan)) return Promise.resolve(null)
+    this.byId.delete(id)
+    return Promise.resolve({
+      id: row.id,
+      r2Key: row.r2Key,
+      servedKey: row.servedKey,
+      thumbKey: row.thumbKey,
+    })
   }
 
   findStuckValidating(olderThan: Date, limit: number): Promise<StuckMediaRow[]> {
@@ -150,6 +172,7 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
           id: row.id,
           uploadId: row.uploadId,
           r2Key: row.r2Key,
+          servedKey: row.servedKey,
           thumbKey: row.thumbKey,
           kind: row.kind,
           checkCount: row.stuckCheckCount,
@@ -164,11 +187,6 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     if (!row || row.status !== "validating") return Promise.resolve(null)
     row.status = "rejected"
     return Promise.resolve({ ...row })
-  }
-
-  deleteById(id: string): Promise<void> {
-    this.byId.delete(id)
-    return Promise.resolve()
   }
 
   r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean> {

@@ -20,6 +20,7 @@ import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types.js"
  */
 type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
+import { readEtag } from "./media-etag.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "./media-presign.js"
 import {
   makeUnboundOnlyMediaViewAuthorizer,
@@ -63,6 +64,13 @@ export interface MediaChecksJob {
   uploadId: string
   r2Key: string
   kind: MediaKind
+  /**
+   * C1: the ETag of the object as it stood at finalize. The worker compares it against what it actually
+   * downloads, so bytes swapped between finalize and processing are rejected rather than published. Null
+   * when the storage seam reports no ETag (offline fakes) and absent on a job enqueued before this field
+   * existed or re-driven by the stuck sweep, which has no finalize-time observation to pass on.
+   */
+  uploadEtag?: string | null
 }
 
 export interface MediaOwner {
@@ -78,6 +86,14 @@ export interface MediaAssetView {
   kind: MediaKind
   codec: string | null
   r2Key: string
+  /**
+   * C1: the WORKER-OWNED key the processed bytes were published to (media-worker/src/jobs/media-keys.ts
+   * servedKey). Every path that serves bytes for a `ready` asset reads THIS key, never `r2Key` — the
+   * client holds a presigned PUT for `r2Key` and could otherwise overwrite vetted media. NULL on a row
+   * that has not been published yet and on pre-migration rows until the served-key backfill has run
+   * (src/db/backfill-served-key.ts); a NULL on a `ready` row is served as "not found".
+   */
+  servedKey: string | null
   thumbKey: string | null
   status: MediaStatus
   width: number | null
@@ -322,6 +338,7 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
             uploadId: input.uploadId,
             r2Key: asset.r2Key,
             kind: asset.kind,
+            uploadEtag: readEtag(head),
           } satisfies MediaChecksJob,
           { singletonKey: input.uploadId },
         )
@@ -354,8 +371,14 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.notFound("Media not found")
       }
 
+      // C1: serve the worker-owned processed key. A `ready` row with no served_key has not been
+      // published to one (pre-migration row awaiting the backfill), and is 404'd exactly like a
+      // not-ready asset rather than falling back to the client-writable upload key.
+      if (asset.servedKey === null) {
+        throw AppError.notFound("Media not found")
+      }
       const issue = decision.private ? presignPrivate : presign
-      const { url, thumbUrl } = await issue(asset.r2Key, asset.thumbKey)
+      const { url, thumbUrl } = await issue(asset.servedKey, asset.thumbKey)
 
       return {
         id: asset.id,

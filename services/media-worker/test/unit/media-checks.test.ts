@@ -4,7 +4,12 @@ import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { RealAbuseChecks } from "@civfix/api/adapters/abuse-checks"
 import exifr from "exifr"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
-import { makeDownloader, DownloadTooLargeError, StorageUnavailableError } from "../../src/download.js"
+import {
+  makeDownloader,
+  DownloadTooLargeError,
+  StorageUnavailableError,
+  type DownloadedObject,
+} from "../../src/download.js"
 import { perceptualHash } from "../../src/sandbox/phash.js"
 import {
   processMedia,
@@ -134,9 +139,11 @@ describe("media.checks IMAGE path", () => {
     expect(typeof row.phash).toBe("string")
     expect((row.phash as string).length).toBe(16)
     expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)
+    expect(row.servedKey).toBe(`processed/${r2Key}`)
 
-    const processed = env.storage.get(r2Key)
+    const processed = env.storage.get(`processed/${r2Key}`)
     expect(processed).not.toBeNull()
+    expect(env.storage.get(r2Key)).toBeNull()
     expect(env.storage.get(`processed/${r2Key}.img`)).toBeNull()
     const outGps = await exifr.gps(Buffer.from(processed!))
     expect(outGps?.latitude ?? null).toBeNull()
@@ -401,8 +408,10 @@ describe("media.checks VIDEO path", () => {
     expect(row.width).toBe(320)
     expect(row.height).toBe(240)
 
-    const remuxed = env.storage.get(r2Key)
+    expect(row.servedKey).toBe(`processed/${r2Key}`)
+    const remuxed = env.storage.get(`processed/${r2Key}`)
     expect(remuxed).not.toBeNull()
+    expect(env.storage.get(r2Key)).toBeNull()
     expect(env.storage.get(`processed/${r2Key}.mp4`)).toBeNull()
 
     expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)
@@ -538,10 +547,10 @@ describe("media.checks orchestration robustness", () => {
     const env = makeDeps({
       limits: tightLimits,
       download: () =>
-        new Promise<Uint8Array>((resolve) => {
+        new Promise<DownloadedObject>((resolve) => {
           setTimeout(() => {
             downloadResolved = true
-            resolve(new Uint8Array([1, 2, 3]))
+            resolve({ bytes: new Uint8Array([1, 2, 3]), etag: null })
           }, 5_000).unref?.()
         }),
     })
@@ -566,7 +575,7 @@ describe("media.checks orchestration robustness", () => {
     const env = makeDeps({
       limits: tightLimits,
       download: (_r2Key, _maxBytes, signal) =>
-        new Promise<Uint8Array>((_resolve, reject) => {
+        new Promise<DownloadedObject>((_resolve, reject) => {
           signal?.addEventListener("abort", () => {
             sawAbort = true
             reject(new Error("download aborted by job timeout"))
@@ -606,6 +615,7 @@ describe("media.checks orchestration robustness", () => {
     expect(parsePayload(null)).toBeNull()
     expect(parsePayload({ mediaId: "a", uploadId: "b", r2Key: "c", kind: "audio" })).toBeNull()
     expect(parsePayload({ mediaId: "a", uploadId: "b", r2Key: "c", kind: "image" })).toEqual({
+      uploadEtag: null,
       mediaId: "a",
       uploadId: "b",
       r2Key: "c",
@@ -644,6 +654,7 @@ describe("media.checks terminal-status CAS (F087d)", () => {
     // ...and nothing it re-uploaded survives the terminalized row (a bound row is invisible to the
     // orphan sweep, so these objects would have been retained forever).
     expect(env.storage.get(r2Key)).toBeNull()
+    expect(env.storage.get(`processed/${r2Key}`)).toBeNull()
     expect(env.storage.get(thumb)).toBeNull()
   })
 
@@ -667,7 +678,7 @@ describe("media.checks terminal-status CAS (F087d)", () => {
     // The winner is a ready row pointing AT these keys: deleting them here would 404 a published photo.
     expect(status).toBe("ready")
     expect(env.repo.get(id)!.status).toBe("ready")
-    expect(env.storage.get(r2Key)).not.toBeNull()
+    expect(env.storage.get(`processed/${r2Key}`)).not.toBeNull()
     expect(env.storage.get(`thumbs/${r2Key}.jpg`)).not.toBeNull()
   })
 
@@ -701,7 +712,7 @@ describe("media.checks terminal-status CAS (F087d)", () => {
     ;(env.storage as unknown as { put: typeof env.storage.put }).put = async (key, bytes, opts) => {
       if (!deleted) {
         deleted = true
-        await env.repo.deleteById(id)
+        env.repo.byId.delete(id)
       }
       return realPut(key, bytes, opts)
     }
@@ -711,6 +722,7 @@ describe("media.checks terminal-status CAS (F087d)", () => {
     expect(status).toBe("rejected")
     expect(env.repo.get(id)).toBeUndefined()
     expect(env.storage.get(r2Key)).toBeNull()
+    expect(env.storage.get(`processed/${r2Key}`)).toBeNull()
     expect(env.storage.get(`thumbs/${r2Key}.jpg`)).toBeNull()
   })
 })

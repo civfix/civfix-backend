@@ -1,14 +1,14 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 import { createReadStream, type Dirent } from "node:fs"
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import type { Readable } from "node:stream"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { AppError, ErrorCode } from "@civfix/shared"
+import type { StorageHeadWithEtag } from "../services/media-etag.js"
 import type {
   PresignPutOptions,
   PresignPutResult,
   Storage,
-  StorageHead,
   StorageListOptions,
   StorageListResult,
   StoragePutMeta,
@@ -53,6 +53,12 @@ export interface LocalDiskStorageConfig {
 interface ObjectMetadata {
   contentType: string
   contentDisposition?: string
+  /**
+   * Content hash of the stored bytes, reported as the object's ETag (services/media-etag.ts) so the dev
+   * stack exercises the media pipeline's object-version binding exactly like R2 does. Absent for objects
+   * written by an older build or straight through a signed PUT route that did not record one.
+   */
+  etag?: string
 }
 
 export interface ByteRange {
@@ -153,7 +159,7 @@ export class LocalDiskStorage implements Storage {
     return `${this.objectUrl(key)}?${query.toString()}`
   }
 
-  async head(key: string): Promise<StorageHead | null> {
+  async head(key: string): Promise<StorageHeadWithEtag | null> {
     assertSafeKey(key)
     let size: number
     try {
@@ -165,12 +171,23 @@ export class LocalDiskStorage implements Storage {
       throw new AppError(ErrorCode.INTERNAL, "local storage head failed", { cause: err })
     }
     const meta = await this.readMetadata(key)
+    const etag = meta?.etag ?? (await this.hashObject(key))
     return {
       size,
       contentType: meta?.contentType ?? DEFAULT_CONTENT_TYPE,
       ...(meta?.contentDisposition !== undefined
         ? { contentDisposition: meta.contentDisposition }
         : {}),
+      ...(etag !== null ? { etag } : {}),
+    }
+  }
+
+  private async hashObject(key: string): Promise<string | null> {
+    try {
+      return contentEtag(await readFile(this.objectPath(key)))
+    } catch (err) {
+      if (isNotFound(err)) return null
+      throw new AppError(ErrorCode.INTERNAL, "local storage head failed", { cause: err })
     }
   }
 
@@ -191,6 +208,7 @@ export class LocalDiskStorage implements Storage {
       ...(meta?.contentDisposition !== undefined
         ? { contentDisposition: meta.contentDisposition }
         : {}),
+      etag: contentEtag(body),
     }
     try {
       await this.writeAtomic(this.objectPath(key), Buffer.from(body))
@@ -297,10 +315,11 @@ export class LocalDiskStorage implements Storage {
     }
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== "object" || parsed === null) return null
-    const { contentType, contentDisposition } = parsed as Record<string, unknown>
+    const { contentType, contentDisposition, etag } = parsed as Record<string, unknown>
     return {
       contentType: typeof contentType === "string" ? contentType : DEFAULT_CONTENT_TYPE,
       ...(typeof contentDisposition === "string" ? { contentDisposition } : {}),
+      ...(typeof etag === "string" && etag.length > 0 ? { etag } : {}),
     }
   }
 
@@ -316,6 +335,10 @@ export class LocalDiskStorage implements Storage {
       throw err
     }
   }
+}
+
+function contentEtag(body: Uint8Array | Buffer): string {
+  return createHash("sha256").update(body).digest("hex")
 }
 
 function assertSafeKey(key: string): void {

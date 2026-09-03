@@ -137,6 +137,7 @@ describe("makeUnboundOnlyMediaViewAuthorizer (the fail-closed default)", () => {
     kind: "image",
     codec: null,
     r2Key: "uploads/2026/07/u1",
+    servedKey: "processed/uploads/2026/07/u1",
     thumbKey: null,
     status: "ready",
     width: null,

@@ -115,7 +115,7 @@ describe("download: responses", () => {
     })
     const download = makeDownloader(servedAt("/ok"))
     const out = await download("uploads/2026/06/ok", 1024)
-    expect(Buffer.from(out).toString()).toBe("hello-bytes")
+    expect(Buffer.from(out.bytes).toString()).toBe("hello-bytes")
   })
 
   it("maps a 503 to StorageUnavailableError naming the status", async () => {
@@ -157,7 +157,7 @@ describe("download: responses", () => {
     })
     const download = makeDownloader(servedAt("/exact"))
     const out = await download("uploads/2026/06/exact", 64)
-    expect(out.byteLength).toBe(64)
+    expect(out.bytes.byteLength).toBe(64)
   })
 
   it("falls back to arrayBuffer() when the response carries NO body stream (204)", async () => {
@@ -169,7 +169,7 @@ describe("download: responses", () => {
     })
     const download = makeDownloader(servedAt("/empty"))
     const out = await download("uploads/2026/06/empty", 1024)
-    expect(out.byteLength).toBe(0)
+    expect(out.bytes.byteLength).toBe(0)
   })
 
   it("streams a body that stays under the cap", async () => {
@@ -181,7 +181,7 @@ describe("download: responses", () => {
     })
     const download = makeDownloader(servedAt("/chunked-small"))
     const out = await download("uploads/2026/06/small", 1024)
-    expect(out.byteLength).toBe(32)
+    expect(out.bytes.byteLength).toBe(32)
   })
 })
 

@@ -23,6 +23,7 @@ import type {
   ReportTimelineView,
 } from "./report-service.types.js"
 import { REPORT_CREATE_SCOPE } from "./report-service.types.js"
+import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
 import {
   reportColumns,
   selectPublicPins,
@@ -76,9 +77,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
 
   async function loadMedia(tag: Queryable, reportId: string): Promise<ReportMediaView[]> {
     const rows = await tag<MediaRowSelect[]>`
-      SELECT id, kind, codec, r2_key, thumb_key, status, width, height
+      SELECT id, kind, codec, ${servedKeyExpr(tag, "media_assets")} AS r2_key,
+             thumb_key, status, width, height
       FROM media_assets
       WHERE report_id = ${reportId}
+        AND ${servableMediaFilter(tag, "media_assets")}
       ORDER BY created_at ASC
     `
     return rows.map(toMediaView)
@@ -98,9 +101,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     const grouped = new Map<string, ReportMediaView[]>()
     if (reportIds.length === 0) return grouped
     const rows = await sql<(MediaRowSelect & { report_id: string })[]>`
-      SELECT report_id, id, kind, codec, r2_key, thumb_key, status, width, height
+      SELECT report_id, id, kind, codec, ${servedKeyExpr(sql, "media_assets")} AS r2_key,
+             thumb_key, status, width, height
       FROM media_assets
       WHERE report_id = ANY(${reportIds}::uuid[])
+        AND ${servableMediaFilter(sql, "media_assets")}
       ORDER BY report_id, created_at ASC
     `
     for (const m of rows) {

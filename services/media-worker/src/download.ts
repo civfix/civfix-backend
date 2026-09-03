@@ -1,11 +1,22 @@
 
 import type { Storage } from "@civfix/shared/interfaces"
+import { normalizeEtag, readEtag } from "@civfix/api/media-repo"
+
+/**
+ * The bytes plus the object VERSION they came from (C1). `etag` is null when the storage seam reports
+ * none (offline fakes); the media.checks job compares it against the finalize-time ETag and re-checks it
+ * immediately before publishing, so bytes swapped mid-flight are rejected instead of published.
+ */
+export interface DownloadedObject {
+  bytes: Uint8Array
+  etag: string | null
+}
 
 export type DownloadFn = (
   r2Key: string,
   maxBytes: number,
   signal?: AbortSignal,
-) => Promise<Uint8Array>
+) => Promise<DownloadedObject>
 
 export class DownloadTooLargeError extends Error {
   constructor(maxBytes: number) {
@@ -45,7 +56,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
     r2Key: string,
     maxBytes: number,
     signal?: AbortSignal,
-  ): Promise<Uint8Array> {
+  ): Promise<DownloadedObject> {
     if (isInMemoryReadable(storage)) {
       const bytes = storage.get(r2Key)
       if (bytes === null) {
@@ -54,7 +65,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
       if (bytes.byteLength > maxBytes) {
         throw new DownloadTooLargeError(maxBytes)
       }
-      return bytes
+      return { bytes, etag: await headEtag(storage, r2Key) }
     }
 
     if (!isSafeR2Key(r2Key)) {
@@ -93,6 +104,8 @@ export function makeDownloader(storage: Storage): DownloadFn {
       throw new DownloadTooLargeError(maxBytes)
     }
 
+    const etag = normalizeEtag(res.headers.get("etag"))
+
     const body = res.body
     if (!body) {
       let buf: Uint8Array
@@ -102,7 +115,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
         throw new StorageUnavailableError(r2Key, err)
       }
       if (buf.byteLength > maxBytes) throw new DownloadTooLargeError(maxBytes)
-      return buf
+      return { bytes: buf, etag }
     }
 
     const reader = body.getReader()
@@ -134,6 +147,10 @@ export function makeDownloader(storage: Storage): DownloadFn {
       out.set(c, offset)
       offset += c.byteLength
     }
-    return out
+    return { bytes: out, etag }
   }
+}
+
+async function headEtag(storage: Storage, r2Key: string): Promise<string | null> {
+  return readEtag(await storage.head(r2Key))
 }

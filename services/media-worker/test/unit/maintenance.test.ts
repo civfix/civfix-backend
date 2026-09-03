@@ -166,7 +166,7 @@ describe("orphan.sweep", () => {
       reportId: null,
       createdAt: new Date(now.getTime() - limits.orphanTtlMs - 1000),
     })
-    repo.deleteById = () => Promise.reject(new Error("delete failed"))
+    repo.deleteOrphan = () => Promise.reject(new Error("delete failed"))
 
     const reports: unknown[] = []
     const res = await runOrphanSweep({

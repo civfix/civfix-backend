@@ -349,9 +349,9 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const rows = await sql<
         { id: string; kind: "image" | "video"; r2_key: string; thumb_key: string | null }[]
       >`
-        SELECT id, kind, r2_key, thumb_key
+        SELECT id, kind, served_key AS r2_key, thumb_key
         FROM media_assets
-        WHERE report_id = ${id} AND status = 'ready'
+        WHERE report_id = ${id} AND status = 'ready' AND served_key IS NOT NULL
         ORDER BY created_at ASC
         LIMIT ${MEDIA_CAP}
       `

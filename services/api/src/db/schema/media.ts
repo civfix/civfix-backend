@@ -32,6 +32,7 @@ export const mediaAssets = pgTable(
     kind: text("kind").$type<MediaKind>().notNull(),
     codec: text("codec"),
     r2Key: text("r2_key").notNull(),
+    servedKey: text("served_key"),
     thumbKey: text("thumb_key"),
     status: text("status").$type<MediaStatus>().notNull(),
     purpose: text("purpose").$type<MediaPurpose>().notNull().default("report"),
@@ -59,6 +60,11 @@ export const mediaAssets = pgTable(
       .where(sql`${t.status} = 'validating' and ${t.finalizedAt} is not null`),
     index("media_assets_phash_idx").on(t.phash),
     index("media_assets_r2_key_idx").on(t.r2Key),
+    index("media_assets_orphan_sweep_idx")
+      .on(t.createdAt)
+      .where(
+        sql`${t.reportId} is null and ${t.chatMessageId} is null and ${t.postId} is null and ${t.purpose} <> 'verification'`,
+      ),
   ],
 )
 

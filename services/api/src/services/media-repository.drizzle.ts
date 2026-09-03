@@ -15,6 +15,7 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     kind: row.kind,
     codec: row.codec,
     r2Key: row.r2Key,
+    servedKey: row.servedKey,
     thumbKey: row.thumbKey,
     status: row.status,
     width: row.width,

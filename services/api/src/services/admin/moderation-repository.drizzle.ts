@@ -6,6 +6,7 @@ import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import { tombstonePostInTx } from "../post-repository.drizzle.js"
+import { servedKeyExpr, servableMediaFilter } from "../media-served-key.js"
 import {
   type CreateModerationItemInput,
   type ListModerationArgs,
@@ -249,9 +250,10 @@ async function loadMedia(
 ): Promise<ModerationMediaRecord[]> {
   if (subjectType !== "report") return []
   const rows = await sql<MediaRow[]>`
-    SELECT id, kind, r2_key, thumb_key
+    SELECT id, kind, ${servedKeyExpr(sql, "media_assets")} AS r2_key, thumb_key
     FROM media_assets
     WHERE report_id = ${subjectId}
+      AND ${servableMediaFilter(sql, "media_assets")}
     ORDER BY created_at ASC
   `
   return rows.map((m) => ({

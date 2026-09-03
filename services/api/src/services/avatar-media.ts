@@ -45,10 +45,11 @@ export async function resolveAvatarMediaOrThrow(
   const claimantUserId = claimant.userId ?? null
   const claimantGroupId = claimant.groupId ?? null
   const rows = await sql<{ id: string; r2_key: string }[]>`
-    SELECT m.id, m.r2_key
+    SELECT m.id, m.served_key AS r2_key
     FROM media_assets m
     WHERE m.upload_id = ${uploadId}
       AND m.status = 'ready'
+      AND m.served_key IS NOT NULL
       AND m.kind = 'image'
       AND m.purpose = 'report'
       AND m.report_id IS NULL

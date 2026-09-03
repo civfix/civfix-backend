@@ -165,10 +165,11 @@ export function publicReportFilter(sql: Queryable): SqlFragment {
 export function firstReadyStillLateral(sql: Queryable): SqlFragment {
   return sql`
     LEFT JOIN LATERAL (
-      SELECT thumb_key, r2_key
+      SELECT thumb_key, served_key AS r2_key
       FROM media_assets
       WHERE report_id = r.id
         AND status = 'ready'
+        AND served_key IS NOT NULL
         AND (kind = 'image' OR thumb_key IS NOT NULL)
       ORDER BY created_at ASC, id ASC
       LIMIT 1

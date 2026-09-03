@@ -20,6 +20,7 @@ import {
 } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
 import { goingScalar } from "./cleanup-sql.js"
+import { servedKeyExpr } from "./media-served-key.js"
 
 export {
   searchByHandlePrefix,
@@ -232,7 +233,7 @@ async function connectionsPage(
       u.follower_count AS followers,
       u.following_count AS following,
       EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-      am.r2_key AS avatar_r2_key,
+      ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
       u.avatar_url,
       u.show_volunteer_hours,
       u.edge_created_at,
@@ -268,7 +269,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         u.follower_count AS followers,
         u.following_count AS following,
         EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-        am.r2_key AS avatar_r2_key,
+        ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.social_links,
         u.show_volunteer_hours
@@ -326,7 +327,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.follower_count AS followers,
           u.following_count AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-          am.r2_key AS avatar_r2_key,
+          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
           u.avatar_url,
           u.show_volunteer_hours,
           ${followingExpr} AS is_following
@@ -434,7 +435,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           c.followers,
           c.following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = c.id AND v.status = 'verified') AS verified,
-          am.r2_key AS avatar_r2_key,
+          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
           c.avatar_url,
           c.show_volunteer_hours,
           c.is_organizer

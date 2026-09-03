@@ -11,6 +11,9 @@ import { chatGroups } from "../db/schema/chat-groups.js"
 import type { Db } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
+export { normalizeEtag, readEtag } from "./media-etag.js"
+export type { StorageHeadWithEtag } from "./media-etag.js"
+
 export type WorkerAbuseReason = "nsfw" | "phash_dup" | "gps"
 
 export interface MediaWorkerAsset {
@@ -19,6 +22,7 @@ export interface MediaWorkerAsset {
   reportId: string | null
   kind: MediaKind
   r2Key: string
+  servedKey: string | null
   thumbKey: string | null
   status: MediaStatus
   byteSize: number | null
@@ -30,6 +34,7 @@ export interface MediaResultPatch {
   width?: number | null
   height?: number | null
   phash?: string | null
+  servedKey?: string | null
   thumbKey?: string | null
   byteSize?: number | null
 }
@@ -43,6 +48,7 @@ export interface NewAbuseFlag {
 export interface OrphanRow {
   id: string
   r2Key: string
+  servedKey: string | null
   thumbKey: string | null
 }
 
@@ -50,6 +56,7 @@ export interface StuckMediaRow {
   id: string
   uploadId: string
   r2Key: string
+  servedKey: string | null
   thumbKey: string | null
   kind: MediaKind
   checkCount: number
@@ -69,7 +76,13 @@ export interface MediaWorkerRepo {
   findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]>
   findStuckValidating(olderThan: Date, limit: number): Promise<StuckMediaRow[]>
   terminalizeStuck(id: string): Promise<MediaWorkerAsset | null>
-  deleteById(id: string): Promise<void>
+  /**
+   * H13: the conditional reap. Deletes the row ONLY while it still satisfies the FULL orphan predicate
+   * (the same `olderThan` cutoff the SELECT used), and returns the deleted row's object keys. A row that
+   * a report/post/message bound between findOrphans and this call no longer matches, so zero rows come
+   * back, the caller skips the object deletes, and the just-attached media survives.
+   */
+  deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null>
   r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean>
   enqueueHeldModerationItem?(input: {
     reportId: string
@@ -94,6 +107,7 @@ function toAsset(row: typeof mediaAssets.$inferSelect): MediaWorkerAsset {
     reportId: row.reportId,
     kind: row.kind,
     r2Key: row.r2Key,
+    servedKey: row.servedKey,
     thumbKey: row.thumbKey,
     status: row.status,
     byteSize: row.byteSize,
@@ -124,6 +138,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
       if (patch.width !== undefined) set.width = patch.width
       if (patch.height !== undefined) set.height = patch.height
       if (patch.phash !== undefined) set.phash = patch.phash
+      if (patch.servedKey !== undefined) set.servedKey = patch.servedKey
       if (patch.thumbKey !== undefined) set.thumbKey = patch.thumbKey
       if (patch.byteSize !== undefined) set.byteSize = patch.byteSize
 
@@ -152,33 +167,15 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
     },
 
     async findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {
+      return db.select(ORPHAN_COLUMNS).from(mediaAssets).where(orphanPredicate(db, olderThan)).limit(limit)
+    },
+
+    async deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null> {
       const rows = await db
-        .select({
-          id: mediaAssets.id,
-          r2Key: mediaAssets.r2Key,
-          thumbKey: mediaAssets.thumbKey,
-        })
-        .from(mediaAssets)
-        .where(
-          and(
-            isNull(mediaAssets.reportId),
-            isNull(mediaAssets.chatMessageId),
-            isNull(mediaAssets.postId),
-            notExists(
-              db.select({ id: users.id }).from(users).where(eq(users.avatarMediaId, mediaAssets.id)),
-            ),
-            notExists(
-              db
-                .select({ id: chatGroups.id })
-                .from(chatGroups)
-                .where(eq(chatGroups.avatarMediaId, mediaAssets.id)),
-            ),
-            ne(mediaAssets.purpose, "verification"),
-            lt(mediaAssets.createdAt, olderThan),
-          ),
-        )
-        .limit(limit)
-      return rows
+        .delete(mediaAssets)
+        .where(and(eq(mediaAssets.id, id), orphanPredicate(db, olderThan)))
+        .returning(ORPHAN_COLUMNS)
+      return rows[0] ?? null
     },
 
     async findStuckValidating(olderThan: Date, limit: number): Promise<StuckMediaRow[]> {
@@ -216,6 +213,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
             id: mediaAssets.id,
             uploadId: mediaAssets.uploadId,
             r2Key: mediaAssets.r2Key,
+            servedKey: mediaAssets.servedKey,
             thumbKey: mediaAssets.thumbKey,
             kind: mediaAssets.kind,
             checkCount: mediaAssets.stuckCheckCount,
@@ -231,10 +229,6 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
         .returning()
       const row = rows[0]
       return row ? toAsset(row) : null
-    },
-
-    async deleteById(id: string): Promise<void> {
-      await db.delete(mediaAssets).where(eq(mediaAssets.id, id))
     },
 
     async r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean> {
@@ -343,6 +337,38 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
       await db.delete(mediaReapTombstones).where(eq(mediaReapTombstones.r2Key, r2Key))
     },
   }
+}
+
+const ORPHAN_COLUMNS = {
+  id: mediaAssets.id,
+  r2Key: mediaAssets.r2Key,
+  servedKey: mediaAssets.servedKey,
+  thumbKey: mediaAssets.thumbKey,
+}
+
+/**
+ * THE orphan predicate — one definition, used by BOTH the SELECT (findOrphans) and the conditional
+ * DELETE (deleteOrphan). H13: they used to be two statements, the DELETE keyed on `id` alone, so a
+ * report/post/message that bound the row in the seconds between them was silently undone and the R2
+ * objects destroyed with it. Anything that can bind a media row MUST be added here.
+ */
+function orphanPredicate(db: Db, olderThan: Date) {
+  return and(
+    isNull(mediaAssets.reportId),
+    isNull(mediaAssets.chatMessageId),
+    isNull(mediaAssets.postId),
+    notExists(
+      db.select({ id: users.id }).from(users).where(eq(users.avatarMediaId, mediaAssets.id)),
+    ),
+    notExists(
+      db
+        .select({ id: chatGroups.id })
+        .from(chatGroups)
+        .where(eq(chatGroups.avatarMediaId, mediaAssets.id)),
+    ),
+    ne(mediaAssets.purpose, "verification"),
+    lt(mediaAssets.createdAt, olderThan),
+  )
 }
 
 type MessageParent = "chat_messages" | "dm_messages"

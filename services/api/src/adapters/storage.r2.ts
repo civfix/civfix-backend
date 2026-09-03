@@ -23,6 +23,10 @@
  * Content-Length, so the upload is pinned to the declared type and exact byte size: R2 rejects a PUT
  * whose Content-Type/Content-Length differ from the signature. This is a cheap, API-side guard that
  * the later media-worker (which inspects the actual bytes) builds on.
+ *
+ * head() also reports the object's ETag (services/media-etag.ts). It is an EXTRA field on top of the
+ * shared StorageHead: the media pipeline binds a `ready` row to the exact object version it inspected,
+ * so a PUT that races the worker is detected and rejected rather than published (C1).
  */
 
 import { AppError, ErrorCode } from "@civfix/shared"
@@ -35,6 +39,7 @@ import type {
   StorageListOptions,
   StorageListResult,
 } from "@civfix/shared/interfaces"
+import { normalizeEtag, type StorageHeadWithEtag } from "../services/media-etag.js"
 import type { S3Client } from "@aws-sdk/client-s3"
 
 export interface R2StorageConfig {
@@ -133,19 +138,21 @@ export class R2Storage implements Storage {
    * thing offline and in production, or the assertion is vacuous where it runs and unverified where it
    * matters.
    */
-  async head(key: string): Promise<StorageHead | null> {
+  async head(key: string): Promise<StorageHeadWithEtag | null> {
     const { HeadObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
     try {
       const res = await client.send(
         new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
       )
+      const etag = normalizeEtag(res.ETag)
       return {
         size: typeof res.ContentLength === "number" ? res.ContentLength : 0,
         contentType: res.ContentType ?? "application/octet-stream",
         ...(typeof res.ContentDisposition === "string"
           ? { contentDisposition: res.ContentDisposition }
           : {}),
+        ...(etag !== null ? { etag } : {}),
       }
     } catch (err) {
       if (isNotFound(err)) return null

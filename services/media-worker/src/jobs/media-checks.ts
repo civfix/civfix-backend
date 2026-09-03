@@ -1,6 +1,6 @@
 
 import type { MediaKind, MediaStatus } from "@civfix/shared"
-import type { AbuseChecks, Storage } from "@civfix/shared/interfaces"
+import type { AbuseChecks, Storage, StorageHead } from "@civfix/shared/interfaces"
 import type {
   MediaResultPatch,
   MediaWorkerAsset,
@@ -8,11 +8,12 @@ import type {
 } from "@civfix/api/media-repo"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
-import { DownloadTooLargeError, type DownloadFn } from "../download.js"
+import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
 import { settleWithin } from "../timeout.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
-import { thumbnailKey } from "./media-keys.js"
-import { deleteRejectedObjects } from "./reject-cleanup.js"
+import { readEtag } from "@civfix/api/media-repo"
+import { servedKey, thumbnailKey } from "./media-keys.js"
+import { deleteRejectedObjects, deleteSupersededUpload } from "./reject-cleanup.js"
 import {
   processMedia,
   errNote,
@@ -62,6 +63,8 @@ export interface MediaChecksPayload {
   uploadId: string
   r2Key: string
   kind: MediaKind
+  /** ETag of the upload object as the API saw it at finalize; absent when the seam reports none. */
+  uploadEtag?: string | null
 }
 
 export function parsePayload(data: unknown): MediaChecksPayload | null {
@@ -73,7 +76,13 @@ export function parsePayload(data: unknown): MediaChecksPayload | null {
     typeof d.r2Key === "string" &&
     (d.kind === "image" || d.kind === "video")
   ) {
-    return { mediaId: d.mediaId, uploadId: d.uploadId, r2Key: d.r2Key, kind: d.kind }
+    return {
+      mediaId: d.mediaId,
+      uploadId: d.uploadId,
+      r2Key: d.r2Key,
+      kind: d.kind,
+      uploadEtag: typeof d.uploadEtag === "string" ? d.uploadEtag : null,
+    }
   }
   return null
 }
@@ -106,7 +115,7 @@ export async function runMediaChecksJobDetailed(
     return { status: "missing", reportId: null }
   }
   const reportId = asset.reportId ?? null
-  return { status: await processAsset(asset, deps), reportId }
+  return { status: await processAsset(asset, payload, deps), reportId }
 }
 
 export async function runMediaChecksJob(
@@ -117,13 +126,30 @@ export async function runMediaChecksJob(
   return outcome.status === "missing" ? "rejected" : outcome.status
 }
 
-async function processAsset(asset: MediaWorkerAsset, deps: MediaChecksDeps): Promise<MediaStatus> {
+async function processAsset(
+  asset: MediaWorkerAsset,
+  payload: MediaChecksPayload,
+  deps: MediaChecksDeps,
+): Promise<MediaStatus> {
   const { log, report } = resolveJobObs(deps)
 
-  let bytes: Uint8Array
+  // A re-delivered job for an asset that already reached a terminal status has nothing to do: every
+  // write below is CAS'd on status='validating', and since C1 the upload object it would download is
+  // deleted the moment the processed bytes are published. Settle on the recorded verdict instead of
+  // failing the download and burning the retry budget.
+  if (asset.status !== "validating") {
+    log("media.checks: asset already terminal, skipping", {
+      mediaId: asset.id,
+      uploadId: asset.uploadId,
+      status: asset.status,
+    })
+    return asset.status
+  }
+
+  let downloaded: DownloadedObject
   const downloadAbort = new AbortController()
   try {
-    bytes = await withJobTimeout(
+    downloaded = await withJobTimeout(
       deps.download(asset.r2Key, deps.limits.maxDownloadBytes, downloadAbort.signal),
       deps.limits.jobTimeoutMs,
       () => downloadAbort.abort(),
@@ -139,6 +165,14 @@ async function processAsset(asset: MediaWorkerAsset, deps: MediaChecksDeps): Pro
       err: String(err),
     })
     throw new MediaInfraError("download", err)
+  }
+
+  const bytes = downloaded.bytes
+  // C1: the bytes the API sized at finalize must be the bytes we just inspected. A PUT that raced
+  // finalize (the presigned URL stays valid for its whole TTL) changes the object version, and the
+  // result of checking one version while publishing another is exactly the overwrite this closes.
+  if (payload.uploadEtag && downloaded.etag && payload.uploadEtag !== downloaded.etag) {
+    return persistRejection(asset, deps, "upload object changed between finalize and processing")
   }
 
   let result: MediaProcessResult
@@ -171,13 +205,37 @@ async function processAsset(asset: MediaWorkerAsset, deps: MediaChecksDeps): Pro
     phash: result.phash,
   }
 
+  const publishes = result.status !== "rejected" && result.processedBytes !== null
+
+  if (publishes) {
+    let current: StorageHead | null
+    try {
+      current = await deps.storage.head(asset.r2Key)
+    } catch (err) {
+      report(err, { job: "media.checks", phase: "publish-precheck", mediaId: asset.id })
+      log("media.checks: pre-publish head failed, will retry", {
+        mediaId: asset.id,
+        err: String(err),
+      })
+      throw new MediaInfraError("publish-precheck", err)
+    }
+    const note = uploadDriftNote(current, downloaded.etag)
+    if (note !== null) {
+      return persistRejection(asset, deps, note)
+    }
+  }
+
   let uploaded = false
   let applied: MediaWorkerAsset | null
   try {
-    if (result.status !== "rejected" && result.processedBytes) {
+    if (publishes && result.processedBytes) {
+      // C1: publish to the WORKER-OWNED key. Writing back to asset.r2Key would put the vetted bytes at
+      // the exact key the uploader still holds a presigned PUT for, so every check here could be
+      // undone after the asset went `ready`.
+      const sKey = servedKey(asset.r2Key)
       const tKey = result.thumbnailBytes ? thumbnailKey(asset.r2Key) : null
       await Promise.all([
-        deps.storage.put(asset.r2Key, result.processedBytes, {
+        deps.storage.put(sKey, result.processedBytes, {
           ...(result.processedContentType !== null
             ? { contentType: result.processedContentType }
             : {}),
@@ -191,6 +249,7 @@ async function processAsset(asset: MediaWorkerAsset, deps: MediaChecksDeps): Pro
           : Promise.resolve(),
       ])
       patch.byteSize = result.processedBytes.byteLength
+      patch.servedKey = sKey
       if (tKey) patch.thumbKey = tKey
       uploaded = true
     }
@@ -208,6 +267,12 @@ async function processAsset(asset: MediaWorkerAsset, deps: MediaChecksDeps): Pro
 
   if (applied === null) {
     return settleTerminalRace(asset, deps, { attempted: result.status, uploaded })
+  }
+
+  if (uploaded) {
+    // The processed object is live at served_key, so the upload object is now dead weight AND a
+    // still-writable key: drop it (tombstoned + retried like every other reap failure).
+    await deleteSupersededUpload(asset, deps, log, report)
   }
 
   if (result.status === "rejected") {
@@ -279,7 +344,12 @@ async function settleTerminalRace(
       )
     } else if (winner === null || winner === "rejected") {
       await deleteRejectedObjects(
-        { id: asset.id, r2Key: asset.r2Key, thumbKey: thumbnailKey(asset.r2Key) },
+        {
+          id: asset.id,
+          r2Key: asset.r2Key,
+          servedKey: servedKey(asset.r2Key),
+          thumbKey: thumbnailKey(asset.r2Key),
+        },
         deps,
         log,
         report,
@@ -288,6 +358,19 @@ async function settleTerminalRace(
   }
 
   return winner ?? "rejected"
+}
+
+/**
+ * C1: is the upload object still the exact object we processed? A missing object or a different ETag
+ * means someone re-PUT the key while the worker was working, so what we vetted is not what is there.
+ * Returns a rejection note, or null when the object is unchanged (or the seam reports no version at
+ * all, which is the offline-fake case).
+ */
+function uploadDriftNote(head: StorageHead | null, downloadedEtag: string | null): string | null {
+  if (head === null) return "upload object disappeared before publish"
+  const current = readEtag(head)
+  if (downloadedEtag === null || current === null) return null
+  return current === downloadedEtag ? null : "upload object was overwritten during processing"
 }
 
 function logRejection(

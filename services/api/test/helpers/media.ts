@@ -21,6 +21,7 @@ export class InMemoryMediaRepository implements MediaRepository {
       kind: row.kind,
       codec: null,
       r2Key: row.r2Key,
+      servedKey: null,
       thumbKey: null,
       status: row.status,
       width: null,
