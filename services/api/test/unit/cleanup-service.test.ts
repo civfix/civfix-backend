@@ -8,6 +8,7 @@ import {
   RESOURCE_REQUEST_PER_HOST_PER_DAY,
   RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR,
   ROLE_CHANGES_PER_TARGET_PER_WINDOW,
+  MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW,
   type CleanupService,
 } from "../../src/services/cleanup-service.js"
 import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/services/guest-rsvp-service.js"
@@ -135,6 +136,27 @@ describe("joinCleanup / leaveCleanup", () => {
     await expect(
       service.leaveCleanup("00000000-0000-0000-0000-000000000000", ALICE),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it(`H12: caps join/leave flips at ${MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW} per attendee per event`, async () => {
+    const counters = new InMemoryCounterStore()
+    const scoped = makeCleanupService({ repo, counters })
+    const created = await scoped.createCleanup(baseInput(), ORG)
+
+    for (let i = 0; i < MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW; i++) {
+      if (i % 2 === 0) await scoped.joinCleanup(created.id, ALICE)
+      else await scoped.leaveCleanup(created.id, ALICE)
+    }
+    await expect(scoped.joinCleanup(created.id, ALICE)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+    await expect(scoped.leaveCleanup(created.id, ALICE)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
+
+    const other = await scoped.createCleanup(baseInput(), ORG)
+    await expect(scoped.joinCleanup(other.id, ALICE)).resolves.toMatchObject({ joined: true })
+    await expect(scoped.joinCleanup(created.id, BOB)).resolves.toMatchObject({ joined: true })
   })
 })
 

@@ -11,7 +11,10 @@ import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { clientQuery } from "../helpers/query.js"
-import type { CleanupServiceOverrides } from "../../src/routes/cleanups.routes.js"
+import {
+  CLEANUP_MEMBERSHIP_RATE_LIMIT,
+  type CleanupServiceOverrides,
+} from "../../src/routes/cleanups.routes.js"
 
 
 interface Harness {
@@ -355,6 +358,26 @@ describe("POST /cleanups/:id/join and /leave", () => {
     const id = await createCleanup(app, token)
     const res = await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join` })
     expect(res.statusCode).toBe(401)
+  })
+
+  it("H12: RSVP flipping is bounded per identity and does not spend another account's budget", async () => {
+    const { app, token, mailer } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const joiner = await signIn(app, mailer, "flipper@example.com")
+    const bystander = await signIn(app, mailer, "bystander@example.com")
+
+    const flip = (who: string, verb: "join" | "leave") =>
+      app.inject({ method: "POST", url: `/v1/cleanups/${id}/${verb}`, headers: auth(who) })
+
+    let blocked = false
+    for (let i = 0; i < CLEANUP_MEMBERSHIP_RATE_LIMIT.max + 2 && !blocked; i++) {
+      const res = await flip(joiner.token, i % 2 === 0 ? "join" : "leave")
+      blocked = res.statusCode === 429
+    }
+    expect(blocked).toBe(true)
+
+    const other = await flip(bystander.token, "join")
+    expect(other.statusCode).toBe(200)
   })
 })
 

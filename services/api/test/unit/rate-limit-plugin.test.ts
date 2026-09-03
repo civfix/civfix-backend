@@ -66,6 +66,7 @@ import {
   GUEST_LIST_RATE_LIMIT,
 } from "../../src/routes/guest-rsvp.routes.js"
 import { CREATE_POST_RATE_LIMIT, POST_INTERACTION_RATE_LIMIT } from "../../src/routes/posts.routes.js"
+import { CLEANUP_MEMBERSHIP_RATE_LIMIT } from "../../src/routes/cleanups.routes.js"
 import { ROUTE_REPORT_RATE_LIMIT } from "../../src/routes/admin/reports.routes.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "../../src/routes/admin/mail.routes.js"
 import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
@@ -439,6 +440,7 @@ const IDENTITY_SCOPED_LIMITS = {
   LIST_BLOCKS_RATE_LIMIT,
   CREATE_REPORT_RATE_LIMIT,
   REPORT_CONTENT_RATE_LIMIT,
+  CLEANUP_MEMBERSHIP_RATE_LIMIT,
 }
 
 const HOST_SCOPED_LIMITS = {

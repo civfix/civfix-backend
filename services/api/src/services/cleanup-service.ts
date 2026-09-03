@@ -104,6 +104,13 @@ export { MAX_EVENT_SLOTS }
 export const SLOT_FLIPS_PER_EVENT_PER_WINDOW = 20
 const SLOT_FLIP_WINDOW_SEC = 60 * 60
 
+// H12: join/leave is a short transaction, but it takes FOR SHARE on the cleanups row that the organizer's
+// FOR NO KEY UPDATE paths (complete, removeMember) have to wait behind, and it churns `going` for every
+// reader. The route limit bounds the caller; this bounds one caller against ONE event, mirroring the
+// slot-flip and role-change counters.
+export const MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW = 20
+const MEMBERSHIP_FLIP_WINDOW_SEC = 60 * 60
+
 const CANCEL_FANOUT_MEMBER_CAP = 2000
 
 const CANCEL_FANOUT_CONCURRENCY = 8
@@ -172,6 +179,18 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const newId = deps.newId ?? (() => randomUUID())
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
   const counters = deps.counters ?? fallbackCounters
+
+  async function assertMembershipFlipBudget(cleanupId: string, userId: string): Promise<void> {
+    const flips = await counters.incr(
+      `cleanup:rsvp:${cleanupId}:${userId}`,
+      MEMBERSHIP_FLIP_WINDOW_SEC,
+    )
+    if (flips > MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW) {
+      throw AppError.rateLimited(
+        "You've joined and left this event too many times recently. Please try again later.",
+      )
+    }
+  }
 
   function assertEventTextClean(input: {
     title?: string | undefined
@@ -745,6 +764,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     },
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
+      await assertMembershipFlipBudget(id, userId)
       const outcome = await deps.repo.joinCleanupTx(id, userId)
       if (outcome === "not_found") notFoundCleanup()
       if (outcome === "banned") {
@@ -756,6 +776,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     },
 
     async leaveCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
+      await assertMembershipFlipBudget(id, userId)
       const organizerId = await deps.repo.organizerOf(id)
       if (organizerId === null) notFoundCleanup()
       if (organizerId === userId) {
