@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { sanitizeInboundHtml } from "../../src/services/admin/inbound-html-sanitizer.js"
+import {
+  INBOUND_HTML_MAX_CHARS,
+  sanitizeInboundHtml,
+} from "../../src/services/admin/inbound-html-sanitizer.js"
 const cases: [string, string][] = [
   [
     "underscore div handler",
@@ -86,5 +89,55 @@ describe("sanitizer bypass attempts", () => {
     sanitizeInboundHtml("<" + "a".repeat(50000) + " " + "b=1 ".repeat(20000))
     sanitizeInboundHtml("<a ".repeat(40000))
     expect(Date.now() - t0).toBeLessThan(3000)
+  })
+})
+
+describe("sanitizer is linear at the size cap (H14)", () => {
+  const BUDGET_MS = 500
+
+  function fill(unit: string): string {
+    return unit.repeat(Math.floor(INBOUND_HTML_MAX_CHARS / unit.length))
+  }
+
+  const payloads: [string, string][] = [
+    ["unterminated iframe run", fill("<iframe")],
+    ["unterminated iframe tags", fill("<iframe ")],
+    ["unterminated script run", fill("<script")],
+    ["unterminated script tags", fill("<script ")],
+    ["unterminated form tags", fill("<form ")],
+    ["mixed unterminated drop tags", fill("<form <iframe <object <svg ")],
+    ["balanced form pairs", fill("<form></form>")],
+    ["orphan close tags", fill("</form>")],
+    ["unterminated comments", fill("<!--")],
+    ["bare angle brackets", fill("<")],
+  ]
+
+  for (const [name, payload] of payloads) {
+    it(`${name} stays under ${BUDGET_MS}ms`, () => {
+      expect(payload.length).toBeLessThanOrEqual(INBOUND_HTML_MAX_CHARS)
+      const t0 = performance.now()
+      const out = sanitizeInboundHtml(payload)
+      const elapsed = performance.now() - t0
+      expect(out).not.toBeNull()
+      expect(out?.toLowerCase()).not.toContain("<iframe")
+      expect(out?.toLowerCase()).not.toContain("<script")
+      expect(out?.toLowerCase()).not.toContain("<form")
+      expect(elapsed).toBeLessThan(BUDGET_MS)
+    })
+  }
+
+  it("still refuses a body over the size cap", () => {
+    expect(sanitizeInboundHtml("a".repeat(INBOUND_HTML_MAX_CHARS + 1))).toBeNull()
+  })
+
+  it("a 512 KB body of REAL markup still sanitizes correctly", () => {
+    const unit = '<p>hello <a href="https://x.example">link</a><script>alert(1)</script></p>'
+    const body = unit.repeat(Math.floor(INBOUND_HTML_MAX_CHARS / unit.length))
+    const t0 = performance.now()
+    const out = sanitizeInboundHtml(body) ?? ""
+    expect(performance.now() - t0).toBeLessThan(BUDGET_MS)
+    expect(out.toLowerCase()).not.toContain("<script")
+    expect(out).not.toContain("alert(1)")
+    expect(out).toContain('<a href="https://x.example">link</a>')
   })
 })
