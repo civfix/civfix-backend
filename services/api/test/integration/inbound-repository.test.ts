@@ -135,4 +135,70 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     `
     expect(missing[0]!.n).toBe(0)
   })
+
+  /**
+   * H10 against the real DDL (migration 0101): `archived_at` is the clock the 180-day retention lane
+   * reads. It is stamped on the transition INTO `archived` (and preserved on a repeat), and cleared on
+   * any transition out, so un-archiving restarts the clock instead of leaving a stale deadline.
+   */
+  it("H10: stamps archived_at on archive, keeps it on a re-archive, and clears it on un-archive", async () => {
+    const { id } = await repo.insertIdempotent(insert({ messageId: "<archived-clock@x>" }))
+
+    const read = async (): Promise<Date | null> => {
+      const rows = await h.sql<{ archived_at: Date | null }[]>`
+        SELECT archived_at FROM inbound_emails WHERE id = ${id}
+      `
+      return rows[0]?.archived_at ?? null
+    }
+
+    expect(await read()).toBeNull()
+    await repo.setStatus(id, "read", "op-1")
+    expect(await read()).toBeNull()
+
+    await repo.setStatus(id, "archived", "op-1")
+    const first = await read()
+    expect(first).toBeInstanceOf(Date)
+
+    await repo.setStatus(id, "archived", "op-1")
+    expect((await read())?.getTime()).toBe(first!.getTime())
+
+    await repo.setStatus(id, "unread", "op-1")
+    expect(await read()).toBeNull()
+  })
+
+  it("H10: the retention predicate finds ONLY archived rows past the TTL, with their attachment keys", async () => {
+    const long = 200 * 24 * 60 * 60 * 1000
+    const short = 10 * 24 * 60 * 60 * 1000
+    const cutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)
+
+    const stale = await repo.insertIdempotent(
+      insert({
+        messageId: "<stale-archived@x>",
+        attachments: [{ key: "inbound-emails/stale/1-a.pdf", filename: "a.pdf", size: 4 }],
+      }),
+    )
+    const fresh = await repo.insertIdempotent(insert({ messageId: "<fresh-archived@x>" }))
+    const unread = await repo.insertIdempotent(insert({ messageId: "<still-unread@x>" }))
+
+    await repo.setStatus(stale.id, "archived", "op-1")
+    await repo.setStatus(fresh.id, "archived", "op-1")
+    await h.sql`
+      UPDATE inbound_emails SET archived_at = now() - make_interval(secs => ${long / 1000})
+      WHERE id = ${stale.id}
+    `
+    await h.sql`
+      UPDATE inbound_emails SET archived_at = now() - make_interval(secs => ${short / 1000})
+      WHERE id = ${fresh.id}
+    `
+
+    const due = await h.sql<{ id: string; attachments: { key: string }[] }[]>`
+      SELECT id, attachments FROM inbound_emails
+      WHERE archived_at IS NOT NULL AND archived_at < ${cutoff}
+      ORDER BY archived_at ASC
+    `
+    expect(due.map((r) => r.id)).toEqual([stale.id])
+    expect(due[0]?.attachments?.[0]?.key).toBe("inbound-emails/stale/1-a.pdf")
+    expect(due.map((r) => r.id)).not.toContain(fresh.id)
+    expect(due.map((r) => r.id)).not.toContain(unread.id)
+  })
 })

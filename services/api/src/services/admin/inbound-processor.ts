@@ -220,8 +220,6 @@ async function routeThreaded(
   return { outcome: "threaded", id: inserted.id }
 }
 
-export const INBOUND_THREAD_BODY_MAX_CHARS = 256 * 1024
-
 function threadBody(mail: ParsedMail): string | null {
   if (mail.text !== null && mail.text !== undefined) return clipBodyText(mail.text)
   if (mail.html === null || mail.html === undefined || mail.html.length === 0) return null

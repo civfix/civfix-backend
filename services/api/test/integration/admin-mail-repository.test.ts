@@ -181,4 +181,114 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     expect(set2.suppressed).toBe(true)
     expect(set2.lastOutreachAt?.getTime()).toBe(at.getTime())
   })
+
+  /**
+   * H5 + M(retryable effects) against the real DDL (migration 0100): `unaffiliated` and
+   * `effects_applied_at` must round-trip, and the claim must be a genuine CAS so a webhook and the
+   * sweep cannot both apply one message's side effects.
+   */
+  it("H5: round-trips `unaffiliated` and claims/releases effects exactly once", async () => {
+    const t = await repo.createThread({ subject: "Pothole" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: "outreach@civfix.org",
+      toAddr: "pw@lacity.gov",
+      body: "Packet",
+      messageId: "<out-1@civfix.org>",
+    })
+    const joined = await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "sales@vendor.example",
+      body: "Forward me everything",
+      messageId: "<in-vendor@vendor.example>",
+      unaffiliated: true,
+    })
+    const city = await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@lacity.gov",
+      body: "On it",
+      messageId: "<in-city@lacity.gov>",
+    })
+
+    expect(joined?.unaffiliated).toBe(true)
+    expect(city?.unaffiliated).toBe(false)
+    expect(city?.effectsAppliedAt).toBeNull()
+
+    expect(await repo.findMessageByMessageId("<in-vendor@vendor.example>")).toMatchObject({
+      unaffiliated: true,
+    })
+
+    expect(await repo.claimMessageEffects(city!.id)).toBe(true)
+    expect(await repo.claimMessageEffects(city!.id)).toBe(false)
+    await repo.releaseMessageEffects(city!.id)
+    expect(await repo.claimMessageEffects(city!.id)).toBe(true)
+  })
+
+  it("findMessagesPendingEffects returns only affiliated, unapplied, thread-bound inbound messages", async () => {
+    const [report] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES ('pending-effects-1', ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+              'published', '8a2a1072b59ffff', ${GEOID})
+      RETURNING id
+    `
+    const bound = await repo.findOrCreateReportThread(report!.id, { subject: "Bound" })
+    const loose = await repo.createThread({ subject: "Not bound to anything" })
+
+    const eligible = await repo.insertMessage({
+      threadId: bound.id,
+      direction: "in",
+      fromAddr: "clerk@lacity.gov",
+      body: "On it",
+      messageId: "<pe-eligible@lacity.gov>",
+    })
+    await repo.insertMessage({
+      threadId: bound.id,
+      direction: "in",
+      fromAddr: "sales@vendor.example",
+      body: "hi",
+      messageId: "<pe-unaffiliated@vendor.example>",
+      unaffiliated: true,
+    })
+    await repo.insertMessage({
+      threadId: bound.id,
+      direction: "out",
+      fromAddr: "outreach@civfix.org",
+      toAddr: "pw@lacity.gov",
+      body: "packet",
+      messageId: "<pe-out@civfix.org>",
+    })
+    const applied = await repo.insertMessage({
+      threadId: bound.id,
+      direction: "in",
+      fromAddr: "clerk@lacity.gov",
+      body: "already handled",
+      messageId: "<pe-applied@lacity.gov>",
+    })
+    await repo.claimMessageEffects(applied!.id)
+    await repo.insertMessage({
+      threadId: loose.id,
+      direction: "in",
+      fromAddr: "clerk@lacity.gov",
+      body: "no report or event on this thread",
+      messageId: "<pe-loose@lacity.gov>",
+    })
+
+    const pending = await repo.findMessagesPendingEffects({
+      before: new Date(Date.now() + 60_000),
+      limit: 50,
+    })
+    expect(pending.map((p) => p.message.messageId)).toEqual(["<pe-eligible@lacity.gov>"])
+    expect(pending[0]?.message.id).toBe(eligible!.id)
+    expect(pending[0]?.thread.id).toBe(bound.id)
+    expect(pending[0]?.thread.reportId).toBe(report!.id)
+
+    expect(
+      await repo.findMessagesPendingEffects({ before: new Date(Date.now() - 60_000), limit: 50 }),
+    ).toHaveLength(0)
+
+    await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
+  })
 })
