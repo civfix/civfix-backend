@@ -299,6 +299,11 @@ export class PgUserStore implements UserStore {
           avatarUrl: null,
           avatarMediaId: null,
           socialLinks: null,
+          // 0102 (audit H18): the materialized last-activity point is a precise location attached to the
+          // account, so it is scrubbed with the rest of the tombstone. The reports/events it was copied
+          // from are civic record and stay (docs/erasure-behavior.md); this derived copy is not.
+          lastActivityGeom: null,
+          lastActivityAt: null,
         })
         .where(eq(users.id, id))
         .returning()

@@ -19,6 +19,7 @@ import { requireAuth } from "../auth/context.js"
 import {
   makeSocialService,
   type SocialNotifier,
+  type SuggestionsCache,
   type SocialRepository,
   type SocialService,
   type SocialViewer,
@@ -73,8 +74,18 @@ export async function registerSocialRoutes(
     return makeRouteNotificationService(container, app.log)
   }
 
+  // Lazily resolved so building the container stays socket-free: the Redis client is only created on
+  // the first suggestion request, and only when REDIS_URL is configured at all.
+  const suggestionsCache: SuggestionsCache = {
+    get: (key) => container.getCache().get(key),
+    set: (key, value, ttl) => container.getCache().set(key, value, ttl),
+    del: (key) => container.getCache().del(key),
+  }
+
   function service(withNotifier = false): SocialService {
     const n = withNotifier ? notifier() : undefined
+    const cache =
+      app.socialOverrides || !container.env.REDIS_URL ? undefined : suggestionsCache
     const presignAvatar = app.socialOverrides
       ? undefined
       : (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC)
@@ -92,6 +103,7 @@ export async function registerSocialRoutes(
     return makeSocialService({
       repo: repo(),
       logger: app.log,
+      ...(cache !== undefined ? { suggestionsCache: cache } : {}),
       ...(n !== undefined ? { notifier: n } : {}),
       ...(presignAvatar !== undefined ? { presignAvatar } : {}),
       ...(volunteerHoursTotalFor !== undefined ? { volunteerHoursTotalFor } : {}),

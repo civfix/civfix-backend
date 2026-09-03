@@ -26,6 +26,11 @@ export default defineConfig({
   //   reports + cleanups (and resolves cleanup jurisdictions), AFTER deploy is healthy (NEVER in the
   //   migration tx). Idempotent (only touches reference_code IS NULL rows) + race-free (shares the
   //   reference_counters allocator with live creates). Guard-free core is never bundled into the server.
+  // db/backfill-user-activity.ts: the audit-H18 one-off, emitted so the image runs
+  //   `node dist/db/backfill-user-activity.js` WITHOUT tsx. Fills users.last_activity_geom /
+  //   last_activity_at (0102) for rows that predate the live writers, AFTER the deploy is healthy and
+  //   AFTER the out-of-band indexes are built (docs/out-of-band-indexes.md). Idempotent + monotonic, so
+  //   re-running it and running it under live traffic are both safe.
   // NOTE the boundary-prep runner (scripts/prepare-boundaries.ts) and the manifest
   //   (src/db/boundaries/manifest.ts) are deliberately NOT entries: the runner is a GDAL-dependent ops
   //   tool run via tsx that never executes inside the production image, and the manifest is consumed only
@@ -39,6 +44,7 @@ export default defineConfig({
     "src/db/backfill-jurisdictions.ts",
     "src/db/backfill-population.ts",
     "src/db/backfill-reference-codes.ts",
+    "src/db/backfill-user-activity.ts",
   ],
   outDir: "dist",
   format: ["esm"],

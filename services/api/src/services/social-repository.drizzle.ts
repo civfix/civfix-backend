@@ -1,4 +1,5 @@
 
+import type postgres from "postgres"
 import type { Sql } from "../db/client.js"
 import type {
   PersonView,
@@ -31,7 +32,32 @@ export {
   resolveUserIdsToMentions,
 } from "./mention-resolver.drizzle.js"
 
+type SqlFragment = postgres.Fragment
+
 const SUGGEST_NEARBY_METERS = 25_000
+
+/**
+ * H18: how many candidates each bounded pool may contribute before ranking. The old query ranked EVERY
+ * non-deleted user (an O(N users) LATERAL + geography distance per request, inside a 15s statement
+ * timeout, at 30 req/min per identity); these caps make the per-request cost independent of how many
+ * accounts exist. Three pools, because the ranking has three intents to preserve: people active near
+ * the viewer (KNN over users.last_activity_geom), people active anywhere recently, and — so a fresh
+ * deployment where nobody has posted yet still suggests somebody — the newest accounts.
+ */
+export const SUGGEST_CANDIDATE_POOL = 200
+
+/**
+ * Cast-net radius for the KNN pool, in SRID-4326 DEGREES, not metres: the `<->` operator and the GiST
+ * index on users.last_activity_geom work in the geometry's own units, and casting to geography here
+ * would make the index unusable and reintroduce the full scan. ~2.5 degrees is ~275 km at the equator
+ * and shrinks with latitude — deliberately generous, because it only decides who is CONSIDERED. The
+ * honest metre distance (SUGGEST_NEARBY_METERS, ST_Distance over geography) still decides the ranking.
+ */
+export const SUGGEST_CANDIDATE_RADIUS_DEG = 2.5
+
+/** Named so the integration test can assert the planner actually picks them (out-of-band builds). */
+export const SUGGEST_KNN_INDEX = "users_last_activity_gist"
+export const SUGGEST_RECENCY_INDEX = "users_last_activity_at_idx"
 
 export interface PersonRowSelect {
   id: string
@@ -352,6 +378,23 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
 
     async suggestFollows(args): Promise<Array<PersonView & { isFollowing: boolean }>> {
       const viewerId = args.viewerId
+      // The eligibility predicate, repeated by each bounded pool below. It stays INSIDE every pool (not
+      // applied after the LIMIT) so a viewer who already follows their whole neighbourhood still gets a
+      // full page instead of a page of rows that are then filtered away.
+      const eligible = (): SqlFragment => sql`
+        u.deleted_at IS NULL
+        AND u.handle IS NOT NULL
+        AND u.id <> ${viewerId}
+        AND NOT EXISTS (
+          SELECT 1 FROM follows_people f
+          WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM user_blocks b
+          WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
+             OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
+        )
+      `
       const rows = await sql<
         Array<PersonRowSelect & { is_organizer: boolean }>
       >`
@@ -370,6 +413,35 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           ORDER BY p.created_at DESC NULLS LAST
           LIMIT 1
         ),
+        near_pool AS (
+          SELECT u.id
+          FROM users u, viewer_point vp
+          WHERE ${eligible()}
+            AND u.last_activity_geom IS NOT NULL
+            AND ST_DWithin(u.last_activity_geom, vp.geom, ${SUGGEST_CANDIDATE_RADIUS_DEG})
+          ORDER BY u.last_activity_geom <-> vp.geom
+          LIMIT ${SUGGEST_CANDIDATE_POOL}
+        ),
+        recent_pool AS (
+          SELECT u.id
+          FROM users u
+          WHERE ${eligible()}
+            AND u.last_activity_at IS NOT NULL
+          ORDER BY u.last_activity_at DESC
+          LIMIT ${SUGGEST_CANDIDATE_POOL}
+        ),
+        new_pool AS (
+          SELECT u.id
+          FROM users u
+          WHERE ${eligible()}
+          ORDER BY u.created_at DESC, u.id DESC
+          LIMIT ${SUGGEST_CANDIDATE_POOL}
+        ),
+        pool AS (
+          SELECT id FROM near_pool
+          UNION SELECT id FROM recent_pool
+          UNION SELECT id FROM new_pool
+        ),
         candidates AS (
           SELECT
             u.id,
@@ -385,35 +457,13 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
             EXISTS (SELECT 1 FROM cleanups oc WHERE oc.organizer_user_id = u.id) AS is_organizer,
             dist.meters AS dist_meters,
             (dist.meters IS NOT NULL AND dist.meters <= ${SUGGEST_NEARBY_METERS}) AS is_near
-          FROM users u
+          FROM pool p
+          JOIN users u ON u.id = p.id
           LEFT JOIN LATERAL (
-            SELECT p.geom FROM (
-              SELECT r.geom, r.created_at FROM reports r
-                WHERE r.reporter_user_id = u.id AND r.deleted_at IS NULL
-              UNION ALL
-              SELECT c.geom, c.created_at FROM cleanups c
-                WHERE c.organizer_user_id = u.id
-            ) p
-            ORDER BY p.created_at DESC NULLS LAST
-            LIMIT 1
-          ) cand ON TRUE
-          LEFT JOIN LATERAL (
-            SELECT ST_Distance(vp.geom::geography, cand.geom::geography) AS meters
+            SELECT ST_Distance(vp.geom::geography, u.last_activity_geom::geography) AS meters
             FROM viewer_point vp
-            WHERE cand.geom IS NOT NULL
+            WHERE u.last_activity_geom IS NOT NULL
           ) dist ON TRUE
-          WHERE u.deleted_at IS NULL
-            AND u.handle IS NOT NULL
-            AND u.id <> ${viewerId}
-            AND NOT EXISTS (
-              SELECT 1 FROM follows_people f
-              WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM user_blocks b
-              WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
-                 OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
-            )
         ),
         ranked AS (
           SELECT * FROM candidates

@@ -15,6 +15,20 @@ import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
 
 export const PEOPLE_DEFAULT_LIMIT = 20
 
+/**
+ * H18: follow suggestions are expensive relative to how little they change (they rank on a materialized
+ * activity point and a denormalized follower count, neither of which moves in seconds), and the route
+ * allows 30/min per identity. One entry per viewer, holding the widest page the contract permits, so a
+ * caller asking for fewer just slices the same ranking. Invalidated on follow/unfollow, which are the
+ * only actions that make a cached row WRONG rather than merely stale.
+ */
+export const SUGGESTIONS_CACHE_LIMIT = 20
+export const SUGGESTIONS_CACHE_TTL_SEC = 5 * 60
+
+function suggestionsCacheKey(viewerId: string): string {
+  return `social:suggest:v1:${viewerId}`
+}
+
 export const PROFILE_PAST_EVENTS_LIMIT = 20
 
 export const PROFILE_UPCOMING_EVENTS_LIMIT = 20
@@ -127,8 +141,16 @@ export interface SocialViewer {
   userId: string | null
 }
 
+/** The 3-verb slice of the Redis cache this service uses (auth/cache.js CacheClient shape). */
+export interface SuggestionsCache {
+  get(key: string): Promise<string | null>
+  set(key: string, value: string, ttlSeconds: number): Promise<void>
+  del(key: string): Promise<void>
+}
+
 export interface SocialServiceDeps {
   repo: SocialRepository
+  suggestionsCache?: SuggestionsCache
   notifier?: SocialNotifier
   isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
   blockState?: (
@@ -189,6 +211,46 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
 
 export function makeSocialService(deps: SocialServiceDeps): SocialService {
   const presignAvatar = deps.presignAvatar ?? ((avatarKey: string) => Promise.resolve(avatarKey))
+
+  // A cache miss, a malformed entry and an unreachable Redis are all the same thing here: recompute.
+  // Suggestions are advisory, so a cache fault must never turn into a 500 on a read path.
+  async function readSuggestionsCache(viewerId: string): Promise<PersonDTO[] | null> {
+    const cache = deps.suggestionsCache
+    if (cache === undefined) return null
+    try {
+      const raw = await cache.get(suggestionsCacheKey(viewerId))
+      if (raw === null) return null
+      const parsed: unknown = JSON.parse(raw)
+      return Array.isArray(parsed) ? (parsed as PersonDTO[]) : null
+    } catch (err) {
+      deps.logger?.warn({ err }, "follow suggestions cache read failed (recomputing)")
+      return null
+    }
+  }
+
+  async function writeSuggestionsCache(viewerId: string, results: PersonDTO[]): Promise<void> {
+    const cache = deps.suggestionsCache
+    if (cache === undefined) return
+    try {
+      await cache.set(
+        suggestionsCacheKey(viewerId),
+        JSON.stringify(results),
+        SUGGESTIONS_CACHE_TTL_SEC,
+      )
+    } catch (err) {
+      deps.logger?.warn({ err }, "follow suggestions cache write failed (ignored)")
+    }
+  }
+
+  async function dropSuggestionsCache(viewerId: string): Promise<void> {
+    const cache = deps.suggestionsCache
+    if (cache === undefined) return
+    try {
+      await cache.del(suggestionsCacheKey(viewerId))
+    } catch (err) {
+      deps.logger?.warn({ err }, "follow suggestions cache invalidation failed (ignored)")
+    }
+  }
 
   async function viewerFollows(targetId: string, viewer: SocialViewer): Promise<boolean> {
     if (viewer.userId === null || viewer.userId === targetId) return false
@@ -338,9 +400,16 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async followSuggestions(viewerId: string, limit: number): Promise<{ results: PersonDTO[] }> {
-      const items = await deps.repo.suggestFollows({ viewerId, limit })
+      const cached = await readSuggestionsCache(viewerId)
+      if (cached !== null) return { results: cached.slice(0, limit) }
+      const items = await deps.repo.suggestFollows({
+        viewerId,
+        limit: Math.max(limit, SUGGESTIONS_CACHE_LIMIT),
+      })
       // The repo already excludes followed users, but keep the DTO honest either way.
-      return { results: items.map((it) => toPersonDTO(it, it.isFollowing)) }
+      const results = items.map((it) => toPersonDTO(it, it.isFollowing))
+      await writeSuggestionsCache(viewerId, results)
+      return { results: results.slice(0, limit) }
     },
 
     async listFollowers(
@@ -372,6 +441,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       const { exists, created } = await deps.repo.addFollow(viewerId, targetId)
       if (!exists) throw AppError.notFound("Person not found")
 
+      await dropSuggestionsCache(viewerId)
       const followers = await deps.repo.followerCount(targetId)
 
       if (created && deps.notifier) {
@@ -402,6 +472,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       }
       const { exists } = await deps.repo.removeFollow(viewerId, targetId)
       if (!exists) throw AppError.notFound("Person not found")
+      await dropSuggestionsCache(viewerId)
       const followers = await deps.repo.followerCount(targetId)
       return { isFollowing: false, followers }
     },

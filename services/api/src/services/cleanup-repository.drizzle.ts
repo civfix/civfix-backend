@@ -52,6 +52,7 @@ import type {
   ReportStatus,
   ReportType,
 } from "@civfix/shared"
+import { touchUserActivity } from "../db/sql/user-activity.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
 
@@ -121,6 +122,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
 
         const created = await readById(tx, args.cleanupId, null)
         if (!created) throw AppError.internal()
+        await touchUserActivity(tx, {
+          userId: args.organizerUserId,
+          lng: args.lng,
+          lat: args.lat,
+          at: created.createdAt,
+        })
         return created
       })
     },

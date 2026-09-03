@@ -1,7 +1,7 @@
 
 import { sql } from "drizzle-orm"
 import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
-import { citext, type ROLE_VALUES } from "./types.js"
+import { citext, geometry, type ROLE_VALUES } from "./types.js"
 import type { SocialLinks } from "@civfix/shared"
 
 type Role = (typeof ROLE_VALUES)[number]
@@ -42,6 +42,15 @@ export const users = pgTable(
     // are INCLUDED, matching the correlated count(*) aggregates these replaced.
     followerCount: integer("follower_count").notNull().default(0),
     followingCount: integer("following_count").notNull().default(0),
+    // Materialized "most recent locatable public act" (0102, audit H18): the point + timestamp of the
+    // user's latest report, organized event, or event completion. It exists ONLY so follow suggestions
+    // can bound their candidate set with a KNN index scan instead of a per-user LATERAL over the whole
+    // users table; it is never projected into any DTO. Writers move it FORWARD only (see
+    // report-repository / cleanup-repository), and erasure nulls both columns with the rest of the
+    // tombstone. The GiST + recency indexes are built out of band (docs/out-of-band-indexes.md), so
+    // they are deliberately absent from the index list below.
+    lastActivityGeom: geometry("last_activity_geom", { subtype: "Point", srid: 4326 }),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },

@@ -6,12 +6,15 @@ import {
   PROFILE_PAST_EVENTS_LIMIT,
   type SocialNotifier,
   type SocialService,
+  type SocialRepository,
   type PersonView,
 } from "../../src/services/social-service.js"
 import {
   toPersonView,
+  SUGGEST_CANDIDATE_POOL,
   type PersonRowSelect,
 } from "../../src/services/social-repository.drizzle.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   InMemorySocialRepository,
   makeCleanupRecord,
@@ -978,6 +981,62 @@ describe("followSuggestions", () => {
     const ids = results.map((r) => r.id)
     expect(ids.indexOf(B)).toBeLessThan(ids.indexOf(C))
     expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(D))
+  })
+
+  it("H18: a viewer with no location still gets a bounded, non-empty page from a large population", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    for (let i = 0; i < SUGGEST_CANDIDATE_POOL * 2; i++) {
+      repo.seedUser({ displayName: `Person ${i}`, handle: `person_${i}` })
+    }
+    const { results } = await service.followSuggestions(A, 10)
+    expect(results).toHaveLength(10)
+    expect(results.map((r) => r.id)).not.toContain(A)
+  })
+
+  it("H18: serves a repeat call from the cache and recomputes after a follow", async () => {
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const repo = new InMemorySocialRepository()
+    let calls = 0
+    // Object.create, not a spread: the fake's methods live on the prototype, and the delegate must keep
+    // sharing the instance's seeded maps so a follow written through it is visible to the recompute.
+    const counted = Object.create(repo) as SocialRepository
+    counted.suggestFollows = (a) => {
+      calls += 1
+      return repo.suggestFollows(a)
+    }
+    const service = makeSocialService({ repo: counted, suggestionsCache: cache })
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "Someone", handle: "someone" })
+
+    const first = await service.followSuggestions(A, 10)
+    expect(first.results.map((r) => r.id)).toEqual([B])
+    expect(calls).toBe(1)
+
+    const second = await service.followSuggestions(A, 10)
+    expect(second.results.map((r) => r.id)).toEqual([B])
+    expect(calls).toBe(1)
+
+    await service.followPerson(A, B)
+    const third = await service.followSuggestions(A, 10)
+    expect(calls).toBe(2)
+    expect(third.results.map((r) => r.id)).not.toContain(B)
+  })
+
+  it("H18: a cache that throws is not an error path — suggestions still compute", async () => {
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({
+      repo,
+      suggestionsCache: {
+        get: () => Promise.reject(new Error("redis down")),
+        set: () => Promise.reject(new Error("redis down")),
+        del: () => Promise.reject(new Error("redis down")),
+      },
+    })
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "Someone", handle: "someone" })
+    const { results } = await service.followSuggestions(A, 10)
+    expect(results.map((r) => r.id)).toEqual([B])
   })
 })
 

@@ -10,6 +10,10 @@ import type {
 } from "../../src/services/social-service.js"
 import type { CleanupRecord } from "../../src/services/cleanup-service.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../src/db/cursor-helpers.js"
+import {
+  SUGGEST_CANDIDATE_POOL,
+  SUGGEST_CANDIDATE_RADIUS_DEG,
+} from "../../src/services/social-repository.drizzle.js"
 
 interface StoredUser {
   id: string
@@ -187,19 +191,31 @@ export class InMemorySocialRepository implements SocialRepository {
     return rec ? { lat: rec.lat, lng: rec.lng } : null
   }
 
+  /** The timestamp paired with the materialized point: the created_at of that organized cleanup. */
+  private activityAt(userId: string): Date | null {
+    const mine = this.cleanups
+      .filter((c) => c.record.organizerUserId === userId)
+      .sort((a, b) => b.record.createdAt.getTime() - a.record.createdAt.getTime())
+    return mine[0]?.record.createdAt ?? null
+  }
+
   private isOrganizer(userId: string): boolean {
     return this.cleanups.some((c) => c.record.organizerUserId === userId)
   }
 
   /**
-   * In-memory mirror of the drizzle suggestFollows ranking (nearby organizers > nearby > organizers >
-   * rest; within a tier closer first, then follower count). Locations come from seeded cleanups.
+   * In-memory mirror of the drizzle suggestFollows (H18 shape): THREE bounded candidate pools —
+   * nearest by last-activity point, most recently active, newest account — unioned and then ranked with
+   * the unchanged signals (nearby organizers > nearby > organizers > rest; within a tier closer first,
+   * then follower count). "Last activity" here is the seeded organized-cleanup point, which is what the
+   * users.last_activity_geom column materialises. `users` insertion order stands in for created_at.
    */
   suggestFollows(args: {
     viewerId: string
     limit: number
   }): Promise<Array<PersonView & { isFollowing: boolean }>> {
     const NEARBY_METERS = 25_000
+    const RADIUS_METERS = SUGGEST_CANDIDATE_RADIUS_DEG * 111_320
     const viewerPoint = this.activityPoint(args.viewerId, false)
     const haversine = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): number => {
       const toRad = (d: number): number => (d * Math.PI) / 180
@@ -210,27 +226,44 @@ export class InMemorySocialRepository implements SocialRepository {
         Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
       return 2 * 6371000 * Math.asin(Math.sqrt(s))
     }
-    const candidates = [...this.users.values()]
-      .filter((u) => {
-        if (u.deletedAt !== null || u.handle === null || u.id === args.viewerId) return false
-        if (this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id)) {
-          return false
-        }
-        if (this.isBlockedEitherWay(args.viewerId, u.id)) return false
-        return true
-      })
-      .map((u) => {
-        const point = this.activityPoint(u.id, true)
-        const meters = viewerPoint && point ? haversine(viewerPoint, point) : null
-        return {
-          u,
-          meters,
-          near: meters !== null && meters <= NEARBY_METERS,
-          organizer: this.isOrganizer(u.id),
-        }
-      })
+    const eligible = [...this.users.values()].filter((u) => {
+      if (u.deletedAt !== null || u.handle === null || u.id === args.viewerId) return false
+      if (this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id)) {
+        return false
+      }
+      if (this.isBlockedEitherWay(args.viewerId, u.id)) return false
+      return true
+    })
+    const scored = eligible.map((u) => {
+      const point = this.activityPoint(u.id, true)
+      const meters = viewerPoint && point ? haversine(viewerPoint, point) : null
+      return {
+        u,
+        point,
+        at: this.activityAt(u.id),
+        meters,
+        near: meters !== null && meters <= NEARBY_METERS,
+        organizer: this.isOrganizer(u.id),
+      }
+    })
+    const nearPool =
+      viewerPoint === null
+        ? []
+        : scored
+            .filter((c) => c.point !== null && c.meters !== null && c.meters <= RADIUS_METERS)
+            .sort((a, b) => (a.meters ?? 0) - (b.meters ?? 0))
+            .slice(0, SUGGEST_CANDIDATE_POOL)
+    const recentPool = scored
+      .filter((c) => c.at !== null)
+      .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
+      .slice(0, SUGGEST_CANDIDATE_POOL)
+    const newPool = [...scored].reverse().slice(0, SUGGEST_CANDIDATE_POOL)
+    const pool = new Map<string, (typeof scored)[number]>()
+    for (const c of [...nearPool, ...recentPool, ...newPool]) pool.set(c.u.id, c)
+
+    const ranked = [...pool.values()]
       .sort((a, b) => {
-        const tier = (c: typeof a): number =>
+        const tier = (c: (typeof scored)[number]): number =>
           c.near && c.organizer ? 0 : c.near ? 1 : c.organizer ? 2 : 3
         if (tier(a) !== tier(b)) return tier(a) - tier(b)
         const da = a.meters ?? Number.POSITIVE_INFINITY
@@ -242,7 +275,7 @@ export class InMemorySocialRepository implements SocialRepository {
         return fb - fa
       })
       .slice(0, args.limit)
-    return Promise.resolve(candidates.map((c) => ({ ...this.toView(c.u), isFollowing: false })))
+    return Promise.resolve(ranked.map((c) => ({ ...this.toView(c.u), isFollowing: false })))
   }
 
   listFollowers(args: {

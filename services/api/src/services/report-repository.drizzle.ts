@@ -34,6 +34,7 @@ import {
   type ReportRowSelect,
   type TimelineRowSelect,
 } from "./report-sql.js"
+import { touchUserActivity } from "../db/sql/user-activity.js"
 
 type SqlFragment = postgres.Fragment
 
@@ -201,6 +202,14 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           `
           if (!rows[0]) throw AppError.internal("report row vanished mid-create-transaction")
           const record = toRecord(rows[0])
+          if (args.reporterUserId !== null) {
+            await touchUserActivity(tx, {
+              userId: args.reporterUserId,
+              lng: record.lng,
+              lat: record.lat,
+              at: record.createdAt,
+            })
+          }
           const media = await loadMedia(tx, args.reportId)
           const timeline = await loadTimeline(tx, args.reportId)
           const dto = await args.buildSnapshot(record, media, timeline)
