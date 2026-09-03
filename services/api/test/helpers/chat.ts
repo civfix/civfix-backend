@@ -15,12 +15,14 @@ import {
   replyWrongRoom,
 } from "../../src/services/chat-reply-hydration.js"
 import { aroundLimits } from "../../src/services/chat-history-window.js"
+import { toTombstoneDTO } from "../../src/services/chat-tombstone.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 import type { TimeCursor } from "../../src/db/cursor-helpers.js"
 
 interface StoredMessage {
   dto: ChatMessageDTO
   deleted: boolean
+  deletedAt?: Date
   /**
    * REAL wall-clock insertion time. The dto's createdAt rides the deterministic 2026-01-01 tick clock
    * (stable ordering for assertions), which would make every fake message look months old to the
@@ -159,9 +161,7 @@ export class InMemoryChatRepository implements ChatRepository {
     const items = window.map((m) =>
       this.withReply(
         roomId,
-        // The store keeps a deleted boolean, not a timestamp; stamp a deletedAt so the tombstone
-        // projects like a drizzle tombstone row.
-        m.deleted ? { ...m.dto, deletedAt: new Date(m.insertedAtMs).toISOString() } : m.dto,
+        m.deleted ? toTombstoneDTO(m.dto, m.deletedAt ?? new Date(m.insertedAtMs)) : m.dto,
       ),
     )
     return Promise.resolve({
@@ -289,11 +289,11 @@ export class InMemoryChatRepository implements ChatRepository {
       return Promise.resolve(null)
     }
     found.deleted = true
-    const tombstone: ChatMessageDTO = {
-      ...found.dto,
-      deletedAt: this.nextDate().toISOString(),
-      mine: found.dto.from?.id === senderId,
-    }
+    found.deletedAt = this.nextDate()
+    const tombstone = toTombstoneDTO(
+      { ...found.dto, mine: found.dto.from?.id === senderId },
+      found.deletedAt,
+    )
     return Promise.resolve(this.withReply(cleanupId, tombstone))
   }
 
