@@ -24,6 +24,7 @@ import { SessionService } from "../../src/auth/session-service.js"
 import { makeWsTicketStore } from "../../src/auth/ws-ticket.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import { WS_CLOSE_POLICY_VIOLATION } from "../../src/ws/types.js"
+import { SESSION_COOKIE } from "../../src/auth/transport.js"
 
 
 const WS_OPEN = 1
@@ -110,6 +111,17 @@ function authedRequest(userId: string, ip = "203.0.113.7"): FastifyRequest {
     ip,
     headers: {},
     cookies: {},
+    query: {},
+    log: { warn() {}, error() {}, info() {}, debug() {} },
+  } as unknown as FastifyRequest
+}
+
+function cookieRequest(userId: string, token: string, ip = "203.0.113.10"): FastifyRequest {
+  return {
+    auth: { userId },
+    ip,
+    headers: {},
+    cookies: { [SESSION_COOKIE]: token },
     query: {},
     log: { warn() {}, error() {}, info() {}, debug() {} },
   } as unknown as FastifyRequest
@@ -832,5 +844,47 @@ describe("H2: a ?ticket socket is re-validated against session revocation, exact
 
     expect(socket.closes).toHaveLength(1)
     expect(socket.closes[0]?.reason).toBe("unauthenticated")
+  })
+})
+
+describe("H3: the cookie socket honours the revocation epoch even when the Redis eviction failed", () => {
+  class FailingDelCache extends InMemoryCacheClient {
+    failDel = false
+    override del(key: string): Promise<void> {
+      if (this.failDel) return Promise.reject(new Error("redis del down"))
+      return super.del(key)
+    }
+  }
+
+  it("closes a cookie socket after revokeAllForUser strands its sess:<hash> projection", async () => {
+    vi.useFakeTimers()
+    try {
+      const stores = makeInMemoryStores()
+      const cache = new FailingDelCache(() => Date.now())
+      const sessions = new SessionService({
+        store: stores.sessions,
+        cache,
+        now: () => Date.now(),
+        logger: { error() {} },
+      })
+      const token = await sessions.createSession(ALICE, ["citizen"])
+      const hash = await sha256Hex(token)
+
+      const handler = captureGatewayHandler(baseOpts({ sessions }))
+      const socket = new MockSocket()
+      handler(socket as unknown as WebSocket, cookieRequest(ALICE, token))
+      await settle()
+      expect(socket.closes).toHaveLength(0)
+
+      cache.failDel = true
+      await sessions.revokeAllForUser(ALICE)
+      expect(await cache.get(`sess:${hash}`)).not.toBeNull()
+
+      for (let i = 0; i < 5; i += 1) await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
+      expect(socket.closes).toHaveLength(1)
+      expect(socket.closes[0]?.reason).toBe("session no longer valid")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

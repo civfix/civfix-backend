@@ -104,6 +104,7 @@ export class SessionService {
     const expiresAt = new Date(nowMs + this.ttlSeconds * 1000)
     const lastSeen = new Date(nowMs)
 
+    const epoch = await this.currentEpoch(userId)
     await this.store.insert({
       id: hash,
       userId,
@@ -114,7 +115,6 @@ export class SessionService {
       ip: meta.ip ?? null,
     })
 
-    const epoch = await this.currentEpoch(userId)
     await this.writeCache(
       hash,
       {
