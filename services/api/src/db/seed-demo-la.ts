@@ -46,8 +46,7 @@ import {
 import { resolveJurisdiction } from "./sql/jurisdiction.js"
 import { reportH3Cell } from "../services/report-clustering.js"
 import { runIfMain } from "./cli.js"
-
-export const DEMO_EMAIL_DOMAIN = "demo-seed.civfix.org"
+import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
 
 // ---------------------------------------------------------------------------------------------------
 // Deterministic PRNG (mulberry32) + sampling helpers. Seeded so a rehearsal and the committed run (or
@@ -1044,9 +1043,12 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
       kind === "upcoming"
         ? nextSaturdayish(now, rint(3, 21))
         : nextSaturdayish(new Date(later(organizer.createdAt, new Date(now.getTime() - 150 * DAY)).getTime()), rint(7, 120), now)
+    // The create must land in the PAST even for upcoming events (scheduled_at - 2d can exceed now
+    // when the event is less than 2 days out, which would backdate joins into the future).
+    const createdCeiling = new Date(Math.min(scheduledAt.getTime() - 2 * DAY, now.getTime() - 6 * 3600_000))
     const createdAt = randTimestamp(
       later(organizer.createdAt, new Date(scheduledAt.getTime() - 28 * DAY)),
-      new Date(scheduledAt.getTime() - 2 * DAY),
+      createdCeiling,
     )
     const { lat, lng } = jitterPoint(park.lat, park.lng, 0.0015)
     const title = fill(bilingual(organizer, EVENT_TITLE_EN, EVENT_TITLE_ES), organizer, { park: park.name, hood: hood.name, street: pick(hood.streets) })

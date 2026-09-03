@@ -36,6 +36,7 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
     "db:seed:demo": "tsx src/db/seed-demo-la.ts",
+    "db:demo:join": "tsx src/db/demo-join-event.ts",
     "db:ingest": "tsx src/db/ingest-jurisdictions.ts",
     "db:backfill": "tsx src/db/backfill-jurisdictions.ts",
     "db:backfill:reference-codes": "tsx src/db/backfill-reference-codes.ts",
