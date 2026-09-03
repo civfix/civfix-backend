@@ -331,6 +331,33 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows[0] ? toRecord(rows[0]) : null
     },
 
+    async refreshUnreadNotification(args: {
+      userId: string
+      type: NotificationType
+      link: string
+      title: string
+      body: string | null
+      since: Date
+    }): Promise<NotificationRecord | null> {
+      const rows = await sql<NotificationRowSelect[]>`
+        UPDATE notifications
+        SET title = ${args.title}, body = ${args.body}
+        WHERE id = (
+          SELECT id FROM notifications
+          WHERE user_id = ${args.userId}
+            AND type = ${args.type}
+            AND link = ${args.link}
+            AND read_at IS NULL
+            AND created_at > ${args.since}
+          ORDER BY created_at DESC
+          LIMIT 1
+          FOR UPDATE
+        )
+        RETURNING id, user_id, type, title, body, link, read_at, created_at
+      `
+      return rows[0] ? toRecord(rows[0]) : null
+    },
+
     async deleteAllNotificationsForUser(userId: string): Promise<void> {
       await sql`DELETE FROM notifications WHERE user_id = ${userId}`
     },

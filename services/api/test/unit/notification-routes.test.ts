@@ -17,6 +17,11 @@ import {
 import { randomUUID } from "node:crypto"
 
 
+const DEVICE_TOKEN = "a1".repeat(32)
+const DEVICE_TOKEN_WILD = "b2".repeat(32)
+const DEVICE_TOKEN_GOOD = "c3".repeat(32)
+const DEVICE_TOKEN_LEGACY = "d4".repeat(32)
+
 interface Harness {
   app: FastifyInstance
   repo: InMemoryNotificationRepository
@@ -265,14 +270,14 @@ describe("POST /push/register", () => {
       method: "POST",
       url: "/v1/push/register",
       headers: auth(token),
-      payload: { platform: "ios", token: "device-token-1", deviceId: "dev-1" },
+      payload: { platform: "ios", token: DEVICE_TOKEN, deviceId: "dev-1" },
     })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
 
     expect(current!.repo.pushTokens).toHaveLength(1)
-    expect(current!.repo.pushTokens[0]).toMatchObject({ userId, platform: "ios", token: "device-token-1" })
-    expect(push.tokens.some((t) => t.token === "device-token-1")).toBe(true)
+    expect(current!.repo.pushTokens[0]).toMatchObject({ userId, platform: "ios", token: DEVICE_TOKEN })
+    expect(push.tokens.some((t) => t.token === DEVICE_TOKEN)).toBe(true)
   })
 
   it("422s a bad platform", async () => {
@@ -292,7 +297,7 @@ describe("POST /push/register", () => {
       method: "POST",
       url: "/v1/push/register",
       headers: auth(token),
-      payload: { platform: "ios", token: "device-token-wild", deviceId: "*" },
+      payload: { platform: "ios", token: DEVICE_TOKEN_WILD, deviceId: "*" },
     })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
@@ -301,7 +306,7 @@ describe("POST /push/register", () => {
     expect(current!.repo.pushTokens[0]).toMatchObject({
       userId,
       platform: "ios",
-      token: "device-token-wild",
+      token: DEVICE_TOKEN_WILD,
       deviceId: null,
     })
   })
@@ -322,7 +327,7 @@ describe("POST /push/register", () => {
         method: "POST",
         url: "/v1/push/register",
         headers: auth(token),
-        payload: { platform: "android", token: `tok-${i}`, deviceId },
+        payload: { platform: "android", token: `${"ab".repeat(30)}${String(i).padStart(4, "0")}`, deviceId },
       })
       expect(res.statusCode, deviceId.slice(0, 24)).toBe(200)
       expect(current!.repo.pushTokens[0]?.deviceId, deviceId.slice(0, 24)).toBeNull()
@@ -339,7 +344,7 @@ describe("POST /push/register", () => {
       headers: auth(token),
       payload: {
         platform: "ios",
-        token: "device-token-good",
+        token: DEVICE_TOKEN_GOOD,
         deviceId: "  3F2504E0-4F89-11D3-9A0C-0305E82C3301 ",
       },
     })
@@ -353,7 +358,7 @@ describe("POST /push/register", () => {
       method: "POST",
       url: "/v1/push/register",
       headers: auth(token),
-      payload: { platform: "ios", token: "device-token-legacy" },
+      payload: { platform: "ios", token: DEVICE_TOKEN_LEGACY },
     })
     expect(res.statusCode).toBe(200)
     expect(current!.repo.pushTokens[0]?.deviceId).toBeNull()
@@ -390,15 +395,15 @@ describe("POST /push/unregister (F083)", () => {
       method: "POST",
       url: "/v1/push/register",
       headers: auth(token),
-      payload: { platform: "ios", token: "device-token-1" },
+      payload: { platform: "ios", token: DEVICE_TOKEN },
     })
-    expect(current!.repo.pushTokens[0]).toMatchObject({ userId, token: "device-token-1", revokedAt: null })
+    expect(current!.repo.pushTokens[0]).toMatchObject({ userId, token: DEVICE_TOKEN, revokedAt: null })
 
     const res = await app.inject({
       method: "POST",
       url: "/v1/push/unregister",
       headers: auth(token),
-      payload: { platform: "ios", token: "device-token-1" },
+      payload: { platform: "ios", token: DEVICE_TOKEN },
     })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })

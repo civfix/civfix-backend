@@ -410,6 +410,7 @@ export function buildContainer(env: Env): Container {
         : new MultiPushSender({
             db: getDb().db,
             config: buildPushConfig(env),
+            counters: getCounterStore(),
             ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
           })
     }

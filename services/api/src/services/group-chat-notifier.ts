@@ -33,6 +33,8 @@ export interface GroupChatNotifierDeps {
   isBlockedEitherWay: (a: string, b: string) => Promise<boolean>
   /** Optional batch form of the M11 gate (one query for the whole candidate set). */
   blockedIdsFor?: (actorId: string, candidateIds: string[]) => Promise<Set<string>>
+  coalesceWindowMs?: number
+  now?: () => number
 }
 
 export function makeGroupChatNotifier(
@@ -49,6 +51,8 @@ export function makeGroupChatNotifier(
       roomKey: (groupId) => deps.roomKeyFor("group", groupId),
       isBlockedEitherWay: deps.isBlockedEitherWay,
       ...(deps.blockedIdsFor ? { blockedIdsFor: deps.blockedIdsFor } : {}),
+      ...(deps.coalesceWindowMs !== undefined ? { coalesceWindowMs: deps.coalesceWindowMs } : {}),
+      ...(deps.now !== undefined ? { now: deps.now } : {}),
     },
   )
 }

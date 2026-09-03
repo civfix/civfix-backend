@@ -83,6 +83,17 @@ LIMIT n`. At scale a `notifications(created_at)` index would help; the F089
 this is deferred, not blocking. The `DELETE /me` erasure cleanup step and the
 `docs/erasure-behavior.md` row are owned by the users/erasure workstream.
 
+UPDATE (H19, audit 2026-09) — the inflow side is now bounded too. Group/report
+room activity used to write ONE row per member per message; a room fan-out now
+happens at most once per `ROOM_ACTIVITY_COALESCE_WINDOW_MS` (10 min,
+`services/api/src/services/chat-room-fanout-notifier.ts`) and a recipient keeps
+ONE unread bell per room per window — later messages in the window UPDATE that
+row's title/body via `refreshUnreadNotification` instead of inserting. The
+message preview stored in `body` is therefore the LATEST message of the window
+rather than one row per message; retention semantics and the 90-day TTL are
+unchanged, but the volume the sweep has to drain is bounded by rooms×windows
+instead of members×messages. Mention/reply/DM bells are NOT coalesced.
+
 ---
 
 ## F106 — `inbound/failed/` poison-message store (adminmail-a)

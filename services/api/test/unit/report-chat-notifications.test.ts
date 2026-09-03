@@ -10,7 +10,7 @@ import {
   ROOM_FANOUT_MEMBER_CAP,
 } from "../../src/services/chat-room-fanout-notifier.js"
 import { makeDmBellNotifier } from "../../src/services/chat-bells.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import { InMemoryNotificationRepository, flushNotificationDispatch } from "../helpers/notifications.js"
 import type { NotificationPrefsRecord } from "../../src/services/notification-service.js"
 import {
   makeNotificationService,
@@ -484,8 +484,11 @@ describe("F084: the shared room fan-out batches push delivery", () => {
     await notify(REPORT, systemMessage())
 
     expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    await flushNotificationDispatch()
     expect(pushSpy.singleSends).toHaveLength(0)
+    await flushNotificationDispatch()
     expect(pushSpy.batches).toEqual([PUSH_FANOUT_BATCH_SIZE, PUSH_FANOUT_BATCH_SIZE, 50])
+    await flushNotificationDispatch()
     expect(pushSpy.batches.reduce((a, b) => a + b, 0)).toBe(roster.length)
   })
 
@@ -513,7 +516,9 @@ describe("F084: the shared room fan-out batches push delivery", () => {
     await notify(REPORT, systemMessage())
 
     expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    await flushNotificationDispatch()
     expect(pushSpy.singleSends).toHaveLength(0)
+    await flushNotificationDispatch()
     expect(pushSpy.batches).toEqual([PUSH_FANOUT_BATCH_SIZE])
   })
 })
@@ -572,7 +577,9 @@ describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOS
     await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
 
     expect(repo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    await flushNotificationDispatch()
     expect(pushSpy.batches).toEqual([])
+    await flushNotificationDispatch()
     expect(pushSpy.singleSends).toHaveLength(0)
   })
 
@@ -584,7 +591,9 @@ describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOS
     await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
 
     expect(repo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    await flushNotificationDispatch()
     expect(pushSpy.batches).toEqual([])
+    await flushNotificationDispatch()
     expect(pushSpy.singleSends).toHaveLength(0)
   })
 
@@ -597,7 +606,9 @@ describe("F084: an unreadable prefs row suppresses push (consent gate fails CLOS
     await fanOutWith(repo, pushSpy, roster)(REPORT, systemMessage())
 
     expect(repo.batchCalls).toEqual([roster.length])
+    await flushNotificationDispatch()
     expect(pushSpy.batches).toEqual([PUSH_FANOUT_BATCH_SIZE])
+    await flushNotificationDispatch()
     expect(pushSpy.singleSends).toHaveLength(0)
   })
 })

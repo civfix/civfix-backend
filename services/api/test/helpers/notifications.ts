@@ -13,6 +13,15 @@ import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
+/**
+ * Settle the fire-and-forget push/signal dispatch that createNotification kicks off after persisting.
+ * The notification path deliberately does not await the push provider (H15), so a test that asserts on
+ * pushes — including asserting that NONE were sent — has to let the microtask chain drain first.
+ */
+export function flushNotificationDispatch(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 export interface StoredPushToken {
   userId: string
   platform: PushPlatform
@@ -235,6 +244,30 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
     return Promise.resolve(match ?? null)
+  }
+
+  refreshUnreadNotification(args: {
+    userId: string
+    type: NotificationType
+    link: string
+    title: string
+    body: string | null
+    since: Date
+  }): Promise<NotificationRecord | null> {
+    const match = this.notifications
+      .filter(
+        (n) =>
+          n.userId === args.userId &&
+          n.type === args.type &&
+          n.link === args.link &&
+          n.readAt === null &&
+          n.createdAt.getTime() > args.since.getTime(),
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
+    if (!match) return Promise.resolve(null)
+    match.title = args.title
+    match.body = args.body
+    return Promise.resolve(match)
   }
 
   deleteAllNotificationsForUser(userId: string): Promise<void> {

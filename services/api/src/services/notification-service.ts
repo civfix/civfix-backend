@@ -23,6 +23,7 @@ import {
   typeAllowedByPrefs,
 } from "./notification-helpers.js"
 import { mapWithLimit } from "./media-presign.js"
+import { classifyPushToken, isSafePushEndpoint } from "../adapters/push-sender.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"
 
@@ -107,6 +108,15 @@ export interface NotificationRepository {
     since: Date
   }): Promise<NotificationRecord | null>
 
+  refreshUnreadNotification(args: {
+    userId: string
+    type: NotificationType
+    link: string
+    title: string
+    body: string | null
+    since: Date
+  }): Promise<NotificationRecord | null>
+
   deleteAllNotificationsForUser(userId: string): Promise<void>
 
   findPrefs(userId: string): Promise<NotificationPrefsRecord | null>
@@ -149,6 +159,7 @@ export interface CreateNotificationInput {
   vars?: MessageVars
   link?: string
   dedupeWindowMs?: number
+  coalesceWindowMs?: number
 }
 
 export interface NotificationServiceDeps {
@@ -157,6 +168,7 @@ export interface NotificationServiceDeps {
   userChannel?: UserChannel
   logger?: Pick<FastifyBaseLogger, "warn" | "error">
   now?: () => Date
+  isSafePushEndpoint?: (endpoint: string) => Promise<boolean>
 }
 
 export interface PostNotifier {
@@ -186,6 +198,7 @@ interface ResolvedPrefs {
 
 export function makeNotificationService(deps: NotificationServiceDeps): NotificationService {
   const now = deps.now ?? (() => new Date())
+  const isSafeEndpoint = deps.isSafePushEndpoint ?? isSafePushEndpoint
 
   async function resolvePrefs(userId: string): Promise<NotificationPrefsRecord> {
     const existing = await deps.repo.findPrefs(userId)
@@ -247,6 +260,24 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         ? renderMessage(locale, input.bodyKey, input.vars)
         : (input.body ?? null)
     const link = input.link ?? null
+    if (input.coalesceWindowMs !== undefined && link !== null) {
+      try {
+        const refreshed = await deps.repo.refreshUnreadNotification({
+          userId,
+          type: input.type,
+          link,
+          title,
+          body,
+          since: new Date(now().getTime() - input.coalesceWindowMs),
+        })
+        if (refreshed) return { record: refreshed, deduped: true }
+      } catch (err) {
+        deps.logger?.warn(
+          { err, userId, type: input.type },
+          "notification coalesce lookup failed; creating anyway",
+        )
+      }
+    }
     if (input.dedupeWindowMs !== undefined) {
       try {
         const existing = await deps.repo.findRecentDuplicate({
@@ -280,7 +311,9 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   ): Promise<NotificationDTO> {
     const { record, deduped } = await persistNotification(userId, input)
     if (deduped) return toNotificationDTO(record)
-    await maybeSendPush(userId, record)
+    void maybeSendPush(userId, record).catch((err: unknown) => {
+      deps.logger?.error({ err, userId }, "push dispatch failed (suppressed)")
+    })
     void maybeSignalNotification(userId).catch((err: unknown) => {
       deps.logger?.error({ err, userId }, "notification signal dispatch failed (suppressed)")
     })
@@ -386,7 +419,9 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     })
     const created = persisted.filter((p): p is { userId: string; record: NotificationRecord } => p !== null)
     if (created.length === 0) return
-    await sendBatchedPush(created)
+    void sendBatchedPush(created).catch((err: unknown) => {
+      deps.logger?.error({ err, count: created.length }, "batched push dispatch failed (suppressed)")
+    })
     void signalMany(created.map((c) => c.userId))
   }
 
@@ -435,6 +470,16 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       userId: string,
       req: RegisterPushTokenRequest,
     ): Promise<{ ok: true }> {
+      const shape = classifyPushToken(req.platform, req.token)
+      if (!shape.ok) {
+        throw AppError.validation({ [shape.field]: shape.reason }, "Invalid push token")
+      }
+      if (shape.kind === "web" && (await isSafeEndpoint(shape.endpoint)) === false) {
+        throw AppError.validation(
+          { token: "subscription endpoint must be a public https push service" },
+          "Invalid push token",
+        )
+      }
       const outcome = await deps.repo.upsertPushToken({
         userId,
         platform: req.platform,

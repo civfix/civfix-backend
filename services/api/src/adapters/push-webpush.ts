@@ -9,6 +9,7 @@ const AGENT_DRAIN_SWEEP_MS = 5_000
 
 export interface PinnedAgentPool {
   get(address: string, family: 4 | 6): Agent
+  drop(address: string, family: 4 | 6): void
   sweep(): void
   destroyAll(): void
   stats(): { cached: number; retiring: number }
@@ -90,8 +91,18 @@ export function makePinnedAgentPool(
     return agent
   }
 
+  function drop(address: string, family: 4 | 6): void {
+    const key = `${family}|${address}`
+    const agent = cache.get(key)
+    if (!agent) return
+    cache.delete(key)
+    retiring.delete(agent)
+    agent.destroy()
+  }
+
   return {
     get,
+    drop,
     sweep,
     stats: () => ({ cached: cache.size, retiring: retiring.size }),
     destroyAll: () => {
@@ -111,16 +122,50 @@ const agentPool = makePinnedAgentPool()
 
 const WEB_PUSH_CONCURRENCY = 16
 
+export const WEB_PUSH_REQUEST_TIMEOUT_MS = 8_000
+
+export const WEB_PUSH_DEADLINE_SLACK_MS = 2_000
+
+export const WEB_PUSH_BATCH_BUDGET_MS = 32_000
+
+export class WebPushDeadlineError extends Error {
+  constructor(ms: number) {
+    super(`web push request exceeded the ${ms}ms hard deadline`)
+    this.name = "WebPushDeadlineError"
+  }
+}
+
+async function withDeadline<T>(work: Promise<T>, ms: number, onExpire: () => void): Promise<T> {
+  void work.catch(() => {})
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const guard = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      onExpire()
+      reject(new WebPushDeadlineError(ms))
+    }, ms)
+    timer.unref?.()
+  })
+  try {
+    return await Promise.race([work, guard])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 export function makeWebPushDispatcher(
   webPush: NonNullable<PushSenderConfig["webPush"]>,
   logger: PushLogger,
+  pool: PinnedAgentPool = agentPool,
 ): PlatformDispatcher {
   let webpushPromise: Promise<any> | null = null
+  const requestTimeoutMs = webPush.timeoutMs ?? WEB_PUSH_REQUEST_TIMEOUT_MS
+  const deadlineMs = requestTimeoutMs + WEB_PUSH_DEADLINE_SLACK_MS
+  const batchBudgetMs = webPush.batchBudgetMs ?? WEB_PUSH_BATCH_BUDGET_MS
 
   async function getWebPush() {
     if (!webpushPromise) {
       webpushPromise = (async () => {
-        const mod = await import("web-push")
+        const mod = await (webPush.loadModule ? webPush.loadModule() : import("web-push"))
         const wp: any = (mod as { default?: unknown }).default ?? mod
         wp.setVapidDetails(webPush.subject, webPush.publicKey, webPush.privateKey)
         return wp
@@ -139,7 +184,13 @@ export function makeWebPushDispatcher(
     })
 
     const invalidTokens: string[] = []
+    const budgetEndsAt = Date.now() + batchBudgetMs
+    let overBudget = 0
     await mapWithLimit(tokens, WEB_PUSH_CONCURRENCY, async (token) => {
+      if (Date.now() >= budgetEndsAt) {
+        overBudget += 1
+        return
+      }
       const subscription = parseSubscription(token)
       if (subscription === null) {
         invalidTokens.push(token)
@@ -155,10 +206,22 @@ export function makeWebPushDispatcher(
         return
       }
       try {
-        await wp.sendNotification(subscription, body, {
-          agent: agentPool.get(target.address, target.family),
-        })
+        await withDeadline(
+          wp.sendNotification(subscription, body, {
+            agent: pool.get(target.address, target.family),
+            timeout: requestTimeoutMs,
+          }) as Promise<unknown>,
+          deadlineMs,
+          () => pool.drop(target.address, target.family),
+        )
       } catch (err) {
+        if (err instanceof WebPushDeadlineError) {
+          logger.warn(
+            { deadlineMs, endpointHash: hashForLog(subscription.endpoint) },
+            "push(webpush): endpoint exceeded the hard deadline; request torn down",
+          )
+          return
+        }
         const { prune, statusCode } = classifyWebPushError(err)
         if (prune) {
           invalidTokens.push(token)
@@ -170,11 +233,17 @@ export function makeWebPushDispatcher(
         }
       }
     })
+    if (overBudget > 0) {
+      logger.warn(
+        { skipped: overBudget, batchBudgetMs },
+        "push(webpush): batch budget exhausted; remaining endpoints skipped",
+      )
+    }
     return { invalidTokens }
   }
 
   dispatch.close = async () => {
-    agentPool.destroyAll()
+    pool.destroyAll()
   }
 
   return dispatch

@@ -11,6 +11,8 @@ import { makeFcmDispatcher } from "./push-fcm.js"
 import { makeWebPushDispatcher } from "./push-webpush.js"
 import { makeExpoDispatcher, isExpoPushToken, type ExpoPushConfig } from "./push-expo.js"
 import { expandIpv6Hextets } from "./net-ipv6.js"
+import { mapWithLimit } from "../services/media-presign.js"
+import type { CounterStore } from "../abuse/counter-store.js"
 
 export interface PushSenderConfig {
   apns?: {
@@ -28,6 +30,9 @@ export interface PushSenderConfig {
     publicKey: string
     privateKey: string
     subject: string
+    timeoutMs?: number
+    batchBudgetMs?: number
+    loadModule?: () => Promise<unknown>
   }
   expo?: ExpoPushConfig
 }
@@ -71,18 +76,55 @@ export interface PushSenderDeps {
   config: PushSenderConfig
   dispatchers?: PushDispatchers
   logger?: PushLogger
+  counters?: CounterStore
+}
+
+export const PUSH_MAX_PER_USER_PER_MINUTE = 60
+
+const PUSH_RATE_WINDOW_SECONDS = 60
+const PUSH_RATE_CHECK_CONCURRENCY = 16
+
+export async function allowedByPushRate(
+  userIds: string[],
+  counters: CounterStore | undefined,
+  logger: PushLogger,
+): Promise<string[]> {
+  if (!counters || userIds.length === 0) return userIds
+  const verdicts = await mapWithLimit(
+    userIds,
+    PUSH_RATE_CHECK_CONCURRENCY,
+    async (userId): Promise<boolean> => {
+      try {
+        const used = await counters.incr(`push:rate:${userId}`, PUSH_RATE_WINDOW_SECONDS)
+        return used <= PUSH_MAX_PER_USER_PER_MINUTE
+      } catch (err) {
+        logger.warn({ err }, "push: per-user rate counter unavailable; allowing")
+        return true
+      }
+    },
+  )
+  const allowed = userIds.filter((_, i) => verdicts[i] === true)
+  if (allowed.length < userIds.length) {
+    logger.warn(
+      { dropped: userIds.length - allowed.length, capPerMinute: PUSH_MAX_PER_USER_PER_MINUTE },
+      "push: per-user rate cap reached; dropping excess device pushes",
+    )
+  }
+  return allowed
 }
 
 export class MultiPushSender implements PushSender {
   private readonly db: Db
   private readonly config: PushSenderConfig
   private readonly logger: PushLogger
+  private readonly counters: CounterStore | undefined
   private dispatchers: PushDispatchers | undefined
 
   constructor(deps: PushSenderDeps) {
     this.db = deps.db
     this.config = deps.config
     this.logger = deps.logger ?? consoleLogger
+    this.counters = deps.counters
     if (deps.dispatchers) this.dispatchers = deps.dispatchers
   }
 
@@ -111,7 +153,9 @@ export class MultiPushSender implements PushSender {
     )
   }
 
-  private async deliver(userIds: string[], payload: PushPayload): Promise<void> {
+  private async deliver(recipientIds: string[], payload: PushPayload): Promise<void> {
+    const userIds = await allowedByPushRate(recipientIds, this.counters, this.logger)
+    if (userIds.length === 0) return
     const tokens = await this.loadActiveTokens(userIds)
     if (tokens.length === 0) return
 
@@ -324,6 +368,78 @@ function isPublicIpv6(addr: string): boolean {
   if ((b[0]! & 0xfe) === 0xfc) return false
   if (b[0] === 0xff) return false
   return true
+}
+
+const WEB_PUSH_P256DH_BYTES = 65
+const WEB_PUSH_AUTH_BYTES = 16
+const BASE64URL_RE = /^[A-Za-z0-9_-]+={0,2}$/
+const APNS_TOKEN_RE = /^[0-9a-fA-F]{64,200}$/
+const FCM_TOKEN_RE = /^[A-Za-z0-9_:.~%+-]{64,2048}$/
+
+function decodedByteLength(value: string): number | null {
+  if (!BASE64URL_RE.test(value)) return null
+  try {
+    return Buffer.from(value, "base64url").length
+  } catch {
+    return null
+  }
+}
+
+export type PushTokenShape =
+  | { ok: true; kind: "expo" }
+  | { ok: true; kind: "apns" }
+  | { ok: true; kind: "fcm" }
+  | { ok: true; kind: "web"; endpoint: string }
+  | { ok: false; field: string; reason: string }
+
+export function classifyPushToken(platform: PushPlatform, token: string): PushTokenShape {
+  if (isExpoPushToken(token)) {
+    return token.endsWith("]") && token.length <= 512
+      ? { ok: true, kind: "expo" }
+      : { ok: false, field: "token", reason: "malformed Expo push token" }
+  }
+  if (platform === "web") {
+    const subscription = parseSubscription(token)
+    if (subscription === null) {
+      return {
+        ok: false,
+        field: "token",
+        reason: "web push tokens must be the subscription JSON: {endpoint, keys:{p256dh, auth}}",
+      }
+    }
+    let url: URL
+    try {
+      url = new URL(subscription.endpoint)
+    } catch {
+      return { ok: false, field: "token", reason: "subscription endpoint is not a URL" }
+    }
+    if (url.protocol !== "https:") {
+      return { ok: false, field: "token", reason: "subscription endpoint must be https" }
+    }
+    if (decodedByteLength(subscription.keys.p256dh) !== WEB_PUSH_P256DH_BYTES) {
+      return {
+        ok: false,
+        field: "token",
+        reason: `keys.p256dh must be ${WEB_PUSH_P256DH_BYTES} base64url-encoded bytes`,
+      }
+    }
+    if (decodedByteLength(subscription.keys.auth) !== WEB_PUSH_AUTH_BYTES) {
+      return {
+        ok: false,
+        field: "token",
+        reason: `keys.auth must be ${WEB_PUSH_AUTH_BYTES} base64url-encoded bytes`,
+      }
+    }
+    return { ok: true, kind: "web", endpoint: subscription.endpoint }
+  }
+  if (platform === "ios") {
+    return APNS_TOKEN_RE.test(token) && token.length % 2 === 0
+      ? { ok: true, kind: "apns" }
+      : { ok: false, field: "token", reason: "APNs device tokens are hex (64-200 characters)" }
+  }
+  return FCM_TOKEN_RE.test(token)
+    ? { ok: true, kind: "fcm" }
+    : { ok: false, field: "token", reason: "not a recognizable FCM registration token" }
 }
 
 export function parseSubscription(
