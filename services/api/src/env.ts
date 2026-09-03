@@ -56,19 +56,40 @@ type FakeFlags = Pick<
   | "USE_REAL_NSFW"
 >
 
+export const FAKE_SEAM_FLAGS: ReadonlyArray<{ flag: keyof FakeFlags; consequence: string }> = [
+  { flag: "USE_FAKE_STORAGE", consequence: "uploaded media is kept in memory and lost on restart" },
+  { flag: "USE_FAKE_MAILER", consequence: "every outbound email is silently dropped" },
+  { flag: "USE_FAKE_PUSH", consequence: "every push notification is silently dropped" },
+  { flag: "USE_FAKE_ABUSE_NSFW", consequence: "NSFW and abuse checks always pass" },
+  { flag: "USE_FAKE_CHAT", consequence: "chat is in-process only: no persistence, no fan-out" },
+  {
+    flag: "USE_FAKE_JOBS",
+    consequence:
+      "background jobs run in-process and die with the request: media stays 'validating', data exports " +
+      "and report autoforwards never complete",
+  },
+  {
+    flag: "USE_FAKE_USER_CHANNEL",
+    consequence: "realtime per-user signals never reach other API processes",
+  },
+  {
+    flag: "USE_FAKE_GEOCODER",
+    consequence: 'every report is labeled "Los Angeles, CA" and that label is persisted as civic record',
+  },
+  {
+    flag: "USE_FAKE_SMS",
+    consequence:
+      "guest-RSVP verification texts are swallowed and guests can never verify (turn SMS off with " +
+      "SMS_GUEST_ENABLED=false instead)",
+  },
+]
+
 function deriveFakeFlags(source: NodeJS.ProcessEnv, isProd: boolean): FakeFlags {
-  return {
-    USE_FAKE_STORAGE: parseBool(source.USE_FAKE_STORAGE, !isProd),
-    USE_FAKE_MAILER: parseBool(source.USE_FAKE_MAILER, !isProd),
-    USE_FAKE_PUSH: parseBool(source.USE_FAKE_PUSH, !isProd),
-    USE_FAKE_ABUSE_NSFW: parseBool(source.USE_FAKE_ABUSE_NSFW, !isProd),
-    USE_FAKE_CHAT: parseBool(source.USE_FAKE_CHAT, !isProd),
-    USE_FAKE_JOBS: parseBool(source.USE_FAKE_JOBS, !isProd),
-    USE_FAKE_USER_CHANNEL: parseBool(source.USE_FAKE_USER_CHANNEL, !isProd),
-    USE_FAKE_GEOCODER: parseBool(source.USE_FAKE_GEOCODER, !isProd),
-    USE_FAKE_SMS: parseBool(source.USE_FAKE_SMS, !isProd),
-    USE_REAL_NSFW: parseBool(source.USE_REAL_NSFW, false),
+  const flags = { USE_REAL_NSFW: parseBool(source.USE_REAL_NSFW, false) } as FakeFlags
+  for (const { flag } of FAKE_SEAM_FLAGS) {
+    flags[flag] = parseBool(source[flag], !isProd)
   }
+  return flags
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
@@ -84,16 +105,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const fakeFlags = deriveFakeFlags(source, isProd)
 
   if (isProd) {
-    for (const flag of [
-      "USE_FAKE_ABUSE_NSFW",
-      "USE_FAKE_CHAT",
-      "USE_FAKE_MAILER",
-      "USE_FAKE_STORAGE",
-    ] as const) {
+    for (const { flag, consequence } of FAKE_SEAM_FLAGS) {
       if (fakeFlags[flag]) {
-        errors.push(
-          `${flag}: must not be true in production (it disables a real security or durability control)`,
-        )
+        errors.push(`${flag}: must not be true in production — ${consequence}`)
       }
     }
   }

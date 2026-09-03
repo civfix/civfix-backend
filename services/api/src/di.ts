@@ -108,6 +108,9 @@ export interface Container {
   readonly dbHandle: DbHandle | undefined
   readonly redis: RedisClient | undefined
 
+  readonly usesRealDb: boolean
+  readonly usesRealRedis: boolean
+
   getDb(): DbHandle
   getRedis(): RedisClient
 
@@ -479,6 +482,8 @@ export function buildContainer(env: Env): Container {
     get redis() {
       return redis
     },
+    usesRealDb: env.DATABASE_URL.length > 0,
+    usesRealRedis: env.REDIS_URL.length > 0,
     getDb,
     getRedis,
     getDmRepo,
