@@ -192,6 +192,27 @@ in the directory (`ls services/api/drizzle | tail -1`). The ordering + the canon
 guarded by `test/unit/migrate-files.test.ts` (locally), and the resulting schema shape by
 `test/integration/schema.test.ts` (Docker-gated).
 
+### Expand/contract is MANDATORY (blue/green deploys)
+
+The deploy is blue/green: the `migrate` one-shot applies the new DDL, then the NEW api color starts
+while the PREVIOUS image is still serving, and the old color keeps serving for the length of its
+SIGTERM drain. **The previous release's code therefore runs against the new schema for minutes on
+every deploy** (longer if a rollback follows). So:
+
+- **Every migration in a release is ADDITIVE and backward-compatible**: add tables/columns/indexes,
+  add nullable or DEFAULTed columns, add constraints only as `NOT VALID` first. The old image must
+  keep working untouched against the post-migration schema — including `INSERT`s that never mention
+  the new column.
+- **Destructive DDL ships ONE RELEASE LATER, never with the code change**: dropping or renaming a
+  column/table, `SET NOT NULL` on an existing column, narrowing a type, or removing an enum value
+  goes out only after a release whose code no longer reads or writes it is fully deployed. A rename
+  is two releases: add the new column + dual-write, then drop the old one.
+- A backfill runs in its own migration and must be re-runnable and idempotent; code reading the
+  column keeps a fail-closed fallback until the drop-side release (see the `?? new Date(0)` note in
+  `src/auth/pg-stores.ts`).
+
+`docs/migrations-expand-contract.md` has the full rule with the failure modes it prevents.
+
 ## Deploy (Docker Compose, via the civfix-infra repo)
 
 Deployment is owned by the **civfix-infra** repo (`github.com/civfix/civfix-infra`): the compose files,
@@ -226,20 +247,46 @@ DEPLOY SEQUENCE (enforced by `depends_on` in the compose file):
    deploy runs migrations; they are never applied by hand — then exits 0.
 2. `api` and `media-worker` start only after `migrate` completes successfully AND `redis` is healthy.
 
-The API exposes `GET /healthz` (liveness, pure) and `GET /readyz` (readiness: pings DB + Redis when
-wired). Both processes install SIGTERM/SIGINT graceful shutdown. The API can drain first: when
-`SHUTDOWN_DRAIN_MS` is set it flips `/healthz` to 503 on SIGTERM so the blue/green load balancer pulls
-this api color out of the upstream pool, keeps serving everything else normally for that long, and only
-then closes the server — terminating WebSocket connections and tearing down pg-boss, the chat pub/sub
-subscriber, Redis, and the Postgres pool. (Open WebSockets are not migrated: they stay on the retiring
-color and are cut at the END of the drain, then reconnect to the new color.) The worker drains the queue
-then closes its DB pool.
+The API exposes `GET /healthz` (liveness, pure, `Cache-Control: no-store`) and `GET /readyz`
+(readiness: pings DB + Redis when wired). Both processes install SIGTERM/SIGINT graceful shutdown. The
+API drains first (`src/lifecycle.ts`), in three bounded phases:
+
+1. **Drain (`SHUTDOWN_DRAIN_MS`).** `/healthz` answers `503 {"ok":false}` with an
+   `x-civfix-draining: 1` response header (a header, so the public body stays a bare `{ok:false}`
+   with no deploy state in the JSON clients parse), so Caddy's active health check demotes this
+   color while the process keeps serving every request normally. **The paired civfix-infra change
+   must set `SHUTDOWN_DRAIN_MS=8000` and Caddy `health_interval 2s` + `health_timeout 1s`
+   (demotion inside ~4s); until it lands, the box still runs the older values and the CI
+   availability assertion will not hold.** A configured value above the 10s ceiling is clamped and
+   logged as a warning, so a stale compose value can never be silently reduced.
+2. **Close (bounded by the 15s `requestTimeout`).** Fastify is built with
+   `forceCloseConnections: false`; its default (`'idle'`) calls `closeAllConnections()` and DESTROYS
+   sockets with a request in flight, which is exactly the dropped request the drain exists to prevent.
+   Instead the shutdown closes only IDLE keep-alive sockets, on a 250 ms sweep, while awaiting
+   `app.close()` — so parked connections cannot stretch the close and active requests still finish.
+   One second before the wait expires anything still open is forced down — WebSocket clients are
+   `terminate()`d (a graceful close frame an unresponsive peer never answers would otherwise hold
+   `app.close()` for ws's own 30s timeout) and remaining sockets destroyed — and the shutdown moves
+   on to teardown regardless, never awaiting a close that cannot settle.
+3. **Teardown (15s watchdog).** pg-boss, the chat pub/sub subscriber, Redis and the Postgres pool,
+   plus the error-reporting flush — all INSIDE the watchdog, so nothing trails the budget — then
+   exit. (Open WebSockets are not migrated: they stay on the retiring color and are cut when the
+   server closes, then reconnect to the new color.) The worker drains the queue then closes its DB
+   pool.
 
 `SHUTDOWN_DRAIN_MS` defaults to **0 — no drain — in every environment, deliberately**: a drain longer
 than the container's `stop_grace_period` gets SIGKILLed mid-teardown, which is worse than not draining
 at all. The deployed value is set in the civfix-infra compose `api` service `environment:` block, on the
 same service that carries `stop_grace_period: 45s`, so the drain and its SIGKILL deadline cannot land in
-different deploys. The loader clamps it to 20s: drain (20) + close watchdog (20) = 40s, inside 45.
+different deploys; the value this release expects there is **8000**.
+
+The loader AND `makeShutdown` both clamp it to 10s, which makes the whole
+shutdown budget explicit and enforced: **drain 10 + close wait 15 + teardown watchdog 15 = 40s, 5s
+inside the 45s grace**. `test/unit/shutdown-drain.test.ts` asserts that arithmetic against the named
+`COMPOSE_STOP_GRACE_PERIOD_SECONDS = 45` constant, so raising any phase without raising the compose
+grace period fails CI. A hard deadline of the same length (drain + close wait + teardown watchdog) is
+armed the moment the signal lands, so the process exits inside the grace period even if a phase
+somehow outlives its own bound — the guarantee the old single close watchdog provided.
 
 Resource budget (compose `mem_limit`/`cpus`): api 1.5G / 2 cpu, media-worker 2.5G / 1.5 cpu, redis 1G.
 
