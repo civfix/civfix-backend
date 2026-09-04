@@ -171,7 +171,7 @@ its seams from `container` (or `app.container`). Health routes are already regis
 
 ## Migrations
 
-The canonical, hand-authored DDL lives in `services/api/drizzle/0000..0005.sql` (PostGIS geometry,
+The canonical, hand-authored DDL lives in `services/api/drizzle/0000..0096.sql` (PostGIS geometry,
 GiST indexes, and declarative partitioning that drizzle-kit cannot express). The Drizzle schema under
 `services/api/src/db/schema/` mirrors it for type-safe queries. The runner applies every `.sql` file in
 lexical order, each in its own transaction, recording applied files in `_civfix_migrations` so re-runs
@@ -185,9 +185,10 @@ pnpm --filter @civfix/api db:migrate
 node dist/db/migrate.js        # == pnpm --filter @civfix/api start:migrate
 ```
 
-Migration files in play: `0000_extensions` (PostGIS/citext), `0001_core` (all Phase-1 tables +
-indexes), `0002_chat_partitioning` (range-partitioned `chat_messages`), `0003_users_email`
-(partial-unique citext email), `0004_cleanup_address`. The ordering + the canonical file set are
+The chain starts at `0000_extensions` (PostGIS/citext), `0001_core` (all Phase-1 tables + indexes),
+`0002_chat_partitioning` (range-partitioned `chat_messages`), `0003_users_email` (partial-unique citext
+email) and currently ends at `0096_cleanup_guests`; a new file takes the next number after the highest
+in the directory (`ls services/api/drizzle | tail -1`). The ordering + the canonical file set are
 guarded by `test/unit/migrate-files.test.ts` (locally), and the resulting schema shape by
 `test/integration/schema.test.ts` (Docker-gated).
 
@@ -195,16 +196,24 @@ guarded by `test/unit/migrate-files.test.ts` (locally), and the resulting schema
 
 Deployment is owned by the **civfix-infra** repo (`github.com/civfix/civfix-infra`): the compose files,
 the Caddy + Cloudflare Tunnel edge, the local Postgres/Redis services, the SOPS-encrypted secrets, and the
-deploy scripts all live there — NOT in this repo. This repo provides only the two service **Dockerfiles**
-(`services/{api,media-worker}/Dockerfile`); the infra compose sets each image's `build.context` to a
-checkout of this repo and builds the images ON the VPS.
+deploy scripts all live there — NOT in this repo. That repo has ONE branch, `main`, serving both
+environments: the box picks its environment from a host marker file (`/etc/civfix/env`), which selects
+`env/prod.sh` + `secrets/prod/` on the production box (`ssh civfix`) and `env/staging.sh` +
+`secrets/staging/` on the staging box (`ssh civfix-dev`). There is no per-environment infra branch.
+
+This repo provides only the two service **Dockerfiles** (`services/{api,media-worker}/Dockerfile`); the
+infra compose sets each image's `build.context` to a checkout of this repo and builds the images ON the
+VPS.
 
 Build contexts are the REPO ROOT (the services are pnpm-workspace packages that need the root
 manifests + lockfile + the root `.npmrc`, so the in-image `pnpm install` resolves `@civfix/shared`
 from `repo.civfix.org`); each service's `Dockerfile` header documents this.
 
-Deploy is a single command on the box (it pulls civfix-infra + this repo, decrypts secrets, builds,
-and brings the stack up — see civfix-infra/README.md):
+In normal operation the deploy is CI-driven: a push to `main` runs `.github/workflows/deploy.yml`
+(prod), a push to `dev` runs `.github/workflows/deploy-staging.yml` (staging), and both SSH in under a
+forced command that runs the same on-box script. The manual equivalent, for infra-only changes and
+recovery, is a single command on either box (it pulls civfix-infra + this repo, decrypts secrets,
+builds, and brings the stack up — see civfix-infra/README.md):
 
 ```
 sudo -u civfix /opt/civfix/infra/ops/deploy.sh
@@ -213,13 +222,24 @@ sudo -u civfix /opt/civfix/infra/ops/deploy.sh
 DEPLOY SEQUENCE (enforced by `depends_on` in the compose file):
 
 1. The `migrate` one-shot service runs `node dist/db/migrate.js` (it reuses the API image, which carries
-   the runner + the `drizzle/*.sql`), applies `0000..0005`, then exits 0.
+   the runner + the `drizzle/*.sql`), applies the whole `0000..0096` chain in lexical order — every
+   deploy runs migrations; they are never applied by hand — then exits 0.
 2. `api` and `media-worker` start only after `migrate` completes successfully AND `redis` is healthy.
 
 The API exposes `GET /healthz` (liveness, pure) and `GET /readyz` (readiness: pings DB + Redis when
-wired). Both processes install SIGTERM/SIGINT graceful shutdown: the API drains in-flight HTTP, closes
-all WebSocket connections, then tears down pg-boss, the chat pub/sub subscriber, Redis, and the Postgres
-pool; the worker drains the queue then closes its DB pool.
+wired). Both processes install SIGTERM/SIGINT graceful shutdown. The API can drain first: when
+`SHUTDOWN_DRAIN_MS` is set it flips `/healthz` to 503 on SIGTERM so the blue/green load balancer pulls
+this api color out of the upstream pool, keeps serving everything else normally for that long, and only
+then closes the server — terminating WebSocket connections and tearing down pg-boss, the chat pub/sub
+subscriber, Redis, and the Postgres pool. (Open WebSockets are not migrated: they stay on the retiring
+color and are cut at the END of the drain, then reconnect to the new color.) The worker drains the queue
+then closes its DB pool.
+
+`SHUTDOWN_DRAIN_MS` defaults to **0 — no drain — in every environment, deliberately**: a drain longer
+than the container's `stop_grace_period` gets SIGKILLed mid-teardown, which is worse than not draining
+at all. The deployed value is set in the civfix-infra compose `api` service `environment:` block, on the
+same service that carries `stop_grace_period: 45s`, so the drain and its SIGKILL deadline cannot land in
+different deploys. The loader clamps it to 20s: drain (20) + close watchdog (20) = 40s, inside 45.
 
 Resource budget (compose `mem_limit`/`cpus`): api 1.5G / 2 cpu, media-worker 2.5G / 1.5 cpu, redis 1G.
 
