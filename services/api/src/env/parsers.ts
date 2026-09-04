@@ -59,6 +59,30 @@ export function parsePositiveIntOr(raw: string | undefined, fallback: number): n
   return n >= 1 ? n : fallback
 }
 
+/**
+ * Hard ceiling for SHUTDOWN_DRAIN_MS (the SIGTERM drain window, lifecycle.ts).
+ *
+ * The drain is SERIAL with the 20s close watchdog, and the whole shutdown must finish inside the
+ * container's `stop_grace_period` or Docker SIGKILLs the process mid-teardown (pg-boss workers killed
+ * mid-job, handles dropped). The blue/green compose sets that to 45s, so 20 + 20 = 40s leaves 5s of
+ * margin whatever value is configured.
+ */
+export const SHUTDOWN_DRAIN_MS_MAX = 20_000
+
+/**
+ * Parse the SIGTERM drain window. The default is 0 — NO drain — in every environment, deliberately:
+ * a drain longer than the container's `stop_grace_period` is strictly worse than no drain at all, and
+ * that grace period lives in civfix-infra. The value is therefore switched on where the grace period
+ * is set (the compose api service `environment:` block, next to `stop_grace_period: 45s`), so the two
+ * cannot drift apart or land in different deploys. A negative or non-numeric value falls back to 0;
+ * anything above the ceiling is clamped rather than rejected.
+ */
+export function parseDrainMs(raw: string | undefined): number {
+  const n = parseIntOr(raw, 0)
+  if (!Number.isFinite(n) || n < 0) return 0
+  return Math.min(n, SHUTDOWN_DRAIN_MS_MAX)
+}
+
 /** Parse a "west,south,east,north" bounds string; falls back unless it is exactly four finite numbers. */
 export function parseBounds(
   raw: string | undefined,

@@ -1,8 +1,10 @@
 /**
  * Liveness and readiness routes.
  *
- *   GET /healthz  liveness: pure, no dependencies. Always 200 while the process is up. Used by the
- *                 load balancer / Caddy and by unit tests (works with no DB/Redis).
+ *   GET /healthz  liveness: pure, no dependencies. 200 while the process is serving; 503 once SIGTERM
+ *                 has started the shutdown drain (lifecycle.ts), which is how the blue/green load
+ *                 balancer pulls a retiring api color out of the pool BEFORE its listener closes.
+ *                 Used by the load balancer / Caddy and by unit tests (works with no DB/Redis).
  *   GET /readyz   readiness: pings DB and Redis when they are wired (real seams). In all-fakes mode
  *                 there is nothing to check, so each check reports "skipped" and the overall status
  *                 is 200. If a real handle exists but its ping fails, returns 503.
@@ -40,7 +42,11 @@ export async function registerHealthRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  route(app, "health", async () => {
+  route(app, "health", async (_request, reply) => {
+    if (app.lifecycle.isDraining()) {
+      reply.status(503)
+      return { ok: false, service: SERVICE_NAME, draining: true }
+    }
     return { ok: true, service: SERVICE_NAME }
   })
 
