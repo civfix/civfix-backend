@@ -62,24 +62,27 @@ export function parsePositiveIntOr(raw: string | undefined, fallback: number): n
 /**
  * Hard ceiling for SHUTDOWN_DRAIN_MS (the SIGTERM drain window, lifecycle.ts).
  *
- * The drain is SERIAL with the 20s close watchdog, and the whole shutdown must finish inside the
- * container's `stop_grace_period` or Docker SIGKILLs the process mid-teardown (pg-boss workers killed
- * mid-job, handles dropped). The blue/green compose sets that to 45s, so 20 + 20 = 40s leaves 5s of
- * margin whatever value is configured.
+ * The drain is SERIAL with the two bounded phases that follow it: the in-flight close wait
+ * (SHUTDOWN_CLOSE_WAIT_MS = the 15s requestTimeout) and the teardown watchdog
+ * (SHUTDOWN_TEARDOWN_WATCHDOG_MS, 15s, covering pg-boss/redis/db AND the error-reporting flush that
+ * runs inside it, so nothing trails the budget). The whole shutdown must finish inside
+ * the container's `stop_grace_period` or Docker SIGKILLs the process mid-teardown (pg-boss workers
+ * killed mid-job, handles dropped). The blue/green compose sets that to 45s, so 10 + 15 + 15 = 40s
+ * leaves 5s of margin whatever value is configured. shutdown-drain.test.ts enforces the arithmetic.
  */
-export const SHUTDOWN_DRAIN_MS_MAX = 20_000
+export const SHUTDOWN_DRAIN_MS_MAX = 10_000
 
 /**
  * Parse the SIGTERM drain window. The default is 0 — NO drain — in every environment, deliberately:
  * a drain longer than the container's `stop_grace_period` is strictly worse than no drain at all, and
  * that grace period lives in civfix-infra. The value is therefore switched on where the grace period
  * is set (the compose api service `environment:` block, next to `stop_grace_period: 45s`), so the two
- * cannot drift apart or land in different deploys. A negative or non-numeric value falls back to 0;
- * anything above the ceiling is clamped rather than rejected.
+ * cannot drift apart or land in different deploys; the deployed value is 8000. A negative or
+ * non-numeric value falls back to 0; anything above the ceiling is clamped rather than rejected.
  */
 export function parseDrainMs(raw: string | undefined): number {
   const n = parseIntOr(raw, 0)
-  if (!Number.isFinite(n) || n < 0) return 0
+  if (n < 0) return 0
   return Math.min(n, SHUTDOWN_DRAIN_MS_MAX)
 }
 

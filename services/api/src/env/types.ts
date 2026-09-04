@@ -24,12 +24,12 @@ export interface Env {
   TRUST_PROXY: TrustProxyValue
 
   /**
-   * SIGTERM drain window in ms [OPT, default 0 = no drain, clamped to 0..20000]. When set, SIGTERM
+   * SIGTERM drain window in ms [OPT, default 0 = no drain, clamped to 0..10000]. When set, SIGTERM
    * flips /healthz to 503 and the process keeps serving in-flight and newly-arrived requests for this
    * long before it closes the server, so the blue/green load balancer's active health check pulls
    * this api color out of the pool with no dropped request. It defaults OFF because a drain longer
-   * than the container's `stop_grace_period` is worse than no drain; the deployed value is set in the
-   * civfix-infra compose api service, alongside that grace period. See env/parsers.parseDrainMs.
+   * than the container's `stop_grace_period` is worse than no drain; the deployed value (8000) is set
+   * in the civfix-infra compose api service, alongside that grace period. See parsers.parseDrainMs.
    */
   SHUTDOWN_DRAIN_MS: number
 

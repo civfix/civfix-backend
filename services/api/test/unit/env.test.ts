@@ -344,7 +344,10 @@ describe("loadEnv", () => {
     expect(loadEnv(validProdEnv()).SHUTDOWN_DRAIN_MS).toBe(0)
     expect(loadEnv({ NODE_ENV: "test" }).SHUTDOWN_DRAIN_MS).toBe(0)
     expect(loadEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_MS: "3500" }).SHUTDOWN_DRAIN_MS).toBe(3500)
-    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "12000" }).SHUTDOWN_DRAIN_MS).toBe(12000)
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "8000" }).SHUTDOWN_DRAIN_MS).toBe(8000)
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "12000" }).SHUTDOWN_DRAIN_MS).toBe(
+      SHUTDOWN_DRAIN_MS_MAX,
+    )
     expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "600000" }).SHUTDOWN_DRAIN_MS).toBe(
       SHUTDOWN_DRAIN_MS_MAX,
     )

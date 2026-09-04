@@ -36,7 +36,7 @@ import { registerDataExportJobs } from "./services/data-export-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
-import { makeLifecycle, makeShutdown } from "./lifecycle.js"
+import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -93,7 +93,8 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     genReqId,
     trustProxy: env.TRUST_PROXY,
     bodyLimit: 262144,
-    requestTimeout: 15000,
+    requestTimeout: REQUEST_TIMEOUT_MS,
+    forceCloseConnections: false,
     connectionTimeout: 30000,
     keepAliveTimeout: 5000,
     disableRequestLogging: false,
