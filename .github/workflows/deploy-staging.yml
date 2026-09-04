@@ -1,16 +1,24 @@
 name: Deploy (staging)
 
 # Deploys the civfix backend to the STAGING VPS (193.122.142.107) by SSHing in and running the on-box
-# deploy script (/opt/civfix/infra/ops/deploy.sh). That script git-pulls the infra repo (staging branch)
-# + this backend (at CIVFIX_REF, which env/env.sh on the staging branch defaults to `dev`), SOPS-decrypts
-# the secrets, then rebuilds and restarts the docker compose stack. The build happens ON the VPS; this
-# workflow only triggers it and then gates on the public health endpoint. Mirrors deploy.yml (prod).
+# deploy script (/opt/civfix/infra/ops/deploy.sh). That script git-pulls the infra repo (single `main`
+# branch — the same tree prod runs; the box's env marker at /etc/civfix/env selects env/staging.sh and
+# secrets/staging/) + this backend (at CIVFIX_REF, which env/staging.sh defaults to `dev`), SOPS-decrypts
+# the secrets, then rebuilds and blue/green swaps the docker compose stack. The build happens ON the VPS;
+# this workflow only triggers it and then proves the public API stayed up. Mirrors deploy.yml (prod).
 #
 # Triggers:
 #   - Every push to dev (staging tracks pre-release code).
 #   - Manually via the Actions "Run workflow" button (workflow_dispatch).
-# Both deploy the staging env's CIVFIX_REF (dev); the SSH forced command ignores any client-sent command,
-# so a deploy can never target an arbitrary ref.
+# Both deploy the staging env's CIVFIX_REF (from env/staging.sh, default `dev`); the SSH forced command
+# ignores any client-sent command, so a deploy can never target an arbitrary ref.
+#
+# THE AVAILABILITY CHECK IS AN ASSERTION, NOT A "did it come back" WAIT — see the deploy.yml header for
+# the reasoning. GET /healthz is polled once a second for the whole deploy (pure and
+# rate-limit-allowlisted, so a 1s poll cannot trip the limiter); the job fails when the longest
+# unavailable stretch exceeds MAX_OUTAGE_S seconds, with a drain-marked 503 from the retiring color not
+# counted as an outage. /readyz (db + redis, not allowlisted) stays a separate gate afterwards. It runs
+# after the flip, so it reports rather than prevents.
 #
 # Required repo secret:
 #   STAGING_DEPLOY_SSH_KEY  Private half of the dedicated staging CI deploy key (ed25519). Its public half
@@ -32,13 +40,16 @@ concurrency:
 
 jobs:
   deploy:
-    name: ssh deploy + health gate
+    name: ssh deploy + availability assertion
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
     env:
       DEPLOY_HOST: 193.122.142.107
       DEPLOY_USER: deployer
+      LIVENESS_URL: https://api.civfix.dev/healthz
+      # Longest public unavailability tolerated during a deploy, in seconds.
+      MAX_OUTAGE_S: 2
       HEALTH_URL: https://api.civfix.dev/readyz
     steps:
       - name: Configure SSH (deploy key + pinned host key)
@@ -52,24 +63,83 @@ jobs:
           printf '%s\n' "193.122.142.107 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP843TSCJte6yLyn3qWk1t9Gr5oDecExWJWEgdboX4FU" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Run on-box deploy (forced command runs deploy.sh as the civfix service user)
+      - name: Deploy + continuous availability probe (the API must never go down)
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # The probe and the deploy MUST live in the same step: a background process started in one
+          # step is not reliably alive in the next.
+          #
+          # Each sample is classified into one token, then aggregated by WALL CLOCK (not by sample
+          # count): a hung upstream produces ONE line per --max-time, so counting samples would let a
+          # 10s hole look like a 1s blip.
+          #   200      serving
+          #   draining this api color got SIGTERM and is finishing its in-flight work; /healthz is 503
+          #            by design so Caddy demotes it (services/api/src/lifecycle.ts). NOT an outage —
+          #            every other path is still served 200 by this same process. The body marker is
+          #            required so a 503 from anything else still counts against us.
+          #   <code>   any other HTTP status (502 = Caddy has no healthy upstream: a real outage)
+          #   000      connection refused / DNS / timeout
+          rm -f probe.log
+          ( while :; do
+              t="$(date -u +%s)"
+              resp="$(curl -s -m 10 -w '\n%{http_code}' "$LIVENESS_URL" 2>/dev/null || true)"
+              code="$(printf '%s' "$resp" | tail -n 1)"
+              state="$code"
+              case "$code" in
+                200) state=200 ;;
+                503) case "$resp" in *'"draining":true'*) state=draining ;; esac ;;
+                ""|000) state=000 ;;
+              esac
+              printf '%s %s\n' "$t" "$state" >> probe.log
+              sleep 1
+            done ) &
+          PROBE=$!
+
           # No remote command is passed: the deploy key's forced command runs deploy.sh (CIVFIX_REF=dev).
-          # Its stdout/stderr stream here and its exit code is this step's exit code, so a failed deploy
-          # fails the job. Keepalives keep the connection up during the (quiet) docker build.
-          ssh -i ~/.ssh/deploy_key \
+          # Its stdout/stderr stream here and its exit code becomes `rc`, so a failed deploy fails the
+          # job. Keepalives keep the connection up during the (quiet) docker build.
+          if ssh -i ~/.ssh/deploy_key \
               -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
               -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
-              "${DEPLOY_USER}@${DEPLOY_HOST}"
+              "${DEPLOY_USER}@${DEPLOY_HOST}"; then
+            rc=0
+          else
+            rc=$?
+          fi
 
-      - name: Health gate (poll public readyz until the new stack is up)
+          # deploy.sh returns right after the flip; keep probing across the retiring color's drain and
+          # the compose reconcile step.
+          sleep 30
+          kill "$PROBE" 2>/dev/null || true
+          wait "$PROBE" 2>/dev/null || true
+
+          echo "--- samples that were not serving (empty is perfect) ---"
+          awk '$2!="200" && $2!="draining"' probe.log || true
+          total="$(wc -l < probe.log)"
+          # Longest UNAVAILABLE interval in seconds: from the last serving sample before a bad run to
+          # the first serving sample after it, so one slow --max-time sample cannot hide the hole.
+          # A single isolated bad sample between two good ones measures 2s, which is why the SLO is 2.
+          worst="$(awk '
+            { ok = ($2 == "200" || $2 == "draining")
+              if (ok) { if (bad) { d = $1 - lastgood; if (d > worst) worst = d; bad = 0 }; lastgood = $1 }
+              else    { if (!bad) { bad = 1; if (lastgood == "") lastgood = $1 }; lastbad = $1 } }
+            END { if (bad) { d = lastbad - lastgood; if (d > worst) worst = d }; print worst + 0 }
+          ' probe.log)"
+          echo "samples=$total longest_unavailable_s=$worst slo=${MAX_OUTAGE_S}s deploy_rc=$rc"
+
+          [ "$rc" -eq 0 ] || { echo "FATAL: on-box deploy failed (rc=$rc)" >&2; exit 1; }
+          [ "$worst" -le "$MAX_OUTAGE_S" ] || {
+            echo "FATAL: public API was unavailable for ~${worst}s during the deploy" >&2; exit 1; }
+          tail -n 1 probe.log | grep -qE ' (200|draining)$' || {
+            echo "FATAL: API is not serving at the end of the deploy" >&2; exit 1; }
+
+      - name: Readiness gate (db + redis behind the new api color)
         run: |
           set -euo pipefail
           for i in $(seq 1 18); do
             code="$(curl -fsS -o /tmp/readyz.json -w '%{http_code}' --max-time 10 "$HEALTH_URL" || true)"
             if [ "$code" = "200" ]; then
-              echo "healthy: $(cat /tmp/readyz.json)"
+              echo "ready: $(cat /tmp/readyz.json)"
               exit 0
             fi
             echo "attempt $i: readyz=$code; retrying in 10s"
