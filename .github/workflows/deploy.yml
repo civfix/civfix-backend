@@ -13,20 +13,32 @@ name: Deploy (production)
 # Both always deploy origin/main — the on-box deploy.sh checks out CIVFIX_REF (default main); the SSH
 # forced command ignores any client-sent command, so a deploy can never target an arbitrary ref.
 #
+# !! MERGE ORDER !! The availability assertion below REQUIRES the civfix-infra blue/green deploy
+# (two api colors, Caddy active health checks with health_interval 2s / health_timeout 1s, and
+# `stop_grace_period: 45s` + SHUTDOWN_DRAIN_MS=8000 on the api service) to be LIVE ON THE BOX ALREADY.
+# Against the old stop-then-start deploy the API genuinely goes down for tens of seconds and this job
+# fails every time. This backend branch must merge AFTER the civfix-infra change, never alone.
+#
 # THE AVAILABILITY CHECK IS AN ASSERTION, NOT A "did it come back" WAIT. Deploys are blue/green: the
 # new api color is started and proved ready BEFORE the old one is stopped, and the app drains on
 # SIGTERM (SHUTDOWN_DRAIN_MS) so in-flight requests finish. The contract is therefore "the public API
 # never stopped answering", so this job polls GET /healthz once a second FOR THE WHOLE DURATION of the
-# deploy and fails when the longest unavailable stretch exceeds MAX_OUTAGE_S. /healthz (not /readyz) is
-# the probe: it is pure and rate-limit-allowlisted (services/api/src/plugins/rate-limit.ts), so a 1s
-# poll cannot trip the limiter and invent a failure, while still traversing Cloudflare -> tunnel ->
-# Caddy -> the live api color, so a Caddy "no healthy upstream" 502 shows up immediately. A 503 whose
-# body carries the drain marker is the RETIRING color answering by design and is not counted as an
-# outage (it keeps serving every other path). /readyz (db + redis) stays a separate gate after the
-# deploy: it is NOT allowlisted and its verdict is memoized 5s server-side.
+# deploy and fails when the longest gap between serving samples exceeds MAX_OUTAGE_S. /healthz (not
+# /readyz) is the probe: it is pure and rate-limit-allowlisted (services/api/src/plugins/rate-limit.ts),
+# so a 1s poll cannot trip the limiter and invent a failure, while still traversing Cloudflare ->
+# tunnel -> Caddy -> the live api color, so a Caddy "no healthy upstream" 502 shows up immediately. A
+# 503 carrying the x-civfix-draining RESPONSE HEADER is the RETIRING color answering by design and is
+# not counted as an outage (it keeps serving every other path); the marker is a header, not a body
+# field, so the public body stays a bare {ok:false} with no deploy-timing oracle in it. /readyz
+# (db + redis) stays a separate gate after the deploy: it is NOT allowlisted and its verdict is
+# memoized 5s server-side.
 #
-# It runs AFTER the flip, so it cannot prevent a bad deploy — it fails the job loudly. Rolling back is
-# still `CIVFIX_REF=<sha>` on the box (or `docker compose start api-<previous color>`).
+# STEP ORDER IS LOAD-BEARING: the probe step only measures and records; the readiness gate runs next
+# with `if: always()`; the availability + deploy-rc assertion runs LAST, also `if: always()`. A red
+# availability result therefore can never skip /readyz, and a failed ssh still fails the job.
+#
+# It all runs AFTER the flip, so it cannot prevent a bad deploy — it fails the job loudly. Rolling back
+# is still `CIVFIX_REF=<sha>` on the box (or `docker compose start api-<previous color>`).
 #
 # Required repo secret:
 #   DEPLOY_SSH_KEY  Private half of the dedicated CI deploy key (ed25519). Its public half is the
@@ -58,8 +70,10 @@ jobs:
       DEPLOY_HOST: 150.136.102.127
       DEPLOY_USER: deployer
       LIVENESS_URL: https://api.civfix.org/healthz
-      # Longest public unavailability tolerated during a deploy, in seconds.
-      MAX_OUTAGE_S: 2
+      # Longest public unavailability tolerated during a deploy, in seconds (sub-second resolution;
+      # see the SLO SEMANTIC note in the probe step). One isolated failed sample measures ~2s and can
+      # never fail the job; this fails from two consecutive failed samples upward.
+      MAX_OUTAGE_S: "3.0"
       HEALTH_URL: https://api.civfix.org/readyz
     steps:
       - name: Configure SSH (deploy key + pinned host key)
@@ -75,29 +89,48 @@ jobs:
 
       - name: Deploy + continuous availability probe (the API must never go down)
         run: |
-          set -uo pipefail
+          set -euo pipefail
           # The probe and the deploy MUST live in the same step: a background process started in one
-          # step is not reliably alive in the next.
+          # step is not reliably alive in the next. This step only MEASURES; the pass/fail verdict is
+          # the last step, so a red availability result can never skip the readiness gate.
           #
-          # Each sample is classified into one token, then aggregated by WALL CLOCK (not by sample
-          # count): a hung upstream produces ONE line per --max-time, so counting samples would let a
-          # 10s hole look like a 1s blip.
+          # Each sample is classified into one token and stamped with a SUB-SECOND timestamp, then
+          # aggregated by WALL CLOCK (not by sample count): a hung upstream produces ONE line per
+          # --max-time, so counting samples would let a 10s hole look like a 1s blip.
           #   200      serving
           #   draining this api color got SIGTERM and is finishing its in-flight work; /healthz is 503
-          #            by design so Caddy demotes it (services/api/src/lifecycle.ts). NOT an outage —
-          #            every other path is still served 200 by this same process. The body marker is
-          #            required so a 503 from anything else still counts against us.
+          #            by design so Caddy demotes it (services/api/src/lifecycle.ts). NOT an outage -
+          #            every other path is still served 200 by this same process. The marker is the
+          #            x-civfix-draining RESPONSE HEADER, never the body: the body is world-readable
+          #            to anonymous callers and a drain marker in it is a deploy-timing oracle. The
+          #            headers are dumped to a file instead of read with curl's %header{} write-out,
+          #            which needs curl >= 7.84. A 503 without the header still counts against us.
           #   <code>   any other HTTP status (502 = Caddy has no healthy upstream: a real outage)
           #   000      connection refused / DNS / timeout
-          rm -f probe.log
-          ( while :; do
-              t="$(date -u +%s)"
-              resp="$(curl -s -m 10 -w '\n%{http_code}' "$LIVENESS_URL" 2>/dev/null || true)"
-              code="$(printf '%s' "$resp" | tail -n 1)"
+          #
+          # SLO SEMANTIC: MAX_OUTAGE_S is the longest tolerated GAP between two serving samples - the
+          # wall-clock span of a run of consecutive failed samples, including the hop in and out of
+          # it. Resolution is the ~1s sample cadence, so an outage shorter than that can fall between
+          # two samples and stay invisible: this asserts "no user-visible hole", not "not one dropped
+          # request". A single isolated failed sample that returns promptly measures ~2s and passes;
+          # 3.0 fails from two consecutive failures upward, and also from one failure slow enough
+          # (>~1s of curl time) that the hole itself is real.
+          #
+          # COVERAGE IS ASSERTED TOO. A worst-gap of 0.00 is what an EMPTY probe.log prints, so the
+          # step also records how long it sampled, how many samples it got, how stale the last one
+          # is, and whether the sampler was still alive when it was killed. Without that a sampler
+          # that died early would report a perfect score for a deploy it never watched.
+          rm -f probe.log probe.headers
+          probe_started="$(date -u +%s.%N)"
+          # errexit off inside the sampler only: a transient curl/grep non-zero must not kill it.
+          ( set +e
+            while :; do
+              t="$(date -u +%s.%N)"
+              code="$(curl -s -m 10 -o /dev/null -D probe.headers -w '%{http_code}' "$LIVENESS_URL" 2>/dev/null)"
               state="$code"
               case "$code" in
                 200) state=200 ;;
-                503) case "$resp" in *'"draining":true'*) state=draining ;; esac ;;
+                503) grep -qi '^x-civfix-draining:' probe.headers && state=draining ;;
                 ""|000) state=000 ;;
               esac
               printf '%s %s\n' "$t" "$state" >> probe.log
@@ -106,8 +139,8 @@ jobs:
           PROBE=$!
 
           # No remote command is passed: the deploy key's forced command runs /opt/civfix/ops/deploy.sh.
-          # Its stdout/stderr stream here and its exit code becomes `rc`, so a failed deploy fails the
-          # job. Keepalives keep the connection up during the (quiet) docker build.
+          # Its stdout/stderr stream here and its exit code becomes `rc`, which the assertion step
+          # turns into a job failure. Keepalives keep the connection up during the (quiet) build.
           if ssh -i ~/.ssh/deploy_key \
               -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
               -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
@@ -120,30 +153,39 @@ jobs:
           # deploy.sh returns right after the flip; keep probing across the retiring color's drain and
           # the compose reconcile step.
           sleep 30
+          if kill -0 "$PROBE" 2>/dev/null; then probe_alive=1; else probe_alive=0; fi
           kill "$PROBE" 2>/dev/null || true
           wait "$PROBE" 2>/dev/null || true
+          probe_ended="$(date -u +%s.%N)"
 
           echo "--- samples that were not serving (empty is perfect) ---"
           awk '$2!="200" && $2!="draining"' probe.log || true
-          total="$(wc -l < probe.log)"
+          total="$(awk 'END { print NR + 0 }' probe.log)"
           # Longest UNAVAILABLE interval in seconds: from the last serving sample before a bad run to
           # the first serving sample after it, so one slow --max-time sample cannot hide the hole.
-          # A single isolated bad sample between two good ones measures 2s, which is why the SLO is 2.
           worst="$(awk '
             { ok = ($2 == "200" || $2 == "draining")
               if (ok) { if (bad) { d = $1 - lastgood; if (d > worst) worst = d; bad = 0 }; lastgood = $1 }
               else    { if (!bad) { bad = 1; if (lastgood == "") lastgood = $1 }; lastbad = $1 } }
-            END { if (bad) { d = lastbad - lastgood; if (d > worst) worst = d }; print worst + 0 }
+            END { if (bad) { d = lastbad - lastgood; if (d > worst) worst = d }; printf "%.2f", worst + 0 }
           ' probe.log)"
-          echo "samples=$total longest_unavailable_s=$worst slo=${MAX_OUTAGE_S}s deploy_rc=$rc"
-
-          [ "$rc" -eq 0 ] || { echo "FATAL: on-box deploy failed (rc=$rc)" >&2; exit 1; }
-          [ "$worst" -le "$MAX_OUTAGE_S" ] || {
-            echo "FATAL: public API was unavailable for ~${worst}s during the deploy" >&2; exit 1; }
-          tail -n 1 probe.log | grep -qE ' (200|draining)$' || {
-            echo "FATAL: API is not serving at the end of the deploy" >&2; exit 1; }
+          last="$(tail -n 1 probe.log | awk '{ print $2 }')"
+          last_at="$(tail -n 1 probe.log | awk '{ printf "%.2f", $1 + 0 }')"
+          elapsed="$(awk -v a="$probe_started" -v b="$probe_ended" 'BEGIN { printf "%.0f", b - a }')"
+          stale="$(awk -v e="$probe_ended" -v l="$last_at" 'BEGIN { printf "%.2f", e - l }')"
+          echo "samples=$total elapsed_s=$elapsed last_sample=$last last_sample_age_s=$stale probe_alive=$probe_alive longest_unavailable_s=$worst slo=${MAX_OUTAGE_S}s deploy_rc=$rc"
+          {
+            echo "DEPLOY_RC=$rc"
+            echo "WORST_UNAVAILABLE_S=$worst"
+            echo "LAST_SAMPLE=$last"
+            echo "PROBE_SAMPLES=$total"
+            echo "PROBE_ELAPSED_S=$elapsed"
+            echo "PROBE_LAST_AGE_S=$stale"
+            echo "PROBE_ALIVE=$probe_alive"
+          } >> "$GITHUB_ENV"
 
       - name: Readiness gate (db + redis behind the new api color)
+        if: success() || failure()
         run: |
           set -euo pipefail
           for i in $(seq 1 18); do
@@ -157,6 +199,40 @@ jobs:
           done
           echo "FATAL: $HEALTH_URL did not return 200 within ~3m after deploy" >&2
           exit 1
+
+      - name: Availability assertion (deploy rc + probe coverage + the API never went down)
+        if: success() || failure()
+        run: |
+          set -euo pipefail
+          rc="${DEPLOY_RC:-1}"
+          worst="${WORST_UNAVAILABLE_S:-}"
+          last="${LAST_SAMPLE:-}"
+          samples="${PROBE_SAMPLES:-0}"
+          elapsed="${PROBE_ELAPSED_S:-0}"
+          age="${PROBE_LAST_AGE_S:-999}"
+          alive="${PROBE_ALIVE:-0}"
+          [ "$rc" -eq 0 ] || { echo "FATAL: on-box deploy failed (rc=$rc)" >&2; exit 1; }
+          # Coverage first: a verdict from a probe that stopped sampling is worthless, and an empty
+          # probe.log scores a perfect 0.00.
+          [ -n "$worst" ] || { echo "FATAL: the availability probe recorded no verdict" >&2; exit 1; }
+          [ "$alive" -eq 1 ] || { echo "FATAL: the availability probe died before the deploy finished" >&2; exit 1; }
+          [ "$elapsed" -gt 0 ] || { echo "FATAL: the availability probe measured no time" >&2; exit 1; }
+          # At a ~1s cadence with 10s worst-case stalls, fewer than one sample per 3s of deploy means
+          # the sampler was not watching.
+          awk -v s="$samples" -v e="$elapsed" 'BEGIN { exit !(s >= e / 3) }' || {
+            echo "FATAL: availability probe coverage too thin: $samples samples over ${elapsed}s" >&2
+            exit 1; }
+          awk -v a="$age" 'BEGIN { exit !(a <= 5) }' || {
+            echo "FATAL: the last availability sample is ${age}s old; the probe stopped early" >&2
+            exit 1; }
+          awk -v w="$worst" -v m="$MAX_OUTAGE_S" 'BEGIN { exit !(w <= m) }' || {
+            echo "FATAL: public API was unavailable for ~${worst}s during the deploy (slo ${MAX_OUTAGE_S}s)" >&2
+            exit 1; }
+          case "$last" in
+            200|draining) ;;
+            *) echo "FATAL: API is not serving at the end of the deploy (last sample: ${last:-none})" >&2; exit 1 ;;
+          esac
+          echo "availability OK: $samples samples over ${elapsed}s, longest unavailable ${worst}s <= ${MAX_OUTAGE_S}s"
 
       - name: Cleanup deploy key
         if: always()
