@@ -1,38 +1,23 @@
-/**
- * Sandboxed ffprobe wrapper.
- *
- * Probes untrusted media bytes and returns a small, typed descriptor. ffprobe is a VENDORED binary
- * (ffprobe-static) invoked via the hardened runTool (args array, hard timeout, SIGKILL, maxBuffer):
- * no shell, no injection. We never trust the declared kind/content-type; the ONLY source of truth for
- * "is this really a video, and which codec" is what ffprobe reports about the actual bytes.
- *
- * The seam rule: ffprobe-static (the binary path) and execa (via exec.ts) are confined to sandbox/.
- */
 
-import ffprobeStatic from "ffprobe-static"
 import { runTool, SandboxToolError } from "./exec.js"
+import { mediaToolPath } from "./binaries.js"
 import { makeScratch } from "./tmp.js"
 import type { WorkerLimits } from "../config.js"
 
 export interface ProbeResult {
-  /** Duration in seconds (0 when ffprobe could not determine it). */
   durationSec: number
-  /** Primary video codec_name (e.g. "h264", "hevc"), or null when there is no video stream. */
   codec: string | null
-  /** Video width in pixels, or null. */
   width: number | null
-  /** Video height in pixels, or null. */
   height: number | null
-  /** True when at least one video stream is present. */
+  fps: number | null
+  bitrateBps: number | null
   isVideo: boolean
 }
 
-/** Resolve the vendored ffprobe binary path. ffprobe-static exports { path }. */
-function ffprobeBinary(): string {
-  const p = (ffprobeStatic as { path: string }).path
-  if (!p) throw new SandboxToolError("ffprobe", { timedOut: false, exitCode: null, stderrTail: "" })
-  return p
-}
+const ALLOWED_DEMUXERS = "mov,mp4,m4a,3gp,3g2,mj2"
+
+const ANALYZE_DURATION_US = "2000000"
+const PROBE_SIZE_BYTES = "5000000"
 
 interface FfprobeStream {
   codec_type?: string
@@ -40,10 +25,14 @@ interface FfprobeStream {
   width?: number
   height?: number
   duration?: string
+  avg_frame_rate?: string
+  r_frame_rate?: string
+  bit_rate?: string
 }
 
 interface FfprobeFormat {
   duration?: string
+  bit_rate?: string
 }
 
 interface FfprobeJson {
@@ -57,11 +46,26 @@ function num(v: string | undefined): number {
   return Number.isFinite(n) ? n : 0
 }
 
-/**
- * Probe `bytes`. Stages them to a private temp file (seekable input, needed for accurate mp4 moov
- * parsing), runs `ffprobe -show_format -show_streams -print_format json`, and parses the result.
- * Throws SandboxToolError on timeout / non-zero exit / spawn failure or when output is not parseable.
- */
+function frameRate(...candidates: (string | undefined)[]): number | null {
+  for (const raw of candidates) {
+    if (raw === undefined) continue
+    const [numerator, denominator] = raw.split("/")
+    const n = Number.parseFloat(numerator ?? "")
+    const d = denominator === undefined ? 1 : Number.parseFloat(denominator)
+    if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0 || n <= 0) continue
+    return n / d
+  }
+  return null
+}
+
+function bitrate(...candidates: (string | undefined)[]): number | null {
+  for (const raw of candidates) {
+    const n = num(raw)
+    if (n > 0) return n
+  }
+  return null
+}
+
 export async function probeBytes(bytes: Uint8Array, limits: WorkerLimits): Promise<ProbeResult> {
   const scratch = await makeScratch(bytes, "bin")
   try {
@@ -73,21 +77,20 @@ export async function probeBytes(bytes: Uint8Array, limits: WorkerLimits): Promi
       "json",
       "-show_format",
       "-show_streams",
-      // Limit probing work so a pathological file cannot make ffprobe scan forever within the timeout.
       "-analyzeduration",
-      "10000000", // 10s of stream time
+      ANALYZE_DURATION_US,
       "-probesize",
-      "10000000", // 10 MB
-      // SECURITY: restrict input protocols to "file" so a crafted body (e.g. an HLS playlist) cannot make
-      // ffprobe open remote URLs (SSRF / existence+timing oracle). Must precede the positional input path.
-      // (ffprobe must auto-detect the container, so we cannot force -f here; remux/thumbnail do force it.)
+      PROBE_SIZE_BYTES,
+      "-f",
+      ALLOWED_DEMUXERS,
       "-protocol_whitelist",
       "file",
       scratch.inputPath,
     ]
-    const res = await runTool("ffprobe", ffprobeBinary(), args, {
+    const res = await runTool("ffprobe", await mediaToolPath("ffprobe"), args, {
       timeoutMs: limits.ffprobeTimeoutMs,
-      maxBuffer: limits.maxChildOutputBytes,
+      maxStdoutBytes: limits.maxToolStdoutBytes,
+      cwd: scratch.dir,
     })
 
     let parsed: FfprobeJson
@@ -113,6 +116,8 @@ export async function probeBytes(bytes: Uint8Array, limits: WorkerLimits): Promi
       codec: video?.codec_name ?? null,
       width: typeof video?.width === "number" ? video.width : null,
       height: typeof video?.height === "number" ? video.height : null,
+      fps: frameRate(video?.avg_frame_rate, video?.r_frame_rate),
+      bitrateBps: bitrate(video?.bit_rate, parsed.format?.bit_rate),
       isVideo,
     }
   } finally {

@@ -1,47 +1,46 @@
-/**
- * Scratch-file helpers for the sandbox.
- *
- * ffprobe/ffmpeg work most reliably on a SEEKABLE file (container probing reads the moov atom, which
- * for mp4 can live at the end). We therefore stage untrusted bytes to a private temp file under a
- * per-call directory, run the tool, and ALWAYS clean up (even on throw). The directory name is random
- * (mkdtemp), so there is no predictable path an attacker could pre-create or race.
- *
- * No vendor SDKs here; just node:fs/os/path.
- */
 
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { constants, open, chmod, chown, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { sandboxIdentity } from "./exec.js"
 
-/** Prefix for every per-call scratch directory (must stay in sync with the mkdtemp prefix below). */
 const SCRATCH_PREFIX = "civfix-media-"
 
+export class ScratchOutputError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause !== undefined ? { cause } : undefined)
+    this.name = "ScratchOutputError"
+    Object.setPrototypeOf(this, ScratchOutputError.prototype)
+  }
+}
+
 export interface Scratch {
-  /** The private temp directory (caller may place outputs here too). */
   dir: string
-  /** Absolute path to the staged input file (present only when bytes were provided). */
   inputPath: string
-  /** Build a path for an output file inside the scratch dir. */
   outPath(name: string): string
-  /** Remove the whole scratch directory. Idempotent; never throws. */
+  seal(): Promise<void>
   cleanup(): Promise<void>
 }
 
-/**
- * Create a scratch dir and (optionally) stage `bytes` into `input.<ext>`. The returned `cleanup` MUST
- * be awaited in a finally block by the caller.
- */
 export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scratch> {
   const dir = await mkdtemp(join(tmpdir(), SCRATCH_PREFIX))
   const safeExt = /^[a-z0-9]{1,8}$/i.test(ext) ? ext : "bin"
   const inputPath = join(dir, `input.${safeExt}`)
+  const identity = sandboxIdentity()
+  if (identity !== null) {
+    try {
+      await chown(dir, process.getuid?.() ?? -1, identity.gid)
+      await chmod(dir, 0o2770)
+    } catch (err) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+      throw err
+    }
+  }
   if (bytes !== undefined) {
     try {
       await writeFile(inputPath, bytes)
+      if (identity !== null) await chmod(inputPath, 0o660)
     } catch (err) {
-      // The caller never receives a cleanup() when the stage fails, so the dir would leak until the next
-      // process restart (sweepStaleScratchDirs runs at boot + on the hourly reap cron, not per job). Most
-      // likely cause is ENOSPC - i.e. exactly when disk pressure makes leaks expensive.
       await rm(dir, { recursive: true, force: true }).catch(() => {})
       throw err
     }
@@ -51,9 +50,11 @@ export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scra
     dir,
     inputPath,
     outPath(name: string): string {
-      // name is a fixed worker-chosen literal (never user input), but sanitize defensively.
       const safe = name.replace(/[^a-z0-9._-]/gi, "_")
       return join(dir, safe)
+    },
+    async seal(): Promise<void> {
+      await chmod(dir, 0o700)
     },
     async cleanup(): Promise<void> {
       if (cleaned) return
@@ -63,13 +64,41 @@ export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scra
   }
 }
 
-/**
- * Backstop for dirs no cleanup() will ever reach: per-call cleanup() runs in a finally, but a SIGKILL
- * mid-pipeline (e.g. an OOM kill) skips it, leaking scratch dirs that accumulate in a long-running worker.
- * Remove any civfix-media-* dir older than `maxAgeMs` (default 1h, comfortably above the per-job budget so
- * an in-flight job's dir is never reaped). Called at worker start AND from the hourly orphan-sweep cron, so
- * a leak in a process that stays up for weeks is still collected. Never throws.
- */
+export async function readScratchOutput(
+  dir: string,
+  name: string,
+  expectUid: number | null,
+  maxBytes: number,
+): Promise<Buffer> {
+  const path = join(dir, name)
+  let handle
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch (err) {
+    throw new ScratchOutputError(`sandbox output ${name} could not be opened safely`, err)
+  }
+  try {
+    const stats = await handle.stat()
+    if (!stats.isFile()) {
+      throw new ScratchOutputError(`sandbox output ${name} is not a regular file`)
+    }
+    if (stats.nlink !== 1) {
+      throw new ScratchOutputError(`sandbox output ${name} is hard-linked elsewhere`)
+    }
+    if (expectUid !== null && stats.uid !== expectUid) {
+      throw new ScratchOutputError(`sandbox output ${name} is not owned by the sandbox uid`)
+    }
+    if (stats.size > maxBytes) {
+      throw new ScratchOutputError(
+        `sandbox output ${name} is ${stats.size} bytes, over the ${maxBytes} byte cap`,
+      )
+    }
+    return await handle.readFile()
+  } finally {
+    await handle.close().catch(() => {})
+  }
+}
+
 export async function sweepStaleScratchDirs(maxAgeMs = 60 * 60 * 1000): Promise<number> {
   const root = tmpdir()
   const cutoff = Date.now() - maxAgeMs
@@ -89,8 +118,8 @@ export async function sweepStaleScratchDirs(maxAgeMs = 60 * 60 * 1000): Promise<
         await rm(full, { recursive: true, force: true })
         removed++
       }
-    } catch {
-      // A racing concurrent worker removed it, or a permission issue: skip.
+    } catch (ignored) {
+      void ignored
     }
   }
   return removed

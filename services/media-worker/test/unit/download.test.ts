@@ -1,14 +1,3 @@
-/**
- * The REAL download path (presign + fetch), which every other suite bypasses.
- *
- * Every existing test hands makeDownloader a FakeStorage, and FakeStorage exposes `get()`, so the
- * downloader takes its in-memory fast path: the key allowlist, presign failure mapping, content-length
- * precheck, the INCREMENTAL STREAMING BYTE CAP (a security bound - the only thing standing between a
- * hostile/mistaken multi-GB object and the worker's heap) and the non-OK mapping were all unexercised.
- *
- * These cases drive the real branch by giving the downloader a stub Storage with NO `get()` whose
- * presignGet points at a local http server, so nothing here touches the network.
- */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
@@ -16,7 +5,6 @@ import type { AddressInfo } from "node:net"
 import type { Storage } from "@civfix/shared/interfaces"
 import { makeDownloader, DownloadTooLargeError, StorageUnavailableError } from "../../src/download.js"
 
-/** Routes the server serves, keyed by pathname. */
 type Route = (res: ServerResponse) => void
 
 const routes = new Map<string, Route>()
@@ -26,8 +14,6 @@ let origin = ""
 
 beforeAll(async () => {
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    // A client abort (the byte cap firing) resets the connection mid-write; without these the stream
-    // error would surface as an unhandled 'error' event and kill the test process.
     req.on("error", () => {})
     res.on("error", () => {})
     const route = routes.get(new URL(req.url ?? "/", "http://localhost").pathname)
@@ -38,8 +24,8 @@ beforeAll(async () => {
     }
     try {
       route(res)
-    } catch {
-      // Writing to an already-reset socket throws; nothing to do.
+    } catch (ignored) {
+      void ignored
     }
   })
   server.on("clientError", () => {})
@@ -52,12 +38,10 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()))
 })
 
-/** A Storage that ONLY presigns (no `get`), so the downloader takes the real presign+fetch path. */
 function stubStorage(presignGet: (key: string, ttlSec: number) => Promise<string>): Storage {
   return { presignGet } as unknown as Storage
 }
 
-/** Storage whose presigned URL is `${origin}${path}`. */
 function servedAt(path: string): Storage {
   return stubStorage((_key, _ttl) => Promise.resolve(`${origin}${path}`))
 }
@@ -98,7 +82,6 @@ describe("download: presign failures", () => {
   })
 
   it("maps an unreachable URL to StorageUnavailableError", async () => {
-    // Port 1 on loopback: connection refused, i.e. the fetch itself rejects.
     const download = makeDownloader(stubStorage(() => Promise.resolve("http://127.0.0.1:1/nope")))
     await expect(download("uploads/2026/06/a", 1024)).rejects.toBeInstanceOf(
       StorageUnavailableError,
@@ -115,7 +98,7 @@ describe("download: responses", () => {
     })
     const download = makeDownloader(servedAt("/ok"))
     const out = await download("uploads/2026/06/ok", 1024)
-    expect(Buffer.from(out).toString()).toBe("hello-bytes")
+    expect(Buffer.from(out.bytes).toString()).toBe("hello-bytes")
   })
 
   it("maps a 503 to StorageUnavailableError naming the status", async () => {
@@ -128,7 +111,6 @@ describe("download: responses", () => {
   })
 
   it("rejects on the declared content-length BEFORE reading the body", async () => {
-    // node sets Content-Length for a single end(buffer) on HTTP/1.1, so the precheck sees it.
     routes.set("/declared-big", (res) => {
       res.statusCode = 200
       res.end(Buffer.alloc(4096, 1))
@@ -138,7 +120,6 @@ describe("download: responses", () => {
   })
 
   it("SECURITY: aborts mid-stream when a chunked body grows past the cap", async () => {
-    // No Content-Length (multiple writes => chunked), so only the incremental cap can stop this.
     routes.set("/chunked-big", (res) => {
       res.statusCode = 200
       for (let i = 0; i < 8; i++) res.write(Buffer.alloc(4096, 2))
@@ -157,19 +138,17 @@ describe("download: responses", () => {
     })
     const download = makeDownloader(servedAt("/exact"))
     const out = await download("uploads/2026/06/exact", 64)
-    expect(out.byteLength).toBe(64)
+    expect(out.bytes.byteLength).toBe(64)
   })
 
   it("falls back to arrayBuffer() when the response carries NO body stream (204)", async () => {
-    // undici exposes res.body === null for a bodyless response, which is the only way into the
-    // arrayBuffer() fallback branch.
     routes.set("/empty", (res) => {
       res.statusCode = 204
       res.end()
     })
     const download = makeDownloader(servedAt("/empty"))
     const out = await download("uploads/2026/06/empty", 1024)
-    expect(out.byteLength).toBe(0)
+    expect(out.bytes.byteLength).toBe(0)
   })
 
   it("streams a body that stays under the cap", async () => {
@@ -181,7 +160,7 @@ describe("download: responses", () => {
     })
     const download = makeDownloader(servedAt("/chunked-small"))
     const out = await download("uploads/2026/06/small", 1024)
-    expect(out.byteLength).toBe(32)
+    expect(out.bytes.byteLength).toBe(32)
   })
 })
 

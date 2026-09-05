@@ -10,6 +10,7 @@ import {
   MEDIA_STUCK_SWEEP_JOB,
 } from "../../src/worker.js"
 import { buildJobs, type ScheduleOptions } from "../../src/jobs.js"
+import { MEDIA_UPLOAD_REAP_JOB } from "../../src/jobs/upload-reap.js"
 import { buildSeams, type WorkerSeams } from "../../src/seams.js"
 import {
   CHAT_PARTITION_CRON,
@@ -116,6 +117,7 @@ describe("media-worker wiring", () => {
       ANON_HOLD_RELEASE_SWEEP_JOB,
       RETENTION_SWEEP_JOB,
       MEDIA_STUCK_SWEEP_JOB,
+      MEDIA_UPLOAD_REAP_JOB,
     ]
     expect(queues.sort()).toEqual([...expected].sort())
     expect([...worked].sort()).toEqual([...expected].sort())
@@ -219,6 +221,7 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
 
     const seams: WorkerSeams = {
       storage,
+      inboundStorage: storage,
       abuseChecks: new FakeAbuseChecks(),
       limits: loadLimits({}),
       download: makeDownloader(storage),
