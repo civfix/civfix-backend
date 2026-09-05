@@ -26,28 +26,10 @@ import { InMemoryMailRepository } from "../../src/services/admin/mail-repository
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 
-/**
- * Cross-router HTTP tests for the admin console (app.inject against the REAL Fastify stack, every router
- * wired to its in-memory repository via the per-router `*Overrides` seam — no DB, no R2, no Docker).
- *
- * Two gaps are closed here.
- *
- * 1. L4 READ-AUDIT WIRING was unassertable, so deleting an `await auditRead(...)` line broke no test:
- *    auditRead writes through `container.getDb().sql` and swallows the offline harness's getDb() throw by
- *    design, so the HTTP tests could not observe it and only the helper itself was unit-tested. With
- *    `app.adminReadAuditOverrides.sink` installed (ONE injection covers all four audited routes, because
- *    the helper reads the slot off `request.server`) the action/target/actor per route is pinned — AND so
- *    is the deliberate ABSENCE of an audit on the neighbouring per-subject reads.
- *
- * 2. Every admin router except auth had only SERVICE-level unit tests: nothing called app.inject, so the
- *    route wiring itself (query parse -> service -> status/body) was unexercised. Each router now gets one
- *    happy-path read asserted against seeded fixture data plus a malformed-query rejection.
- */
 
 const OPERATOR = "ops@civfix.org"
 const FROM_OUTREACH = "outreach@civfix.org"
 
-/** Stable uuids so a path id survives idParam's uuid check. */
 const SUBJECT_USER = "11111111-1111-4111-8111-111111111111"
 const SUBJECT_REPORT = "22222222-2222-4222-8222-222222222222"
 const SUBJECT_EVENT = "33333333-3333-4333-8333-333333333333"
@@ -77,17 +59,13 @@ interface Harness {
   services: AuthServices
   stores: ReturnType<typeof makeInMemoryStores>
   fakes: Fakes
-  /** Rows captured by the injected read-audit sink (L4). */
   reads: WriteAuditInput[]
   token: string
   operatorId: string
-  /** The seeded mail thread id (a uuid is not required by the mail fake, so it is captured). */
   mailThreadId: string
-  /** The seeded inbound email id. */
   inboxId: string
 }
 
-/** Seed one row per admin domain so every list/detail route has something real to project. */
 function makeFakes(): Fakes {
   const home = new InMemoryHomeRepository()
   home.discoveryValue = { queue: 4, reportsWaiting: 11, overSla: 2 }
@@ -238,16 +216,13 @@ async function makeHarness(): Promise<Harness> {
   app.activityOverrides = { repo: fakes.activity }
   app.auditOverrides = { repo: fakes.audit }
   app.discoveryOverrides = { repo: fakes.discovery }
-  // `jobs` is passed explicitly: the container fallback would resolve the real Jobs adapter on every
-  // request, which this DB-less harness has no business touching.
   app.jurisdictionOverrides = { repo: fakes.jurisdictions, jobs: new FakeJobs(), throttleDays: 7 }
   app.adminReportOverrides = { repo: fakes.reports, outboundMail }
   app.adminEventOverrides = { repo: fakes.events }
   app.adminUserOverrides = {
     repo: fakes.users,
     sessions: {
-      ban: () => Promise.resolve(0),
-      clearBan: () => Promise.resolve(),
+      applyStatus: () => Promise.resolve(0),
       revokeAll: () => Promise.resolve(0),
     },
   }
@@ -260,7 +235,6 @@ async function makeHarness(): Promise<Harness> {
   app.adminMailOverrides = {
     repo: fakes.mail,
     outboundMail,
-    fromOutreach: FROM_OUTREACH,
     storage: new FakeStorage(),
   }
   app.adminInboxOverrides = { repo: fakes.inbox, storage: new FakeStorage() }
@@ -272,8 +246,6 @@ async function makeHarness(): Promise<Harness> {
   }
 
   const reads: WriteAuditInput[] = []
-  // ONE sink covers every read-audited route: auditRead reads it off request.server, and the encapsulated
-  // admin scope inherits it through the prototype chain even though it is installed after buildServer.
   app.adminReadAuditOverrides = {
     sink: (input) => {
       reads.push(input)
@@ -332,7 +304,6 @@ afterEach(async () => {
   await h.app.close()
 })
 
-/** GET as the seeded operator. */
 function get(url: string): Promise<{ statusCode: number; json: () => unknown }> {
   return h.app.inject({ method: "GET", url, headers: { authorization: `Bearer ${h.token}` } })
 }
@@ -394,11 +365,6 @@ describe("L4: sensitive per-subject READS write an audit row", () => {
     ])
   })
 
-  /**
-   * The scope is deliberate, and the absence is as load-bearing as the presence: a user's reports and
-   * cleanups are their PUBLIC civic record, and the aggregate/list surfaces are high-volume, so auditing
-   * them would bury the log. If someone widens auditRead to those routes, this fails.
-   */
   it("does NOT audit the public sub-lists or any aggregate/list surface", async () => {
     for (const url of [
       `/v1/admin/users/${SUBJECT_USER}/reports`,
@@ -437,11 +403,6 @@ describe("L4: sensitive per-subject READS write an audit row", () => {
   })
 })
 
-/**
- * One happy-path read per admin router, through the real route (query parse -> service -> reply). Each
- * assertion reads a value that can only have come from the seeded in-memory repo, so a router wired to the
- * wrong service or dropping its query would fail rather than 200 with an empty page.
- */
 describe("every admin router answers a happy-path read", () => {
   it("home: summary + map project the repo's counts and pins", async () => {
     const summary = await get("/v1/admin/home/summary")
@@ -630,10 +591,6 @@ describe("every admin router answers a happy-path read", () => {
   })
 })
 
-/**
- * Malformed queries must be a typed 422 from the shared schema, never a 500 and never silently ignored.
- * `limit` is `z.coerce.number().int().positive().max(100)` on every admin list query (AdminListQuerySchema).
- */
 describe("every admin list route rejects a malformed query with 422", () => {
   const LIST_ROUTES = [
     "/v1/admin/activity",
@@ -679,7 +636,6 @@ describe("every admin list route rejects a malformed query with 422", () => {
     expect(status.statusCode).toBe(422)
     expect((status.json() as { fields?: Record<string, string> }).fields).toHaveProperty("status")
 
-    // The reports facet IS a closed enum on the wire, unlike the activity feed's free-form filter below.
     const facet = await get("/v1/admin/reports?filter=not-a-facet")
     expect(facet.statusCode).toBe(422)
     expect((facet.json() as { fields?: Record<string, string> }).fields).toHaveProperty("filter")
@@ -691,19 +647,15 @@ describe("every admin list route rejects a malformed query with 422", () => {
       expect(res.statusCode, tab).toBe(422)
       expect((res.json() as { fields?: Record<string, string> }).fields, tab).toHaveProperty("limit")
     }
-    // A rejected query never reaches the handler, so the sensitive-read audit is not written either.
     expect(h.reads).toEqual([])
   })
 
   it("degrades an unrecognized free-form filter/sort to the default instead of 422ing", async () => {
-    // ActivityListQuerySchema types `filter`/`sort` as bare z.string(), so the SERVER owns that
-    // vocabulary: an unknown value must fall back to the default, not reject and not reach SQL.
     const res = await get("/v1/admin/activity?filter=not-a-kind&sort=not-a-sort")
     expect(res.statusCode).toBe(200)
     expect((res.json() as { items: { who: string }[] }).items.map((i) => i.who)).toEqual([
       "Jane Neighbor",
     ])
-    // Same stance on the reports SORT (a free-form string) while its `filter` enum stays closed.
     const sorted = await get("/v1/admin/reports?sort=not-a-sort")
     expect(sorted.statusCode).toBe(200)
     expect((sorted.json() as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([
@@ -712,14 +664,6 @@ describe("every admin list route rejects a malformed query with 422", () => {
   })
 })
 
-/**
- * F092: inbound mail attachments are persisted as RAW R2 object keys ("inbound-mail/<thread>/<file>").
- * The thread read used to hand those keys straight to the console, where the SPA renders them as hrefs —
- * relative to admin.civfix.org, swallowed by the SPA catch-all rewrite, so an operator saw a "working"
- * link that served HTML instead of the municipality's attachment. The route must presign every
- * attachment through the inbound storage seam (as the sibling inbox route already did), and cap the
- * per-thread fan-out so a many-part thread cannot issue unbounded presign calls.
- */
 describe("F092: GET /admin/mail/:id presigns inbound attachment keys", () => {
   it("returns an absolute presigned URL per attachment, never the raw object key", async () => {
     await h.fakes.mail.insertMessage({

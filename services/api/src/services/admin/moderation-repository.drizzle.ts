@@ -6,6 +6,8 @@ import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import { tombstonePostInTx } from "../post-repository.drizzle.js"
+import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
+import { servedKeyExpr, servableMediaFilter } from "../media-served-key.js"
 import {
   type CreateModerationItemInput,
   type ListModerationArgs,
@@ -249,9 +251,10 @@ async function loadMedia(
 ): Promise<ModerationMediaRecord[]> {
   if (subjectType !== "report") return []
   const rows = await sql<MediaRow[]>`
-    SELECT id, kind, r2_key, thumb_key
+    SELECT id, kind, ${servedKeyExpr(sql, "media_assets")} AS r2_key, thumb_key
     FROM media_assets
     WHERE report_id = ${subjectId}
+      AND ${servableMediaFilter(sql, "media_assets")}
     ORDER BY created_at ASC
   `
   return rows.map((m) => ({
@@ -398,6 +401,9 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
         const record = toRecord(resolved, media)
         if (removedReport) record.reportTimelineStatus = "rejected"
+        if (removed && isUserSubject(resolved.subject_type)) {
+          record.suspendedUserId = resolved.subject_id
+        }
         return record
       })
     },
@@ -741,6 +747,9 @@ async function tombstoneSubject(
     }
     case "profile":
     case "user": {
+      const target = await tx<{ role: string }[]>`
+        SELECT role FROM users WHERE id = ${subjectId}`
+      assertTargetIsNotOperatorRole(target[0]?.role, "remove")
       const rows = await tx<{ user_id: string }[]>`
         INSERT INTO user_moderation (user_id, account_status, flagged, updated_at)
         VALUES (${subjectId}, 'suspended', true, now())
