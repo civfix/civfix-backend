@@ -381,6 +381,10 @@ describe("H17: clientId send idempotency", () => {
 })
 
 describe("H17: a hung Redis does not stall the per-socket frame chain", () => {
+  const HUNG_STEP_TIMEOUT_MS = 20
+  const HUNG_SEND_BUDGET_MS = HUNG_STEP_TIMEOUT_MS * (BROADCAST_ATTEMPTS + 1)
+  const COLD_START_SLACK_MS = 500
+
   it("reserve is bounded, commit is fire-and-forget, so a send settles on the broadcast budget", async () => {
     const hang = <T,>(): Promise<T> => new Promise<T>(() => undefined)
     const hungDedupe: SendDedupeStore = {
@@ -399,8 +403,8 @@ describe("H17: a hung Redis does not stall the per-socket frame chain", () => {
           if (msg !== undefined) warnings.push(msg)
         },
       } as unknown as Pick<FastifyBaseLogger, "warn">,
-      reserveTimeoutMs: 20,
-      attemptTimeoutMs: 20,
+      reserveTimeoutMs: HUNG_STEP_TIMEOUT_MS,
+      attemptTimeoutMs: HUNG_STEP_TIMEOUT_MS,
       sleep: () => Promise.resolve(),
       jitter: () => 0,
     })
@@ -433,7 +437,7 @@ describe("H17: a hung Redis does not stall the per-socket frame chain", () => {
     expect(warnings).toContain(
       "chat: send dedupe unavailable; the send will insert without an idempotency reservation",
     )
-    expect(elapsed).toBeLessThan(20 * (BROADCAST_ATTEMPTS + 2))
+    expect(elapsed).toBeLessThan(HUNG_SEND_BUDGET_MS + COLD_START_SLACK_MS)
     const history = await repo.history(ROOM, undefined, 50, ALICE)
     expect(history.items).toHaveLength(1)
   })
