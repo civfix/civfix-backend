@@ -1,12 +1,20 @@
-/**
- * Process entrypoint. Loads env (failing loudly on misconfiguration) and starts the server.
- */
+import type { FastifyInstance } from "fastify"
+import { start, makeShutdown } from "./server.js"
 
-import { start } from "./server.js"
+function installProcessFaultHandlers(app: FastifyInstance): void {
+  const shutdown = makeShutdown(app, { exitCode: 1 })
+  const fatal = (err: unknown, source: string): void => {
+    app.log.error({ err, source }, "fatal: unhandled process error, draining")
+    void shutdown(source).catch(() => process.exit(1))
+  }
+  process.on("unhandledRejection", (reason: unknown) => fatal(reason, "unhandledRejection"))
+  process.on("uncaughtException", (err: unknown) => fatal(err, "uncaughtException"))
+}
 
-start().catch((err: unknown) => {
-  // Last-resort handler: env load failure or listen failure. Print and exit non-zero.
-  console.error("fatal: failed to start civfix-api")
-  console.error(err)
-  process.exit(1)
-})
+start()
+  .then(installProcessFaultHandlers)
+  .catch((err: unknown) => {
+    console.error("fatal: failed to start civfix-api")
+    console.error(err)
+    process.exit(1)
+  })

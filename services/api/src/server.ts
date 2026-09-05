@@ -10,6 +10,7 @@ import { registerCookie } from "./plugins/cookie.js"
 import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
+import { registerAccountStatusGuard } from "./auth/account-status.js"
 import { buildAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
 import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
@@ -33,6 +34,7 @@ import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
+import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
@@ -167,6 +169,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   }
 
   await registerAuthContext(app)
+  registerAccountStatusGuard(app)
 
   if (env.DATABASE_URL) container.getNotificationService(app.log)
 
@@ -190,6 +193,35 @@ function resolveAuthServices(
 
 let shuttingDown = false
 
+export function makeShutdown(
+  app: FastifyInstance,
+  opts: { exitCode?: number } = {},
+): (reason: string) => Promise<void> {
+  const cleanExitCode = opts.exitCode ?? 0
+  return async function shutdown(reason: string): Promise<void> {
+    if (shuttingDown) return
+    shuttingDown = true
+    app.log.info({ signal: reason }, "shutdown: draining")
+    const watchdog = setTimeout(() => {
+      app.log.error("shutdown: drain timed out; forcing exit")
+      process.exit(1)
+    }, 20000)
+    watchdog.unref()
+    try {
+      await app.close()
+      await app.container.close()
+      await flushErrorReporting()
+      clearTimeout(watchdog)
+      app.log.info("shutdown: complete")
+      process.exit(cleanExitCode)
+    } catch (err) {
+      clearTimeout(watchdog)
+      app.log.error({ err }, "shutdown: error during drain")
+      process.exit(1)
+    }
+  }
+}
+
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   await initErrorReporting({
     ...(env.GLITCHTIP_DSN !== undefined ? { dsn: env.GLITCHTIP_DSN } : {}),
@@ -212,30 +244,10 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerDataExportJobs(app.container, { logger: app.log })
     await registerCleanupCancelFanoutJob(app.container, app.log)
     await registerGuestJobs(app.container, app.log)
+    await registerChatRoomFanoutJob(app.container, app.log)
   }
 
-  async function shutdown(signal: string): Promise<void> {
-    if (shuttingDown) return
-    shuttingDown = true
-    app.log.info({ signal }, "shutdown: draining")
-    const watchdog = setTimeout(() => {
-      app.log.error("shutdown: drain timed out; forcing exit")
-      process.exit(1)
-    }, 20000)
-    watchdog.unref()
-    try {
-      await app.close()
-      await app.container.close()
-      await flushErrorReporting()
-      clearTimeout(watchdog)
-      app.log.info("shutdown: complete")
-      process.exit(0)
-    } catch (err) {
-      clearTimeout(watchdog)
-      app.log.error({ err }, "shutdown: error during drain")
-      process.exit(1)
-    }
-  }
+  const shutdown = makeShutdown(app)
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
   process.on("SIGINT", () => void shutdown("SIGINT"))
