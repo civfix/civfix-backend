@@ -1,7 +1,7 @@
 # Retention cleanup jobs (civfix-backend)
 
 **Audience:** internal (engineering + ops). Not served publicly.
-**Last updated:** 2026-06-20 (privacy/backend-hardening).
+**Last updated:** 2026-09-02 (audit-fix pass: inbound_emails TTL + doc-drift corrections).
 
 Backs the "written retention schedule + scheduled cleanup jobs" item in
 `documents/21-privacy-compliance.md` §7.1 for the TTL-able auth artifacts that
@@ -9,15 +9,19 @@ previously accumulated forever (no existing path deleted them).
 
 ## What runs
 
-A new `retention.sweep` cron in the **media-worker** (the same process that runs
-`orphan.sweep` and `chat.partition.maintenance`) deletes expired rows from three
-existing tables. **No new schema** — it only deletes already-expired rows.
+A `retention.sweep` cron in the **media-worker** (the same process that runs
+`orphan.sweep` and `chat.partition.maintenance`) deletes expired rows from the
+tables below. Every lane but `inbound_emails` deletes already-expired rows only
+and needs no schema of its own.
 
 | Table | Rows deleted | Source schema |
 |---|---|---|
 | `email_otps` | `consumed_at IS NOT NULL` OR `expires_at < cutoff` | `services/api/src/db/schema/otp.ts` |
 | `anon_tokens` | `expires_at < cutoff` | `services/api/src/db/schema/anon.ts` |
 | `sessions` | `expires_at < cutoff` | `services/api/src/db/schema/sessions.ts` |
+| `idempotency_keys` | `created_at < now - 48h` (`RETENTION_IDEMPOTENCY_MS`) | `services/api/src/db/schema/idempotency.ts` |
+| `notifications` | `created_at < now - 90d` (see F088 below) | `services/api/src/db/schema/notifications.ts` |
+| `inbound_emails` | `archived_at < now - 180d` (see H10 below) | `services/api/src/db/schema/inbound_emails.ts` |
 
 `cutoff = now - grace`, where `grace` defaults to **1 hour** past expiry (so a
 just-expired row is never raced out from under an in-flight request). Each table
@@ -33,7 +37,7 @@ so a backlog drains over several daily runs rather than one long-locking DELETE.
 - Registration: `services/media-worker/src/worker.ts` — `RETENTION_SWEEP_JOB`
   queue + worker + `jobs.schedule(RETENTION_SWEEP_JOB, RETENTION_SWEEP_CRON)`.
 - Schedule: `services/media-worker/src/config.ts` — `RETENTION_SWEEP_CRON`
-  = `30 3 * * *` (daily, 03:30 UTC, off-peak).
+  = `37 4 * * *` (daily, 04:37 UTC, off-peak).
 - Tests: `services/media-worker/test/unit/retention-sweep.test.ts`.
 
 ## Scheduling mechanism
@@ -76,12 +80,64 @@ DECIDED TTL: 90 days (single lane for all notification types). If a shorter
 TTL is later wanted for `FEED_HIDDEN_NOTIFICATION_TYPES` (chat/DM bells never
 shown in the feed), split into a second drain — no schema change needed.
 
-FOLLOW-UP (not in this change): the drain query is `WHERE created_at < cutoff
-LIMIT n`. At scale a `notifications(created_at)` index would help; the F089
-`notifications_feed_idx` is `(user_id, created_at DESC, id DESC) WHERE type <>
-…` and does not cover a bare `created_at` scan. Pre-launch tables are tiny, so
-this is deferred, not blocking. The `DELETE /me` erasure cleanup step and the
+INDEX: `notifications_created_idx` (migration `0094_notifications_created_idx.sql`)
+now covers the bare `created_at` drain — this was previously listed as deferred.
+The F089 `notifications_feed_idx` is `(user_id, created_at DESC, id DESC) WHERE
+type <> …` and does NOT cover it. The `DELETE /me` erasure cleanup step and the
 `docs/erasure-behavior.md` row are owned by the users/erasure workstream.
+
+UPDATE (H19, audit 2026-09) — the inflow side is now bounded too. Group/report
+room activity used to write ONE row per member per message. Two windows now
+govern it, deliberately separate
+(`services/api/src/services/chat-room-fanout-notifier.ts`):
+
+* `ROOM_ACTIVITY_COALESCE_WINDOW_MS` (10 min) is the BELL window — a recipient
+  keeps ONE unread bell per room per window and gets ONE push; later messages
+  UPDATE that row's title/body via `refreshUnreadNotification` instead of
+  inserting. A recipient who READS (opens) the room has no unread row left, so
+  the next message rings again immediately.
+* `ROOM_FANOUT_THROTTLE_MS` (15 s) is the COST window — how often a room may pay
+  for a fan-out at all (member list + presence + block/mute batches + the
+  per-recipient upsert). It never decides whether a bell is due, so a refresh or
+  a re-ring is at most 15 s stale even on a single-process deployment.
+
+The upsert is ONE statement pair inside a single short `sql.begin`
+(`upsertCoalescedNotification`): the `FOR UPDATE` in the refresh subquery makes
+two runners that find the same unread row serialise, so the second refreshes
+rather than inserting. RESIDUAL, accepted deliberately: when NO unread row
+exists yet and two runners race (the Redis window claim fails open, or one
+fan-out outlives the 15 s claim TTL), both can insert — there is no unique
+constraint to lean on and `notifications` is a hot table where new DDL is not
+worth it. The blast radius is ONE extra unread row per member per race, both
+rows carry the same room link, opening the room clears them together, and the
+next fan-out inside the bell window refreshes one of them rather than adding a
+third.
+
+The message preview stored in `body` is therefore the LATEST message of the
+window rather than one row per message; retention semantics and the 90-day TTL are
+unchanged, but the volume the sweep has to drain is bounded by rooms×windows
+instead of members×messages. Mention/reply/DM bells are NOT coalesced.
+
+The fan-out itself can now run off the sender's WS frame, on the pg-boss queue
+`chat.room.fanout` (`services/api/src/services/chat-fanout-jobs.ts`, registered
+in `src/server.ts`, queue declared in `src/adapters/jobs.pgboss.ts` with the
+same explicit `policy: "short"` every API queue uses). Its `singletonKey` is
+`<kind>:<roomId>:<throttle bucket>`, so simultaneous enqueues from different API
+processes collapse into one run. The job payload is IDS ONLY — `{kind, roomId,
+messageId}` — deliberately: `pgboss.job` has its own archive retention that was
+never reviewed for message bodies, so the handler re-reads the message through
+the room-scoped repository (which also preserves the "Deleted User" rendering)
+instead of carrying a preview through the queue. The handler also drops a
+message that was TOMBSTONED between the enqueue and the run — the finders
+hydrate a tombstone rather than returning null, so a deleted message must not
+still bell the room.
+
+A caller opts in by passing `dispatchToJob` (and optionally the cross-process
+`claimWindow`) to `makeRoomFanoutNotifier`; with neither, the notifier fans out
+inline exactly as before, and an enqueue that throws (queue not started) also
+falls back inline so bells are never silently dropped. The REST poll lane stays
+inline on purpose — a poll create is one event, not a burst. Wiring the WS send
+lane (`src/routes/chat-gateway-wiring.ts`) is the remaining step.
 
 ---
 
@@ -148,3 +204,106 @@ means deleting an event (which the product does not currently do) removes its
 guests with it. There is no way to look a guest up by contact, so there is no
 guest-facing erasure endpoint: cancelling the RSVP is the erasure path, and it
 is capability-based (the manage token), needing no identity check.
+
+---
+
+## H10 — `inbound_emails` retention (audit-fix 2026-09)
+
+`inbound_emails` holds the catch-all inbox: complete third-party correspondence
+(`body_text`, sanitized `body_html`, allowlisted headers) plus the R2 keys of
+every attachment. It had **no TTL and no sweep**, so it was on track to become the
+largest unbounded PII store on the box, with no way to honour a DSAR from a
+resident who had emailed support.
+
+**DECIDED RULE (product owner, 2026-09-02):** an **archived** thread is purged
+**180 days after `archived_at`**. Unread and read rows are untouched — they are
+still open operator work, and ageing them out would silently drop live
+correspondence. The attachment objects in the inbound R2 bucket are deleted with
+the row.
+
+| What | Value |
+|---|---|
+| Table | `inbound_emails` |
+| Predicate | `archived_at IS NOT NULL AND archived_at < now() - 180 days` |
+| Objects deleted | every `attachments[].key` on the deleted rows, from the **inbound** bucket |
+| Cron | the existing `retention.sweep` (`37 4 * * *`, daily) |
+| Batching | `SELECT … ORDER BY archived_at ASC LIMIT n` → delete that page's objects → `DELETE … WHERE id = ANY(...)`, drained page-wise up to `RETENTION_MAX_PAGES` |
+| Order | **objects before rows.** Deleting rows first meant a crash between the commit and the object deletes leaked every object on the page with nothing left pointing at it. In this order a crash leaves rows whose objects are already gone; the next run re-selects them and object deletes are idempotent, so the page simply completes. A row whose objects could NOT be deleted is kept and retried; a page where nothing at all could be reaped stops the drain rather than re-selecting the same rows. |
+| Tuning | `runRetentionSweep({ inboundEmailsRetentionMs })`, constant `RETENTION_INBOUND_EMAILS_MS` |
+
+**Schema:** `drizzle/0101_inbound_emails_archived_at.sql` adds `archived_at`
+(plus a partial index for the sweep predicate) and backfills existing archived
+rows from `received_at`. `InboundRepository.setStatus` stamps `archived_at` on
+the transition into `archived` and clears it on any transition out, so
+un-archiving restarts the clock rather than leaving a stale deadline.
+
+**Where it lives:** the delete is
+`services/api/src/services/admin/inbound-retention-repository.drizzle.ts`
+(`makeDrizzleInboundRetentionRepository`, exported to the worker as
+`@civfix/api/inbound-retention-repo`); the drain lane is
+`runInboundEmailRetentionLane` at the END of
+`services/media-worker/src/jobs/retention-sweep.ts`, called once from
+`runRetentionSweep` after the auth-artifact lanes. Tests:
+`services/media-worker/test/unit/retention-sweep.test.ts` (lane) and
+`services/api/test/integration/inbound-repository.test.ts` (the `archived_at`
+clock + the retention predicate against the real schema).
+
+**Bucket:** inbound attachments are written by the API through
+`container.inboundStorage`, which is the dedicated `R2_INBOUND_BUCKET` whenever
+`R2_PUBLIC_BASE` is set (raw inbound mail is never kept in the public media
+bucket). The worker therefore builds its own `inboundStorage` seam
+(`services/media-worker/src/seams.ts`) instead of reusing the media `storage`
+seam.
+
+**Row deletion:** `deleteByIds` deletes strictly by the ids the same page selected and deliberately does
+NOT re-check `archived_at`. By the time it runs, that page's attachment objects are already gone, so
+re-qualifying the row could only leave a row pointing at deleted objects. The window is one page of a
+single sweep run, and the only way a row could stop qualifying inside it is an operator un-archiving it in
+that instant — for which "the row goes" is the consistent outcome, not a lost decision.
+
+**OPS:** the worker's SOPS env (`civfix-infra/secrets/media-worker.sops.env`)
+currently carries `R2_PUBLIC_BASE` but NOT `R2_INBOUND_BUCKET`, so the bucket
+cannot be identified there yet. The worker does **not** refuse to boot over
+this: it logs a warning, leaves `inboundStorage` undefined, and the lane is
+**skipped entirely** — rows are KEPT, never deleted with unreachable
+attachments. Add `R2_INBOUND_BUCKET` (the same value the API uses) to the
+worker's env to activate the lane. A failed object delete is counted
+(`inboundEmailObjectsLeaked`) and reported to GlitchTip, and the row is **kept** so the next run retries
+it — a row is only deleted once every one of its objects is gone. A page where nothing at all could be
+reaped ends the drain rather than re-selecting the same rows.
+
+**Not covered:** `mail_threads` / `mail_messages` (the operator outreach record
+for reports and events) are civic-record correspondence about a public report and
+are deliberately kept, like the reports themselves.
+
+### `mail_events` — no TTL (accepted)
+
+`mail_events` is the per-delivery trail (`sent` / `failed` / `delivered` /
+`bounced` / `complained` / `opened`) behind every outbound packet. It has **no
+retention rule and that is deliberate**:
+
+- It carries **no message content** — only a type, a timestamp, the from/to
+  addresses and a small meta jsonb (`reason`, `deadlineMs`, `bytes`,
+  `failedRecipient`, `late`). It is the least PII-bearing table in the mail
+  cluster.
+- It is **load-bearing for correctness**, not just history. `send_failed` /
+  `send_in_flight` (`admin-report-repository.drizzle.ts`) and `hasSendInFlight`
+  (`mail-repository.drizzle.ts`) decide from the newest outbound attempt's own
+  events whether a report may be re-routed. Ageing rows out would make an old
+  report look re-routable and could put a second packet in front of a
+  jurisdiction.
+- Growth is bounded by **outbound volume**, not by inbound traffic: a handful of
+  rows per report routed or operator reply, not one per inbound webhook.
+
+**Indexing is the real constraint.** Every predicate above must be reachable
+through `mail_events_thread_idx` (`thread_id`); the table has no `message_id`
+index, so a per-attempt subquery filtered only on `message_id` seq-scans it.
+`services/api/src/services/admin/outbound-send-sql.ts` is the single place those
+expressions are built, and every `mail_events` subquery there carries the thread
+filter — asserted offline by
+`services/api/test/unit/outbound-send-sql.test.ts`.
+
+**Pending decision (not taken here):** if outbound volume ever makes the table
+large, the safe TTL is "delete events whose thread has no outbound message newer
+than N months", never a flat `created_at` cutoff — the newest attempt's events
+must outlive the in-flight and stale-claim windows by a wide margin.
