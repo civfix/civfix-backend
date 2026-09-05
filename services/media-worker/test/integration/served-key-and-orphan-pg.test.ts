@@ -41,6 +41,25 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
     return { id, r2Key }
   }
 
+  async function insertReport(): Promise<string> {
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, visibility, h3_cell)
+      VALUES (
+        ${randomUUID()},
+        ST_SetSRID(ST_MakePoint(-118.24, 34.05), 4326),
+        'manual',
+        'trash',
+        'dump',
+        'published',
+        'public',
+        'h0'
+      )
+      RETURNING id
+    `
+    if (!row) throw new Error("failed to insert report fixture")
+    return row.id
+  }
+
   it("applyResult persists served_key alongside the terminal status", async () => {
     const { id, r2Key } = await insertAsset()
 
@@ -64,12 +83,7 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
     const found = await repo.findOrphans(cutoff, 100)
     expect(found.map((o) => o.id)).toContain(id)
 
-    const reportId = randomUUID()
-    await h.sql`
-      INSERT INTO reports (id, category, type, status, visibility, geom)
-      VALUES (${reportId}, 'trash', 'illegal_dumping', 'new', 'public',
-              ST_SetSRID(ST_MakePoint(-118.24, 34.05), 4326))
-    `
+    const reportId = await insertReport()
     await h.sql`UPDATE media_assets SET report_id = ${reportId} WHERE id = ${id}`
 
     expect(await repo.deleteOrphan(id, cutoff)).toBeNull()
@@ -88,12 +102,7 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
       ...repo,
       async findOrphans(olderThan, limit) {
         const rows = await repo.findOrphans(olderThan, limit)
-        const reportId = randomUUID()
-        await h.sql`
-          INSERT INTO reports (id, category, type, status, visibility, geom)
-          VALUES (${reportId}, 'trash', 'illegal_dumping', 'new', 'public',
-                  ST_SetSRID(ST_MakePoint(-118.24, 34.05), 4326))
-        `
+        const reportId = await insertReport()
         await h.sql`UPDATE media_assets SET report_id = ${reportId} WHERE id = ${id}`
         return rows.filter((r) => r.id === id)
       },
