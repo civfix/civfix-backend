@@ -14,6 +14,7 @@ import type { POST_KIND_VALUES } from "../db/schema/types.js"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { goingScalar } from "./cleanup-sql.js"
+import { servedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
@@ -244,7 +245,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         u.follower_count AS followers,
         u.following_count AS following,
         EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-        am.r2_key AS avatar_r2_key,
+        ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.deleted_at,
         EXISTS (
@@ -444,9 +445,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     const out = new Map<string, MediaDTO[]>()
     if (ids.length === 0) return out
     const rows = await sql<MediaRow[]>`
-      SELECT post_id, id, kind, codec, r2_key, thumb_key, status, width, height
+      SELECT post_id, id, kind, codec, served_key AS r2_key, thumb_key, status, width, height
       FROM media_assets
-      WHERE post_id = ANY(${ids}::uuid[]) AND status = 'ready'
+      WHERE post_id = ANY(${ids}::uuid[]) AND status = 'ready' AND served_key IS NOT NULL
       ORDER BY post_id, created_at ASC
     `
     const projected = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {

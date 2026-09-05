@@ -9,6 +9,7 @@ import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
+import { servedKeyExpr } from "./media-served-key.js"
 
 export type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
 
@@ -77,11 +78,6 @@ export interface ChatGroupRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
-  /**
-   * Resolve an avatar uploadId to a media id. `groupId` is the group about to point at it, so a group
-   * re-applying the avatar it already has stays idempotent while every other group is refused a
-   * claimed row (F074); omitted on the create path, where no group exists yet.
-   */
   findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string>
   invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]>
   blockedPairsAmong(userIds: string[]): Promise<Set<string>>
@@ -232,7 +228,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
           a.id AS avatar_id,
           a.kind AS avatar_kind,
           a.codec AS avatar_codec,
-          a.r2_key AS avatar_r2_key,
+          ${servedKeyExpr(sql, "a")} AS avatar_r2_key,
           a.thumb_key AS avatar_thumb_key,
           a.status AS avatar_status,
           a.width AS avatar_width,

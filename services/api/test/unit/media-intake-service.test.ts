@@ -173,19 +173,12 @@ describe("finalize", () => {
     const patched = jobs as unknown as { enqueue: (...a: unknown[]) => Promise<string> }
     patched.enqueue = () => Promise.reject(new Error("queue down"))
 
-    // The rollback this used to do (clearFinalized) revoked a claim whose idempotent success a
-    // CONCURRENT finalize could already have been handed: that caller was told "validating, job queued"
-    // and would then wait forever on a row whose watermark had been nulled behind it - and a bound row
-    // with finalized_at NULL is invisible to BOTH sweeps (findOrphans skips bound rows, the stuck sweep
-    // requires the watermark), so nothing ever reclaimed it. The claim now stands; the row is exactly
-    // the shape the stuck sweep picks up.
     const fin = await service.finalize({ uploadId: created.uploadId }, {})
     expect(fin).toEqual({ mediaId: asset.id, status: "validating" })
     expect((await row(created.uploadId)).finalizedAt).toBeInstanceOf(Date)
     expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
     expect(warnings).toHaveLength(1)
 
-    // ...and the CAS is not replayable, so a client retry cannot mint a second job either.
     const again = await service.finalize({ uploadId: created.uploadId }, {})
     expect(again).toEqual(fin)
     expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(0)
@@ -226,6 +219,7 @@ describe("getMedia", () => {
     const asset = await row(created.uploadId)
     repo.patch(asset.id, {
       status: "ready",
+      servedKey: `processed/${asset.r2Key}`,
       width: 1200,
       height: 800,
       thumbKey: `${asset.r2Key}.thumb`,
@@ -235,10 +229,19 @@ describe("getMedia", () => {
     expect(dto.id).toBe(asset.id)
     expect(dto.kind).toBe("image")
     expect(dto.status).toBe("ready")
-    expect(dto.url).toBe(`memory://${asset.r2Key}`)
+    expect(dto.url).toBe(`memory://processed/${asset.r2Key}`)
     expect(dto.thumbUrl).toBe(`memory://${asset.r2Key}.thumb`)
     expect(dto.width).toBe(1200)
     expect(dto.height).toBe(800)
+  })
+
+  it("C1: 404s a ready asset whose served_key is NULL instead of falling back to the upload key", async () => {
+    const { repo, service, row } = makeHarness()
+    const created = await service.createUpload(imageReq(), {})
+    const asset = await row(created.uploadId)
+    repo.patch(asset.id, { status: "ready", servedKey: null, width: 100, height: 100 })
+
+    await expect(service.getMedia(asset.id, {})).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
   it("404s for not-yet-ready media (validating) via the public path", async () => {

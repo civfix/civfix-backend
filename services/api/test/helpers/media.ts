@@ -21,14 +21,12 @@ export class InMemoryMediaRepository implements MediaRepository {
       kind: row.kind,
       codec: null,
       r2Key: row.r2Key,
+      servedKey: null,
       thumbKey: null,
       status: row.status,
       width: null,
       height: null,
       byteSize: row.byteSize,
-      // Bindings (H9): an in-memory row starts UNBOUND, exactly like a freshly presigned upload. Tests
-      // that need a bound asset set these via patch(). createdAt is stamped so the service's
-      // unbound-only authorizer can evaluate the pre-commit capability window.
       reportId: null,
       chatMessageId: null,
       postId: null,

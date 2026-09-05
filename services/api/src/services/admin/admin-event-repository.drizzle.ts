@@ -295,9 +295,10 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         FROM cleanup_reports cr
         JOIN reports r ON r.id = cr.report_id
         LEFT JOIN LATERAL (
-          SELECT COALESCE(ma.thumb_key, ma.r2_key) AS thumb_key
+          SELECT COALESCE(ma.thumb_key, ma.served_key) AS thumb_key
           FROM media_assets ma
           WHERE ma.report_id = r.id AND ma.status = 'ready'
+            AND (ma.thumb_key IS NOT NULL OR ma.served_key IS NOT NULL)
           ORDER BY ma.created_at ASC
           LIMIT 1
         ) m ON true

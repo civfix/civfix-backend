@@ -8,12 +8,6 @@ import { InMemoryMediaRepository } from "../helpers/media.js"
 import { MEDIA_CHECKS_JOB } from "../../src/services/media-intake-service.js"
 import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
 
-/**
- * Route-level tests for the media plugin, run with NO database: an in-memory MediaRepository is
- * injected into buildServer (opts.mediaRepo) and the container's storage/jobs are the default fakes.
- * Exercised through the real Fastify app via app.inject. The DB-backed Drizzle repo is covered by the
- * Docker-gated integration test instead.
- */
 
 const SHA = "b".repeat(64)
 
@@ -72,8 +66,6 @@ describe("POST /media/upload", () => {
       url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/jpeg", byteSize: MAX_IMAGE_BYTES + 1, sha256: SHA },
     })
-    // The shared schema caps byteSize at MAX_VIDEO_BYTES and the superRefine enforces the per-kind cap,
-    // so an oversize-for-image (but <= video cap) value is a VALIDATION (422) failure at the boundary.
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
     expect(repo.byId.size).toBe(0)
@@ -86,7 +78,6 @@ describe("POST /media/upload", () => {
       url: "/v1/media/upload",
       payload: { kind: "image", contentType: "image/gif", byteSize: 1024, sha256: SHA },
     })
-    // contentType shape passes the schema (any non-empty string), so the service's allowlist rejects it.
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("MEDIA_REJECTED")
     expect(repo.byId.size).toBe(0)
@@ -106,13 +97,8 @@ describe("POST /media/upload", () => {
 
 describe("media byte quota wiring", () => {
   it("charges through container.getByteMeter() when Redis is configured (one shared client)", async () => {
-    // M10's daily quota used to run on a RedisByteMeter the route built itself, so container.close()'s
-    // reset of the shared client protected nothing. Pin the wiring: with a Redis-configured container and
-    // no injected meter, createUpload must charge through the container's meter.
     const env = loadEnv({ NODE_ENV: "test" })
     const charges: { subject: string; bytes: number }[] = []
-    // The SERVER sees an env with no Redis (in-memory limiter, no connection opened) while the CONTAINER
-    // reports a REDIS_URL — that is exactly the branch production takes in redisFallbackMeter().
     const container = {
       ...buildContainer(env),
       env: { ...env, REDIS_URL: "redis://cache:6379" },
@@ -143,9 +129,6 @@ describe("media byte quota wiring", () => {
   })
 
   it("F016: a rotating civfix_anon cookie still charges the caller's IP bucket on every request", async () => {
-    // resolveAuthContext lifts the RAW civfix_anon cookie into auth.anonSessionId with no store lookup,
-    // so the cookie is attacker-chosen. The quota must therefore charge ip: on EVERY anon request; when
-    // the anon lane was preferred, each rotation minted a fresh 512 MB/day bucket.
     const env = loadEnv({ NODE_ENV: "test" })
     const charges: { subject: string; bytes: number }[] = []
     const container = {
@@ -195,7 +178,6 @@ describe("POST /media/:uploadId/finalize", () => {
     })
     const { uploadId } = createRes.json()
     const row = await repo.findByUploadId(uploadId)
-    // Simulate the direct-to-R2 PUT having landed.
     await storage.put(row!.r2Key, new Uint8Array(2048), { contentType: "image/jpeg" })
 
     const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
@@ -203,10 +185,8 @@ describe("POST /media/:uploadId/finalize", () => {
     const fin = finRes.json()
     expect(fin.status).toBe("validating")
     expect(fin.mediaId).toBe(row!.id)
-    // The row stays VALIDATING until the worker strips EXIF/GPS + runs moderation, then promotes to ready.
     expect((await repo.findByUploadId(uploadId))!.status).toBe("validating")
 
-    // finalize enqueues exactly one media.checks job (deduped by uploadId) for the worker to process.
     const enqueued = jobs.jobsFor(MEDIA_CHECKS_JOB)
     expect(enqueued).toHaveLength(1)
     expect(enqueued[0]?.data).toMatchObject({ uploadId })
@@ -239,14 +219,19 @@ describe("GET /media/:id", () => {
     })
     const { uploadId } = createRes.json()
     const row = await repo.findByUploadId(uploadId)
-    repo.patch(row!.id, { status: "ready", width: 640, height: 480 })
+    repo.patch(row!.id, {
+      status: "ready",
+      servedKey: `processed/${row!.r2Key}`,
+      width: 640,
+      height: 480,
+    })
 
     const res = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(res.statusCode).toBe(200)
     const dto = res.json()
     expect(dto.id).toBe(row!.id)
     expect(dto.status).toBe("ready")
-    expect(dto.url).toBe(`memory://${row!.r2Key}`)
+    expect(dto.url).toBe(`memory://processed/${row!.r2Key}`)
     expect(dto.width).toBe(640)
   })
 
