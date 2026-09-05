@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import { flushNotificationDispatch } from "../helpers/notifications.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeSocialService } from "../../src/services/social-service.js"
@@ -391,6 +392,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       },
     )
 
+    await flushNotificationDispatch()
     const pushed = new Set(push.sent.map((s) => s.userId))
     expect(pushed.has(optedIn)).toBe(true)
     expect(pushed.has(noRow)).toBe(true)

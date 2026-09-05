@@ -10,6 +10,10 @@ import type {
 } from "../../src/services/social-service.js"
 import type { CleanupRecord } from "../../src/services/cleanup-service.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../src/db/cursor-helpers.js"
+import {
+  SUGGEST_CANDIDATE_POOL,
+  SUGGEST_CANDIDATE_RADIUS_DEG,
+} from "../../src/services/social-repository.drizzle.js"
 
 interface StoredUser {
   id: string
@@ -19,11 +23,6 @@ interface StoredUser {
   deletedAt: Date | null
   verified?: boolean
   avatarUrl?: string | null
-  /**
-   * P6 hours privacy — the users.show_volunteer_hours TRI-STATE (C18). Seeds as `null` ("never chosen"),
-   * which is what every account that predates the column has, so the default fixture reproduces the
-   * pre-column response shape rather than an opted-in one.
-   */
   showVolunteerHours?: boolean | null
 }
 
@@ -43,15 +42,6 @@ export class InMemorySocialRepository implements SocialRepository {
   readonly cleanups: StoredCleanup[] = []
   readonly reportCounts = new Map<string, number>()
   readonly fixedReportCounts = new Map<string, number>()
-  /**
-   * Denormalized follow totals, mirroring users.follower_count / users.following_count
-   * (drizzle/0059_users_follow_counters.sql). The Drizzle repo maintains these next to the edge write and
-   * moves them ONLY when the INSERT/DELETE actually changed a row, so the fake keeps its own counters
-   * instead of re-deriving them from `follows`: a fake that recomputes can never disagree with itself, and
-   * "an idempotent re-follow does not double count" is precisely the invariant worth mirroring. Like the
-   * real columns these count edges to/from soft-deleted users (nothing clears follows_people on a
-   * tombstone), which is why a roster can be shorter than the count beside it.
-   */
   readonly followerCounts = new Map<string, number>()
   readonly followingCounts = new Map<string, number>()
 
@@ -77,8 +67,6 @@ export class InMemorySocialRepository implements SocialRepository {
     }
   }
 
-  /** One edge's effect on the two denormalized totals: +1/-1 on the followee's followers and the
-   * follower's following. Clamped at 0 like the SQL's GREATEST(x - 1, 0). */
   private bumpCounters(followerId: string, followeeId: string, delta: number): void {
     this.followerCounts.set(followeeId, Math.max((this.followerCounts.get(followeeId) ?? 0) + delta, 0))
     this.followingCounts.set(followerId, Math.max((this.followingCounts.get(followerId) ?? 0) + delta, 0))
@@ -121,9 +109,6 @@ export class InMemorySocialRepository implements SocialRepository {
     let all = [...this.users.values()].filter((u) => {
       if (u.deletedAt !== null) return false
       if (args.viewerId !== null && u.id === args.viewerId) return false
-      // M-people-blocks: people SEARCH carries the same SYMMETRIC block filter as connections,
-      // suggestions and the feeds (social-repository.drizzle.ts listPeople) — a blocked OR blocking
-      // account must not surface here. Anonymous viewers have no block rows, so the gate is skipped.
       if (args.viewerId !== null && this.isBlockedEitherWay(args.viewerId, u.id)) return false
       if (q !== null) {
         const inHandle = u.handle !== null && u.handle.toLowerCase().includes(q)
@@ -160,21 +145,18 @@ export class InMemorySocialRepository implements SocialRepository {
     return Promise.resolve({ items, nextCursor })
   }
 
-  /** Users the viewer has blocked / been blocked by (either way), excluded from search + suggestions. */
   readonly blockedPairs: Array<{ a: string; b: string }> = []
 
   seedBlock(a: string, b: string): void {
     this.blockedPairs.push({ a, b })
   }
 
-  /** The `user_blocks` symmetric NOT EXISTS the people surfaces share, as one predicate. */
   private isBlockedEitherWay(viewerId: string, otherId: string): boolean {
     return this.blockedPairs.some(
       (p) => (p.a === viewerId && p.b === otherId) || (p.a === otherId && p.b === viewerId),
     )
   }
 
-  /** The user's most recent activity point (their latest cleanup, organized or attended). */
   private activityPoint(userId: string, organizedOnly: boolean): { lat: number; lng: number } | null {
     const mine = this.cleanups
       .filter((c) =>
@@ -187,19 +169,23 @@ export class InMemorySocialRepository implements SocialRepository {
     return rec ? { lat: rec.lat, lng: rec.lng } : null
   }
 
+  private activityAt(userId: string): Date | null {
+    const mine = this.cleanups
+      .filter((c) => c.record.organizerUserId === userId)
+      .sort((a, b) => b.record.createdAt.getTime() - a.record.createdAt.getTime())
+    return mine[0]?.record.createdAt ?? null
+  }
+
   private isOrganizer(userId: string): boolean {
     return this.cleanups.some((c) => c.record.organizerUserId === userId)
   }
 
-  /**
-   * In-memory mirror of the drizzle suggestFollows ranking (nearby organizers > nearby > organizers >
-   * rest; within a tier closer first, then follower count). Locations come from seeded cleanups.
-   */
   suggestFollows(args: {
     viewerId: string
     limit: number
   }): Promise<Array<PersonView & { isFollowing: boolean }>> {
     const NEARBY_METERS = 25_000
+    const RADIUS_METERS = SUGGEST_CANDIDATE_RADIUS_DEG * 111_320
     const viewerPoint = this.activityPoint(args.viewerId, false)
     const haversine = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): number => {
       const toRad = (d: number): number => (d * Math.PI) / 180
@@ -210,39 +196,55 @@ export class InMemorySocialRepository implements SocialRepository {
         Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
       return 2 * 6371000 * Math.asin(Math.sqrt(s))
     }
-    const candidates = [...this.users.values()]
-      .filter((u) => {
-        if (u.deletedAt !== null || u.handle === null || u.id === args.viewerId) return false
-        if (this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id)) {
-          return false
-        }
-        if (this.isBlockedEitherWay(args.viewerId, u.id)) return false
-        return true
-      })
-      .map((u) => {
-        const point = this.activityPoint(u.id, true)
-        const meters = viewerPoint && point ? haversine(viewerPoint, point) : null
-        return {
-          u,
-          meters,
-          near: meters !== null && meters <= NEARBY_METERS,
-          organizer: this.isOrganizer(u.id),
-        }
-      })
+    const eligible = [...this.users.values()].filter((u) => {
+      if (u.deletedAt !== null || u.handle === null || u.id === args.viewerId) return false
+      if (this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id)) {
+        return false
+      }
+      if (this.isBlockedEitherWay(args.viewerId, u.id)) return false
+      return true
+    })
+    const scored = eligible.map((u) => {
+      const point = this.activityPoint(u.id, true)
+      const meters = viewerPoint && point ? haversine(viewerPoint, point) : null
+      return {
+        u,
+        point,
+        at: this.activityAt(u.id),
+        meters,
+        near: meters !== null && meters <= NEARBY_METERS,
+        organizer: this.isOrganizer(u.id),
+      }
+    })
+    const nearPool =
+      viewerPoint === null
+        ? []
+        : scored
+            .filter((c) => c.point !== null && c.meters !== null && c.meters <= RADIUS_METERS)
+            .sort((a, b) => (a.meters ?? 0) - (b.meters ?? 0))
+            .slice(0, SUGGEST_CANDIDATE_POOL)
+    const recentPool = scored
+      .filter((c) => c.at !== null)
+      .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
+      .slice(0, SUGGEST_CANDIDATE_POOL)
+    const newPool = [...scored].reverse().slice(0, SUGGEST_CANDIDATE_POOL)
+    const pool = new Map<string, (typeof scored)[number]>()
+    for (const c of [...nearPool, ...recentPool, ...newPool]) pool.set(c.u.id, c)
+
+    const ranked = [...pool.values()]
       .sort((a, b) => {
-        const tier = (c: typeof a): number =>
+        const tier = (c: (typeof scored)[number]): number =>
           c.near && c.organizer ? 0 : c.near ? 1 : c.organizer ? 2 : 3
         if (tier(a) !== tier(b)) return tier(a) - tier(b)
         const da = a.meters ?? Number.POSITIVE_INFINITY
         const db = b.meters ?? Number.POSITIVE_INFINITY
         if (da !== db) return da - db
-        // The SQL sorts on the denormalized users.follower_count, so the fake sorts on its mirror.
         const fa = this.followerCounts.get(a.u.id) ?? 0
         const fb = this.followerCounts.get(b.u.id) ?? 0
         return fb - fa
       })
       .slice(0, args.limit)
-    return Promise.resolve(candidates.map((c) => ({ ...this.toView(c.u), isFollowing: false })))
+    return Promise.resolve(ranked.map((c) => ({ ...this.toView(c.u), isFollowing: false })))
   }
 
   listFollowers(args: {
@@ -331,8 +333,6 @@ export class InMemorySocialRepository implements SocialRepository {
     const already = this.follows.some(
       (f) => f.followerId === followerId && f.followeeId === followeeId,
     )
-    // Counters move ONLY on a real insert — the Drizzle repo's bump is gated on
-    // `ON CONFLICT DO NOTHING ... RETURNING` having produced a row for exactly this reason.
     if (already) return Promise.resolve({ exists: true, created: false })
     this.follows.push({ followerId, followeeId })
     this.bumpCounters(followerId, followeeId, 1)
@@ -345,7 +345,6 @@ export class InMemorySocialRepository implements SocialRepository {
     const idx = this.follows.findIndex(
       (f) => f.followerId === followerId && f.followeeId === followeeId,
     )
-    // ... and only on a real delete: a repeated unfollow is a no-op, not a decrement.
     if (idx >= 0) {
       this.follows.splice(idx, 1)
       this.bumpCounters(followerId, followeeId, -1)
@@ -433,6 +432,7 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
     lat: over.lat ?? 34.0,
     lng: over.lng ?? -118.49,
     scheduledAt: over.scheduledAt ?? new Date("2025-01-01T10:00:00.000Z"),
+    completedAt: over.completedAt ?? null,
     status: over.status ?? "done",
     bring: over.bring ?? null,
     address: over.address ?? null,
