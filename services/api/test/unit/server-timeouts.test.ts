@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify"
 import { buildServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { makeDb } from "../../src/db/client.js"
+import { REQUEST_TIMEOUT_MS, SHUTDOWN_CLOSE_WAIT_MS } from "../../src/lifecycle.js"
 
 let app: FastifyInstance | undefined
 
@@ -33,5 +34,14 @@ describe("server timeout ordering (F029)", () => {
     expect(requestTimeout).toBeGreaterThanOrEqual(statementTimeout)
     expect(socketTimeout).toBeGreaterThan(statementTimeout)
     await handle.close()
+  })
+
+  it("never force-closes connections, and bounds the shutdown close wait by the request budget", async () => {
+    app = await buildServer({ env: loadEnv() })
+    // Fastify's default ('idle') calls closeAllConnections() on close, destroying sockets with a
+    // request STILL IN FLIGHT - the exact dropped request the SIGTERM drain exists to prevent.
+    expect(app.initialConfig.forceCloseConnections).toBe(false)
+    expect(app.server.requestTimeout).toBe(REQUEST_TIMEOUT_MS)
+    expect(SHUTDOWN_CLOSE_WAIT_MS).toBe(app.server.requestTimeout)
   })
 })

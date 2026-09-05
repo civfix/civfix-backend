@@ -28,6 +28,7 @@ describe("health routes", () => {
     expect(body.service).toBe("civfix-api")
     // L19: the build version is NOT disclosed to unauthenticated callers.
     expect(body.version).toBeUndefined()
+    expect(res.headers["cache-control"]).toBe("no-store")
   })
 
   it("L19: /readyz is rate limited (no longer on the limiter allowlist), /healthz is not", async () => {
@@ -35,6 +36,7 @@ describe("health routes", () => {
     const ready = await app.inject({ method: "GET", url: "/readyz" })
     // The limiter ran => it emitted its headers. /healthz stays exempt so liveness never 429s.
     expect(ready.headers["x-ratelimit-limit"]).toBeDefined()
+    expect(ready.headers["cache-control"]).toBe("no-store")
     const live = await app.inject({ method: "GET", url: "/healthz" })
     expect(live.headers["x-ratelimit-limit"]).toBeUndefined()
   })

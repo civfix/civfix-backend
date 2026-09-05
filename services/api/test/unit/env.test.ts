@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest"
-import { loadEnv, REVIEWER_OTP_CODE_MIN_LENGTH } from "../../src/env.js"
+import {
+  loadEnv,
+  REVIEWER_OTP_CODE_MIN_LENGTH,
+  SHUTDOWN_DRAIN_MS_MAX,
+} from "../../src/env.js"
 
 function validProdEnv(): NodeJS.ProcessEnv {
   return {
@@ -332,5 +336,22 @@ describe("loadEnv", () => {
     }
     expect(caught).toBeDefined()
     expect(caught!.message).toContain("PORT")
+  })
+
+  it("defaults SHUTDOWN_DRAIN_MS to 0 in every environment and clamps a configured value", () => {
+    // OFF by default on purpose: a drain longer than the container's stop_grace_period is worse than
+    // no drain, and that grace period lives in civfix-infra. See env/parsers.parseDrainMs.
+    expect(loadEnv(validProdEnv()).SHUTDOWN_DRAIN_MS).toBe(0)
+    expect(loadEnv({ NODE_ENV: "test" }).SHUTDOWN_DRAIN_MS).toBe(0)
+    expect(loadEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_MS: "3500" }).SHUTDOWN_DRAIN_MS).toBe(3500)
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "8000" }).SHUTDOWN_DRAIN_MS).toBe(8000)
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "12000" }).SHUTDOWN_DRAIN_MS).toBe(
+      SHUTDOWN_DRAIN_MS_MAX,
+    )
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "600000" }).SHUTDOWN_DRAIN_MS).toBe(
+      SHUTDOWN_DRAIN_MS_MAX,
+    )
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "-1" }).SHUTDOWN_DRAIN_MS).toBe(0)
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "nope" }).SHUTDOWN_DRAIN_MS).toBe(0)
   })
 })
