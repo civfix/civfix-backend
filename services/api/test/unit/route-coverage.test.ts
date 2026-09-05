@@ -179,8 +179,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 210 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(210)
+  it("covers ALL 211 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(211)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {
