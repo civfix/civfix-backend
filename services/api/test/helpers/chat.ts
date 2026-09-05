@@ -15,17 +15,14 @@ import {
   replyWrongRoom,
 } from "../../src/services/chat-reply-hydration.js"
 import { aroundLimits } from "../../src/services/chat-history-window.js"
+import { toTombstoneDTO } from "../../src/services/chat-tombstone.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
 import type { TimeCursor } from "../../src/db/cursor-helpers.js"
 
 interface StoredMessage {
   dto: ChatMessageDTO
   deleted: boolean
-  /**
-   * REAL wall-clock insertion time. The dto's createdAt rides the deterministic 2026-01-01 tick clock
-   * (stable ordering for assertions), which would make every fake message look months old to the
-   * chat-edit-service EDIT_WINDOW_HOURS gate; findMessageMeta reports this instead.
-   */
+  deletedAt?: Date
   insertedAtMs: number
 }
 
@@ -51,10 +48,6 @@ export class InMemoryChatRepository implements ChatRepository {
     return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
   }
 
-  /**
-   * Recompute the reply preview for a target id from the CURRENT store state (mirrors the drizzle
-   * hydration: tombstoned target -> deleted:true + excerpt ""; excerpt = first 120 chars of body).
-   */
   private replyToFor(roomId: string, replyToId: string): ReplyToDTO | null {
     const stored = (this.log.get(roomId) ?? []).find((m) => m.dto.id === replyToId)
     if (!stored) return null
@@ -67,15 +60,12 @@ export class InMemoryChatRepository implements ChatRepository {
     }
   }
 
-  /** Project a stored DTO with its live reply preview (no-op for non-replies). */
   private withReply(roomId: string, dto: ChatMessageDTO): ChatMessageDTO {
     if (dto.replyToId == null) return dto
     return { ...dto, replyTo: this.replyToFor(roomId, dto.replyToId) }
   }
 
   insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO> {
-    // Reply validation (P2), mirroring the drizzle repo: target must exist in THIS room (else 422
-    // reply_wrong_room) and not be tombstoned (else 422 reply_deleted_target).
     if (input.replyToId !== undefined) {
       const target = (this.log.get(input.cleanupId) ?? []).find((m) => m.dto.id === input.replyToId)
       if (!target) return Promise.reject(replyWrongRoom())
@@ -127,8 +117,6 @@ export class InMemoryChatRepository implements ChatRepository {
   ): Promise<ChatHistoryPage> {
     if (around !== undefined) return this.historyAround(cleanupId, around, limit)
     const allDesc = [...(this.log.get(cleanupId) ?? [])].reverse()
-    // Anchor resolves against ALL rows, tombstones included (2.4 review): the anchor is only a keyset
-    // position, so a deleted cursor id still pages correctly instead of falling back to the newest page.
     let afterAnchor = allDesc
     if (before !== undefined) {
       const idx = allDesc.findIndex((m) => m.dto.id === before)
@@ -140,12 +128,6 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve({ items: page, nextCursor })
   }
 
-  /**
-   * Around-mode window (P2 2.4), mirroring the drizzle semantics: ceil(limit/2) at-or-older rows (the
-   * target INCLUDED — even a tombstoned target anchors, riding as a tombstone while every OTHER deleted
-   * row stays filtered) + floor(limit/2) strictly newer, newest-first. nextCursor = older end,
-   * prevCursor = newer end (null when that side reaches the edge). Missing/foreign-room target -> 404.
-   */
   private historyAround(roomId: string, around: string, limit: number): Promise<ChatHistoryPage> {
     const all = this.log.get(roomId) ?? []
     if (!all.some((m) => m.dto.id === around)) {
@@ -159,9 +141,7 @@ export class InMemoryChatRepository implements ChatRepository {
     const items = window.map((m) =>
       this.withReply(
         roomId,
-        // The store keeps a deleted boolean, not a timestamp; stamp a deletedAt so the tombstone
-        // projects like a drizzle tombstone row.
-        m.deleted ? { ...m.dto, deletedAt: new Date(m.insertedAtMs).toISOString() } : m.dto,
+        m.deleted ? toTombstoneDTO(m.dto, m.deletedAt ?? new Date(m.insertedAtMs)) : m.dto,
       ),
     )
     return Promise.resolve({
@@ -217,9 +197,6 @@ export class InMemoryChatRepository implements ChatRepository {
   }
 
   findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {
-    // Id-only scan across rooms (mirrors the drizzle id-only seek), INCLUDING soft-deleted entries. The
-    // store keys BOTH cleanup and report rooms by their room id in `log`; roomKind on the stored DTO tells
-    // them apart (insertMessage stamps roomKind:"report" for report rows).
     for (const [roomId, list] of this.log) {
       const stored = list.find((m) => m.dto.id === messageId)
       if (stored) {
@@ -232,9 +209,7 @@ export class InMemoryChatRepository implements ChatRepository {
           groupId: isGroup ? roomId : null,
           senderId: stored.dto.from?.id ?? null,
           kind: stored.dto.kind,
-          // Real insertion time, NOT the deterministic dto clock (see StoredMessage.insertedAtMs).
           createdAt: new Date(stored.insertedAtMs),
-          // The store keeps a boolean, not a tombstone timestamp; any non-null Date marks "deleted".
           deletedAt: stored.deleted ? new Date(stored.insertedAtMs) : null,
         })
       }
@@ -248,7 +223,6 @@ export class InMemoryChatRepository implements ChatRepository {
     senderId: string,
     body: string,
   ): Promise<ChatMessageDTO | null> {
-    // Same WHERE gate as softDelete (sender-only, room-scoped, not deleted) but SET body + editedAt.
     const list = this.log.get(cleanupId)
     const found = list?.find((m) => m.dto.id === messageId)
     if (!found || found.deleted || found.dto.from?.id !== senderId) return Promise.resolve(null)
@@ -280,28 +254,20 @@ export class InMemoryChatRepository implements ChatRepository {
     const list = this.log.get(cleanupId)
     const found = list?.find((m) => m.dto.id === messageId)
     if (!found || found.deleted) return Promise.resolve(null)
-    // Sender gate (mirrors the drizzle WHERE): sender-only by default; a moderator bypass (Task 3.5)
-    // still refuses sender-less SYSTEM rows. Test-registered senders always populate `from`;
-    // optional-chain to satisfy the nullable contract type.
     if (opts?.bypassSenderGate) {
       if (found.dto.from == null) return Promise.resolve(null)
     } else if (found.dto.from?.id !== senderId) {
       return Promise.resolve(null)
     }
     found.deleted = true
-    const tombstone: ChatMessageDTO = {
-      ...found.dto,
-      deletedAt: this.nextDate().toISOString(),
-      mine: found.dto.from?.id === senderId,
-    }
+    found.deletedAt = this.nextDate()
+    const tombstone = toTombstoneDTO(
+      { ...found.dto, mine: found.dto.from?.id === senderId },
+      found.deletedAt,
+    )
     return Promise.resolve(this.withReply(cleanupId, tombstone))
   }
 
-  /**
-   * Pin/unpin (P3), mirroring the drizzle gate: room-scoped, live, non-system, and only an ACTUAL state
-   * change flips pinnedAt (a repeat pin keeps the original stamp). Returns the CURRENT DTO either way;
-   * null when missing/deleted.
-   */
   setPinned(
     roomId: string,
     messageId: string,
@@ -330,7 +296,6 @@ export class InMemoryChatRepository implements ChatRepository {
     return this.setPinned(reportId, messageId, userId, pinned)
   }
 
-  /** The room's pins, newest-pin first, capped at PIN_LIST_CAP (mirrors the drizzle partial-index query). */
   listPins(roomId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
     const pins = (this.log.get(roomId) ?? [])
       .filter((m) => !m.deleted && m.dto.pinnedAt != null)
@@ -385,8 +350,6 @@ export class InMemoryChatRepository implements ChatRepository {
     return Promise.resolve(this.count(reportId))
   }
 
-  // P4 group-room twins: like the report twins above, the store keys every room by its room id, so
-  // the group methods delegate to the shared room-scoped implementations.
   groupHistory(
     groupId: string,
     before: string | undefined,
@@ -472,15 +435,6 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
       ?.messages.push({ ...msg, deleted: msg.deleted ?? false })
   }
 
-  /**
-   * Mirrors the Drizzle repository's keyset page (listThreadFamily): order by
-   * `activity = COALESCE(last message created_at, joined_at)` DESC then room id DESC, and — when a cursor
-   * is supplied — keep only rows strictly before it in that same order.
-   *
-   * The cursor MUST be honored: threads-service pushes it into every family and then re-filters the merged
-   * page with the identical (activity, id) predicate. A family that ignores it re-offers rows the caller
-   * already saw, they lose the re-filter, and page 2+ of the offline inbox silently under-fetches.
-   */
   listThreadsFor(
     userId: string,
     limit: number,
@@ -508,8 +462,6 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
     }
     const activityOf = (t: ThreadAggregate): number =>
       t.last?.createdAt.getTime() ?? t.joinedAt.getTime()
-    // (activity, id) DESC — the id tiebreak matters exactly when two rooms share an activity instant,
-    // which is the case a cursor has to survive.
     out.sort((a, b) => {
       const cmp = activityOf(b) - activityOf(a)
       if (cmp !== 0) return cmp
@@ -521,9 +473,6 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
         : out.filter((t) => {
             const activity = activityOf(t)
             const at = cursor.at.getTime()
-            // The SQL's bound is deliberately loose (`< at + 1ms`) because created_at is
-            // microsecond-resolution there; a JS Date is already millisecond-resolution, so the loose
-            // term reduces to `activity <= at` and the strict row-value comparison does the real work.
             return activity <= at && (activity < at || t.cleanupId < cursor.id)
           })
     return Promise.resolve(page.slice(0, limit))

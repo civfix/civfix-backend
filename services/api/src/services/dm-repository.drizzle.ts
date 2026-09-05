@@ -25,6 +25,7 @@ import {
   roomSetPinned,
   type RoomScopeSql,
 } from "./chat-room-scope.drizzle.js"
+import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
 
 export interface DmThread {
   id: string
@@ -149,6 +150,19 @@ function toMessageDTO(
   attachments: MediaDTO[] = [],
   replyTo?: ReplyToDTO | null,
 ): ChatMessageDTO {
+  const dto = buildMessageDTO(r, reactions, mentions, viewerUserId, clientId, attachments, replyTo)
+  return r.deleted_at !== null ? toTombstoneDTO(dto, r.deleted_at) : dto
+}
+
+function buildMessageDTO(
+  r: DmRowSelect,
+  reactions: ReactionSummaryDTO[],
+  mentions: UserMentionDTO[],
+  viewerUserId?: string | null,
+  clientId?: string,
+  attachments: MediaDTO[] = [],
+  replyTo?: ReplyToDTO | null,
+): ChatMessageDTO {
   const author = publicAuthorIdentity({
     id: r.sender_id,
     displayName: r.sender_display_name,
@@ -235,7 +249,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     page: DmRowSelect[],
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO[]> {
-    const ids = page.map((r) => r.id)
+    const ids = liveMessageIds(page)
     const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
       await Promise.all([
         presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
@@ -257,10 +271,11 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
   }
 
   async function hydrateDmRow(row: DmRowSelect, viewerUserId: string | null): Promise<ChatMessageDTO> {
+    const liveIds = liveMessageIds([row])
     const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
-      loadChatReactions(sql, row.id, viewerUserId),
-      loadChatMentions(sql, row.id),
-      presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+      liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
+      liveIds.length > 0 ? loadChatMentions(sql, row.id) : Promise.resolve([]),
+      presign ? loadChatAttachments(sql, liveIds, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
       replyMapForRows(sql, "dm_messages", [row]),
     ])
     return toMessageDTO(
@@ -450,7 +465,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       if (!row) return null
       const replyByTarget = await replyMapForRows(sql, "dm_messages", [row])
       return toMessageDTO(
-        { ...row, body: null },
+        row,
         [],
         [],
         senderId,

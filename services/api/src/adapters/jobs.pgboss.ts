@@ -18,6 +18,7 @@ export const API_QUEUE_NAMES = [
   "cleanup.cancel.fanout",
   "cleanup.guest.update.fanout",
   "guest.retention.sweep",
+  "chat.room.fanout",
 ] as const
 
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
