@@ -1,8 +1,13 @@
 import type { FastifyInstance } from "fastify"
-import { start, makeShutdown } from "./server.js"
+import { start } from "./server.js"
+import { makeShutdown } from "./lifecycle.js"
 
 function installProcessFaultHandlers(app: FastifyInstance): void {
-  const shutdown = makeShutdown(app, { exitCode: 1 })
+  const shutdown = makeShutdown(app, {
+    drainMs: app.container.env.SHUTDOWN_DRAIN_MS,
+    closeContainer: () => app.container.close(),
+    exitCode: 1,
+  })
   const fatal = (err: unknown, source: string): void => {
     app.log.error({ err, source }, "fatal: unhandled process error, draining")
     void shutdown(source).catch(() => process.exit(1))

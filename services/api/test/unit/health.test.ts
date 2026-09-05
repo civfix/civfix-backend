@@ -23,12 +23,14 @@ describe("health routes", () => {
     expect(body.ok).toBe(true)
     expect(body.service).toBe("civfix-api")
     expect(body.version).toBeUndefined()
+    expect(res.headers["cache-control"]).toBe("no-store")
   })
 
   it("L19: /readyz is rate limited (no longer on the limiter allowlist), /healthz is not", async () => {
     app = await buildServer({ env: loadEnv() })
     const ready = await app.inject({ method: "GET", url: "/readyz" })
     expect(ready.headers["x-ratelimit-limit"]).toBeDefined()
+    expect(ready.headers["cache-control"]).toBe("no-store")
     const live = await app.inject({ method: "GET", url: "/healthz" })
     expect(live.headers["x-ratelimit-limit"]).toBeUndefined()
   })

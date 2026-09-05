@@ -244,7 +244,7 @@ The app now fails closed on several of these — it will **refuse to boot** rath
 6. **`OAUTH_REQUIRE_NONCE`** — leave unset (off) until a nonce-sending mobile build is the store floor, then flip it to `true`. Turning it on early 422s native sign-in for every older install.
 7. **`WS_ALLOW_QUERY_TOKEN` must stay unset.** It is the break-glass switch re-enabling the leaking `?token=` WS path for store-shipped mobile builds that predate the fix.
 8. **Reconcile operator accounts against `ADMIN_EMAILS` before deploying.** `ADMIN_EMAILS` is now the sole source of operator truth, re-checked on every admin request (60s cache). Any operator whose `users.email` is absent from it gets 403 on every admin route within a minute of deploy. Run `SELECT email FROM users WHERE role='operator'` and diff. Watch for NULL emails and case/alias mismatches (the check is trim+lowercase exact match, no plus-address normalization). Operators can no longer be created or removed from the console — onboarding is `ADMIN_EMAILS` + Access sign-in.
-9. **Migrations to apply manually on the box** (deploy does not auto-migrate). Wave 1 added `drizzle/0052_cleanup_bans.sql` and `drizzle/0053_volunteer_hours_audit.sql`; wave 2 added four more (`0054`–`0057`), one of which the new code HARD-DEPENDS on; wave 3 added `0058_sessions_created_at.sql` (the M3 session backfill) and `0059_users_follow_counters.sql`, a SECOND hard dependency — without it every people-facing read fails on an undefined column. All forward-only, and idempotent on re-apply. The full list, ordering constraints and failure signatures are in the operator runbook at the end of this document.
+9. **Migrations shipped with this change set** (CORRECTED 2026-09-04: the deploy DOES apply them — the compose `migrate` one-shot runs `node dist/db/migrate.js` before `seed`/`api`/`media-worker`, all three gated on `service_completed_successfully`, so a failed migration blocks the release rather than letting the new images run on the old schema. There is no manual step; the sections below are the failure-signature reference.) Wave 1 added `drizzle/0052_cleanup_bans.sql` and `drizzle/0053_volunteer_hours_audit.sql`; wave 2 added four more (`0054`–`0057`), one of which the new code HARD-DEPENDS on; wave 3 added `0058_sessions_created_at.sql` (the M3 session backfill) and `0059_users_follow_counters.sql`, a SECOND hard dependency — without it every people-facing read fails on an undefined column. All forward-only, and idempotent on re-apply. The full list, ordering constraints and failure signatures are in the operator runbook at the end of this document.
 
 ## Coordinated client releases required
 
@@ -311,12 +311,14 @@ can prove: a test written against either one is asserting behavior production do
 
 Everything an operator has to do by hand, in order, plus the two infra facts and the local-verification recipe that the change set assumes. Read this together with "Operator actions required BEFORE the next deploy" above — that section covers env vars, this one covers schema, infra and verification.
 
-## 1. Manual migrations, in this order, BEFORE the new images run
+## 1. Migrations, in this order, applied BEFORE the new images run
 
-`src/db/migrate.ts` sorts `drizzle/*.sql` **lexically** and records applied files in `_civfix_migrations`; there is no journal file, so a filename alone enrolls a migration. The production deploy (`infra/ops/deploy.sh` on the box) does **not** run it — apply them explicitly:
+`src/db/migrate.ts` sorts `drizzle/*.sql` **lexically** and records applied files in `_civfix_migrations`; there is no journal file, so a filename alone enrolls a migration.
+
+**CORRECTED 2026-09-04 — the production deploy runs this automatically.** The compose `migrate` one-shot (`civfix-infra` `compose/docker-compose.yml`) runs the command below on every deploy, and `seed`, `api` and `media-worker` all declare `depends_on: migrate: { condition: service_completed_successfully }`, so a migration failure aborts the release with the previous images still in place. The original text here said the deploy did not run migrations and that they had to be applied by hand; that was wrong. The manual invocation survives only as a re-run / recovery lever:
 
 ```sh
-# on the box, as the civfix user, with DATABASE_URL exported
+# on the box, as the civfix user, with DATABASE_URL exported (re-run only; the deploy already did this)
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
@@ -517,7 +519,7 @@ Operator notes:
 - **It briefly write-locks `sessions`.** `SET NOT NULL` takes `ACCESS EXCLUSIVE` and, with no pre-validated `CHECK` to reuse, scans the table to prove no NULLs remain; logins and sliding-expiry writes block for that scan. Fine at this table's size (self-pruning via the ceiling + the expiry sweep); if that changes, add a `NOT VALID` CHECK and `VALIDATE` it out-of-band first.
 - Re-applying is a no-op: the `UPDATE` matches nothing and `SET NOT NULL` on an already-`NOT NULL` column succeeds silently.
 - Nothing hard-depends on it (unlike `0056`), so the deploy order is free — the only cost of skipping it is the recurring re-login above.
-- The `?? new Date(0)` fallback in `src/auth/pg-stores.ts` is **deliberately kept** even though the Drizzle mirror (`src/db/schema/sessions.ts`) now types `createdAt` as non-nullable: the deploy does not auto-migrate, so the code has to fail closed against the pre-`0058` schema. Its comment says so.
+- The `?? new Date(0)` fallback in `src/auth/pg-stores.ts` is **deliberately kept** even though the Drizzle mirror (`src/db/schema/sessions.ts`) now types `createdAt` as non-nullable: it fails closed against any row the backfill has not reached, and the blue/green overlap means the PREVIOUS image serves briefly against the new schema on every deploy. Its comment says so.
 
 ## 3. media-worker `stop_grace_period` (civfix-infra, different repo)
 

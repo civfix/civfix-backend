@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify"
 import { loadEnv, type Env } from "./env.js"
 import { assertRedisReachable, buildContainer, type Container } from "./di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "./errors/http-mapper.js"
-import { initErrorReporting, flushErrorReporting } from "./errors/glitchtip.js"
+import { initErrorReporting } from "./errors/glitchtip.js"
 import { genReqId, registerRequestId } from "./plugins/request-id.js"
 import { registerCors } from "./plugins/cors.js"
 import { registerHelmet } from "./plugins/helmet.js"
@@ -38,6 +38,7 @@ import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
+import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -94,7 +95,8 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     genReqId,
     trustProxy: env.TRUST_PROXY,
     bodyLimit: 262144,
-    requestTimeout: 15000,
+    requestTimeout: REQUEST_TIMEOUT_MS,
+    forceCloseConnections: false,
     connectionTimeout: 30000,
     keepAliveTimeout: 5000,
     disableRequestLogging: false,
@@ -130,6 +132,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   })
 
   app.decorate("container", container)
+  app.decorate("lifecycle", makeLifecycle())
 
   app.setErrorHandler(makeErrorHandler())
   app.setNotFoundHandler(makeNotFoundHandler())
@@ -191,37 +194,6 @@ function resolveAuthServices(
   return undefined
 }
 
-let shuttingDown = false
-
-export function makeShutdown(
-  app: FastifyInstance,
-  opts: { exitCode?: number } = {},
-): (reason: string) => Promise<void> {
-  const cleanExitCode = opts.exitCode ?? 0
-  return async function shutdown(reason: string): Promise<void> {
-    if (shuttingDown) return
-    shuttingDown = true
-    app.log.info({ signal: reason }, "shutdown: draining")
-    const watchdog = setTimeout(() => {
-      app.log.error("shutdown: drain timed out; forcing exit")
-      process.exit(1)
-    }, 20000)
-    watchdog.unref()
-    try {
-      await app.close()
-      await app.container.close()
-      await flushErrorReporting()
-      clearTimeout(watchdog)
-      app.log.info("shutdown: complete")
-      process.exit(cleanExitCode)
-    } catch (err) {
-      clearTimeout(watchdog)
-      app.log.error({ err }, "shutdown: error during drain")
-      process.exit(1)
-    }
-  }
-}
-
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   await initErrorReporting({
     ...(env.GLITCHTIP_DSN !== undefined ? { dsn: env.GLITCHTIP_DSN } : {}),
@@ -247,7 +219,10 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerChatRoomFanoutJob(app.container, app.log)
   }
 
-  const shutdown = makeShutdown(app)
+  const shutdown = makeShutdown(app, {
+    drainMs: env.SHUTDOWN_DRAIN_MS,
+    closeContainer: () => app.container.close(),
+  })
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
   process.on("SIGINT", () => void shutdown("SIGINT"))

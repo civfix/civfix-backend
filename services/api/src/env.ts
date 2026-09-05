@@ -8,6 +8,7 @@ import {
   parseBounds,
   parseCsv,
   parseCsvLower,
+  parseDrainMs,
   parseIntOr,
   parsePositiveIntOr,
   parseTrustProxy,
@@ -19,12 +20,14 @@ export {
   parseBool,
   parseCsv,
   parseCsvLower,
+  parseDrainMs,
   parseIntOr,
   parsePositiveIntOr,
   parseBounds,
   parseTrustProxy,
   isCronish,
   DEFAULT_TRUSTED_PROXY_CIDRS,
+  SHUTDOWN_DRAIN_MS_MAX,
 } from "./env/parsers.js"
 
 const DEV_SESSION_SIGNING_KEY = "dev-insecure-session-signing-key-do-not-use-in-prod"
@@ -322,6 +325,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     SESSION_SIGNING_KEY,
     ANON_TOKEN_SIGNING_KEY,
     TRUST_PROXY,
+    SHUTDOWN_DRAIN_MS: parseDrainMs(source.SHUTDOWN_DRAIN_MS),
 
     R2_ACCOUNT_ID,
     R2_ACCESS_KEY_ID,
