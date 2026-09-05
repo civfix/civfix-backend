@@ -15,12 +15,13 @@
 #   * FFMPEG IS PINNED AND CHECKSUMMED HERE, not taken from npm (audit H8). ffprobe-static@3.1.0 ships
 #     an FFmpeg 4.0.2 binary from 2018 — the tool that must interpret untrusted container bytes — with
 #     no channel for the demuxer memory-safety fixes released since. The `ffmpeg` stage below downloads
-#     ONE pinned release (FFMPEG_URL/FFMPEG_SHA256 ARGs), verifies its SHA-256 and fails the build on a
+#     ONE pinned release per CPU architecture (FFMPEG_URL_/FFMPEG_SHA256_{AMD64,ARM64} ARGs, selected
+#     by BuildKit's TARGETARCH — the boxes are arm64), verifies its SHA-256 and fails the build on a
 #     mismatch. The runtime stage exports FFMPEG_PATH/FFPROBE_PATH, which sandbox/binaries.ts REQUIRES
 #     in production (the npm static packages are devDependencies and are pruned out of this image by
 #     `pnpm --prod deploy`, so there is no silent fallback to the 2018 build).
-#     BUMPING IT: pick a newer asset from the same release feed, put its URL in FFMPEG_URL, and set
-#     FFMPEG_SHA256 to the `sha256sum` of the downloaded file. BtbN prunes old dated autobuild tags, so
+#     BUMPING IT: pick the linux64 AND linuxarm64 assets of one newer autobuild, put their URLs in the
+#     two FFMPEG_URL_* ARGs, and set each FFMPEG_SHA256_* to the `sha256sum` of its download. BtbN prunes old dated autobuild tags, so
 #     a stale pin eventually 404s the build — that is a loud failure, never a silent downgrade.
 #   * sharp 0.33.x ships prebuilt linux-x64 binaries (@img/sharp-linux-x64) that run on glibc, which the
 #     Debian bookworm base provides. No build toolchain or libvips apt package is required.
@@ -60,13 +61,22 @@ WORKDIR /app
 
 # ----------------------------------------------------------------------------------------------------
 FROM base AS ffmpeg
+ARG TARGETARCH
 ARG FFMPEG_VERSION=n8.1.2
-ARG FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-02-13-13/ffmpeg-n8.1.2-50-g1a748fe2cd-linux64-lgpl-8.1.tar.xz
-ARG FFMPEG_SHA256=00eb62aac60b796fd2b0cc53c49574f58a1586cb1ab46744fc863c4c79565378
+ARG FFMPEG_RELEASE=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-02-13-13
+ARG FFMPEG_URL_AMD64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-50-g1a748fe2cd-linux64-lgpl-8.1.tar.xz
+ARG FFMPEG_SHA256_AMD64=00eb62aac60b796fd2b0cc53c49574f58a1586cb1ab46744fc863c4c79565378
+ARG FFMPEG_URL_ARM64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-50-g1a748fe2cd-linuxarm64-lgpl-8.1.tar.xz
+ARG FFMPEG_SHA256_ARM64=43945e886f0d994b6ee02d08b00bcc3ce1f65bbba68b40ec322b6d88e739a8a2
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
  && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL -o /tmp/ffmpeg.tar.xz "$FFMPEG_URL" \
+RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+      amd64) FFMPEG_URL="$FFMPEG_URL_AMD64"; FFMPEG_SHA256="$FFMPEG_SHA256_AMD64" ;; \
+      arm64) FFMPEG_URL="$FFMPEG_URL_ARM64"; FFMPEG_SHA256="$FFMPEG_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH '${TARGETARCH}' for the pinned FFmpeg build" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL -o /tmp/ffmpeg.tar.xz "$FFMPEG_URL" \
  && echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
  && mkdir -p /opt/ffmpeg/bin \
  && tar -xJf /tmp/ffmpeg.tar.xz -C /opt/ffmpeg/bin --strip-components=2 \
