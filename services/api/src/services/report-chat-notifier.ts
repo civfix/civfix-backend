@@ -14,6 +14,10 @@ export interface ReportChatNotifierDeps {
   roomKeyFor: (kind: "report", id: string) => string
   isBlockedEitherWay: (a: string, b: string) => Promise<boolean>
   blockedIdsFor?: (actorId: string, candidateIds: string[]) => Promise<Set<string>>
+  coalesceWindowMs?: number
+  now?: () => number
+  claimWindow?: (roomId: string, windowMs: number) => Promise<boolean>
+  dispatchToJob?: (roomId: string, messageId: string) => Promise<void>
 }
 
 export function makeReportChatNotifier(
@@ -31,6 +35,10 @@ export function makeReportChatNotifier(
       roomKey: (reportId) => deps.roomKeyFor("report", reportId),
       isBlockedEitherWay: deps.isBlockedEitherWay,
       ...(deps.blockedIdsFor ? { blockedIdsFor: deps.blockedIdsFor } : {}),
+      ...(deps.coalesceWindowMs !== undefined ? { coalesceWindowMs: deps.coalesceWindowMs } : {}),
+      ...(deps.now !== undefined ? { now: deps.now } : {}),
+      ...(deps.claimWindow !== undefined ? { claimWindow: deps.claimWindow } : {}),
+      ...(deps.dispatchToJob !== undefined ? { dispatchToJob: deps.dispatchToJob } : {}),
     },
   )
 }

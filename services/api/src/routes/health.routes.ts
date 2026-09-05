@@ -1,22 +1,3 @@
-/**
- * Liveness and readiness routes.
- *
- *   GET /healthz  liveness: pure, no dependencies. Always 200 while the process is up. Used by the
- *                 load balancer / Caddy and by unit tests (works with no DB/Redis).
- *   GET /readyz   readiness: pings DB and Redis when they are wired (real seams). In all-fakes mode
- *                 there is nothing to check, so each check reports "skipped" and the overall status
- *                 is 200. If a real handle exists but its ping fails, returns 503.
- *
- * L19 hardening. Both probes are unauthenticated, so both are attack surface:
- *   - /readyz is no longer exempt from rate limiting (see plugins/rate-limit.ts) AND its result is memoized
- *     for READY_CACHE_MS. It does real I/O — `select 1` against a 10-connection pool plus a Redis PING —
- *     so an uncapped, uncached probe was a cheap amplifier: one HTTP request per DB round-trip. The cache
- *     keeps the probe honest for an orchestrator polling every few seconds while flattening a flood into
- *     at most one backend check per window.
- *   - /healthz no longer discloses the build version. Liveness needs `{ok:true}`; publishing the exact
- *     running version to anonymous callers only helps someone match us against a CVE list. The version is
- *     still available to operators via the authenticated admin system-health surface.
- */
 
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
@@ -33,7 +14,6 @@ interface ReadyBody {
   }
 }
 
-/** How long a readiness verdict is reused before the backends are probed again. */
 const READY_CACHE_MS = 5_000
 
 export async function registerHealthRoutes(
@@ -44,8 +24,6 @@ export async function registerHealthRoutes(
     return { ok: true, service: SERVICE_NAME }
   })
 
-  // Memoized readiness verdict (L19). Concurrent hits share the SAME in-flight probe promise, so a burst
-  // of N requests costs one `select 1` + one PING, not N of each.
   let cached: { at: number; body: ReadyBody } | undefined
   let inFlight: Promise<ReadyBody> | undefined
 
@@ -65,14 +43,8 @@ export async function registerHealthRoutes(
   }
 
   async function probe(): Promise<ReadyBody> {
-    // Probe a backend only when a real consumer would have created its handle, OR one already exists
-    // (handles are lazy, so an existing handle is the unambiguous "real" signal). The env-flag fallback
-    // mirrors di.ts's real-vs-fake wiring; when di.ts grows a `container.usesRealDb`, prefer that to
-    // remove this hand-enumeration. (USE_FAKE_JOBS/PUSH/CHAT are the seams that force a DB handle; CHAT
-    // is the only Redis consumer outside the rate-limit store.)
-    const env = container.env
-    const realDbConsumer = !(env.USE_FAKE_CHAT && env.USE_FAKE_PUSH && env.USE_FAKE_JOBS)
-    const realRedisConsumer = !env.USE_FAKE_CHAT
+    const realDbConsumer = container.usesRealDb
+    const realRedisConsumer = container.usesRealRedis
 
     const body: ReadyBody = {
       ok: true,
