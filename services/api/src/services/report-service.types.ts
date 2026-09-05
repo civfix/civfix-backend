@@ -22,6 +22,14 @@ export interface ReportAutoForwardJob {
   reportId: string
 }
 
+export const REPORT_VISIBILITY_TIMELINE_KIND = {
+  hidden: "hidden",
+  public: "unhidden",
+} as const satisfies Record<ReportVisibility, string>
+
+export type ReportVisibilityTimelineKind =
+  (typeof REPORT_VISIBILITY_TIMELINE_KIND)[ReportVisibility]
+
 export const REPORT_H3_RESOLUTION = 10
 
 export const REPORTS_DEFAULT_LIMIT = 20
@@ -159,8 +167,8 @@ export interface ReportRepository {
   setVisibilityByOwner(
     reportId: string,
     userId: string,
-    input: { visibility: ReportVisibility; note: string },
-  ): Promise<"updated" | "not_found" | "forbidden">
+    input: { visibility: ReportVisibility; note: string; kind: ReportVisibilityTimelineKind },
+  ): Promise<"updated" | "unchanged" | "not_found" | "forbidden">
 }
 
 export interface BBox {

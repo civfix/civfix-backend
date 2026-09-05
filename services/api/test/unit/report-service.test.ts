@@ -695,9 +695,27 @@ describe("unlistReport (owner visibility toggle)", () => {
     expect(dto.status).toBe("published")
     const last = dto.timeline[dto.timeline.length - 1]!
     expect(last.status).toBe("published")
+    expect(last.kind).toBe("hidden")
     expect(last.note).toBe("Hidden from the public map by the reporter")
     expect(repo.reports.get(r.id)!.visibility).toBe("hidden")
     expect(repo.reports.get(r.id)!.status).toBe("published")
+  })
+
+  it("tags the hide event as a visibility change, leaving the status row untouched", async () => {
+    const { repo, service, emitter } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published" })
+
+    const dto = await service.unlistReport("owner", r.id, true)
+    expect(dto.timeline.filter((e) => e.kind === "hidden")).toHaveLength(1)
+    expect(dto.timeline.every((e) => e.status !== "resolved")).toBe(true)
+    expect(emitter.events).toEqual([
+      {
+        reportId: r.id,
+        status: "published",
+        kind: "hidden",
+        note: "Hidden from the public map by the reporter",
+      },
+    ])
   })
 
   it("re-listing a hidden report returns it to public with a 'Re-listed' timeline entry", async () => {
@@ -707,8 +725,20 @@ describe("unlistReport (owner visibility toggle)", () => {
     const dto = await service.unlistReport("owner", r.id, false)
     expect(dto.visibility).toBe("public")
     const last = dto.timeline[dto.timeline.length - 1]!
+    expect(last.kind).toBe("unhidden")
     expect(last.note).toBe("Re-listed by the reporter")
     expect(repo.reports.get(r.id)!.visibility).toBe("public")
+  })
+
+  it("re-hiding an already-hidden report writes no second row and emits nothing", async () => {
+    const { repo, service, emitter } = makeHarness()
+    const r = repo.seedReport({ reporterUserId: "owner", status: "published" })
+
+    await service.unlistReport("owner", r.id, true)
+    const after = await service.unlistReport("owner", r.id, true)
+    expect(after.visibility).toBe("hidden")
+    expect(after.timeline.filter((e) => e.kind === "hidden")).toHaveLength(1)
+    expect(emitter.events).toHaveLength(1)
   })
 
   it("403s when the caller does not own the report (and leaves the visibility untouched)", async () => {

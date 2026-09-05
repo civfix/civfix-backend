@@ -1,6 +1,6 @@
 {
   "name": "@civfix/api",
-  "version": "0.0.0",
+  "version": "1.2.0",
   "private": true,
   "description": "civfix Fastify 5 API service. Hosts HTTP + WS endpoints; all external dependencies sit behind the 9 @civfix/shared interfaces, selected real-vs-fake in the DI container.",
   "license": "UNLICENSED",

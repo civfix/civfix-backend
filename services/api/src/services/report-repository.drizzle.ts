@@ -21,6 +21,7 @@ import type {
   ReportRecord,
   ReportRepository,
   ReportTimelineView,
+  ReportVisibilityTimelineKind,
 } from "./report-service.types.js"
 import { REPORT_CREATE_SCOPE } from "./report-service.types.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
@@ -417,8 +418,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async setVisibilityByOwner(
       reportId: string,
       userId: string,
-      input: { visibility: ReportVisibility; note: string },
-    ): Promise<"updated" | "not_found" | "forbidden"> {
+      input: { visibility: ReportVisibility; note: string; kind: ReportVisibilityTimelineKind },
+    ): Promise<"updated" | "unchanged" | "not_found" | "forbidden"> {
       return sql.begin(async (tx) => {
         const rows = await tx<
           {
@@ -437,11 +438,12 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         const row = rows[0]
         if (!row || row.deleted_at !== null) return "not_found"
         if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
+        if (row.visibility === input.visibility) return "unchanged"
 
         await tx`UPDATE reports SET visibility = ${input.visibility} WHERE id = ${reportId}`
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
-          VALUES (${reportId}, ${row.status}, ${input.note}, ${userId})
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          VALUES (${reportId}, ${row.status}, ${input.note}, ${input.kind}, ${userId})
         `
         return "updated"
       })

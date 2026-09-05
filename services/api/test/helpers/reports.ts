@@ -9,6 +9,7 @@ import type {
   ReportRecord,
   ReportRepository,
   ReportTimelineView,
+  ReportVisibilityTimelineKind,
 } from "../../src/services/report-service.js"
 import {
   formatReferenceCode,
@@ -425,16 +426,22 @@ export class InMemoryReportRepository implements ReportRepository {
   setVisibilityByOwner(
     reportId: string,
     userId: string,
-    input: { visibility: ReportRecord["visibility"]; note: string },
-  ): Promise<"updated" | "not_found" | "forbidden"> {
+    input: {
+      visibility: ReportRecord["visibility"]
+      note: string
+      kind: ReportVisibilityTimelineKind
+    },
+  ): Promise<"updated" | "unchanged" | "not_found" | "forbidden"> {
     const r = this.reports.get(reportId)
     if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
     if (r.reporterUserId !== userId) return Promise.resolve(notOwnerOutcome(r))
+    if (r.visibility === input.visibility) return Promise.resolve("unchanged")
     r.visibility = input.visibility
     this.timeline.push({
       reportId,
       status: r.status,
       note: input.note,
+      kind: input.kind,
       createdAt: this.nextDate(),
     })
     return Promise.resolve("updated")

@@ -34,6 +34,7 @@ import { isPubliclyVisibleStatus } from "./report-visibility.js"
 import {
   REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
+  REPORT_VISIBILITY_TIMELINE_KIND,
   REPORTS_DEFAULT_LIMIT,
   REPORTS_SEARCH_DEFAULT_LIMIT,
   type BBox,
@@ -381,14 +382,20 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
     async unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO> {
       const visibility: ReportVisibility = unlisted ? "hidden" : "public"
+      const kind = REPORT_VISIBILITY_TIMELINE_KIND[visibility]
       const note = unlisted ? "Hidden from the public map by the reporter" : "Re-listed by the reporter"
-      const outcome = await deps.repo.setVisibilityByOwner(reportId, userId, { visibility, note })
+      const outcome = await deps.repo.setVisibilityByOwner(reportId, userId, {
+        visibility,
+        note,
+        kind,
+      })
       if (outcome === "not_found") throw AppError.notFound("Report not found")
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only hide your own report")
       }
       const dto = await service.getReport(reportId, { userId })
-      await maybeEmitTimeline(deps, { reportId, status: dto.status, kind: "status", note })
+      if (outcome === "unchanged") return dto
+      await maybeEmitTimeline(deps, { reportId, status: dto.status, kind, note })
       return dto
     },
   }
