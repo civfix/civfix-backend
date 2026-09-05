@@ -60,6 +60,13 @@ vi.mock("../../src/services/discussion-repository.drizzle.js", () => ({
 
 vi.mock("../../src/services/admin/outbound-mail-service.js", () => ({
   makeOutboundMailService: () => ({
+    prepareReportToJurisdiction: (input: SendReportInput) => {
+      sent.push(input)
+      return Promise.resolve({
+        thread: {},
+        deliver: () => Promise.resolve({ thread: {}, messageId: "<stub@civfix.org>" }),
+      })
+    },
     sendReportToJurisdiction: (input: SendReportInput) => {
       sent.push(input)
       return Promise.resolve({ thread: {}, messageId: "<stub@civfix.org>" })

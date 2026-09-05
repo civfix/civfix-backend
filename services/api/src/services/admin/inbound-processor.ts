@@ -14,15 +14,16 @@ import {
 import type { AdminReportRepository } from "./admin-report-service.js"
 import { detectBounce, handleBounce, type BounceDetection } from "./inbound-bounce.js"
 import {
+  applyInboundEffects,
   findThreadByReferences,
-  onEventReply,
-  onJurisdictionReply,
+  isJurisdictionSender,
   parseMessageIdList,
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
 import type { CleanupRepository } from "../cleanup-service.js"
 import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
+import { htmlToText } from "./mail-preview.js"
 
 export { detectBounce, resolveMessageId, parseMessageIdList, type BounceDetection }
 export { readMailAuthVerdict, sanitizeInboundHtml, type MailAuthVerdict }
@@ -62,7 +63,14 @@ export interface ProcessResult {
   id?: string
 }
 
+export interface InboundLogger {
+  warn(obj: unknown, msg?: string): void
+}
+
+const NOOP_LOGGER: InboundLogger = { warn: () => {} }
+
 export interface InboundProcessorDeps {
+  logger?: InboundLogger
   storage?: Storage
   inboundMail?: InboundMail
   mailRepo?: MailRepository
@@ -82,6 +90,7 @@ export async function processInboundObject(
   const inboundRepo = deps.inboundRepo ?? makeDrizzleInboundRepository(container.getDb().sql)
   const injectedReportRepo = deps.adminReportRepo
   const injectedCleanupRepo = deps.cleanupRepo
+  const logger = deps.logger ?? NOOP_LOGGER
 
   const bytes = await storage.getObject(key)
   if (bytes === null) {
@@ -105,16 +114,13 @@ export async function processInboundObject(
 
   const bounce = detectBounce(mail)
   if (bounce.isBounce) {
-    const result = await routeInbox(
-      storage,
-      inboundRepo,
-      key,
-      mail,
-      messageId,
-      readMailAuthVerdict(mail),
-    )
+    const bounceVerdict = readMailAuthVerdict(mail)
+    const result = await routeInbox(storage, inboundRepo, key, mail, messageId, bounceVerdict)
     if (result.outcome === "inbox") {
-      await handleBounce(container, mailRepo, bounce).catch(() => {})
+      await handleBounce(container, mailRepo, bounce, {
+        fromAddr: mail.from?.address ?? null,
+        authVerdict: bounceVerdict,
+      }).catch(() => {})
     }
     if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
     return result
@@ -153,6 +159,7 @@ export async function processInboundObject(
       mail,
       messageId,
       resolvedThread,
+      logger,
     )
   } else {
     result = await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
@@ -173,37 +180,67 @@ async function routeThreaded(
   mail: ParsedMail,
   messageId: string,
   thread: MailThreadRecord,
+  logger: InboundLogger,
 ): Promise<ProcessResult> {
+  const unaffiliated = !(await isJurisdictionSender(mailRepo, thread.id, mail))
   const { attachments, oversize } = await streamAttachments(storage, `inbound-mail/${thread.id}`, mail)
-  const message = await mailRepo.insertMessage({
+  const inserted = await mailRepo.insertMessage({
     threadId: thread.id,
     direction: "in",
     fromAddr: mail.from?.address ?? null,
     toAddr: mail.to[0]?.address ?? null,
     subject: mail.subject ?? null,
-    body: mail.text ?? mail.html ?? null,
+    body: threadBody(mail),
     attachments,
     messageId,
     inReplyTo: mail.inReplyTo ?? null,
+    unaffiliated,
   })
-  if (message === null) return { outcome: "replay" }
-  await mailRepo.recordEvent({
-    threadId: thread.id,
-    messageId: message.id,
-    type: "delivered",
-    meta: {
-      direction: "in",
-      from: mail.from?.address ?? null,
-      messageId,
-      ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
-    },
-  })
-  if (thread.reportId !== null) {
-    await onJurisdictionReply(container, injectedReportRepo, mailRepo, thread, mail).catch(() => {})
-  } else if (thread.cleanupId !== null) {
-    await onEventReply(container, injectedCleanupRepo, mailRepo, thread, mail).catch(() => {})
+  if (inserted !== null) {
+    await mailRepo.recordEvent({
+      threadId: thread.id,
+      messageId: inserted.id,
+      type: "delivered",
+      meta: {
+        direction: "in",
+        from: mail.from?.address ?? null,
+        messageId,
+        ...(unaffiliated ? { unaffiliated: true } : {}),
+        ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
+      },
+    })
   }
-  return { outcome: "threaded", id: message.id }
+
+  const message = inserted ?? (await mailRepo.findMessageByMessageId(messageId).catch(() => null))
+  if (message !== null && message.threadId === thread.id) {
+    await applyInboundEffects(
+      container,
+      injectedReportRepo,
+      injectedCleanupRepo,
+      mailRepo,
+      thread,
+      message,
+    ).catch((err: unknown) => {
+      logger.warn(
+        { err: errorText(err), threadId: thread.id, messageId: message.id },
+        "inbound: side effects failed (claim released; the sweep re-drives it)",
+      )
+    })
+  }
+  if (inserted === null) return { outcome: "replay" }
+  return { outcome: "threaded", id: inserted.id }
+}
+
+function threadBody(mail: ParsedMail): string | null {
+  if (mail.text !== null && mail.text !== undefined) return clipBodyText(mail.text)
+  if (mail.html === null || mail.html === undefined || mail.html.length === 0) return null
+  return clipBodyText(htmlToText(mail.html.slice(0, INBOUND_HTML_SOURCE_MAX_CHARS)))
+}
+
+export const INBOUND_HTML_SOURCE_MAX_CHARS = 1024 * 1024
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 async function routeInbox(

@@ -1,9 +1,21 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
-import type { OutboundAttachment } from "@civfix/shared/interfaces"
+import type { Mailer, OutboundAttachment, SentMail } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import {
+  assertOutboundSendPolicy,
+  base64Bytes,
+  inflightWindowSeconds,
+  maxOutboundSendDeadlineMs,
+  outboundSendDeadlineMs,
+  OUTBOUND_SEND_MAX_DEADLINE_MS,
+  ROUTE_DEADLINE_INFLIGHT_SECONDS,
+} from "../../src/services/admin/outbound-send-policy.js"
+import {
+  isOutboundSendDeadlineError,
   makeOutboundMailService,
+  OutboundSendDeadlineError,
+  outboundPayloadBytes,
   type OutboundMailEnv,
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
@@ -391,5 +403,283 @@ describe("OutboundMailService — F109: a delivered send never throws post-deliv
       svc.sendToCity({ geoid: null, toAddr: "clerk@city.gov", subject: "Digest", body: "hi" }),
     ).resolves.toBeDefined()
     expect(mailer.sent).toHaveLength(1)
+  })
+})
+
+describe("OutboundMailService: total send deadline", () => {
+  function deferredMailer(): {
+    mailer: Mailer
+    resolve: (messageId: string) => void
+    reject: (err: unknown) => void
+  } {
+    let resolve!: (messageId: string) => void
+    let reject!: (err: unknown) => void
+    const pending = new Promise<SentMail>((res, rej) => {
+      resolve = (messageId: string) => res({ messageId })
+      reject = rej
+    })
+    return {
+      resolve,
+      reject,
+      mailer: {
+        sendOtp: () => Promise.resolve(),
+        sendTransactional: () => Promise.resolve(),
+        sendOutbound: () => pending,
+      },
+    }
+  }
+
+  function svcFor(mailer: Mailer, repo: InMemoryMailRepository, deadlineMs: number) {
+    return makeOutboundMailService({
+      repo,
+      mailer,
+      env: ENV,
+      logger: { warn: () => {} },
+      sendDeadlineMs: deadlineMs,
+    })
+  }
+
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
+
+  it("records 'failed' with reason=deadline when the send outlives its budget", async () => {
+    const repo = new InMemoryMailRepository()
+    const { mailer } = deferredMailer()
+    const svc = svcFor(mailer, repo, 20)
+
+    await expect(
+      svc.sendReportToJurisdiction({
+        reportId: "11111111-1111-1111-1111-111111111111",
+        geoid: "0644000",
+        toAddr: "pw@lacity.gov",
+        subject: "Pothole",
+        text: "packet",
+      }),
+    ).rejects.toSatisfy(isOutboundSendDeadlineError)
+
+    const failed = repo.events.filter((e) => e.type === "failed")
+    expect(failed).toHaveLength(1)
+    expect(failed[0]?.meta).toMatchObject({ reason: "deadline", deadlineMs: 20 })
+    expect(repo.events.some((e) => e.type === "sent")).toBe(false)
+  })
+
+  it("a LATE success records 'sent' (marked late) with the real Message-ID, clearing send_failed", async () => {
+    const repo = new InMemoryMailRepository()
+    const { mailer, resolve } = deferredMailer()
+    const svc = svcFor(mailer, repo, 20)
+
+    await expect(
+      svc.sendReportToJurisdiction({
+        reportId: "22222222-2222-2222-2222-222222222222",
+        geoid: "0644000",
+        toAddr: "pw@lacity.gov",
+        subject: "Pothole",
+        text: "packet",
+      }),
+    ).rejects.toSatisfy(isOutboundSendDeadlineError)
+
+    expect(repo.events.map((e) => e.type)).toEqual(["failed"])
+
+    resolve("<real-250-ok@oci>")
+    await flush()
+
+    expect(repo.events.map((e) => e.type)).toEqual(["failed", "sent"])
+    const sentEvent = repo.events.find((e) => e.type === "sent")
+    expect(sentEvent?.meta).toMatchObject({ late: true })
+    expect(repo.events.some((e) => e.type === "sent")).toBe(true)
+    const stored = repo.messages.find((m) => m.direction === "out")
+    expect(stored?.messageId).toBe("<real-250-ok@oci>")
+  })
+
+  it("a LATE rejection leaves the recorded 'failed' standing and raises no unhandled rejection", async () => {
+    const repo = new InMemoryMailRepository()
+    const { mailer, reject } = deferredMailer()
+    const svc = svcFor(mailer, repo, 20)
+
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown): void => {
+      unhandled.push(err)
+    }
+    process.on("unhandledRejection", onUnhandled)
+    try {
+      await expect(
+        svc.sendReportToJurisdiction({
+          reportId: "33333333-3333-3333-3333-333333333333",
+          geoid: "0644000",
+          toAddr: "pw@lacity.gov",
+          subject: "Pothole",
+          text: "packet",
+        }),
+      ).rejects.toSatisfy(isOutboundSendDeadlineError)
+
+      reject(new Error("550 rejected"))
+      await flush()
+      await flush()
+    } finally {
+      process.off("unhandledRejection", onUnhandled)
+    }
+
+    expect(repo.events.map((e) => e.type)).toEqual(["failed"])
+    expect(unhandled).toHaveLength(0)
+  })
+
+  it("runs the caller's late-success continuation after recording the late 'sent'", async () => {
+    const repo = new InMemoryMailRepository()
+    const { mailer, resolve } = deferredMailer()
+    const svc = svcFor(mailer, repo, 20)
+    const ran: string[] = []
+
+    const prepared = await svc.prepareReportToJurisdiction({
+      reportId: "66666666-6666-6666-6666-666666666666",
+      geoid: "0644000",
+      toAddr: "pw@lacity.gov",
+      subject: "Pothole",
+      text: "packet",
+    })
+    await expect(
+      prepared.deliver({
+        onLateSuccess: async () => {
+          ran.push("route-outcome")
+          await Promise.resolve()
+        },
+      }),
+    ).rejects.toSatisfy(isOutboundSendDeadlineError)
+
+    expect(ran).toHaveLength(0)
+
+    resolve("<late-ok@oci>")
+    await flush()
+
+    expect(ran).toEqual(["route-outcome"])
+    expect(repo.events.map((e) => e.type)).toEqual(["failed", "sent"])
+  })
+
+  it("a deadline expiry is a CONFLICT for the operator, not a 500", async () => {
+    const err = new OutboundSendDeadlineError(30_000)
+    expect(err.httpStatus).toBe(409)
+    expect(err.message.toLowerCase()).toContain("still in progress")
+    expect(isOutboundSendDeadlineError(err)).toBe(true)
+  })
+
+  it("the deadline SCALES with the payload rather than being flat", () => {
+    const phaseBudgetMs = 45_000
+    const minThroughputBytesPerSec = 256 * 1024
+
+    const empty = outboundSendDeadlineMs({ bytes: 0, phaseBudgetMs, minThroughputBytesPerSec })
+    const oneMiB = outboundSendDeadlineMs({
+      bytes: 1024 * 1024,
+      phaseBudgetMs,
+      minThroughputBytesPerSec,
+    })
+    const eightMiB = outboundSendDeadlineMs({
+      bytes: 8 * 1024 * 1024,
+      phaseBudgetMs,
+      minThroughputBytesPerSec,
+    })
+
+    expect(empty).toBe(phaseBudgetMs)
+    expect(oneMiB).toBe(phaseBudgetMs + 4_000)
+    expect(eightMiB).toBe(phaseBudgetMs + 32_000)
+    expect(eightMiB).toBeGreaterThan(oneMiB)
+  })
+
+  it("payload bytes count the text, the html part and attachments AS BASE64 (what goes on the wire)", () => {
+    expect(outboundPayloadBytes({ body: "abc" })).toBe(3)
+    expect(outboundPayloadBytes({ body: "abc", html: "<p>de</p>" })).toBe(3 + 9)
+    expect(
+      outboundPayloadBytes({
+        body: "abc",
+        attachments: [
+          { filename: "a.jpg", contentType: "image/jpeg", content: new Uint8Array(1000) },
+          { filename: "b.jpg", contentType: "image/jpeg", content: new Uint8Array(2000) },
+        ],
+      }),
+    ).toBe(3 + base64Bytes(3000))
+    expect(base64Bytes(3000)).toBe(4000)
+  })
+
+  describe("send-deadline / in-flight-window invariant", () => {
+    const DEFAULTS = { smtpTimeoutMs: 15_000, minThroughputBytesPerSec: 256 * 1024 }
+
+    it("the largest computable deadline at defaults fits inside the in-flight window", () => {
+      const maxMs = maxOutboundSendDeadlineMs(DEFAULTS)
+      expect(maxMs).toBeLessThan(ROUTE_DEADLINE_INFLIGHT_SECONDS * 1000)
+      expect(inflightWindowSeconds(DEFAULTS)).toBeLessThanOrEqual(ROUTE_DEADLINE_INFLIGHT_SECONDS)
+      expect(ROUTE_DEADLINE_INFLIGHT_SECONDS).toBeGreaterThanOrEqual(900)
+    })
+
+    it("accepts the default configuration", () => {
+      expect(assertOutboundSendPolicy(DEFAULTS)).toEqual([])
+    })
+
+    it("REJECTS a throughput floor below the minimum", () => {
+      const errs = assertOutboundSendPolicy({ ...DEFAULTS, minThroughputBytesPerSec: 48 })
+      expect(errs).toHaveLength(1)
+      expect(errs[0]).toContain("OUTBOUND_SEND_MIN_THROUGHPUT_BPS")
+    })
+
+    it("REJECTS an SMTP timeout above the ceiling", () => {
+      const errs = assertOutboundSendPolicy({ ...DEFAULTS, smtpTimeoutMs: 300_000 })
+      expect(errs).toHaveLength(1)
+      expect(errs[0]).toContain("OCI_EMAIL_SMTP_TIMEOUT_MS")
+    })
+
+    it("REJECTS an in-range combination whose largest deadline still outlives the window", () => {
+      const errs = assertOutboundSendPolicy({
+        smtpTimeoutMs: 60_000,
+        minThroughputBytesPerSec: 16 * 1024,
+      })
+      expect(errs).toHaveLength(1)
+      expect(errs[0]).toContain("in-flight guard")
+    })
+
+    it("never produces a deadline that overflows setTimeout's 32-bit range", () => {
+      const absurd = outboundSendDeadlineMs({
+        bytes: Number.MAX_SAFE_INTEGER,
+        phaseBudgetMs: 45_000,
+        minThroughputBytesPerSec: 1,
+      })
+      expect(absurd).toBe(OUTBOUND_SEND_MAX_DEADLINE_MS)
+      expect(absurd).toBeLessThanOrEqual(2 ** 31 - 1)
+    })
+  })
+
+  it("a large packet is NOT failed by a budget sized for a small one", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    const svc = makeOutboundMailService({
+      repo,
+      mailer,
+      env: ENV,
+      sendPhaseBudgetMs: 50,
+      sendMinThroughputBytesPerSec: 1024,
+    })
+
+    await svc.sendReportToJurisdiction({
+      reportId: "44444444-4444-4444-4444-444444444444",
+      geoid: "0644000",
+      toAddr: "pw@lacity.gov",
+      subject: "Pothole",
+      text: "x".repeat(64 * 1024),
+    })
+
+    expect(repo.events.some((e) => e.type === "sent")).toBe(true)
+    expect(repo.events.some((e) => e.type === "failed")).toBe(false)
+  })
+
+  it("a send that completes inside the deadline is unaffected", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    const svc = svcFor(mailer, repo, 5_000)
+
+    await svc.sendReportToJurisdiction({
+      reportId: "55555555-5555-5555-5555-555555555555",
+      geoid: "0644000",
+      toAddr: "pw@lacity.gov",
+      subject: "Pothole",
+      text: "packet",
+    })
+
+    expect(repo.events.some((e) => e.type === "sent")).toBe(true)
+    expect(repo.events.some((e) => e.type === "failed")).toBe(false)
   })
 })

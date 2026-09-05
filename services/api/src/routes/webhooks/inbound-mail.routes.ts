@@ -73,7 +73,10 @@ async function handleInbound(
   if (key === null) return ack(reply, { processed: false, reason: "bad-key" })
 
   try {
-    const deps = app.inboundMailOverrides ?? {}
+    const deps: InboundProcessorDeps = {
+      logger: request.log,
+      ...(app.inboundMailOverrides ?? {}),
+    }
     const result = await processInboundObject(container, key, deps)
     return ack(reply, { processed: result.outcome !== "skipped", outcome: result.outcome })
   } catch (err) {

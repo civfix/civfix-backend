@@ -10,25 +10,9 @@ import {
 import type { Container } from "../../src/di.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
 
-/**
- * M7 on the BOUNCE branch: the stored `x-civfix-auth-verdict` must be the REAL verdict.
- *
- * Bounces are routed to the admin Inbox BEFORE the authentication gate, because bounce handling itself is
- * verdict-independent (it only ever reaches the Inbox and the thread's own outbound recipients). But
- * routeInbox used to DEFAULT its verdict parameter to "pass", so every DSN was stored as authenticated —
- * on the single message class that is easiest to forge, and precisely where the console must show its
- * UNVERIFIED badge. The parameter is now required and the bounce branch passes readMailAuthVerdict(mail).
- *
- * The verdict is also stamped LAST into the stored headers, so a sender who sets the header themselves
- * cannot pre-seed it — asserted below.
- */
 
 const TOKEN = "0123456789abcdef01234567"
 
-/**
- * Build a raw RFC822 DSN. `authResults` sets Authentication-Results verbatim; OMIT it for the spoof case
- * (no header at all -> the fail-closed "unknown" verdict).
- */
 function dsn(opts: {
   from: string
   to?: string
@@ -65,8 +49,7 @@ interface Ctx {
   db: FakeSqlControl
 }
 
-/** The bounce path's three SQL touches (contact stamp + correlation probe + geoid lookup) are stubbed. */
-function ctx(sqlHandlers: SqlHandler[] = []): Ctx {
+function ctx(sqlHandlers: SqlHandler[] = [], env: Record<string, unknown> = {}): Ctx {
   const storage = new FakeStorage()
   const inboundMail = new FakeInboundMail()
   const mailRepo = new InMemoryMailRepository()
@@ -75,7 +58,7 @@ function ctx(sqlHandlers: SqlHandler[] = []): Ctx {
   const db = makeFakeSql(sqlHandlers)
   const deps: InboundProcessorDeps = { storage, inboundMail, mailRepo, inboundRepo }
   const container = {
-    env: {},
+    env,
     storage,
     inboundStorage: storage,
     inboundMail,
@@ -93,7 +76,6 @@ function bounceSqlHandlers(geoid = "0644000"): SqlHandler[] {
   ]
 }
 
-/** Store the DSN and run the processor; returns the stored inbound row's verdict header. */
 async function verdictFor(c: Ctx, key: string, eml: Buffer): Promise<string | undefined> {
   await c.storage.put(key, eml)
   const r = await processInboundObject(c.container, key, c.deps)
@@ -113,8 +95,6 @@ describe("DSN/bounce: the stored auth verdict is the REAL one, not a default 'pa
         failedRecipient: "publicworks@city.gov",
       }),
     )
-    // FAIL CLOSED: an absent header means our MTA did not stamp a verdict, which is indistinguishable from
-    // a message that bypassed it. Anything but "unknown" here is the bug this pins.
     expect(verdict).toBe("unknown")
   })
 
@@ -157,8 +137,6 @@ describe("DSN/bounce: the stored auth verdict is the REAL one, not a default 'pa
         from: "mailer-daemon@evil.example",
         messageId: "<spoof-header@evil.example>",
         failedRecipient: "publicworks@city.gov",
-        // The attacker asserts their own verdict; there is no Authentication-Results, so the truth is
-        // "unknown" and the server's own value must win.
         extraHeaders: { "X-Civfix-Auth-Verdict": "pass" },
       }),
     )
@@ -190,9 +168,7 @@ describe("DSN/bounce: the stored auth verdict is the REAL one, not a default 'pa
         originalMessageId: "<out-42@civfix.org>",
       }),
     )
-    // Stored honestly as UNVERIFIED…
     expect(verdict).toBe("unknown")
-    // …while the side effects still run, because they only touch the thread's OWN outbound recipients.
     expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(true)
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("bounced")
     const stamp = c.db.statements.find((s) =>
@@ -200,5 +176,175 @@ describe("DSN/bounce: the stored auth verdict is the REAL one, not a default 'pa
     )
     expect(stamp?.values).toContain(failed)
     expect(c.jobs.jobsFor("jurisdiction.discovery")[0]?.data).toMatchObject({ geoid })
+  })
+})
+
+describe("DSN/bounce: only the receiving domain or our own provider can report a failure", () => {
+  const geoid = "0644000"
+  const failed = "clerk@lacity.gov"
+
+  function threadedCtx(env: Record<string, unknown> = {}): Ctx {
+    const c = ctx(bounceSqlHandlers(geoid), env)
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      jurisdictionGeoid: geoid,
+      status: "sent",
+    })
+    c.mailRepo.seedMessage({
+      threadId: thread.id,
+      direction: "out",
+      messageId: "<out-42@civfix.org>",
+    })
+    return c
+  }
+
+  function bouncedAtStamped(c: Ctx): boolean {
+    return c.db.statements.some((s) =>
+      /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql),
+    )
+  }
+
+  it("REFUSES a spoofed DSN from an unrelated domain that echoes a real outbound Message-ID", async () => {
+    const c = threadedCtx()
+    await verdictFor(
+      c,
+      `${INBOUND_PENDING_PREFIX}spoof-unrelated.eml`,
+      dsn({
+        from: "mailer-daemon@vendor.example",
+        messageId: "<spoof-unrelated@vendor.example>",
+        failedRecipient: failed,
+        originalMessageId: "<out-42@civfix.org>",
+      }),
+    )
+
+    expect(bouncedAtStamped(c)).toBe(false)
+    expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(false)
+    expect(c.jobs.jobsFor("jurisdiction.discovery")).toHaveLength(0)
+    expect(c.inboundRepo.rows).toHaveLength(1)
+  })
+
+  it("REFUSES a DSN whose domain aligns but whose DMARC verdict is a hard fail", async () => {
+    const c = threadedCtx()
+    await verdictFor(
+      c,
+      `${INBOUND_PENDING_PREFIX}spoof-dmarc-fail.eml`,
+      dsn({
+        from: "mailer-daemon@lacity.gov",
+        messageId: "<spoof-dmarc-fail@lacity.gov>",
+        failedRecipient: failed,
+        originalMessageId: "<out-42@civfix.org>",
+        authResults: "mx.civfix.org; dmarc=fail header.from=lacity.gov",
+      }),
+    )
+
+    expect(bouncedAtStamped(c)).toBe(false)
+    expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(false)
+  })
+
+  it("ACCEPTS a DSN from a SUBDOMAIN of the failed recipient's domain", async () => {
+    const c = threadedCtx()
+    await verdictFor(
+      c,
+      `${INBOUND_PENDING_PREFIX}subdomain-dsn.eml`,
+      dsn({
+        from: "mailer-daemon@mx1.lacity.gov",
+        messageId: "<subdomain-dsn@mx1.lacity.gov>",
+        failedRecipient: failed,
+        originalMessageId: "<out-42@civfix.org>",
+      }),
+    )
+
+    expect(bouncedAtStamped(c)).toBe(true)
+    expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(true)
+  })
+
+  it("ACCEPTS a DSN from a known PROVIDER daemon domain (Google-Workspace-hosted jurisdictions)", async () => {
+    const c = threadedCtx()
+    await verdictFor(
+      c,
+      `${INBOUND_PENDING_PREFIX}google-dsn.eml`,
+      dsn({
+        from: "mailer-daemon@googlemail.com",
+        messageId: "<google-dsn@googlemail.com>",
+        failedRecipient: failed,
+        originalMessageId: "<out-42@civfix.org>",
+      }),
+    )
+
+    expect(bouncedAtStamped(c)).toBe(true)
+    expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(true)
+  })
+
+  it("ACCEPTS a DSN from a Microsoft 365 bounce host", async () => {
+    const c = threadedCtx()
+    await verdictFor(
+      c,
+      `${INBOUND_PENDING_PREFIX}m365-dsn.eml`,
+      dsn({
+        from: "postmaster@eur01.protection.outlook.com",
+        messageId: "<m365-dsn@protection.outlook.com>",
+        failedRecipient: failed,
+        originalMessageId: "<out-42@civfix.org>",
+      }),
+    )
+
+    expect(bouncedAtStamped(c)).toBe(true)
+  })
+
+  it("REFUSES a consumer mailbox on a provider domain (only daemon local-parts qualify)", async () => {
+    for (const [name, from] of [
+      ["hotmail", "attacker@hotmail.com"],
+      ["outlook", "attacker@outlook.com"],
+      ["gmail", "attacker@googlemail.com"],
+    ] as const) {
+      const c = threadedCtx()
+      await verdictFor(
+        c,
+        `${INBOUND_PENDING_PREFIX}consumer-${name}.eml`,
+        dsn({
+          from,
+          messageId: `<consumer-${name}@example.invalid>`,
+          failedRecipient: failed,
+          originalMessageId: "<out-42@civfix.org>",
+        }),
+      )
+      expect(bouncedAtStamped(c)).toBe(false)
+      expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(false)
+    }
+  })
+
+  it("still REFUSES a provider-shaped daemon on an unrelated domain", async () => {
+    const c = threadedCtx()
+    await verdictFor(
+      c,
+      `${INBOUND_PENDING_PREFIX}fake-provider-dsn.eml`,
+      dsn({
+        from: "mailer-daemon@googlemail.com.evil.example",
+        messageId: "<fake-provider@evil.example>",
+        failedRecipient: failed,
+        originalMessageId: "<out-42@civfix.org>",
+      }),
+    )
+
+    expect(bouncedAtStamped(c)).toBe(false)
+  })
+
+  it("ACCEPTS a DSN generated by our OWN mail provider domain", async () => {
+    const c = threadedCtx({
+      MAIL_FROM_OUTREACH: "outreach@civfix.org",
+      MAIL_REPLY_DOMAIN: "civfix.org",
+    })
+    await verdictFor(
+      c,
+      `${INBOUND_PENDING_PREFIX}own-dsn.eml`,
+      dsn({
+        from: "mailer-daemon@civfix.org",
+        messageId: "<own-dsn@civfix.org>",
+        failedRecipient: failed,
+        originalMessageId: "<out-42@civfix.org>",
+      }),
+    )
+
+    expect(bouncedAtStamped(c)).toBe(true)
   })
 })

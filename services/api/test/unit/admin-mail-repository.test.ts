@@ -61,6 +61,10 @@ describe("toThreadDTO", () => {
         attachments: [],
         messageId: null,
         inReplyTo: null,
+        unaffiliated: false,
+        effectsClaimedAt: null,
+        effectsAppliedAt: null,
+        effectsStage: 0,
         createdAt: new Date("2026-02-01T00:00:01.000Z"),
       },
       {
@@ -74,6 +78,10 @@ describe("toThreadDTO", () => {
         attachments: [{ key: "r2/a.pdf", filename: "a.pdf", size: 10 }],
         messageId: null,
         inReplyTo: null,
+        unaffiliated: false,
+        effectsClaimedAt: null,
+        effectsAppliedAt: null,
+        effectsStage: 0,
         createdAt: new Date("2026-02-01T00:00:02.000Z"),
       },
     ])

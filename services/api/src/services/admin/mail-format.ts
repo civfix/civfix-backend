@@ -100,7 +100,6 @@ export function buildReportPacket(
   const categoryLabel = REPORT_CATEGORY_LABELS[record.category]
   const place = routing?.place ?? record.place
   const address = record.address && record.address.trim() !== "" ? record.address : place
-  const reporter = record.reporter?.name ?? "anonymous"
   const noteText = note && note.trim() !== "" ? note.trim() : null
   const desc = record.desc && record.desc.trim() !== "" ? record.desc.trim() : "(none provided)"
   const submittedDate = formatSubmittedDate(record.createdAt)
@@ -135,14 +134,13 @@ export function buildReportPacket(
     blocks = [
       paragraph(
         `A resident reported a ${categoryLabel} issue in ${place} through civfix on ${submittedDate}. ` +
-          `Reply to this email to respond directly to the resident and civfix.`,
+          `Replies to this email go to the civfix operators, not to the resident.`,
       ),
       kvTable([
         ["Reference", ref],
         ["Category", categoryLabel],
         ["Location", address],
         ["Coordinates", `${record.lat}, ${record.lng}`],
-        ["Reported by", reporter],
         ["Confirmed by", `${record.confirmations} neighbors`],
         ["Submitted", submittedDate],
       ]),
@@ -162,7 +160,7 @@ export function buildReportPacket(
       )
     }
     blocks.push(
-      paragraph(`civfix reference ${ref} - reply to this email to reach the resident.`, {
+      paragraph(`civfix reference ${ref} - replies to this email reach the civfix operators.`, {
         muted: true,
       }),
     )

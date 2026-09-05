@@ -1,5 +1,12 @@
 
+import type { Storage } from "@civfix/shared/interfaces"
 import type { Sql } from "@civfix/api/db"
+import {
+  INBOUND_EMAIL_RETENTION_BATCH,
+  INBOUND_EMAIL_RETENTION_MS,
+  makeDrizzleInboundRetentionRepository,
+  type InboundRetentionRepository,
+} from "@civfix/api/inbound-retention-repo"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
@@ -8,8 +15,10 @@ export interface RetentionSweepDeps extends JobObsDeps {
   graceMs?: number
   idempotencyRetentionMs?: number
   notificationsRetentionMs?: number
+  inboundEmailsRetentionMs?: number
   batchSize?: number
   maxPages?: number
+  storage?: Pick<Storage, "delete">
 }
 
 export interface RetentionSweepResult {
@@ -18,6 +27,8 @@ export interface RetentionSweepResult {
   sessions: number
   idempotencyKeys: number
   notifications: number
+  inboundEmails: number
+  inboundEmailObjectsLeaked: number
   errors: number
 }
 
@@ -25,6 +36,8 @@ export const RETENTION_GRACE_MS = 60 * 60 * 1000
 export const RETENTION_BATCH = 5000
 export const RETENTION_IDEMPOTENCY_MS = 48 * 60 * 60 * 1000
 export const RETENTION_NOTIFICATIONS_MS = 90 * 24 * 60 * 60 * 1000
+export const RETENTION_INBOUND_EMAILS_MS = INBOUND_EMAIL_RETENTION_MS
+export const RETENTION_INBOUND_EMAILS_BATCH = INBOUND_EMAIL_RETENTION_BATCH
 export const RETENTION_MAX_PAGES = 20
 
 export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<RetentionSweepResult> {
@@ -40,6 +53,9 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
   const notificationsCutoff = new Date(
     now.getTime() - (deps.notificationsRetentionMs ?? RETENTION_NOTIFICATIONS_MS),
   )
+  const inboundEmailsCutoff = new Date(
+    now.getTime() - (deps.inboundEmailsRetentionMs ?? RETENTION_INBOUND_EMAILS_MS),
+  )
 
   const result: RetentionSweepResult = {
     otps: 0,
@@ -47,6 +63,8 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     sessions: 0,
     idempotencyKeys: 0,
     notifications: 0,
+    inboundEmails: 0,
+    inboundEmailObjectsLeaked: 0,
     errors: 0,
   }
 
@@ -134,14 +152,80 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     (n) => (result.notifications += n),
   )
 
+  await runInboundEmailRetentionLane(deps, result, {
+    before: inboundEmailsCutoff,
+    maxPages,
+    log,
+    report,
+  })
+
   log("retention.sweep: done", {
     otps: result.otps,
     anonTokens: result.anonTokens,
     sessions: result.sessions,
     idempotencyKeys: result.idempotencyKeys,
     notifications: result.notifications,
+    inboundEmails: result.inboundEmails,
+    inboundEmailObjectsLeaked: result.inboundEmailObjectsLeaked,
     errors: result.errors,
     cutoff: cutoff.toISOString(),
   })
   return result
+}
+
+export interface InboundEmailRetentionLaneOptions {
+  before: Date
+  maxPages: number
+  log: (line: string, extra?: Record<string, unknown>) => void
+  report: (err: unknown, context?: Record<string, unknown>) => void
+  repo?: InboundRetentionRepository
+  pageSize?: number
+}
+
+export async function runInboundEmailRetentionLane(
+  deps: Pick<RetentionSweepDeps, "sql" | "storage">,
+  result: Pick<RetentionSweepResult, "inboundEmails" | "inboundEmailObjectsLeaked" | "errors">,
+  opts: InboundEmailRetentionLaneOptions,
+): Promise<void> {
+  const storage = deps.storage
+  if (storage === undefined) return
+  const repo = opts.repo ?? makeDrizzleInboundRetentionRepository(deps.sql)
+  const pageSize = opts.pageSize ?? INBOUND_EMAIL_RETENTION_BATCH
+
+  let stalled = false
+  try {
+    await drainPages(
+      (limit) => (stalled ? Promise.resolve([]) : repo.findArchivedBefore({ before: opts.before, limit })),
+      async (rows) => {
+        const reaped: string[] = []
+        for (const row of rows) {
+          let objectsGone = true
+          for (const key of row.attachmentKeys) {
+            try {
+              await storage.delete(key)
+            } catch (err) {
+              objectsGone = false
+              result.inboundEmailObjectsLeaked += 1
+              opts.report(err, {
+                job: "retention.sweep",
+                table: "inbound_emails",
+                phase: "attachment",
+              })
+            }
+          }
+          if (objectsGone) reaped.push(row.id)
+        }
+        if (reaped.length === 0) {
+          stalled = true
+          return
+        }
+        result.inboundEmails += await repo.deleteByIds(reaped)
+      },
+      { pageSize, maxPages: opts.maxPages },
+    )
+  } catch (err) {
+    result.errors++
+    opts.report(err, { job: "retention.sweep", table: "inbound_emails" })
+    opts.log("retention.sweep: inbound_emails failed", { err: String(err) })
+  }
 }
