@@ -13,6 +13,10 @@ import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
+export function flushNotificationDispatch(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 export interface StoredPushToken {
   userId: string
   platform: PushPlatform
@@ -237,6 +241,50 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve(match ?? null)
   }
 
+  refreshUnreadNotification(args: {
+    userId: string
+    type: NotificationType
+    link: string
+    title: string
+    body: string | null
+    since: Date
+  }): Promise<NotificationRecord | null> {
+    const match = this.notifications
+      .filter(
+        (n) =>
+          n.userId === args.userId &&
+          n.type === args.type &&
+          n.link === args.link &&
+          n.readAt === null &&
+          n.createdAt.getTime() > args.since.getTime(),
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
+    if (!match) return Promise.resolve(null)
+    match.title = args.title
+    match.body = args.body
+    return Promise.resolve(match)
+  }
+
+  async upsertCoalescedNotification(args: {
+    userId: string
+    type: NotificationType
+    link: string
+    title: string
+    body: string | null
+    since: Date
+  }): Promise<{ record: NotificationRecord; coalesced: boolean }> {
+    const refreshed = await this.refreshUnreadNotification(args)
+    if (refreshed) return { record: refreshed, coalesced: true }
+    const record = await this.insertNotification({
+      userId: args.userId,
+      type: args.type,
+      title: args.title,
+      body: args.body,
+      link: args.link,
+    })
+    return { record, coalesced: false }
+  }
+
   deleteAllNotificationsForUser(userId: string): Promise<void> {
     for (let i = this.notifications.length - 1; i >= 0; i--) {
       if (this.notifications[i]!.userId === userId) this.notifications.splice(i, 1)
@@ -246,8 +294,22 @@ export class InMemoryNotificationRepository implements NotificationRepository {
 
   readonly locales = new Map<string, string>()
 
+  readonly localeCalls: string[] = []
+  readonly localeBatchCalls: number[] = []
+
   findUserLocale(userId: string): Promise<string | null> {
+    this.localeCalls.push(userId)
     return Promise.resolve(this.locales.get(userId) ?? null)
+  }
+
+  findUserLocaleMany(userIds: string[]): Promise<Map<string, string>> {
+    this.localeBatchCalls.push(userIds.length)
+    const out = new Map<string, string>()
+    for (const userId of userIds) {
+      const locale = this.locales.get(userId)
+      if (locale !== undefined) out.set(userId, locale)
+    }
+    return Promise.resolve(out)
   }
 }
 

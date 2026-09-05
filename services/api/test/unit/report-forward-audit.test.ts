@@ -47,6 +47,16 @@ function mailer(opts: { fail?: boolean } = {}): OutboundMailService & { calls: S
   const calls: SendReportInput[] = []
   return {
     calls,
+    prepareReportToJurisdiction(input: SendReportInput) {
+      calls.push(input)
+      return Promise.resolve({
+        thread: stubThread(),
+        deliver: () =>
+          opts.fail
+            ? Promise.reject(new Error("smtp down"))
+            : Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" }),
+      })
+    },
     sendReportToJurisdiction(input: SendReportInput) {
       calls.push(input)
       if (opts.fail) return Promise.reject(new Error("smtp down"))

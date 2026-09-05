@@ -44,7 +44,11 @@ import type {
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
-import { SCHEDULE_MAX_BACKDATE_MS, isCleanupTerminal } from "./cleanup-rules.js"
+import {
+  MIN_EVENT_DURATION_MS,
+  SCHEDULE_MAX_BACKDATE_MS,
+  isCleanupTerminal,
+} from "./cleanup-rules.js"
 import {
   CLEANUP_GUEST_UPDATE_FANOUT_JOB,
   type GuestRsvpService,
@@ -103,6 +107,9 @@ export { MAX_EVENT_SLOTS }
 
 export const SLOT_FLIPS_PER_EVENT_PER_WINDOW = 20
 const SLOT_FLIP_WINDOW_SEC = 60 * 60
+
+export const MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW = 20
+const MEMBERSHIP_FLIP_WINDOW_SEC = 60 * 60
 
 const CANCEL_FANOUT_MEMBER_CAP = 2000
 
@@ -172,6 +179,18 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const newId = deps.newId ?? (() => randomUUID())
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
   const counters = deps.counters ?? fallbackCounters
+
+  async function assertMembershipFlipBudget(cleanupId: string, userId: string): Promise<void> {
+    const flips = await counters.incr(
+      `cleanup:rsvp:${cleanupId}:${userId}`,
+      MEMBERSHIP_FLIP_WINDOW_SEC,
+    )
+    if (flips > MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW) {
+      throw AppError.rateLimited(
+        "You've joined and left this event too many times recently. Please try again later.",
+      )
+    }
+  }
 
   function assertEventTextClean(input: {
     title?: string | undefined
@@ -683,7 +702,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       if (outcome === "too_early") {
         throw AppError.conflict(
-          "This event hasn't started yet — you can mark it complete once it begins.",
+          `This event can be marked complete ${MIN_EVENT_DURATION_MS / 60_000} minutes after its start time.`,
         )
       }
 
@@ -745,6 +764,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     },
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
+      await assertMembershipFlipBudget(id, userId)
       const outcome = await deps.repo.joinCleanupTx(id, userId)
       if (outcome === "not_found") notFoundCleanup()
       if (outcome === "banned") {
@@ -756,6 +776,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     },
 
     async leaveCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
+      await assertMembershipFlipBudget(id, userId)
       const organizerId = await deps.repo.organizerOf(id)
       if (organizerId === null) notFoundCleanup()
       if (organizerId === userId) {

@@ -28,6 +28,7 @@ import {
   roomSetPinned,
   type RoomScopeSql,
 } from "./chat-room-scope.drizzle.js"
+import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
 
 export interface ReportCityContext {
   geoid: string
@@ -178,6 +179,31 @@ interface ChatRowSelect {
 }
 
 function toMessageDTO(
+  r: ChatRowSelect,
+  reactions: ReactionSummaryDTO[],
+  mentions: UserMentionDTO[],
+  viewerUserId?: string | null,
+  clientId?: string,
+  attachments: MediaDTO[] = [],
+  reportCity?: ReportCityContext | null,
+  replyTo?: ReplyToDTO | null,
+  poll?: PollDTO | null,
+): ChatMessageDTO {
+  const dto = buildMessageDTO(
+    r,
+    reactions,
+    mentions,
+    viewerUserId,
+    clientId,
+    attachments,
+    reportCity,
+    replyTo,
+    poll,
+  )
+  return r.deleted_at !== null ? toTombstoneDTO(dto, r.deleted_at) : dto
+}
+
+function buildMessageDTO(
   r: ChatRowSelect,
   reactions: ReactionSummaryDTO[],
   mentions: UserMentionDTO[],
@@ -351,7 +377,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     viewerUserId: string | null,
     reportCity: ReportCityContext | null,
   ): Promise<ChatMessageDTO[]> {
-    const ids = page.map((r) => r.id)
+    const ids = liveMessageIds(page)
     const pollIds = page.filter((r) => r.kind === "poll" && r.deleted_at === null).map((r) => r.id)
     const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget, pollsByMessage] =
       await Promise.all([
@@ -382,11 +408,12 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO> {
     const pollIds = row.kind === "poll" && row.deleted_at === null ? [row.id] : []
+    const liveIds = liveMessageIds([row])
     const [reactions, mentions, attachmentsByMessage, reportCity, replyByTarget, pollsByMessage] =
       await Promise.all([
-        loadChatReactions(sql, row.id, viewerUserId),
-        loadChatMentions(sql, row.id),
-        presign ? loadChatAttachments(sql, [row.id], presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
+        liveIds.length > 0 ? loadChatMentions(sql, row.id) : Promise.resolve([]),
+        presign ? loadChatAttachments(sql, liveIds, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
         resolveReportCity(scope),
         replyMapForRows(sql, "chat_messages", [row]),
         loadPollsFor(sql, pollIds, viewerUserId),
@@ -498,7 +525,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     if (!row) return null
     const replyByTarget = await replyMapForRows(sql, "chat_messages", [row])
     return toMessageDTO(
-      { ...row, body: null, system_body: null },
+      row,
       [],
       [],
       senderId,

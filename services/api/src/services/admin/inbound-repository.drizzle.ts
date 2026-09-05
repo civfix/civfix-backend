@@ -1,18 +1,3 @@
-/**
- * Postgres-backed InboundRepository (catch-all inbox). The persistence seam for non-reply *@civfix.org
- * mail stored in inbound_emails. Like the mail repository this is written against the RAW postgres-js
- * tag (`Sql`, from `container.getDb().sql`), NOT the Drizzle query builder, so jsonb/Date values use
- * postgres.js's default serializers. The in-memory sibling (inbound-repository.memory.ts) backs tests.
- *
- * insertIdempotent is the dedup core: INSERT ... ON CONFLICT (message_id) DO NOTHING, so a re-delivered
- * email (webhook + sweep racing the same R2 object) lands exactly once. It returns { id, inserted } so
- * the processor can distinguish a fresh insert ("inbox") from a replay.
- *
- * Mapping to @civfix/shared: list -> InboundEmailListItemDTO[]; get -> InboundEmailDTO. `localPart` is
- * derived from `recipient` (split on '@'); attachment keys are the raw R2 keys (the route presigns them).
- * list() selects only what a list ROW needs (bounded body prefixes, no headers/attachments jsonb); the
- * full-row select is get()'s alone.
- */
 
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
@@ -32,7 +17,6 @@ import type {
   MailAttachment,
 } from "@civfix/shared"
 
-/** Insert input for one inbound email. message_id is already resolved (header or derived) by the caller. */
 export interface InboundEmailInsert {
   messageId: string
   fromAddr: string | null
@@ -46,39 +30,21 @@ export interface InboundEmailInsert {
   receivedAt?: Date
 }
 
-/** Persistence seam for the catch-all inbox. Routes + the inbound processor depend only on this. */
 export interface InboundRepository {
-  /** Insert idempotently on message_id. `inserted` is false when the row already existed (a replay). */
   insertIdempotent(input: InboundEmailInsert): Promise<{ id: string; inserted: boolean }>
-  /** Keyset-paginated inbox list (newest first) mapped to InboundEmailListItemDTO. */
   list(query: InboxListQuery): Promise<InboxListResponse>
-  /** A single inbound email mapped to InboundEmailDTO (with raw R2 attachment keys), or null. */
   get(id: string): Promise<InboundEmailDTO | null>
-  /**
-   * Set an inbound email's triage status. Returns true when the row existed.
-   *
-   * L6: `actorId` is REQUIRED and the `inbox.status_changed` audit row is written in the SAME transaction
-   * as the UPDATE. This mutation used to record neither an actor nor an audit row — the only admin state
-   * change in the console that left no trace of who made it.
-   */
   setStatus(id: string, status: InboundEmailStatus, actorId: string | null): Promise<boolean>
 }
 
-/** The preview policy now lives in mail-preview.ts (one policy for the inbox + the mail lists). */
 export { toPreview }
 
-/** The local-part of a catch-all recipient (e.g. "support" from "support@civfix.org"). */
 export function localPartOf(recipient: string | null): string {
   if (!recipient) return ""
   const at = recipient.indexOf("@")
   return at > 0 ? recipient.slice(0, at) : recipient
 }
 
-/**
- * The columns the LIST projection needs. `preview_*` are bounded prefixes of the bodies, not the bodies:
- * a list page used to drag body_html (up to 512 KB a row), headers and the attachments jsonb across the
- * wire only to throw them away — ~13 MB of discarded payload on a worst-case 25-row page.
- */
 interface InboundListRowSelect {
   id: string
   from_addr: string | null
@@ -91,7 +57,6 @@ interface InboundListRowSelect {
   received_at: Date
 }
 
-/** A full row as selected back from SQL for get() (snake_case columns). */
 interface InboundRowSelect extends Omit<InboundListRowSelect, "preview_text" | "preview_html"> {
   message_id: string
   to_addr: string | null
@@ -126,7 +91,6 @@ function toDTO(r: InboundRowSelect): InboundEmailDTO {
   }
 }
 
-/** Construct the production InboundRepository over the raw postgres-js tag. */
 export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
   return {
     async insertIdempotent(input: InboundEmailInsert): Promise<{ id: string; inserted: boolean }> {
@@ -223,18 +187,18 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
       status: InboundEmailStatus,
       actorId: string | null,
     ): Promise<boolean> {
-      // L6: effect + audit atomically, matching every other admin mutation in this codebase. The prior
-      // status is read in-tx and recorded so the log shows the transition, not just the destination.
       return sql.begin(async (tx) => {
-        // Read the prior status FIRST (a plain SELECT; a subquery inside the UPDATE's RETURNING would be
-        // reading the same row the statement is writing, which is exactly the kind of subtlety not worth
-        // having in an audit path). FOR UPDATE serializes concurrent triage clicks on the same row.
         const existing = await tx<{ status: InboundEmailStatus }[]>`
           SELECT status FROM inbound_emails WHERE id = ${id} LIMIT 1 FOR UPDATE
         `
         const prior = existing[0]?.status
         if (prior === undefined) return false
-        await tx`UPDATE inbound_emails SET status = ${status} WHERE id = ${id}`
+        await tx`
+          UPDATE inbound_emails
+          SET status = ${status},
+              archived_at = CASE WHEN ${status === "archived"} THEN COALESCE(archived_at, now()) ELSE NULL END
+          WHERE id = ${id}
+        `
         await writeAudit(tx, {
           actorId,
           action: "inbox.status_changed",

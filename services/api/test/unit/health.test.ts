@@ -5,10 +5,6 @@ import { buildContainer } from "../../src/di.js"
 import type { RedisClient } from "../../src/adapters/redis.js"
 import { loadEnv } from "../../src/env.js"
 
-/**
- * Boots the server with the test env (all fakes on, no DB/Redis) and exercises the health routes
- * via app.inject so no socket is opened.
- */
 describe("health routes", () => {
   let app: FastifyInstance | undefined
 
@@ -26,14 +22,12 @@ describe("health routes", () => {
     const body = res.json()
     expect(body.ok).toBe(true)
     expect(body.service).toBe("civfix-api")
-    // L19: the build version is NOT disclosed to unauthenticated callers.
     expect(body.version).toBeUndefined()
   })
 
   it("L19: /readyz is rate limited (no longer on the limiter allowlist), /healthz is not", async () => {
     app = await buildServer({ env: loadEnv() })
     const ready = await app.inject({ method: "GET", url: "/readyz" })
-    // The limiter ran => it emitted its headers. /healthz stays exempt so liveness never 429s.
     expect(ready.headers["x-ratelimit-limit"]).toBeDefined()
     const live = await app.inject({ method: "GET", url: "/healthz" })
     expect(live.headers["x-ratelimit-limit"]).toBeUndefined()
@@ -43,7 +37,6 @@ describe("health routes", () => {
     let pings = 0
     const env = loadEnv()
     const container = buildContainer(env)
-    // Force the "real Redis consumer" branch with a stub whose PING we can count.
     const stub = { ping: async () => (pings++, "PONG") } as unknown as RedisClient
     Object.defineProperty(container, "redis", { get: () => stub })
     Object.defineProperty(container, "getRedis", { value: () => stub })
@@ -76,6 +69,31 @@ describe("health routes", () => {
     expect(body.checks.redis).toBe("skipped")
   })
 
+  it("H11: readiness ignores the USE_FAKE_* flags — a configured backend is always probed", async () => {
+    const env = loadEnv({
+      NODE_ENV: "development",
+      DATABASE_URL: "postgres://u:p@localhost:5432/civfix",
+      USE_FAKE_CHAT: "1",
+      USE_FAKE_PUSH: "1",
+      USE_FAKE_JOBS: "1",
+      USE_FAKE_USER_CHANNEL: "1",
+    })
+    const container = buildContainer(env)
+    expect(container.usesRealDb).toBe(true)
+    expect(container.usesRealRedis).toBe(false)
+    Object.defineProperty(container, "getDb", {
+      value: () => ({
+        sql: () => Promise.reject(new Error("db down")),
+      }),
+    })
+    app = await buildServer({ env, container })
+    const res = await app.inject({ method: "GET", url: "/readyz" })
+    expect(res.statusCode).toBe(503)
+    const body = res.json()
+    expect(body.checks.db).toBe("down")
+    expect(body.checks.redis).toBe("skipped")
+  })
+
   it("unknown route returns the 404 error envelope", async () => {
     app = await buildServer({ env: loadEnv() })
     const res = await app.inject({ method: "GET", url: "/v1/does-not-exist" })
@@ -90,10 +108,8 @@ describe("health routes", () => {
     const res = await app.inject({ method: "GET", url: "/healthz" })
     const csp = res.headers["content-security-policy"]
     expect(typeof csp).toBe("string")
-    // Pure-JSON API: deny every subresource and disallow framing.
     expect(csp).toContain("default-src 'none'")
     expect(csp).toContain("frame-ancestors 'none'")
-    // helmet's nosniff default must survive the CSP config.
     expect(res.headers["x-content-type-options"]).toBe("nosniff")
   })
 })

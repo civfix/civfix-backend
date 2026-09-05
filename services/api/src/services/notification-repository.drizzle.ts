@@ -67,6 +67,34 @@ function toPrefsRecord(r: PrefsRowSelect): NotificationPrefsRecord {
   }
 }
 
+export interface RefreshUnreadArgs {
+  userId: string
+  type: NotificationType
+  link: string
+  title: string
+  body: string | null
+  since: Date
+}
+
+function refreshUnreadWith(exec: Sql, args: RefreshUnreadArgs): Promise<NotificationRecord | null> {
+  return exec<NotificationRowSelect[]>`
+    UPDATE notifications
+    SET title = ${args.title}, body = ${args.body}
+    WHERE id = (
+      SELECT id FROM notifications
+      WHERE user_id = ${args.userId}
+        AND type = ${args.type}
+        AND link = ${args.link}
+        AND read_at IS NULL
+        AND created_at > ${args.since}
+      ORDER BY created_at DESC
+      LIMIT 1
+      FOR UPDATE
+    )
+    RETURNING id, user_id, type, title, body, link, read_at, created_at
+  `.then((rows) => (rows[0] ? toRecord(rows[0]) : null))
+}
+
 export function makeDrizzleNotificationRepository(sql: Sql): NotificationRepository {
   return {
     async insertNotification(args: NewNotificationArgs): Promise<NotificationRecord> {
@@ -331,8 +359,39 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows[0] ? toRecord(rows[0]) : null
     },
 
+    refreshUnreadNotification(args: RefreshUnreadArgs): Promise<NotificationRecord | null> {
+      return refreshUnreadWith(sql, args)
+    },
+
+    async upsertCoalescedNotification(
+      args: RefreshUnreadArgs,
+    ): Promise<{ record: NotificationRecord; coalesced: boolean }> {
+      return sql.begin(async (tx) => {
+        const refreshed = await refreshUnreadWith(tx as unknown as Sql, args)
+        if (refreshed) return { record: refreshed, coalesced: true }
+        const rows = await tx<NotificationRowSelect[]>`
+          INSERT INTO notifications (user_id, type, title, body, link)
+          VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
+          RETURNING id, user_id, type, title, body, link, read_at, created_at
+        `
+        return { record: toRecord(rows[0]!), coalesced: false }
+      }) as Promise<{ record: NotificationRecord; coalesced: boolean }>
+    },
+
     async deleteAllNotificationsForUser(userId: string): Promise<void> {
       await sql`DELETE FROM notifications WHERE user_id = ${userId}`
+    },
+
+    async findUserLocaleMany(userIds: string[]): Promise<Map<string, string>> {
+      const out = new Map<string, string>()
+      if (userIds.length === 0) return out
+      const rows = await sql<{ id: string; locale: string | null }[]>`
+        SELECT id, locale FROM users WHERE id = ANY(${userIds}::uuid[])
+      `
+      for (const row of rows) {
+        if (row.locale !== null) out.set(row.id, row.locale)
+      }
+      return out
     },
 
     async findUserLocale(userId: string): Promise<string | null> {

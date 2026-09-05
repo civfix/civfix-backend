@@ -1,4 +1,5 @@
 
+import { dirname, join } from "node:path"
 import { MAX_VIDEO_BYTES } from "@civfix/shared"
 
 export function parseBool(raw: string | undefined, fallback: boolean): boolean {
@@ -27,11 +28,15 @@ export interface WorkerLimits {
   maxImagePixels: number
   sharpPixelLimit: number
   maxChildOutputBytes: number
+  maxToolStdoutBytes: number
   ffprobeTimeoutMs: number
   ffmpegTimeoutMs: number
   imageTimeoutMs: number
   jobTimeoutMs: number
   maxVideoDurationSec: number
+  maxVideoPixels: number
+  maxVideoFps: number
+  maxVideoBitrateBps: number
   thumbnailMaxEdge: number
   nsfwHoldThreshold: number
   nsfwUnscoredPolicy: "flag" | "hold"
@@ -49,6 +54,52 @@ export interface WorkerLimits {
 
 export const CHILD_KILL_SIGNAL = "SIGKILL" as const
 
+export interface SandboxIdentity {
+  uid: number
+  gid: number
+}
+
+function parseId(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null
+  const n = Number.parseInt(raw.trim(), 10)
+  return Number.isInteger(n) && n > 0 ? n : null
+}
+
+export function loadSandboxIdentity(
+  source: NodeJS.ProcessEnv = process.env,
+): SandboxIdentity | null {
+  const uid = parseId(source.MEDIA_SANDBOX_UID)
+  const gid = parseId(source.MEDIA_SANDBOX_GID)
+  if (uid !== null && gid !== null) return { uid, gid }
+  if (uid !== null || gid !== null) {
+    throw new Error(
+      "media-worker: MEDIA_SANDBOX_UID and MEDIA_SANDBOX_GID must be set together (both positive " +
+        "integers naming the unprivileged account the media decoders run as)",
+    )
+  }
+  if (source.NODE_ENV === "production") {
+    throw new Error(
+      "media-worker: MEDIA_SANDBOX_UID / MEDIA_SANDBOX_GID are required in production - the media " +
+        "decoders must not run as the uid that holds DATABASE_URL and the R2 credentials. The image " +
+        "provisions uid/gid 1001 (mediatools) and compose sets both variables.",
+    )
+  }
+  return null
+}
+
+export function loadImageLaneEntry(source: NodeJS.ProcessEnv = process.env): string {
+  const configured = (source.MEDIA_IMAGE_LANE_ENTRY ?? "").trim()
+  if (configured) return configured
+  const entry = process.argv[1]
+  const dir = entry === undefined ? process.cwd() : dirname(entry)
+  return join(dir, "image-lane.js")
+}
+
+export function loadHttpsProxy(source: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = (source.HTTPS_PROXY ?? source.https_proxy ?? "").trim()
+  return raw.length > 0 ? raw : null
+}
+
 export const ALLOWED_VIDEO_CODECS: ReadonlySet<string> = new Set(["h264", "hevc"])
 
 const ONE_MB = 1024 * 1024
@@ -59,11 +110,15 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     maxImagePixels: parsePosInt(source.MEDIA_MAX_IMAGE_PIXELS, 24_000_000),
     sharpPixelLimit: parsePosInt(source.MEDIA_SHARP_PIXEL_LIMIT, 32_000_000),
     maxChildOutputBytes: parsePosInt(source.MEDIA_MAX_CHILD_OUTPUT_BYTES, MAX_VIDEO_BYTES + ONE_MB),
+    maxToolStdoutBytes: parsePosInt(source.MEDIA_MAX_TOOL_STDOUT_BYTES, ONE_MB),
     ffprobeTimeoutMs: parsePosInt(source.MEDIA_FFPROBE_TIMEOUT_MS, 10_000),
     ffmpegTimeoutMs: parsePosInt(source.MEDIA_FFMPEG_TIMEOUT_MS, 30_000),
     imageTimeoutMs: parsePosInt(source.MEDIA_IMAGE_TIMEOUT_MS, 15_000),
     jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, 90_000),
     maxVideoDurationSec: parsePosInt(source.MEDIA_MAX_VIDEO_DURATION_SEC, 30),
+    maxVideoPixels: parsePosInt(source.MEDIA_VIDEO_MAX_PIXELS, 3840 * 2160),
+    maxVideoFps: parsePosInt(source.MEDIA_VIDEO_MAX_FPS, 120),
+    maxVideoBitrateBps: parsePosInt(source.MEDIA_VIDEO_MAX_BITRATE, 50_000_000),
     thumbnailMaxEdge: parsePosInt(source.MEDIA_THUMBNAIL_MAX_EDGE, 400),
     nsfwHoldThreshold: clampUnit(source.MEDIA_NSFW_HOLD_THRESHOLD, 0.8),
     nsfwUnscoredPolicy: source.MEDIA_UNSCORED_POLICY?.trim().toLowerCase() === "hold" ? "hold" : "flag",

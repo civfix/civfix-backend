@@ -1,13 +1,3 @@
-/**
- * plugins/rate-limit.ts — the two-limiter shape.
- *
- * H4: sensitive prefixes must FAIL CLOSED when the store errors, while ordinary traffic keeps its lax,
- * skip-on-error global bucket.
- * M22: the key must prefer the authenticated identity over the IP, which only works if the auth
- * onRequest hook has already run — this file locks that hook ordering down, because a silently-broken
- * key generator would look exactly like a working one.
- * L19: /healthz stays exempt; /readyz does not.
- */
 
 import { describe, it, expect } from "vitest"
 import { readdirSync, readFileSync } from "node:fs"
@@ -66,6 +56,7 @@ import {
   GUEST_LIST_RATE_LIMIT,
 } from "../../src/routes/guest-rsvp.routes.js"
 import { CREATE_POST_RATE_LIMIT, POST_INTERACTION_RATE_LIMIT } from "../../src/routes/posts.routes.js"
+import { CLEANUP_MEMBERSHIP_RATE_LIMIT } from "../../src/routes/cleanups.routes.js"
 import { ROUTE_REPORT_RATE_LIMIT } from "../../src/routes/admin/reports.routes.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "../../src/routes/admin/mail.routes.js"
 import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
@@ -82,7 +73,6 @@ import { registerCors } from "../../src/plugins/cors.js"
 import { makeErrorHandler } from "../../src/errors/http-mapper.js"
 import type { RedisClient } from "../../src/adapters/redis.js"
 
-/** A Redis whose rate-limit script always fails — i.e. the outage the fix is about. */
 function brokenRedis(): RedisClient {
   return {
     rateLimit: (
@@ -102,8 +92,6 @@ async function buildApp(
   const app = Fastify()
   app.setErrorHandler(makeErrorHandler())
   await registerRateLimit(app, opts)
-  // Mirror server.ts: the auth context hook is an INSTANCE-level onRequest hook registered AFTER the
-  // rate limiter. If Fastify ever ran route-level hooks first, the identity key would silently degrade.
   app.addHook("onRequest", async (req) => {
     const header = req.headers["x-test-user"]
     req.auth = {
@@ -149,7 +137,6 @@ describe("rate limiter: sensitive prefixes fail closed (H4)", () => {
       expect(sensitive.statusCode).toBe(429)
       expect(sensitive.json().code).toBe("RATE_LIMITED")
 
-      // The global bucket is deliberately lax: a Redis blip must not take the read product down.
       const ordinary = await app.inject({ method: "GET", url: "/v1/reports" })
       expect(ordinary.statusCode).toBe(200)
     } finally {
@@ -166,7 +153,6 @@ describe("rate limiter: sensitive prefixes fail closed (H4)", () => {
       "/v1/media/presign",
       "/v1/claim/abc",
       "/forms/home-turf",
-      // Mints a durable, publicly-verifiable artifact from personal data and returns a capability URL.
       "/v1/me/volunteer-hours/certificates",
       "/v1/me/volunteer-hours/certificates/A1B2C3D4E5F6/revoke",
     ]) {
@@ -178,13 +164,7 @@ describe("rate limiter: sensitive prefixes fail closed (H4)", () => {
       "/readyz",
       "/v1/authors",
       "/v1/admin/users",
-      // `path === p || startsWith(p + "/")`: the plain hours read must NOT inherit the certificates
-      // prefix and land in the fail-closed bucket.
       "/v1/me/volunteer-hours",
-      // C3, and this negative is the tripwire: the PUBLIC verification read must stay OUT of the
-      // fail-closed bucket. It is a read-only lookup that mints nothing, consumes no one-shot secret and
-      // hands out no upload URL — and a Redis blip here would 429 the school registrar holding a printed
-      // transcript, who is the one audience this feature exists for.
       "/v1/service-hours/verify/A1B2C3D4E5F6",
     ]) {
       expect(isSensitivePath(p)).toBe(false)
@@ -213,10 +193,6 @@ describe("rate limiter: mutating write paths fail closed too (F061/F093)", () =>
       expect(created.statusCode).toBe(429)
       expect(created.json().code).toBe("RATE_LIMITED")
 
-      // The outbound-mail bucket ALSO sets skipOnError:false, and @fastify/rate-limit rethrows the
-      // store error from its own onRequest hook, which runs before the write-sensitive hook can turn
-      // it into a 429. The send is still refused — the property that matters — but the caller sees a
-      // 500 instead of a 429 + retry-after, so a client cannot back off correctly.
       const sent = await app.inject({
         method: "POST",
         url: "/v1/admin/mail",
@@ -277,7 +253,6 @@ describe("rate limiter: identity-first keying (M22)", () => {
     const authed = { auth: { userId: "u-1" }, ip: "203.0.113.9" } as never
     const otherAccount = { auth: { userId: "u-2" }, ip: "203.0.113.9" } as never
     const anon = { auth: { userId: null }, ip: "203.0.113.9" } as never
-    // All three share one bucket: N accounts on one host must not buy N x the budget (M22 regression).
     expect(rateLimitKey(authed)).toBe("ip:203.0.113.9")
     expect(rateLimitKey(otherAccount)).toBe("ip:203.0.113.9")
     expect(rateLimitKey(anon)).toBe("ip:203.0.113.9")
@@ -293,7 +268,6 @@ describe("rate limiter: identity-first keying (M22)", () => {
   })
 
   it("counts one account as ONE bucket even when it rotates IPs", async () => {
-    // No redis => the in-process LocalStore, which is enough to count.
     const app = await buildApp({ sensitiveMax: 3 })
     try {
       const hit = (ip: string) =>
@@ -306,11 +280,9 @@ describe("rate limiter: identity-first keying (M22)", () => {
       expect((await hit("203.0.113.1")).statusCode).toBe(200)
       expect((await hit("203.0.113.2")).statusCode).toBe(200)
       expect((await hit("203.0.113.3")).statusCode).toBe(200)
-      // Fourth request from a fourth address: the ACCOUNT is over its limit.
       const blocked = await hit("203.0.113.4")
       expect(blocked.statusCode).toBe(429)
 
-      // A different account from a already-used IP is unaffected (the key really is the identity).
       const other = await app.inject({
         method: "GET",
         url: "/v1/auth/otp/request",
@@ -439,6 +411,7 @@ const IDENTITY_SCOPED_LIMITS = {
   LIST_BLOCKS_RATE_LIMIT,
   CREATE_REPORT_RATE_LIMIT,
   REPORT_CONTENT_RATE_LIMIT,
+  CLEANUP_MEMBERSHIP_RATE_LIMIT,
 }
 
 const HOST_SCOPED_LIMITS = {
@@ -465,11 +438,6 @@ interface DeclaredLimit {
   file: string
 }
 
-/**
- * Every rate limit declared with perIdentity()/perHost() anywhere under src/routes, read from source.
- * The two enumerations above are hand-written, so without this scan a new limiter simply never gets
- * asserted — which is exactly how CREATE_REPORT/REPORT_CONTENT/DATA_EXPORT stayed IP-keyed unnoticed.
- */
 function declaredRouteLimits(): DeclaredLimit[] {
   const root = fileURLToPath(new URL("../../src/routes/", import.meta.url))
   const found: DeclaredLimit[] = []

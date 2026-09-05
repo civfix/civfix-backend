@@ -113,6 +113,20 @@ export async function registerHomeTurfRoutes(
     return store
   }
 
+  if (container.env.HOME_TURF_NOTIFY_TO === "") {
+    app.log.warn(
+      "home-turf form: HOME_TURF_NOTIFY_TO is unset — POST /forms/home-turf is disabled and will accept no submissions",
+    )
+  }
+
+  function requireNotifyTo(): string {
+    const notifyTo = container.env.HOME_TURF_NOTIFY_TO
+    if (notifyTo === "") {
+      throw AppError.conflict("This form isn't accepting submissions right now. Please try again later.")
+    }
+    return notifyTo
+  }
+
   app.post(
     "/forms/home-turf",
     { bodyLimit: HOME_TURF_BODY_LIMIT, config: { rateLimit: HOME_TURF_RATE_LIMIT } },
@@ -131,19 +145,18 @@ export async function registerHomeTurfRoutes(
         return reply.status(200).send({ ok: true })
       }
 
+      const notifyTo = requireNotifyTo()
       const store = requireCounters()
       await enforceHomeTurfIpCap(request.ip, store)
 
       const from = container.env.HOME_TURF_MAIL_FROM
-      const notification = buildNotificationEmail(form, from, container.env.HOME_TURF_NOTIFY_TO)
+      const notification = buildNotificationEmail(form, from, notifyTo)
       await container.mailer.sendOutbound(notification)
 
       await enforceHomeTurfRecipientCap(form.email, store)
 
       try {
-        await container.mailer.sendOutbound(
-          buildConfirmationEmail(form, from, container.env.HOME_TURF_NOTIFY_TO),
-        )
+        await container.mailer.sendOutbound(buildConfirmationEmail(form, from, notifyTo))
       } catch (err) {
         request.log.warn({ err }, "home-turf form: confirmation email failed (non-fatal; returning 200)")
       }

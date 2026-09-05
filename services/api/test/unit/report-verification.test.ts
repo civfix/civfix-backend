@@ -17,6 +17,7 @@ import {
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import {
   makeOutboundMailService,
+  OutboundSendDeadlineError,
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
@@ -175,8 +176,7 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
     const svc = makeAdminUserService({
       repo,
       sessions: {
-        ban: async () => 0,
-        clearBan: async () => {},
+        applyStatus: async () => 0,
         revokeAll: async () => 0,
       },
       now: () => NOW,
@@ -298,7 +298,14 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
     })
     const outboundMail: OutboundMailService =
       opts.sendError !== undefined
-        ? { ...realOutbound, sendReportToJurisdiction: () => Promise.reject(opts.sendError) }
+        ? {
+            ...realOutbound,
+            async prepareReportToJurisdiction(input) {
+              const prepared = await realOutbound.prepareReportToJurisdiction(input)
+              return { thread: prepared.thread, deliver: () => Promise.reject(opts.sendError) }
+            },
+            sendReportToJurisdiction: () => Promise.reject(opts.sendError),
+          }
         : realOutbound
     const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
     return { repo, mailer, mailRepo, svc }
@@ -411,6 +418,27 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
     await expect(
       runAutoForwardWith(svc, "rep-1", { info: () => {}, warn: (o) => warnings.push(o) }),
     ).rejects.toThrow("ECONNRESET")
+    expect(warnings).toHaveLength(1)
+  })
+
+  it("(c'') a DEADLINE expiry is NOT retried — the handler completes and leaves it to the operator", async () => {
+    const { repo, svc } = handlerHarness({ sendError: new OutboundSendDeadlineError(30_000) })
+    repo.seedReport({
+      id: "rep-1",
+      reporter: reporter("u-1"),
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: true,
+      },
+    })
+
+    const warnings: unknown[] = []
+    await expect(
+      runAutoForwardWith(svc, "rep-1", { info: () => {}, warn: (o) => warnings.push(o) }),
+    ).resolves.toBeUndefined()
     expect(warnings).toHaveLength(1)
   })
 

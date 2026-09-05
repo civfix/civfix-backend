@@ -15,14 +15,13 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     kind: row.kind,
     codec: row.codec,
     r2Key: row.r2Key,
+    servedKey: row.servedKey,
     thumbKey: row.thumbKey,
     status: row.status,
     width: row.width,
     height: row.height,
     byteSize: row.byteSize,
     purpose: row.purpose,
-    // H9: the bindings the view authorizer resolves visibility through. Projected here (not lazily
-    // re-queried) so getMedia makes exactly one lookup before authorizing.
     reportId: row.reportId,
     chatMessageId: row.chatMessageId,
     postId: row.postId,
@@ -33,14 +32,6 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
 
 export function makeDrizzleMediaRepository(db: Db): MediaRepository {
   return {
-    /**
-     * `codec` is deliberately NOT part of the intake insert: at presign time the only codec-ish input is
-     * the client's declared contentType, which is untrusted and frequently wrong. The column is written
-     * later by the media-worker from what ffprobe reports about the actual bytes (media-worker-repo's
-     * applyResult, called from media-worker/src/jobs/media-checks.ts) — and it stays NULL for images by
-     * design (the image branch of the worker's pipeline reports no codec). So `media_assets.codec` is a
-     * VIDEO fact about processed bytes only, and nothing may derive an image's MIME type from it.
-     */
     async insert(row: NewMediaAsset): Promise<void> {
       await db.insert(mediaAssets).values({
         id: row.id,
@@ -68,13 +59,6 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
       return row ? toView(row) : null
     },
 
-    /**
-     * The finalize compare-and-set (0087). A conditional UPDATE is the whole control: the ONE caller whose
-     * statement finds finalized_at NULL flips it and gets the row back; every concurrent or later finalize
-     * matches zero rows and gets null, so the media.checks enqueue cannot be replayed. Read-then-write
-     * would race, and the old status-CAS could not work at all — the row is already 'validating' for the
-     * entire processing window, so the guard was true every time.
-     */
     async markFinalized(uploadId: string): Promise<MediaAssetView | null> {
       const rows = await db
         .update(mediaAssets)

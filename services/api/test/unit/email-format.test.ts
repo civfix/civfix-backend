@@ -77,19 +77,35 @@ describe("email layout", () => {
 describe("buildReportPacket", () => {
   it("builds the refined default subject + a branded body with escaped, multi-line content", () => {
     const packet = buildReportPacket(reportRecord(), null, ["https://r2/a?t=1", "https://r2/b?t=2"], "Please prioritize.")
-    // The concise default subject identifies the report by its title, place, and human reference.
     expect(packet.subject).toBe("[civfix] Tag on the underpass - Springfield - ABC123")
     expect(packet.html).toContain("<!DOCTYPE html>")
     expect(packet.html).toContain("First line of description.<br>Second line with detail.")
     expect(packet.html).toContain(">Photo 1<")
     expect(packet.html).toContain(">Photo 2<")
     expect(packet.html).toContain("Please prioritize.")
-    // The default footer paragraph uses the human reference code, not the raw UUID.
     expect(packet.text).toContain("civfix reference ABC123")
     expect(packet.text).not.toContain("11111111-2222-3333-4444-555555555555")
     expect(packet.text).toContain("Photo 1: https://r2/a?t=1")
-    // The scannable kvTable carries the confirmations + submitted date.
     expect(packet.text).toContain("3 neighbors")
+  })
+
+  it("H6: the packet never names the reporter and never offers a direct line to them", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null)
+    for (const part of [packet.text, packet.html]) {
+      expect(part).not.toContain("Dana Reporter")
+      expect(part).not.toContain("Reported by")
+      expect(part.toLowerCase()).not.toContain("directly to the resident")
+      expect(part.toLowerCase()).not.toContain("to reach the resident")
+    }
+    expect(packet.text).toContain("Replies to this email go to the civfix operators")
+    expect(packet.text).toContain("replies to this email reach the civfix operators")
+  })
+
+  it("H6: precise coordinates and the map link stay (jurisdiction routing needs the exact spot)", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null)
+    expect(packet.text).toContain("39.5, -98.35")
+    expect(packet.html).toContain("mlat=39.5")
+    expect(packet.text).toContain("100 Main St")
   })
 
   it("strips CRLF from the subject to block header injection", () => {
@@ -114,11 +130,9 @@ describe("buildReportPacket", () => {
       "A {category} report was filed at {address}.\n\nConfirmed by {confirmations} neighbors. See {mapLink}.",
     )
     expect(packet.subject).toBe("Case ABC123: Graffiti at 100 Main St")
-    // Body is split on the blank line into two paragraph blocks, tokens replaced.
     expect(packet.html).toContain("A Graffiti report was filed at 100 Main St.")
     expect(packet.html).toContain("Confirmed by 3 neighbors.")
     expect(packet.html).toContain("<!DOCTYPE html>")
-    // The refined-default kvTable / photo blocks are NOT emitted for a custom body.
     expect(packet.html).not.toContain(">Photo 1<")
   })
 
@@ -131,10 +145,8 @@ describe("buildReportPacket", () => {
       null,
       "First paragraph.\r\n\r\nSecond paragraph.",
     )
-    // CRLF blank line splits into two distinct paragraphs (would stay one block if \r were left in).
     expect(packet.html).toContain("First paragraph.")
     expect(packet.html).toContain("Second paragraph.")
-    // No carriage return leaks into either rendered part.
     expect(packet.text).not.toContain("\r")
     expect(packet.html).not.toContain("\r")
   })
@@ -162,7 +174,6 @@ describe("buildReportPacket", () => {
       null,
     )
     expect(packet.subject).toBe("Ref ABC123")
-    // Default body still renders (the kvTable heading is present).
     expect(packet.html).toContain("What was reported")
   })
 })

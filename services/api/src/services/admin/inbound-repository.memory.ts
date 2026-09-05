@@ -1,9 +1,3 @@
-/**
- * In-memory InboundRepository for unit tests (the inbound processor, sweep, and admin inbox routes run
- * fully offline against this). Mirrors the Drizzle impl's behavior: insertIdempotent dedups on
- * message_id; list pages newest-first with status/recipient/q filters; get/setStatus by id, with setStatus
- * recording the `inbox.status_changed` audit row (actor + transition) the Drizzle impl writes in-tx.
- */
 
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
@@ -25,13 +19,9 @@ interface StoredInbound extends InboundEmailInsert {
   id: string
   status: InboundEmailStatus
   receivedAt: Date
+  archivedAt: Date | null
 }
 
-/**
- * An audit row setStatus would have written. The Drizzle impl writes `inbox.status_changed` into audit_log
- * inside the SAME transaction as the UPDATE (L6), so the actor and the transition are recoverable; this
- * fake used to DROP the actorId argument entirely, which made the operator threading unobservable offline.
- */
 export interface RecordedInboxAudit {
   actorId: string | null
   action: "inbox.status_changed"
@@ -41,7 +31,6 @@ export interface RecordedInboxAudit {
 
 export class InMemoryInboundRepository implements InboundRepository {
   readonly rows: StoredInbound[] = []
-  /** Audit rows recorded by setStatus, mirroring the Drizzle impl's in-tx writeAudit. */
   readonly audits: RecordedInboxAudit[] = []
   private tick = 0
 
@@ -58,6 +47,7 @@ export class InMemoryInboundRepository implements InboundRepository {
       id: randomUUID(),
       status: "unread",
       receivedAt: input.receivedAt ?? this.nextDate(),
+      archivedAt: null,
     }
     this.rows.push(row)
     return Promise.resolve({ id: row.id, inserted: true })
@@ -77,7 +67,6 @@ export class InMemoryInboundRepository implements InboundRepository {
       }
       return true
     })
-    // Newest first (received_at DESC, id DESC).
     filtered = filtered.sort((a, b) => {
       const d = b.receivedAt.getTime() - a.receivedAt.getTime()
       return d !== 0 ? d : (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
@@ -111,6 +100,7 @@ export class InMemoryInboundRepository implements InboundRepository {
     if (!row) return Promise.resolve(false)
     const priorStatus = row.status
     row.status = status
+    row.archivedAt = status === "archived" ? (row.archivedAt ?? this.nextDate()) : null
     this.audits.push({
       actorId,
       action: "inbox.status_changed",

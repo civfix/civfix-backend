@@ -17,6 +17,7 @@ export interface CleanupRowSelect {
   lng: number
   lat: number
   scheduled_at: Date
+  completed_at: Date | null
   status: CleanupStatus
   bring: string[] | null
   address: string | null
@@ -60,6 +61,7 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     lat: r.lat,
     lng: r.lng,
     scheduledAt: r.scheduled_at,
+    completedAt: r.completed_at,
     status: r.status,
     bring: r.bring,
     address: r.address,
@@ -88,6 +90,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     ST_X(c.geom) AS lng,
     ST_Y(c.geom) AS lat,
     c.scheduled_at,
+    c.completed_at,
     c.status,
     c.bring,
     c.address,

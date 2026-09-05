@@ -5,6 +5,7 @@ import {
   makeVolunteerHoursService,
   type CleanupHoursLookup,
   type CleanupHoursView,
+  type HoursModerationSink,
   type VolunteerHoursService,
 } from "../../src/services/volunteer-hours-service.js"
 import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
@@ -23,6 +24,9 @@ const CAROL = "33333333-3333-3333-3333-333333333333"
 const DAVE = "44444444-4444-4444-4444-444444444444"
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const CLEANUP = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+const SCHEDULED_AT = new Date("2026-07-04T08:00:00.000Z")
+const COMPLETED_AT = new Date("2026-07-05T07:00:00.000Z")
+
 const GEOID_A = "0644000"
 const GEOID_B = "0667000"
 
@@ -70,6 +74,8 @@ function makeService(opts: {
   cohosts?: string[]
   verified?: boolean | Record<string, boolean>
   notifier?: Pick<NotificationService, "createNotification">
+  moderation?: HoursModerationSink
+  weeklyFlagHours?: number
 }): VolunteerHoursService {
   const verified = opts.verified ?? true
   return makeVolunteerHoursService({
@@ -78,7 +84,35 @@ function makeService(opts: {
     isVerified: (userId: string) =>
       Promise.resolve(typeof verified === "boolean" ? verified : (verified[userId] ?? false)),
     ...(opts.notifier !== undefined ? { notifier: opts.notifier } : {}),
+    ...(opts.moderation !== undefined ? { moderation: opts.moderation } : {}),
+    ...(opts.weeklyFlagHours !== undefined ? { weeklyFlagHours: opts.weeklyFlagHours } : {}),
   })
+}
+
+interface RecordingModeration extends HoursModerationSink {
+  filed: Parameters<HoursModerationSink["flag"]>[0][]
+}
+
+function makeModerationSink(): RecordingModeration {
+  const filed: RecordingModeration["filed"] = []
+  return {
+    filed,
+    flag: (input) => {
+      filed.push(input)
+      return Promise.resolve()
+    },
+  }
+}
+
+function eventOfLength(hours: number): CleanupHoursView {
+  return {
+    organizerUserId: HOST,
+    status: "done",
+    jurisdictionGeoid: GEOID_A,
+    title: "Ocean Beach sweep",
+    scheduledAt: SCHEDULED_AT,
+    completedAt: new Date(SCHEDULED_AT.getTime() + hours * 3_600_000),
+  }
 }
 
 function flat(userIds: string[], hours: number): { userId: string; hours: number }[] {
@@ -124,6 +158,8 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     status: "done",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
+    scheduledAt: SCHEDULED_AT,
+    completedAt: COMPLETED_AT,
   }
 
   it("credits each listed attendee their OWN hours and reports the row count", async () => {
@@ -331,6 +367,8 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
         status: "upcoming",
         jurisdictionGeoid: GEOID_A,
         title: "Ocean Beach sweep",
+        scheduledAt: SCHEDULED_AT,
+        completedAt: null,
       },
       members: [HOST],
     })
@@ -345,6 +383,180 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     await expect(
       service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([HOST], 1) }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+})
+
+describe("H9: volunteer hours cannot be minted faster than events actually run", () => {
+  function seedEvent(repo: InMemoryVolunteerHoursRepository, cleanupId: string, at: Date): void {
+    repo.seedCleanup(cleanupId, { title: "Sweep", referenceCode: null, scheduledAt: at })
+  }
+
+  it("a: caps a per-attendee credit at the event's own window plus one hour of grace", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedEvent(repo, CLEANUP, SCHEDULED_AT)
+    const service = makeService({ repo, view: eventOfLength(2), members: [HOST, BOB] })
+
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 3.5) }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 3) })
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(3)
+  })
+
+  it("a: an event completed before 0103 has no recorded window and keeps the MAX_EVENT_HOURS ceiling", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedEvent(repo, CLEANUP, SCHEDULED_AT)
+    const legacy: CleanupHoursView = { ...eventOfLength(2), completedAt: null }
+    const service = makeService({ repo, view: legacy, members: [HOST, BOB] })
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 12) })
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(12)
+  })
+
+  it("e: refuses hours for an event that ran for less than the minimum duration", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedEvent(repo, CLEANUP, SCHEDULED_AT)
+    const service = makeService({ repo, view: eventOfLength(0.2), members: [HOST, BOB] })
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 0.1) }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+  })
+
+  it("b: caps one attendee at 24 h per UTC day ACROSS events", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const morning = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    const evening = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    seedEvent(repo, morning, new Date("2026-07-04T06:00:00.000Z"))
+    seedEvent(repo, evening, new Date("2026-07-04T18:00:00.000Z"))
+
+    const first = makeService({
+      repo,
+      view: { ...eventOfLength(23), organizerUserId: HOST },
+      members: [HOST, BOB],
+    })
+    await first.logEventHours({ cleanupId: morning, actorId: HOST, entries: flat([BOB], 20) })
+
+    await expect(
+      first.logEventHours({ cleanupId: evening, actorId: HOST, entries: flat([BOB], 5) }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+
+    await first.logEventHours({ cleanupId: evening, actorId: HOST, entries: flat([BOB], 4) })
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(24)
+  })
+
+  it("b: the same-day cap does not leak across UTC days", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const day1 = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    const day2 = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    seedEvent(repo, day1, new Date("2026-07-04T06:00:00.000Z"))
+    seedEvent(repo, day2, new Date("2026-07-05T06:00:00.000Z"))
+    const service = makeService({ repo, view: eventOfLength(23), members: [HOST, BOB] })
+    await service.logEventHours({ cleanupId: day1, actorId: HOST, entries: flat([BOB], 20) })
+    await service.logEventHours({ cleanupId: day2, actorId: HOST, entries: flat([BOB], 20) })
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(40)
+  })
+
+  it("c: blocks reciprocal crediting inside one event, in both directions", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedEvent(repo, CLEANUP, SCHEDULED_AT)
+    const view = eventOfLength(23)
+    const asHost = makeService({ repo, view, members: [HOST, BOB], cohosts: [BOB] })
+
+    await asHost.logEventHours({ cleanupId: CLEANUP, actorId: BOB, entries: flat([HOST], 4) })
+
+    await expect(
+      asHost.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 4) }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+
+    const withCarol = makeService({
+      repo,
+      view,
+      members: [HOST, BOB, CAROL],
+      cohosts: [BOB],
+    })
+    await withCarol.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([CAROL], 4) })
+    expect((await repo.totalsFor(CAROL)).totalHours).toBe(4)
+  })
+
+  it("c: the reciprocity refusal holds when the ORGANIZER credits first", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedEvent(repo, CLEANUP, SCHEDULED_AT)
+    const service = makeService({
+      repo,
+      view: eventOfLength(23),
+      members: [HOST, BOB],
+      cohosts: [BOB],
+    })
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 4) })
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: BOB, entries: flat([HOST], 4) }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect((await repo.totalsFor(HOST)).totalHours).toBe(0)
+  })
+
+  it("d: files a moderation item when a ledger crosses the rolling 7-day threshold", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedEvent(repo, CLEANUP, SCHEDULED_AT)
+    const moderation = makeModerationSink()
+    const service = makeService({
+      repo,
+      view: eventOfLength(23),
+      members: [HOST, BOB],
+      moderation,
+      weeklyFlagHours: 5,
+    })
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 4) })
+    expect(moderation.filed).toHaveLength(0)
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 9) })
+    expect(moderation.filed).toEqual([
+      { userId: BOB, cleanupId: CLEANUP, kind: "weekly_hours", counterpartUserId: null, hours: 9 },
+    ])
+  })
+
+  it("d: files a moderation item for a reciprocal swap across two events", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const first = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    const second = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    seedEvent(repo, first, new Date("2026-07-04T06:00:00.000Z"))
+    seedEvent(repo, second, new Date("2026-07-06T06:00:00.000Z"))
+    const moderation = makeModerationSink()
+    const service = makeService({
+      repo,
+      view: eventOfLength(23),
+      members: [HOST, BOB],
+      cohosts: [BOB],
+      moderation,
+    })
+
+    await service.logEventHours({ cleanupId: first, actorId: BOB, entries: flat([HOST], 6) })
+    await service.logEventHours({ cleanupId: second, actorId: HOST, entries: flat([BOB], 6) })
+
+    expect(moderation.filed).toEqual([
+      {
+        userId: BOB,
+        cleanupId: second,
+        kind: "reciprocal_credit",
+        counterpartUserId: HOST,
+        hours: null,
+      },
+    ])
+  })
+
+  it("d: a moderation outage never undoes the credit that produced the signal", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedEvent(repo, CLEANUP, SCHEDULED_AT)
+    const service = makeService({
+      repo,
+      view: eventOfLength(23),
+      members: [HOST, BOB],
+      moderation: { flag: () => Promise.reject(new Error("moderation is down")) },
+      weeklyFlagHours: 1,
+    })
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 6) })
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(6)
   })
 })
 
@@ -551,6 +763,8 @@ describe("volunteer hours: hours_logged notifications", () => {
     status: "done",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
+    scheduledAt: SCHEDULED_AT,
+    completedAt: COMPLETED_AT,
   }
 
   it("the repo returns the changed[] pre-image (null previous = a first credit)", async () => {

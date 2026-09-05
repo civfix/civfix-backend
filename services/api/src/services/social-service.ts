@@ -15,6 +15,28 @@ import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
 
 export const PEOPLE_DEFAULT_LIMIT = 20
 
+export const SUGGESTIONS_CACHE_LIMIT = 20
+export const SUGGESTIONS_CACHE_TTL_SEC = 5 * 60
+
+export function suggestionsCacheKey(viewerId: string): string {
+  return `social:suggest:v1:${viewerId}`
+}
+
+export async function dropSuggestionsFor(
+  cache: SuggestionsCache | undefined,
+  viewerIds: readonly string[],
+  logger?: { warn(obj: unknown, msg?: string): void },
+): Promise<void> {
+  if (cache === undefined) return
+  for (const viewerId of new Set(viewerIds)) {
+    try {
+      await cache.del(suggestionsCacheKey(viewerId))
+    } catch (err) {
+      logger?.warn({ err }, "follow suggestions cache invalidation failed (ignored)")
+    }
+  }
+}
+
 export const PROFILE_PAST_EVENTS_LIMIT = 20
 
 export const PROFILE_UPCOMING_EVENTS_LIMIT = 20
@@ -32,11 +54,6 @@ export interface PersonView {
   avatarR2Key: string | null
   avatarUrl: string | null
   socialLinks: SocialLinks | null
-  /**
-   * P6 hours privacy — the `users.show_volunteer_hours` TRI-STATE (C18), carried raw:
-   *   null = never chosen, true = explicit opt-in, false = explicit opt-out.
-   * EVERY SQL projection that builds a PersonView selects it; see buildProfile for the three arms.
-   */
   showVolunteerHours: boolean | null
 }
 
@@ -83,12 +100,6 @@ export interface SocialRepository {
     limit: number
   }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
 
-  /**
-   * Follow suggestions for the viewer. The repo returns candidates ALREADY filtered (no self, no
-   * already-followed, no blocked-either-way, no deleted/handle-less users) and ALREADY ranked:
-   * people active near the viewer's own recent activity first — community organizers (cleanup/event
-   * hosts) ahead of ordinary nearby users — then organizers elsewhere, then everyone else by reach.
-   */
   suggestFollows(args: {
     viewerId: string
     limit: number
@@ -127,8 +138,15 @@ export interface SocialViewer {
   userId: string | null
 }
 
+export interface SuggestionsCache {
+  get(key: string): Promise<string | null>
+  set(key: string, value: string, ttlSeconds: number): Promise<void>
+  del(key: string): Promise<void>
+}
+
 export interface SocialServiceDeps {
   repo: SocialRepository
+  suggestionsCache?: SuggestionsCache
   notifier?: SocialNotifier
   isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
   blockState?: (
@@ -190,6 +208,44 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
 export function makeSocialService(deps: SocialServiceDeps): SocialService {
   const presignAvatar = deps.presignAvatar ?? ((avatarKey: string) => Promise.resolve(avatarKey))
 
+  async function readSuggestionsCache(viewerId: string): Promise<PersonDTO[] | null> {
+    const cache = deps.suggestionsCache
+    if (cache === undefined) return null
+    try {
+      const raw = await cache.get(suggestionsCacheKey(viewerId))
+      if (raw === null) return null
+      const parsed: unknown = JSON.parse(raw)
+      return Array.isArray(parsed) ? (parsed as PersonDTO[]) : null
+    } catch (err) {
+      deps.logger?.warn({ err }, "follow suggestions cache read failed (recomputing)")
+      return null
+    }
+  }
+
+  async function writeSuggestionsCache(viewerId: string, results: PersonDTO[]): Promise<void> {
+    const cache = deps.suggestionsCache
+    if (cache === undefined) return
+    try {
+      await cache.set(
+        suggestionsCacheKey(viewerId),
+        JSON.stringify(results),
+        SUGGESTIONS_CACHE_TTL_SEC,
+      )
+    } catch (err) {
+      deps.logger?.warn({ err }, "follow suggestions cache write failed (ignored)")
+    }
+  }
+
+  async function dropSuggestionsCache(viewerId: string): Promise<void> {
+    const cache = deps.suggestionsCache
+    if (cache === undefined) return
+    try {
+      await cache.del(suggestionsCacheKey(viewerId))
+    } catch (err) {
+      deps.logger?.warn({ err }, "follow suggestions cache invalidation failed (ignored)")
+    }
+  }
+
   async function viewerFollows(targetId: string, viewer: SocialViewer): Promise<boolean> {
     if (viewer.userId === null || viewer.userId === targetId) return false
     return deps.repo.isFollowing(viewer.userId, targetId)
@@ -225,16 +281,6 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     viewer: SocialViewer,
     isSelf: boolean,
   ): Promise<UserProfileDTO> {
-    // P6 hours privacy, the THREE-STATE gate (C18). `show_volunteer_hours` is nullable on purpose:
-    //   false -> explicit opt-out: `volunteerHours` is OMITTED and `showVolunteerHours: false` is emitted.
-    //            That PAIR is how the client tells "hidden" apart from "genuinely zero hours" — a bare
-    //            omission is ambiguous, and a 0 would be a lie.
-    //   null  -> never chosen: `volunteerHours` exactly as before the column existed, and
-    //            `showVolunteerHours` OMITTED. This response is byte-identical to today's for every
-    //            account that already exists; only the new ITEMISED ledger stays closed.
-    //   true  -> explicit opt-in: both.
-    // isSelf BYPASSES the flag entirely — your own profile always shows your own hours, and your own DTO
-    // still carries the raw tri-state so the settings toggle can render the honest position.
     const hoursHidden = !isSelf && view.showVolunteerHours === false
     const [isFollowing, pastEventsPage, upcomingEventRecords, stats, volunteerHours] =
       await Promise.all([
@@ -248,16 +294,10 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
           limit: PROFILE_UPCOMING_EVENTS_LIMIT,
         }),
         deps.repo.statsFor(view.id),
-        // Not merely dropped from the response: the total is never ASKED FOR when it is hidden, which
-        // saves the query and keeps the opt-out from being observable as a timing difference.
         deps.volunteerHoursTotalFor && !hoursHidden
           ? deps.volunteerHoursTotalFor(view.id)
           : Promise.resolve(undefined),
       ])
-    // CleanupDTO.joined is the VIEWER's membership, not the profile owner's. These records are the OWNER's
-    // events (organized or attended), so on your own profile every card is genuinely `joined`; on someone
-    // else's it is unknown without a per-event membership lookup, and `false` is the honest answer rather
-    // than telling the viewer they are attending events they never joined (myRole stays omitted either way).
     const pastEvents: CleanupDTO[] = pastEventsPage.items.map((r) => toCleanupDTO(r, isSelf))
     const upcomingEvents: CleanupDTO[] = upcomingEventRecords.map((r) => toCleanupDTO(r, isSelf))
     const avatarUrl =
@@ -283,8 +323,6 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         : {}),
       stats,
       ...(volunteerHours !== undefined ? { volunteerHours } : {}),
-      // Emitted only when the user has actually CHOSEN. Absent = never chosen, on your own profile as
-      // much as on anyone else's.
       ...(view.showVolunteerHours !== null
         ? { showVolunteerHours: view.showVolunteerHours }
         : {}),
@@ -338,9 +376,15 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async followSuggestions(viewerId: string, limit: number): Promise<{ results: PersonDTO[] }> {
-      const items = await deps.repo.suggestFollows({ viewerId, limit })
-      // The repo already excludes followed users, but keep the DTO honest either way.
-      return { results: items.map((it) => toPersonDTO(it, it.isFollowing)) }
+      const cached = await readSuggestionsCache(viewerId)
+      if (cached !== null) return { results: cached.slice(0, limit) }
+      const items = await deps.repo.suggestFollows({
+        viewerId,
+        limit: Math.max(limit, SUGGESTIONS_CACHE_LIMIT),
+      })
+      const results = items.map((it) => toPersonDTO(it, it.isFollowing))
+      await writeSuggestionsCache(viewerId, results)
+      return { results: results.slice(0, limit) }
     },
 
     async listFollowers(
@@ -372,6 +416,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       const { exists, created } = await deps.repo.addFollow(viewerId, targetId)
       if (!exists) throw AppError.notFound("Person not found")
 
+      await dropSuggestionsCache(viewerId)
       const followers = await deps.repo.followerCount(targetId)
 
       if (created && deps.notifier) {
@@ -402,6 +447,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       }
       const { exists } = await deps.repo.removeFollow(viewerId, targetId)
       if (!exists) throw AppError.notFound("Person not found")
+      await dropSuggestionsCache(viewerId)
       const followers = await deps.repo.followerCount(targetId)
       return { isFollowing: false, followers }
     },

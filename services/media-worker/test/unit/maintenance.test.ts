@@ -7,6 +7,7 @@ import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js
 import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { MEDIA_UPLOAD_REAP_JOB, uploadReapDelaySec } from "../../src/jobs/upload-reap.js"
 
 const limits = loadLimits({})
 
@@ -166,7 +167,7 @@ describe("orphan.sweep", () => {
       reportId: null,
       createdAt: new Date(now.getTime() - limits.orphanTtlMs - 1000),
     })
-    repo.deleteById = () => Promise.reject(new Error("delete failed"))
+    repo.deleteOrphan = () => Promise.reject(new Error("delete failed"))
 
     const reports: unknown[] = []
     const res = await runOrphanSweep({
@@ -417,9 +418,6 @@ describe("media.stuck.sweep", () => {
 
   it("F087d: staleness is measured from FINALIZE, not presign - a late-finalized asset gets a full TTL", async () => {
     const repo = makeRepo()
-    // Presigned a day ago, finalized a minute ago: the bytes have only just arrived and the media.checks
-    // job is still in flight. Keyed on created_at this row was born stuck, burning its whole attempt
-    // budget (and being terminalized as rejected) while the worker was still doing its first pass.
     repo.seed({ id: "late-1", uploadId: "u1", kind: "image", r2Key: "uploads/l1", status: "validating", createdAt: old, finalizedAt: new Date(now.getTime() - 60_000) })
     repo.seed({ id: "stuck-1", uploadId: "u2", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
 
@@ -475,8 +473,13 @@ describe("media.stuck.sweep", () => {
 
     const giveUp = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
     expect(giveUp).toEqual({ scanned: 1, requeued: 0, terminalized: 1, errors: 0 })
-    expect(enqueued).toHaveLength(3)
+    expect(enqueued.filter((e) => e.name === MEDIA_CHECKS_JOB)).toHaveLength(3)
     expect(repo.get("hopeless")!.status).toBe("rejected")
+
+    const reap = enqueued.filter((e) => e.name === MEDIA_UPLOAD_REAP_JOB)
+    expect(reap).toHaveLength(1)
+    expect(reap[0]!.data).toEqual({ mediaId: "hopeless", uploadId: "u1", r2Key: "uploads/h1" })
+    expect(reap[0]!.opts).toEqual({ singletonKey: "u1", startAfter: uploadReapDelaySec() })
 
     const after = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
     expect(after).toEqual({ scanned: 0, requeued: 0, terminalized: 0, errors: 0 })
@@ -497,8 +500,6 @@ describe("media.stuck.sweep", () => {
   it("F087b: NEVER clobbers a terminal status — a row the worker finished mid-sweep is left alone", async () => {
     const repo = makeRepo()
     repo.seed({ id: "raced", uploadId: "u1", kind: "image", r2Key: "uploads/r1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9 })
-    // The claim already happened; the media.checks job this sweep's earlier pass enqueued lands NOW and
-    // writes the real terminal status. The give-up must lose the compare-and-set, not overwrite 'ready'.
     const { jobs } = makeJobsSpy()
     await repo.applyResult("raced", { status: "ready" })
 
@@ -507,7 +508,6 @@ describe("media.stuck.sweep", () => {
     expect(res).toEqual({ scanned: 0, requeued: 0, terminalized: 0, errors: 0 })
     expect(repo.get("raced")!.status).toBe("ready")
 
-    // Same guarantee one layer up: even handed a row directly, terminalizeStuck is a CAS on 'validating'.
     expect(await repo.terminalizeStuck("raced")).toBeNull()
     expect(repo.get("raced")!.status).toBe("ready")
   })
@@ -527,8 +527,6 @@ describe("media.stuck.sweep", () => {
 
     expect(res.terminalized).toBe(1)
     expect(repo.get("hopeless")!.status).toBe("rejected")
-    // A bound row is invisible to the orphan sweep, so if the give-up did not delete these bytes nothing
-    // ever would: unscanned, never-EXIF-stripped media retained forever.
     expect(await storage.head("uploads/h1")).toBeNull()
     expect(await storage.head("uploads/h1.thumb")).toBeNull()
   })

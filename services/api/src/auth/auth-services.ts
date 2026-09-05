@@ -49,6 +49,7 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
   const sessions = new SessionService({
     store: opts.stores.sessions,
     cache: opts.cache,
+    users: opts.stores.users,
     ...(now ? { now } : {}),
     ...(opts.logger ? { logger: opts.logger } : {}),
   })

@@ -37,7 +37,10 @@ export interface OciMailerConfig {
   pass: string
   fromNoReply: string
   fromOutreach: string
+  timeoutMs?: number
 }
+
+export const OCI_MAILER_DEFAULT_TIMEOUT_MS = 15_000
 
 interface Rendered {
   subject: string
@@ -118,12 +121,16 @@ export class OciMailer implements Mailer {
   private async getTransporter(): Promise<Transporter> {
     if (!this.transporter) {
       const nodemailer = await import("nodemailer")
+      const timeout = this.config.timeoutMs ?? OCI_MAILER_DEFAULT_TIMEOUT_MS
       const transporter = nodemailer.createTransport({
         host: this.config.host,
         port: this.config.port,
         secure: this.config.port === 465,
         requireTLS: true,
         auth: { user: this.config.user, pass: this.config.pass },
+        connectionTimeout: timeout,
+        greetingTimeout: timeout,
+        socketTimeout: timeout,
       })
       this.transporter = transporter
       transporter.verify().catch((err: unknown) => {

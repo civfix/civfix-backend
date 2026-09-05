@@ -129,6 +129,14 @@ export interface ThreadsMutesSource {
   ): Promise<Set<string>>
 }
 
+export interface ThreadsHidesSource {
+  hiddenAtFor(
+    userId: string,
+    roomKind: "cleanup" | "dm" | "report" | "group",
+    roomIds: string[],
+  ): Promise<Map<string, Date>>
+}
+
 
 export const THREADS_DEFAULT_LIMIT = 30
 
@@ -139,6 +147,7 @@ export interface ThreadsServiceDeps {
   report?: ReportThreadsSource
   group?: GroupThreadsSource
   mutes?: ThreadsMutesSource
+  hides?: ThreadsHidesSource
   now?: () => Date
 }
 
@@ -171,6 +180,10 @@ export interface ThreadsService {
     userId: string,
     limit?: number,
   ): Promise<{ items: MessageThreadDTO[]; nextCursor: string | null }>
+}
+
+export function isHiddenFor(hiddenAt: Date | undefined, activity: number): boolean {
+  return hiddenAt !== undefined && activity <= hiddenAt.getTime()
 }
 
 function beforeCursor(cursor: TimeCursor | null, activity: number, id: string): boolean {
@@ -236,6 +249,40 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
         groupAggregates.map((a) => a.groupId),
       ),
     ])
+
+    const hiddenAtFor = async (
+      roomKind: "cleanup" | "dm" | "report" | "group",
+      roomIds: string[],
+    ): Promise<Map<string, Date>> =>
+      deps.hides && roomIds.length > 0
+        ? await deps.hides.hiddenAtFor(userId, roomKind, roomIds)
+        : new Map<string, Date>()
+    const [hiddenCleanup, hiddenDm, hiddenReport, hiddenGroup] = await Promise.all([
+      hiddenAtFor(
+        "cleanup",
+        aggregates.map((a) => a.cleanupId),
+      ),
+      hiddenAtFor(
+        "dm",
+        dmAggregates.map((a) => a.threadId),
+      ),
+      hiddenAtFor(
+        "report",
+        reportAggregates.map((a) => a.reportId),
+      ),
+      hiddenAtFor(
+        "group",
+        groupAggregates.map((a) => a.groupId),
+      ),
+    ])
+    const hiddenAtOf = (kind: MessageThreadDTO["kind"], id: string): Date | undefined =>
+      kind === "cleanup"
+        ? hiddenCleanup.get(id)
+        : kind === "dm"
+          ? hiddenDm.get(id)
+          : kind === "report"
+            ? hiddenReport.get(id)
+            : hiddenGroup.get(id)
 
     const cleanupEntries = await Promise.all(
       aggregates.map(async (agg): Promise<{ dto: MessageThreadDTO; activity: number }> => {
@@ -354,7 +401,10 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
     const page = pageWith(merged, limit, (last) =>
       encodeTimeCursor({ at: new Date(last.activity), id: last.dto.id }),
     )
-    return { items: page.items.map((e) => e.dto), nextCursor: page.nextCursor }
+    const visible = page.items.filter(
+      (e) => !isHiddenFor(hiddenAtOf(e.dto.kind, e.dto.id), e.activity),
+    )
+    return { items: visible.map((e) => e.dto), nextCursor: page.nextCursor }
   }
 
   return {

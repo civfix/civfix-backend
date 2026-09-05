@@ -35,6 +35,7 @@ export interface RecordedAudit {
   action: string
   target: string
   meta: Record<string, unknown>
+  actorId?: string | null
 }
 
 export interface SeededOutreach {
@@ -44,6 +45,7 @@ export interface SeededOutreach {
   routedTo: string | null
   routedAt: Date | null
   sendFailed: boolean
+  sendInFlight?: boolean
 }
 
 export interface SeededReport {
@@ -125,6 +127,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
         routedTo: input.outreach?.routedTo ?? null,
         routedAt: input.outreach?.routedAt ?? null,
         sendFailed: input.outreach?.sendFailed ?? false,
+        sendInFlight: input.outreach?.sendInFlight ?? false,
       },
       deletedAt: input.deletedAt ?? null,
     }
@@ -222,7 +225,38 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       routedTo: o.routedTo,
       routedAt: o.routedAt ? o.routedAt.toISOString() : null,
       sendFailed: o.sendFailed,
+      sendInFlight: o.sendInFlight ?? false,
     }
+  }
+
+  async advanceStatusIfIn(
+    id: string,
+    input: {
+      from: readonly AdminReportStatus[]
+      to: AdminReportStatus
+      note: string
+      actorId: string | null
+      kind?: ReportTimelineItem["kind"]
+    },
+  ): Promise<boolean> {
+    const seeded = this.reports.get(id)
+    if (!seeded) return false
+    if (!input.from.includes(seeded.record.status)) return false
+    seeded.record.status = input.to
+    this.appendTimeline(id, {
+      status: input.to,
+      note: input.note,
+      kind: input.kind ?? null,
+      who: input.actorId === null ? "system" : input.actorId,
+      createdAt: this.nextDate(),
+    })
+    this.audits.push({
+      actorId: input.actorId,
+      action: "report.status_changed",
+      target: `report:${id}`,
+      meta: { status: input.to },
+    })
+    return true
   }
 
   async appendSystemTimeline(

@@ -3,12 +3,14 @@ import { AppError } from "@civfix/shared"
 import type { AuthContext } from "@civfix/shared"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { AuthServices } from "./auth-services.js"
+import type { AccountStatus } from "./stores.js"
 import { ANON_COOKIE, presentedSessionToken } from "./transport.js"
 
 declare module "fastify" {
   interface FastifyRequest {
     auth: AuthContext
     sessionExpiresAtMs?: number
+    accountStatus?: AccountStatus
   }
   interface FastifyInstance {
     authServices: AuthServices
@@ -41,6 +43,7 @@ export async function resolveAuthContext(request: FastifyRequest): Promise<AuthC
     const resolved = await services.sessions.resolveSession(token)
     if (resolved) {
       request.sessionExpiresAtMs = resolved.expiresAtMs
+      request.accountStatus = resolved.accountStatus
       return { userId: resolved.userId, roles: resolved.roles, anon: false }
     }
   }

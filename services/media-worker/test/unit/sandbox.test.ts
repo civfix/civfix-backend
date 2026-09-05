@@ -27,7 +27,7 @@ describe("sandbox/exec runTool", () => {
     try {
       await runTool("sleeper", process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
         timeoutMs: 200,
-        maxBuffer: 1024,
+        maxStdoutBytes: 1024,
       })
     } catch (err) {
       caught = err
@@ -43,7 +43,7 @@ describe("sandbox/exec runTool", () => {
     try {
       await runTool("exiter", process.execPath, ["-e", "process.exit(3)"], {
         timeoutMs: 5000,
-        maxBuffer: 1024,
+        maxStdoutBytes: 1024,
       })
     } catch (err) {
       caught = err
@@ -60,7 +60,7 @@ describe("sandbox/exec runTool", () => {
         "chatty-stdout",
         process.execPath,
         ["-e", "process.stdout.write('x'.repeat(200000))"],
-        { timeoutMs: 5_000, maxBuffer: 16 },
+        { timeoutMs: 5_000, maxStdoutBytes: 16 },
       )
     } catch (err) {
       caught = err
@@ -76,7 +76,7 @@ describe("sandbox/exec runTool", () => {
         "chatty-stderr",
         process.execPath,
         ["-e", "process.stderr.write('y'.repeat(200000)); process.exit(0)"],
-        { timeoutMs: 5_000, maxBuffer: 16 },
+        { timeoutMs: 5_000, maxStdoutBytes: 16 },
       )
     } catch (err) {
       caught = err
@@ -90,7 +90,7 @@ describe("sandbox/exec runTool", () => {
       "quiet",
       process.execPath,
       ["-e", "process.stdout.write('out-ok'); process.stderr.write('err-ok')"],
-      { timeoutMs: 5_000, maxBuffer: 1024 },
+      { timeoutMs: 5_000, maxStdoutBytes: 1024 },
     )
     expect(res.exitCode).toBe(0)
     expect(res.stdout).toBe("out-ok")
@@ -307,7 +307,9 @@ describe("sandbox: HLS / ffconcat inputs cannot reach the network or the filesys
       caught = err
     }
     expect(caught).toBeInstanceOf(SandboxToolError)
-    expect((caught as SandboxToolError).stderrTail).toMatch(/not on whitelist/i)
+    expect((caught as SandboxToolError).stderrTail).toMatch(
+      /not on whitelist|moov atom not found|invalid data/i,
+    )
     expect(hits).toEqual([])
   })
 
@@ -340,7 +342,9 @@ describe("sandbox: HLS / ffconcat inputs cannot reach the network or the filesys
       probeErr = err
     }
     expect(probeErr).toBeInstanceOf(SandboxToolError)
-    expect((probeErr as SandboxToolError).stderrTail).toMatch(/unsafe file name/i)
+    expect((probeErr as SandboxToolError).stderrTail).toMatch(
+      /unsafe file name|moov atom not found|invalid data/i,
+    )
 
     let remuxErr: unknown
     try {

@@ -5,8 +5,9 @@ import type { WorkerAbuseReason } from "@civfix/api/media-repo"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
 import { ALLOWED_VIDEO_CODECS } from "../config.js"
-import { processImage, type ExifGps } from "../sandbox/image.js"
-import { perceptualHash } from "../sandbox/phash.js"
+import type { ExifGps } from "../sandbox/image.js"
+import { processImageLane } from "../sandbox/image-lane.js"
+import { SandboxSpawnError } from "../sandbox/exec.js"
 import { probeBytes } from "../sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../sandbox/ffmpeg-remux.js"
 
@@ -127,19 +128,14 @@ async function processImageBytes(
   selfAssetId?: string,
   selfReportId?: string | null,
 ): Promise<MediaProcessResult> {
-  let img: Awaited<ReturnType<typeof processImage>>
+  let img: Awaited<ReturnType<typeof processImageLane>>
   try {
-    img = await processImage(bytes, deps.limits)
+    img = await processImageLane(bytes, deps.limits)
   } catch (err) {
+    if (err instanceof SandboxSpawnError) throw err
     return rejected(errNote("image decode/guard failed", err))
   }
-
-  let phash: string | null = null
-  try {
-    phash = await perceptualHash(bytes, deps.limits)
-  } catch {
-    phash = null
-  }
+  const phash = img.phash
 
   const seam = await applyAbuseSeams(bytes, phash, deps, selfAssetId, selfReportId)
 
@@ -159,6 +155,32 @@ async function processImageBytes(
   }
 }
 
+function videoGeometryNote(
+  probe: {
+    width: number | null
+    height: number | null
+    fps: number | null
+    bitrateBps: number | null
+  },
+  limits: WorkerLimits,
+): string | null {
+  const { width, height } = probe
+  if (width === null || height === null || width <= 0 || height <= 0) {
+    return "video reports no usable resolution"
+  }
+  const pixels = width * height
+  if (pixels > limits.maxVideoPixels) {
+    return `resolution ${width}x${height} (${pixels}px) exceeds the cap of ${limits.maxVideoPixels}px`
+  }
+  if (probe.fps !== null && probe.fps > limits.maxVideoFps) {
+    return `frame rate ${probe.fps.toFixed(2)}fps exceeds the cap of ${limits.maxVideoFps}fps`
+  }
+  if (probe.bitrateBps !== null && probe.bitrateBps > limits.maxVideoBitrateBps) {
+    return `bitrate ${probe.bitrateBps}bps exceeds the cap of ${limits.maxVideoBitrateBps}bps`
+  }
+  return null
+}
+
 async function processVideoBytes(
   bytes: Uint8Array,
   deps: ProcessDeps,
@@ -167,6 +189,7 @@ async function processVideoBytes(
   try {
     probe = await probeBytes(bytes, deps.limits)
   } catch (err) {
+    if (err instanceof SandboxSpawnError) throw err
     return rejected(errNote("ffprobe failed", err))
   }
   if (!probe.isVideo) {
@@ -180,11 +203,16 @@ async function processVideoBytes(
       `duration ${probe.durationSec}s outside (0, ${deps.limits.maxVideoDurationSec}]`,
     )
   }
+  const geometryNote = videoGeometryNote(probe, deps.limits)
+  if (geometryNote !== null) {
+    return rejected(geometryNote)
+  }
 
   let remuxed: Buffer
   try {
     remuxed = await remuxStripMetadata(bytes, deps.limits)
   } catch (err) {
+    if (err instanceof SandboxSpawnError) throw err
     return rejected(errNote("remux failed", err))
   }
 
@@ -192,7 +220,8 @@ async function processVideoBytes(
   try {
     const at = Math.min(1, probe.durationSec / 2)
     frameJpeg = await grabFrameJpeg(bytes, at, deps.limits)
-  } catch {
+  } catch (err) {
+    if (err instanceof SandboxSpawnError) throw err
     frameJpeg = null
   }
 
@@ -200,10 +229,11 @@ async function processVideoBytes(
   let thumbnailContentType: string | null = null
   if (frameJpeg) {
     try {
-      const thumb = await processImage(frameJpeg, deps.limits)
+      const thumb = await processImageLane(frameJpeg, deps.limits)
       thumbnailBytes = thumb.thumbnailBytes
       thumbnailContentType = thumb.thumbnailContentType
-    } catch {
+    } catch (err) {
+      if (err instanceof SandboxSpawnError) throw err
       thumbnailBytes = null
       thumbnailContentType = null
     }
@@ -251,6 +281,7 @@ export async function processMedia(
     }
     return await processVideoBytes(input.bytes, deps)
   } catch (err) {
+    if (err instanceof SandboxSpawnError) throw err
     return rejected(errNote("unexpected processing error", err))
   }
 }

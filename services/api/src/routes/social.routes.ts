@@ -16,6 +16,7 @@ import { z } from "zod"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
+import { makeContainerSuggestionsCache } from "../services/social-suggestions-wiring.js"
 import {
   makeSocialService,
   type SocialNotifier,
@@ -73,8 +74,11 @@ export async function registerSocialRoutes(
     return makeRouteNotificationService(container, app.log)
   }
 
+  const suggestionsCache = makeContainerSuggestionsCache(container)
+
   function service(withNotifier = false): SocialService {
     const n = withNotifier ? notifier() : undefined
+    const cache = app.socialOverrides ? undefined : suggestionsCache
     const presignAvatar = app.socialOverrides
       ? undefined
       : (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC)
@@ -92,6 +96,7 @@ export async function registerSocialRoutes(
     return makeSocialService({
       repo: repo(),
       logger: app.log,
+      ...(cache !== undefined ? { suggestionsCache: cache } : {}),
       ...(n !== undefined ? { notifier: n } : {}),
       ...(presignAvatar !== undefined ? { presignAvatar } : {}),
       ...(volunteerHoursTotalFor !== undefined ? { volunteerHoursTotalFor } : {}),

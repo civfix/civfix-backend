@@ -1,0 +1,43 @@
+-- =============================================================================
+-- 0097_media_assets_served_key.sql
+-- -----------------------------------------------------------------------------
+-- FINDING C1 (critical): the presigned PUT the client holds stays valid for 15
+-- minutes, and the media-worker used to write its PROCESSED output back to the
+-- SAME key (`r2_key`) the client uploaded to. Every read path then served that
+-- key, so an uploader could re-PUT arbitrary same-size bytes AFTER the asset
+-- was already `ready` and attached to a public report, bypassing every control
+-- the worker enforces (EXIF/GPS strip, magic-byte allowlist, NSFW hold, codec
+-- allowlist, remux).
+--
+-- served_key is the WORKER-OWNED key the processed bytes are published to. It
+-- is derived from the upload key under a distinct `processed/` prefix, the
+-- client never receives a presigned PUT for it, and it is written exactly once
+-- (by the media.checks job) before the CAS to `ready`. Every read path that
+-- hands out bytes for a `ready` asset serves served_key and treats a NULL as
+-- "not servable" (the same 404 as a non-ready asset). The upload object is
+-- deleted once the processed object is published.
+--
+-- BACK-COMPAT: rows that went `ready` before this migration carry NULL, and
+-- their processed bytes live at r2_key (that IS what the old worker wrote).
+-- `pnpm --filter @civfix/api db:backfill-served-key` (src/db/backfill-served-key.ts,
+-- registered in src/db/cli.ts) adopts them keyset-paged, off the migration's
+-- transaction, so this file never rewrites a hot table. Run it right after the
+-- deploy; until it has run, pre-existing media reads as not-found. See
+-- docs/media-pipeline-hardening.md.
+--
+-- HOT TABLE: media_assets. This is an `ADD COLUMN IF NOT EXISTS` of a NULLable
+-- column with NO default and NO index, which Postgres 11+ applies as a catalog-
+-- only change (brief ACCESS EXCLUSIVE lock, no table rewrite). No index is
+-- added here on purpose: served_key is only ever read through an already-keyed
+-- row lookup (id / report_id / upload_id / chat_message_id / post_id).
+--
+-- CANONICAL DDL: hand-authored source of truth. Mirror: schema/media.ts.
+--
+-- Conventions: additive ADD COLUMN IF NOT EXISTS; one transaction per file
+-- (src/db/migrate.ts). Forward-only, no down.
+--
+-- Ordering rules: requires 0001_core.sql (media_assets).
+-- =============================================================================
+
+ALTER TABLE media_assets
+  ADD COLUMN IF NOT EXISTS served_key text;

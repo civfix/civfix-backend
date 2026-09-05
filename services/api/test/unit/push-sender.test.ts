@@ -9,6 +9,8 @@ import {
   type PlatformDispatcher,
   type PushDispatchers,
 } from "../../src/adapters/push-sender.js"
+import { PUSH_MAX_PER_USER_PER_MINUTE, allowedByPushRate } from "../../src/adapters/push-sender.js"
+import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 
 
@@ -294,4 +296,77 @@ describe("isSafePushEndpoint (SSRF guard, IP-literal paths)", () => {
       expect(await isSafePushEndpoint(e)).toBe(true)
     })
   }
+})
+
+
+describe("per-user push rate cap (H15)", () => {
+  const rateRows = (userId: string): TokenRow[] => [{ userId, platform: "ios", token: `${userId}-tok` }]
+
+  it("stops dispatching to a recipient past the per-minute cap and keeps the window per user", async () => {
+    const ios = recordingDispatcher()
+    const counters = new InMemoryCounterStore(() => 1_000)
+    const sender = new MultiPushSender({
+      db: fakeDb(rateRows("victim"), {}),
+      config: {},
+      dispatchers: { ios: ios.fn },
+      counters,
+    })
+
+    for (let i = 0; i < PUSH_MAX_PER_USER_PER_MINUTE + 25; i++) {
+      await sender.send("victim", PAYLOAD)
+    }
+    expect(ios.calls).toHaveLength(PUSH_MAX_PER_USER_PER_MINUTE)
+
+    const other = recordingDispatcher()
+    const senderB = new MultiPushSender({
+      db: fakeDb(rateRows("bystander"), {}),
+      config: {},
+      dispatchers: { ios: other.fn },
+      counters,
+    })
+    await senderB.send("bystander", PAYLOAD)
+    expect(other.calls).toHaveLength(1)
+  })
+
+  it("drops only the over-cap recipients out of a fan-out batch", async () => {
+    const counters = new InMemoryCounterStore(() => 1_000)
+    for (let i = 0; i < PUSH_MAX_PER_USER_PER_MINUTE; i++) {
+      await counters.incr("push:rate:hot", 60)
+    }
+    const allowed = await allowedByPushRate(["hot", "cool"], counters, {
+      warn: () => {},
+      error: () => {},
+    })
+    expect(allowed).toEqual(["cool"])
+  })
+
+  it("skips the token query entirely when every recipient is over the cap", async () => {
+    const ios = recordingDispatcher()
+    const counters = new InMemoryCounterStore(() => 1_000)
+    for (let i = 0; i < PUSH_MAX_PER_USER_PER_MINUTE; i++) {
+      await counters.incr("push:rate:hot", 60)
+    }
+    const sender = new MultiPushSender({
+      db: fakeDb([{ userId: "hot", platform: "ios", token: "hot-tok" }], {}),
+      config: {},
+      dispatchers: { ios: ios.fn },
+      counters,
+      logger: { warn: () => {}, error: () => {} },
+    })
+    await sender.sendMany(["hot"], PAYLOAD)
+    expect(ios.calls).toHaveLength(0)
+  })
+
+  it("fails OPEN when the counter store is unavailable (a Redis blip must not mute notifications)", async () => {
+    const ios = recordingDispatcher()
+    const sender = new MultiPushSender({
+      db: fakeDb(rateRows("u"), {}),
+      config: {},
+      dispatchers: { ios: ios.fn },
+      counters: { incr: () => Promise.reject(new Error("redis down")) },
+      logger: { warn: () => {}, error: () => {} },
+    })
+    await sender.send("u", PAYLOAD)
+    expect(ios.calls).toHaveLength(1)
+  })
 })

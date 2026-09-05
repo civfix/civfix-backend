@@ -112,3 +112,43 @@ jobs:
       # placeholder so the job is green until those tests exist.
       - name: Integration tests
         run: echo "integration tests are added by later steps; services are up at DATABASE_URL / REDIS_URL"
+
+  media-worker-sandbox:
+    name: media-worker image sandbox smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Proves the decoder-sandbox contract on every build instead of at deploy time: the image's
+    # entrypoint must be able to drop root -> node while keeping ambient CAP_SETUID/CAP_SETGID under the
+    # PRODUCTION capability set (cap_drop ALL + cap_add SETUID,SETGID + no-new-privileges), and the
+    # worker's preflight must then prove that a child spawned through setpriv has the sandbox uid and NO
+    # capabilities, and that the image lane actually runs. None of this is reachable from a unit test.
+    # Independent of every other job: nothing else here needs Docker.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the media-worker image
+        run: docker build -f services/media-worker/Dockerfile -t civfix/media-worker:ci .
+
+      - name: Sandbox preflight under the production capability set
+        run: |
+          set -uo pipefail
+          # tee, not command substitution: under `set -e` a failing substitution aborts the step before
+          # the echo, hiding the one line that says WHY the sandbox refused to boot.
+          docker run --rm \
+            --cap-drop ALL \
+            --cap-add SETUID \
+            --cap-add SETGID \
+            --security-opt no-new-privileges:true \
+            --read-only \
+            --tmpfs /tmp:mode=1777,noexec,nosuid,nodev \
+            -e NODE_ENV=production \
+            -e MEDIA_SANDBOX_UID=1001 \
+            -e MEDIA_SANDBOX_GID=1001 \
+            civfix/media-worker:ci node dist/preflight-only.js 2>&1 | tee preflight.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "media-worker sandbox preflight exited $status"
+            exit "$status"
+          fi
+          grep -q "sandbox preflight ok" preflight.log

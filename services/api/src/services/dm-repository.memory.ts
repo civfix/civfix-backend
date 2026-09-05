@@ -11,6 +11,7 @@ import {
 import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { aroundLimits } from "./chat-history-window.js"
+import { toTombstoneDTO } from "./chat-tombstone.js"
 import type {
   DmMessageMeta,
   DmPersistInput,
@@ -40,6 +41,7 @@ export interface DmUser {
 interface StoredDmMessage {
   dto: ChatMessageDTO
   deleted: boolean
+  deletedAt?: Date
   insertedAtMs: number
 }
 
@@ -209,11 +211,8 @@ export class InMemoryDmRepository implements DmRepository {
     )
     if (!stored) return Promise.resolve(null)
     stored.deleted = true
-    const tombstone: ChatMessageDTO = {
-      ...stored.dto,
-      deletedAt: this.nextDate().toISOString(),
-      mine: true,
-    }
+    stored.deletedAt = this.nextDate()
+    const tombstone = toTombstoneDTO({ ...stored.dto, mine: true }, stored.deletedAt)
     return Promise.resolve(this.withReply(threadId, tombstone))
   }
 
@@ -291,11 +290,12 @@ export class InMemoryDmRepository implements DmRepository {
     const newerStart = Math.max(0, idx - newerLimit)
     const window = ordered.slice(newerStart, idx + olderLimit)
     const items = window.map((m) =>
-      this.withReply(threadId, {
-        ...m.dto,
-        reactions: this.reactionsFor(m.dto.id, viewerUserId),
-        ...(m.deleted ? { deletedAt: new Date(m.insertedAtMs).toISOString() } : {}),
-      }),
+      this.withReply(
+        threadId,
+        m.deleted
+          ? toTombstoneDTO(m.dto, m.deletedAt ?? new Date(m.insertedAtMs))
+          : { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) },
+      ),
     )
     return Promise.resolve({
       items,

@@ -13,9 +13,16 @@ import {
   type NotificationPrefsRecord,
 } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
-import { InMemoryNotificationRepository } from "../helpers/notifications.js"
+import { InMemoryNotificationRepository, flushNotificationDispatch } from "../helpers/notifications.js"
 import { normalizeDeviceId } from "../../src/routes/notifications.routes.js"
 
+
+const TOK_1 = "d1".repeat(32)
+const TOK_SHARED = "d5".repeat(32)
+const capToken = (i: number): string => `${"ef".repeat(30)}${String(i).padStart(4, "0")}`
+const TOK_X = "d2".repeat(32)
+const TOK_U = "d3".repeat(32)
+const TOK_V = "d4".repeat(32)
 
 const U = "11111111-1111-1111-1111-111111111111"
 const V = "22222222-2222-2222-2222-222222222222"
@@ -220,6 +227,7 @@ describe("feed excludes conversation-message notifications", () => {
         .sort(),
     ).toEqual(["cleanup_chat", "dm", "report_chat", "report_update", "system"])
 
+    await flushNotificationDispatch()
     expect(push.sent.filter((p) => p.userId === U)).toHaveLength(5)
   })
 })
@@ -293,7 +301,7 @@ describe("registerPushToken", () => {
     const { repo, push, service } = makeHarness()
     const res = await service.registerPushToken(U, {
       platform: "ios",
-      token: "tok-1",
+      token: TOK_1,
       deviceId: "dev-1",
     })
     expect(res).toEqual({ ok: true })
@@ -301,31 +309,31 @@ describe("registerPushToken", () => {
     expect(repo.pushTokens[0]).toMatchObject({
       userId: U,
       platform: "ios",
-      token: "tok-1",
+      token: TOK_1,
       deviceId: "dev-1",
       revokedAt: null,
     })
     expect(push.tokens).toHaveLength(1)
-    expect(push.tokens[0]).toMatchObject({ userId: U, token: "tok-1", platform: "ios" })
+    expect(push.tokens[0]).toMatchObject({ userId: U, token: TOK_1, platform: "ios" })
   })
 
   it("the SAME user re-registering re-activates a revoked token (owner update)", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
+    await service.registerPushToken(U, { platform: "android", token: TOK_X, deviceId: "d1" })
     repo.pushTokens[0]!.revokedAt = new Date()
 
-    await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
+    await service.registerPushToken(U, { platform: "android", token: TOK_X, deviceId: "d1" })
     expect(repo.pushTokens).toHaveLength(1)
     expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "d1", revokedAt: null })
   })
 
   it("P1-3 / H11: a DIFFERENT user with a different/absent device_id CANNOT hijack the token, and gets a real ERROR", async () => {
     const { repo, push, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "d1" })
+    await service.registerPushToken(U, { platform: "android", token: TOK_X, deviceId: "d1" })
     expect(push.tokens).toHaveLength(1)
 
     await expect(
-      service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "d2" }),
+      service.registerPushToken(V, { platform: "android", token: TOK_X, deviceId: "d2" }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
 
     expect(repo.pushTokens).toHaveLength(1)
@@ -336,9 +344,9 @@ describe("registerPushToken", () => {
 
   it("F153: a matching device_id can NO LONGER take over another account's (platform,token) row", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "android", token: "tok-x", deviceId: "shared-device" })
+    await service.registerPushToken(U, { platform: "android", token: TOK_X, deviceId: "shared-device" })
     await expect(
-      service.registerPushToken(V, { platform: "android", token: "tok-x", deviceId: "shared-device" }),
+      service.registerPushToken(V, { platform: "android", token: TOK_X, deviceId: "shared-device" }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
     expect(repo.pushTokens).toHaveLength(1)
     expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "shared-device", revokedAt: null })
@@ -346,27 +354,27 @@ describe("registerPushToken", () => {
 
   it("H12: a self-declared device_id does NOT revoke another account's token (mass-revoke closed)", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
-    await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "shared" })
+    await service.registerPushToken(U, { platform: "ios", token: TOK_U, deviceId: "shared" })
+    await service.registerPushToken(V, { platform: "ios", token: TOK_V, deviceId: "shared" })
 
-    const uRow = repo.pushTokens.find((t) => t.token === "tok-U")
-    const vRow = repo.pushTokens.find((t) => t.token === "tok-V")
+    const uRow = repo.pushTokens.find((t) => t.token === TOK_U)
+    const vRow = repo.pushTokens.find((t) => t.token === TOK_V)
     expect(uRow).toMatchObject({ userId: U, revokedAt: null })
     expect(vRow).toMatchObject({ userId: V, revokedAt: null })
   })
 
   it("device-claim: does NOT revoke another user's token on a DIFFERENT device", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "device-A" })
-    await service.registerPushToken(V, { platform: "ios", token: "tok-V", deviceId: "device-B" })
-    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).toBeNull()
+    await service.registerPushToken(U, { platform: "ios", token: TOK_U, deviceId: "device-A" })
+    await service.registerPushToken(V, { platform: "ios", token: TOK_V, deviceId: "device-B" })
+    expect(repo.pushTokens.find((t) => t.token === TOK_U)?.revokedAt).toBeNull()
   })
 
   it("device-claim: a registration WITHOUT a device_id revokes nobody (no device proof)", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "ios", token: "tok-U", deviceId: "shared" })
-    await service.registerPushToken(V, { platform: "ios", token: "tok-V" })
-    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).toBeNull()
+    await service.registerPushToken(U, { platform: "ios", token: TOK_U, deviceId: "shared" })
+    await service.registerPushToken(V, { platform: "ios", token: TOK_V })
+    expect(repo.pushTokens.find((t) => t.token === TOK_U)?.revokedAt).toBeNull()
   })
 })
 
@@ -383,11 +391,17 @@ describe("createNotification (inline-send gating)", () => {
     expect(repo.notifications).toHaveLength(1)
     expect(dto.title).toBe("New follower")
     expect(dto.read).toBe(false)
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(1)
+    await flushNotificationDispatch()
     expect(push.sent[0]!.userId).toBe(U)
+    await flushNotificationDispatch()
     expect(push.sent[0]!.payload.title).toBe("New follower")
+    await flushNotificationDispatch()
     expect(push.sent[0]!.payload.body).toBe("Alice started following you.")
+    await flushNotificationDispatch()
     expect(push.sent[0]!.payload.link).toBe("/people/x")
+    await flushNotificationDispatch()
     expect(push.sent[0]!.payload.data).toMatchObject({ type: "new_follower", notificationId: dto.id })
   })
 
@@ -396,6 +410,7 @@ describe("createNotification (inline-send gating)", () => {
     await service.updatePrefs(U, { push: false })
     await service.createNotification(U, { type: "new_follower", title: "x" })
     expect(repo.notifications).toHaveLength(1)
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(0)
   })
 
@@ -404,8 +419,10 @@ describe("createNotification (inline-send gating)", () => {
     await service.updatePrefs(U, { follows: false })
     await service.createNotification(U, { type: "new_follower", title: "x" })
     expect(repo.notifications).toHaveLength(1)
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(0)
     await service.createNotification(U, { type: "report_update", title: "y" })
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(1)
   })
 
@@ -414,6 +431,7 @@ describe("createNotification (inline-send gating)", () => {
     await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00", tz: "UTC" } })
     await service.createNotification(U, { type: "system", title: "late" })
     expect(repo.notifications).toHaveLength(1)
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(0)
   })
 
@@ -422,6 +440,7 @@ describe("createNotification (inline-send gating)", () => {
     await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00" } })
     await service.createNotification(U, { type: "system", title: "late" })
     expect(repo.notifications).toHaveLength(1)
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(1)
   })
 
@@ -430,9 +449,11 @@ describe("createNotification (inline-send gating)", () => {
     const { push, service } = makeHarness(() => new Date(nowMs))
     await service.updatePrefs(U, { quietHours: { start: "22:00", end: "07:00", tz: "UTC" } })
     await service.createNotification(U, { type: "system", title: "late" })
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(0)
     nowMs = at(12, 0).getTime()
     await service.createNotification(U, { type: "system", title: "noon" })
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(1)
   })
 
@@ -462,6 +483,7 @@ describe("onNewFollower", () => {
     expect(n.type).toBe("new_follower")
     expect(n.body).toContain("Alice")
     expect(n.link).toBe(`/people/${V}`)
+    await flushNotificationDispatch()
     expect(push.sent).toHaveLength(1)
   })
 })
@@ -578,21 +600,21 @@ describe("markRead (F085: no silent truncation)", () => {
 describe("unregisterPushToken (F083)", () => {
   it("soft-revokes ONLY the caller's own (platform, token) row", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "ios", token: "tok-U" })
-    await service.registerPushToken(V, { platform: "ios", token: "tok-V" })
+    await service.registerPushToken(U, { platform: "ios", token: TOK_U })
+    await service.registerPushToken(V, { platform: "ios", token: TOK_V })
 
-    const res = await service.unregisterPushToken(U, { platform: "ios", token: "tok-U" })
+    const res = await service.unregisterPushToken(U, { platform: "ios", token: TOK_U })
     expect(res).toEqual({ ok: true })
 
-    expect(repo.pushTokens.find((t) => t.token === "tok-U")?.revokedAt).not.toBeNull()
-    expect(repo.pushTokens.find((t) => t.token === "tok-V")?.revokedAt).toBeNull()
+    expect(repo.pushTokens.find((t) => t.token === TOK_U)?.revokedAt).not.toBeNull()
+    expect(repo.pushTokens.find((t) => t.token === TOK_V)?.revokedAt).toBeNull()
   })
 
   it("does NOT revoke another account's token even with a matching token value", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(V, { platform: "ios", token: "tok-shared" })
-    await service.unregisterPushToken(U, { platform: "ios", token: "tok-shared" })
-    expect(repo.pushTokens.find((t) => t.token === "tok-shared")?.revokedAt).toBeNull()
+    await service.registerPushToken(V, { platform: "ios", token: TOK_SHARED })
+    await service.unregisterPushToken(U, { platform: "ios", token: TOK_SHARED })
+    expect(repo.pushTokens.find((t) => t.token === TOK_SHARED)?.revokedAt).toBeNull()
   })
 })
 
@@ -601,12 +623,12 @@ describe("push token cap per user (F087)", () => {
     const { repo, service } = makeHarness()
     const total = MAX_ACTIVE_PUSH_TOKENS_PER_USER + 5
     for (let i = 0; i < total; i++) {
-      await service.registerPushToken(U, { platform: "ios", token: `tok-${i}` })
+      await service.registerPushToken(U, { platform: "ios", token: capToken(i) })
     }
     const active = repo.pushTokens.filter((t) => t.userId === U && t.revokedAt === null)
     expect(active).toHaveLength(MAX_ACTIVE_PUSH_TOKENS_PER_USER)
-    expect(repo.pushTokens.find((t) => t.token === "tok-0")?.revokedAt).not.toBeNull()
-    expect(repo.pushTokens.find((t) => t.token === `tok-${total - 1}`)?.revokedAt).toBeNull()
+    expect(repo.pushTokens.find((t) => t.token === capToken(0))?.revokedAt).not.toBeNull()
+    expect(repo.pushTokens.find((t) => t.token === capToken(total - 1))?.revokedAt).toBeNull()
   })
 })
 
@@ -620,6 +642,7 @@ describe("toggle-bell de-duplication (F015)", () => {
     }
     const bells = repo.notifications.filter((n) => n.userId === U && n.type === "post_like")
     expect(bells).toHaveLength(1)
+    await flushNotificationDispatch()
     expect(push.sent.filter((p) => p.userId === U)).toHaveLength(1)
   })
 

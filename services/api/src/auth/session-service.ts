@@ -2,7 +2,8 @@
 import { AppError, type Role } from "@civfix/shared"
 import { generateToken, sha256Hex } from "./crypto.js"
 import type { CacheClient } from "./cache.js"
-import type { SessionStore } from "./stores.js"
+import { assertTargetIsNotOperatorRole } from "./operator-target.js"
+import type { AccountStatus, SessionStore } from "./stores.js"
 
 export const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 
@@ -10,13 +11,18 @@ export const ABSOLUTE_SESSION_MAX_SECONDS = 90 * 24 * 60 * 60
 
 export const BANNED_MARKER_GRACE_SECONDS = 60
 
+export const DEFAULT_SLIDE_GRANULARITY_MS = 60 * 60 * 1000
+
 const SESSION_KEY_PREFIX = "sess:"
 
 const BANNED_KEY_PREFIX = "banned:"
 
+const EPOCH_KEY_PREFIX = "sessepoch:"
+
 export interface ResolvedSession {
   userId: string
   roles: Role[]
+  accountStatus: AccountStatus
 }
 
 export type SessionSource = "cache" | "store"
@@ -29,6 +35,7 @@ export interface ResolveResult extends ResolvedSession {
 export interface SessionMeta {
   userAgent?: string | null
   ip?: string | null
+  accountStatus?: AccountStatus
 }
 
 export interface SessionLogger {
@@ -39,14 +46,30 @@ interface CachedSession {
   userId: string
   roles: Role[]
   expiresAtMs: number
-  createdAtMs?: number
+  createdAtMs: number
+  epoch: number
+  accountStatus: AccountStatus
+}
+
+interface UserGate {
+  active: boolean
+  epoch: number
+}
+
+const REVOKED_STATUSES: ReadonlySet<AccountStatus> = new Set<AccountStatus>(["banned"])
+
+export interface SessionUserLookup {
+  accountStatus(id: string): Promise<AccountStatus>
+  findById(id: string): Promise<{ role: Role } | null>
 }
 
 export interface SessionServiceOptions {
   store: SessionStore
   cache: CacheClient
+  users?: SessionUserLookup
   ttlSeconds?: number
   absoluteMaxSeconds?: number
+  slideGranularityMs?: number
   now?: () => number
   logger?: SessionLogger
 }
@@ -59,19 +82,33 @@ function bannedKey(userId: string): string {
   return BANNED_KEY_PREFIX + userId
 }
 
+function epochKey(userId: string): string {
+  return EPOCH_KEY_PREFIX + userId
+}
+
+function parseEpoch(raw: string | null): number {
+  if (raw === null) return 0
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 export class SessionService {
   private readonly store: SessionStore
   private readonly cache: CacheClient
+  private readonly users: SessionUserLookup | undefined
   private readonly ttlSeconds: number
   private readonly absoluteMaxSeconds: number
+  private readonly slideGranularityMs: number
   private readonly now: () => number
   private readonly logger: SessionLogger | undefined
 
   constructor(opts: SessionServiceOptions) {
     this.store = opts.store
     this.cache = opts.cache
+    this.users = opts.users
     this.ttlSeconds = opts.ttlSeconds ?? DEFAULT_SESSION_TTL_SECONDS
     this.absoluteMaxSeconds = opts.absoluteMaxSeconds ?? ABSOLUTE_SESSION_MAX_SECONDS
+    this.slideGranularityMs = opts.slideGranularityMs ?? DEFAULT_SLIDE_GRANULARITY_MS
     this.now = opts.now ?? Date.now
     this.logger = opts.logger
   }
@@ -83,6 +120,13 @@ export class SessionService {
     const expiresAt = new Date(nowMs + this.ttlSeconds * 1000)
     const lastSeen = new Date(nowMs)
 
+    const [epoch, mintStatus] = await Promise.all([
+      this.currentEpoch(userId),
+      this.users ? this.users.accountStatus(userId) : Promise.resolve(meta.accountStatus ?? "active"),
+    ])
+    if (mintStatus === "banned" || mintStatus === "suspended") {
+      throw AppError.forbidden("This account cannot start a new session.")
+    }
     await this.store.insert({
       id: hash,
       userId,
@@ -95,31 +139,45 @@ export class SessionService {
 
     await this.writeCache(
       hash,
-      { userId, roles: [...roles], expiresAtMs: expiresAt.getTime(), createdAtMs: nowMs },
+      {
+        userId,
+        roles: [...roles],
+        expiresAtMs: expiresAt.getTime(),
+        createdAtMs: nowMs,
+        epoch,
+        accountStatus: mintStatus,
+      },
       nowMs,
     )
     return token
   }
 
   async resolveSession(token: string): Promise<ResolveResult | null> {
-    const hash = await sha256Hex(token)
+    return this.resolveSessionByHash(await sha256Hex(token))
+  }
+
+  async resolveSessionByHash(hash: string): Promise<ResolveResult | null> {
     const nowMs = this.now()
 
     const cachedRaw = await this.cache.get(sessionKey(hash))
     if (cachedRaw !== null) {
       const cached = this.parseCache(cachedRaw)
-      if (cached && cached.createdAtMs !== undefined && cached.expiresAtMs > nowMs) {
+      if (cached && cached.expiresAtMs > nowMs && !REVOKED_STATUSES.has(cached.accountStatus)) {
         if (this.absolutelyExpired(cached.createdAtMs, nowMs)) {
           await this.expireSession(hash)
           return null
         }
-        if (!(await this.isUserActive(cached.userId))) return null
-        await this.maybeSlide(hash, cached.expiresAtMs, cached.createdAtMs, nowMs)
-        return {
-          userId: cached.userId,
-          roles: cached.roles,
-          source: "cache",
-          expiresAtMs: cached.expiresAtMs,
+        const gate = await this.userGate(cached.userId)
+        if (!gate.active) return null
+        if (cached.epoch === gate.epoch) {
+          await this.maybeSlide(hash, cached.expiresAtMs, cached.createdAtMs, nowMs)
+          return {
+            userId: cached.userId,
+            roles: cached.roles,
+            accountStatus: cached.accountStatus,
+            source: "cache",
+            expiresAtMs: cached.expiresAtMs,
+          }
         }
       }
       await this.cache.del(sessionKey(hash)).catch(() => {})
@@ -135,7 +193,12 @@ export class SessionService {
       return null
     }
 
-    if (!(await this.isUserActive(row.userId))) return null
+    const gate = await this.userGate(row.userId)
+    if (!gate.active) return null
+    if (REVOKED_STATUSES.has(row.accountStatus)) {
+      await this.enforceRevokedStatus(row.userId, hash)
+      return null
+    }
 
     await this.writeCache(
       hash,
@@ -144,6 +207,8 @@ export class SessionService {
         roles: row.roles,
         expiresAtMs: row.expiresAt.getTime(),
         createdAtMs: row.createdAt.getTime(),
+        epoch: gate.epoch,
+        accountStatus: row.accountStatus,
       },
       nowMs,
     )
@@ -151,47 +216,58 @@ export class SessionService {
     return {
       userId: row.userId,
       roles: row.roles,
+      accountStatus: row.accountStatus,
       source: "store",
       expiresAtMs: row.expiresAt.getTime(),
     }
   }
 
   async revokeSession(token: string): Promise<void> {
-    const hash = await sha256Hex(token)
+    await this.revokeSessionByHash(await sha256Hex(token))
+  }
+
+  async revokeSessionByHash(hash: string): Promise<void> {
     await this.cache.del(sessionKey(hash))
     await this.store.deleteById(hash)
   }
 
   async revokeAllForUser(userId: string): Promise<number> {
+    await this.bumpEpoch(userId)
     const ids = await this.store.deleteAllForUser(userId)
-    const failed = await this.evictSessionCaches(ids, userId)
-    if (failed.length > 0) {
-      throw AppError.internal("Session cache eviction failed during revoke.")
-    }
+    await this.evictSessionCaches(ids, userId)
     return ids.length
   }
 
   async banUser(userId: string): Promise<number> {
+    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
+    await this.bumpEpoch(userId)
     const ids = await this.store.deleteAllForUser(userId)
     await this.evictSessionCaches(ids, userId)
-    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
     return ids.length
   }
 
-  private async evictSessionCaches(hashes: string[], userId: string): Promise<string[]> {
+  async applyAccountStatus(userId: string, status: AccountStatus): Promise<number> {
+    if (status === "banned" || status === "suspended") {
+      const target = await this.users?.findById(userId)
+      assertTargetIsNotOperatorRole(target?.role, status === "banned" ? "ban" : "suspend")
+    }
+    if (status === "banned") return this.banUser(userId)
+    await this.clearBan(userId)
+    if (status === "suspended") return this.revokeAllForUser(userId)
+    await this.bumpEpoch(userId)
+    return 0
+  }
+
+  private async evictSessionCaches(hashes: string[], userId: string): Promise<void> {
     const results = await Promise.allSettled(hashes.map((hash) => this.cache.del(sessionKey(hash))))
-    const failed: string[] = []
     results.forEach((result, index) => {
       if (result.status === "rejected") {
-        const hash = hashes[index]!
-        failed.push(hash)
         this.logger?.error(
-          { userId, hash, err: result.reason },
+          { userId, hash: hashes[index]!, err: result.reason },
           "session cache eviction failed during revoke",
         )
       }
     })
-    return failed
   }
 
   async clearBan(userId: string): Promise<void> {
@@ -203,8 +279,33 @@ export class SessionService {
     return marked === null
   }
 
+  async currentEpoch(userId: string): Promise<number> {
+    return parseEpoch(await this.cache.get(epochKey(userId)))
+  }
+
+  async bumpEpoch(userId: string): Promise<number> {
+    return this.cache.incr(epochKey(userId), this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
+  }
+
   get ttl(): number {
     return this.ttlSeconds
+  }
+
+  private async userGate(userId: string): Promise<UserGate> {
+    const keys = [bannedKey(userId), epochKey(userId)]
+    const [banned, epochRaw] = this.cache.mget
+      ? await this.cache.mget(keys)
+      : await Promise.all(keys.map((key) => this.cache.get(key)))
+    return { active: (banned ?? null) === null, epoch: parseEpoch(epochRaw ?? null) }
+  }
+
+  private async enforceRevokedStatus(userId: string, hash: string): Promise<void> {
+    await this.cache
+      .set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
+      .catch((err: unknown) => {
+        this.logger?.error({ userId, err }, "ban marker refresh failed during resolve")
+      })
+    await this.expireSession(hash)
   }
 
   private absolutelyExpired(createdAtMs: number, nowMs: number): boolean {
@@ -228,7 +329,7 @@ export class SessionService {
 
     const ceilingMs = createdAtMs + this.absoluteMaxSeconds * 1000
     const extendedMs = Math.min(nowMs + this.ttlSeconds * 1000, ceilingMs)
-    if (extendedMs <= currentExpiryMs) return
+    if (extendedMs - currentExpiryMs < this.slideGranularityMs) return
     const newExpiresAt = new Date(extendedMs)
     await this.store.updateExpiry(hash, newExpiresAt, new Date(nowMs))
 
@@ -250,13 +351,18 @@ export class SessionService {
       if (
         typeof parsed.userId === "string" &&
         Array.isArray(parsed.roles) &&
-        typeof parsed.expiresAtMs === "number"
+        typeof parsed.expiresAtMs === "number" &&
+        typeof parsed.createdAtMs === "number" &&
+        typeof parsed.epoch === "number" &&
+        typeof parsed.accountStatus === "string"
       ) {
         return {
           userId: parsed.userId,
           roles: parsed.roles as Role[],
           expiresAtMs: parsed.expiresAtMs,
-          ...(typeof parsed.createdAtMs === "number" ? { createdAtMs: parsed.createdAtMs } : {}),
+          createdAtMs: parsed.createdAtMs,
+          epoch: parsed.epoch,
+          accountStatus: parsed.accountStatus as AccountStatus,
         }
       }
       return null

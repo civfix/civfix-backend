@@ -1,13 +1,3 @@
-/**
- * Inbound (catch-all inbox) data-layer integration test (Docker-gated). Exercises the REAL Drizzle/raw-SQL
- * InboundRepository against a live Postgres container via withPg, which applies the canonical
- * 0010_inbound_emails.sql migration. Proven against the real schema + the UNIQUE(message_id) constraint:
- *   - insertIdempotent inserts once and reports inserted=false on a re-delivery (ON CONFLICT DO NOTHING);
- *   - list pages newest-first with the keyset cursor and applies status / localPart / q filters;
- *   - get maps the row to InboundEmailDTO; setStatus transitions the triage state.
- *
- * When Docker is unavailable the whole describe block SKIPS, so the local suite stays green; CI runs it.
- */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -70,7 +60,7 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
 
     const page1 = await repo.list({ limit: 2 })
     expect(page1.items).toHaveLength(2)
-    expect(page1.items[0]?.id).toBe(third.id) // newest first
+    expect(page1.items[0]?.id).toBe(third.id)
     expect(page1.nextCursor).not.toBeNull()
 
     const page2 = await repo.list({ limit: 2, cursor: page1.nextCursor ?? undefined })
@@ -91,8 +81,6 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect((await repo.list({ status: "archived" })).items).toHaveLength(1)
   })
 
-  // L6: setInboxStatus used to mutate state with NO actor and NO audit row - the only admin state change
-  // in the console that left no trace of who made it. The audit is now written in the SAME transaction.
   it("setStatus writes an inbox.status_changed audit row (with the actor + the transition) in-tx", async () => {
     const r = await repo.insertIdempotent(insert({ messageId: "<audit@x>" }))
     const actor = await h.sql<{ id: string }[]>`
@@ -104,8 +92,6 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     `
     const actorId = actor[0]!.id
     expect(await repo.setStatus(r.id, "archived", actorId)).toBe(true)
-    // Scoped to THIS row's target: the preceding test also transitions a row (with a null actor), so an
-    // unscoped count is a function of test order, not of the behavior under test.
     const audit = await h.sql<{ actor_id: string; target: string; meta: Record<string, unknown> }[]>`
       SELECT actor_id, target, meta FROM audit_log
       WHERE action = 'inbox.status_changed' AND target = ${`inbound_email:${r.id}`}
@@ -115,8 +101,6 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect(audit[0]?.target).toBe(`inbound_email:${r.id}`)
     expect(audit[0]?.meta).toMatchObject({ status: "archived", priorStatus: "unread" })
 
-    // Every accepted call is logged, including a same-value re-click: the log records the TRANSITION, so a
-    // repeat shows archived -> archived rather than being silently dropped.
     expect(await repo.setStatus(r.id, "archived", actorId)).toBe(true)
     const again = await h.sql<{ meta: Record<string, unknown> }[]>`
       SELECT meta FROM audit_log
@@ -126,7 +110,6 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect(again).toHaveLength(2)
     expect(again[1]?.meta).toMatchObject({ status: "archived", priorStatus: "archived" })
 
-    // A missing row is reported as false and logs nothing.
     expect(await repo.setStatus("00000000-0000-0000-0000-000000000000", "read", actorId)).toBe(false)
     const missing = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM audit_log
@@ -134,5 +117,66 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
         AND target = 'inbound_email:00000000-0000-0000-0000-000000000000'
     `
     expect(missing[0]!.n).toBe(0)
+  })
+
+  it("H10: stamps archived_at on archive, keeps it on a re-archive, and clears it on un-archive", async () => {
+    const { id } = await repo.insertIdempotent(insert({ messageId: "<archived-clock@x>" }))
+
+    const read = async (): Promise<Date | null> => {
+      const rows = await h.sql<{ archived_at: Date | null }[]>`
+        SELECT archived_at FROM inbound_emails WHERE id = ${id}
+      `
+      return rows[0]?.archived_at ?? null
+    }
+
+    expect(await read()).toBeNull()
+    await repo.setStatus(id, "read", "op-1")
+    expect(await read()).toBeNull()
+
+    await repo.setStatus(id, "archived", "op-1")
+    const first = await read()
+    expect(first).toBeInstanceOf(Date)
+
+    await repo.setStatus(id, "archived", "op-1")
+    expect((await read())?.getTime()).toBe(first!.getTime())
+
+    await repo.setStatus(id, "unread", "op-1")
+    expect(await read()).toBeNull()
+  })
+
+  it("H10: the retention predicate finds ONLY archived rows past the TTL, with their attachment keys", async () => {
+    const long = 200 * 24 * 60 * 60 * 1000
+    const short = 10 * 24 * 60 * 60 * 1000
+    const cutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)
+
+    const stale = await repo.insertIdempotent(
+      insert({
+        messageId: "<stale-archived@x>",
+        attachments: [{ key: "inbound-emails/stale/1-a.pdf", filename: "a.pdf", size: 4 }],
+      }),
+    )
+    const fresh = await repo.insertIdempotent(insert({ messageId: "<fresh-archived@x>" }))
+    const unread = await repo.insertIdempotent(insert({ messageId: "<still-unread@x>" }))
+
+    await repo.setStatus(stale.id, "archived", "op-1")
+    await repo.setStatus(fresh.id, "archived", "op-1")
+    await h.sql`
+      UPDATE inbound_emails SET archived_at = now() - make_interval(secs => ${long / 1000})
+      WHERE id = ${stale.id}
+    `
+    await h.sql`
+      UPDATE inbound_emails SET archived_at = now() - make_interval(secs => ${short / 1000})
+      WHERE id = ${fresh.id}
+    `
+
+    const due = await h.sql<{ id: string; attachments: { key: string }[] }[]>`
+      SELECT id, attachments FROM inbound_emails
+      WHERE archived_at IS NOT NULL AND archived_at < ${cutoff}
+      ORDER BY archived_at ASC
+    `
+    expect(due.map((r) => r.id)).toEqual([stale.id])
+    expect(due[0]?.attachments?.[0]?.key).toBe("inbound-emails/stale/1-a.pdf")
+    expect(due.map((r) => r.id)).not.toContain(fresh.id)
+    expect(due.map((r) => r.id)).not.toContain(unread.id)
   })
 })

@@ -3,6 +3,7 @@ import { MEDIA_CHECKS_JOB, type MediaWorkerRepo, type StuckMediaRow } from "@civ
 import type { WorkerLimits } from "../config.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 import { deleteRejectedObjects } from "./reject-cleanup.js"
+import { MEDIA_UPLOAD_REAP_JOB, uploadReapDelaySec } from "./upload-reap.js"
 
 export interface StuckSweepDeps extends JobObsDeps {
   repo: MediaWorkerRepo
@@ -54,6 +55,18 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
           maxAttempts,
         })
         await deleteRejectedObjects(rejected, deps, log, report)
+        await deps.jobs
+          .enqueue(
+            MEDIA_UPLOAD_REAP_JOB,
+            { mediaId: row.id, uploadId: row.uploadId, r2Key: row.r2Key },
+            { singletonKey: row.uploadId, startAfter: uploadReapDelaySec() },
+          )
+          .catch((err: unknown) =>
+            log("media.stuck.sweep: failed to schedule media.upload.reap (non-fatal)", {
+              mediaId: row.id,
+              err: String(err),
+            }),
+          )
       } catch (err) {
         errors++
         report(err, { job: "media.stuck.sweep", phase: "terminalize", mediaId: row.id })

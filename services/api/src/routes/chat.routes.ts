@@ -57,6 +57,10 @@ import {
   makeConversationMutesRepository,
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
+import {
+  makeConversationHidesRepository,
+  type ConversationHidesRepository,
+} from "../services/conversation-hides-repository.drizzle.js"
 
 export interface ChatGatewayOverrides {
   isMember: IsMemberFn
@@ -71,6 +75,7 @@ export interface ChatGatewayOverrides {
   reportVisible?: ReportVisibleFn
   reportChat?: ReportChatRepository
   conversationMutes?: ConversationMutesRepository
+  conversationHides?: ConversationHidesRepository
   reportThreadsSource?: ReportThreadsSource
   groupThreadsSource?: GroupThreadsSource
   groups?: ChatGroupRepository
@@ -115,6 +120,9 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
     const mutes: ConversationMutesRepository | undefined = overrides
       ? overrides.conversationMutes
       : makeConversationMutesRepository(container.getDb().sql)
+    const hides: ConversationHidesRepository | undefined = overrides
+      ? overrides.conversationHides
+      : makeConversationHidesRepository(container.getDb().sql)
     return (threadsService = makeThreadsService({
       repo: threadsRepo,
       readState: wiring.readState,
@@ -122,6 +130,7 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
       report: reportThreadsSource,
       group: groupThreadsSource,
       mutes,
+      hides,
     }))
   }
 

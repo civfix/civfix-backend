@@ -2,9 +2,11 @@
 import {
   MarkThreadReadRequestSchema,
   ToggleMuteRequestSchema,
+  ToggleHiddenRequestSchema,
   AppError,
   type MarkThreadReadResponse,
   type ToggleMuteResponse,
+  type ToggleHiddenResponse,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"
@@ -17,6 +19,10 @@ import {
   makeConversationMutesRepository,
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
+import {
+  makeConversationHidesRepository,
+  type ConversationHidesRepository,
+} from "../services/conversation-hides-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import {
   makeReportChatRepository,
@@ -34,6 +40,7 @@ import type { MarkRoomRead } from "../services/room-read-service.js"
 
 export interface ConversationRoutesOverrides {
   repo: ConversationMutesRepository
+  hides?: ConversationHidesRepository
   participates?: (
     roomKind: ConversationMuteRoomKind,
     roomId: string,
@@ -45,6 +52,8 @@ export interface ConversationRoutesOverrides {
 export const CONVERSATION_MUTE_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 export const THREAD_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+
+export const CONVERSATION_HIDE_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -65,6 +74,10 @@ export async function registerConversationRoutes(app: FastifyInstance, container
   let repo: ConversationMutesRepository | undefined
   const getRepo = (): ConversationMutesRepository =>
     overrides?.repo ?? (repo ??= makeConversationMutesRepository(container.getDb().sql))
+
+  let hidesRepo: ConversationHidesRepository | undefined
+  const getHidesRepo = (): ConversationHidesRepository =>
+    overrides?.hides ?? (hidesRepo ??= makeConversationHidesRepository(container.getDb().sql))
 
   let cleanups: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   let reportChat: ReportChatRepository | undefined
@@ -114,6 +127,28 @@ export async function registerConversationRoutes(app: FastifyInstance, container
       }
       await getRepo().setMuted(userId, body.roomKind, body.roomId, body.muted)
       const payload: ToggleMuteResponse = { muted: body.muted }
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "toggleConversationHidden",
+    { preHandler: csrfProtect, config: { rateLimit: CONVERSATION_HIDE_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(ToggleHiddenRequestSchema, request.body)
+      if (!isMutableRoomKind(body.roomKind)) {
+        throw AppError.validation({ roomKind: "This conversation kind cannot be hidden." })
+      }
+      if (participates && !(await participates(body.roomKind, body.roomId, userId))) {
+        throw AppError.forbidden("You can't change this conversation.")
+      }
+      await getHidesRepo().setHidden(userId, body.roomKind, body.roomId, body.hidden)
+      void Promise.resolve(
+        container.userChannel?.publishToUser(userId, { topic: "threads", id: body.roomId }),
+      ).catch(() => {})
+      const payload: ToggleHiddenResponse = { hidden: body.hidden }
       reply.status(200).send(payload)
     },
   )

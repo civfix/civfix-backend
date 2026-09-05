@@ -115,6 +115,9 @@ export async function registerLocalStorageRoutes(
 
         reply.header("accept-ranges", "bytes")
         reply.header("cache-control", "private, max-age=60")
+        if (head.etag !== undefined) {
+          reply.header("etag", `"${head.etag}"`)
+        }
         reply.header(
           "cross-origin-resource-policy",
           CROSS_ORIGIN_RESOURCE_POLICY_FOR_EMBEDDABLE_MEDIA,

@@ -1,15 +1,3 @@
-/**
- * Worker wiring for the hold-then-publish release (offline, no DB, no Docker).
- *
- * Builds the worker over FakeJobs + custom seams (FakeStorage + an in-memory media repo + an in-memory
- * AnonHoldReleaseRepo + FakeAbuseChecks). FakeJobs runs a handler synchronously on enqueue, so a single
- * media.checks enqueue drives the WHOLE chain end to end:
- *   media.checks (processes bytes -> media ready) -> post-success hook enqueues anon.hold.release ->
- *   anon.hold.release handler runs releaseAnonHoldIfReady -> the held anon report is published.
- *
- * The "stays held" case feeds an NSFW image: media.checks holds the media, the hook still fires, and the
- * release gate keeps the report held.
- */
 
 import { describe, it, expect } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
@@ -29,11 +17,6 @@ import type {
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
 import * as fx from "../fixtures/make.js"
 
-/**
- * A tiny in-memory AnonHoldReleaseRepo. Its media view is DERIVED from the shared worker repo (by
- * reportId) so it always reflects the status the media.checks job just wrote - exactly like production,
- * where both read the same media_assets rows.
- */
 class MemHoldRepo implements AnonHoldReleaseRepo {
   report: HeldReportView
   openFlags = 0
@@ -72,7 +55,6 @@ class MemHoldRepo implements AnonHoldReleaseRepo {
   }
 }
 
-/** Build offline worker seams with a custom media repo + hold repo + abuse checks. */
 function makeSeams(opts: {
   repo: InMemoryWorkerRepo
   anonHoldRepo: AnonHoldReleaseRepo
@@ -82,13 +64,14 @@ function makeSeams(opts: {
   const limits = loadLimits({})
   return {
     storage: opts.storage,
+    inboundStorage: opts.storage,
     abuseChecks: opts.abuse,
     limits,
     download: makeDownloader(opts.storage),
     dbHandle: undefined,
     repo: opts.repo,
     anonHoldRepo: opts.anonHoldRepo,
-    findPhashDuplicate: undefined, // offline: falls back to FakeAbuseChecks.isNearDuplicate
+    findPhashDuplicate: undefined,
     report: () => {},
     close: () => Promise.resolve(),
   }
@@ -109,7 +92,6 @@ function heldReport(id: string): HeldReportView {
   }
 }
 
-/** Seed a media row + stage its bytes, attached to an anon report. */
 async function seedMedia(
   storage: FakeStorage,
   repo: InMemoryWorkerRepo,
@@ -132,7 +114,7 @@ describe("media-worker hold-release wiring", () => {
     const reportId = "anon-report-ready"
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
 
-    const handle = buildJobs() // FakeJobs (runs handlers synchronously on enqueue)
+    const handle = buildJobs()
     const seams = makeSeams({ repo, anonHoldRepo: holdRepo, abuse, storage })
     const worker = await buildWorker(handle, seams)
     await worker.start()
@@ -140,8 +122,6 @@ describe("media-worker hold-release wiring", () => {
     const valid = await fx.makeValidPng()
     const { mediaId, uploadId, r2Key } = await seedMedia(storage, repo, reportId, valid)
 
-    // Enqueue media.checks: FakeJobs runs it now; its post-success hook enqueues anon.hold.release,
-    // which FakeJobs also runs now, publishing the report.
     await handle.jobs.enqueue(MEDIA_CHECKS_JOB, { mediaId, uploadId, r2Key, kind: "image" })
 
     expect(repo.get(mediaId)!.status).toBe("ready")
@@ -163,8 +143,6 @@ describe("media-worker hold-release wiring", () => {
     const worker = await buildWorker(handle, seams)
     await worker.start()
 
-    // An NSFW image: media.checks marks the media held; the hook fires and the release gate (reading the
-    // now-held media from the shared repo) keeps the report held.
     const nsfw = await fx.makeNsfwJpeg()
     const { mediaId, uploadId, r2Key } = await seedMedia(storage, repo, reportId, nsfw)
     await handle.jobs.enqueue(MEDIA_CHECKS_JOB, { mediaId, uploadId, r2Key, kind: "image" })
@@ -179,16 +157,12 @@ describe("media-worker hold-release wiring", () => {
 
 describe("hold-release self-healing sweep (P2-8)", () => {
   it("publishes a held anon report whose media are ready even if NO inline enqueue ever fired", async () => {
-    // Simulate the shutdown race: media.checks ran and the media is READY, but the post-success hook's
-    // anon.hold.release enqueue was LOST (boss stopping), so the report is still held with no pending
-    // re-trigger. The periodic sweep must discover and release it.
     const repo = new InMemoryWorkerRepo()
     const reportId = "anon-report-stuck"
     repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key: "k1", reportId, status: "ready" })
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
     const abuse = new FakeAbuseChecks()
 
-    // No media event re-triggers it; the sweep is the only path. Run it directly.
     const result = await runHoldReleaseSweep({
       repo: holdRepo,
       abuseChecks: abuse,
@@ -202,7 +176,6 @@ describe("hold-release self-healing sweep (P2-8)", () => {
     expect(holdRepo.published).toBe(true)
     expect(holdRepo.report.status).toBe("published")
 
-    // Idempotent: a SECOND sweep finds nothing to publish (the report is no longer held).
     const again = await runHoldReleaseSweep({
       repo: holdRepo,
       abuseChecks: abuse,

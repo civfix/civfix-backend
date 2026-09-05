@@ -2,12 +2,23 @@ import { ErrorCode } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { makeWsTicketStore } from "../auth/ws-ticket.js"
+import {
+  InMemorySendDedupeStore,
+  makeSendResilience,
+  type LocalDeliver,
+  type SendDedupeStore,
+} from "../ws/send-resilience.js"
+import { RedisSendDedupeStore } from "../adapters/chat-send-dedupe.redis.js"
+import { makeRoomFanoutDispatcher } from "../services/chat-fanout-jobs.js"
+import { makeWindowClaim } from "../services/chat-room-notifier-wiring.js"
+import type { RoomFanoutNotifierDeps } from "../services/chat-room-fanout-notifier.js"
 import { applyRateLimitHeaders, wsUpgradeRateLimitKey } from "../plugins/rate-limit.js"
 import {
   registerChatGateway,
   roomKeyFor,
   type GatewayChatMentions,
   type GatewayDmDeps,
+  type GatewayChatService,
   type GatewayReportChat,
   type IsBlockedEitherWayFn,
   type IsMemberFn,
@@ -456,6 +467,66 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   const reportSendLimiter: RateLimiter = makeTokenBucketLimiter(REPORT_SEND_LIMIT)
 
+  const fanoutMode = roomFanoutMode({
+    useFakeChat,
+    useFakeJobs: container.env.USE_FAKE_JOBS,
+    usesRealRedis: container.usesRealRedis === true,
+  })
+  const roomFanoutClaim = makeWindowClaim(container, app.log)
+  const roomFanoutHandoff = (
+    kind: "report" | "group",
+  ): Pick<RoomFanoutNotifierDeps, "dispatchToJob" | "claimWindow"> => ({
+    ...(fanoutMode.queued
+      ? { dispatchToJob: makeRoomFanoutDispatcher(container.jobs, kind) }
+      : {}),
+    ...(fanoutMode.claimed
+      ? { claimWindow: (roomId: string, windowMs: number) => roomFanoutClaim(kind, roomId, windowMs) }
+      : {}),
+  })
+
+  let dedupeStore: SendDedupeStore | undefined
+  const resolveDedupeStore = (): SendDedupeStore =>
+    (dedupeStore ??= useFakeChat
+      ? new InMemorySendDedupeStore()
+      : new RedisSendDedupeStore(container.getRedis()))
+  const sendDedupe: SendDedupeStore = {
+    reserve: (key) => resolveDedupeStore().reserve(key),
+    commit: (key, messageId) => resolveDedupeStore().commit(key, messageId),
+    release: (key) => resolveDedupeStore().release(key),
+  }
+
+  const baseChat = container.chatService as GatewayChatService & {
+    deliverLocal?: LocalDeliver
+  }
+  const sendResilience = makeSendResilience({
+    dedupe: sendDedupe,
+    findRoomMessage: (kind, roomId, messageId, viewerUserId) => {
+      if (kind === "dm") return dmRepo.findMessage(roomId, messageId, viewerUserId)
+      if (kind === "report") return getChatRepo().findReportMessage(roomId, messageId, viewerUserId)
+      if (kind === "group") return getChatRepo().findGroupMessage(roomId, messageId, viewerUserId)
+      return getChatRepo().findMessage(roomId, messageId, viewerUserId)
+    },
+    deliverLocally: (roomKey, frame, excludeConnId) =>
+      baseChat.deliverLocal?.(roomKey, frame, excludeConnId) ?? 0,
+    onBroadcastFailure: (info) =>
+      app.log.error({ ...info, component: "chat-broadcast" }, "chat: room broadcast not published"),
+    logger: app.log,
+  })
+  const chatWithResilience: GatewayChatService = {
+    joinRoom: (room, conn, userId) => baseChat.joinRoom(room, conn, userId),
+    leaveRoom: (room, conn) => baseChat.leaveRoom(room, conn),
+    persist: (input) => baseChat.persist(input),
+    history: (room, before, limit, viewerUserId, around) =>
+      baseChat.history(room, before, limit, viewerUserId, around),
+    broadcast: (room, msg, opts) => baseChat.broadcast(room, msg, opts),
+    ...(baseChat.broadcastEvent
+      ? {
+          broadcastEvent: (room, frame, opts) => baseChat.broadcastEvent!(room, frame, opts),
+        }
+      : {}),
+    sendResilience,
+  }
+
   const canForwardCity = makeCityForwardThrottle({
     incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
   })
@@ -473,6 +544,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           roomKeyFor,
           isBlockedEitherWay,
           ...(blockedIdsForCandidates ? { blockedIdsFor: blockedIdsForCandidates } : {}),
+          ...roomFanoutHandoff("report"),
         })
       : undefined
 
@@ -487,6 +559,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           roomKeyFor,
           isBlockedEitherWay,
           ...(blockedIdsForCandidates ? { blockedIdsFor: blockedIdsForCandidates } : {}),
+          ...roomFanoutHandoff("group"),
         })
       : undefined
   const onGroupMessage: OnGroupMessage | undefined = notifyGroupChatMembers
@@ -543,7 +616,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   const wsTicketCache = app.authServices?.cache
   registerChatGateway(app, {
-    chat: container.chatService,
+    chat: chatWithResilience,
     isMember,
     sessions: app.authServices?.sessions,
     ...(wsTicketCache
@@ -584,6 +657,20 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     getReportChatRepo,
     listDmThreadsFor: (userId, limit, cursor) => dmRepo.listThreadsForUser(userId, limit, cursor),
   }
+}
+
+export interface RoomFanoutMode {
+  queued: boolean
+  claimed: boolean
+}
+
+export function roomFanoutMode(input: {
+  useFakeChat: boolean
+  useFakeJobs: boolean
+  usesRealRedis: boolean
+}): RoomFanoutMode {
+  const claimed = !input.useFakeChat && input.usesRealRedis
+  return { claimed, queued: claimed && !input.useFakeJobs }
 }
 
 export function makeGatewayReportChat(

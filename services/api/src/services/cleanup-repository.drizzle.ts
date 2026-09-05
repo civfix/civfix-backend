@@ -52,6 +52,8 @@ import type {
   ReportStatus,
   ReportType,
 } from "@civfix/shared"
+import { touchUserActivity } from "../db/sql/user-activity.js"
+import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
 
@@ -121,6 +123,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
 
         const created = await readById(tx, args.cleanupId, null)
         if (!created) throw AppError.internal()
+        await touchUserActivity(tx, {
+          userId: args.organizerUserId,
+          lng: args.lng,
+          lat: args.lat,
+          at: created.createdAt,
+        })
         return created
       })
     },
@@ -654,19 +662,38 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       input: { note: string; actorId: string; now: Date },
     ): Promise<CompleteCleanupOutcome> {
       return sql.begin(async (tx) => {
-        const locked = await tx<{ status: CleanupStatus; scheduled_at: Date }[]>`
-          SELECT status, scheduled_at FROM cleanups WHERE id = ${id} LIMIT 1 FOR NO KEY UPDATE
+        const locked = await tx<
+          {
+            status: CleanupStatus
+            scheduled_at: Date
+            organizer_user_id: string
+            lng: number
+            lat: number
+          }[]
+        >`
+          SELECT status, scheduled_at, organizer_user_id, ST_X(geom) AS lng, ST_Y(geom) AS lat
+          FROM cleanups WHERE id = ${id} LIMIT 1 FOR NO KEY UPDATE
         `
         const row = locked[0]
         if (row === undefined) return "not_found"
         if (row.status === "cancelled") return "cancelled"
         if (row.status === "done") return "already_completed"
-        if (row.scheduled_at.getTime() > input.now.getTime()) return "too_early"
-        await tx`UPDATE cleanups SET status = 'done' WHERE id = ${id}`
+        if (row.scheduled_at.getTime() + MIN_EVENT_DURATION_MS > input.now.getTime()) {
+          return "too_early"
+        }
+        await tx`
+          UPDATE cleanups SET status = 'done', completed_at = ${input.now} WHERE id = ${id}
+        `
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'status', ${input.note}, ${input.actorId})
         `
+        await touchUserActivity(tx, {
+          userId: row.organizer_user_id,
+          lng: row.lng,
+          lat: row.lat,
+          at: input.now,
+        })
         return "completed"
       })
     },

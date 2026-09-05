@@ -11,6 +11,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import type { AuthServices } from "../../auth/auth-services.js"
 import type { UserRecord } from "../../auth/stores.js"
+import { SUSPENDED_MESSAGE } from "../../auth/account-status.js"
 import type { Env } from "../../env.js"
 import { resolveLocale } from "../../i18n/locales.js"
 import { isAdminEmail } from "../../auth/admin-allowlist.js"
@@ -155,12 +156,17 @@ async function establishOperatorSession(
   reply: FastifyReply,
   user: UserRecord,
 ): Promise<AdminLoginResponse> {
-  if ((await services.users.accountStatus(user.id)) === "banned") {
+  const accountStatus = await services.users.accountStatus(user.id)
+  if (accountStatus === "banned") {
     throw AppError.forbidden("This account has been banned.")
+  }
+  if (accountStatus === "suspended") {
+    throw AppError.forbidden(SUSPENDED_MESSAGE)
   }
   const token = await services.sessions.createSession(user.id, [user.role], {
     userAgent: request.headers["user-agent"] ?? null,
     ip: request.ip || null,
+    accountStatus,
   })
   const ttl = services.sessions.ttl
   setSessionCookie(reply, token, ttl)

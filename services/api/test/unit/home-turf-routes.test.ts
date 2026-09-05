@@ -30,8 +30,10 @@ afterEach(async () => {
   }
 })
 
-async function makeHarness(): Promise<Harness> {
-  const env = loadEnv({ NODE_ENV: "test" })
+const NOTIFY_TO = "home-turf@civfix.test"
+
+async function makeHarness(over: Record<string, string> = {}): Promise<Harness> {
+  const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO, ...over })
   const container = buildContainer(env)
   const app = await buildServer({
     env,
@@ -75,7 +77,7 @@ describe("POST /forms/home-turf", () => {
 
     const notify = sent[0]!
     expect(notify.from).toBe("donotreply@civfix.org")
-    expect(notify.to).toBe("roman@reachoutla.org")
+    expect(notify.to).toBe(NOTIFY_TO)
     expect(notify.replyTo).toBe("coach@example.org")
     expect(notify.subject).toBe("Home Turf sign-up: Lincoln High School")
     for (const value of [
@@ -97,7 +99,7 @@ describe("POST /forms/home-turf", () => {
     expect(confirm.from).toBe("donotreply@civfix.org")
     expect(confirm.to).toBe("coach@example.org")
     expect(confirm.subject).toBe("We got your Home Turf sign-up")
-    expect(confirm.text).toContain("roman@reachoutla.org")
+    expect(confirm.text).toContain(NOTIFY_TO)
     expect(confirm.text).toContain("The civfix team")
     for (const value of [
       "Alex Rivera",
@@ -178,6 +180,15 @@ describe("POST /forms/home-turf", () => {
     expect(outbounds(mailer)[0]!.text).not.toContain("Notes")
   })
 
+  it("is DISABLED when HOME_TURF_NOTIFY_TO is unset: 409, no mail, and NOT a captured 5xx", async () => {
+    const { app, mailer } = await makeHarness({ HOME_TURF_NOTIFY_TO: "" })
+    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    expect(res.statusCode).toBe(409)
+    expect(res.statusCode).toBeLessThan(500)
+    expect(res.json().code).toBe("CONFLICT")
+    expect(outbounds(mailer)).toHaveLength(0)
+  })
+
   it("5xxes when the notification send fails (and never sends the confirmation)", async () => {
     const { app, mailer } = await makeHarness()
     let calls = 0
@@ -203,7 +214,7 @@ describe("POST /forms/home-turf", () => {
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
     expect(outbounds(mailer)).toHaveLength(1)
-    expect(outbounds(mailer)[0]!.to).toBe("roman@reachoutla.org")
+    expect(outbounds(mailer)[0]!.to).toBe(NOTIFY_TO)
   })
 
   it("does NOT consume the 1/day recipient budget when the coordinator send fails (the retry still 200s)", async () => {
@@ -234,7 +245,7 @@ describe("POST /forms/home-turf", () => {
 
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(2)
-    expect(sent[0]!.to).toBe("roman@reachoutla.org")
+    expect(sent[0]!.to).toBe(NOTIFY_TO)
     expect(sent[1]!.to).toBe("coach@example.org")
   })
 
@@ -250,9 +261,9 @@ describe("POST /forms/home-turf", () => {
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(3)
     expect(sent.map((e) => e.to)).toEqual([
-      "roman@reachoutla.org",
+      NOTIFY_TO,
       "coach@example.org",
-      "roman@reachoutla.org",
+      NOTIFY_TO,
     ])
 
     const other = await app.inject({
@@ -347,7 +358,7 @@ describe("enforceHomeTurfRecipientCap (M8)", () => {
 
 describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
   it("refuses to send when no counter store is available (empty REDIS_URL, no override)", async () => {
-    const env = loadEnv({ NODE_ENV: "test" })
+    const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO })
     const container = buildContainer(env)
     const app = await buildServer({ env, container })
     current = { app, mailer: container.mailer as FakeMailer, container }
@@ -359,7 +370,7 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
   })
 
   it("counts through container.getCounterStore() when Redis IS configured (one shared client)", async () => {
-    const env = loadEnv({ NODE_ENV: "test" })
+    const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO })
     const counted: string[] = []
     const container = {
       ...buildContainer(env),

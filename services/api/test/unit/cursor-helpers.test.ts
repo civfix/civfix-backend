@@ -95,6 +95,31 @@ describe("parseTimeCursor", () => {
     expect(parseTimeCursor(`${ISO}|${UUID}|extra`)).toBeNull()
     expect(parseTimeCursor(`${ISO}|${UUID}|extra`, { requireUuid: false })!.id).toBe(`${UUID}|extra`)
   })
+
+  it("rejects a forged out-of-range timestamp that JS parses but Postgres would 22008 on", () => {
+    expect(parseTimeCursor(`-271821-04-20T00:00:00Z|${UUID}`)).toBeNull()
+    expect(parseTimeCursor("-271821-04-20T00:00:00Z")).toBeNull()
+    expect(parseTimeCursor(`+275760-09-13T00:00:00Z|${UUID}`)).toBeNull()
+    expect(parseTimeCursor(`1969-12-31T23:59:59.999Z|${UUID}`)).toBeNull()
+    expect(parseTimeCursor(`2101-01-01T00:00:00.000Z|${UUID}`)).toBeNull()
+  })
+
+  it("rejects loosely-parsable non-ISO anchors JS would otherwise accept", () => {
+    expect(parseTimeCursor(`2026|${UUID}`)).toBeNull()
+    expect(parseTimeCursor(`2026-07-24|${UUID}`)).toBeNull()
+    expect(parseTimeCursor(`Wed Jul 24 2026|${UUID}`)).toBeNull()
+    expect(parseTimeCursor(`2026-07-24T12:34:56.789Z ${UUID}`)).toBeNull()
+  })
+
+  it("accepts every shape the encoders emit, plus an explicit UTC offset", () => {
+    for (const at of [new Date(0), new Date(ISO), new Date("2099-12-31T23:59:59.999Z")]) {
+      const parsed = parseTimeCursor(encodeTimeCursor({ at, id: UUID }))
+      expect(parsed!.at.getTime()).toBe(at.getTime())
+    }
+    expect(parseTimeCursor(`2026-07-24T12:34:56+02:00|${UUID}`)!.at.toISOString()).toBe(
+      "2026-07-24T10:34:56.000Z",
+    )
+  })
 })
 
 describe("parseNameCursor / encodeNameCursor", () => {
