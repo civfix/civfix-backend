@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto"
-import { avatarGradient } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   LeaderboardEntryDTO,
   MyVolunteerHoursDTO,
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
-import { ITEMISED_SOURCES } from "./volunteer-hours-service.js"
+import {
+  DAILY_HOURS_CAP,
+  ITEMISED_SOURCES,
+  RECIPROCAL_LOOKBACK_MS,
+  WEEKLY_HOURS_FLAG_DEFAULT,
+} from "./volunteer-hours-service.js"
 import type {
   CertificateEntriesPage,
   EntriesForCertificateArgs,
@@ -16,6 +21,7 @@ import type {
   ListEntriesArgs,
   LogEventHoursArgs,
   LogEventHoursResult,
+  VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
@@ -51,6 +57,8 @@ interface LedgerEntry {
 function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 
 export interface InMemoryVolunteerHoursRepositoryOpts {
   now?: () => Date
@@ -107,6 +115,8 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   }
 
   logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
+    this.assertNoReciprocalCredit(args)
+    this.assertDailyCap(args)
     const changed: LogEventHoursResult["changed"] = []
     for (const entry of args.entries) {
       const key = `${args.cleanupId}|${entry.userId}`
@@ -145,7 +155,111 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
         })
       }
     }
-    return Promise.resolve({ credited: args.entries.length, changed })
+    return Promise.resolve({
+      credited: args.entries.length,
+      changed,
+      anomalies: this.detectAnomalies(args),
+    })
+  }
+
+  private assertNoReciprocalCredit(args: LogEventHoursArgs): void {
+    const creditedTheActor = new Set(
+      this.entries
+        .filter(
+          (e) =>
+            e.source === "event" &&
+            e.cleanupId === args.cleanupId &&
+            e.userId === args.actorId &&
+            e.voidedAt === undefined &&
+            e.loggedByUserId !== null &&
+            e.loggedByUserId !== args.actorId,
+        )
+        .map((e) => e.loggedByUserId as string),
+    )
+    if (args.entries.some((entry) => creditedTheActor.has(entry.userId))) {
+      throw AppError.conflict(
+        "You can't credit hours to someone who has already credited you for this event.",
+      )
+    }
+  }
+
+  private assertDailyCap(args: LogEventHoursArgs): void {
+    const day = this.eventDay(args.cleanupId)
+    if (day === null) return
+    const dailyCapHours = args.dailyCapHours ?? DAILY_HOURS_CAP
+    for (const entry of args.entries) {
+      const held = this.entries
+        .filter(
+          (e) =>
+            e.source === "event" &&
+            e.userId === entry.userId &&
+            e.voidedAt === undefined &&
+            e.cleanupId !== null &&
+            e.cleanupId !== args.cleanupId &&
+            this.eventDay(e.cleanupId) === day,
+        )
+        .reduce((sum, e) => sum + e.hours, 0)
+      if (held + entry.hours > dailyCapHours) {
+        throw AppError.conflict(
+          `That attendee already holds ${round2(held)} h for events on this date; the daily limit is ${dailyCapHours} h.`,
+        )
+      }
+    }
+  }
+
+  private eventDay(cleanupId: string): string | null {
+    const scheduledAt = this.cleanups.get(cleanupId)?.scheduledAt ?? null
+    return scheduledAt === null ? null : scheduledAt.toISOString().slice(0, 10)
+  }
+
+  private detectAnomalies(args: LogEventHoursArgs): VolunteerHoursAnomaly[] {
+    const anomalies: VolunteerHoursAnomaly[] = []
+    const weeklyFlagHours = args.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT
+    const nowMs = this.now().getTime()
+    for (const entry of args.entries) {
+      const weekly = this.entries
+        .filter(
+          (e) =>
+            e.userId === entry.userId &&
+            e.source !== "report" &&
+            e.voidedAt === undefined &&
+            nowMs - e.createdAt.getTime() <= WEEK_MS,
+        )
+        .reduce((sum, e) => sum + e.hours, 0)
+      if (weekly > weeklyFlagHours) {
+        anomalies.push({
+          kind: "weekly_hours",
+          userId: entry.userId,
+          counterpartUserId: null,
+          hours: round2(weekly),
+        })
+      }
+    }
+    const creditedTheActorElsewhere = new Set(
+      this.entries
+        .filter(
+          (e) =>
+            e.source === "event" &&
+            e.userId === args.actorId &&
+            e.voidedAt === undefined &&
+            e.cleanupId !== null &&
+            e.cleanupId !== args.cleanupId &&
+            e.loggedByUserId !== null &&
+            nowMs - e.createdAt.getTime() <= RECIPROCAL_LOOKBACK_MS,
+        )
+        .map((e) => e.loggedByUserId as string),
+    )
+    for (const entry of args.entries) {
+      if (creditedTheActorElsewhere.has(entry.userId)) {
+        anomalies.push({
+          kind: "reciprocal_credit",
+          userId: entry.userId,
+          counterpartUserId: args.actorId,
+          hours: null,
+        })
+      }
+    }
+    return anomalies
   }
 
   totalsFor(userId: string): Promise<MyVolunteerHoursDTO> {

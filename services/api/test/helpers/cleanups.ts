@@ -40,6 +40,7 @@ import {
   parseTimeCursor,
 } from "../../src/db/cursor-helpers.js"
 import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
+import { MIN_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
 
 interface StoredCleanup {
   id: string
@@ -51,6 +52,7 @@ interface StoredCleanup {
   lat: number
   lng: number
   scheduledAt: Date
+  completedAt: Date | null
   status: CleanupRecord["status"]
   bring: string[] | null
   address: string | null
@@ -224,6 +226,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       lat: over.lat ?? 34.0,
       lng: over.lng ?? -118.49,
       scheduledAt: over.scheduledAt ?? new Date(Date.now() + 86_400_000),
+      completedAt: over.completedAt ?? null,
       status: over.status ?? "upcoming",
       bring: over.bring ?? null,
       address: over.address ?? null,
@@ -274,6 +277,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       lat: c.lat,
       lng: c.lng,
       scheduledAt: c.scheduledAt,
+      completedAt: c.completedAt,
       status: c.status,
       bring: c.bring,
       address: c.address,
@@ -299,6 +303,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       lat: args.lat,
       lng: args.lng,
       scheduledAt: args.scheduledAt,
+      completedAt: null,
       status: args.status,
       bring: args.bring,
       address: args.address,
@@ -689,8 +694,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!c) return Promise.resolve("not_found")
     if (c.status === "cancelled") return Promise.resolve("cancelled")
     if (c.status === "done") return Promise.resolve("already_completed")
-    if (c.scheduledAt.getTime() > input.now.getTime()) return Promise.resolve("too_early")
+    if (c.scheduledAt.getTime() + MIN_EVENT_DURATION_MS > input.now.getTime()) {
+      return Promise.resolve("too_early")
+    }
     c.status = "done"
+    c.completedAt = input.now
     this.timeline.push({
       cleanupId: id,
       kind: "status",
