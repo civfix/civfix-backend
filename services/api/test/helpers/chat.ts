@@ -17,6 +17,8 @@ import {
 import { aroundLimits } from "../../src/services/chat-history-window.js"
 import { toTombstoneDTO } from "../../src/services/chat-tombstone.js"
 import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
+import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.drizzle.js"
+import { visibleAfterHides } from "../../src/services/conversation-hides-repository.memory.js"
 import type { TimeCursor } from "../../src/db/cursor-helpers.js"
 
 interface StoredMessage {
@@ -417,6 +419,8 @@ interface ThreadCleanup {
 export class InMemoryThreadsRepository implements ThreadsRepository {
   private readonly cleanups = new Map<string, ThreadCleanup>()
 
+  constructor(private readonly hides?: ConversationHidesRepository) {}
+
   seedCleanup(title: string, id: string = randomUUID()): string {
     this.cleanups.set(id, { id, title, members: new Map(), messages: [] })
     return id
@@ -435,7 +439,7 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
       ?.messages.push({ ...msg, deleted: msg.deleted ?? false })
   }
 
-  listThreadsFor(
+  async listThreadsFor(
     userId: string,
     limit: number,
     cursor?: TimeCursor | null,
@@ -462,20 +466,28 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
     }
     const activityOf = (t: ThreadAggregate): number =>
       t.last?.createdAt.getTime() ?? t.joinedAt.getTime()
-    out.sort((a, b) => {
+    const visible = await visibleAfterHides(
+      this.hides,
+      userId,
+      "cleanup",
+      out,
+      (t) => t.cleanupId,
+      activityOf,
+    )
+    visible.sort((a, b) => {
       const cmp = activityOf(b) - activityOf(a)
       if (cmp !== 0) return cmp
       return a.cleanupId < b.cleanupId ? 1 : a.cleanupId > b.cleanupId ? -1 : 0
     })
     const page =
       cursor === null || cursor === undefined
-        ? out
-        : out.filter((t) => {
+        ? visible
+        : visible.filter((t) => {
             const activity = activityOf(t)
             const at = cursor.at.getTime()
             return activity <= at && (activity < at || t.cleanupId < cursor.id)
           })
-    return Promise.resolve(page.slice(0, limit))
+    return page.slice(0, limit)
   }
 
   countUnread(cleanupId: string, userId: string, after: Date): Promise<number> {

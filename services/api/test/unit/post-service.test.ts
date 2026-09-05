@@ -4,10 +4,12 @@ import { AppError } from "@civfix/shared"
 import type { PostComposeInput, PostDTO } from "@civfix/shared"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
-import type {
-  CreatePostArgs,
-  PostBrief,
-  PostRepository,
+import { makeFakeSql } from "../helpers/fake-sql.js"
+import {
+  makeDrizzlePostRepository,
+  type CreatePostArgs,
+  type PostBrief,
+  type PostRepository,
 } from "../../src/services/post-repository.drizzle.js"
 import type { PostNotifier } from "../../src/services/notification-service.js"
 
@@ -182,6 +184,7 @@ describe("PostService validation + authorization", () => {
       replyToId: null,
       repostOfId: null,
       deletedAt: null,
+      visibility: "public",
     }
     const repo = fakeRepo({ briefs: { p1: brief } })
     const svc = makePostService({ repo, sql: throwingSql })
@@ -189,6 +192,47 @@ describe("PostService validation + authorization", () => {
     expect(repo.deleted).toHaveLength(0)
     await expect(svc.deletePost("p1", "owner")).resolves.toEqual({ ok: true })
     expect(repo.deleted).toEqual(["p1"])
+  })
+
+  it("repostPost rejects a self-repost and never writes a repost row", async () => {
+    const reposted: Array<{ postId: string; userId: string }> = []
+    const repo = {
+      ...fakeRepo({
+        briefs: {
+          p1: { id: "p1", authorId: "self", kind: "post", replyToId: null, repostOfId: null, deletedAt: null, visibility: "public" },
+        },
+      }),
+      repost: (postId: string, userId: string) => {
+        reposted.push({ postId, userId })
+        return Promise.resolve({ targetId: postId, created: true })
+      },
+    }
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(svc.repostPost("p1", "self")).rejects.toMatchObject({ httpStatus: 422 })
+    expect(reposted).toHaveLength(0)
+    await expect(svc.repostPost("p1", "other")).resolves.toMatchObject({ id: "p1" })
+    expect(reposted).toEqual([{ postId: "p1", userId: "other" }])
+  })
+
+  it("repostPost resolves a repost shell to its original before the self-repost check", async () => {
+    const reposted: Array<{ postId: string; userId: string }> = []
+    const repo = {
+      ...fakeRepo({
+        briefs: {
+          shell: { id: "shell", authorId: "booster", kind: "repost", replyToId: null, repostOfId: "orig", deletedAt: null, visibility: "public" },
+          orig: { id: "orig", authorId: "self", kind: "post", replyToId: null, repostOfId: null, deletedAt: null, visibility: "public" },
+        },
+      }),
+      repost: (postId: string, userId: string) => {
+        reposted.push({ postId, userId })
+        return Promise.resolve({ targetId: "orig", created: true })
+      },
+    }
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(svc.repostPost("shell", "self")).rejects.toMatchObject({ httpStatus: 422 })
+    expect(reposted).toHaveLength(0)
+    await expect(svc.repostPost("shell", "other")).resolves.toMatchObject({ id: "orig" })
+    expect(reposted).toEqual([{ postId: "shell", userId: "other" }])
   })
 })
 
@@ -200,6 +244,7 @@ describe("PostService notification fan-out", () => {
     replyToId: null,
     repostOfId: null,
     deletedAt: null,
+    visibility: "public",
     ...over,
   })
 
@@ -276,6 +321,7 @@ describe("PostService: replyToId alone makes a reply, whatever `kind` claims", (
     replyToId: null,
     repostOfId: null,
     deletedAt: null,
+    visibility: "public",
   }
 
   const kindlessReply = (): PostComposeInput => ({
@@ -356,5 +402,237 @@ describe("PostService: replyToId alone makes a reply, whatever `kind` claims", (
       svc.createPost({ ...kindlessReply(), repostOfId: "target" }, "replier"),
     ).rejects.toMatchObject({ httpStatus: 422 })
     expect(repo.created).toHaveLength(0)
+  })
+})
+
+describe("PostService: an author-erased (visibility 'hidden') post is unreadable", () => {
+  const hidden = (over: Partial<PostBrief> = {}): PostBrief => ({
+    id: "orig",
+    authorId: "erased",
+    kind: "post",
+    replyToId: null,
+    repostOfId: null,
+    deletedAt: null,
+    visibility: "hidden",
+    ...over,
+  })
+
+  it("404s a repost of a hidden original and never writes a repost row", async () => {
+    const reposted: Array<{ postId: string; userId: string }> = []
+    const repo = {
+      ...fakeRepo({ briefs: { orig: hidden() } }),
+      repost: (postId: string, userId: string) => {
+        reposted.push({ postId, userId })
+        return Promise.resolve({ targetId: postId, created: true })
+      },
+    }
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(svc.repostPost("orig", "booster")).rejects.toMatchObject({ httpStatus: 404 })
+    expect(reposted).toHaveLength(0)
+  })
+
+  it("404s a quote of, a reply to and a read of a hidden original", async () => {
+    const repo = fakeRepo({ briefs: { orig: hidden() } })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(svc.getPost("orig", "reader")).rejects.toMatchObject({ httpStatus: 404 })
+    await expect(
+      svc.createPost(
+        {
+          kind: "post",
+          repostOfId: "orig",
+          body: "look",
+          mediaUploadIds: [],
+          mentionedUserIds: [],
+        },
+        "quoter",
+      ),
+    ).rejects.toMatchObject({ httpStatus: 404 })
+    await expect(
+      svc.createPost(
+        {
+          kind: "post",
+          replyToId: "orig",
+          body: "hey",
+          mediaUploadIds: [],
+          mentionedUserIds: [],
+        },
+        "replier",
+      ),
+    ).rejects.toMatchObject({ httpStatus: 404 })
+    expect(repo.created).toHaveLength(0)
+  })
+
+  it("404s a read through a repost shell whose original went hidden", async () => {
+    const repo = fakeRepo({
+      briefs: {
+        shell: hidden({
+          id: "shell",
+          authorId: "booster",
+          kind: "repost",
+          repostOfId: "orig",
+          visibility: "public",
+        }),
+        orig: hidden(),
+      },
+    })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(svc.getPost("shell", "reader")).rejects.toMatchObject({ httpStatus: 404 })
+  })
+})
+
+describe("PostRepository.loadRefs: a hidden original is an unavailable embed", () => {
+  const VIEWER = "11111111-1111-1111-1111-111111111111"
+  const QUOTE = "22222222-2222-2222-2222-222222222222"
+  const ORIG = "33333333-3333-3333-3333-333333333333"
+  const AUTHOR = "44444444-4444-4444-4444-444444444444"
+  const ERASED = "55555555-5555-5555-5555-555555555555"
+  const AT = new Date("2026-07-01T00:00:00.000Z")
+
+  function repoOver(visibility: "public" | "hidden") {
+    const fake = makeFakeSql([
+      {
+        match: /FROM posts WHERE id = \?/,
+        rows: [
+          {
+            id: QUOTE,
+            author_id: AUTHOR,
+            kind: "quote",
+            body: "quoting this",
+            reply_to_id: null,
+            thread_root_id: null,
+            repost_of_id: ORIG,
+            event_id: null,
+            report_id: null,
+            like_count: 0,
+            repost_count: 0,
+            reply_count: 0,
+            save_count: 0,
+            created_at: AT,
+            updated_at: AT,
+          },
+        ],
+      },
+      {
+        match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/,
+        rows: [
+          {
+            id: AUTHOR,
+            display_name: "Quoter",
+            handle: "quoter",
+            bio: null,
+            followers: 0,
+            following: 0,
+            verified: false,
+            avatar_r2_key: null,
+            avatar_url: null,
+            is_following: false,
+            deleted_at: null,
+          },
+        ],
+      },
+      {
+        match: /LEFT JOIN users u ON u\.id = p\.author_id/,
+        rows: [
+          {
+            id: ORIG,
+            kind: "post",
+            body: "the original body",
+            event_id: "66666666-6666-6666-6666-666666666666",
+            report_id: null,
+            like_count: 3,
+            repost_count: 1,
+            reply_count: 0,
+            save_count: 0,
+            created_at: AT,
+            deleted_at: null,
+            visibility,
+            author_id: ERASED,
+            display_name: "Erased",
+            handle: "erased",
+            bio: "bio",
+            avatar_url: null,
+            verified: false,
+          },
+        ],
+      },
+    ])
+    const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+      presignMedia: () => Promise.resolve({ url: "u" }),
+      presignAvatar: () => Promise.resolve("a"),
+    })
+    return { repo, fake }
+  }
+
+  it("selects posts.visibility on the ref query", async () => {
+    const { repo, fake } = repoOver("hidden")
+    await repo.getPostDTO(QUOTE, VIEWER)
+    const refStmt = fake.statements.find((s) => /LEFT JOIN users u ON u\.id = p\.author_id/.test(s.sql))
+    expect(refStmt?.sql).toContain("p.visibility")
+  })
+
+  it("blanks the body, excerpt, author and links of a hidden original and loads no media for it", async () => {
+    const { repo, fake } = repoOver("hidden")
+    const dto = await repo.getPostDTO(QUOTE, VIEWER)
+    expect(dto?.repostOf).toMatchObject({
+      id: ORIG,
+      deleted: true,
+      body: null,
+      excerpt: "",
+      author: null,
+      media: [],
+      event: null,
+      report: null,
+    })
+    const mediaStmts = fake.statements.filter((s) => /FROM media_assets\s+WHERE post_id/.test(s.sql))
+    expect(mediaStmts.some((s) => JSON.stringify(s.values).includes(ORIG))).toBe(false)
+    const eventStmts = fake.statements.filter((s) => /FROM cleanups c/.test(s.sql))
+    expect(eventStmts).toHaveLength(0)
+  })
+
+  it("still ships the body and links of a public original", async () => {
+    const { repo, fake } = repoOver("public")
+    const dto = await repo.getPostDTO(QUOTE, VIEWER)
+    expect(dto?.repostOf).toMatchObject({ id: ORIG, body: "the original body" })
+    expect(dto?.repostOf?.deleted).toBeUndefined()
+    const mediaStmts = fake.statements.filter((s) => /FROM media_assets\s+WHERE post_id/.test(s.sql))
+    expect(mediaStmts.some((s) => JSON.stringify(s.values).includes(ORIG))).toBe(true)
+  })
+})
+
+describe("PostRepository read paths all exclude non-public posts", () => {
+  const VIEWER = "11111111-1111-1111-1111-111111111111"
+  const SUBJECT = "22222222-2222-2222-2222-222222222222"
+
+  async function emitted(run: (repo: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>) {
+    const fake = makeFakeSql()
+    const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+      presignMedia: () => Promise.resolve({ url: "u" }),
+      presignAvatar: () => Promise.resolve("a"),
+    })
+    await run(repo)
+    return fake.statements[0]!.sql
+  }
+
+  const args = { viewerId: VIEWER, cursor: null, limit: 10 }
+
+  it("filters every post-listing query on visibility, not just the public feed", async () => {
+    const cases: Array<[string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]> = [
+      ["getPostDTO", (r) => r.getPostDTO(SUBJECT, VIEWER)],
+      ["homeFeed", (r) => r.homeFeed({ ...args, filter: "all" })],
+      ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],
+      ["listReplies", (r) => r.listReplies(SUBJECT, args)],
+      ["listUserPosts", (r) => r.listUserPosts(SUBJECT, args)],
+      ["listSaves", (r) => r.listSaves(args)],
+    ]
+    for (const [name, run] of cases) {
+      const stmt = await emitted(run)
+      expect(stmt, `${name} must exclude non-public posts`).toMatch(/visibility = 'public'/)
+      expect(stmt, `${name} must exclude soft-deleted posts`).toMatch(/deleted_at IS NULL/)
+    }
+  })
+
+  it("selects visibility on getPostBrief so the service can gate on it", async () => {
+    const stmt = await emitted((r) => r.getPostBrief(SUBJECT))
+    expect(stmt).toContain("visibility")
   })
 })

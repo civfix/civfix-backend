@@ -28,6 +28,7 @@ export * from "./chat_reactions.js"
 export * from "./message_mentions.js"
 export * from "./report_chat_members.js"
 export * from "./conversation_mutes.js"
+export * from "./conversation_hides.js"
 export * from "./report_message_forwards.js"
 
 export * from "./dm_threads.js"

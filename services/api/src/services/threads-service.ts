@@ -129,7 +129,6 @@ export interface ThreadsMutesSource {
   ): Promise<Set<string>>
 }
 
-
 export const THREADS_DEFAULT_LIMIT = 30
 
 export interface ThreadsServiceDeps {

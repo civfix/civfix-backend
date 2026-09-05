@@ -3,6 +3,7 @@ import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
 import type postgres from "postgres"
 import type { Sql } from "../db/client.js"
+import type { ConversationHideRoomKind } from "../db/schema/conversation_hides.js"
 import { publicReportFilter } from "./report-sql.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
 import type {
@@ -50,6 +51,7 @@ interface ThreadFamilySpec {
   memberTable: string
   roomTable: string
   scopeColumn: string
+  roomKind: ConversationHideRoomKind
   columns: SqlFragment
   where?: SqlFragment
 }
@@ -62,7 +64,8 @@ async function listThreadFamily<R extends ThreadFamilyRow>(
   cursor: TimeCursor | null | undefined,
 ): Promise<R[]> {
   const scope = sql(spec.scopeColumn)
-  const activity = sql`date_trunc('milliseconds', COALESCE(last_msg.created_at, mem.joined_at))`
+  const rawActivity = sql`COALESCE(last_msg.created_at, mem.joined_at)`
+  const activity = sql`date_trunc('milliseconds', ${rawActivity})`
   const cursorFilter = threadsCursorFilter(sql, activity, sql`r.id`, cursor)
   return await sql<R[]>`
     WITH page AS (
@@ -80,7 +83,10 @@ async function listThreadFamily<R extends ThreadFamilyRow>(
         ORDER BY cm.created_at DESC, cm.id DESC
         LIMIT 1
       ) last_msg ON TRUE
+      LEFT JOIN conversation_hides h
+        ON h.user_id = ${userId} AND h.room_kind = ${spec.roomKind} AND h.room_id = r.id
       WHERE mem.user_id = ${userId}
+        AND (h.hidden_at IS NULL OR ${rawActivity} > h.hidden_at)
         ${spec.where ?? sql``}
         ${cursorFilter}
       ORDER BY ${activity} DESC, r.id DESC
@@ -125,6 +131,7 @@ const CLEANUP_FAMILY = (sql: Sql): ThreadFamilySpec => ({
   memberTable: "cleanup_members",
   roomTable: "cleanups",
   scopeColumn: "cleanup_id",
+  roomKind: "cleanup",
   columns: sql`r.title`,
 })
 
@@ -132,6 +139,7 @@ const REPORT_FAMILY = (sql: Sql, userId: string): ThreadFamilySpec => ({
   memberTable: "report_chat_members",
   roomTable: "reports",
   scopeColumn: "report_id",
+  roomKind: "report",
   columns: sql`r.category, r.addr`,
   where: sql`
     AND r.deleted_at IS NULL
@@ -143,6 +151,7 @@ const GROUP_FAMILY = (sql: Sql): ThreadFamilySpec => ({
   memberTable: "chat_group_members",
   roomTable: "chat_groups",
   scopeColumn: "group_id",
+  roomKind: "group",
   columns: sql`r.name, r.kind`,
 })
 

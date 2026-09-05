@@ -7,9 +7,14 @@ import { resolveMentionTargets } from "./mention-resolver.drizzle.js"
 import {
   POSTS_DEFAULT_LIMIT,
   type FeedPage,
+  type PostBrief,
   type PostRepository,
 } from "./post-repository.drizzle.js"
 import type { PostNotifier } from "./notification-service.js"
+
+function isVisible(brief: PostBrief): boolean {
+  return brief.deletedAt === null && brief.visibility === "public"
+}
 
 export interface PostServiceDeps {
   repo: PostRepository
@@ -61,12 +66,12 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
   async function requireReadable(id: string, viewerId: string) {
     const brief = await deps.repo.getPostBrief(id)
-    if (!brief || brief.deletedAt !== null || (await isBlocked(viewerId, brief.authorId))) {
+    if (!brief || !isVisible(brief) || (await isBlocked(viewerId, brief.authorId))) {
       throw AppError.notFound("Post not found")
     }
     if (brief.repostOfId) {
       const target = await deps.repo.getPostBrief(brief.repostOfId)
-      if (!target || target.deletedAt !== null || (await isBlocked(viewerId, target.authorId))) {
+      if (!target || !isVisible(target) || (await isBlocked(viewerId, target.authorId))) {
         throw AppError.notFound("Post not found")
       }
       if (brief.kind === "repost") return target
@@ -206,7 +211,10 @@ export function makePostService(deps: PostServiceDeps): PostService {
     },
 
     async repostPost(id: string, viewerId: string): Promise<PostDTO> {
-      await requireReadable(id, viewerId)
+      const subject = await requireReadable(id, viewerId)
+      if (subject.authorId === viewerId) {
+        throw AppError.validation({ id: "You cannot repost your own post." })
+      }
       const { targetId, created } = await deps.repo.repost(id, viewerId)
       if (created) {
         const targetBrief = await deps.repo.getPostBrief(targetId)

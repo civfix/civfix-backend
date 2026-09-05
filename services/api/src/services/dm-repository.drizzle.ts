@@ -538,7 +538,8 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       cursor?: TimeCursor | null,
     ): Promise<DmThreadAggregate[]> {
       const limitClause = limit !== undefined ? sql`LIMIT ${limit}` : sql``
-      const activity = sql`date_trunc('milliseconds', COALESCE(last_msg.created_at, t.created_at))`
+      const rawActivity = sql`COALESCE(last_msg.created_at, t.created_at)`
+      const activity = sql`date_trunc('milliseconds', ${rawActivity})`
       let cursorFilter = sql``
       if (cursor !== null && cursor !== undefined) {
         const msCeiling = new Date(cursor.at.getTime() + 1)
@@ -594,7 +595,10 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
           ORDER BY dm.created_at DESC, dm.id DESC
           LIMIT 1
         ) last_msg ON TRUE
+        LEFT JOIN conversation_hides h
+          ON h.user_id = ${userId} AND h.room_kind = 'dm' AND h.room_id = t.id
         WHERE (t.user_lo = ${userId} OR t.user_hi = ${userId})
+          AND (h.hidden_at IS NULL OR ${rawActivity} > h.hidden_at)
           AND NOT EXISTS (
             SELECT 1 FROM user_blocks b
             WHERE (b.blocker_id = ${userId} AND b.blocked_id = peer.id)

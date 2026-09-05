@@ -12,6 +12,8 @@ import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { aroundLimits } from "./chat-history-window.js"
 import { toTombstoneDTO } from "./chat-tombstone.js"
+import type { ConversationHidesRepository } from "./conversation-hides-repository.drizzle.js"
+import { visibleAfterHides } from "./conversation-hides-repository.memory.js"
 import type {
   DmMessageMeta,
   DmPersistInput,
@@ -63,7 +65,10 @@ export class InMemoryDmRepository implements DmRepository {
   private readonly users = new Map<string, DmUser>()
   private tick = 0
 
-  constructor(private readonly isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>) {}
+  constructor(
+    private readonly isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>,
+    private readonly hides?: ConversationHidesRepository,
+  ) {}
 
   registerUser(user: DmUser): void {
     this.users.set(user.id, user)
@@ -433,19 +438,27 @@ export class InMemoryDmRepository implements DmRepository {
     }
     const activityOf = (a: DmThreadAggregate): number =>
       (a.last?.createdAt ?? a.createdAt).getTime()
-    out.sort(
+    const visible = await visibleAfterHides(
+      this.hides,
+      userId,
+      "dm",
+      out,
+      (a) => a.threadId,
+      activityOf,
+    )
+    visible.sort(
       (a, b) =>
         activityOf(b) - activityOf(a) ||
         (a.threadId < b.threadId ? 1 : a.threadId > b.threadId ? -1 : 0),
     )
     const paged =
       cursor !== null && cursor !== undefined
-        ? out.filter(
+        ? visible.filter(
             (a) =>
               activityOf(a) < cursor.at.getTime() ||
               (activityOf(a) === cursor.at.getTime() && a.threadId < cursor.id),
           )
-        : out
+        : visible
     return limit !== undefined ? paged.slice(0, limit) : paged
   }
 }

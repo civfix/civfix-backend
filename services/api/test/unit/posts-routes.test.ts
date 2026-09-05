@@ -181,6 +181,7 @@ class InMemoryPostRepository implements PostRepository {
       replyToId: p.replyToId,
       repostOfId: p.repostOfId,
       deletedAt: p.deletedAt,
+      visibility: "public",
     })
   }
 

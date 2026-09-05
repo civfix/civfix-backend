@@ -51,6 +51,7 @@ const EXPECTED_TABLES = [
   "chat_message_mentions",
   "report_chat_members",
   "conversation_mutes",
+  "conversation_hides",
   "report_message_forwards",
   "chat_groups",
   "chat_group_members",
