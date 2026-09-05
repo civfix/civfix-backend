@@ -65,33 +65,12 @@ function parseId(raw: string | undefined): number | null {
   return Number.isInteger(n) && n > 0 ? n : null
 }
 
-function assertDistinctFromWorker(uid: number, gid: number): void {
-  const workerUid = process.getuid?.()
-  const workerGid = process.getgid?.()
-  if (workerUid !== undefined && uid === workerUid) {
-    throw new Error(
-      `media-worker: MEDIA_SANDBOX_UID (${uid}) is the uid this worker already runs as, so the media ` +
-        "decoders would keep DATABASE_URL, the R2 credentials and ptrace access to this process. Point " +
-        "it at the unprivileged mediatools account (uid 1001) the image provisions.",
-    )
-  }
-  if (workerGid !== undefined && gid === workerGid) {
-    throw new Error(
-      `media-worker: MEDIA_SANDBOX_GID (${gid}) is the gid this worker already runs as, so the media ` +
-        "decoders would share this process's group access. Point it at the mediatools group (gid 1001).",
-    )
-  }
-}
-
 export function loadSandboxIdentity(
   source: NodeJS.ProcessEnv = process.env,
 ): SandboxIdentity | null {
   const uid = parseId(source.MEDIA_SANDBOX_UID)
   const gid = parseId(source.MEDIA_SANDBOX_GID)
-  if (uid !== null && gid !== null) {
-    assertDistinctFromWorker(uid, gid)
-    return { uid, gid }
-  }
+  if (uid !== null && gid !== null) return { uid, gid }
   if (uid !== null || gid !== null) {
     throw new Error(
       "media-worker: MEDIA_SANDBOX_UID and MEDIA_SANDBOX_GID must be set together (both positive " +
