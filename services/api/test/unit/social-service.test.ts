@@ -1,17 +1,22 @@
 import { describe, it, expect } from "vitest"
 import { avatarGradient, stableHash, AVATAR_PALETTE } from "@civfix/shared"
 import {
+  dropSuggestionsFor,
   makeSocialService,
+  suggestionsCacheKey,
   toPersonDTO,
   PROFILE_PAST_EVENTS_LIMIT,
   type SocialNotifier,
   type SocialService,
+  type SocialRepository,
   type PersonView,
 } from "../../src/services/social-service.js"
 import {
   toPersonView,
+  SUGGEST_CANDIDATE_POOL,
   type PersonRowSelect,
 } from "../../src/services/social-repository.drizzle.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   InMemorySocialRepository,
   makeCleanupRecord,
@@ -189,8 +194,6 @@ describe("listPeople", () => {
     expect(page2.nextCursor).toBeNull()
   })
 
-  // M-people-blocks: the block filter on people SEARCH is symmetric — a block hides both accounts from
-  // each other's search results, in whichever direction it was created.
   it("excludes an account the viewer blocked", async () => {
     const { repo, service } = makeHarness()
     repo.seedUser({ id: A, displayName: "Alice" })
@@ -212,7 +215,6 @@ describe("listPeople", () => {
 
     const asA = await service.listPeople({ limit: 20 }, { userId: A })
     expect(asA.items.map((p) => p.id)).not.toContain(B)
-    // ...and the block hides the blocker from the blocked user too.
     const asB = await service.listPeople({ limit: 20 }, { userId: B })
     expect(asB.items.map((p) => p.id)).not.toContain(A)
   })
@@ -394,9 +396,6 @@ describe("getProfile", () => {
     expect(profile.stats).toEqual({ reports: 4, fixed: 3, cleanups: 2 })
     expect(profile.pastEvents.map((e) => e.title)).toEqual(["Newer", "Older"])
     expect(profile.avatar).toEqual(avatarGradient(A))
-    // `joined` is the VIEWER's membership, not the profile owner's: C is looking at A's events, so the
-    // cards must not claim C is attending them (and myRole stays omitted). See the next test for the
-    // owner's own view, where every card IS genuinely joined.
     expect(profile.pastEvents[0]!.joined).toBe(false)
     expect(profile.pastEvents[0]!.myRole).toBeUndefined()
     expect(profile.pastEvents[0]!.organizer.id).toBe(A)
@@ -409,12 +408,10 @@ describe("getProfile", () => {
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: A, title: "Organized" }))
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Attended" }), [A])
 
-    // A's own profile: every card is an event A organized or attended, so `joined` is true for all.
     const own = await service.getProfile(A, { userId: A })
     expect(own.profile.pastEvents).toHaveLength(2)
     expect(own.profile.pastEvents.map((e) => e.joined)).toEqual([true, true])
 
-    // C (and an anonymous viewer) has no membership in A's events, so none of the cards are joined.
     const other = await service.getProfile(A, { userId: C })
     expect(other.profile.pastEvents.map((e) => e.joined)).toEqual([false, false])
     expect(other.profile.pastEvents.map((e) => e.myRole)).toEqual([undefined, undefined])
@@ -468,24 +465,12 @@ describe("getProfile", () => {
   })
 })
 
-/**
- * P6 hours privacy — `users.show_volunteer_hours` is a NULLABLE TRI-STATE (C18), not a boolean, and the
- * profile has to keep all three arms apart:
- *   null  = never chosen  -> hours visible, flag ABSENT (the response every existing account already gets)
- *   true  = explicit opt-in  -> hours visible, flag true
- *   false = explicit opt-out -> hours OMITTED, flag false
- * The (omitted hours + `showVolunteerHours: false`) PAIR is load-bearing: without the flag a hidden
- * profile is indistinguishable from someone who genuinely has no hours yet, and emitting `0` would be a
- * lie. `in` rather than `=== undefined` throughout, because "absent from the payload" is the actual
- * contract — a present-but-undefined key would serialize differently.
- */
 describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
   const HOURS = 12.5
 
   function makeHoursHarness(): {
     repo: InMemorySocialRepository
     service: SocialService
-    /** Every userId `volunteerHoursTotalFor` was asked about — empty means the query never ran. */
     calls: string[]
   } {
     const repo = new InMemorySocialRepository()
@@ -530,7 +515,6 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
     const { profile } = await service.getProfile(A, { userId: C })
     expect("volunteerHours" in profile).toBe(false)
     expect(profile.showVolunteerHours).toBe(false)
-    // Not merely stripped from the response — the read is skipped entirely.
     expect(calls).toEqual([])
   })
 
@@ -550,7 +534,6 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
 
     const own = await service.getProfile(A, { userId: A })
     expect(own.profile.volunteerHours).toBe(HOURS)
-    // The RAW tri-state rides along so the settings toggle renders the honest position.
     expect(own.profile.showVolunteerHours).toBe(false)
 
     const mine = await service.getMyProfile(A)
@@ -590,17 +573,7 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
     expect(profile.showVolunteerHours).toBe(true)
   })
 
-  /**
-   * FAIL-CLOSED on a projection that FORGOT the column.
-   *
-   * The four PersonView-producing reads in social-repository.drizzle.ts are raw postgres.js templates
-   * typed by `sql<PersonRowSelect[]>` — an UNCHECKED assertion. A projection that drops
-   * `u.show_volunteer_hours` therefore typechecks and yields `undefined` at runtime, and `undefined`
-   * would sail through `view.showVolunteerHours === false`, publishing the hours of a user who
-   * explicitly hid them. `toPersonView` coerces that `undefined` to an explicit opt-out.
-   */
   describe("toPersonView: a projection missing show_volunteer_hours fails CLOSED", () => {
-    /** Exactly what postgres.js hands back when the SELECT list omits the column: no such key. */
     function rowWithoutTheColumn(): PersonRowSelect {
       return {
         id: A,
@@ -639,7 +612,6 @@ describe("getProfile: volunteer-hours privacy tri-state (C18)", () => {
 
       const { profile } = await service.getProfile(A, { userId: C })
       expect("volunteerHours" in profile).toBe(false)
-      // ...and the total is never even queried, the same as a genuine opt-out.
       expect(calls).toEqual([])
     })
   })
@@ -910,7 +882,6 @@ describe("followSuggestions", () => {
   const D = "44444444-4444-4444-4444-444444444444"
   const E = "55555555-5555-5555-5555-555555555555"
 
-  // Santa Monica-ish viewer point; "far" = New York.
   const NEAR = { lat: 34.01, lng: -118.49 }
   const FAR = { lat: 40.7, lng: -74.0 }
 
@@ -921,8 +892,6 @@ describe("followSuggestions", () => {
     repo.seedUser({ id: C, displayName: "Far organizer", handle: "org_far" })
     repo.seedUser({ id: D, displayName: "Nearby neighbor", handle: "neighbor" })
     repo.seedUser({ id: E, displayName: "Random person", handle: "random" })
-    // The viewer's area: they attended B's cleanup at NEAR. C hosts an event far away. D and E have
-    // no activity signal at all (no known location, not organizers) so they land in the last tier.
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, ...NEAR }), [A])
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: C, ...FAR }))
 
@@ -978,6 +947,109 @@ describe("followSuggestions", () => {
     const ids = results.map((r) => r.id)
     expect(ids.indexOf(B)).toBeLessThan(ids.indexOf(C))
     expect(ids.indexOf(C)).toBeLessThan(ids.indexOf(D))
+  })
+
+  it("H18: a viewer with no location still gets a bounded, non-empty page from a large population", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    for (let i = 0; i < SUGGEST_CANDIDATE_POOL * 2; i++) {
+      repo.seedUser({ displayName: `Person ${i}`, handle: `person_${i}` })
+    }
+    const { results } = await service.followSuggestions(A, 10)
+    expect(results).toHaveLength(10)
+    expect(results.map((r) => r.id)).not.toContain(A)
+  })
+
+  it("H18: serves a repeat call from the cache and recomputes after a follow", async () => {
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const repo = new InMemorySocialRepository()
+    let calls = 0
+    const counted = Object.create(repo) as SocialRepository
+    counted.suggestFollows = (a) => {
+      calls += 1
+      return repo.suggestFollows(a)
+    }
+    const service = makeSocialService({ repo: counted, suggestionsCache: cache })
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "Someone", handle: "someone" })
+
+    const first = await service.followSuggestions(A, 10)
+    expect(first.results.map((r) => r.id)).toEqual([B])
+    expect(calls).toBe(1)
+
+    const second = await service.followSuggestions(A, 10)
+    expect(second.results.map((r) => r.id)).toEqual([B])
+    expect(calls).toBe(1)
+
+    await service.followPerson(A, B)
+    const third = await service.followSuggestions(A, 10)
+    expect(calls).toBe(2)
+    expect(third.results.map((r) => r.id)).not.toContain(B)
+  })
+
+  it("R4-B2: blocking drops BOTH viewers' cached suggestions, so neither keeps seeing the other", async () => {
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({ repo, suggestionsCache: cache })
+    repo.seedUser({ id: A, displayName: "Blocker", handle: "blocker" })
+    repo.seedUser({ id: B, displayName: "Blocked", handle: "blocked" })
+
+    expect((await service.followSuggestions(A, 10)).results.map((r) => r.id)).toEqual([B])
+    expect((await service.followSuggestions(B, 10)).results.map((r) => r.id)).toEqual([A])
+    expect(await cache.get(suggestionsCacheKey(A))).not.toBeNull()
+    expect(await cache.get(suggestionsCacheKey(B))).not.toBeNull()
+
+    repo.seedBlock(A, B)
+    await dropSuggestionsFor(cache, [A, B])
+
+    expect(await cache.get(suggestionsCacheKey(A))).toBeNull()
+    expect(await cache.get(suggestionsCacheKey(B))).toBeNull()
+    expect((await service.followSuggestions(A, 10)).results).toEqual([])
+    expect((await service.followSuggestions(B, 10)).results).toEqual([])
+  })
+
+  it("R4-B2: unblocking drops both keys again, so the pair reappears without waiting out the TTL", async () => {
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({ repo, suggestionsCache: cache })
+    repo.seedUser({ id: A, displayName: "Blocker", handle: "blocker" })
+    repo.seedUser({ id: B, displayName: "Blocked", handle: "blocked" })
+    repo.seedBlock(A, B)
+
+    expect((await service.followSuggestions(A, 10)).results).toEqual([])
+    expect((await service.followSuggestions(B, 10)).results).toEqual([])
+
+    repo.blockedPairs.length = 0
+    await dropSuggestionsFor(cache, [A, B])
+
+    expect((await service.followSuggestions(A, 10)).results.map((r) => r.id)).toEqual([B])
+    expect((await service.followSuggestions(B, 10)).results.map((r) => r.id)).toEqual([A])
+  })
+
+  it("R4-B2: a Redis fault during block invalidation is swallowed — the block itself must not fail", async () => {
+    const throwing = {
+      get: () => Promise.reject(new Error("redis down")),
+      set: () => Promise.reject(new Error("redis down")),
+      del: () => Promise.reject(new Error("redis down")),
+    }
+    await expect(dropSuggestionsFor(throwing, [A, B])).resolves.toBeUndefined()
+    await expect(dropSuggestionsFor(undefined, [A, B])).resolves.toBeUndefined()
+  })
+
+  it("H18: a cache that throws is not an error path — suggestions still compute", async () => {
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({
+      repo,
+      suggestionsCache: {
+        get: () => Promise.reject(new Error("redis down")),
+        set: () => Promise.reject(new Error("redis down")),
+        del: () => Promise.reject(new Error("redis down")),
+      },
+    })
+    repo.seedUser({ id: A, displayName: "Viewer", handle: "viewer" })
+    repo.seedUser({ id: B, displayName: "Someone", handle: "someone" })
+    const { results } = await service.followSuggestions(A, 10)
+    expect(results.map((r) => r.id)).toEqual([B])
   })
 })
 

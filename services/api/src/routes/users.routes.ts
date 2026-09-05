@@ -26,6 +26,7 @@ import { writeAudit } from "../services/admin/audit.js"
 import { DATA_EXPORT_JOB, dataExportSupportEmail } from "../services/data-export-jobs.js"
 import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import { dropContainerSuggestions } from "../services/social-suggestions-wiring.js"
 import { route } from "../versioning/route.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { parse, trimTextFields } from "./_validate.js"
@@ -101,6 +102,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     const blocks = blocksRepo()
     await assertUserBlockable(app, blocks, userId, id)
     await blocks.block(userId, id)
+    await dropContainerSuggestions(container, [userId, id], request.log)
     const payload: BlockUserResponse = { blocked: true }
     reply.status(200).send(payload)
   })
@@ -109,6 +111,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     const userId = requireAuth(request)
     const { id } = parse(UserIdParamsSchema, request.params)
     await blocksRepo().unblock(userId, id)
+    await dropContainerSuggestions(container, [userId, id], request.log)
     const payload: BlockUserResponse = { blocked: false }
     reply.status(200).send(payload)
   })
@@ -156,7 +159,7 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  route(app, "deleteAccount", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "deleteAccount", { preHandler: csrfProtect, config: { allowSuspended: true } }, async (request, reply) => {
     const userId = requireAuth(request)
     const store = app.authServices?.users
     const sessions = app.authServices?.sessions

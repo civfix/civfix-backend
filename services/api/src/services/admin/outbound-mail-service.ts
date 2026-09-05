@@ -1,7 +1,7 @@
-
-import { AppError } from "@civfix/shared"
-import type { Mailer, OutboundAttachment } from "@civfix/shared/interfaces"
-import type { Container } from "../../di.js"
+import { AppError, ErrorCode } from "@civfix/shared"
+import type { Mailer, OutboundAttachment, SentMail } from "@civfix/shared/interfaces"
+import type { DbHandle } from "../../db/client.js"
+import type { Env } from "../../env/types.js"
 import {
   makeDrizzleMailRepository,
   type MailAuditInput,
@@ -10,6 +10,13 @@ import {
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
 import { domainOf } from "../../adapters/mail-text.js"
+import {
+  base64Bytes,
+  outboundSendDeadlineMs,
+  phaseBudgetFor,
+  OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
+  OUTBOUND_SEND_PHASE_BUDGET_MS,
+} from "./outbound-send-policy.js"
 
 export interface OutboundMailEnv {
   MAIL_FROM_OUTREACH: string
@@ -73,8 +80,18 @@ export interface SendEventInput {
   html?: string
 }
 
+export interface DeliverOptions {
+  onLateSuccess?: () => Promise<void>
+}
+
+export interface PreparedReportOutbound {
+  thread: MailThreadRecord
+  deliver(opts?: DeliverOptions): Promise<{ thread: MailThreadRecord; messageId: string }>
+}
+
 export interface OutboundMailService {
   sendToCity(input: SendToCityInput): Promise<MailThreadRecord>
+  prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound>
   sendReportToJurisdiction(
     input: SendReportInput,
   ): Promise<{ thread: MailThreadRecord; messageId: string }>
@@ -90,11 +107,59 @@ export interface OutboundMailServiceDeps {
   mailer: Mailer
   env: OutboundMailEnv
   logger?: OutboundMailLogger
+  sendDeadlineMs?: number
+  sendPhaseBudgetMs?: number
+  sendMinThroughputBytesPerSec?: number
+}
+
+export const OUTBOUND_DEADLINE_REASON = "deadline"
+
+export class OutboundSendDeadlineError extends AppError {
+  readonly outboundSendDeadline = true
+  readonly deadlineMs: number
+
+  constructor(deadlineMs: number) {
+    super(
+      ErrorCode.CONFLICT,
+      "The send to this jurisdiction is still in progress. Check back shortly — the outcome will " +
+        "appear on the outreach trail once the mail server answers.",
+    )
+    this.deadlineMs = deadlineMs
+  }
+}
+
+export function isOutboundSendDeadlineError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false
+  return (err as { outboundSendDeadline?: unknown }).outboundSendDeadline === true
+}
+
+export function outboundPayloadBytes(input: {
+  body: string
+  html?: string | undefined
+  attachments?: readonly OutboundAttachment[] | undefined
+}): number {
+  let bytes = Buffer.byteLength(input.body, "utf8")
+  if (input.html !== undefined) bytes += Buffer.byteLength(input.html, "utf8")
+  let attachmentBytes = 0
+  for (const att of input.attachments ?? []) attachmentBytes += att.content.byteLength
+  return bytes + base64Bytes(attachmentBytes)
+}
+
+function raceDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new OutboundSendDeadlineError(ms)), ms)
+  })
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  }) as Promise<T>
 }
 
 export function makeOutboundMailService(deps: OutboundMailServiceDeps): OutboundMailService {
   const { repo, mailer, env } = deps
   const logger: OutboundMailLogger = deps.logger ?? console
+  const phaseBudgetMs = deps.sendPhaseBudgetMs ?? OUTBOUND_SEND_PHASE_BUDGET_MS
+  const minThroughput = deps.sendMinThroughputBytesPerSec ?? OUTBOUND_SEND_MIN_THROUGHPUT_BPS
 
   function fromHeaderForThread(thread: MailThreadRecord): string {
     const domain = env.MAIL_REPLY_DOMAIN
@@ -114,28 +179,39 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     html?: string
     attachments?: OutboundAttachment[]
     eventMeta?: Record<string, unknown>
+    onLateSuccess?: (() => Promise<void>) | undefined
   }): Promise<string> {
     const rfcMessageId = `<out-${args.messageId}@${domainOf(env.MAIL_FROM_OUTREACH)}>`
-    const priorIds = await repo
-      .priorOutboundMessageIds(args.threadId)
-      .catch(() => [] as string[])
+    const priorIds = await repo.priorOutboundMessageIds(args.threadId).catch(() => [] as string[])
     const inReplyTo = priorIds.length > 0 ? priorIds[priorIds.length - 1] : undefined
     const references =
       priorIds.length > 10 ? [priorIds[0] as string, ...priorIds.slice(-9)] : priorIds
-    let sent: { messageId: string }
-    try {
-      sent = await mailer.sendOutbound({
-        from: args.fromHeader,
-        to: args.toAddr,
-        subject: args.subject,
-        text: args.body,
-        ...(args.html !== undefined ? { html: args.html } : {}),
-        messageId: rfcMessageId,
-        ...(inReplyTo !== undefined ? { inReplyTo } : {}),
-        ...(references.length > 0 ? { references } : {}),
-        ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
+    const bytes = outboundPayloadBytes({
+      body: args.body,
+      html: args.html,
+      attachments: args.attachments,
+    })
+    const deadlineMs =
+      deps.sendDeadlineMs ??
+      outboundSendDeadlineMs({
+        bytes,
+        phaseBudgetMs,
+        minThroughputBytesPerSec: minThroughput,
       })
-    } catch (err) {
+
+    const send = mailer.sendOutbound({
+      from: args.fromHeader,
+      to: args.toAddr,
+      subject: args.subject,
+      text: args.body,
+      ...(args.html !== undefined ? { html: args.html } : {}),
+      messageId: rfcMessageId,
+      ...(inReplyTo !== undefined ? { inReplyTo } : {}),
+      ...(references.length > 0 ? { references } : {}),
+      ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
+    })
+
+    async function recordFailed(err: unknown, extra: Record<string, unknown>): Promise<void> {
       try {
         await repo.recordEvent({
           threadId: args.threadId,
@@ -145,6 +221,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
             from: env.MAIL_FROM_OUTREACH,
             to: args.toAddr,
             error: err instanceof Error ? err.message : String(err),
+            ...extra,
             ...(args.eventMeta ?? {}),
           },
         })
@@ -154,16 +231,59 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           "outbound mail send failed AND recording the 'failed' event failed",
         )
       }
-      throw err
     }
-    try {
-      await repo.setMessageMessageId(args.messageId, sent.messageId)
+
+    async function recordSent(result: SentMail, extra: Record<string, unknown>): Promise<void> {
+      await repo.setMessageMessageId(args.messageId, result.messageId)
       await repo.recordEvent({
         threadId: args.threadId,
         messageId: args.messageId,
         type: "sent",
-        meta: { from: env.MAIL_FROM_OUTREACH, to: args.toAddr, ...(args.eventMeta ?? {}) },
+        meta: {
+          from: env.MAIL_FROM_OUTREACH,
+          to: args.toAddr,
+          ...extra,
+          ...(args.eventMeta ?? {}),
+        },
       })
+    }
+
+    let sent: SentMail
+    try {
+      sent = await raceDeadline(send, deadlineMs)
+    } catch (err) {
+      if (!isOutboundSendDeadlineError(err)) {
+        await recordFailed(err, {})
+        throw err
+      }
+      void send.then(
+        async (late: SentMail) => {
+          try {
+            await recordSent(late, { late: true })
+            if (args.onLateSuccess !== undefined) await args.onLateSuccess()
+            logger.warn(
+              { threadId: args.threadId, messageId: args.messageId, deadlineMs },
+              "outbound mail delivered AFTER its deadline; recorded 'sent' (late)",
+            )
+          } catch (recordErr) {
+            logger.warn(
+              { err: recordErr, threadId: args.threadId, messageId: args.messageId },
+              "outbound mail delivered late but recording the 'sent' event failed",
+            )
+          }
+        },
+        (lateErr: unknown) => {
+          logger.warn(
+            { err: lateErr, threadId: args.threadId, messageId: args.messageId, deadlineMs },
+            "outbound mail rejected AFTER its deadline; the 'failed' event already recorded stands",
+          )
+        },
+      )
+      await recordFailed(err, { reason: OUTBOUND_DEADLINE_REASON, deadlineMs, bytes })
+      throw err
+    }
+    try {
+      await recordSent(sent, {})
     } catch (err) {
       logger.warn(
         { err, threadId: args.threadId, messageId: args.messageId },
@@ -173,7 +293,9 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     return sent.messageId
   }
 
-  async function insertOut(input: Parameters<MailRepository["insertMessage"]>[0]): Promise<MailMessageRecord> {
+  async function insertOut(
+    input: Parameters<MailRepository["insertMessage"]>[0],
+  ): Promise<MailMessageRecord> {
     const message = await repo.insertMessage(input)
     if (message === null) {
       throw new Error("insertMessage: unexpected message_id conflict on an outbound insert")
@@ -200,54 +322,72 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     }
   }
 
+  async function prepareReport(input: SendReportInput): Promise<PreparedReportOutbound> {
+    const thread = await repo.findOrCreateReportThread(input.reportId, {
+      jurisdictionGeoid: input.geoid,
+      org: input.org ?? null,
+      subject: input.subject,
+      status: "sent",
+    })
+    const message = await insertOut({
+      threadId: thread.id,
+      direction: "out",
+      fromAddr: env.MAIL_FROM_OUTREACH,
+      toAddr: input.toAddr,
+      subject: input.subject,
+      body: input.text,
+      ...(input.audit
+        ? {
+            audit: {
+              ...input.audit,
+              meta: { ...(input.audit.meta ?? {}), threadId: thread.id, to: input.toAddr },
+            },
+          }
+        : {}),
+    })
+    return {
+      thread,
+      async deliver(opts?: DeliverOptions): Promise<{ thread: MailThreadRecord; messageId: string }> {
+        const messageId = await deliverAndRecord({
+          ...(opts?.onLateSuccess !== undefined ? { onLateSuccess: opts.onLateSuccess } : {}),
+          threadId: thread.id,
+          messageId: message.id,
+          fromHeader: fromHeaderForThread(thread),
+          toAddr: input.toAddr,
+          subject: input.subject,
+          body: input.text,
+          ...(input.html !== undefined ? { html: input.html } : {}),
+          ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+          eventMeta: {
+            reportId: input.reportId,
+            ...(input.geoid != null ? { geoid: input.geoid } : {}),
+          },
+        })
+        if (thread.status === "bounced") {
+          try {
+            await repo.setThreadStatus(thread.id, "sent")
+          } catch (err) {
+            logger.warn(
+              { err, threadId: thread.id },
+              "report re-route delivered but clearing the thread's 'bounced' status failed",
+            )
+          }
+        }
+        return { thread: await freshThread(thread), messageId }
+      },
+    }
+  }
+
   return {
+    prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound> {
+      return prepareReport(input)
+    },
+
     async sendReportToJurisdiction(
       input: SendReportInput,
     ): Promise<{ thread: MailThreadRecord; messageId: string }> {
-      const thread = await repo.findOrCreateReportThread(input.reportId, {
-        jurisdictionGeoid: input.geoid,
-        org: input.org ?? null,
-        subject: input.subject,
-        status: "sent",
-      })
-      const message = await insertOut({
-        threadId: thread.id,
-        direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
-        toAddr: input.toAddr,
-        subject: input.subject,
-        body: input.text,
-        ...(input.audit
-          ? {
-              audit: {
-                ...input.audit,
-                meta: { ...(input.audit.meta ?? {}), threadId: thread.id, to: input.toAddr },
-              },
-            }
-          : {}),
-      })
-      const messageId = await deliverAndRecord({
-        threadId: thread.id,
-        messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
-        toAddr: input.toAddr,
-        subject: input.subject,
-        body: input.text,
-        ...(input.html !== undefined ? { html: input.html } : {}),
-        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
-        eventMeta: { reportId: input.reportId, ...(input.geoid != null ? { geoid: input.geoid } : {}) },
-      })
-      if (thread.status === "bounced") {
-        try {
-          await repo.setThreadStatus(thread.id, "sent")
-        } catch (err) {
-          logger.warn(
-            { err, threadId: thread.id },
-            "report re-route delivered but clearing the thread's 'bounced' status failed",
-          )
-        }
-      }
-      return { thread: await freshThread(thread), messageId }
+      const prepared = await prepareReport(input)
+      return prepared.deliver()
     },
 
     async sendEventToJurisdiction(
@@ -373,8 +513,17 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
   }
 }
 
+type OutboundMailContainer = {
+  getDb(): DbHandle
+  mailer: Mailer
+  env: Pick<
+    Env,
+    "MAIL_FROM_OUTREACH" | "MAIL_REPLY_DOMAIN" | "OCI_EMAIL_SMTP_TIMEOUT_MS" | "OUTBOUND_SEND_MIN_THROUGHPUT_BPS"
+  >
+}
+
 export function makeContainerOutboundMailService(
-  container: Container,
+  container: OutboundMailContainer,
   overrides?: { repo?: MailRepository; logger?: OutboundMailLogger },
 ): OutboundMailService {
   return makeOutboundMailService({
@@ -384,6 +533,8 @@ export function makeContainerOutboundMailService(
       MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
       MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
     },
+    sendPhaseBudgetMs: phaseBudgetFor(container.env.OCI_EMAIL_SMTP_TIMEOUT_MS),
+    sendMinThroughputBytesPerSec: container.env.OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
     ...(overrides?.logger !== undefined ? { logger: overrides.logger } : {}),
   })
 }

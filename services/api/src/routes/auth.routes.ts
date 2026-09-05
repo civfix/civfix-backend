@@ -30,7 +30,9 @@ import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
 import { toUserDTO } from "../auth/auth-services.js"
 import { requireAuth } from "../auth/context.js"
+import { SUSPENDED_MESSAGE } from "../auth/account-status.js"
 import { makeWsTicketStore } from "../auth/ws-ticket.js"
+import { sha256Hex } from "../auth/crypto.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserved-handles.js"
 import { handleChanged } from "../auth/handle-policy.js"
@@ -124,7 +126,7 @@ export async function registerAuthRoutes(
     return handleCollidesWithJurisdiction(container.getDb().sql, handle)
   }
 
-  route(app, "otpRequest", { config: { rateLimit: OTP_REQUEST_RATE_LIMIT } }, async (request, reply) => {
+  route(app, "otpRequest", { config: { rateLimit: OTP_REQUEST_RATE_LIMIT, allowSuspended: true } }, async (request, reply) => {
     const body = parse(EmailOtpRequestRequestSchema, request.body)
     const result = await services.otp.issueOtp(body.email, request.ip || null)
     const payload: EmailOtpRequestResponse = { sent: true, resendAfterSec: result.resendAfterSec }
@@ -265,7 +267,7 @@ export async function registerAuthRoutes(
     reply.status(200).send({ ...payload, guestSmsEnabled: guestSmsEnabledFor(container.env) })
   })
 
-  route(app, "logout", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "logout", { preHandler: csrfProtect, config: { allowSuspended: true } }, async (request, reply) => {
     const token = presentedSessionToken(request)
     if (token === null) {
       throw AppError.unauthorized()
@@ -279,7 +281,9 @@ export async function registerAuthRoutes(
 
   route(app, "wsTicket", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
-    const payload = await makeWsTicketStore(services.cache).mint(userId)
+    const token = presentedSessionToken(request)
+    if (token === null) throw AppError.unauthorized()
+    const payload = await makeWsTicketStore(services.cache).mint(userId, await sha256Hex(token))
     reply.status(200).send(payload)
   })
 
@@ -372,13 +376,18 @@ async function issueSessionForUser(
   user: UserRecord,
   opts: IssueSessionOptions = {},
 ): Promise<void> {
-  if ((await services.users.accountStatus(user.id)) === "banned") {
+  const accountStatus = await services.users.accountStatus(user.id)
+  if (accountStatus === "banned") {
     throw AppError.forbidden("This account has been banned.")
+  }
+  if (accountStatus === "suspended") {
+    throw AppError.forbidden(SUSPENDED_MESSAGE)
   }
   const kind = opts.forceKind ?? clientKind(request)
   const token = await services.sessions.createSession(user.id, [user.role], {
     userAgent: request.headers["user-agent"] ?? null,
     ip: request.ip || null,
+    accountStatus,
   })
   const dto: UserDTO = toUserDTO(user)
   const ttl = services.sessions.ttl

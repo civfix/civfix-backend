@@ -13,6 +13,7 @@ import { InMemoryMailRepository } from "../../src/services/admin/mail-repository
 import { MAX_PACKET_TOTAL_BYTES } from "../../src/services/admin/mail-format.js"
 import {
   makeOutboundMailService,
+  OutboundSendDeadlineError,
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
 
@@ -768,7 +769,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
 
     let sends = 0
     const outboundMail = {
-      async sendReportToJurisdiction(input: { reportId: string; toAddr: string }) {
+      async prepareReportToJurisdiction(input: { reportId: string; toAddr: string }) {
         await Promise.resolve()
         sends += 1
         const marker = sends
@@ -783,7 +784,11 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             sendFailed: false,
           }
         }
-        return { thread: { id: `t-${marker}` }, messageId: `m-${marker}` }
+        return {
+          thread: { id: `t-${marker}` },
+          deliver: () =>
+            Promise.resolve({ thread: { id: `t-${marker}` }, messageId: `m-${marker}` }),
+        }
       },
     } as unknown as OutboundMailService
 
@@ -800,6 +805,198 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     expect(fulfilled).toHaveLength(1)
     expect(rejected).toHaveLength(1)
     expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ httpStatus: 409 })
+  })
+
+  it("B2: a late success never regresses a status the operator moved on after the deadline", async () => {
+    const repo = new InMemoryAdminReportRepository()
+    repo.now = NOW
+    repo.seedReport({
+      id: "rep-1",
+      status: "published",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+
+    let lateSuccess: (() => Promise<void>) | undefined
+    const outboundMail = {
+      prepareReportToJurisdiction(input: { reportId: string; toAddr: string }) {
+        const seeded = repo.reports.get(input.reportId)
+        if (seeded) {
+          seeded.outreach = {
+            threadId: "t-1",
+            threadStatus: "sent",
+            hasInbound: false,
+            routedTo: input.toAddr,
+            routedAt: NOW,
+            sendFailed: false,
+          }
+        }
+        return Promise.resolve({
+          thread: { id: "t-1" },
+          deliver: (opts?: { onLateSuccess?: () => Promise<void> }) => {
+            lateSuccess = opts?.onLateSuccess
+            return Promise.reject(new OutboundSendDeadlineError(30_000))
+          },
+        })
+      },
+    } as unknown as OutboundMailService
+
+    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+
+    await expect(
+      svc.routeToJurisdiction("rep-1", {
+        contactEmailOverride: null,
+        note: null,
+        actorId: "op-1",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+
+    expect(repo.reports.get("rep-1")?.record.status).toBe("published")
+    expect(repo.timeline.get("rep-1") ?? []).toHaveLength(0)
+
+    await svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" })
+    expect(repo.reports.get("rep-1")?.record.status).toBe("resolved")
+    const afterOperator = (repo.timeline.get("rep-1") ?? []).length
+
+    expect(lateSuccess).toBeDefined()
+    await lateSuccess?.()
+
+    expect(repo.reports.get("rep-1")?.record.status).toBe("resolved")
+    const timeline = repo.timeline.get("rep-1") ?? []
+    expect(timeline).toHaveLength(afterOperator + 1)
+    expect(timeline.at(-1)?.note).toContain("Sent to jurisdiction")
+    expect(timeline.at(-1)?.status).toBe("resolved")
+    expect(timeline.filter((t) => t.status === "acknowledged")).toHaveLength(0)
+    expect(
+      repo.audits.filter(
+        (a) => a.action === "report.status_changed" && a.meta.status === "acknowledged",
+      ),
+    ).toHaveLength(0)
+  })
+
+  it("B2: a late success DOES advance a report the operator left alone", async () => {
+    const repo = new InMemoryAdminReportRepository()
+    repo.now = NOW
+    repo.seedReport({
+      id: "rep-1",
+      status: "published",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+
+    let lateSuccess: (() => Promise<void>) | undefined
+    const outboundMail = {
+      prepareReportToJurisdiction: () =>
+        Promise.resolve({
+          thread: { id: "t-1" },
+          deliver: (opts?: { onLateSuccess?: () => Promise<void> }) => {
+            lateSuccess = opts?.onLateSuccess
+            return Promise.reject(new OutboundSendDeadlineError(30_000))
+          },
+        }),
+    } as unknown as OutboundMailService
+
+    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+    await expect(
+      svc.routeToJurisdiction("rep-1", {
+        contactEmailOverride: null,
+        note: null,
+        actorId: "op-1",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+
+    await lateSuccess?.()
+
+    expect(repo.reports.get("rep-1")?.record.status).toBe("acknowledged")
+    const timeline = repo.timeline.get("rep-1") ?? []
+    expect(timeline).toHaveLength(1)
+    expect(timeline[0]?.status).toBe("acknowledged")
+    expect(timeline[0]?.who).toBe("op-1")
+    expect(repo.audits.filter((a) => a.action === "report.status_changed")).toEqual([
+      { actorId: "op-1", action: "report.status_changed", target: "report:rep-1", meta: { status: "acknowledged" } },
+    ])
+  })
+
+  it("does NOT hold the route lock across the mailer network send", async () => {
+    const repo = new InMemoryAdminReportRepository()
+    repo.now = NOW
+    repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+
+    let lockDepth = 0
+    let maxLockDepthDuringSend = 0
+    const realLock = repo.withRouteLock.bind(repo)
+    repo.withRouteLock = async <T,>(id: string, fn: () => Promise<T>): Promise<T> => {
+      return realLock(id, async () => {
+        lockDepth += 1
+        try {
+          return await fn()
+        } finally {
+          lockDepth -= 1
+        }
+      })
+    }
+
+    let releaseSend: () => void = () => {}
+    const hung = new Promise<void>((resolve) => {
+      releaseSend = resolve
+    })
+    const outboundMail = {
+      prepareReportToJurisdiction(input: { reportId: string; toAddr: string }) {
+        const seeded = repo.reports.get(input.reportId)
+        if (seeded) {
+          seeded.outreach = {
+            threadId: "t-1",
+            threadStatus: "sent",
+            hasInbound: false,
+            routedTo: input.toAddr,
+            routedAt: NOW,
+            sendFailed: false,
+          }
+        }
+        return Promise.resolve({
+          thread: { id: "t-1" },
+          deliver: async () => {
+            maxLockDepthDuringSend = Math.max(maxLockDepthDuringSend, lockDepth)
+            await hung
+            return { thread: { id: "t-1" }, messageId: "m-1" }
+          },
+        })
+      },
+    } as unknown as OutboundMailService
+
+    const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
+    const routing = svc.routeToJurisdiction("rep-1", {
+      contactEmailOverride: null,
+      note: null,
+      actorId: "op-1",
+    })
+
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(maxLockDepthDuringSend).toBe(0)
+    expect(lockDepth).toBe(0)
+
+    releaseSend()
+    await expect(routing).resolves.toMatchObject({ threadId: "t-1", routedTo: "311@lacity.gov" })
   })
 })
 

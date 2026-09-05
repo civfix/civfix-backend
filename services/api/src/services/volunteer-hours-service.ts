@@ -17,6 +17,7 @@ import type {
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
+import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
 import { mapWithLimit } from "./media-presign.js"
 import type { NotificationService } from "./notification-service.js"
 
@@ -34,16 +35,66 @@ export const LEADERBOARD_EXTRAS_MIN_LIMIT = 25
 
 export const HOURS_NOTIFY_CONCURRENCY = 8
 
+
+export const EVENT_WINDOW_GRACE_MS = 60 * 60 * 1000
+
+export const DAILY_HOURS_CAP = 24
+
+export const WEEKLY_HOURS_FLAG_DEFAULT = 60
+
+export const RECIPROCAL_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
+
+export type VolunteerHoursAnomalyKind = "weekly_hours" | "reciprocal_credit"
+
+export interface VolunteerHoursAnomaly {
+  kind: VolunteerHoursAnomalyKind
+  userId: string
+  counterpartUserId: string | null
+  hours: number | null
+}
+
+export interface HoursModerationSink {
+  flag(input: {
+    userId: string
+    cleanupId: string
+    kind: VolunteerHoursAnomalyKind
+    counterpartUserId: string | null
+    hours: number | null
+  }): Promise<void>
+}
+
+export function creditableHoursForEvent(cleanup: {
+  scheduledAt: Date
+  completedAt: Date | null
+}): number | null {
+  const windowMs = eventDurationMs(cleanup)
+  if (windowMs === null) return null
+  if (windowMs <= 0) return 0
+  const hours = (windowMs + EVENT_WINDOW_GRACE_MS) / (60 * 60 * 1000)
+  return Math.min(MAX_EVENT_HOURS, Math.round(hours * 100) / 100)
+}
+
+export function eventDurationMs(cleanup: {
+  scheduledAt: Date
+  completedAt: Date | null
+}): number | null {
+  if (cleanup.completedAt === null) return null
+  return cleanup.completedAt.getTime() - cleanup.scheduledAt.getTime()
+}
+
 export interface LogEventHoursArgs {
   actorId: string
   cleanupId: string
   geoid: string | null
   entries: EventHoursEntry[]
+  dailyCapHours?: number
+  weeklyFlagHours?: number
 }
 
 export interface LogEventHoursResult {
   credited: number
   changed: { userId: string; hours: number; previousHours: number | null }[]
+  anomalies: VolunteerHoursAnomaly[]
 }
 
 export interface VolunteerHoursEntryView {
@@ -133,6 +184,8 @@ export interface CleanupHoursView {
   status: CleanupStatus
   jurisdictionGeoid: string | null
   title: string
+  scheduledAt: Date
+  completedAt: Date | null
 }
 
 export interface CleanupHoursLookup {
@@ -147,6 +200,8 @@ export interface VolunteerHoursServiceDeps {
   isVerified: (userId: string) => Promise<boolean>
   isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
   notifier?: Pick<NotificationService, "createNotification">
+  moderation?: HoursModerationSink
+  weeklyFlagHours?: number
   logger?: { warn(obj: unknown, msg?: string): void }
 }
 
@@ -273,6 +328,30 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     })
   }
 
+  async function reportAnomalies(
+    anomalies: VolunteerHoursAnomaly[],
+    cleanupId: string,
+  ): Promise<void> {
+    const moderation = deps.moderation
+    if (moderation === undefined) return
+    for (const anomaly of anomalies) {
+      try {
+        await moderation.flag({
+          userId: anomaly.userId,
+          cleanupId,
+          kind: anomaly.kind,
+          counterpartUserId: anomaly.counterpartUserId,
+          hours: anomaly.hours,
+        })
+      } catch (err) {
+        deps.logger?.warn(
+          { err, cleanupId, kind: anomaly.kind },
+          "volunteer hours anomaly could not be filed for moderation (suppressed)",
+        )
+      }
+    }
+  }
+
   return {
     getMyHours(userId: string): Promise<MyVolunteerHoursDTO> {
       return deps.repo.totalsFor(userId)
@@ -380,6 +459,13 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       if (cleanup.status !== "done") {
         throw AppError.conflict("Volunteer hours can only be logged for a completed event.")
       }
+      const durationMs = eventDurationMs(cleanup)
+      if (durationMs !== null && durationMs < MIN_EVENT_DURATION_MS) {
+        throw AppError.conflict(
+          `This event ran for less than ${MIN_EVENT_DURATION_MS / 60_000} minutes, so no volunteer hours can be logged against it.`,
+        )
+      }
+      const windowCap = creditableHoursForEvent(cleanup)
 
       if (input.entries.length > MAX_EVENT_HOURS_ENTRIES) {
         throw AppError.validation({
@@ -397,6 +483,11 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         if (!(entry.hours >= MIN_EVENT_HOURS) || entry.hours > MAX_EVENT_HOURS) {
           throw AppError.validation({
             entries: `hours must be at least ${MIN_EVENT_HOURS} and at most ${MAX_EVENT_HOURS}`,
+          })
+        }
+        if (windowCap !== null && entry.hours > windowCap) {
+          throw AppError.validation({
+            entries: `this event ran for ${round2((durationMs ?? 0) / 3_600_000)} h, so at most ${windowCap} h may be credited per attendee`,
           })
         }
         if (seen.has(entry.userId)) {
@@ -419,7 +510,10 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         cleanupId: input.cleanupId,
         geoid: cleanup.jurisdictionGeoid,
         entries: input.entries.map((entry) => ({ ...entry, hours: round2(entry.hours) })),
+        dailyCapHours: DAILY_HOURS_CAP,
+        weeklyFlagHours: deps.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
       })
+      await reportAnomalies(result.anomalies, input.cleanupId)
       await notifyHoursLogged(
         { id: input.cleanupId, title: cleanup.title },
         result.changed,

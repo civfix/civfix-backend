@@ -40,6 +40,10 @@ export interface MessageRowSelect {
   attachments: MailAttachment[] | null
   message_id: string | null
   in_reply_to: string | null
+  unaffiliated: boolean
+  effects_claimed_at: Date | null
+  effects_applied_at: Date | null
+  effects_stage: number
   created_at: Date
   truncated?: boolean
 }
@@ -78,6 +82,10 @@ export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
     attachments: r.attachments ?? [],
     messageId: r.message_id,
     inReplyTo: r.in_reply_to,
+    unaffiliated: r.unaffiliated,
+    effectsClaimedAt: r.effects_claimed_at,
+    effectsAppliedAt: r.effects_applied_at,
+    effectsStage: r.effects_stage,
     createdAt: r.created_at,
     ...(r.truncated === true ? { truncated: true } : {}),
   }

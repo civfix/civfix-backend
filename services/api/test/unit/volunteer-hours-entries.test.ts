@@ -1,21 +1,3 @@
-/**
- * The itemised service-hours ledger (P4): `GET /me/volunteer-hours/entries`,
- * `GET /people/:id/volunteer-hours` and `GET /cleanups/:id/hours`, exercised through the service over the
- * in-memory VolunteerHoursRepository twin.
- *
- * What is pinned here, and why each one is load-bearing:
- *   - the keyset page split on `(created_at DESC, id DESC)`, including a MALFORMED cursor degrading to
- *     page 1 rather than throwing (a non-UUID id would raise a Postgres 22P02 -> 500 on the real repo);
- *   - `voided_at` rows are excluded from every read, so the dormant column needs no read change later;
- *   - the PUBLIC projection's two C18 gates: aggregate (`IS NOT FALSE`) vs itemised (`IS TRUE`), a
- *     never-chosen user getting `visible: true` with `items: []`, and hidden reported at 200 not 403;
- *   - only `source='event'` rows are itemised publicly (a public list of every report someone filed is a
- *     privacy leak and the id deep-links into them), and `reportHours` is now a hard 0 — filing a report
- *     is not volunteer service, so pre-0065 report rows are excluded from EVERY read, owner's included;
- *   - `creditedBy` is carried — the whole point of a transcript a school can trust;
- *   - the `getEventHours` scope matrix, including `anyLogged`, which is the only thing that lets an
- *     uncredited attendee's receipt say "not credited" instead of "the host hasn't logged yet" forever.
- */
 
 import { describe, it, expect } from "vitest"
 import {
@@ -36,10 +18,6 @@ const REPORT_TWO = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"
 
 const BASE_MS = Date.parse("2026-06-01T00:00:00.000Z")
 
-/**
- * Deterministic clock + id source. The keyset orders on `(created_at DESC, id DESC)`, so a random UUID
- * would make the tie-break assertion non-reproducible; sequential ids sort the same way every run.
- */
 function makeRepo(opts?: { frozenClock?: boolean }): InMemoryVolunteerHoursRepository {
   let tick = 0
   let n = 0
@@ -54,6 +32,8 @@ const doneEvent = (title: string): CleanupHoursView => ({
   status: "done",
   jurisdictionGeoid: GEOID_A,
   title,
+  scheduledAt: new Date("2026-07-04T08:00:00.000Z"),
+  completedAt: new Date("2026-07-05T07:00:00.000Z"),
 })
 
 function makeCleanups(
@@ -84,7 +64,6 @@ function makeService(
   })
 }
 
-/** Credit BOB `hours` at a fresh event, seeding the event metadata the ledger join produces. */
 async function creditEvent(
   repo: InMemoryVolunteerHoursRepository,
   cleanupId: string,
@@ -124,7 +103,6 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     const first = await service.getMyHoursEntries(BOB, { limit: 2 })
     expect(first.items.map((e) => e.eventTitle)).toEqual(["Event 4", "Event 3"])
     expect(first.nextCursor).not.toBeNull()
-    // The header total is the ROLLUP (1+2+3+4), not the sum of the page — it must not move as you scroll.
     expect(first.totalHours).toBe(10)
 
     const second = await service.getMyHoursEntries(BOB, {
@@ -135,13 +113,11 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     expect(second.nextCursor).toBeNull()
     expect(second.totalHours).toBe(10)
 
-    // No row is served twice across the two pages.
     const ids = [...first.items, ...second.items].map((e) => e.id)
     expect(new Set(ids).size).toBe(4)
   })
 
   it("breaks an exact created_at tie on the id, and pages across it without repeating a row", async () => {
-    // Every row shares one instant, so ONLY the id tie-break can order them.
     const repo = makeRepo({ frozenClock: true })
     repo.seedJurisdiction(GEOID_A, "San Francisco")
     for (const [i, id] of EVENT_IDS.entries()) {
@@ -154,15 +130,9 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     const ids = [...first.items, ...second.items].map((e) => e.id)
     expect(ids).toHaveLength(4)
     expect(new Set(ids).size).toBe(4)
-    // Descending on id, which is what the row-value comparison delivers when the timestamps are equal.
     expect([...ids]).toEqual([...ids].sort().reverse())
   })
 
-  /**
-   * A malformed cursor must degrade to "from the start", never throw: on the real repo a non-UUID id
-   * would reach a `::uuid` cast and raise a Postgres 22P02, which surfaces as an unhandled 500 on a read
-   * a client can trigger with one hand-edited query string.
-   */
   it("degrades a MALFORMED cursor to page 1 instead of throwing", async () => {
     const repo = makeRepo()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
@@ -181,8 +151,6 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
   it("itemises the SERVICE sources for the owner, never 'report', and excludes voided rows", async () => {
     const repo = makeRepo()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    // A pre-0065 row: filing a report used to auto-award 0.1h. It is not volunteer service, so it is not
-    // itemised even to the owner — ITEMISED_SOURCES is ["event", "manual"], and 0065 voided these rows.
     repo.seedLegacyReportEntry(BOB, REPORT_ONE, GEOID_A)
     await creditEvent(repo, EVENT_IDS[0], BOB, 3, { title: "Kept" })
     await creditEvent(repo, EVENT_IDS[1], BOB, 4, { title: "Voided" })
@@ -191,8 +159,6 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     const all = await service.getMyHoursEntries(BOB, {})
     expect(all.items.map((e) => e.source).sort()).toEqual(["event", "event"])
 
-    // `voided_at` is what 0065 wrote to retire the report credits; the READ filter has been live since
-    // day one, so voiding needed no read change and no backfill.
     const voided = all.items.find((e) => e.eventTitle === "Voided")!
     repo.voidEntry(voided.id)
     const after = await service.getMyHoursEntries(BOB, {})
@@ -218,7 +184,6 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     expect(entry.eventReferenceCode).toBe("EVENT-SF-000123")
     expect(entry.jurisdictionGeoid).toBe(GEOID_A)
     expect(entry.jurisdictionName).toBe("San Francisco")
-    // `occurredAt` is when the SERVICE happened (scheduledAt), not when the host got round to logging it.
     expect(entry.occurredAt).toBe("2026-05-20T17:00:00.000Z")
     expect(entry.creditedAt).not.toBe(entry.occurredAt)
     expect(entry.creditedBy).toEqual({ id: HOST, name: "Ann Host", handle: "ann", verified: true })
@@ -231,8 +196,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null, verified: true })
     await creditEvent(repo, EVENT_IDS[0], BOB, 2, { title: "Ocean Beach sweep" })
     await creditEvent(repo, EVENT_IDS[1], BOB, 1, { title: "Dolores clean-up" })
-    // Two PRE-0065 report auto-awards, still in the ledger and (as in production before the migration
-    // recomputes it) still in the rollup `totalHours` reads. They must not surface anywhere public.
     repo.seedLegacyReportEntry(BOB, REPORT_ONE, GEOID_A)
     repo.seedLegacyReportEntry(BOB, REPORT_TWO, GEOID_A)
   }
@@ -252,29 +215,21 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     expect(res.visible).toBe(true)
     expect(res.totalHours).toBe(3.2)
     expect(res.byJurisdiction).toEqual([{ geoid: GEOID_A, name: "San Francisco", hours: 3.2 }])
-    // Only source='event' is itemised: a public, itemised list of every report a user filed is a privacy
-    // leak (reports can be held, unlisted or sensitive) and the id deep-links straight into them.
     expect(res.items.map((e) => e.source)).toEqual(["event", "event"])
     expect(res.items.map((e) => e.eventTitle)).toEqual(["Dolores clean-up", "Ocean Beach sweep"])
-    // `reportHours` is now a hard 0, not a ledger read: report filings are not volunteer service, so
-    // there is no honest aggregate to publish. The field stays on the wire for shipped clients.
     expect(res.reportHours).toBe(0)
-    // ...and the crediting host IS named — that is the whole point of a transcript a school can trust.
     expect(res.items[0]?.creditedBy?.handle).toBe("ann")
   })
 
   it("NULL (never chosen): visible with an EMPTY items list and a truthful nextCursor", async () => {
     const repo = makeRepo()
     await seedBob(repo)
-    // No showVolunteerHours key at all — the state every account that exists today is in.
     repo.seedUser(BOB, { name: "Bob", handle: "bob", avatarUrl: null, verified: false })
     const res = await makeService(repo).getPublicHours({ id: BOB }, CAROL)
 
-    // The aggregate is byte-identical to what their profile already publishes...
     expect(res.visible).toBe(true)
     expect(res.totalHours).toBe(3.2)
     expect(res.reportHours).toBe(0)
-    // ...while the per-event list — where they physically were, on which dates — stays closed.
     expect(res.items).toEqual([])
     expect(res.nextCursor).toBeNull()
   })
@@ -372,8 +327,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
   })
 
 
-  // P4: your own data is always visible to you, and this endpoint is auth-OPTIONAL, so a signed-in owner
-  // hitting their own public URL must not be shown as hidden from themselves.
   it("isSelf bypasses both gates even when the owner has opted OUT", async () => {
     const repo = makeRepo()
     await seedBob(repo)
@@ -478,11 +431,6 @@ describe("hours ledger: getEventHours scope matrix (C10)", () => {
     expect(res.anyLogged).toBe(true)
   })
 
-  /**
-   * The reason `anyLogged` exists. DAVE attended and was NOT credited; his own rows are empty either way,
-   * so without this flag his receipt can never tell "the host hasn't logged yet" from "the host logged
-   * and didn't credit me", and he sits on the former — which is factually wrong — forever.
-   */
   it("an UNCREDITED member gets an empty self scope with anyLogged TRUE", async () => {
     const repo = await seedEvent()
     const service = makeService(

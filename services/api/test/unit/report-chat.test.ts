@@ -15,6 +15,7 @@ import { forwardReportCityMention } from "../../src/services/report-city-forward
 import { makeTokenBucketLimiter, type RateLimiter } from "../../src/ws/report-rate-limit.js"
 import type {
   OutboundMailService,
+  PreparedReportOutbound,
   SendReportInput,
 } from "../../src/services/admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
@@ -44,6 +45,13 @@ const SF_JURISDICTION: ReportJurisdictionView = {
 
 class SpyOutboundMail implements OutboundMailService {
   readonly reportCalls: SendReportInput[] = []
+  prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound> {
+    this.reportCalls.push(input)
+    return Promise.resolve({
+      thread: stubThread(),
+      deliver: () => Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" }),
+    })
+  }
   sendReportToJurisdiction(
     input: SendReportInput,
   ): Promise<{ thread: MailThreadRecord; messageId: string }> {

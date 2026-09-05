@@ -108,6 +108,9 @@ export interface Container {
   readonly dbHandle: DbHandle | undefined
   readonly redis: RedisClient | undefined
 
+  readonly usesRealDb: boolean
+  readonly usesRealRedis: boolean
+
   getDb(): DbHandle
   getRedis(): RedisClient
 
@@ -317,6 +320,7 @@ export function buildContainer(env: Env): Container {
         pass: env.OCI_EMAIL_SMTP_PASS,
         fromNoReply: env.MAIL_FROM_NOREPLY,
         fromOutreach: env.MAIL_FROM_OUTREACH,
+        timeoutMs: env.OCI_EMAIL_SMTP_TIMEOUT_MS,
       })
 
   const smsSender: SmsSender = env.USE_FAKE_SMS
@@ -407,6 +411,7 @@ export function buildContainer(env: Env): Container {
         : new MultiPushSender({
             db: getDb().db,
             config: buildPushConfig(env),
+            counters: getCounterStore(),
             ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
           })
     }
@@ -479,6 +484,8 @@ export function buildContainer(env: Env): Container {
     get redis() {
       return redis
     },
+    usesRealDb: env.DATABASE_URL.length > 0,
+    usesRealRedis: env.REDIS_URL.length > 0,
     getDb,
     getRedis,
     getDmRepo,

@@ -1,20 +1,3 @@
-/**
- * Around-mode history integration test (P2 Task 2.4, Docker-gated). Boots against a live PostGIS
- * container (via withPg) and exercises the DB-backed center-window history paths on all three room
- * scopes (cleanup / report / dm):
- *
- *   - `around=<messageId>` returns a window of ceil(limit/2) at-or-older rows (target INCLUDED) +
- *     floor(limit/2) strictly newer, in the SAME newest-first ordering as a before-mode page;
- *   - nextCursor = the older end of the window (follows as a normal `before` cursor), prevCursor = the
- *     newer end (a "there are newer messages" signal — no `after` param exists today), each null when
- *     that side reaches the edge (tail / live head);
- *   - a target that is missing or lives in ANOTHER room/thread -> 404 (scope isolation);
- *   - a soft-deleted target still anchors: its tombstone rides in the window while every OTHER deleted
- *     row stays excluded;
- *   - reply previews (Task 2.3) hydrate on the merged window exactly like before-mode pages.
- *
- * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
- */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -28,7 +11,6 @@ import { makeCleanupService } from "../../src/services/cleanup-service.js"
 
 const pg = await withPg()
 
-/** Await a rejection and assert it is a 404 AppError. */
 async function expect404(p: Promise<unknown>): Promise<void> {
   let caught: unknown
   try {
@@ -53,7 +35,6 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name, handle) VALUES (${name}, ${testHandle()}) RETURNING id
@@ -61,7 +42,6 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     return u!.id
   }
 
-  /** Create a cleanup (organizer joined) and return its id. */
   async function newCleanup(organizerId: string, title: string): Promise<string> {
     const created = await makeCleanupService({
       repo: makeDrizzleCleanupRepository(h.sql),
@@ -79,7 +59,6 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     return created.id
   }
 
-  /** Insert a minimal report and return its id. */
   async function newReport(): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
@@ -89,11 +68,6 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     return r!.id
   }
 
-  /**
-   * Seed `n` chat messages (bodies m1..mN, m1 oldest) into a cleanup or report room with EXPLICIT,
-   * strictly-increasing created_at values (1s apart) so the (created_at, id) keyset ordering is
-   * deterministic regardless of insert latency. Returns the DTOs oldest-first.
-   */
   async function seedChat(
     repo: ReturnType<typeof makeDrizzleChatRepository>,
     roomId: string,
@@ -125,32 +99,25 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     const organizerId = await newUser("Around Org")
     const cleanupId = await newCleanup(organizerId, "Around sweep")
     const repo = makeDrizzleChatRepository(h.sql)
-    const m = await seedChat(repo, cleanupId, organizerId, 10) // m[0]=m1 oldest .. m[9]=m10 newest
+    const m = await seedChat(repo, cleanupId, organizerId, 10)
 
-    // limit 6 around m5: ceil(6/2)=3 at-or-older (m5,m4,m3 — target included) + floor(6/2)=3 newer
-    // (m6,m7,m8), merged newest-first.
     const page = await repo.history(cleanupId, undefined, 6, null, m[4]!.id)
     expect(ids(page.items)).toEqual([m[7], m[6], m[5], m[4], m[3], m[2]].map((x) => x!.id))
 
-    // The window's ordering is IDENTICAL to the corresponding slice of a before-mode fetch.
     const full = await repo.history(cleanupId, undefined, 50)
     expect(ids(page.items)).toEqual(ids(full.items).slice(2, 8))
 
-    // Both ends have more rows beyond the window -> both cursors non-null and pointing at the ends.
     expect(page.nextCursor).toBe(m[2]!.id)
     expect(page.prevCursor).toBe(m[7]!.id)
 
-    // nextCursor follows as a plain `before` cursor: strictly older rows, no overlap.
     const older = await repo.history(cleanupId, page.nextCursor!, 50)
     expect(ids(older.items)).toEqual([m[1]!.id, m[0]!.id])
     expect(older.nextCursor).toBeNull()
-    // Before-mode pages carry NO prevCursor key at all (byte-identical to pre-2.4 pages).
     expect("prevCursor" in older).toBe(false)
 
-    // prevCursor is re-consumable via around-mode ("load newer"): centering on it reaches the head.
     const newer = await repo.history(cleanupId, undefined, 6, null, page.prevCursor!)
     expect(ids(newer.items)).toEqual([m[9], m[8], m[7], m[6], m[5]].map((x) => x!.id))
-    expect(newer.prevCursor).toBeNull() // reaches the live head
+    expect(newer.prevCursor).toBeNull()
     expect(newer.nextCursor).toBe(m[5]!.id)
   })
 
@@ -189,8 +156,6 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     const repo = makeDrizzleChatRepository(h.sql)
     const m = await seedChat(repo, cleanupId, organizerId, 10)
 
-    // Delete the TARGET (m5) and a neighbor (m4): the target rides as a tombstone; m4 is skipped so
-    // the older half backfills with the next live rows (m3, m2).
     expect(await repo.softDelete(cleanupId, m[4]!.id, organizerId)).not.toBeNull()
     expect(await repo.softDelete(cleanupId, m[3]!.id, organizerId)).not.toBeNull()
 
@@ -198,16 +163,19 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     expect(ids(page.items)).toEqual([m[7], m[6], m[5], m[4], m[2], m[1]].map((x) => x!.id))
     const tombstone = page.items.find((x) => x.id === m[4]!.id)
     expect(tombstone?.deletedAt).toBeTruthy()
+    expect(tombstone?.body ?? null).toBeNull()
+    expect(tombstone?.attachments ?? []).toEqual([])
+    expect(tombstone?.reactions ?? []).toEqual([])
+    expect(tombstone?.mentions ?? []).toEqual([])
     expect(page.items.some((x) => x.id === m[3]!.id)).toBe(false)
-    expect(page.nextCursor).toBe(m[1]!.id) // m1 still older
-    expect(page.prevCursor).toBe(m[7]!.id) // m9/m10 still newer
+    expect(page.nextCursor).toBe(m[1]!.id)
+    expect(page.prevCursor).toBe(m[7]!.id)
   })
 
   it("reply previews hydrate on the merged around window", async () => {
     const organizerId = await newUser("Around Reply Org")
     const cleanupId = await newCleanup(organizerId, "Around reply sweep")
     const repo = makeDrizzleChatRepository(h.sql)
-    // m6 replies to m2.
     const m = await seedChat(repo, cleanupId, organizerId, 6, { replyToIndexByIndex: { 5: 1 } })
 
     const page = await repo.history(cleanupId, undefined, 6, null, m[3]!.id)
@@ -215,8 +183,8 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     const reply = page.items.find((x) => x.id === m[5]!.id)
     expect(reply?.replyToId).toBe(m[1]!.id)
     expect(reply?.replyTo).toMatchObject({ id: m[1]!.id, excerpt: "m2", kind: "text" })
-    expect(page.prevCursor).toBeNull() // the window reaches the live head
-    expect(page.nextCursor).toBe(m[1]!.id) // m1 remains older
+    expect(page.prevCursor).toBeNull()
+    expect(page.nextCursor).toBe(m[1]!.id)
   })
 
   it("report room: around centers the window in report scope and 404s a cleanup-room id", async () => {
@@ -227,18 +195,15 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     const m = await seedChat(repo, reportId, organizerId, 7, { roomKind: "report" })
     const decoy = await seedChat(repo, cleanupId, organizerId, 1)
 
-    // limit 4 around m4: ceil(4/2)=2 at-or-older (m4,m3) + floor(4/2)=2 newer (m5,m6).
     const page = await repo.reportHistory(reportId, undefined, 4, null, m[3]!.id)
     expect(ids(page.items)).toEqual([m[5], m[4], m[3], m[2]].map((x) => x!.id))
     expect(page.items.every((x) => x.roomKind === "report")).toBe(true)
     expect(page.nextCursor).toBe(m[2]!.id)
     expect(page.prevCursor).toBe(m[5]!.id)
 
-    // Ordering matches the before-mode report page.
     const full = await repo.reportHistory(reportId, undefined, 50, null)
     expect(ids(page.items)).toEqual(ids(full.items).slice(1, 5))
 
-    // A cleanup-room message id is not in this report's scope -> 404.
     await expect404(repo.reportHistory(reportId, undefined, 4, null, decoy[0]!.id))
   })
 
@@ -259,19 +224,16 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
     }
     const foreign = await dm.persist({ threadId: otherThread.id, senderId: a, body: "elsewhere" })
 
-    // limit 4 around m4: 2 at-or-older (m4,m3) + 2 newer (m5,m6).
     const page = await dm.history(thread.id, undefined, 4, b, m[3]!.id)
     expect(ids(page.items)).toEqual([m[5], m[4], m[3], m[2]].map((x) => x!.id))
     expect(page.items.every((x) => x.roomKind === "dm")).toBe(true)
     expect(page.nextCursor).toBe(m[2]!.id)
     expect(page.prevCursor).toBe(m[5]!.id)
 
-    // Matches the before-mode dm ordering.
     const full = await dm.history(thread.id, undefined, 50, b)
     expect(ids(page.items)).toEqual(ids(full.items).slice(2, 6))
-    expect("prevCursor" in full).toBe(false) // before-mode page carries no prevCursor key
+    expect("prevCursor" in full).toBe(false)
 
-    // Foreign-thread and unknown targets -> 404.
     await expect404(dm.history(thread.id, undefined, 4, b, foreign.id))
     await expect404(dm.history(thread.id, undefined, 4, b, randomUUID()))
   })

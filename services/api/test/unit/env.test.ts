@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
+  FAKE_SEAM_FLAGS,
   loadEnv,
   REVIEWER_OTP_CODE_MIN_LENGTH,
   SHUTDOWN_DRAIN_MS_MAX,
@@ -54,20 +55,25 @@ describe("loadEnv: outbound SMS", () => {
     expect(() => loadEnv(source)).not.toThrow()
   })
 
-  it("allows a production box with NO Twilio account when USE_FAKE_SMS is set", () => {
+  it("H11: refuses USE_FAKE_SMS in production — it swallows guest OTPs while SMS still reads as available", () => {
     const source = validProdEnv()
     source.SMS_GUEST_ENABLED = "true"
     delete source.TWILIO_ACCOUNT_SID
     delete source.TWILIO_AUTH_TOKEN
     delete source.TWILIO_SMS_FROM
     source.USE_FAKE_SMS = "true"
-    expect(() => loadEnv(source)).not.toThrow()
+    expect(() => loadEnv(source)).toThrow(/USE_FAKE_SMS: must not be true in production/)
   })
 
-  it("does NOT forbid the fake sender in production (unlike storage/mailer/chat/nsfw)", () => {
+  it("H11: SMS_GUEST_ENABLED=false is the supported way to run production with no SMS", () => {
     const source = validProdEnv()
-    source.USE_FAKE_SMS = "true"
-    expect(loadEnv(source).USE_FAKE_SMS).toBe(true)
+    source.SMS_GUEST_ENABLED = "false"
+    delete source.TWILIO_ACCOUNT_SID
+    delete source.TWILIO_AUTH_TOKEN
+    delete source.TWILIO_SMS_FROM
+    const env = loadEnv(source)
+    expect(env.SMS_GUEST_ENABLED).toBe(false)
+    expect(env.USE_FAKE_SMS).toBe(false)
   })
 
   it("keeps the guest SMS channel off and the daily cap bounded by default", () => {
@@ -125,8 +131,19 @@ describe("loadEnv", () => {
     expect(msg).toMatch(/problem\(s\) found/)
   })
 
-  it("refuses to boot production when a security/durability fake is explicitly enabled (F030)", () => {
-    for (const flag of ["USE_FAKE_ABUSE_NSFW", "USE_FAKE_CHAT", "USE_FAKE_MAILER", "USE_FAKE_STORAGE"]) {
+  it("H11: refuses to boot production when ANY known USE_FAKE_* flag is enabled (F030)", () => {
+    expect(FAKE_SEAM_FLAGS.map((f) => f.flag).sort()).toEqual([
+      "USE_FAKE_ABUSE_NSFW",
+      "USE_FAKE_CHAT",
+      "USE_FAKE_GEOCODER",
+      "USE_FAKE_JOBS",
+      "USE_FAKE_MAILER",
+      "USE_FAKE_PUSH",
+      "USE_FAKE_SMS",
+      "USE_FAKE_STORAGE",
+      "USE_FAKE_USER_CHANNEL",
+    ])
+    for (const { flag } of FAKE_SEAM_FLAGS) {
       const source = validProdEnv()
       source[flag] = "1"
       expect(() => loadEnv(source), flag).toThrow(
@@ -135,7 +152,18 @@ describe("loadEnv", () => {
     }
   })
 
+  it("H11: the guard covers every USE_FAKE_* key the loader exposes on Env (no flag left behind)", () => {
+    const listed = new Set<string>(FAKE_SEAM_FLAGS.map((f) => f.flag))
+    const exposed = Object.keys(loadEnv({ NODE_ENV: "test" })).filter((k) => k.startsWith("USE_FAKE_"))
+    expect(exposed.length).toBeGreaterThan(0)
+    for (const key of exposed) expect(listed.has(key), key).toBe(true)
+  })
+
   it("still defaults fakes ON (and never rejects them) outside production (F030)", () => {
+    for (const { flag } of FAKE_SEAM_FLAGS) {
+      const env = loadEnv({ NODE_ENV: "test", [flag]: "1" }) as unknown as Record<string, boolean>
+      expect(env[flag], flag).toBe(true)
+    }
     const env = loadEnv({ NODE_ENV: "test", USE_FAKE_STORAGE: "1", USE_FAKE_CHAT: "1" })
     expect(env.USE_FAKE_STORAGE).toBe(true)
     expect(env.USE_FAKE_CHAT).toBe(true)
@@ -353,5 +381,44 @@ describe("loadEnv", () => {
     )
     expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "-1" }).SHUTDOWN_DRAIN_MS).toBe(0)
     expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "nope" }).SHUTDOWN_DRAIN_MS).toBe(0)
+  })
+})
+
+describe("loadEnv: outbound send policy", () => {
+  it("accepts the defaults", () => {
+    const env = loadEnv({ NODE_ENV: "test" })
+    expect(env.OCI_EMAIL_SMTP_TIMEOUT_MS).toBe(15_000)
+    expect(env.OUTBOUND_SEND_MIN_THROUGHPUT_BPS).toBe(256 * 1024)
+  })
+
+  it("REFUSES a throughput floor below the minimum", () => {
+    expect(() =>
+      loadEnv({ NODE_ENV: "test", OUTBOUND_SEND_MIN_THROUGHPUT_BPS: "48" }),
+    ).toThrow(/OUTBOUND_SEND_MIN_THROUGHPUT_BPS/)
+  })
+
+  it("REFUSES an SMTP timeout above the ceiling", () => {
+    expect(() => loadEnv({ NODE_ENV: "test", OCI_EMAIL_SMTP_TIMEOUT_MS: "300000" })).toThrow(
+      /OCI_EMAIL_SMTP_TIMEOUT_MS/,
+    )
+  })
+
+  it("REFUSES an in-range combination whose largest deadline outlives the in-flight guard", () => {
+    expect(() =>
+      loadEnv({
+        NODE_ENV: "test",
+        OCI_EMAIL_SMTP_TIMEOUT_MS: "60000",
+        OUTBOUND_SEND_MIN_THROUGHPUT_BPS: String(16 * 1024),
+      }),
+    ).toThrow(/in-flight guard/)
+  })
+
+  it("accepts an in-range combination that fits", () => {
+    const env = loadEnv({
+      NODE_ENV: "test",
+      OCI_EMAIL_SMTP_TIMEOUT_MS: "30000",
+      OUTBOUND_SEND_MIN_THROUGHPUT_BPS: String(64 * 1024),
+    })
+    expect(env.OCI_EMAIL_SMTP_TIMEOUT_MS).toBe(30_000)
   })
 })

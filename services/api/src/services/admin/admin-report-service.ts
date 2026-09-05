@@ -52,9 +52,12 @@ export {
   type ReportPacket,
 } from "./mail-format.js"
 
-const ROUTABLE_FROM_STATUSES = new Set<AdminReportStatus>(["submitted", "held", "published"])
+const ROUTABLE_FROM_STATUSES: readonly AdminReportStatus[] = ["submitted", "held", "published"]
 
 export const ALREADY_ROUTED_CONFLICT = "This report has already been sent to its jurisdiction"
+
+export const SEND_IN_FLIGHT_CONFLICT =
+  "A send to this jurisdiction is still in progress. Check back shortly — the outcome will appear on the outreach trail."
 
 export function isAlreadyRoutedConflict(err: unknown): boolean {
   return err instanceof AppError && err.code === ErrorCode.CONFLICT && err.message === ALREADY_ROUTED_CONFLICT
@@ -356,11 +359,9 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         publicRouteAddr !== null && publicRouteAddr !== ""
           ? `Sent to jurisdiction (${publicRouteAddr})`
           : "Sent to jurisdiction"
-      const advances = ROUTABLE_FROM_STATUSES.has(record.status)
-
-      const threadId = await deps.repo.withRouteLock(id, async () => {
+      const prepared = await deps.repo.withRouteLock(id, async () => {
         assertRoutable(await deps.repo.getOutreach(id), toAddr)
-        const { thread } = await deps.outboundMail.sendReportToJurisdiction({
+        return deps.outboundMail.prepareReportToJurisdiction({
           reportId: id,
           geoid: routing?.geoid ?? null,
           org: routing?.dept ?? null,
@@ -376,29 +377,31 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
             meta: { override: override !== null },
           },
         })
-        await retryOnce(async () => {
-          if (advances) {
-            await deps.repo.setStatus(id, {
-              status: "acknowledged",
-              note: routeNote,
-              actorId: input.actorId,
-            })
-          } else {
-            await deps.repo.appendSystemTimeline(id, {
-              note: routeNote,
-              kind: "route",
-            })
-          }
-        })
-        return thread.id
       })
 
-      await emitTimeline({
-        reportId: id,
-        status: advances ? "acknowledged" : record.status,
-        kind: "route",
-        note: routeNote,
-      })
+      const recordRouteOutcome = async (): Promise<void> => {
+        let advanced = false
+        await retryOnce(async () => {
+          advanced = await deps.repo.advanceStatusIfIn(id, {
+            from: ROUTABLE_FROM_STATUSES,
+            to: "acknowledged",
+            note: routeNote,
+            actorId: input.actorId,
+            kind: "route",
+          })
+          if (!advanced) {
+            await deps.repo.appendSystemTimeline(id, { note: routeNote, kind: "route" })
+          }
+        })
+        const current = advanced ? "acknowledged" : ((await deps.repo.getReport(id))?.status ?? record.status)
+        await emitTimeline({ reportId: id, status: current, kind: "route", note: routeNote })
+      }
+
+      await prepared.deliver({ onLateSuccess: recordRouteOutcome })
+
+      const threadId = prepared.thread.id
+
+      await recordRouteOutcome()
 
       return { threadId, routedTo: toAddr }
     },
@@ -469,6 +472,9 @@ function sameAddress(a: string, b: string): boolean {
 }
 
 function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+  if (existing.sendInFlight === true) {
+    throw AppError.conflict(SEND_IN_FLIGHT_CONFLICT)
+  }
   const landed =
     existing.status === "sent" || existing.status === "delivered" || existing.status === "replied"
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)

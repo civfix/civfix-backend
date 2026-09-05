@@ -24,6 +24,7 @@ export interface CleanupRecord {
   jurisdictionGeoid: string | null
   referenceCode: string | null
   createdAt: Date
+  completedAt: Date | null
   going: number
   guestCount?: number
   dist: number | null

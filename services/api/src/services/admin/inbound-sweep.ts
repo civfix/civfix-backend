@@ -5,21 +5,35 @@ import {
   INBOUND_PENDING_PREFIX,
   type InboundProcessorDeps,
 } from "./inbound-processor.js"
+import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
+import { applyInboundEffects, EFFECTS_LEASE_MS } from "./inbound-thread-correlation.js"
 
 export const INBOUND_SWEEP_BATCH = 200
 const LIST_PAGE = 100
+
+export const INBOUND_EFFECTS_REDRIVE_BATCH = 100
+export const INBOUND_EFFECTS_REDRIVE_MIN_AGE_MS = 60_000
 
 export interface InboundSweepResult {
   scanned: number
   processed: number
   errors: number
   parked: number
+  effectsRedriven: number
+  effectsErrors: number
+  effectsError?: string
   listError?: string
 }
 
 export async function runInboundSweep(
   container: Container,
-  opts: { batch?: number; deps?: InboundProcessorDeps } = {},
+  opts: {
+    batch?: number
+    deps?: InboundProcessorDeps
+    now?: () => Date
+    effectsBatch?: number
+    effectsMinAgeMs?: number
+  } = {},
 ): Promise<InboundSweepResult> {
   const storage = opts.deps?.storage ?? container.inboundStorage
   const cap = opts.batch ?? INBOUND_SWEEP_BATCH
@@ -38,10 +52,19 @@ export async function runInboundSweep(
       keys = page.keys
       next = page.cursor
     } catch (err) {
-      return { scanned, processed, errors: errors + 1, parked, listError: errorMessage(err) }
+      return {
+        scanned,
+        processed,
+        errors: errors + 1,
+        parked,
+        listError: errorMessage(err),
+        ...(await redriveEffects(container, opts)),
+      }
     }
     for (const key of keys) {
-      if (scanned >= cap) return { scanned, processed, errors, parked }
+      if (scanned >= cap) {
+        return { scanned, processed, errors, parked, ...(await redriveEffects(container, opts)) }
+      }
       scanned += 1
       try {
         const result = await processInboundObject(container, key, opts.deps ?? {})
@@ -54,7 +77,64 @@ export async function runInboundSweep(
     cursor = next
   } while (cursor !== undefined && scanned < cap)
 
-  return { scanned, processed, errors, parked }
+  return { scanned, processed, errors, parked, ...(await redriveEffects(container, opts)) }
+}
+
+async function redriveEffects(
+  container: Container,
+  opts: {
+    deps?: InboundProcessorDeps
+    now?: () => Date
+    effectsBatch?: number
+    effectsMinAgeMs?: number
+  },
+): Promise<{ effectsRedriven: number; effectsErrors: number; effectsError?: string }> {
+  const now = (opts.now ?? (() => new Date()))()
+  const minAge = opts.effectsMinAgeMs ?? INBOUND_EFFECTS_REDRIVE_MIN_AGE_MS
+  const limit = opts.effectsBatch ?? INBOUND_EFFECTS_REDRIVE_BATCH
+  let mailRepo
+  try {
+    mailRepo = opts.deps?.mailRepo ?? makeDrizzleMailRepository(container.getDb().sql)
+  } catch (err) {
+    return { effectsRedriven: 0, effectsErrors: 1, effectsError: errorMessage(err) }
+  }
+
+  let pending
+  try {
+    pending = await mailRepo.findMessagesPendingEffects({
+      before: new Date(now.getTime() - minAge),
+      leaseBefore: new Date(now.getTime() - EFFECTS_LEASE_MS),
+      limit,
+    })
+  } catch (err) {
+    return { effectsRedriven: 0, effectsErrors: 1, effectsError: errorMessage(err) }
+  }
+
+  let effectsRedriven = 0
+  let effectsErrors = 0
+  let effectsError: string | undefined
+  for (const { message, thread } of pending) {
+    try {
+      await applyInboundEffects(
+        container,
+        opts.deps?.adminReportRepo,
+        opts.deps?.cleanupRepo,
+        mailRepo,
+        thread,
+        message,
+        () => now,
+      )
+      effectsRedriven += 1
+    } catch (err) {
+      effectsErrors += 1
+      effectsError = errorMessage(err)
+    }
+  }
+  return {
+    effectsRedriven,
+    effectsErrors,
+    ...(effectsError !== undefined ? { effectsError } : {}),
+  }
 }
 
 function errorMessage(err: unknown): string {

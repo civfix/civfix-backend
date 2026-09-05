@@ -12,6 +12,7 @@ import { parseUserMentions } from "../services/discussion-mentions.js"
 import { mapWithLimit } from "../services/media-presign.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { containsSlur } from "../abuse/slur-filter.js"
+import { SUSPENDED_MESSAGE, socketWriteVerdict } from "../auth/account-status.js"
 import {
   type GatewayDeps,
   type GatewaySession,
@@ -19,8 +20,17 @@ import {
   TYPING_THROTTLE_MAX_ROOMS,
   WS_FRAME_LIMIT,
   WS_MAX_JOINED_ROOMS,
+  WS_SESSION_ENDED_MESSAGE,
 } from "./types.js"
 import { makeTokenBucketLimiter } from "./report-rate-limit.js"
+import {
+  makeSendResilience,
+  sendDedupeKey,
+  type SendReservation,
+  type SendResilience,
+} from "./send-resilience.js"
+
+const PASSTHROUGH_SEND_RESILIENCE: SendResilience = makeSendResilience()
 
 type ClientFrame = WsClientMessage
 type ExtractFrame<T extends ClientFrame["type"]> = Extract<ClientFrame, { type: T }>
@@ -271,6 +281,16 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   const { conn, deps, userId } = session
   const kind: RoomKind = frame.roomKind ?? "cleanup"
   const id = frame.cleanupId
+  const verdict = await socketWriteVerdict(session)
+  if (verdict === "revoked") {
+    if (session.closeForAuth) session.closeForAuth()
+    else sendError(conn, "UNAUTHORIZED", WS_SESSION_ENDED_MESSAGE, { kind, id })
+    return
+  }
+  if (verdict === "suspended") {
+    sendError(conn, "FORBIDDEN", SUSPENDED_MESSAGE, { kind, id })
+    return
+  }
   if (frame.kind !== undefined && !CLIENT_AUTHORABLE_KINDS.has(frame.kind)) {
     sendError(conn, "BAD_FRAME", "That message kind can't be sent by a client.", { kind, id })
     return
@@ -300,6 +320,16 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     sendError(conn, "RATE_LIMITED", "You're sending messages too fast. Please slow down.", { kind, id })
     return
   }
+  const resilience = deps.chat.sendResilience ?? PASSTHROUGH_SEND_RESILIENCE
+  const dedupeKey = sendDedupeKey(userId, roomKey, frame.clientId)
+  const reservation: SendReservation = await resilience.reserve(dedupeKey)
+  if (reservation.state === "duplicate") {
+    const already = await resilience.findRoomMessage(kind, id, reservation.messageId, userId)
+    if (already !== null) {
+      conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message: already }))
+      return
+    }
+  }
   const mediaUploadIds = frame.mediaUploadIds
   let message: ChatMessageDTO
   try {
@@ -326,12 +356,14 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
       })
     }
   } catch (err) {
+    if (reservation.state === "reserved") void resilience.release(dedupeKey)
     if (err instanceof AppError) {
       sendError(conn, err.fields?.code ?? err.code, err.message, { kind, id })
       return
     }
     throw err
   }
+  void resilience.commit(dedupeKey, message.id)
   let mentions: UserMentionDTO[] = []
   if (deps.chatMentions) {
     const { chatMentions } = deps
@@ -350,10 +382,9 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
   }
   if (mentions.length > 0) message = { ...message, mentions }
 
-  await deps.chat.broadcast(roomKey, neutralizeChatViewerFields(message), {
-    excludeConnId: conn.id,
-  })
   conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
+
+  await resilience.broadcastMessage(deps.chat, roomKey, neutralizeChatViewerFields(message), conn.id)
 
   const replyTargetUserId = replyBellTarget(message, userId)
   fireMentionBells(deps, kind, id, userId, mentions, message, replyTargetUserId)

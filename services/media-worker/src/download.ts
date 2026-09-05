@@ -1,11 +1,18 @@
 
 import type { Storage } from "@civfix/shared/interfaces"
+import { normalizeEtag, readEtag } from "@civfix/api/media-repo"
+import { loadHttpsProxy } from "./config.js"
+
+export interface DownloadedObject {
+  bytes: Uint8Array
+  etag: string | null
+}
 
 export type DownloadFn = (
   r2Key: string,
   maxBytes: number,
   signal?: AbortSignal,
-) => Promise<Uint8Array>
+) => Promise<DownloadedObject>
 
 export class DownloadTooLargeError extends Error {
   constructor(maxBytes: number) {
@@ -45,7 +52,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
     r2Key: string,
     maxBytes: number,
     signal?: AbortSignal,
-  ): Promise<Uint8Array> {
+  ): Promise<DownloadedObject> {
     if (isInMemoryReadable(storage)) {
       const bytes = storage.get(r2Key)
       if (bytes === null) {
@@ -54,7 +61,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
       if (bytes.byteLength > maxBytes) {
         throw new DownloadTooLargeError(maxBytes)
       }
-      return bytes
+      return { bytes, etag: await headEtag(storage, r2Key) }
     }
 
     if (!isSafeR2Key(r2Key)) {
@@ -62,10 +69,6 @@ export function makeDownloader(storage: Storage): DownloadFn {
     }
     let url: string
     try {
-      // MUST resolve to a signed, direct-to-bucket GET. The shared Storage interface has no forceSigned
-      // option, so that is guaranteed upstream instead: seams.ts constructs the worker's R2Storage WITHOUT
-      // publicBase, because fetching the unprocessed original through a public CDN URL would cache the
-      // pre-strip bytes at the key clients read the stripped object from.
       url = await storage.presignGet(r2Key, DOWNLOAD_GET_TTL_SEC)
     } catch (err) {
       throw new StorageUnavailableError(r2Key, err)
@@ -77,12 +80,11 @@ export function makeDownloader(storage: Storage): DownloadFn {
     }
     let res: Response
     try {
-      res = await fetch(url, { signal: controller.signal })
+      res = await proxyAwareFetch(url, controller.signal)
     } catch (err) {
       throw new StorageUnavailableError(r2Key, err)
     }
     if (!res.ok) {
-      // Drain the error body so undici releases the socket now instead of at GC.
       await res.body?.cancel().catch(() => {})
       throw new StorageUnavailableError(r2Key, `HTTP ${res.status}`)
     }
@@ -93,6 +95,8 @@ export function makeDownloader(storage: Storage): DownloadFn {
       throw new DownloadTooLargeError(maxBytes)
     }
 
+    const etag = normalizeEtag(res.headers.get("etag"))
+
     const body = res.body
     if (!body) {
       let buf: Uint8Array
@@ -102,7 +106,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
         throw new StorageUnavailableError(r2Key, err)
       }
       if (buf.byteLength > maxBytes) throw new DownloadTooLargeError(maxBytes)
-      return buf
+      return { bytes: buf, etag }
     }
 
     const reader = body.getReader()
@@ -134,6 +138,19 @@ export function makeDownloader(storage: Storage): DownloadFn {
       out.set(c, offset)
       offset += c.byteLength
     }
-    return out
+    return { bytes: out, etag }
   }
+}
+
+async function headEtag(storage: Storage, r2Key: string): Promise<string | null> {
+  return readEtag(await storage.head(r2Key))
+}
+
+let proxyDispatcher: import("undici").EnvHttpProxyAgent | undefined
+
+async function proxyAwareFetch(url: string, signal: AbortSignal): Promise<Response> {
+  if (loadHttpsProxy() === null) return fetch(url, { signal })
+  const { fetch: undiciFetch, EnvHttpProxyAgent } = await import("undici")
+  proxyDispatcher ??= new EnvHttpProxyAgent()
+  return (await undiciFetch(url, { signal, dispatcher: proxyDispatcher })) as unknown as Response
 }

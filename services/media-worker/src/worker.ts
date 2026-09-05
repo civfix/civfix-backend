@@ -18,7 +18,15 @@ import { runHoldReleaseSweep } from "./jobs/hold-release-sweep.js"
 import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
 import { runRetentionSweep } from "./jobs/retention-sweep.js"
 import { runStuckSweep } from "./jobs/stuck-sweep.js"
+import {
+  MEDIA_UPLOAD_REAP_JOB,
+  parseUploadReapPayload,
+  runUploadReapJob,
+  uploadReapDelaySec,
+} from "./jobs/upload-reap.js"
 import { sweepStaleScratchDirs } from "./sandbox/tmp.js"
+import { assertSandboxPreflight } from "./sandbox/preflight.js"
+import { killAllSandboxChildren } from "./sandbox/exec.js"
 
 export const ORPHAN_SWEEP_JOB = "orphan.sweep"
 export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
@@ -68,6 +76,21 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       ...(seams.findPhashDuplicate ? { findPhashDuplicate: seams.findPhashDuplicate } : {}),
       report: seams.report,
     })
+
+    if (outcome.status !== "missing") {
+      try {
+        await jobs.enqueue(
+          MEDIA_UPLOAD_REAP_JOB,
+          { mediaId: payload.mediaId, uploadId: payload.uploadId, r2Key: payload.r2Key },
+          { singletonKey: payload.uploadId, startAfter: uploadReapDelaySec() },
+        )
+      } catch (err) {
+        console.warn("media.checks: failed to schedule media.upload.reap (non-fatal)", {
+          uploadId: payload.uploadId,
+          err: String(err),
+        })
+      }
+    }
 
     try {
       const reportId =
@@ -186,10 +209,24 @@ function makeRetentionSweepHandler(seams: WorkerSeams): JobHandler {
     if (!dbHandle) return
     await runRetentionSweep({
       sql: dbHandle.sql,
+      storage: seams.inboundStorage,
       batchSize: seams.limits.retentionSweepBatch,
       maxPages: seams.limits.retentionSweepMaxPages,
       report: seams.report,
     })
+  }
+}
+
+function makeUploadReapHandler(seams: WorkerSeams): JobHandler {
+  return async (job) => {
+    const payload = parseUploadReapPayload(job.data)
+    if (!payload) {
+      console.warn("media.upload.reap: malformed payload, skipping", { id: job.id })
+      return
+    }
+    const repo = requireRepo(seams, MEDIA_UPLOAD_REAP_JOB, "repo")
+    if (!repo) return
+    await runUploadReapJob(payload, { repo, storage: seams.storage, report: seams.report })
   }
 }
 
@@ -219,6 +256,7 @@ async function registerHandlers(
   await jobs.createQueue(ANON_HOLD_RELEASE_SWEEP_JOB, { policy: "singleton" })
   await jobs.createQueue(RETENTION_SWEEP_JOB, { policy: "singleton" })
   await jobs.createQueue(MEDIA_STUCK_SWEEP_JOB, { policy: "singleton" })
+  await jobs.createQueue(MEDIA_UPLOAD_REAP_JOB, { policy: "short", retryLimit: 3, retryBackoff: true })
 
   await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams), {
     batchSize: limits.mediaChecksConcurrency,
@@ -231,6 +269,7 @@ async function registerHandlers(
   await jobs.work(ANON_HOLD_RELEASE_SWEEP_JOB, makeHoldReleaseSweepHandler(seams))
   await jobs.work(RETENTION_SWEEP_JOB, makeRetentionSweepHandler(seams))
   await jobs.work(MEDIA_STUCK_SWEEP_JOB, makeStuckSweepHandler(jobs, seams))
+  await jobs.work(MEDIA_UPLOAD_REAP_JOB, makeUploadReapHandler(seams))
 
   await jobs.schedule(ORPHAN_SWEEP_JOB, ORPHAN_SWEEP_CRON, undefined, cronSchedule(ORPHAN_SWEEP_JOB))
   await jobs.schedule(CHAT_PARTITION_JOB, CHAT_PARTITION_CRON, undefined, cronSchedule(CHAT_PARTITION_JOB))
@@ -283,6 +322,8 @@ export async function buildWorker(
 
   async function start(): Promise<void> {
     if (started) return
+    installSandboxChildCleanup()
+    await assertSandboxPreflight()
     await sweepStaleScratchDirs().catch(() => 0)
     await handle.start()
     await registerHandlers(handle.jobs, resolvedSeams, resolvedSeams.limits)
@@ -300,25 +341,41 @@ export async function buildWorker(
   return { jobs: handle.jobs, seams: resolvedSeams, start, stop }
 }
 
+let sandboxCleanupInstalled = false
+
+function installSandboxChildCleanup(): void {
+  if (sandboxCleanupInstalled) return
+  sandboxCleanupInstalled = true
+  process.once("exit", () => killAllSandboxChildren())
+}
+
 let shuttingDown = false
+
+export function makeShutdown(
+  worker: Worker,
+  opts: { exitCode?: number } = {},
+): (reason: string) => Promise<void> {
+  const cleanExitCode = opts.exitCode ?? 0
+  return async function shutdown(reason: string): Promise<void> {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`media-worker: ${reason} received, stopping`)
+    try {
+      await worker.stop()
+      process.exit(cleanExitCode)
+    } catch (err) {
+      console.error("media-worker: error during shutdown", err)
+      process.exit(1)
+    }
+  }
+}
 
 export async function start(): Promise<Worker> {
   const worker = await buildWorker()
   await worker.start()
   console.log("civfix media-worker started")
 
-  async function shutdown(signal: string): Promise<void> {
-    if (shuttingDown) return
-    shuttingDown = true
-    console.log(`media-worker: ${signal} received, stopping`)
-    try {
-      await worker.stop()
-      process.exit(0)
-    } catch (err) {
-      console.error("media-worker: error during shutdown", err)
-      process.exit(1)
-    }
-  }
+  const shutdown = makeShutdown(worker)
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
   process.on("SIGINT", () => void shutdown("SIGINT"))

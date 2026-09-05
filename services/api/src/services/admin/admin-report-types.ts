@@ -48,6 +48,7 @@ export interface ReportOutreachState {
   routedTo: string | null
   routedAt: string | null
   sendFailed?: boolean
+  sendInFlight?: boolean
 }
 
 export interface AdminReportRecord {
@@ -96,6 +97,16 @@ export interface AdminReportRepository {
   listTimeline(id: string): Promise<AdminReportTimelineRecord[]>
   getRouting(id: string): Promise<AdminReportRoutingRecord | null>
   getOutreach(id: string): Promise<ReportOutreachState>
+  advanceStatusIfIn(
+    id: string,
+    input: {
+      from: readonly AdminReportStatus[]
+      to: AdminReportStatus
+      note: string
+      actorId: string | null
+      kind?: ReportTimelineItem["kind"]
+    },
+  ): Promise<boolean>
   appendSystemTimeline(
     id: string,
     input: { note: string; kind: ReportTimelineItem["kind"]; body?: string | null },

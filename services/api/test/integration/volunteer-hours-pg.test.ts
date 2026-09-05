@@ -280,15 +280,15 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ user_id: alice, actor_user_id: org, previous_hours: null, new_hours: 2 })
 
-    await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 40 }] })
+    await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 20 }] })
     await repo.logEventHours({ actorId: cohost, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
 
     rows = await auditRows()
     expect(rows).toHaveLength(3)
     expect(rows.map((r) => [r.previous_hours, r.new_hours])).toEqual([
       [null, 2],
-      [2, 40],
-      [40, 2],
+      [2, 20],
+      [20, 2],
     ])
     expect(rows.map((r) => r.actor_user_id)).toEqual([org, org, cohost])
 

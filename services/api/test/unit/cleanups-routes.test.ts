@@ -11,7 +11,11 @@ import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { clientQuery } from "../helpers/query.js"
-import type { CleanupServiceOverrides } from "../../src/routes/cleanups.routes.js"
+import {
+  CLEANUP_MEMBERSHIP_RATE_LIMIT,
+  type CleanupServiceOverrides,
+} from "../../src/routes/cleanups.routes.js"
+import { MIN_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
 
 
 interface Harness {
@@ -356,6 +360,26 @@ describe("POST /cleanups/:id/join and /leave", () => {
     const res = await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join` })
     expect(res.statusCode).toBe(401)
   })
+
+  it("H12: RSVP flipping is bounded per identity and does not spend another account's budget", async () => {
+    const { app, token, mailer } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const joiner = await signIn(app, mailer, "flipper@example.com")
+    const bystander = await signIn(app, mailer, "bystander@example.com")
+
+    const flip = (who: string, verb: "join" | "leave") =>
+      app.inject({ method: "POST", url: `/v1/cleanups/${id}/${verb}`, headers: auth(who) })
+
+    let blocked = false
+    for (let i = 0; i < CLEANUP_MEMBERSHIP_RATE_LIMIT.max + 2 && !blocked; i++) {
+      const res = await flip(joiner.token, i % 2 === 0 ? "join" : "leave")
+      blocked = res.statusCode === 429
+    }
+    expect(blocked).toBe(true)
+
+    const other = await flip(bystander.token, "join")
+    expect(other.statusCode).toBe(200)
+  })
 })
 
 describe("POST /cleanups/:id/cancel (host cancel)", () => {
@@ -518,6 +542,35 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
     })
     expect(res.statusCode).toBe(409)
     expect(res.json().code).toBe("CONFLICT")
+  })
+
+  it("H9: 409s completing an event that started but has not run for the minimum duration", async () => {
+    const { app, token } = await makeHarness()
+    const justStarted = new Date(Date.now() - MIN_EVENT_DURATION_MS / 3).toISOString()
+    const id = await createCleanup(app, token, justStarted)
+
+    const tooSoon = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(tooSoon.statusCode).toBe(409)
+    expect(tooSoon.json().code).toBe("CONFLICT")
+
+    const ranLongEnough = await createCleanup(
+      app,
+      token,
+      new Date(Date.now() - MIN_EVENT_DURATION_MS * 2).toISOString(),
+    )
+    const ok = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${ranLongEnough}/complete`,
+      headers: auth(token),
+      payload: {},
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json().status).toBe("done")
   })
 
   it("409s completing a CANCELLED event, and 409s cancelling a COMPLETED one (B18)", async () => {

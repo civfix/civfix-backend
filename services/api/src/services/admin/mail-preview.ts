@@ -1,34 +1,10 @@
-/**
- * The ONE preview policy for every mail surface: the admin inbox list, the mail thread list, and the
- * thread DTO's `preview` field. Pure, no I/O.
- *
- * The inbox list already truncated to 140 chars while the mail thread list shipped the latest message's
- * FULL body per row (tens of KB per inbound municipal reply, times a 25-row page). One collapse + one
- * length now serves both; the repositories additionally SELECT only a bounded prefix of the body, so the
- * bytes never leave Postgres.
- */
 
-/** Preview length in characters (post-whitespace-collapse). */
 export const PREVIEW_LEN = 140
 
-/**
- * How much body text a repository needs to SELECT to build a full-length preview. Generous over
- * PREVIEW_LEN because collapsing runs of whitespace shortens the source.
- */
 export const PREVIEW_SOURCE_CHARS = 400
 
-/**
- * How much body HTML a repository needs to SELECT for the HTML fallback: tags, comments and (on legacy
- * rows stored before server-side sanitization) style blocks are dropped before the text is measured, so
- * the source has to be substantially longer than the text case.
- */
 export const HTML_PREVIEW_SOURCE_CHARS = 4096
 
-/**
- * Collapse a body to a single-line preview, truncated to PREVIEW_LEN. `html` is a fallback for the
- * text-less message: mailparser produces no `text` part for an HTML-only email, which used to render an
- * empty preview in the inbox even though the message had content.
- */
 export function toPreview(body: string | null | undefined, html?: string | null): string {
   const fromText = collapse(body ?? "")
   if (fromText.length > 0) return truncate(fromText)
@@ -36,38 +12,64 @@ export function toPreview(body: string | null | undefined, html?: string | null)
   return truncate(collapse(htmlToText(html)))
 }
 
-/**
- * Strip HTML down to legible text for a preview. NOT a sanitizer (see inbound-html-sanitizer.ts for the
- * write-time control) — the output is plain text with every tag removed, so it is inert by construction.
- *
- * Scanning is deliberately linear: the obvious `/<[^>]*>/g` is quadratic on a body full of unclosed `<`,
- * which is attacker-controlled input on the inbound path.
- */
-export function htmlToText(html: string): string {
-  // Elements whose CONTENT is not body text. Only reachable on rows stored before the write-time
-  // sanitizer (it removes these outright), but a legacy row must not preview as a wall of CSS.
-  let working = html.replace(/<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, " ")
-  working = working.replace(/<!--[\s\S]*?(?:-->|$)/g, " ")
+const RAW_TEXT_ELEMENTS = new Set(["script", "style"])
 
+const HTML_TAG_NAME_RE = /[a-zA-Z][^\s/>]{0,16}/y
+
+function tagNameAt(html: string, at: number): { name: string; end: number } | null {
+  HTML_TAG_NAME_RE.lastIndex = at
+  const m = HTML_TAG_NAME_RE.exec(html)
+  return m === null ? null : { name: m[0].toLowerCase(), end: HTML_TAG_NAME_RE.lastIndex }
+}
+
+function rawTextCloseAt(html: string, name: string, from: number): number {
+  let i = from
+  for (;;) {
+    const at = html.indexOf("</", i)
+    if (at === -1) return html.length
+    const parsed = tagNameAt(html, at + 2)
+    if (parsed !== null && parsed.name === name) return at
+    i = at + 2
+  }
+}
+
+export function htmlToText(html: string): string {
   let out = ""
   let i = 0
   for (;;) {
-    const lt = working.indexOf("<", i)
+    const lt = html.indexOf("<", i)
     if (lt === -1) {
-      out += working.slice(i)
+      out += html.slice(i)
       break
     }
-    out += working.slice(i, lt)
-    const gt = working.indexOf(">", lt + 1)
-    // An unterminated tag runs to the end of the (truncated) source: nothing legible follows.
+    out += html.slice(i, lt)
+
+    if (html.startsWith("!--", lt + 1)) {
+      const end = html.indexOf("-->", lt + 4)
+      out += " "
+      if (end === -1) break
+      i = end + 3
+      continue
+    }
+
+    const gt = html.indexOf(">", lt + 1)
     if (gt === -1) break
     out += " "
     i = gt + 1
+
+    if (html[lt + 1] === "/") continue
+    const parsed = tagNameAt(html, lt + 1)
+    if (parsed === null || !RAW_TEXT_ELEMENTS.has(parsed.name)) continue
+    const close = rawTextCloseAt(html, parsed.name, i)
+    if (close >= html.length) break
+    const closeGt = html.indexOf(">", close)
+    if (closeGt === -1) break
+    out += " "
+    i = closeGt + 1
   }
   return decodeTextEntities(out)
 }
 
-/** The handful of entities worth decoding for a preview; anything else survives as its escape. */
 function decodeTextEntities(text: string): string {
   return text
     .replace(/&nbsp;/gi, " ")

@@ -59,10 +59,12 @@ export async function loadReadyAttachmentsFor(
   const byMessage = new Map<string, MediaDTO[]>()
   if (messageIds.length === 0) return byMessage
   const rows = await tag<MediaRow[]>`
-    SELECT id, ${tag(column)} AS message_id, kind, codec, r2_key, thumb_key, status, width, height
+    SELECT id, ${tag(column)} AS message_id, kind, codec, served_key AS r2_key,
+           thumb_key, status, width, height
     FROM media_assets
     WHERE ${tag(column)} IN ${tag(messageIds)}
       AND status = 'ready'
+      AND served_key IS NOT NULL
     ORDER BY created_at ASC
   `
   const projected = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {

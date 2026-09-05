@@ -19,12 +19,6 @@ import {
 import { InMemoryByteMeter } from "../../src/services/media-byte-quota.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 
-/**
- * H9 — GET /media/:id used to authorize NOTHING (the viewer parameter was literally named `_viewer`
- * and discarded). These tests pin the new behavior at the service seam: the asset's binding decides
- * visibility, a deny is a 404 (never a 403 — no existence oracle), and private media is issued as a
- * short-lived SIGNED url rather than a public CDN one.
- */
 
 const SHA = "c".repeat(64)
 
@@ -32,7 +26,6 @@ function imageReq(over: Partial<CreateMediaUploadRequest> = {}): CreateMediaUplo
   return { kind: "image", contentType: "image/jpeg", byteSize: 1024, sha256: SHA, ...over }
 }
 
-/** Records every presignGet call so a test can assert the TTL and the forceSigned flag. */
 class RecordingStorage extends FakeStorage {
   readonly presignCalls: { key: string; ttlSec: number; forceSigned: boolean }[] = []
   override presignGet(key: string, ttlSec: number, opts?: { forceSigned?: boolean }): Promise<string> {
@@ -57,7 +50,7 @@ function harness(authorizer?: MediaViewAuthorizer) {
 async function readyMedia(h: ReturnType<typeof harness>, patch: Partial<MediaAssetView> = {}) {
   const { uploadId } = await h.service.createUpload(imageReq(), {})
   const row = (await h.repo.findByUploadId(uploadId))!
-  h.repo.patch(row.id, { status: "ready", ...patch })
+  h.repo.patch(row.id, { status: "ready", servedKey: `processed/${row.r2Key}`, ...patch })
   return (await h.repo.findById(row.id))!
 }
 
@@ -137,6 +130,7 @@ describe("makeUnboundOnlyMediaViewAuthorizer (the fail-closed default)", () => {
     kind: "image",
     codec: null,
     r2Key: "uploads/2026/07/u1",
+    servedKey: "processed/uploads/2026/07/u1",
     thumbKey: null,
     status: "ready",
     width: null,
@@ -192,7 +186,6 @@ describe("presigned-byte quota (M10)", () => {
 
     await service.createUpload(imageReq({ byteSize: 1024 }), owner)
     await service.createUpload(imageReq({ byteSize: 1024 }), owner)
-    // Third request is within the per-request size limit but over the cumulative budget.
     await expect(service.createUpload(imageReq({ byteSize: 1024 }), owner)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
@@ -212,7 +205,6 @@ describe("presigned-byte quota (M10)", () => {
   it("F016: rotating the civfix_anon cookie does NOT reset the budget (the IP bucket still caps)", async () => {
     const meter = new InMemoryByteMeter()
     const service = quotaService(meter, 2048)
-    // Every call presents a brand-new anon cookie value, which used to mint a fresh bucket per request.
     await service.createUpload(imageReq({ byteSize: 1024 }), {
       anonSessionId: "rotating-1",
       ipKey: "203.0.113.9",

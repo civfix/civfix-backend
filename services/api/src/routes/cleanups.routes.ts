@@ -54,6 +54,7 @@ import { makeDrizzleMailRepository } from "../services/admin/mail-repository.dri
 import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
+import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
 import { chatHistoryPayload } from "./chat-route-helpers.js"
 import { CappedBBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
@@ -98,6 +99,8 @@ const CREATE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 const COMPLETE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
 const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
+
+export const CLEANUP_MEMBERSHIP_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
 
 function refineScheduledAt(
   scheduledAt: string | undefined,
@@ -315,14 +318,14 @@ export async function registerCleanupRoutes(
     reply.status(200).send(dto)
   })
 
-  route(app, "joinCleanup", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "joinCleanup", { preHandler: csrfProtect, config: { rateLimit: CLEANUP_MEMBERSHIP_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: JoinCleanupResponse = await service().joinCleanup(id, userId)
     reply.status(200).send(payload)
   })
 
-  route(app, "leaveCleanup", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "leaveCleanup", { preHandler: csrfProtect, config: { rateLimit: CLEANUP_MEMBERSHIP_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const payload: LeaveCleanupResponse = await service().leaveCleanup(id, userId)

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import {
   handleClientFrame,
   isSocketStillAuthorized,
+  checkSocketAuthorization,
   canStillRead,
   reauthorizeJoinedRooms,
   roomKeyFor,
@@ -211,39 +212,54 @@ describe("M1: a live socket is re-authorized, not trusted forever", () => {
   it("closes on a banned account (isUserActive false), on the cheap every-tick check", async () => {
     const svc = sessions({
       isUserActive: () => Promise.resolve(false),
-      resolveSession: () => Promise.reject(new Error("must not be reached")),
+      resolveSessionByHash: () => Promise.reject(new Error("must not be reached")),
     })
-    expect(await isSocketStillAuthorized(svc, ALICE, "tok", false)).toBe(false)
+    expect(await isSocketStillAuthorized(svc, ALICE, "hash", false)).toBe(false)
   })
 
   it("closes when the session was revoked (full re-resolve returns null)", async () => {
     const svc = sessions({
       isUserActive: () => Promise.resolve(true),
-      resolveSession: () => Promise.resolve(null),
+      resolveSessionByHash: () => Promise.resolve(null),
     })
-    expect(await isSocketStillAuthorized(svc, ALICE, "tok", true)).toBe(false)
-    expect(await isSocketStillAuthorized(svc, ALICE, "tok", false)).toBe(true)
+    expect(await isSocketStillAuthorized(svc, ALICE, "hash", true)).toBe(false)
+    expect(await isSocketStillAuthorized(svc, ALICE, "hash", false)).toBe(true)
   })
 
-  it("closes when the token now resolves to a DIFFERENT user", async () => {
+  it("closes when the session hash now resolves to a DIFFERENT user", async () => {
     const svc = sessions({
       isUserActive: () => Promise.resolve(true),
-      resolveSession: () => Promise.resolve({ userId: BOB, roles: [] }),
+      resolveSessionByHash: () => Promise.resolve({ userId: BOB, roles: [] }),
     })
-    expect(await isSocketStillAuthorized(svc, ALICE, "tok", true)).toBe(false)
+    expect(await isSocketStillAuthorized(svc, ALICE, "hash", true)).toBe(false)
   })
 
-  it("keeps a valid session, and skips the resolve entirely on the ticket path (no token)", async () => {
-    const resolveSession = vi.fn(() => Promise.resolve({ userId: ALICE, roles: [] }))
-    const svc = sessions({ isUserActive: () => Promise.resolve(true), resolveSession })
-    expect(await isSocketStillAuthorized(svc, ALICE, "tok", true)).toBe(true)
+  it("H2: the TICKET path is re-resolved too (a ticket carries the hash of the session that minted it)", async () => {
+    const resolveSessionByHash = vi.fn(() =>
+      Promise.resolve({ userId: ALICE, roles: [], accountStatus: "active" }),
+    )
+    const svc = sessions({ isUserActive: () => Promise.resolve(true), resolveSessionByHash })
+    expect(await isSocketStillAuthorized(svc, ALICE, "ticket-hash", true)).toBe(true)
+    expect(resolveSessionByHash).toHaveBeenCalledWith("ticket-hash")
     expect(await isSocketStillAuthorized(svc, ALICE, undefined, true)).toBe(true)
-    expect(resolveSession).toHaveBeenCalledTimes(1)
+    expect(resolveSessionByHash).toHaveBeenCalledTimes(1)
+  })
+
+  it("H4: a full re-check surfaces the account status so the frame handler can deny writes", async () => {
+    const svc = sessions({
+      isUserActive: () => Promise.resolve(true),
+      resolveSessionByHash: () =>
+        Promise.resolve({ userId: ALICE, roles: [], accountStatus: "suspended" }),
+    })
+    expect(await checkSocketAuthorization(svc, ALICE, "hash", true)).toEqual({
+      authorized: true,
+      accountStatus: "suspended",
+    })
   })
 
   it("FAILS OPEN on an infrastructure error (a Redis blip must not disconnect every socket)", async () => {
     const svc = sessions({ isUserActive: () => Promise.reject(new Error("redis down")) })
-    expect(await isSocketStillAuthorized(svc, ALICE, "tok", true)).toBe(true)
+    expect(await isSocketStillAuthorized(svc, ALICE, "hash", true)).toBe(true)
   })
 })
 
@@ -398,5 +414,140 @@ describe("F022: live sockets are re-authorized against room membership", () => {
     await reauthorizeJoinedRooms(session)
     expect(conn.framesOfType("error")).toHaveLength(0)
     expect(session.joined.has(roomKeyFor("cleanup", ROOM))).toBe(true)
+  })
+})
+
+describe("H4: a suspended account is read-only on the socket", () => {
+  it("denies a send frame with a FORBIDDEN error frame and persists nothing", async () => {
+    const conn = new MockConnection("alice")
+    const session = sessionFor(ALICE, conn)
+    session.accountStatus = "suspended"
+
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    conn.sent.length = 0
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "hello" }),
+    )
+
+    const errors = conn.framesOfType("error")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ code: "FORBIDDEN" })
+    expect(conn.framesOfType("message")).toHaveLength(0)
+  })
+
+  it("still allows join, typing and ack (reads stay open so the user can see the notice)", async () => {
+    const conn = new MockConnection("alice")
+    const session = sessionFor(ALICE, conn, { markRead: () => Promise.resolve() })
+    session.accountStatus = "suspended"
+
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    expect(conn.framesOfType("presence_snapshot")).toHaveLength(1)
+    conn.sent.length = 0
+
+    await handleClientFrame(session, JSON.stringify({ type: "typing", cleanupId: ROOM }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: "00000000-0000-0000-0000-000000000001" }),
+    )
+    expect(conn.framesOfType("error")).toHaveLength(0)
+  })
+
+  it("an ACTIVE account is unaffected", async () => {
+    const conn = new MockConnection("alice")
+    const session = sessionFor(ALICE, conn)
+    session.accountStatus = "active"
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    conn.sent.length = 0
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "hello" }),
+    )
+    expect(conn.framesOfType("error")).toHaveLength(0)
+  })
+})
+
+describe("H4/NB4/B3: a socket is re-validated on the NEXT send, not at the next 90 s re-check", () => {
+  it("re-resolves the account status on send and refuses once the status flips to suspended", async () => {
+    let status: "active" | "suspended" = "active"
+    const conn = new MockConnection("alice")
+    const session = sessionFor(ALICE, conn)
+    session.accountStatus = "active"
+    session.revalidateStatus = () => Promise.resolve({ kind: "live" as const, status })
+
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    conn.sent.length = 0
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "before" }),
+    )
+    expect(conn.framesOfType("error")).toHaveLength(0)
+
+    status = "suspended"
+    conn.sent.length = 0
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c2", body: "after" }),
+    )
+    const errors = conn.framesOfType("error")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ code: "FORBIDDEN" })
+    expect(session.accountStatus).toBe("suspended")
+  })
+
+  it("B3: a REVOKED session (the row is gone, which is what suspension actually does) refuses the send AND closes the socket", async () => {
+    const conn = new MockConnection("alice")
+    const session = sessionFor(ALICE, conn)
+    session.accountStatus = "active"
+    const closed = vi.fn()
+    session.closeForAuth = closed
+    session.revalidateStatus = () => Promise.resolve({ kind: "revoked" as const })
+
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    conn.sent.length = 0
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "after revoke" }),
+    )
+
+    expect(closed).toHaveBeenCalledTimes(1)
+    expect(conn.framesOfType("message")).toHaveLength(0)
+  })
+
+  it("B3: with no lifecycle close routine a revoked session still gets UNAUTHORIZED and persists nothing", async () => {
+    const conn = new MockConnection("alice")
+    const session = sessionFor(ALICE, conn)
+    session.accountStatus = "active"
+    session.revalidateStatus = () => Promise.resolve({ kind: "revoked" as const })
+
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    conn.sent.length = 0
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "after revoke" }),
+    )
+
+    const errors = conn.framesOfType("error")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ code: "UNAUTHORIZED" })
+    expect(conn.framesOfType("message")).toHaveLength(0)
+  })
+
+  it("keeps the last known status when the re-resolve THREW (infra blip fails open, but never invents 'revoked')", async () => {
+    const conn = new MockConnection("alice")
+    const session = sessionFor(ALICE, conn)
+    session.accountStatus = "suspended"
+    const closed = vi.fn()
+    session.closeForAuth = closed
+    session.revalidateStatus = () => Promise.resolve({ kind: "unknown" as const })
+
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
+    conn.sent.length = 0
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "hello" }),
+    )
+    expect(conn.framesOfType("error")[0]).toMatchObject({ code: "FORBIDDEN" })
+    expect(closed).not.toHaveBeenCalled()
   })
 })

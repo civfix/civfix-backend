@@ -20,7 +20,7 @@ export async function readContainerTags(bytes: Uint8Array): Promise<Record<strin
         "file",
         scratch.inputPath,
       ],
-      { timeoutMs: 10_000, maxBuffer: 1024 * 1024 },
+      { timeoutMs: 10_000, maxStdoutBytes: 1024 * 1024 },
     )
     const parsed = JSON.parse(res.stdout) as { format?: { tags?: Record<string, string> } }
     return parsed.format?.tags ?? {}
@@ -51,7 +51,7 @@ export async function readStreamTags(bytes: Uint8Array): Promise<StreamInfo[]> {
         "file",
         scratch.inputPath,
       ],
-      { timeoutMs: 10_000, maxBuffer: 1024 * 1024 },
+      { timeoutMs: 10_000, maxStdoutBytes: 1024 * 1024 },
     )
     const parsed = JSON.parse(res.stdout) as {
       streams?: { codec_type?: string; tags?: Record<string, string> }[]

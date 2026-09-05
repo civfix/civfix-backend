@@ -19,15 +19,22 @@ export const COMPOSE_STOP_GRACE_PERIOD_SECONDS = 45
 export interface Lifecycle {
   isDraining: () => boolean
   beginDrain: () => void
+  escalateExitCode: (code: number) => void
+  finalExitCode: (fallback: number) => number
 }
 
 export function makeLifecycle(): Lifecycle {
   let draining = false
+  let escalated: number | undefined
   return {
     isDraining: (): boolean => draining,
     beginDrain: (): void => {
       draining = true
     },
+    escalateExitCode: (code: number): void => {
+      if (code !== 0 && escalated === undefined) escalated = code
+    },
+    finalExitCode: (fallback: number): number => escalated ?? fallback,
   }
 }
 
@@ -37,6 +44,7 @@ export interface ShutdownOptions {
   closeWaitMs?: number
   teardownWatchdogMs?: number
   idleSweepMs?: number
+  exitCode?: number
   exit?: (code: number) => void
 }
 
@@ -108,6 +116,7 @@ export function makeShutdown(
   const teardownWatchdogMs = options.teardownWatchdogMs ?? SHUTDOWN_TEARDOWN_WATCHDOG_MS
   const idleSweepMs = options.idleSweepMs ?? SHUTDOWN_IDLE_SWEEP_MS
   const exit = options.exit ?? ((code: number): void => process.exit(code))
+  const cleanExitCode = options.exitCode ?? 0
   const drainMs = Math.min(SHUTDOWN_DRAIN_MS_MAX, Math.max(0, options.drainMs))
   const hardDeadlineMs = drainMs + closeWaitMs + teardownWatchdogMs
   let started = false
@@ -120,7 +129,8 @@ export function makeShutdown(
   }
 
   return async function shutdown(signal: string): Promise<void> {
-    if (started) return
+    app.lifecycle.escalateExitCode(cleanExitCode)
+    if (started || app.lifecycle.isDraining()) return
     started = true
     app.lifecycle.beginDrain()
     app.log.info(
@@ -150,7 +160,7 @@ export function makeShutdown(
         return
       }
       app.log.info("shutdown: complete")
-      exit(0)
+      exit(app.lifecycle.finalExitCode(cleanExitCode))
     } catch (err) {
       app.log.error({ err }, "shutdown: error during close")
       await flushErrorReporting()

@@ -24,8 +24,12 @@ import {
   WS_HEARTBEAT_MS,
   WS_REAUTH_INTERVAL_MS,
   WS_REAUTH_JITTER_MS,
+  WS_SESSION_ENDED_MESSAGE,
+  WS_SESSION_ENDED_REASON,
 } from "./types.js"
 import type { SessionService } from "../auth/session-service.js"
+import type { AccountStatus } from "../auth/stores.js"
+import type { SocketStatusCheck } from "../auth/account-status.js"
 
 const READY_STATE_OPEN = 1
 
@@ -98,23 +102,55 @@ export async function subscribeUserChannel(
   }
 }
 
+export interface SocketAuthCheck {
+  authorized: boolean
+  accountStatus?: AccountStatus
+}
+
+export async function checkSocketAuthorization(
+  sessions: SessionService | undefined,
+  userId: string,
+  sessionHash: string | undefined,
+  fullCheck: boolean,
+): Promise<SocketAuthCheck> {
+  if (!sessions) return { authorized: true }
+  try {
+    if (!(await sessions.isUserActive(userId))) return { authorized: false }
+    if (fullCheck && sessionHash !== undefined) {
+      const resolved = await sessions.resolveSessionByHash(sessionHash)
+      if (resolved === null || resolved.userId !== userId) return { authorized: false }
+      return { authorized: true, accountStatus: resolved.accountStatus }
+    }
+    return { authorized: true }
+  } catch {
+    return { authorized: true }
+  }
+}
+
+export function makeStatusRevalidator(
+  sessions: SessionService,
+  userId: string,
+  sessionHash: string,
+): () => Promise<SocketStatusCheck> {
+  return async () => {
+    let resolved
+    try {
+      resolved = await sessions.resolveSessionByHash(sessionHash)
+    } catch {
+      return { kind: "unknown" }
+    }
+    if (resolved === null || resolved.userId !== userId) return { kind: "revoked" }
+    return { kind: "live", status: resolved.accountStatus }
+  }
+}
+
 export async function isSocketStillAuthorized(
   sessions: SessionService | undefined,
   userId: string,
-  token: string | undefined,
+  sessionHash: string | undefined,
   fullCheck: boolean,
 ): Promise<boolean> {
-  if (!sessions) return true
-  try {
-    if (!(await sessions.isUserActive(userId))) return false
-    if (fullCheck && token !== undefined) {
-      const resolved = await sessions.resolveSession(token)
-      if (resolved === null || resolved.userId !== userId) return false
-    }
-    return true
-  } catch {
-    return true
-  }
+  return (await checkSocketAuthorization(sessions, userId, sessionHash, fullCheck)).authorized
 }
 
 export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayOptions): void {
@@ -192,6 +228,18 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
 
       const session: GatewaySession = {
         userId,
+        ...(handshake.accountStatus !== undefined
+          ? { accountStatus: handshake.accountStatus }
+          : {}),
+        ...(handshake.sessionHash !== undefined && opts.sessions !== undefined
+          ? {
+              revalidateStatus: makeStatusRevalidator(
+                opts.sessions,
+                userId,
+                handshake.sessionHash,
+              ),
+            }
+          : {}),
         conn: wrapSocket(socket),
         joined: new Set<string>(),
         typingThrottle: new Map<string, number>(),
@@ -231,12 +279,30 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
 
       let alive = true
       let overBufferTicks = 0
-      const sessionToken = handshake.token
+      const sessionHash = handshake.sessionHash
       const nextReauthInterval = (): number =>
         WS_REAUTH_INTERVAL_MS + Math.floor(Math.random() * WS_REAUTH_JITTER_MS)
       let reauthIntervalMs = nextReauthInterval()
       let lastFullReauthAt = Date.now() - Math.floor(Math.random() * WS_REAUTH_INTERVAL_MS)
       let closingForAuth = false
+      const closeForAuth = (): void => {
+        if (closingForAuth) return
+        closingForAuth = true
+        request.log.info({ userId }, "ws: closing socket, session no longer valid")
+        try {
+          session.conn.send(
+            serverFrame({
+              type: "error",
+              code: "UNAUTHORIZED",
+              message: WS_SESSION_ENDED_MESSAGE,
+            }),
+          )
+        } catch (err) {
+          request.log.debug({ err }, "ws: reauth-reject send failed (socket already closing)")
+        }
+        socket.close(WS_CLOSE_POLICY_VIOLATION, WS_SESSION_ENDED_REASON)
+      }
+      session.closeForAuth = closeForAuth
       socket.on("pong", () => {
         alive = true
       })
@@ -252,23 +318,20 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
             lastFullReauthAt = now
             reauthIntervalMs = nextReauthInterval()
           }
-          if (await isSocketStillAuthorized(opts.sessions, userId, sessionToken, fullCheck)) {
+          const check = await checkSocketAuthorization(
+            opts.sessions,
+            userId,
+            sessionHash,
+            fullCheck,
+          )
+          if (check.authorized) {
+            if (check.accountStatus !== undefined) session.accountStatus = check.accountStatus
             if (fullCheck && !closingForAuth && !session.closed) {
               await reauthorizeJoinedRooms(session)
             }
             return
           }
-          if (closingForAuth) return
-          closingForAuth = true
-          request.log.info({ userId }, "ws: closing socket, session no longer valid")
-          try {
-            session.conn.send(
-              serverFrame({ type: "error", code: "UNAUTHORIZED", message: "Your session ended." }),
-            )
-          } catch (err) {
-            request.log.debug({ err }, "ws: reauth-reject send failed (socket already closing)")
-          }
-          socket.close(WS_CLOSE_POLICY_VIOLATION, "session no longer valid")
+          closeForAuth()
         })().catch(() => {})
         if (socket.bufferedAmount > WS_BUFFER_DROP_THRESHOLD) {
           if (++overBufferTicks >= WS_BUFFER_TERMINATE_TICKS) {

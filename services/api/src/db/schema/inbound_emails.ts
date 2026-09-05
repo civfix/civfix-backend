@@ -1,12 +1,3 @@
-/**
- * Inbound emails (catch-all): non-reply *@civfix.org mail triaged in the admin Inbox. Reply mail still
- * lives in mail_threads/mail_messages; this is the lightweight store for everything else.
- *
- * message_id is UNIQUE (the dedup key — RFC822 Message-ID or a derived hash). attachments jsonb is an
- * array of { key (R2), filename, size }, same shape as mail_messages.attachments.
- *
- * CANONICAL DDL: drizzle/0010_inbound_emails.sql. This mirror exists for typed queries / diff inspection.
- */
 
 import { sql } from "drizzle-orm"
 import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
@@ -32,6 +23,7 @@ export const inboundEmails = pgTable(
     hasAttachments: boolean("has_attachments").notNull().default(false),
     status: text("status").$type<InboundEmailStatus>().notNull().default("unread"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -39,6 +31,9 @@ export const inboundEmails = pgTable(
     index("inbound_emails_received_idx").on(t.receivedAt.desc(), t.id.desc()),
     index("inbound_emails_status_received_idx").on(t.status, t.receivedAt.desc(), t.id.desc()),
     index("inbound_emails_recipient_idx").on(t.recipient),
+    index("inbound_emails_archived_at_idx")
+      .on(t.archivedAt)
+      .where(sql`archived_at IS NOT NULL`),
   ],
 )
 

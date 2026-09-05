@@ -1,6 +1,7 @@
 
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
 import {
   type CreateModerationItemInput,
   type ListModerationArgs,
@@ -17,6 +18,10 @@ export interface SeededHeldReport {
   createdAt: Date
 }
 
+function isUserSubjectType(subjectType: ModerationItemRecord["subjectType"]): boolean {
+  return subjectType === "user" || subjectType === "profile"
+}
+
 export class InMemoryModerationRepository implements ModerationRepository {
   readonly items = new Map<string, ModerationItemRecord>()
   readonly heldReports = new Map<string, SeededHeldReport>()
@@ -24,6 +29,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
   readonly suspensions = new Map<string, boolean>()
   readonly tombstoned = new Set<string>()
   readonly accountStatus = new Map<string, "active" | "suspended">()
+  readonly userRoles = new Map<string, string>()
   readonly deletedUserIds = new Set<string>()
 
   now = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 0))
@@ -170,8 +176,13 @@ export class InMemoryModerationRepository implements ModerationRepository {
     id: string,
     _input: { actorId: string | null; reason: string | null },
   ): Promise<ModerationItemRecord | null> {
+    const pending = this.items.get(id)
+    if (pending && isUserSubjectType(pending.subjectType)) {
+      assertTargetIsNotOperatorRole(this.userRoles.get(pending.subjectId), "remove")
+    }
     const item = this.resolve(id, "removed")
     if (!item) return null
+    delete item.suspendedUserId
     if (item.subjectType === "report" && this.reportStatus.get(item.subjectId) !== "rejected") {
       this.reportStatus.set(item.subjectId, "rejected")
       item.reportTimelineStatus = "rejected"
@@ -179,8 +190,9 @@ export class InMemoryModerationRepository implements ModerationRepository {
     if (item.subjectType === "chat" || item.subjectType === "message") {
       this.tombstoned.add(item.subjectId)
     }
-    if (item.subjectType === "user" || item.subjectType === "profile") {
+    if (isUserSubjectType(item.subjectType)) {
       this.accountStatus.set(item.subjectId, "suspended")
+      item.suspendedUserId = item.subjectId
     }
     return item
   }

@@ -185,6 +185,20 @@ describe("presign -> PUT -> GET round trip", () => {
     expect(res.headers["content-disposition"]).toBe('inline; filename="civfix.pdf"')
   })
 
+  it("emits the object ETag so the dev stack exercises the media version binding", async () => {
+    const { app, storage } = await makeHarness()
+    const key = "uploads/2026/09/etagged"
+    await storage.put(key, Buffer.from("some-bytes"), { contentType: "image/jpeg" })
+    const head = await storage.head(key)
+    const getUrl = await storage.presignGet(key, 300)
+
+    const res = await app.inject({ method: "GET", url: pathAndQueryOf(getUrl) })
+
+    expect(res.statusCode).toBe(200)
+    expect(head?.etag).toBeDefined()
+    expect(res.headers.etag).toBe(`"${head!.etag!}"`)
+  })
+
   it("404s a signed GET for an object that was never written", async () => {
     const { app, storage } = await makeHarness()
     const getUrl = await storage.presignGet("uploads/2026/07/absent", 300)

@@ -4,6 +4,7 @@ import {
   makeModerationService,
   type ModerationService,
 } from "../../src/services/admin/moderation-service.js"
+import type { UserStatus } from "@civfix/shared"
 
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
@@ -405,6 +406,49 @@ describe("moderation actions", () => {
     expect(repo.accountStatus.get("USER-9")).toBe("active")
   })
 
+  it("H4: removing a USER subject suspends the account AND revokes every session", async () => {
+    const repo = new InMemoryModerationRepository()
+    repo.now = NOW
+    const applied: Array<{ userId: string; status: UserStatus }> = []
+    const svc = makeModerationService({
+      repo,
+      now: () => NOW,
+      sessions: {
+        applyStatus: (userId: string, status: UserStatus) => {
+          applied.push({ userId, status })
+          return Promise.resolve(1)
+        },
+      },
+    })
+
+    repo.seedItem({ id: "MOD-U", subjectType: "user", subjectId: "USER-9", status: "open" })
+    await svc.remove("MOD-U", { actorId: "op-1", reason: "abuse" })
+
+    expect(repo.accountStatus.get("USER-9")).toBe("suspended")
+    expect(applied).toEqual([{ userId: "USER-9", status: "suspended" }])
+  })
+
+  it("H4: removing a non-user subject never touches the account status", async () => {
+    const repo = new InMemoryModerationRepository()
+    repo.now = NOW
+    const applied: Array<{ userId: string; status: UserStatus }> = []
+    const svc = makeModerationService({
+      repo,
+      now: () => NOW,
+      sessions: {
+        applyStatus: (userId: string, status: UserStatus) => {
+          applied.push({ userId, status })
+          return Promise.resolve(1)
+        },
+      },
+    })
+
+    repo.seedItem({ id: "MOD-C", subjectType: "chat", subjectId: "CHAT-7", status: "open" })
+    await svc.remove("MOD-C", { actorId: "op-1", reason: "abuse" })
+
+    expect(applied).toEqual([])
+  })
+
   it("appeal overturn on a USER lifts the Redis ban marker, exactly like an admin status change", async () => {
     const repo = new InMemoryModerationRepository()
     repo.now = NOW
@@ -413,9 +457,9 @@ describe("moderation actions", () => {
       repo,
       now: () => NOW,
       sessions: {
-        clearBan: (userId: string) => {
-          cleared.push(userId)
-          return Promise.resolve()
+        applyStatus: (userId: string, status: UserStatus) => {
+          if (status === "active") cleared.push(userId)
+          return Promise.resolve(0)
         },
       },
     })
@@ -426,8 +470,6 @@ describe("moderation actions", () => {
 
     await svc.appeal("APP-U", { decision: "overturn", actorId: "op-1", note: null })
 
-    // The ban marker lives in Redis and is checked on every request, so an overturn that only flipped the
-    // user_moderation row left the account listed active while every session still resolved as banned.
     expect(cleared).toEqual(["USER-9"])
     expect(repo.accountStatus.get("USER-9")).toBe("active")
   })
@@ -440,9 +482,9 @@ describe("moderation actions", () => {
       repo,
       now: () => NOW,
       sessions: {
-        clearBan: (userId: string) => {
-          cleared.push(userId)
-          return Promise.resolve()
+        applyStatus: (userId: string, status: UserStatus) => {
+          if (status === "active") cleared.push(userId)
+          return Promise.resolve(0)
         },
       },
     })
@@ -453,7 +495,6 @@ describe("moderation actions", () => {
     repo.seedItem({ id: "APP-CHAT", kind: "appeal", subjectType: "chat", subjectId: "CHAT-1", status: "open" })
     await svc.appeal("APP-CHAT", { decision: "overturn", actorId: "op-1", note: null })
 
-    // A tombstoned (deleted) account is never restored, so its ban marker is not lifted either.
     repo.deletedUserIds.add("USER-GONE")
     repo.seedItem({ id: "APP-GONE", kind: "appeal", subjectType: "user", subjectId: "USER-GONE", status: "open" })
     await svc.appeal("APP-GONE", { decision: "overturn", actorId: "op-1", note: null })

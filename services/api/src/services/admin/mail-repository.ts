@@ -34,6 +34,10 @@ export interface MailMessageRecord {
   attachments: MailAttachment[]
   messageId: string | null
   inReplyTo: string | null
+  unaffiliated: boolean
+  effectsClaimedAt: Date | null
+  effectsAppliedAt: Date | null
+  effectsStage: number
   createdAt: Date
   truncated?: boolean
 }
@@ -84,6 +88,7 @@ export interface InsertMessageInput {
   attachments?: MailAttachment[]
   messageId?: string | null
   inReplyTo?: string | null
+  unaffiliated?: boolean
   audit?: MailAuditInput
 }
 
@@ -134,8 +139,29 @@ export interface MailRepository {
   findThreadByToken(token: string): Promise<MailThreadRecord | null>
   findThreadByOutboundMessageIds(messageIds: string[]): Promise<MailThreadRecord | null>
   getLastOutboundRecipient(threadId: string): Promise<string | null>
-  getLastInboundSender(threadId: string): Promise<string | null>
   outboundRecipients(threadId: string): Promise<string[]>
+  findMessageByMessageId(messageId: string): Promise<MailMessageRecord | null>
+  hasSendInFlight(threadId: string): Promise<boolean>
+  claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null>
+  setMessageEffectsStage(id: string, stage: number): Promise<void>
+  markMessageEffectsApplied(id: string): Promise<void>
+  releaseMessageEffects(id: string): Promise<void>
+  findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]>
+}
+
+export interface ClaimEffectsInput {
+  leaseBefore: Date
+}
+
+export interface PendingEffectsQuery {
+  before: Date
+  leaseBefore: Date
+  limit: number
+}
+
+export interface PendingEffects {
+  message: MailMessageRecord
+  thread: MailThreadRecord
 }
 
 export const MAIL_STATS_WINDOW_DAYS = 7

@@ -25,6 +25,13 @@ import type {
   ReportOutreachStatus,
   ReportTimelineItem,
 } from "@civfix/shared"
+import {
+  ROUTE_CLAIM_STALE_SECONDS,
+  ROUTE_DEADLINE_INFLIGHT_SECONDS,
+} from "./outbound-send-policy.js"
+import { sendFailedExpr, sendInFlightExpr } from "./outbound-send-sql.js"
+
+export { ROUTE_CLAIM_STALE_SECONDS, ROUTE_DEADLINE_INFLIGHT_SECONDS }
 
 const ROUTE_LOCK_NAMESPACE = 0x7cf17e01
 
@@ -291,6 +298,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           routed_to: string | null
           routed_at: Date | null
           send_failed: boolean
+          send_in_flight: boolean
         }[]
       >`
         SELECT
@@ -308,14 +316,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
             SELECT MIN(m.created_at) FROM mail_messages m
             WHERE m.thread_id = t.id AND m.direction = 'out'
           ) AS routed_at,
-          (
-            -- The thread row is created with status 'sent' BEFORE the mailer runs, so a delivery throw is
-            -- indistinguishable from a real send by status alone. deliverAndRecord records a 'failed'
-            -- mail_event on a throw and a 'sent' one only after delivery returned, so "a failure recorded
-            -- and no success ever" is the positive signal that nothing reached the city on this thread.
-            EXISTS (SELECT 1 FROM mail_events e WHERE e.thread_id = t.id AND e.type = 'failed')
-            AND NOT EXISTS (SELECT 1 FROM mail_events e WHERE e.thread_id = t.id AND e.type = 'sent')
-          ) AS send_failed
+          (${sendFailedExpr(sql, sql`t.id`)}) AS send_failed,
+          (${sendInFlightExpr(sql, sql`t.id`)}) AS send_in_flight
         FROM mail_threads t
         WHERE t.report_id = ${id}
         ORDER BY t.created_at DESC, t.id DESC
@@ -323,7 +325,14 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       `
       const row = rows[0]
       if (!row) {
-        return { status: "not_sent", threadId: null, routedTo: null, routedAt: null, sendFailed: false }
+        return {
+          status: "not_sent",
+          threadId: null,
+          routedTo: null,
+          routedAt: null,
+          sendFailed: false,
+          sendInFlight: false,
+        }
       }
       return {
         status: mapOutreachStatus(row.thread_status, row.has_inbound),
@@ -331,7 +340,42 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         routedTo: row.routed_to,
         routedAt: row.routed_at ? row.routed_at.toISOString() : null,
         sendFailed: row.send_failed,
+        sendInFlight: row.send_in_flight,
       }
+    },
+
+    async advanceStatusIfIn(
+      id: string,
+      input: {
+        from: readonly AdminReportStatus[]
+        to: AdminReportStatus
+        note: string
+        actorId: string | null
+        kind?: ReportTimelineItem["kind"]
+      },
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const updated = await tx<{ id: string }[]>`
+          UPDATE reports
+          SET status = ${input.to}
+          WHERE id = ${id}
+            AND deleted_at IS NULL
+            AND status = ANY(${input.from as string[]}::text[])
+          RETURNING id
+        `
+        if (updated.length === 0) return false
+        await tx`
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          VALUES (${id}, ${input.to}, ${input.note}, ${input.kind ?? null}, ${input.actorId})
+        `
+        await writeAudit(tx, {
+          actorId: input.actorId,
+          action: "report.status_changed",
+          target: `report:${id}`,
+          meta: { status: input.to },
+        })
+        return true
+      })
     },
 
     async appendSystemTimeline(
@@ -349,9 +393,9 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const rows = await sql<
         { id: string; kind: "image" | "video"; r2_key: string; thumb_key: string | null }[]
       >`
-        SELECT id, kind, r2_key, thumb_key
+        SELECT id, kind, served_key AS r2_key, thumb_key
         FROM media_assets
-        WHERE report_id = ${id} AND status = 'ready'
+        WHERE report_id = ${id} AND status = 'ready' AND served_key IS NOT NULL
         ORDER BY created_at ASC
         LIMIT ${MEDIA_CAP}
       `

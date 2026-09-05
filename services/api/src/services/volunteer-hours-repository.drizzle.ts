@@ -1,9 +1,15 @@
-import { avatarGradient } from "@civfix/shared"
+import { AppError, avatarGradient } from "@civfix/shared"
 import type { LeaderboardEntryDTO, MyVolunteerHoursDTO, VolunteerHoursSource } from "@civfix/shared"
-import type { Sql } from "../db/client.js"
+import type { Queryable, Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
-import { EVENT_HOURS_MEMBER_CAP, ITEMISED_SOURCES } from "./volunteer-hours-service.js"
+import {
+  DAILY_HOURS_CAP,
+  EVENT_HOURS_MEMBER_CAP,
+  ITEMISED_SOURCES,
+  RECIPROCAL_LOOKBACK_MS,
+  WEEKLY_HOURS_FLAG_DEFAULT,
+} from "./volunteer-hours-service.js"
 import type {
   CertificateEntriesPage,
   EntriesForCertificateArgs,
@@ -13,11 +19,15 @@ import type {
   ListEntriesArgs,
   LogEventHoursArgs,
   LogEventHoursResult,
+  VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
 
 const MORE_PAGES = "more"
+
+const RECIPROCAL_LOOKBACK_INTERVAL = `${RECIPROCAL_LOOKBACK_MS / 1000} seconds`
+const WEEKLY_WINDOW_INTERVAL = "7 days"
 
 interface LedgerRow {
   id: string
@@ -77,14 +87,109 @@ async function computeTotalHours(sql: Sql, userId: string): Promise<number> {
   return Math.round((rows[0]?.total ?? 0) * 100) / 100
 }
 
+async function detectHoursAnomalies(
+  tx: Queryable,
+  args: { actorId: string; cleanupId: string; userIds: string[]; weeklyFlagHours: number },
+): Promise<VolunteerHoursAnomaly[]> {
+  const anomalies: VolunteerHoursAnomaly[] = []
+
+  const weekly = await tx<{ user_id: string; hours: number }[]>`
+    SELECT user_id, COALESCE(SUM(hours), 0)::float8 AS hours
+    FROM volunteer_hours
+    WHERE user_id = ANY(${args.userIds}::uuid[])
+      AND source <> 'report'
+      AND voided_at IS NULL
+      AND created_at >= now() - ${WEEKLY_WINDOW_INTERVAL}::interval
+    GROUP BY user_id
+    HAVING COALESCE(SUM(hours), 0) > ${args.weeklyFlagHours}
+  `
+  for (const row of weekly) {
+    anomalies.push({
+      kind: "weekly_hours",
+      userId: row.user_id,
+      counterpartUserId: null,
+      hours: row.hours,
+    })
+  }
+
+  const swaps = await tx<{ logged_by_user_id: string }[]>`
+    SELECT DISTINCT logged_by_user_id
+    FROM volunteer_hours
+    WHERE user_id = ${args.actorId}
+      AND source = 'event'
+      AND voided_at IS NULL
+      AND cleanup_id <> ${args.cleanupId}
+      AND created_at >= now() - ${RECIPROCAL_LOOKBACK_INTERVAL}::interval
+      AND logged_by_user_id = ANY(${args.userIds}::uuid[])
+  `
+  for (const row of swaps) {
+    anomalies.push({
+      kind: "reciprocal_credit",
+      userId: row.logged_by_user_id,
+      counterpartUserId: args.actorId,
+      hours: null,
+    })
+  }
+
+  return anomalies
+}
+
 export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
   return {
     async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
-      if (args.entries.length === 0) return { credited: 0, changed: [] }
+      if (args.entries.length === 0) return { credited: 0, changed: [], anomalies: [] }
       const userIds = args.entries.map((e) => e.userId)
       const hoursByRow = args.entries.map((e) => e.hours)
       return sql.begin(async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
+        const lockIds = [...new Set(userIds)].sort()
+        if (lockIds.length > 0) {
+          await tx`
+            SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || u))
+            FROM unnest(${lockIds}::uuid[]) AS t(u)
+            ORDER BY u
+          `
+        }
+
+        const reciprocal = await tx<{ logged_by_user_id: string }[]>`
+          SELECT DISTINCT logged_by_user_id
+          FROM volunteer_hours
+          WHERE cleanup_id = ${args.cleanupId}
+            AND source = 'event'
+            AND user_id = ${args.actorId}
+            AND voided_at IS NULL
+            AND logged_by_user_id <> ${args.actorId}
+            AND logged_by_user_id = ANY(${userIds}::uuid[])
+        `
+        if (reciprocal.length > 0) {
+          throw AppError.conflict(
+            "You can't credit hours to someone who has already credited you for this event.",
+          )
+        }
+
+        const sameDay = await tx<{ user_id: string; hours: number }[]>`
+          SELECT vh.user_id, COALESCE(SUM(vh.hours), 0)::float8 AS hours
+          FROM volunteer_hours vh
+          JOIN cleanups c ON c.id = vh.cleanup_id
+          WHERE vh.user_id = ANY(${userIds}::uuid[])
+            AND vh.source = 'event'
+            AND vh.voided_at IS NULL
+            AND vh.cleanup_id <> ${args.cleanupId}
+            AND (c.scheduled_at AT TIME ZONE 'UTC')::date = (
+              SELECT (scheduled_at AT TIME ZONE 'UTC')::date FROM cleanups WHERE id = ${args.cleanupId}
+            )
+          GROUP BY vh.user_id
+        `
+        const dailyCapHours = args.dailyCapHours ?? DAILY_HOURS_CAP
+        const heldByUser = new Map(sameDay.map((r) => [r.user_id, r.hours]))
+        for (const entry of args.entries) {
+          const held = heldByUser.get(entry.userId) ?? 0
+          if (held + entry.hours > dailyCapHours) {
+            throw AppError.conflict(
+              `That attendee already holds ${Math.round(held * 100) / 100} h for events on this date; the daily limit is ${dailyCapHours} h.`,
+            )
+          }
+        }
 
         const audit = await tx<
           { user_id: string; previous_hours: number | null; new_hours: number }[]
@@ -141,7 +246,13 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             )
             SELECT user_id FROM upsert
           `
-          return { credited: upserted.length, changed }
+          const anomalies = await detectHoursAnomalies(tx, {
+            actorId: args.actorId,
+            cleanupId: args.cleanupId,
+            userIds,
+            weeklyFlagHours: args.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
+          })
+          return { credited: upserted.length, changed, anomalies }
         }
         const upserted = await tx<{ user_id: string }[]>`
           WITH prev AS (
@@ -186,7 +297,13 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
           RETURNING user_id
         `
-        return { credited: new Set(upserted.map((r) => r.user_id)).size, changed }
+        const anomalies = await detectHoursAnomalies(tx, {
+          actorId: args.actorId,
+          cleanupId: args.cleanupId,
+          userIds,
+          weeklyFlagHours: args.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
+        })
+        return { credited: new Set(upserted.map((r) => r.user_id)).size, changed, anomalies }
       })
     },
 

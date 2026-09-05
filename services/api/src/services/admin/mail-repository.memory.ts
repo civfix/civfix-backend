@@ -13,6 +13,9 @@ import {
   type MailThreadRecord,
   type OutreachStatePatch,
   type OutreachStateRecord,
+  type ClaimEffectsInput,
+  type PendingEffects,
+  type PendingEffectsQuery,
   type RecordEventInput,
   type ThreadInit,
 } from "./mail-repository.js"
@@ -23,6 +26,7 @@ import {
   toThreadListItem,
 } from "./mail-mappers.js"
 import { buildMailStats } from "./mail-stats.js"
+import { ROUTE_DEADLINE_INFLIGHT_SECONDS } from "./outbound-send-policy.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import type { MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
@@ -92,6 +96,10 @@ export class InMemoryMailRepository implements MailRepository {
       attachments: over.attachments ?? [],
       messageId: over.messageId ?? null,
       inReplyTo: over.inReplyTo ?? null,
+      unaffiliated: over.unaffiliated ?? false,
+      effectsClaimedAt: over.effectsClaimedAt ?? null,
+      effectsAppliedAt: over.effectsAppliedAt ?? null,
+      effectsStage: over.effectsStage ?? 0,
       createdAt: over.createdAt ?? this.nextDate(),
     }
     this.messages.push(record)
@@ -230,6 +238,10 @@ export class InMemoryMailRepository implements MailRepository {
       attachments: input.attachments ?? [],
       messageId: input.messageId ?? null,
       inReplyTo: input.inReplyTo ?? null,
+      unaffiliated: input.unaffiliated ?? false,
+      effectsClaimedAt: null,
+      effectsAppliedAt: null,
+      effectsStage: 0,
       createdAt,
     }
     this.messages.push(record)
@@ -354,15 +366,79 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve(best?.toAddr ?? null)
   }
 
-  getLastInboundSender(threadId: string): Promise<string | null> {
-    let best: MailMessageRecord | null = null
+  findMessageByMessageId(messageId: string): Promise<MailMessageRecord | null> {
+    const found = this.messages.find((m) => m.messageId === messageId)
+    return Promise.resolve(found ? { ...found } : null)
+  }
+
+  hasSendInFlight(threadId: string): Promise<boolean> {
+    const inflightBefore = new Date(Date.now() - ROUTE_DEADLINE_INFLIGHT_SECONDS * 1000)
+    let latest: MailMessageRecord | null = null
     for (const m of this.messages) {
-      if (m.threadId !== threadId) continue
-      if (m.direction !== "in") continue
-      if (m.fromAddr === null || m.fromAddr === "") continue
-      if (best === null || cmpCreated(m, best) > 0) best = m
+      if (m.threadId !== threadId || m.direction !== "out") continue
+      if (latest === null || cmpCreated(m, latest) > 0) latest = m
     }
-    return Promise.resolve(best?.fromAddr ?? null)
+    if (latest === null) return Promise.resolve(false)
+    const own = this.events.filter((e) => e.messageId === latest.id)
+    if (own.some((e) => e.type === "sent")) return Promise.resolve(false)
+    return Promise.resolve(
+      own.some(
+        (e) =>
+          e.type === "failed" &&
+          (e.meta as { reason?: unknown } | null)?.reason === "deadline" &&
+          e.createdAt.getTime() > inflightBefore.getTime(),
+      ),
+    )
+  }
+
+  claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null> {
+    const message = this.messages.find((m) => m.id === id)
+    if (!message || message.effectsAppliedAt !== null) return Promise.resolve(null)
+    if (
+      message.effectsClaimedAt !== null &&
+      message.effectsClaimedAt.getTime() >= input.leaseBefore.getTime()
+    ) {
+      return Promise.resolve(null)
+    }
+    message.effectsClaimedAt = this.nextDate()
+    return Promise.resolve(message.effectsStage)
+  }
+
+  setMessageEffectsStage(id: string, stage: number): Promise<void> {
+    const message = this.messages.find((m) => m.id === id)
+    if (message) message.effectsStage = Math.max(message.effectsStage, stage)
+    return Promise.resolve()
+  }
+
+  markMessageEffectsApplied(id: string): Promise<void> {
+    const message = this.messages.find((m) => m.id === id)
+    if (message && message.effectsAppliedAt === null) message.effectsAppliedAt = this.nextDate()
+    return Promise.resolve()
+  }
+
+  releaseMessageEffects(id: string): Promise<void> {
+    const message = this.messages.find((m) => m.id === id)
+    if (message && message.effectsAppliedAt === null) message.effectsClaimedAt = null
+    return Promise.resolve()
+  }
+
+  findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]> {
+    const out: PendingEffects[] = []
+    for (const m of [...this.messages].sort((a, b) => cmpCreated(a, b))) {
+      if (m.direction !== "in" || m.unaffiliated || m.effectsAppliedAt !== null) continue
+      if (
+        m.effectsClaimedAt !== null &&
+        m.effectsClaimedAt.getTime() >= input.leaseBefore.getTime()
+      ) {
+        continue
+      }
+      if (m.createdAt.getTime() >= input.before.getTime()) continue
+      const thread = this.threads.get(m.threadId)
+      if (!thread || (thread.reportId === null && thread.cleanupId === null)) continue
+      out.push({ message: { ...m }, thread: { ...thread } })
+      if (out.length >= input.limit) break
+    }
+    return Promise.resolve(out)
   }
 
   markThreadRead(id: string): Promise<boolean> {

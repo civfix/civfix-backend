@@ -41,7 +41,6 @@ const MAX_MAIL_THREAD_ATTACHMENTS = 50
 export interface AdminMailRouteOverrides {
   repo: MailRepository
   outboundMail: OutboundMailService
-  fromOutreach: string
   storage?: Storage
 }
 
@@ -64,17 +63,12 @@ export async function registerAdminMailRoutes(
       makeMailService({
         repo: overrides.repo,
         outboundMail: overrides.outboundMail,
-        fromOutreach: overrides.fromOutreach,
       }),
     () => {
       const sql = container.getDb().sql
       const repo: MailRepository = makeDrizzleMailRepository(sql)
       const outboundMail = makeContainerOutboundMailService(container, { repo, logger: app.log })
-      return makeMailService({
-        repo,
-        outboundMail,
-        fromOutreach: container.env.MAIL_FROM_OUTREACH,
-      })
+      return makeMailService({ repo, outboundMail })
     },
   )
 

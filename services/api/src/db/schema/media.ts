@@ -32,6 +32,7 @@ export const mediaAssets = pgTable(
     kind: text("kind").$type<MediaKind>().notNull(),
     codec: text("codec"),
     r2Key: text("r2_key").notNull(),
+    servedKey: text("served_key"),
     thumbKey: text("thumb_key"),
     status: text("status").$type<MediaStatus>().notNull(),
     purpose: text("purpose").$type<MediaPurpose>().notNull().default("report"),

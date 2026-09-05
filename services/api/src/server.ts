@@ -10,6 +10,7 @@ import { registerCookie } from "./plugins/cookie.js"
 import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
+import { registerAccountStatusGuard } from "./auth/account-status.js"
 import { buildAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
 import type { MediaRepository } from "./services/media-intake-service.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
@@ -33,6 +34,7 @@ import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
+import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
@@ -170,6 +172,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   }
 
   await registerAuthContext(app)
+  registerAccountStatusGuard(app)
 
   if (env.DATABASE_URL) container.getNotificationService(app.log)
 
@@ -213,6 +216,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerDataExportJobs(app.container, { logger: app.log })
     await registerCleanupCancelFanoutJob(app.container, app.log)
     await registerGuestJobs(app.container, app.log)
+    await registerChatRoomFanoutJob(app.container, app.log)
   }
 
   const shutdown = makeShutdown(app, {

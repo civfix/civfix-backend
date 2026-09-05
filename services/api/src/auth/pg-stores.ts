@@ -56,6 +56,7 @@ export class PgSessionStore implements SessionStore {
         id: sessions.id,
         userId: sessions.userId,
         role: users.role,
+        accountStatus: userModeration.accountStatus,
         createdAt: sessions.createdAt,
         expiresAt: sessions.expiresAt,
         lastSeenAt: sessions.lastSeenAt,
@@ -64,6 +65,7 @@ export class PgSessionStore implements SessionStore {
       })
       .from(sessions)
       .innerJoin(users, eq(users.id, sessions.userId))
+      .leftJoin(userModeration, eq(userModeration.userId, sessions.userId))
       .where(eq(sessions.id, hash))
       .limit(1)
 
@@ -73,6 +75,7 @@ export class PgSessionStore implements SessionStore {
       id: r.id,
       userId: r.userId,
       roles: rolesFor(r.role),
+      accountStatus: r.accountStatus ?? "active",
       createdAt: r.createdAt ?? new Date(0),
       expiresAt: r.expiresAt,
       lastSeenAt: r.lastSeenAt,
@@ -299,6 +302,8 @@ export class PgUserStore implements UserStore {
           avatarUrl: null,
           avatarMediaId: null,
           socialLinks: null,
+          lastActivityGeom: null,
+          lastActivityAt: null,
         })
         .where(eq(users.id, id))
         .returning()
@@ -348,7 +353,11 @@ export class PgUserStore implements UserStore {
         WHERE meta->>'reporterUserId' = ${id}
       `)
 
-      const verificationMedia = await tx.execute<{ r2_key: string }>(sql`
+      const verificationMedia = await tx.execute<{
+        r2_key: string
+        served_key: string | null
+        thumb_key: string | null
+      }>(sql`
         DELETE FROM media_assets
         WHERE purpose = 'verification'
           AND id IN (
@@ -357,7 +366,7 @@ export class PgUserStore implements UserStore {
                  jsonb_array_elements(uv.documents) AS doc
             WHERE uv.user_id = ${id} AND doc->>'mediaId' IS NOT NULL
           )
-        RETURNING r2_key
+        RETURNING r2_key, served_key, thumb_key
       `)
       await tx.execute(sql`
         UPDATE user_verification
@@ -367,7 +376,9 @@ export class PgUserStore implements UserStore {
 
       const objectKeys = [
         ...certificates.map((c) => c.r2Key),
-        ...verificationMedia.map((m) => m.r2_key),
+        ...verificationMedia.flatMap((m) =>
+          [m.r2_key, m.served_key, m.thumb_key].filter((k): k is string => k !== null),
+        ),
       ]
       return { record: toUserRecord(r), objectKeys }
     })

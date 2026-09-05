@@ -13,6 +13,20 @@ export interface TimeCursor {
 export const MIN_UUID = "00000000-0000-0000-0000-000000000000"
 export const MAX_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
+export const CURSOR_ISO_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/
+
+export const CURSOR_MIN_MS = Date.UTC(1970, 0, 1)
+export const CURSOR_MAX_MS = Date.UTC(2100, 0, 1)
+
+function parseCursorInstant(iso: string): Date | null {
+  if (!CURSOR_ISO_RE.test(iso)) return null
+  const at = new Date(iso)
+  const ms = at.getTime()
+  if (!Number.isFinite(ms) || ms < CURSOR_MIN_MS || ms > CURSOR_MAX_MS) return null
+  return at
+}
+
 export function parseTimeCursor(
   cursor: string | null | undefined,
   opts?: { requireUuid?: boolean; direction?: "asc" | "desc" },
@@ -22,14 +36,13 @@ export function parseTimeCursor(
   const idx = cursor.indexOf("|")
   if (idx === 0) return null
   if (idx < 0) {
-    const at = new Date(cursor)
-    if (Number.isNaN(at.getTime())) return null
+    const at = parseCursorInstant(cursor)
+    if (at === null) return null
     return { at, id: opts?.direction === "asc" ? MIN_UUID : MAX_UUID }
   }
-  const iso = cursor.slice(0, idx)
   const id = cursor.slice(idx + 1)
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime())) return null
+  const at = parseCursorInstant(cursor.slice(0, idx))
+  if (at === null) return null
   if (requireUuid && !CURSOR_UUID_RE.test(id)) return null
   if (id.length === 0) return null
   return { at, id }

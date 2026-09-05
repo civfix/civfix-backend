@@ -1,5 +1,6 @@
 
-import type { Sql } from "../db/client.js"
+import type postgres from "postgres"
+import type { Queryable, Sql } from "../db/client.js"
 import type {
   PersonView,
   ProfileEventsPage,
@@ -20,6 +21,7 @@ import {
 } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
 import { goingScalar } from "./cleanup-sql.js"
+import { servedKeyExpr } from "./media-served-key.js"
 
 export {
   searchByHandlePrefix,
@@ -31,7 +33,16 @@ export {
   resolveUserIdsToMentions,
 } from "./mention-resolver.drizzle.js"
 
+type SqlFragment = postgres.Fragment
+
 const SUGGEST_NEARBY_METERS = 25_000
+
+export const SUGGEST_CANDIDATE_POOL = 200
+
+export const SUGGEST_CANDIDATE_RADIUS_DEG = 2.5
+
+export const SUGGEST_KNN_INDEX = "users_last_activity_gist"
+export const SUGGEST_RECENCY_INDEX = "users_last_activity_at_idx"
 
 export interface PersonRowSelect {
   id: string
@@ -90,6 +101,7 @@ interface CleanupRowSelect {
   lng: number
   lat: number
   scheduled_at: Date
+  completed_at: Date | null
   status: CleanupStatus
   bring: string[] | null
   address: string | null
@@ -119,6 +131,7 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     lat: r.lat,
     lng: r.lng,
     scheduledAt: r.scheduled_at,
+    completedAt: r.completed_at,
     status: r.status,
     bring: r.bring,
     address: r.address,
@@ -159,6 +172,7 @@ function profileEventRows(
       ST_X(c.geom) AS lng,
       ST_Y(c.geom) AS lat,
       c.scheduled_at,
+      c.completed_at,
       c.status,
       c.bring,
       c.address,
@@ -232,7 +246,7 @@ async function connectionsPage(
       u.follower_count AS followers,
       u.following_count AS following,
       EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-      am.r2_key AS avatar_r2_key,
+      ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
       u.avatar_url,
       u.show_volunteer_hours,
       u.edge_created_at,
@@ -257,6 +271,142 @@ async function connectionsPage(
   return pageConnections(rows, args.limit)
 }
 
+function suggestFollowsStatement(
+  sql: Queryable,
+  args: { viewerId: string; limit: number },
+): SqlFragment {
+  const viewerId = args.viewerId
+  const eligible = (): SqlFragment => sql`
+    u.deleted_at IS NULL
+    AND u.handle IS NOT NULL
+    AND u.id <> ${viewerId}
+    AND NOT EXISTS (
+      SELECT 1 FROM follows_people f
+      WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM user_blocks b
+      WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
+         OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
+    )
+  `
+  return sql`
+        WITH viewer_point AS (
+          SELECT p.geom FROM (
+            SELECT r.geom, r.created_at FROM reports r
+              WHERE r.reporter_user_id = ${viewerId} AND r.deleted_at IS NULL
+            UNION ALL
+            SELECT c.geom, c.created_at FROM cleanups c
+              WHERE c.organizer_user_id = ${viewerId}
+            UNION ALL
+            SELECT c.geom, c.created_at
+              FROM cleanups c JOIN cleanup_members m ON m.cleanup_id = c.id
+              WHERE m.user_id = ${viewerId}
+          ) p
+          ORDER BY p.created_at DESC NULLS LAST
+          LIMIT 1
+        ),
+        near_pool AS (
+          SELECT n.id
+          FROM viewer_point vp
+          CROSS JOIN LATERAL (
+            SELECT u.id
+            FROM users u
+            WHERE ${eligible()}
+              AND u.last_activity_geom IS NOT NULL
+              AND ST_DWithin(u.last_activity_geom, vp.geom, ${SUGGEST_CANDIDATE_RADIUS_DEG})
+            ORDER BY u.last_activity_geom <-> vp.geom
+            LIMIT ${SUGGEST_CANDIDATE_POOL}
+          ) n
+        ),
+        recent_pool AS (
+          SELECT u.id
+          FROM users u
+          WHERE ${eligible()}
+            AND u.last_activity_at IS NOT NULL
+          ORDER BY u.last_activity_at DESC
+          LIMIT ${SUGGEST_CANDIDATE_POOL}
+        ),
+        new_pool AS (
+          SELECT u.id
+          FROM users u
+          WHERE ${eligible()}
+          ORDER BY u.created_at DESC, u.id DESC
+          LIMIT ${SUGGEST_CANDIDATE_POOL}
+        ),
+        pool AS (
+          SELECT id FROM near_pool
+          UNION SELECT id FROM recent_pool
+          UNION SELECT id FROM new_pool
+        ),
+        candidates AS (
+          SELECT
+            u.id,
+            u.display_name,
+            u.handle,
+            u.bio,
+            u.avatar_media_id,
+            u.avatar_url,
+            u.show_volunteer_hours,
+            u.created_at,
+            u.follower_count AS followers,
+            u.following_count AS following,
+            EXISTS (SELECT 1 FROM cleanups oc WHERE oc.organizer_user_id = u.id) AS is_organizer,
+            dist.meters AS dist_meters,
+            (dist.meters IS NOT NULL AND dist.meters <= ${SUGGEST_NEARBY_METERS}) AS is_near
+          FROM pool p
+          JOIN users u ON u.id = p.id
+          LEFT JOIN LATERAL (
+            SELECT ST_Distance(vp.geom::geography, u.last_activity_geom::geography) AS meters
+            FROM viewer_point vp
+            WHERE u.last_activity_geom IS NOT NULL
+          ) dist ON TRUE
+        ),
+        ranked AS (
+          SELECT * FROM candidates
+          ORDER BY
+            (is_near AND is_organizer) DESC,
+            is_near DESC,
+            is_organizer DESC,
+            dist_meters ASC NULLS LAST,
+            followers DESC,
+            created_at DESC
+          LIMIT ${args.limit}
+        )
+        SELECT
+          c.id,
+          c.display_name,
+          c.handle,
+          c.bio,
+          c.followers,
+          c.following,
+          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = c.id AND v.status = 'verified') AS verified,
+          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+          c.avatar_url,
+          c.show_volunteer_hours,
+          c.is_organizer
+        FROM ranked c
+        LEFT JOIN media_assets am ON am.id = c.avatar_media_id
+        ORDER BY
+          (c.is_near AND c.is_organizer) DESC,
+          c.is_near DESC,
+          c.is_organizer DESC,
+          c.dist_meters ASC NULLS LAST,
+          c.followers DESC,
+          c.created_at DESC
+      `
+}
+
+export async function explainSuggestFollows(
+  sql: Queryable,
+  args: { viewerId: string; limit: number },
+): Promise<string> {
+  const rows = await sql<Record<string, string>[]>`
+    EXPLAIN (COSTS OFF, VERBOSE) ${suggestFollowsStatement(sql, args)}
+  `
+  return rows.map((r) => Object.values(r)[0] ?? "").join("\n")
+}
+
 export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
   async function findPerson(keyFilter: ReturnType<Sql>): Promise<PersonView | null> {
     const rows = await sql<PersonRowSelect[]>`
@@ -268,7 +418,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         u.follower_count AS followers,
         u.following_count AS following,
         EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-        am.r2_key AS avatar_r2_key,
+        ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.social_links,
         u.show_volunteer_hours
@@ -326,7 +476,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.follower_count AS followers,
           u.following_count AS following,
           EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
-          am.r2_key AS avatar_r2_key,
+          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
           u.avatar_url,
           u.show_volunteer_hours,
           ${followingExpr} AS is_following
@@ -350,105 +500,10 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       return pagePeople(rows, args.limit)
     },
 
-    async suggestFollows(args): Promise<Array<PersonView & { isFollowing: boolean }>> {
-      const viewerId = args.viewerId
-      const rows = await sql<
-        Array<PersonRowSelect & { is_organizer: boolean }>
-      >`
-        WITH viewer_point AS (
-          SELECT p.geom FROM (
-            SELECT r.geom, r.created_at FROM reports r
-              WHERE r.reporter_user_id = ${viewerId} AND r.deleted_at IS NULL
-            UNION ALL
-            SELECT c.geom, c.created_at FROM cleanups c
-              WHERE c.organizer_user_id = ${viewerId}
-            UNION ALL
-            SELECT c.geom, c.created_at
-              FROM cleanups c JOIN cleanup_members m ON m.cleanup_id = c.id
-              WHERE m.user_id = ${viewerId}
-          ) p
-          ORDER BY p.created_at DESC NULLS LAST
-          LIMIT 1
-        ),
-        candidates AS (
-          SELECT
-            u.id,
-            u.display_name,
-            u.handle,
-            u.bio,
-            u.avatar_media_id,
-            u.avatar_url,
-            u.show_volunteer_hours,
-            u.created_at,
-            u.follower_count AS followers,
-            u.following_count AS following,
-            EXISTS (SELECT 1 FROM cleanups oc WHERE oc.organizer_user_id = u.id) AS is_organizer,
-            dist.meters AS dist_meters,
-            (dist.meters IS NOT NULL AND dist.meters <= ${SUGGEST_NEARBY_METERS}) AS is_near
-          FROM users u
-          LEFT JOIN LATERAL (
-            SELECT p.geom FROM (
-              SELECT r.geom, r.created_at FROM reports r
-                WHERE r.reporter_user_id = u.id AND r.deleted_at IS NULL
-              UNION ALL
-              SELECT c.geom, c.created_at FROM cleanups c
-                WHERE c.organizer_user_id = u.id
-            ) p
-            ORDER BY p.created_at DESC NULLS LAST
-            LIMIT 1
-          ) cand ON TRUE
-          LEFT JOIN LATERAL (
-            SELECT ST_Distance(vp.geom::geography, cand.geom::geography) AS meters
-            FROM viewer_point vp
-            WHERE cand.geom IS NOT NULL
-          ) dist ON TRUE
-          WHERE u.deleted_at IS NULL
-            AND u.handle IS NOT NULL
-            AND u.id <> ${viewerId}
-            AND NOT EXISTS (
-              SELECT 1 FROM follows_people f
-              WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM user_blocks b
-              WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = u.id)
-                 OR (b.blocker_id = u.id AND b.blocked_id = ${viewerId})
-            )
-        ),
-        ranked AS (
-          SELECT * FROM candidates
-          ORDER BY
-            (is_near AND is_organizer) DESC,
-            is_near DESC,
-            is_organizer DESC,
-            dist_meters ASC NULLS LAST,
-            followers DESC,
-            created_at DESC
-          LIMIT ${args.limit}
-        )
-        SELECT
-          c.id,
-          c.display_name,
-          c.handle,
-          c.bio,
-          c.followers,
-          c.following,
-          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = c.id AND v.status = 'verified') AS verified,
-          am.r2_key AS avatar_r2_key,
-          c.avatar_url,
-          c.show_volunteer_hours,
-          c.is_organizer
-        FROM ranked c
-        LEFT JOIN media_assets am ON am.id = c.avatar_media_id
-        ORDER BY
-          (c.is_near AND c.is_organizer) DESC,
-          c.is_near DESC,
-          c.is_organizer DESC,
-          c.dist_meters ASC NULLS LAST,
-          c.followers DESC,
-          c.created_at DESC
-      `
-      return rows.map((r) => ({ ...toPersonView(r), isFollowing: false }))
+    suggestFollows(args): Promise<Array<PersonView & { isFollowing: boolean }>> {
+      return sql<Array<PersonRowSelect & { is_organizer: boolean }>>`
+        ${suggestFollowsStatement(sql, args)}
+      `.then((rows) => rows.map((r) => ({ ...toPersonView(r), isFollowing: false })))
     },
 
     async listFollowers(args): Promise<{

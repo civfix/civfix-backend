@@ -1,10 +1,3 @@
-/**
- * cleanups: a community cleanup event (a single site or a route) organized by a user.
- *
- * `geom` is a Point(4326) for the meeting point / site; the GiST index is in 0001_core.sql. `bring`
- * is a text[] checklist of items to bring. `scheduled_at` and `status` drive the upcoming/past feeds.
- * `address` is the nullable host "name the spot" display line (added in 0004_cleanup_address.sql).
- */
 
 import { sql } from "drizzle-orm"
 import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
@@ -31,8 +24,6 @@ export const cleanups = pgTable(
       .notNull()
       .references(() => users.id),
     type: text("type").$type<CleanupType>().notNull(),
-    // cleanup vs other_volunteer. Default 'cleanup' keeps existing rows + the create flow unchanged;
-    // only 'cleanup' events may link reports / show the gallery. Canonical DDL: 0018.
     eventKind: text("event_kind").$type<EventKind>().notNull().default("cleanup"),
     title: text("title").notNull(),
     description: text("description"),
@@ -40,35 +31,21 @@ export const cleanups = pgTable(
     scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
     status: text("status").$type<CleanupStatus>().notNull(),
     bring: text("bring").array(),
-    // Nullable host-typed display line; see 0004_cleanup_address.sql.
     address: text("address"),
-    // Phase 2 (Events) Turnout panel: capacity is the RSVP cap (nullable), bags the count collected
-    // (default 0). Added in 0007_admin_phase2.sql.
     capacity: integer("capacity"),
     bags: integer("bags").notNull().default(0),
-    // Human-readable immutable EVENT reference code `EVENT-{JURCODE}-{NNNNNN}` (issue #56, 0030).
-    // NULLABLE: minted by createCleanupTx going forward + the post-deploy backfill for historical rows.
-    // A UNIQUE index (cleanups_reference_code_uidx) guarantees no two events share a code.
     referenceCode: text("reference_code"),
-    // The jurisdiction this event sits in (0030, D6), resolved point-in-polygon. Drives the EVENT code's
-    // JURCODE + event mail routing. NULLABLE: resolved at create going forward + by the backfill.
     jurisdictionGeoid: text("jurisdiction_geoid").references(() => jurisdictions.geoid),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
-  // NOTE: GiST(geom) is in 0001_core.sql.
   (t) => [
     index("cleanups_scheduled_idx").on(t.scheduledAt),
     index("cleanups_status_idx").on(t.status),
     index("cleanups_organizer_idx").on(t.organizerUserId),
-    // Activity-feed cleanups branch ordering (created_at DESC). Added in drizzle/0013_perf_indexes.sql.
     index("cleanups_created_idx").on(t.createdAt.desc()),
-    // UNIQUE EVENT reference code (0030). Tolerates the all-NULL pre-backfill state.
     uniqueIndex("cleanups_reference_code_uidx").on(t.referenceCode),
-    // Cleanups-by-jurisdiction (0030): EVENT mail routing + jurisdiction reads.
     index("cleanups_jurisdiction_idx").on(t.jurisdictionGeoid),
-    // NOTE: trigram GIN indexes `cleanups_title_trgm` / `cleanups_address_trgm`
-    // (USING gin (... gin_trgm_ops)) back the admin event-list ILIKE search; they live in
-    // drizzle/0014_search_trgm.sql and are intentionally NOT mirrored here (raw-SQL-only search).
   ],
 )
 

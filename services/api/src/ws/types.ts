@@ -9,6 +9,10 @@ export type ReportVisibleFn = (reportId: string, userId: string | null) => Promi
 
 export const WS_CLOSE_POLICY_VIOLATION = 1008
 
+export const WS_SESSION_ENDED_MESSAGE = "Your session ended."
+
+export const WS_SESSION_ENDED_REASON = "session no longer valid"
+
 export const TYPING_MIN_INTERVAL_MS = 1000
 
 export const TYPING_THROTTLE_MAX_ROOMS = 256
@@ -119,6 +123,7 @@ export type GatewayChatService = Omit<ChatService, "broadcast"> & {
     msg: Parameters<ChatService["broadcast"]>[1],
     opts?: { excludeConnId?: string },
   ): Promise<void>
+  sendResilience?: import("./send-resilience.js").SendResilience | undefined
 }
 
 export interface GatewayDeps {
@@ -150,13 +155,17 @@ export interface GatewaySession {
   readonly typingThrottle: Map<string, number>
   frameLimiter?: RateLimiter
   closed?: boolean
+  accountStatus?: import("../auth/stores.js").AccountStatus
+  revalidateStatus?: () => Promise<import("../auth/account-status.js").SocketStatusCheck>
+  closeForAuth?: () => void
 }
 
 export type WsHandshakeResult =
   | {
       ok: true
       userId: string
-      token?: string
+      sessionHash?: string
+      accountStatus?: import("../auth/stores.js").AccountStatus
     }
   | { ok: false; code: "FORBIDDEN" | "UNAUTHORIZED"; message: string; reason: string }
 
@@ -164,7 +173,9 @@ export interface RegisterGatewayOptions {
   chat: ChatService
   isMember: IsMemberFn
   sessions: import("../auth/session-service.js").SessionService | undefined
-  redeemTicket?: ((ticket: string) => Promise<string | null>) | undefined
+  redeemTicket?:
+    | ((ticket: string) => Promise<import("../auth/ws-ticket.js").WsTicketPayload | null>)
+    | undefined
   markRead?: MarkReadFn | undefined
   markReadOnOpen?: MarkReadOnOpenFn | undefined
   presence?: ChatPresence | undefined

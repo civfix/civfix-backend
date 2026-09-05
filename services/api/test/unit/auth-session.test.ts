@@ -1,12 +1,14 @@
 import { describe, it, expect, vi } from "vitest"
 import { InMemoryCacheClient, type CacheClient } from "../../src/auth/cache.js"
-import { InMemorySessionStore } from "../../src/auth/stores.js"
+import { InMemorySessionStore, type AccountStatus } from "../../src/auth/stores.js"
 import {
   SessionService,
   DEFAULT_SESSION_TTL_SECONDS,
   ABSOLUTE_SESSION_MAX_SECONDS,
 } from "../../src/auth/session-service.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
+import { applyRoleChange } from "../../src/services/admin/role-change.js"
+import type { Role } from "@civfix/shared"
 
 const USER = "11111111-1111-1111-1111-111111111111"
 
@@ -309,6 +311,8 @@ describe("SessionService absolute lifetime (M3)", () => {
         roles: ["citizen"],
         expiresAtMs: clockRef.value + 10 * DAY,
         createdAtMs: clockRef.value - (ABSOLUTE_SESSION_MAX_SECONDS * 1000 + 1000),
+        epoch: 0,
+        accountStatus: "active",
       }),
       DEFAULT_SESSION_TTL_SECONDS,
     )
@@ -381,13 +385,98 @@ describe("SessionService revoke robustness", () => {
     expect(await store.findById(hash)).not.toBeNull()
   })
 
-  it("revokeAllForUser throws when a cache eviction fails, and logs it (F032)", async () => {
+  it("H3: revokeAllForUser survives a failed cache eviction — the stranded entry no longer authenticates", async () => {
     const { service, store, cache } = makeFlakyService()
-    await service.createSession(USER, ["gov_admin"])
+    const token = await service.createSession(USER, ["gov_admin"])
+    const hash = await sha256Hex(token)
     cache.failDel = true
-    await expect(service.revokeAllForUser(USER)).rejects.toThrow()
-    expect(await store.deleteAllForUser(USER)).toEqual([])
+
+    expect(await service.revokeAllForUser(USER)).toBe(1)
     expect(cache.errors.length).toBeGreaterThan(0)
+    expect(await cache.get(`sess:${hash}`)).not.toBeNull()
+    expect(await store.findById(hash)).toBeNull()
+
+    expect(await service.resolveSession(token)).toBeNull()
+  })
+
+  it("H3: a retry of revokeAllForUser is a safe no-op (the hashes are gone, the epoch already moved)", async () => {
+    const { service, cache } = makeFlakyService()
+    const token = await service.createSession(USER, ["gov_admin"])
+    cache.failDel = true
+    await service.revokeAllForUser(USER)
+    cache.failDel = false
+    expect(await service.revokeAllForUser(USER)).toBe(0)
+    expect(await service.resolveSession(token)).toBeNull()
+  })
+
+  it("H3: a fresh login after a revoke works and is cached under the NEW epoch", async () => {
+    const { service } = makeFlakyService()
+    await service.createSession(USER, ["citizen"])
+    await service.revokeAllForUser(USER)
+    const next = await service.createSession(USER, ["citizen"])
+    const resolved = await service.resolveSession(next)
+    expect(resolved?.userId).toBe(USER)
+    expect(resolved?.source).toBe("cache")
+  })
+
+  it("H3: applyRoleChange leaves no session serving the OLD role, even when eviction fails", async () => {
+    const { service, cache } = makeFlakyService()
+    const token = await service.createSession(USER, ["gov_admin"])
+    cache.failDel = true
+    let written: Role[] | null = null
+    await applyRoleChange(
+      {
+        write: (_userId, role) => {
+          written = [role]
+          return Promise.resolve()
+        },
+        revokeAll: (userId) => service.revokeAllForUser(userId),
+      },
+      USER,
+      "citizen",
+    )
+    expect(written).toEqual(["citizen"])
+    expect(await service.resolveSession(token)).toBeNull()
+  })
+
+  it("H3: banUser sets the marker BEFORE deleting rows, so a later failure still locks the account", async () => {
+    const { service, cache } = makeFlakyService()
+    const token = await service.createSession(USER, ["citizen"])
+    cache.failDel = true
+    await service.banUser(USER)
+    expect(await service.isUserActive(USER)).toBe(false)
+    expect(await service.resolveSession(token)).toBeNull()
+  })
+
+  it("H4: applyAccountStatus('suspended') revokes every session and lifts a stale ban marker", async () => {
+    const { service } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    await service.banUser(USER)
+    expect(await service.isUserActive(USER)).toBe(false)
+
+    expect(await service.applyAccountStatus(USER, "suspended")).toBe(0)
+    expect(await service.isUserActive(USER)).toBe(true)
+    expect(await service.resolveSession(token)).toBeNull()
+  })
+
+  it("H4: applyAccountStatus('review') keeps the session alive but re-reads the store", async () => {
+    const { service, store } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    store.setAccountStatus(USER, "review")
+    await service.applyAccountStatus(USER, "review")
+    const resolved = await service.resolveSession(token)
+    expect(resolved?.userId).toBe(USER)
+    expect(resolved?.source).toBe("store")
+    expect(resolved?.accountStatus).toBe("review")
+  })
+
+  it("H4: a session projection carries the account status from the users join", async () => {
+    const { service, store } = makeService()
+    const token = await service.createSession(USER, ["citizen"], { accountStatus: "active" })
+    expect((await service.resolveSession(token))?.accountStatus).toBe("active")
+    store.setAccountStatus(USER, "suspended")
+    await service.bumpEpoch(USER)
+    expect((await service.resolveSession(token))?.accountStatus).toBe("suspended")
   })
 
   it("banUser still sets the marker even when cache eviction fails (F032)", async () => {
@@ -396,5 +485,219 @@ describe("SessionService revoke robustness", () => {
     cache.failDel = true
     await service.banUser(USER)
     expect(await service.isUserActive(USER)).toBe(false)
+  })
+})
+
+class StubUserLookup {
+  private readonly statuses = new Map<string, AccountStatus>()
+  private readonly roles = new Map<string, Role>()
+
+  setStatus(id: string, status: AccountStatus): void {
+    this.statuses.set(id, status)
+  }
+
+  setRole(id: string, role: Role): void {
+    this.roles.set(id, role)
+  }
+
+  accountStatus(id: string): Promise<AccountStatus> {
+    return Promise.resolve(this.statuses.get(id) ?? "active")
+  }
+
+  findById(id: string): Promise<{ role: Role } | null> {
+    return Promise.resolve({ role: this.roles.get(id) ?? "citizen" })
+  }
+}
+
+function makeGuardedService(startMs = 1_700_000_000_000) {
+  const clockRef = { value: startMs }
+  const now = (): number => clockRef.value
+  const store = new InMemorySessionStore()
+  const cache = new InMemoryCacheClient(now)
+  const users = new StubUserLookup()
+  const service = new SessionService({ store, cache, users, now })
+  return { service, store, cache, users, advance: (ms: number) => (clockRef.value += ms) }
+}
+
+describe("B2: Postgres is authoritative for a banned account, not the Redis marker", () => {
+  it("a banned ROW with NO ban marker resolves to null, deletes the row, and re-sets the marker", async () => {
+    const { service, store, cache } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+
+    store.setAccountStatus(USER, "banned")
+    await cache.del(`sess:${hash}`)
+    expect(await cache.get(`banned:${USER}`)).toBeNull()
+
+    expect(await service.resolveSession(token)).toBeNull()
+    expect(await store.findById(hash)).toBeNull()
+    expect(await cache.get(`banned:${USER}`)).not.toBeNull()
+    expect(await service.isUserActive(USER)).toBe(false)
+  })
+
+  it("a banned CACHED projection never authenticates either", async () => {
+    const { service, store, cache } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+    store.setAccountStatus(USER, "banned")
+
+    const raw = JSON.parse((await cache.get(`sess:${hash}`))!) as Record<string, unknown>
+    raw.accountStatus = "banned"
+    await cache.set(`sess:${hash}`, JSON.stringify(raw), 1000)
+
+    expect(await service.resolveSession(token)).toBeNull()
+  })
+
+  it("a SUSPENDED row with no marker still resolves, carrying the read-only status", async () => {
+    const { service, store, cache } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+
+    store.setAccountStatus(USER, "suspended")
+    await cache.del(`sess:${hash}`)
+
+    const resolved = await service.resolveSession(token)
+    expect(resolved?.userId).toBe(USER)
+    expect(resolved?.accountStatus).toBe("suspended")
+    expect(await store.findById(hash)).not.toBeNull()
+  })
+
+  it("createSession refuses to mint for a user the DB reports banned or suspended (ban/login race)", async () => {
+    const { service, users, store } = makeGuardedService()
+    users.setStatus(USER, "banned")
+    await expect(service.createSession(USER, ["citizen"])).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    users.setStatus(USER, "suspended")
+    await expect(service.createSession(USER, ["citizen"])).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    expect(store.count()).toBe(0)
+
+    users.setStatus(USER, "active")
+    expect(typeof (await service.createSession(USER, ["citizen"]))).toBe("string")
+  })
+})
+
+describe("B1: an operator account can never be suspended or banned", () => {
+  it("applyAccountStatus refuses suspended and banned for an operator, whoever calls it", async () => {
+    const { service, users } = makeGuardedService()
+    users.setRole(USER, "operator")
+    const token = await service.createSession(USER, ["operator"])
+
+    await expect(service.applyAccountStatus(USER, "suspended")).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    await expect(service.applyAccountStatus(USER, "banned")).rejects.toMatchObject({
+      httpStatus: 403,
+    })
+    expect((await service.resolveSession(token))?.userId).toBe(USER)
+    expect(await service.isUserActive(USER)).toBe(true)
+  })
+
+  it("still allows active and review for an operator, and both statuses for everyone else", async () => {
+    const { service, users } = makeGuardedService()
+    users.setRole(USER, "operator")
+    await expect(service.applyAccountStatus(USER, "active")).resolves.toBe(0)
+    await expect(service.applyAccountStatus(USER, "review")).resolves.toBe(0)
+
+    const citizen = "22222222-2222-2222-2222-222222222222"
+    await service.createSession(citizen, ["citizen"])
+    await expect(service.applyAccountStatus(citizen, "suspended")).resolves.toBe(1)
+  })
+})
+
+describe("cache entries written by an older build are treated as a miss", () => {
+  it("an entry with no epoch / no accountStatus is discarded and re-read from the store", async () => {
+    const { service, store, cache } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+    const row = (await store.findById(hash))!
+
+    await cache.set(
+      `sess:${hash}`,
+      JSON.stringify({
+        userId: USER,
+        roles: ["citizen"],
+        expiresAtMs: row.expiresAt.getTime(),
+        createdAtMs: row.createdAt.getTime(),
+      }),
+      1000,
+    )
+
+    const resolved = await service.resolveSession(token)
+    expect(resolved?.source).toBe("store")
+    const rewritten = JSON.parse((await cache.get(`sess:${hash}`))!) as Record<string, unknown>
+    expect(rewritten.epoch).toBe(0)
+    expect(rewritten.accountStatus).toBe("active")
+  })
+
+  it("a pre-deploy entry for a user suspended since the deploy does NOT keep write access", async () => {
+    const { service, store, cache } = makeService()
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+    const row = (await store.findById(hash))!
+    store.setAccountStatus(USER, "suspended")
+
+    await cache.set(
+      `sess:${hash}`,
+      JSON.stringify({
+        userId: USER,
+        roles: ["citizen"],
+        expiresAtMs: row.expiresAt.getTime(),
+        createdAtMs: row.createdAt.getTime(),
+      }),
+      1000,
+    )
+
+    expect((await service.resolveSession(token))?.accountStatus).toBe("suspended")
+  })
+})
+
+describe("sliding expiry is coarse-grained, so a hot session does not UPDATE on every request", () => {
+  function slidingService(granularityMs: number) {
+    const clockRef = { value: 1_700_000_000_000 }
+    const now = (): number => clockRef.value
+    const store = new InMemorySessionStore()
+    const cache = new InMemoryCacheClient(now)
+    const service = new SessionService({
+      store,
+      cache,
+      now,
+      ttlSeconds: 100,
+      slideGranularityMs: granularityMs,
+    })
+    return { service, store, clockRef, advance: (ms: number) => (clockRef.value += ms) }
+  }
+
+  it("two resolves inside the granularity window produce ONE updateExpiry", async () => {
+    const { service, store, advance } = slidingService(60_000)
+    const token = await service.createSession(USER, ["citizen"])
+    const spy = vi.spyOn(store, "updateExpiry")
+
+    advance(60_000)
+    await service.resolveSession(token)
+    expect(spy).toHaveBeenCalledTimes(1)
+
+    advance(55_000)
+    await service.resolveSession(token)
+    expect(spy).toHaveBeenCalledTimes(1)
+
+    advance(10_000)
+    await service.resolveSession(token)
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  it("the session still slides — it never expires under continuous use", async () => {
+    const { service, store, advance } = slidingService(60_000)
+    const token = await service.createSession(USER, ["citizen"])
+    const hash = await sha256Hex(token)
+    const originalExpiry = (await store.findById(hash))!.expiresAt.getTime()
+
+    for (let i = 0; i < 6; i += 1) {
+      advance(65_000)
+      expect(await service.resolveSession(token)).not.toBeNull()
+    }
+    expect((await store.findById(hash))!.expiresAt.getTime()).toBeGreaterThan(originalExpiry)
   })
 })
