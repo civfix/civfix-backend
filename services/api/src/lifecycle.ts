@@ -19,15 +19,22 @@ export const COMPOSE_STOP_GRACE_PERIOD_SECONDS = 45
 export interface Lifecycle {
   isDraining: () => boolean
   beginDrain: () => void
+  escalateExitCode: (code: number) => void
+  finalExitCode: (fallback: number) => number
 }
 
 export function makeLifecycle(): Lifecycle {
   let draining = false
+  let escalated: number | undefined
   return {
     isDraining: (): boolean => draining,
     beginDrain: (): void => {
       draining = true
     },
+    escalateExitCode: (code: number): void => {
+      if (code !== 0 && escalated === undefined) escalated = code
+    },
+    finalExitCode: (fallback: number): number => escalated ?? fallback,
   }
 }
 
@@ -122,6 +129,7 @@ export function makeShutdown(
   }
 
   return async function shutdown(signal: string): Promise<void> {
+    app.lifecycle.escalateExitCode(cleanExitCode)
     if (started || app.lifecycle.isDraining()) return
     started = true
     app.lifecycle.beginDrain()
@@ -152,7 +160,7 @@ export function makeShutdown(
         return
       }
       app.log.info("shutdown: complete")
-      exit(cleanExitCode)
+      exit(app.lifecycle.finalExitCode(cleanExitCode))
     } catch (err) {
       app.log.error({ err }, "shutdown: error during close")
       await flushErrorReporting()

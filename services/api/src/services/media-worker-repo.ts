@@ -68,6 +68,11 @@ export interface LeakedObjectRow {
   attempts: number
 }
 
+export interface LegacyServedKeyAdoption {
+  adopted: number
+  remaining: number
+}
+
 export interface MediaWorkerRepo {
   findById(id: string): Promise<MediaWorkerAsset | null>
   findByUploadId(uploadId: string): Promise<MediaWorkerAsset | null>
@@ -77,7 +82,7 @@ export interface MediaWorkerRepo {
   findStuckValidating(olderThan: Date, limit: number): Promise<StuckMediaRow[]>
   terminalizeStuck(id: string): Promise<MediaWorkerAsset | null>
   deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null>
-  adoptLegacyServedKeys(olderThan: Date, limit: number): Promise<number>
+  adoptLegacyServedKeys(olderThan: Date, limit: number): Promise<LegacyServedKeyAdoption>
   r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean>
   enqueueHeldModerationItem?(input: {
     reportId: string
@@ -161,7 +166,10 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
         })
     },
 
-    async adoptLegacyServedKeys(olderThan: Date, limit: number): Promise<number> {
+    async adoptLegacyServedKeys(
+      olderThan: Date,
+      limit: number,
+    ): Promise<LegacyServedKeyAdoption> {
       const candidates = await db
         .select({ id: mediaAssets.id })
         .from(mediaAssets)
@@ -173,7 +181,14 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
           ),
         )
         .limit(limit)
-      if (candidates.length === 0) return 0
+      if (candidates.length === 0) {
+        const residual = await db
+          .select({ id: mediaAssets.id })
+          .from(mediaAssets)
+          .where(and(eq(mediaAssets.status, "ready"), isNull(mediaAssets.servedKey)))
+          .limit(1)
+        return { adopted: 0, remaining: residual.length }
+      }
       const rows = await db
         .update(mediaAssets)
         .set({ servedKey: sql`${mediaAssets.r2Key}` })
@@ -189,7 +204,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
           ),
         )
         .returning({ id: mediaAssets.id })
-      return rows.length
+      return { adopted: rows.length, remaining: candidates.length }
     },
 
     async findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {

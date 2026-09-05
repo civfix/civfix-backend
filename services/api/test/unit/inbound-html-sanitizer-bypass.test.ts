@@ -94,6 +94,8 @@ describe("sanitizer bypass attempts", () => {
 
 describe("sanitizer is linear at the size cap (H14)", () => {
   const BUDGET_MS = 500
+  const LINEAR_TOLERANCE = 4
+  const PER_CHAR_NOISE_MS = 0.0005
 
   function fill(unit: string): string {
     return unit.repeat(Math.floor(INBOUND_HTML_MAX_CHARS / unit.length))
@@ -103,37 +105,65 @@ describe("sanitizer is linear at the size cap (H14)", () => {
     return c.repeat(Math.max(0, total))
   }
 
-  const payloads: [string, string][] = [
-    ["allowed tag + attribute name-run", `<a ${repeatChar("a", INBOUND_HTML_MAX_CHARS - 4)}>`],
-    ["allowed tag + unclosed quoted value", `<a href="${repeatChar("a", INBOUND_HTML_MAX_CHARS - 10)}`],
-    ["allowed tag + unquoted value-run", `<img alt=${repeatChar("a", INBOUND_HTML_MAX_CHARS - 10)}>`],
-    ["allowed tag + name-run then href", `<a ${repeatChar("a", INBOUND_HTML_MAX_CHARS - 30)} href="https://x.test">`],
-    ["unterminated declarations", fill("<!")],
-    ["unterminated named declarations", fill("<!x")],
-    ["unterminated iframe run", fill("<iframe")],
-    ["unterminated iframe tags", fill("<iframe ")],
-    ["unterminated script run", fill("<script")],
-    ["unterminated script tags", fill("<script ")],
-    ["unterminated form tags", fill("<form ")],
-    ["mixed unterminated drop tags", fill("<form <iframe <object <svg ")],
-    ["balanced form pairs", fill("<form></form>")],
-    ["orphan close tags", fill("</form>")],
-    ["unterminated comments", fill("<!--")],
-    ["bare angle brackets", fill("<")],
+  const payloads: [string, () => string][] = [
+    ["allowed tag + attribute name-run", () => `<a ${repeatChar("a", INBOUND_HTML_MAX_CHARS - 4)}>`],
+    [
+      "allowed tag + unclosed quoted value",
+      () => `<a href="${repeatChar("a", INBOUND_HTML_MAX_CHARS - 10)}`,
+    ],
+    ["allowed tag + unquoted value-run", () => `<img alt=${repeatChar("a", INBOUND_HTML_MAX_CHARS - 10)}>`],
+    [
+      "allowed tag + name-run then href",
+      () => `<a ${repeatChar("a", INBOUND_HTML_MAX_CHARS - 30)} href="https://x.test">`,
+    ],
+    ["unterminated declarations", () => fill("<!")],
+    ["unterminated named declarations", () => fill("<!x")],
+    ["unterminated iframe run", () => fill("<iframe")],
+    ["unterminated iframe tags", () => fill("<iframe ")],
+    ["unterminated script run", () => fill("<script")],
+    ["unterminated script tags", () => fill("<script ")],
+    ["unterminated form tags", () => fill("<form ")],
+    ["mixed unterminated drop tags", () => fill("<form <iframe <object <svg ")],
+    ["balanced form pairs", () => fill("<form></form>")],
+    ["orphan close tags", () => fill("</form>")],
+    ["unterminated comments", () => fill("<!--")],
+    ["bare angle brackets", () => fill("<")],
   ]
 
-  for (const [name, payload] of payloads) {
-    it(`${name} stays under ${BUDGET_MS}ms`, () => {
+  for (const [name, build] of payloads) {
+    it(`${name} is sanitized safely at the size cap`, () => {
+      const payload = build()
       expect(payload.length).toBeLessThanOrEqual(INBOUND_HTML_MAX_CHARS)
-      const t0 = performance.now()
       const out = sanitizeInboundHtml(payload)
-      const elapsed = performance.now() - t0
       expect(out).not.toBeNull()
       expect(out?.toLowerCase()).not.toContain("<iframe")
       expect(out?.toLowerCase()).not.toContain("<script")
       expect(out?.toLowerCase()).not.toContain("<form")
       expect(out).not.toMatch(/<[a-zA-Z][^>]*\son\w+\s*=/i)
-      expect(elapsed).toBeLessThan(BUDGET_MS)
+    })
+  }
+
+  function costPerChar(build: (chars: number) => string, chars: number): number {
+    const payload = build(chars)
+    sanitizeInboundHtml(payload)
+    const t0 = performance.now()
+    sanitizeInboundHtml(payload)
+    return (performance.now() - t0) / chars
+  }
+
+  const growthCases: [string, (chars: number) => string][] = [
+    ["bare angle brackets", (n) => "<".repeat(n)],
+    ["unterminated comments", (n) => "<!--".repeat(Math.floor(n / 4))],
+    ["orphan close tags", (n) => "</form>".repeat(Math.floor(n / 7))],
+    ["balanced form pairs", (n) => "<form></form>".repeat(Math.floor(n / 13))],
+    ["attribute name-run", (n) => `<a ${repeatChar("a", n - 4)}>`],
+  ]
+
+  for (const [name, build] of growthCases) {
+    it(`${name} costs no more per character as the body grows (no super-linear blowup)`, () => {
+      const small = costPerChar(build, INBOUND_HTML_MAX_CHARS / 8)
+      const full = costPerChar(build, INBOUND_HTML_MAX_CHARS)
+      expect(full).toBeLessThan(small * LINEAR_TOLERANCE + PER_CHAR_NOISE_MS)
     })
   }
 

@@ -87,16 +87,28 @@ describe("backfillServedKeys", () => {
     expect(selects[2]!.values).toContain("c")
   })
 
-  it("is idempotent: a second run over rows the first adopted reports zero adopted", async () => {
-    const first = scripted([[{ id: "a" }], []], [[{ id: "a" }]], 0)
-    const firstRun = await backfillServedKeys(first.sql as unknown as Sql, { batchSize: 10 })
-    expect(firstRun.adopted).toBe(1)
+  it("is idempotent: a row the previous run adopted no longer matches either statement", async () => {
+    const adopted = new Set<string>()
+    const fake = makeFakeSql([
+      { match: REMAINING, rows: [{ n: 0 }] },
+      {
+        match: UPDATE_PAGE,
+        rows: (values) => {
+          const ids = values.filter((v): v is string => typeof v === "string" && v.length === 1)
+          const fresh = ids.filter((id) => !adopted.has(id))
+          for (const id of fresh) adopted.add(id)
+          return fresh.map((id) => ({ id }))
+        },
+      },
+      { match: SELECT_PAGE, rows: () => (adopted.has("a") ? [] : [{ id: "a" }]) },
+    ])
 
-    const second = scripted([[]], [], 0)
-    const secondRun = await backfillServedKeys(second.sql as unknown as Sql, { batchSize: 10 })
+    const first = await backfillServedKeys(fake.sql as unknown as Sql, { batchSize: 10 })
+    const second = await backfillServedKeys(fake.sql as unknown as Sql, { batchSize: 10 })
 
-    expect(secondRun).toEqual({ adopted: 0, skippedInsidePutWindow: 0 })
-    expect(statementsMatching(second, UPDATE_PAGE)).toHaveLength(0)
+    expect(first.adopted).toBe(1)
+    expect(second.adopted).toBe(0)
+    expect(statementsMatching(fake, UPDATE_PAGE)).toHaveLength(1)
   })
 
   it("counts rows the UPDATE deliberately skipped as still inside the presigned-PUT window", async () => {

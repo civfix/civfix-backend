@@ -142,8 +142,13 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const hoursByRow = args.entries.map((e) => e.hours)
       return sql.begin(async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
-        for (const userId of [...userIds].sort()) {
-          await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || ${userId}))`
+        const lockIds = [...new Set(userIds)].sort()
+        if (lockIds.length > 0) {
+          await tx`
+            SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || u))
+            FROM unnest(${lockIds}::uuid[]) AS t(u)
+            ORDER BY u
+          `
         }
 
         const reciprocal = await tx<{ logged_by_user_id: string }[]>`

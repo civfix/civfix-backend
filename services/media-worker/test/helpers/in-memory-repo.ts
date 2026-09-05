@@ -1,6 +1,7 @@
 
 import type {
   LeakedObjectRow,
+  LegacyServedKeyAdoption,
   MediaResultPatch,
   MediaWorkerAsset,
   MediaWorkerRepo,
@@ -138,7 +139,7 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
     return Promise.resolve(out)
   }
 
-  adoptLegacyServedKeys(olderThan: Date, limit: number): Promise<number> {
+  adoptLegacyServedKeys(olderThan: Date, limit: number): Promise<LegacyServedKeyAdoption> {
     let adopted = 0
     for (const row of this.byId.values()) {
       if (adopted >= limit) break
@@ -148,7 +149,15 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
       row.servedKey = row.r2Key
       adopted += 1
     }
-    return Promise.resolve(adopted)
+    if (adopted > 0) return Promise.resolve({ adopted, remaining: adopted })
+    let remaining = 0
+    for (const row of this.byId.values()) {
+      if (row.status === "ready" && row.servedKey === null) {
+        remaining = 1
+        break
+      }
+    }
+    return Promise.resolve({ adopted: 0, remaining })
   }
 
   deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null> {

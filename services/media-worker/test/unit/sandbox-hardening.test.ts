@@ -148,6 +148,28 @@ describe("H7: MEDIA_SANDBOX_UID/GID are required in production", () => {
     expect(loadSandboxIdentity({ NODE_ENV: "development" } as NodeJS.ProcessEnv)).toBeNull()
   })
 
+  it("refuses a sandbox uid that is the uid this worker already runs as", () => {
+    const selfUid = process.getuid?.()
+    if (selfUid === undefined) return
+    expect(() =>
+      loadSandboxIdentity({
+        MEDIA_SANDBOX_UID: String(selfUid),
+        MEDIA_SANDBOX_GID: "1001",
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/uid this worker already runs as/)
+  })
+
+  it("refuses a sandbox gid that is the gid this worker already runs as", () => {
+    const selfGid = process.getgid?.()
+    if (selfGid === undefined) return
+    expect(() =>
+      loadSandboxIdentity({
+        MEDIA_SANDBOX_UID: "1001",
+        MEDIA_SANDBOX_GID: String(selfGid),
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/gid this worker already runs as/)
+  })
+
   it("refuses a production boot with no sandbox identity", async () => {
     await expect(
       assertSandboxPreflight({

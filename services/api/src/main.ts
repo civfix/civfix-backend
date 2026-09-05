@@ -4,7 +4,7 @@ import { makeShutdown } from "./lifecycle.js"
 
 function installProcessFaultHandlers(app: FastifyInstance): void {
   const shutdown = makeShutdown(app, {
-    drainMs: app.container.env.SHUTDOWN_DRAIN_MS,
+    drainMs: 0,
     closeContainer: () => app.container.close(),
     exitCode: 1,
   })

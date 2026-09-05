@@ -38,6 +38,20 @@ describe("sandboxProofFailure", () => {
     expect(sandboxProofFailure(status(), IDENTITY)).toBeNull()
   })
 
+  it("rejects a child still running as the worker's own uid, even when it matches the configured identity", () => {
+    const failure = sandboxProofFailure(
+      status({ Uid: "1000\t1000\t1000\t1000" }),
+      { uid: 1000, gid: 1001 },
+      { parentUid: 1000, parentGid: 4242 },
+    )
+    expect(failure).toMatch(/worker's own uid 1000/)
+  })
+
+  it("rejects a child still in the worker's own gid", () => {
+    const failure = sandboxProofFailure(status(), IDENTITY, { parentUid: 4242, parentGid: 1001 })
+    expect(failure).toMatch(/worker's own gid 1001/)
+  })
+
   it("FAILS the ambient-capability leak this finding is about", () => {
     const leaked = status({ CapAmb: "00000000000000c0", CapPrm: "00000000000000c0", CapEff: "00000000000000c0" })
     expect(sandboxProofFailure(leaked, IDENTITY)).toMatch(/CapInh|CapPrm|CapEff|CapAmb/)

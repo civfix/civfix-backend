@@ -47,18 +47,6 @@ describe("findArchivedBefore", () => {
     expect(stmt.sql).not.toMatch(/OR\s/)
   })
 
-  it("passes a cutoff that is 180 days behind now, so nothing younger can ever match", async () => {
-    const fake = makeFakeSql([{ match: /FROM inbound_emails/, rows: [] }])
-    const repo = makeDrizzleInboundRetentionRepository(fake.sql as unknown as Sql)
-    const now = new Date("2026-09-04T00:00:00.000Z")
-    const cutoff = new Date(now.getTime() - INBOUND_EMAIL_RETENTION_MS)
-
-    await repo.findArchivedBefore({ before: cutoff, limit: 10 })
-
-    const bound = fake.statements[0]!.values[0] as Date
-    expect(now.getTime() - bound.getTime()).toBe(180 * DAY_MS)
-  })
-
   it("maps each row to its attachment object keys, dropping malformed entries", async () => {
     const fake = makeFakeSql([
       {

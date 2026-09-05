@@ -179,17 +179,31 @@ async function retryTombstonedLeaks(
   return { retried, reclaimed, errors }
 }
 
+let legacyServedKeyAdoptionDrained = false
+
+export function resetLegacyServedKeyAdoption(): void {
+  legacyServedKeyAdoptionDrained = false
+}
+
 async function adoptLegacyServedKeys(
   deps: OrphanSweepDeps,
   log: JobLogFn,
   report: JobReportFn,
 ): Promise<number> {
+  if (legacyServedKeyAdoptionDrained) return 0
   const { now: clock } = resolveJobObs(deps)
   const cutoff = new Date(clock().getTime() - R2_PUT_TTL_SEC * 1000)
   try {
-    const adopted = await deps.repo.adoptLegacyServedKeys(cutoff, deps.limits.orphanSweepBatch)
+    const { adopted, remaining } = await deps.repo.adoptLegacyServedKeys(
+      cutoff,
+      deps.limits.orphanSweepBatch,
+    )
     if (adopted > 0) {
       log("orphan.sweep: adopted pre-0097 ready rows onto served_key", { adopted })
+    }
+    if (adopted === 0 && remaining === 0) {
+      legacyServedKeyAdoptionDrained = true
+      log("orphan.sweep: no pre-0097 ready rows remain; legacy served-key adoption is done", {})
     }
     return adopted
   } catch (err) {

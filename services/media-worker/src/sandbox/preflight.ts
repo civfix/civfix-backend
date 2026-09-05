@@ -50,9 +50,18 @@ export function parseProcStatus(text: string): SandboxProof {
 export function sandboxProofFailure(
   text: string,
   identity: SandboxIdentity,
-  opts: { boundingMustBeZero?: boolean } = {},
+  opts: { boundingMustBeZero?: boolean; parentUid?: number; parentGid?: number } = {},
 ): string | null {
   const proof = parseProcStatus(text)
+
+  const parentUid = opts.parentUid ?? process.getuid?.()
+  const parentGid = opts.parentGid ?? process.getgid?.()
+  if (parentUid !== undefined && proof.uid.some((v) => v === parentUid)) {
+    return `child Uid [${proof.uid.join(" ")}] still contains the worker's own uid ${parentUid}`
+  }
+  if (parentGid !== undefined && proof.gid.some((v) => v === parentGid)) {
+    return `child Gid [${proof.gid.join(" ")}] still contains the worker's own gid ${parentGid}`
+  }
 
   if (proof.uid.length !== 4 || proof.uid.some((v) => v !== identity.uid)) {
     return `child Uid is [${proof.uid.join(" ")}], expected all four ids to be ${identity.uid}`

@@ -2,7 +2,11 @@
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { loadLimits } from "../../src/config.js"
-import { LEAK_RETRY_MAX_ATTEMPTS, runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
+import {
+  LEAK_RETRY_MAX_ATTEMPTS,
+  resetLegacyServedKeyAdoption,
+  runOrphanSweep,
+} from "../../src/jobs/orphan-sweep.js"
 import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js"
 import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
@@ -254,6 +258,70 @@ describe("orphan.sweep", () => {
     expect(lastRetried).toBe(0)
     expect(repo.tombstones.get("uploads/stuck")?.attempts).toBe(LEAK_RETRY_MAX_ATTEMPTS)
     expect(reports.length).toBe(1)
+  })
+})
+
+describe("orphan.sweep: legacy served-key adoption stops once drained", () => {
+  it("adopts pre-0097 rows, then never scans again in this process", async () => {
+    resetLegacyServedKeyAdoption()
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+    const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
+
+    const legacy = repo.seed({
+      id: "legacy-1",
+      uploadId: "u9",
+      kind: "image",
+      r2Key: "uploads/l1",
+      reportId: "report-1",
+      createdAt: old,
+    })
+    legacy.status = "ready"
+    legacy.servedKey = null
+
+    let scans = 0
+    const counting = Object.assign(Object.create(Object.getPrototypeOf(repo) as object), repo, {
+      adoptLegacyServedKeys: (olderThan: Date, limit: number) => {
+        scans += 1
+        return repo.adoptLegacyServedKeys(olderThan, limit)
+      },
+    }) as InMemoryWorkerRepo
+
+    await runOrphanSweep({ repo: counting, storage, limits, now: () => now, log: () => {} })
+    expect(scans).toBe(1)
+    expect(legacy.servedKey).toBe("uploads/l1")
+
+    await runOrphanSweep({ repo: counting, storage, limits, now: () => now, log: () => {} })
+    expect(scans).toBe(2)
+
+    await runOrphanSweep({ repo: counting, storage, limits, now: () => now, log: () => {} })
+    expect(scans).toBe(2)
+  })
+
+  it("keeps scanning while a row still needs adoption", async () => {
+    resetLegacyServedKeyAdoption()
+    const storage = new FakeStorage()
+    const repo = new InMemoryWorkerRepo()
+    const now = new Date("2026-06-01T12:00:00Z")
+
+    const pending = repo.seed({
+      id: "legacy-2",
+      uploadId: "u10",
+      kind: "image",
+      r2Key: "uploads/l2",
+      reportId: "report-2",
+      createdAt: new Date(now.getTime() - 60_000),
+    })
+    pending.status = "ready"
+    pending.servedKey = null
+
+    await runOrphanSweep({ repo, storage, limits, now: () => now, log: () => {} })
+    expect(pending.servedKey).toBeNull()
+
+    const later = new Date(now.getTime() + 30 * 60_000)
+    await runOrphanSweep({ repo, storage, limits, now: () => later, log: () => {} })
+    expect(pending.servedKey).toBe("uploads/l2")
   })
 })
 

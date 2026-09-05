@@ -193,6 +193,15 @@ async function settle(): Promise<void> {
   }
 }
 
+async function settleUntil(done: () => boolean, maxTicks = 200): Promise<void> {
+  for (let i = 0; i < maxTicks; i += 1) {
+    if (done()) return
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(1)
+    else await flush()
+  }
+  if (!done()) throw new Error("settleUntil: condition never became true")
+}
+
 describe("frames sent during the async handshake are buffered, not dropped", () => {
   it("a join sent before the handshake settles is applied once the session exists", async () => {
     const handler = captureGatewayHandler(baseOpts())
@@ -776,7 +785,7 @@ describe("H2: a ?ticket socket is re-validated against session revocation, exact
     )
     const socket = new MockSocket()
     handler(socket as unknown as WebSocket, ticketRequest(ticket))
-    await settle()
+    await settleUntil(() => vi.getTimerCount() > 0 || socket.closes.length > 0)
     return { sessions, socket, token }
   }
 

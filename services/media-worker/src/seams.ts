@@ -117,7 +117,16 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
           secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
           bucket: inboundBucket,
         })
-    : storage
+    : localStorageDir.length > 0
+      ? new LocalDiskStorage({
+          rootDirectory: localStorageDir,
+          namespace: "inbound",
+          publicApiUrl: req(source, "PUBLIC_API_URL"),
+          signingKey:
+            (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim() || LOCAL_STORAGE_DEV_SIGNING_KEY,
+          nodeEnv: source.NODE_ENV ?? "development",
+        })
+      : storage
 
   return {
     storage,

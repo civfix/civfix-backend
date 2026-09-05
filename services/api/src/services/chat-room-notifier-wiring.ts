@@ -44,7 +44,8 @@ export function makeContainerRoomFanoutDeps(
   ): Promise<boolean> => {
     try {
       return await conversationMutes.isMuted(userId, kind, roomId)
-    } catch {
+    } catch (err) {
+      logger?.warn({ err, kind }, "room fan-out mute lookup failed; notifying anyway")
       return false
     }
   }
