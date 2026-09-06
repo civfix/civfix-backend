@@ -199,7 +199,7 @@ describe("cleanup title, description, spot label and bring list (CVX-002)", () =
     )
     expect(created.bring).toEqual(["gloves"])
 
-    const updated = parse(UpdateCleanupBodySchema, { bring: [WHITESPACE] })
+    const updated = parse(UpdateCleanupBodySchema, { id: ROOM_ID, bring: [WHITESPACE] })
     expect(updated.bring).toEqual([])
   })
 

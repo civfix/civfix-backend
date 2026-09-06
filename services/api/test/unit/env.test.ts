@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
+  DEFAULT_TRUSTED_PROXY_CIDRS,
   FAKE_SEAM_FLAGS,
   loadEnv,
   REVIEWER_OTP_CODE_MIN_LENGTH,
@@ -27,6 +28,8 @@ function validProdEnv(): NodeJS.ProcessEnv {
     TWILIO_ACCOUNT_SID: "ACtest",
     TWILIO_AUTH_TOKEN: "twilio-token",
     TWILIO_SMS_FROM: "+15550001111",
+    UNSUBSCRIBE_SIGNING_KEY: "prod-unsubscribe-signing-key-abcdefghijklmnop",
+    TICKET_TOKEN_SECRET: "prod-ticket-token-secret-abcdefghijklmnop",
   }
 }
 
@@ -106,10 +109,13 @@ describe("loadEnv", () => {
     expect(Array.isArray(env.TRUST_PROXY)).toBe(true)
   })
 
-  it("honors an explicit TRUST_PROXY hop count", () => {
+  it("ignores a numeric TRUST_PROXY and keeps the safe internal-ranges default", () => {
     const source = validProdEnv()
     source.TRUST_PROXY = "1"
-    expect(loadEnv(source).TRUST_PROXY).toBe(1)
+    const parsed = loadEnv(source).TRUST_PROXY
+    expect(parsed).toEqual([...DEFAULT_TRUSTED_PROXY_CIDRS])
+    expect(parsed).not.toBe(true)
+    expect(parsed).not.toBe(false)
   })
 
   it("throws an aggregated error listing every missing BOOT var in production", () => {
@@ -138,6 +144,7 @@ describe("loadEnv", () => {
       "USE_FAKE_GEOCODER",
       "USE_FAKE_JOBS",
       "USE_FAKE_MAILER",
+      "USE_FAKE_PAYMENTS",
       "USE_FAKE_PUSH",
       "USE_FAKE_SMS",
       "USE_FAKE_STORAGE",
@@ -367,8 +374,6 @@ describe("loadEnv", () => {
   })
 
   it("defaults SHUTDOWN_DRAIN_MS to 0 in every environment and clamps a configured value", () => {
-    // OFF by default on purpose: a drain longer than the container's stop_grace_period is worse than
-    // no drain, and that grace period lives in civfix-infra. See env/parsers.parseDrainMs.
     expect(loadEnv(validProdEnv()).SHUTDOWN_DRAIN_MS).toBe(0)
     expect(loadEnv({ NODE_ENV: "test" }).SHUTDOWN_DRAIN_MS).toBe(0)
     expect(loadEnv({ NODE_ENV: "test", SHUTDOWN_DRAIN_MS: "3500" }).SHUTDOWN_DRAIN_MS).toBe(3500)

@@ -12,7 +12,8 @@ import {
 } from "drizzle-orm/pg-core"
 import { posts } from "./posts.js"
 import { reports } from "./reports.js"
-import type { MEDIA_KIND_VALUES, MEDIA_PURPOSE_VALUES, MEDIA_STATUS_VALUES } from "./types.js"
+import type { MEDIA_KIND_VALUES, MEDIA_STATUS_VALUES } from "./types.js"
+import type { MEDIA_PURPOSE_VALUES } from "./types-host.js"
 
 type MediaKind = (typeof MEDIA_KIND_VALUES)[number]
 type MediaStatus = (typeof MEDIA_STATUS_VALUES)[number]

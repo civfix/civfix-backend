@@ -16,6 +16,7 @@ import type {
   VolunteerHoursEntryDTO,
   VolunteerHoursSource,
 } from "@civfix/shared"
+import { can, type HostStanding } from "@civfix/shared/host"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
 import { mapWithLimit } from "./media-presign.js"
@@ -192,6 +193,7 @@ export interface CleanupHoursLookup {
   load(cleanupId: string): Promise<CleanupHoursView | null>
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
   roleOf(cleanupId: string, userId: string): Promise<CleanupMemberRole | null>
+  standingOf?(cleanupId: string, userId: string): Promise<HostStanding>
 }
 
 export interface VolunteerHoursServiceDeps {
@@ -299,6 +301,13 @@ function toEventHoursRow(entry: EventHoursLedgerEntry): {
 }
 
 export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): VolunteerHoursService {
+  async function standingFor(cleanupId: string, userId: string): Promise<HostStanding> {
+    if (deps.cleanups.standingOf !== undefined) {
+      return deps.cleanups.standingOf(cleanupId, userId)
+    }
+    return { eventRole: await deps.cleanups.roleOf(cleanupId, userId), orgRole: null }
+  }
+
   async function notifyHoursLogged(
     cleanup: { id: string; title: string },
     changed: LogEventHoursResult["changed"],
@@ -420,10 +429,12 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       const cleanup = await deps.cleanups.load(cleanupId)
       if (cleanup === null) throw AppError.notFound("Event not found")
 
-      const role = await deps.cleanups.roleOf(cleanupId, viewerId)
-      if (role === null) return { scope: "self", entries: [] }
+      const standing = await standingFor(cleanupId, viewerId)
+      if (standing.eventRole === null && standing.orgRole === null) {
+        return { scope: "self", entries: [] }
+      }
 
-      if (role === "organizer" || role === "cohost") {
+      if (can(standing, "manage_event")) {
         const ledger = await deps.repo.listEventHours(cleanupId, null)
         return {
           scope: "all",
@@ -448,8 +459,8 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       const cleanup = await deps.cleanups.load(input.cleanupId)
       if (cleanup === null) throw AppError.notFound("Event not found")
 
-      const actorRole = await deps.cleanups.roleOf(input.cleanupId, input.actorId)
-      if (actorRole !== "organizer" && actorRole !== "cohost") {
+      const actorStanding = await standingFor(input.cleanupId, input.actorId)
+      if (!can(actorStanding, "manage_event")) {
         throw AppError.forbidden("Only the event hosts can log volunteer hours.")
       }
       const verified = await deps.isVerified(input.actorId)

@@ -5,6 +5,7 @@ import {
   CancelCleanupRequestSchema,
   ClaimEventSlotRequestSchema,
   CompleteCleanupRequestSchema,
+  GetEventIcsRequestSchema,
   ListCleanupsRequestSchema,
   RequestEventResourcesRequestSchema,
   SetMemberRoleRequestSchema,
@@ -15,6 +16,7 @@ import {
   AppError,
   type CleanupDTO,
   type GetCleanupResponse,
+  type GetEventIcsResponse,
   type JoinCleanupResponse,
   type LeaveCleanupResponse,
   type CleanupAttendeesResponse,
@@ -36,7 +38,10 @@ import {
   type CleanupViewer,
 } from "../services/cleanup-service.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
-import { makeContainerGuestRsvpService } from "../services/guest-rsvp-wiring.js"
+import { makeHostAuditSink } from "../services/host/host-audit.js"
+import { enrichCleanupDTOs } from "../services/cleanup-enrichment.js"
+import { makeCommsRuntime } from "../services/host/comms-wiring.js"
+import { makeEventMediaPresigner } from "../services/host/event-media.js"
 import {
   SCHEDULE_MAX_AHEAD_MS,
   SCHEDULE_MAX_BACKDATE_MS,
@@ -46,6 +51,7 @@ import {
   type ChatRepository,
 } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
+import { buildIcs } from "@civfix/shared/ics"
 import type { CounterStore } from "../abuse/counter-store.js"
 import { makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
@@ -54,7 +60,7 @@ import { makeDrizzleMailRepository } from "../services/admin/mail-repository.dri
 import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
-import { perIdentity } from "../plugins/rate-limit.js"
+import { perHost, perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
 import { chatHistoryPayload } from "./chat-route-helpers.js"
 import { CappedBBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
@@ -62,11 +68,13 @@ import { CappedBBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
 export interface CleanupServiceOverrides {
   repo: CleanupRepository
   presignThumb?: CleanupServiceDeps["presignThumb"]
+  presignEventMedia?: CleanupServiceDeps["presignEventMedia"]
+  audit?: CleanupServiceDeps["audit"]
   newId?: CleanupServiceDeps["newId"]
   outboundMail?: CleanupServiceDeps["outboundMail"]
   isVerified?: CleanupServiceDeps["isVerified"]
   notifier?: CleanupServiceDeps["notifier"]
-  guestNotifier?: CleanupServiceDeps["guestNotifier"]
+  attendeeNotifier?: CleanupServiceDeps["attendeeNotifier"]
   counters?: CleanupServiceDeps["counters"]
 }
 
@@ -101,6 +109,8 @@ const COMPLETE_CLEANUP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 
 export const CLEANUP_MEMBERSHIP_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
+
+export const EVENT_ICS_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
 
 function refineScheduledAt(
   scheduledAt: string | undefined,
@@ -163,6 +173,7 @@ export async function registerCleanupRoutes(
   container: Container,
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
+  const webOrigin = (container.env.WEB_ORIGINS[0] ?? "https://civfix.org").replace(/\/+$/, "")
 
   function repo(): CleanupRepository {
     const overrides = app.cleanupOverrides
@@ -211,18 +222,25 @@ export async function registerCleanupRoutes(
             isVerified: (userId: string) =>
               makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
             notifier: makeRouteNotificationService(container, app.log),
-            guestNotifier: makeContainerGuestRsvpService(container, undefined, app.log),
+            attendeeNotifier: makeCommsRuntime(container, app.log).lanes,
             counters: lazyCounters,
             jobs: container.jobs,
+            presignEventMedia: makeEventMediaPresigner(container.storage),
+            audit: makeHostAuditSink(container.getDb().sql, app.log),
+            enrichDTOs: (dtos, viewerUserId) => enrichCleanupDTOs(container, dtos, viewerUserId),
           }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
       ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
       ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
-      ...(overrides?.guestNotifier !== undefined
-        ? { guestNotifier: overrides.guestNotifier }
+      ...(overrides?.attendeeNotifier !== undefined
+        ? { attendeeNotifier: overrides.attendeeNotifier }
         : {}),
       ...(overrides?.counters !== undefined ? { counters: overrides.counters } : {}),
+      ...(overrides?.presignEventMedia !== undefined
+        ? { presignEventMedia: overrides.presignEventMedia }
+        : {}),
+      ...(overrides?.audit !== undefined ? { audit: overrides.audit } : {}),
       logger: app.log,
     })
   }
@@ -237,7 +255,7 @@ export async function registerCleanupRoutes(
   route(app, "updateCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
-    const body = parse(UpdateCleanupBodySchema, request.body)
+    const body = parse(UpdateCleanupBodySchema, { ...(request.body as object), id })
     const dto: GetCleanupResponse = await service().updateCleanup(id, body, userId)
     reply.status(200).send(dto)
   })
@@ -316,6 +334,30 @@ export async function registerCleanupRoutes(
     const { id } = parse(CleanupRefOrIdParamsSchema, request.params)
     const dto: GetCleanupResponse = await service().getCleanup(id, viewerOf(request))
     reply.status(200).send(dto)
+  })
+
+  route(app, "getEventIcs", { config: { rateLimit: EVENT_ICS_RATE_LIMIT } }, async (request, reply) => {
+    const { id } = parse(GetEventIcsRequestSchema, request.params)
+    const event = await service().getCleanup(id, viewerOf(request))
+    const payload: GetEventIcsResponse = {
+      ics: buildIcs({
+        uid: `cleanup-${event.id}@civfix.org`,
+        title: event.title,
+        startsAt: event.scheduledAt,
+        ...(event.description !== undefined && event.description !== null
+          ? { description: event.description }
+          : {}),
+        ...(event.endsAt !== null && event.endsAt !== undefined ? { endsAt: event.endsAt } : {}),
+        ...(event.timezone !== null && event.timezone !== undefined
+          ? { timezone: event.timezone }
+          : {}),
+        ...(event.address !== null ? { location: event.address } : {}),
+        url: `${webOrigin}/events/${event.id}`,
+        status: event.status === "cancelled" ? "CANCELLED" : "CONFIRMED",
+      }),
+      filename: `civfix-event-${event.id}.ics`,
+    }
+    reply.status(200).send(payload)
   })
 
   route(app, "joinCleanup", { preHandler: csrfProtect, config: { rateLimit: CLEANUP_MEMBERSHIP_RATE_LIMIT } }, async (request, reply) => {

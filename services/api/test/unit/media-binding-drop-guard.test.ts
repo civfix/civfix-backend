@@ -1,18 +1,3 @@
-/**
- * F147: 0044 dropped media_assets.discussion_message_id without first re-pointing the rows bound only by
- * it (0036 had flattened report_discussion_messages into chat_messages PRESERVING the message id, so a
- * one-line `UPDATE media_assets SET chat_message_id = discussion_message_id` would have carried them
- * over). Those rows fell out with report_id, chat_message_id and post_id all NULL — which is EXACTLY the
- * orphan predicate the media-worker sweep uses, and the sweep DELETEs the row and then the R2 object.
- * The loss is not recoverable forward; what is enforceable is the rule.
- *
- * This guard ties three things together so the mistake cannot repeat silently:
- *   1. the binding columns are READ OUT OF the orphan sweep's own predicate (findOrphans), so adding a
- *      new binding to the sweep without teaching this rule about it fails here;
- *   2. any migration dropping one of those columns must re-point the bound rows in the SAME file,
- *      BEFORE the DROP;
- *   3. the historical unrepointed drop is pinned by name, so the grandfathered set cannot quietly grow.
- */
 
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -23,25 +8,15 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const DRIZZLE_DIR = join(HERE, "..", "..", "drizzle")
 const WORKER_REPO = join(HERE, "..", "..", "src", "services", "media-worker-repo.ts")
 
-/** camelCase -> snake_case, the mirror's naming convention for a column. */
-function columnName(prop: string): string {
-  return prop.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase())
-}
-
-/** The media_assets columns whose NULLness makes a row orphan-eligible, read from the sweep itself. */
 function orphanBindingColumns(): string[] {
   const src = readFileSync(WORKER_REPO, "utf8")
-  const body = src.slice(src.indexOf("async findOrphans("))
-  const matches = [...body.matchAll(/isNull\(mediaAssets\.(\w+)\)/g)].map((m) =>
-    columnName(m[1] ?? ""),
-  )
+  const body = src.slice(src.indexOf("function orphanPredicate("))
+  const matches = [...body.matchAll(/media_assets\.(\w+) IS NULL/g)].map((m) => m[1] ?? "")
   return [...new Set(matches)]
 }
 
-/** Every historical binding column name a migration may legitimately drop. */
 const HISTORICAL_BINDINGS = ["discussion_message_id"]
 
-/** Migrations that dropped a binding column WITHOUT re-pointing its rows. Do not grow this list. */
 const GRANDFATHERED_UNREPOINTED = ["0044_drop_report_discussion.sql"]
 
 interface Drop {

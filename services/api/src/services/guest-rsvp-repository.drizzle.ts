@@ -44,6 +44,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           status: CleanupStatus
           scheduled_at: Date
           address: string | null
+          timezone: string | null
           lng: number
           lat: number
         }[]
@@ -54,6 +55,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           c.status,
           c.scheduled_at,
           c.address,
+          c.timezone,
           ST_X(c.geom) AS lng,
           ST_Y(c.geom) AS lat
         FROM cleanups c
@@ -68,6 +70,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
         status: row.status,
         scheduledAt: row.scheduled_at,
         address: row.address,
+        timezone: row.timezone,
         lat: row.lat,
         lng: row.lng,
       }
@@ -215,16 +218,65 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
       return { id: row.id, cleanupId: row.cleanup_id, cancelledAt: row.cancelled_at }
     },
 
-    async cancelGuest(guestId: string, now: Date): Promise<void> {
-      await sql`
-        UPDATE cleanup_guests
-        SET cancelled_at = ${now},
-            email = NULL,
-            phone = NULL,
-            contact_key = NULL,
-            contact_scrubbed_at = COALESCE(contact_scrubbed_at, ${now})
-        WHERE id = ${guestId} AND cancelled_at IS NULL
+    async cancelGuest(guestId: string, now: Date): Promise<string[]> {
+      const released = await sql<{ ticket_type_id: string }[]>`
+        WITH cancelled_guest AS (
+          UPDATE cleanup_guests
+             SET cancelled_at = ${now},
+                 email = NULL,
+                 phone = NULL,
+                 contact_key = NULL,
+                 contact_scrubbed_at = COALESCE(contact_scrubbed_at, ${now})
+           WHERE id = ${guestId} AND cancelled_at IS NULL
+          RETURNING id
+        ), cancelled_registrations AS (
+          UPDATE cleanup_registrations r
+             SET status = 'cancelled', cancelled_at = ${now}
+            FROM cancelled_guest g
+           WHERE r.guest_id = g.id AND r.status = 'registered'
+          RETURNING r.id, r.ticket_type_id, r.party_size
+        ), cancelled_seats AS (
+          UPDATE cleanup_registration_seats s
+             SET status = 'cancelled', attendee_name = NULL
+            FROM cancelled_registrations r
+           WHERE s.registration_id = r.id AND s.status = 'active'
+          RETURNING s.id
+        ), scrubbed_answers AS (
+          UPDATE cleanup_answers a
+             SET value_text = NULL, value_json = NULL, scrubbed_at = ${now}
+            FROM cancelled_registrations r
+           WHERE a.registration_id = r.id AND a.scrubbed_at IS NULL
+          RETURNING a.id
+        ), cancelled_waitlist AS (
+          UPDATE cleanup_waitlist w
+             SET status = 'cancelled'
+            FROM cancelled_guest g
+           WHERE w.guest_id = g.id AND w.status IN ('waiting', 'offered')
+          RETURNING w.id, w.ticket_type_id, w.party_size, w.offered_at
+        ), releases AS (
+          SELECT ticket_type_id, sum(party_size)::int AS seats
+            FROM (
+              SELECT ticket_type_id, party_size
+                FROM cancelled_registrations
+               WHERE ticket_type_id IS NOT NULL
+              UNION ALL
+              SELECT ticket_type_id, party_size
+                FROM cancelled_waitlist
+               WHERE offered_at IS NOT NULL
+            ) held
+           GROUP BY ticket_type_id
+        )
+        , released_types AS (
+          UPDATE cleanup_ticket_types t
+             SET reserved_seats = GREATEST(t.reserved_seats - r.seats, 0),
+                 updated_at = ${now}
+            FROM releases r
+           WHERE t.id = r.ticket_type_id
+          RETURNING t.id
+        )
+        SELECT id AS ticket_type_id FROM released_types
       `
+      return released.map((row) => row.ticket_type_id)
     },
 
     async listGuests(args: {

@@ -1,4 +1,9 @@
 import { tokens } from "@civfix/shared"
+import {
+  markdownInlineToPlainText,
+  type MarkdownInline,
+  type MarkdownList,
+} from "@civfix/shared/markdown"
 import { escapeHtml } from "./mail-text.js"
 
 export interface EmailBlock {
@@ -18,9 +23,6 @@ function htmlText(value: string): string {
   return escapeHtml(value).replace(/\n/g, "<br>")
 }
 
-// Every element that inlines a light-theme color also carries the matching cv-* class, which the layout's
-// prefers-color-scheme:dark media query recolors (see email-layout.ts). Without the class the inlined
-// near-black ink stays near-black on the dark card and the text is unreadable.
 
 export function heading(text: string): EmailBlock {
   return {
@@ -42,7 +44,6 @@ export function paragraph(text: string, opts: { muted?: boolean } = {}): EmailBl
 export function kvTable(rows: Array<[string, string]>): EmailBlock {
   const cells = rows
     .map(([label, value], i) => {
-      // The hairline divider between rows is dark-mode-recolored via cv-rule; the last row has none.
       const ruled = i < rows.length - 1
       const rule = ruled ? `1px solid ${BORDER}` : "none"
       const ruleClass = ruled ? " cv-rule" : ""
@@ -98,5 +99,46 @@ export function linkList(label: string, items: Array<{ label: string; href: stri
   return {
     html: `<p class="cv-ink3" style="margin:0 0 6px;font-family:${FONT};font-size:13px;color:${INK3};font-weight:600;">${escapeHtml(label)}</p><ul style="margin:0 0 14px;padding-left:20px;">${lis}</ul>`,
     text: `${label}:\n${items.map((it) => `  ${it.label}: ${it.href}`).join("\n")}`,
+  }
+}
+
+function inlineHtml(spans: readonly MarkdownInline[]): string {
+  return spans
+    .map((span) => {
+      switch (span.type) {
+        case "text":
+          return escapeHtml(span.value)
+        case "strong":
+          return `<strong>${inlineHtml(span.children)}</strong>`
+        case "em":
+          return `<em>${inlineHtml(span.children)}</em>`
+        case "link":
+          return `<a class="cv-link" href="${escapeHtml(span.href)}" style="color:${LINK};">${inlineHtml(span.children)}</a>`
+      }
+    })
+    .join("")
+}
+
+export function richParagraph(spans: readonly MarkdownInline[]): EmailBlock {
+  return {
+    html: `<p class="cv-ink2" style="margin:0 0 14px;font-family:${FONT};font-size:15px;line-height:1.55;color:${INK2};">${inlineHtml(spans)}</p>`,
+    text: markdownInlineToPlainText(spans),
+  }
+}
+
+export function richList(list: MarkdownList): EmailBlock {
+  const tag = list.ordered ? "ol" : "ul"
+  const items = list.items
+    .map(
+      (item) =>
+        `<li class="cv-ink2" style="margin:0 0 4px;font-family:${FONT};font-size:15px;line-height:1.55;color:${INK2};">${inlineHtml(item.children)}</li>`,
+    )
+    .join("")
+  const text = list.items
+    .map((item, i) => `${list.ordered ? `${i + 1}.` : "-"} ${markdownInlineToPlainText(item.children)}`)
+    .join("\n")
+  return {
+    html: `<${tag} style="margin:0 0 14px;padding-left:20px;">${items}</${tag}>`,
+    text,
   }
 }

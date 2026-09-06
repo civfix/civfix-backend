@@ -212,6 +212,7 @@ describe("GET + PUT /notifications/prefs", () => {
       follows: true,
       mentions: true,
       postInteractions: true,
+      hostBroadcasts: true,
     })
   })
 

@@ -10,7 +10,13 @@ import type {
   UpcomingEventsArgs,
 } from "./social-service.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
-import type { CleanupStatus, CleanupType, EventKind, SocialLinks } from "@civfix/shared"
+import type {
+  CleanupStatus,
+  CleanupType,
+  EventKind,
+  EventVisibility,
+  SocialLinks,
+} from "@civfix/shared"
 import {
   encodeNameCursor,
   encodeTimeCursor,
@@ -108,6 +114,8 @@ interface CleanupRowSelect {
   jurisdiction_geoid: string | null
   reference_code: string | null
   created_at: Date
+  capacity: number | null
+  visibility: EventVisibility
   going: number
   org_display_name: string
   org_handle: string | null
@@ -138,9 +146,25 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     jurisdictionGeoid: r.jurisdiction_geoid,
     referenceCode: r.reference_code,
     createdAt: r.created_at,
+    capacity: r.capacity,
     going: Number(r.going),
     dist: null,
     organizer,
+    endsAt: null,
+    timezone: null,
+    visibility: r.visibility,
+    coverMediaId: null,
+    coverKey: null,
+    galleryMediaIds: [],
+    donationUrl: null,
+    pageSlug: null,
+    registrationOpensAt: null,
+    registrationClosesAt: null,
+    organizationId: null,
+    organization: null,
+    reminderOffsetsMin: null,
+    hostReplyTo: null,
+    hostReplyToVerifiedAt: null,
   }
 }
 
@@ -179,6 +203,8 @@ function profileEventRows(
       c.jurisdiction_geoid,
       c.reference_code,
       c.created_at,
+      c.capacity,
+      c.visibility,
       ${goingScalar(sql)} AS going,
       u.display_name AS org_display_name,
       u.handle AS org_handle,
@@ -187,6 +213,7 @@ function profileEventRows(
     JOIN ids ON ids.cleanup_id = c.id
     JOIN users u ON u.id = c.organizer_user_id
     WHERE c.status <> 'cancelled'
+      AND c.visibility = 'public'
       ${args.where}
     ${args.order}
     LIMIT ${args.limit}
@@ -351,7 +378,10 @@ function suggestFollowsStatement(
             u.created_at,
             u.follower_count AS followers,
             u.following_count AS following,
-            EXISTS (SELECT 1 FROM cleanups oc WHERE oc.organizer_user_id = u.id) AS is_organizer,
+            EXISTS (
+              SELECT 1 FROM cleanups oc
+              WHERE oc.organizer_user_id = u.id AND oc.visibility = 'public'
+            ) AS is_organizer,
             dist.meters AS dist_meters,
             (dist.meters IS NOT NULL AND dist.meters <= ${SUGGEST_NEARBY_METERS}) AS is_near
           FROM pool p
@@ -619,7 +649,10 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         SELECT
           (SELECT count(*)::int FROM reports r WHERE r.reporter_user_id = ${userId} AND r.deleted_at IS NULL) AS reports,
           (SELECT count(*)::int FROM reports r WHERE r.reporter_user_id = ${userId} AND r.deleted_at IS NULL AND r.status = 'resolved') AS fixed,
-          (SELECT count(*)::int FROM cleanups c WHERE c.organizer_user_id = ${userId}) AS cleanups
+          (
+            SELECT count(*)::int FROM cleanups c
+            WHERE c.organizer_user_id = ${userId} AND c.visibility = 'public'
+          ) AS cleanups
       `
       return {
         reports: rows[0]?.reports ?? 0,

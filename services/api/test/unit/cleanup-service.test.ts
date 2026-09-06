@@ -44,7 +44,7 @@ function baseInput(over: Partial<CreateCleanupRequest> = {}): CreateCleanupReque
 beforeEach(() => {
   repo = new InMemoryCleanupRepository()
   repo.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive" })
-  service = makeCleanupService({ repo })
+  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
 })
 
 describe("createCleanup", () => {
@@ -82,6 +82,7 @@ describe("createCleanup", () => {
 
   it("resolves the event's jurisdiction + code and getCleanup resolves by reference_code", async () => {
     const scoped = makeCleanupService({
+      counters: new InMemoryCounterStore(),
       repo,
       resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
       resolveJurisdictionCode: () => Promise.resolve(42),
@@ -667,26 +668,30 @@ describe("requestResources (D19 event resource request)", () => {
         appendOutbound: () => Promise.reject(new Error("unused")),
       },
     })
-    return { repo: r, svc, sends }
+    const creator = makeCleanupService({
+      repo: r,
+      counters: { incr: () => Promise.resolve(1), incrBy: () => Promise.resolve(1) },
+    })
+    return { repo: r, svc, sends, creator }
   }
 
   async function seedEvent(
     r: InMemoryCleanupRepository,
-    svc: CleanupService,
+    creator: CleanupService,
     geoid: string | null,
   ): Promise<string> {
-    const dto = await svc.createCleanup(baseInput({ title: "Park Cleanup" }), ORG)
+    const dto = await creator.createCleanup(baseInput({ title: "Park Cleanup" }), ORG)
     const stored = r.cleanups.get(dto.id)
     if (stored) stored.jurisdictionGeoid = geoid
     return dto.id
   }
 
   it("happy path: verified host -> event thread send + resource_request timeline row", async () => {
-    const { repo: r, svc, sends } = harness({
+    const { repo: r, svc, sends, creator } = harness({
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, svc, "0644000")
+    const id = await seedEvent(r, creator, "0644000")
     const res = await svc.requestResources({ cleanupId: id, message: "Need 20 trash bags.", actorId: ORG })
     expect(res).toEqual({ ok: true })
 
@@ -702,11 +707,11 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("F068: 422s a slur in the message and neither sends nor writes a timeline row", async () => {
-    const { repo: r, svc, sends } = harness({
+    const { repo: r, svc, sends, creator } = harness({
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, svc, "0644000")
+    const id = await seedEvent(r, creator, "0644000")
     await expect(
       svc.requestResources({ cleanupId: id, message: "please send bags nigger", actorId: ORG }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
@@ -716,17 +721,17 @@ describe("requestResources (D19 event resource request)", () => {
 
 
   it("M20: a FRESH event does not reset the host's budget (the old cleanupId-keyed bypass)", async () => {
-    const { repo: r, svc, sends } = harness({
+    const { repo: r, svc, sends, creator } = harness({
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     for (let i = 0; i < RESOURCE_REQUEST_PER_HOST_PER_DAY; i += 1) {
-      const id = await seedEvent(r, svc, "0644000")
+      const id = await seedEvent(r, creator, "0644000")
       await svc.requestResources({ cleanupId: id, message: `Need bags ${i}.`, actorId: ORG })
     }
     expect(sends).toHaveLength(RESOURCE_REQUEST_PER_HOST_PER_DAY)
 
-    const fresh = await seedEvent(r, svc, "0644000")
+    const fresh = await seedEvent(r, creator, "0644000")
     await expect(
       svc.requestResources({ cleanupId: fresh, message: "One more.", actorId: ORG }),
     ).rejects.toMatchObject({ code: "RATE_LIMITED" })
@@ -762,11 +767,11 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("M20: a rejected request (403) costs the host nothing", async () => {
-    const { repo: r, svc, sends } = harness({
+    const { repo: r, svc, sends, creator } = harness({
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, svc, "0644000")
+    const id = await seedEvent(r, creator, "0644000")
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
@@ -777,11 +782,11 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("403s a non-host (and sends nothing)", async () => {
-    const { repo: r, svc, sends } = harness({
+    const { repo: r, svc, sends, creator } = harness({
       verified: true,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, svc, "0644000")
+    const id = await seedEvent(r, creator, "0644000")
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
@@ -789,11 +794,11 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("403s a host who is NOT identity-verified", async () => {
-    const { repo: r, svc, sends } = harness({
+    const { repo: r, svc, sends, creator } = harness({
       verified: false,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, svc, "0644000")
+    const id = await seedEvent(r, creator, "0644000")
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ORG }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
@@ -801,8 +806,8 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("422 NOT_ROUTABLE when the jurisdiction has no contact on file", async () => {
-    const { repo: r, svc, sends } = harness({ verified: true, contact: null })
-    const id = await seedEvent(r, svc, "0644000")
+    const { repo: r, svc, sends, creator } = harness({ verified: true, contact: null })
+    const id = await seedEvent(r, creator, "0644000")
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ORG }),
     ).rejects.toMatchObject({ code: "NOT_ROUTABLE" })
@@ -891,6 +896,30 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
     const res = await svc.setMemberRole(id, ORG, ALICE, "member")
     expect(res).toEqual({ ok: true })
     expect(bells).toHaveLength(0)
+  })
+
+  it("assigns the day-of STAFF role, which the contract accepts alongside cohost and member", async () => {
+    const id = await setup()
+    const res = await svc.setMemberRole(id, ORG, ALICE, "staff")
+    expect(res).toEqual({ ok: true })
+    expect(await repo.roleOf(id, ALICE)).toBe("staff")
+    expect(bells.map((b) => b.bodyKey)).toEqual(["notification.cleanup_role.promoted.body"])
+  })
+
+  it("moves someone between staff and cohost, and back down to member", async () => {
+    const id = await setup()
+    await svc.setMemberRole(id, ORG, ALICE, "staff")
+    await svc.setMemberRole(id, ORG, ALICE, "cohost")
+    expect(await repo.roleOf(id, ALICE)).toBe("cohost")
+    await svc.setMemberRole(id, ORG, ALICE, "member")
+    expect(await repo.roleOf(id, ALICE)).toBe("member")
+  })
+
+  it("never lets the organizer's own role be changed, staff included", async () => {
+    const id = await setup()
+    await expect(svc.setMemberRole(id, ORG, ORG, "staff")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
   })
 
   it("403s a cohost or plain member trying to promote/demote (organizer-only, D3)", async () => {
@@ -1579,14 +1608,10 @@ describe("F157: cancellation fan-out leaves the request path", () => {
       counters: new InMemoryCounterStore(),
       jobs,
       logger: { warn: () => {}, error: (obj) => errors.push(obj) },
-      guestNotifier: {
-        notifyEventCancelled: (cleanupId) => {
+      attendeeNotifier: {
+        eventCancelled: (cleanupId: string) => {
           guestCalls.push(cleanupId)
-          return Promise.resolve()
-        },
-        notifyEventUpdated: ({ cleanupId }) => {
-          guestCalls.push(cleanupId)
-          return Promise.resolve()
+          return Promise.resolve(null)
         },
       },
     })
@@ -1628,14 +1653,10 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     const svc = makeCleanupService({
       repo,
       counters: new InMemoryCounterStore(),
-      guestNotifier: {
-        notifyEventCancelled: (cleanupId) => {
+      attendeeNotifier: {
+        eventCancelled: (cleanupId: string) => {
           guestCalls.push(cleanupId)
-          return Promise.resolve()
-        },
-        notifyEventUpdated: ({ cleanupId }) => {
-          guestCalls.push(cleanupId)
-          return Promise.resolve()
+          return Promise.resolve(null)
         },
       },
     })
@@ -1651,9 +1672,8 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     const svc = makeCleanupService({
       repo,
       counters: new InMemoryCounterStore(),
-      guestNotifier: {
-        notifyEventCancelled: () => Promise.reject(new Error("guest roster read failed")),
-        notifyEventUpdated: () => Promise.resolve(),
+      attendeeNotifier: {
+        eventCancelled: () => Promise.reject(new Error("guest roster read failed")),
       },
     })
     const created = await svc.createCleanup(baseInput(), ORG)

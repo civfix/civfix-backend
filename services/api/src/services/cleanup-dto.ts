@@ -4,12 +4,15 @@ import type {
   CleanupDTO,
   CleanupMemberRole,
   EventSlotDTO,
+  HostCapability,
   LinkedEventRef,
   LinkedReportRef,
+  OrganizationRefDTO,
   PersonDTO,
 } from "@civfix/shared"
 import type {
   AttendeeView,
+  CleanupOrganizationView,
   CleanupPersonView,
   CleanupRecord,
   EventSlotView,
@@ -65,12 +68,32 @@ export function toEventSlotDTO(view: EventSlotView): EventSlotDTO {
   }
 }
 
+export interface CleanupDTOExtras {
+  slots?: EventSlotDTO[]
+  slotCount?: number
+  myCapabilities?: readonly HostCapability[]
+  coverUrl?: string | null
+  galleryUrls?: string[]
+  organizationLogoUrl?: string | null
+}
+
+export function toOrganizationRef(view: CleanupOrganizationView, logoUrl: string | null): OrganizationRefDTO {
+  return {
+    id: view.id,
+    slug: view.slug,
+    name: view.name,
+    logoUrl,
+    verified: view.verifiedStatus === "verified",
+    verifiedKind: view.verifiedKind,
+  }
+}
+
 export function toCleanupDTO(
   record: CleanupRecord,
   joined: boolean,
   linkedReports: LinkedReportRef[] = [],
   myRole: CleanupMemberRole | null = null,
-  slotting: { slots?: EventSlotDTO[]; slotCount?: number } = {},
+  slotting: CleanupDTOExtras = {},
 ): CleanupDTO {
   return {
     id: record.id,
@@ -95,6 +118,25 @@ export function toCleanupDTO(
     linkedReports,
     slots: slotting.slots ?? [],
     ...(slotting.slotCount !== undefined ? { slotCount: slotting.slotCount } : {}),
+    endsAt: record.endsAt === null ? null : record.endsAt.toISOString(),
+    timezone: record.timezone,
+    visibility: record.visibility,
+    coverUrl: slotting.coverUrl ?? null,
+    galleryUrls: slotting.galleryUrls ?? [],
+    donationUrl: record.donationUrl,
+    pageSlug: record.pageSlug,
+    registrationOpensAt:
+      record.registrationOpensAt === null ? null : record.registrationOpensAt.toISOString(),
+    registrationClosesAt:
+      record.registrationClosesAt === null ? null : record.registrationClosesAt.toISOString(),
+    capacity: record.capacity,
+    organization:
+      record.organization === null
+        ? null
+        : toOrganizationRef(record.organization, slotting.organizationLogoUrl ?? null),
+    ticketTypes: [],
+    myCapabilities: [...(slotting.myCapabilities ?? [])],
+    reminderOffsetsMinutes: record.reminderOffsetsMin,
   }
 }
 

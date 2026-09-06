@@ -529,6 +529,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   const canForwardCity = makeCityForwardThrottle({
     incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
+    incrBy: (key, by, ttlSeconds) => container.getCounterStore().incrBy(key, by, ttlSeconds),
   })
 
   const notifyReportChatMembers =

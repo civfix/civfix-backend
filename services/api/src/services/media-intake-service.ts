@@ -11,7 +11,7 @@ import type {
   MediaStatus,
 } from "@civfix/shared"
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
-import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types.js"
+import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types-host.js"
 
 type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"

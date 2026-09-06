@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
+import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 import { LINKED_REPORTS_LIST_PREVIEW } from "../../src/services/cleanup-dto.js"
 import {
@@ -43,7 +44,7 @@ beforeEach(() => {
   repo.seedReport({ id: R2, title: "Graffiti", category: "graffiti" })
   repo.seedReport({ id: R3, title: "Held one", status: "held" })
   repo.seedReport({ id: R4, title: "Fixed hazard", category: "hazard", status: "resolved" })
-  service = makeCleanupService({ repo })
+  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
 })
 
 describe("createCleanup linking", () => {
@@ -258,7 +259,7 @@ describe("listCleanups linkedReports hydration (#70 map blend)", () => {
 
   it("F065: a report cannot be linked past MAX_EVENTS_PER_REPORT, and its linkedEvents read is bounded", async () => {
     for (let i = 0; i < MAX_EVENTS_PER_REPORT; i++) {
-      const c = await service.createCleanup(baseInput({ title: `Event ${i}` }), ORG)
+      const c = repo.seedCleanup({ organizerUserId: ORG, title: `Event ${i}` })
       repo.seedLink(c.id, R1, ORG)
     }
     await expect(

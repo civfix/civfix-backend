@@ -307,3 +307,95 @@ filter — asserted offline by
 large, the safe TTL is "delete events whose thread has no outbound message newer
 than N months", never a flat `created_at` cutoff — the newest attempt's events
 must outlive the in-flight and stale-claim windows by a wide margin.
+
+---
+
+## Event host platform — new TTLs (contract 0.40.0)
+
+Organizations, ticketed registration, host broadcasts and donations each add
+stores with their own rule. Everything below is enforced by the
+`host.retention.sweep` cron (`HOST_RETENTION_CRON`, default `35 4 * * *`) unless
+another lane is named; every lane is bounded (500 rows × 20 pages per run) and
+NEVER throws — a failed lane is logged and the next lane still runs.
+
+### Organizations and event team
+
+| Table | Rule | Enforced by |
+|---|---|---|
+| `org_verifications.ein_number` | NULLed **90 days** after `reviewed_at`; `ein_scrubbed_at` records it. The row (kind, decision, document list, reviewer) is kept — it is the audit trail of a verification decision. | `host.retention.sweep` → `organizationService.scrubDecidedEins(limit)` |
+| `org_verifications.documents` | Kept as an id list; the underlying media are `purpose = 'verification'` assets and follow the verification-media rules. Never exported to the organization or to `/me/data-export`. | — |
+| `cleanup_team_invites.invited_email` | NULLed **7 days after `expires_at`**, and immediately on accept or revoke; `email_scrubbed_at` records it. The row is kept as the record of who was given standing on the event. | `host.retention.sweep` → `hostTeamService.scrubInviteEmails(limit)` + the accept/revoke statements |
+| `cleanup_team_invites.status` | `pending` → `expired` once `expires_at` passes. | `host.retention.sweep` → `hostTeamService.expireStaleInvites(limit)` |
+| `event_consents` | **Never scrubbed, never swept.** Deleted only with its event (`ON DELETE CASCADE`); `registration_id` is `ON DELETE SET NULL` (0121) so the consent artifact survives a registration that does not. It holds no contact detail of its own — the subject is a foreign key — and it is the artifact THAT consent existed, including the `surface` it was captured on. | — |
+
+### Registration and check-in
+
+| Store | Rule | Mechanism |
+|---|---|---|
+| `cleanup_answers` (`value_text` / `value_json`) | NULLed **30 days** after the event ends | `host.retention.sweep` -> `registrations` lane; `scrubbed_at` stamped, a partial index drains the backlog |
+| `cleanup_registration_seats.checked_in_at` | coarsened to the DAY at **30 days** | `host.retention.sweep` -> `registrations` lane; `checkin_coarsened_at` stamped |
+| `cleanup_registration_seats.attendee_name` | NULLed **30 days** after the event | `host.retention.sweep` -> `registrations` lane; partial index |
+| `cleanup_registrations.host_note` | NULLed **90 days** after the event | `host.retention.sweep` -> `registrations` lane; partial index |
+| `cleanup_registrations`, `cleanup_registration_seats` (the rows) | Kept. They are the roster record of someone else's event, and a check-in is a civic-participation record. | — |
+
+### Communications, analytics and exports
+
+| Data | TTL | Lane |
+|---|---|---|
+| `broadcast_deliveries` rows | **180 d** from `created_at` | `host.retention.sweep` → `broadcast_deliveries` |
+| `broadcasts` subject + body + CTA | scrubbed **180 d** after `finished_at`; the counts and the row are kept indefinitely as the audit record that a message was sent | `host.retention.sweep` → `broadcast_content` |
+| `host_exports` rows | **90 d** from `requested_at` | `host.retention.sweep` → `host_exports` |
+| host export OBJECTS | **24 h** (`HOST_EXPORT_TTL_HOURS`); objects are deleted BEFORE their rows | `host.export.reap` |
+| `event_metrics_daily` | **never** — aggregates with no identifier of any kind, and the only long-run record a host has | — |
+| `broadcast_unsubscribes`, `email_suppressions` | **indefinite, deliberately** — a suppression list that expires re-enables mailing someone who said stop (same reasoning as `sms_opt_outs`) | — |
+
+### Donations, eligibility and legal
+
+| Table | Rows deleted | Source schema |
+|---|---|---|
+| `donations` | **none, ever.** Contact columns (`donor_email`, `donor_name`) NULLed at `charged_at + 7y` | `schema/donations.ts` |
+| `donation_refunds` / `donation_disputes` | none, ever | `schema/donation_refunds.ts` |
+| `stripe_events` | deleted at `received_at + 400d` | `schema/stripe_events.ts` |
+| `org_eligibility_checks` | deleted at the per-row `retention_until` (7 y; 10 y OFAC) | `schema/org_eligibility_checks.ts` |
+| `eligibility_source_revisions` | deleted at `retention_until`, **object before row** | `schema/eligibility_source_revisions.ts` |
+| `consent_records` | none, ever | `schema/consent_records.ts` |
+| `legal_documents` | none, ever | `schema/legal_documents.ts` |
+
+⚠ **The media-worker orphan sweep must never reap `receipts/` or `compliance/`.**
+Neither prefix has `media_assets` rows, so today's row-driven reaper cannot reach
+them — but a prefix-listing reaper would silently destroy issued receipts and
+§8.01 eligibility evidence. Any change to that sweep must exclude both prefixes
+explicitly.
+
+## What binds a media asset (the orphan sweep's exemption set)
+
+The media-worker `orphan.sweep` deletes every `media_assets` row nothing points
+at once it is older than `MEDIA_ORPHAN_TTL_MS` (6h by default), together with its
+R2 upload, served and thumbnail objects. "Nothing points at it" is one
+definition, in `src/services/media-bindings.ts`, and the sweep
+(`orphanPredicate`), the claim helpers (`claimEventMediaInTx`,
+`claimVerificationDocumentsInTx`, `savePage`) and the media view authorizer
+(`authorizeEventBound`) all read it from there, so an asset can never be
+reapable and servable at the same time.
+
+The bindings are:
+
+| Binding | Where |
+| --- | --- |
+| `media_assets.report_id` / `chat_message_id` / `post_id` | columns on the asset itself |
+| `users.avatar_media_id` | profile photo |
+| `chat_groups.avatar_media_id` | group photo |
+| `organizations.logo_media_id` | org logo |
+| `cleanups.cover_media_id`, `cleanups.gallery_media_ids` | event imagery |
+| `cleanup_page_media (cleanup_id, media_id)` | images embedded in a signup page's blocks |
+| `purpose = 'verification'` | operator-only documents, exempt by purpose |
+
+`cleanup_page_media` (0123) exists because `cleanup_pages.blocks` is a jsonb
+document: an image referenced only from inside a block has no joinable reference,
+and a jsonb containment scan over every page is not something an hourly reaper may
+run. `savePage` rewrites that set on every save, so dropping a block drops the
+binding and the image becomes reapable again on the normal schedule.
+
+A verification document dropped from a re-submission has its `purpose` cleared
+back to `'report'` in the same transaction, so it returns to the reapable set
+instead of being exempt forever.

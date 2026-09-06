@@ -1,51 +1,25 @@
-/**
- * Audit log helper (Phase 2). EVERY admin write calls writeAudit so the activity feed and the
- * audit-log view (both read `audit_log`) record who did what. civfixplan done-gate: "all admin actions
- * are audited."
- *
- * The action string is a stable, dotted, lower_snake convention: `<domain>.<verb>` (e.g.
- * `operator.login`, `discovery.contacts_saved`, `report.status_changed`, `user.banned`,
- * `gov_claim.approved`, `moderation.removed`, `mail.sent`). `AdminAuditAction` enumerates the actions
- * wave 2 will write; it is a UNION of string literals AND `string` so a new action does not require an
- * edit here, but the named members give call sites autocomplete + a discoverable catalogue.
- *
- * `db` is the raw postgres-js tag (`container.getDb().sql`), matching the hand-written SQL repos. We
- * insert via a parameterized tagged template (jsonb is serialized by postgres.js from a plain object),
- * so there is no string interpolation of untrusted values. `target` is a free-form reference string,
- * conventionally `<type>:<id>` (e.g. `report:<uuid>`, `gov_claim:<uuid>`).
- */
 
 import type { Queryable } from "../../db/client.js"
 
-/**
- * Stable admin audit action catalogue. The trailing `(string & {})` keeps the union OPEN so a
- * not-yet-listed action still typechecks (wave 2 can add rows without editing this file) while the
- * named literals provide autocomplete. Grouped by domain to mirror the route groups.
- */
 export type AdminAuditAction =
-  // auth / session
   | "operator.login"
   | "operator.logout"
-  // discovery / jurisdictions
   | "discovery.contacts_saved"
   | "discovery.draft_saved"
   | "discovery.note_added"
   | "discovery.flagged"
   | "jurisdiction.patched"
-  // reports
   | "report.status_changed"
   | "report.flagged"
   | "report.unflagged"
   | "report.removed"
   | "report.followup_sent"
   | "report.routed"
-  // events (cleanups)
   | "event.status_changed"
   | "event.flagged"
   | "event.unflagged"
   | "event.cancelled"
   | "event.message_posted"
-  // users
   | "user.flagged"
   | "user.unflagged"
   | "user.status_changed"
@@ -53,66 +27,78 @@ export type AdminAuditAction =
   | "user.role_changed"
   | "user.verified"
   | "user.unverified"
-  // gov provisioning
   | "gov_claim.verified"
   | "gov_claim.approved"
   | "gov_claim.rejected"
-  // moderation
   | "moderation.approved"
   | "moderation.removed"
   | "moderation.held"
   | "moderation.appeal_decided"
-  // mail / outreach
   | "mail.sent"
   | "mail.replied"
   | "mail.resent"
   | "mail.status_changed"
   | "outreach.digest_sent"
-  // inbox (catch-all inbound mail)
   | "inbox.status_changed"
-  // L4: sensitive per-SUBJECT READS. Aggregate/list/analytics reads stay unaudited by design (see
-  // audit.routes.ts); these four disclose one identified person's private material to one operator, so
-  // "who looked at whose messages" has to be answerable. Written best-effort by routes/admin/_audit-read.ts.
   | "user.detail_viewed"
   | "user.messages_viewed"
   | "inbox.message_viewed"
   | "mail.thread_viewed"
-  // escape hatch: any other dotted action wave 2 introduces
+  | "media.viewed"
+  | "org.detail_viewed"
+  | "org.verifications_viewed"
+  | "event.roster_viewed"
+  | "event.guests_viewed"
+  | "event.answers_viewed"
+  | "org.verification_submitted"
+  | "org.verification_verified"
+  | "org.verification_rejected"
+  | "org.member_role_changed"
+  | "org.member_removed"
+  | "event.host_transferred"
+  | "event.team_invited"
+  | "event.team_invite_revoked"
+  | "event.team_role_changed"
+  | "event.attendee_removed"
+  | "event.attendee_transferred"
+  | "event.attendee_note_set"
+  | "event.attendee_registered_by_host"
+  | "event.attendee_checked_in"
+  | "event.attendee_checkin_undone"
+  | "event.attendees_marked_no_show"
+  | "event.waitlist_promoted"
+  | "event.page_published"
+  | "event_page.flagged"
+  | "event_page.unflagged"
+  | "event_page.unpublished"
+  | "event.broadcast_sent"
+  | "event.broadcast_test_sent"
+  | "event.broadcast_killed"
+  | "event.roster_exported"
+  | "host.messaging_suspended"
+  | "host.messaging_restored"
   | (string & {})
 
-/**
- * The L4 read-audit actions: the four sensitive per-subject READS, as written by
- * routes/admin/_audit-read.ts. Separated out because they are the only actions the recent-activity feed
- * must NOT show — routine operator navigation writes one per page view, which floods a feed whose per-source
- * window is only `limit` rows and pushes every real action out of it. They stay fully queryable in the
- * audit-log view, which is where "who looked at whose messages" is actually asked.
- */
 export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "user.detail_viewed",
   "user.messages_viewed",
   "inbox.message_viewed",
   "mail.thread_viewed",
+  "media.viewed",
+  "org.detail_viewed",
+  "org.verifications_viewed",
+  "event.roster_viewed",
+  "event.guests_viewed",
+  "event.answers_viewed",
 ]
 
 export interface WriteAuditInput {
-  /** The acting operator's userId. Null/undefined for system-originated actions. */
   actorId?: string | null
-  /** Stable dotted action, e.g. "report.status_changed". */
   action: AdminAuditAction
-  /** Free-form subject reference, conventionally "<type>:<id>". Optional. */
   target?: string | null
-  /** Action-specific detail (serialized to the jsonb `meta` column). Optional. */
   meta?: Record<string, unknown> | null
 }
 
-/**
- * Insert one audit_log row. Accepts the pooled tag OR a transaction-scoped tag (Queryable), so a caller
- * can record the audit inside the SAME transaction as the effect it audits (atomic "did + recorded").
- * Best practice: pass the transaction tag when one is open. Returns the new audit row id.
- *
- * `meta` is serialized to jsonb via the postgres.js `db.json(...)` value marker (the same pattern the
- * Phase 1 repos use for jsonb columns); a null/absent meta is written as SQL NULL.
- */
 export async function writeAudit(db: Queryable, input: WriteAuditInput): Promise<string> {
   const actorId = input.actorId ?? null
   const target = input.target ?? null
@@ -122,7 +108,6 @@ export async function writeAudit(db: Queryable, input: WriteAuditInput): Promise
     VALUES (${actorId}, ${input.action}, ${target}, ${meta})
     RETURNING id
   `
-  // RETURNING always yields the inserted row; guard for the type system.
   const id = rows[0]?.id
   if (id === undefined) throw new Error("writeAudit: insert returned no row")
   return id

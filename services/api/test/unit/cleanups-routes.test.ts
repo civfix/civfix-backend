@@ -1184,3 +1184,101 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     expect(res.statusCode).toBe(409)
   })
 })
+
+describe("GET /cleanups/:id/ics", () => {
+  it("returns a calendar document for a public event, with no session", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+
+    const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { ics: string; filename: string }
+    expect(body.filename).toBe(`civfix-event-${id}.ics`)
+    expect(body.ics.startsWith("BEGIN:VCALENDAR")).toBe(true)
+    expect(body.ics).toContain("BEGIN:VEVENT")
+    expect(body.ics).toContain(`UID:cleanup-${id}@civfix.org`)
+    expect(body.ics).toContain("SUMMARY:Sweep")
+    expect(body.ics.trimEnd().endsWith("END:VCALENDAR")).toBe(true)
+  })
+
+  it("marks a cancelled event CANCELLED so a calendar client withdraws it", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/cancel`,
+      headers: auth(token),
+      payload: { reason: "storm" },
+    })
+
+    const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as { ics: string }).ics).toContain("STATUS:CANCELLED")
+  })
+
+  it("404s an event that does not exist rather than emitting an empty calendar", async () => {
+    const { app } = await makeHarness()
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/cleanups/99999999-9999-4999-8999-999999999999/ics",
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("rides the event visibility gate: a private event 404s for a stranger", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: { visibility: "private" },
+    })
+    expect(patched.statusCode).toBe(200)
+
+    const anonymous = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
+    expect(anonymous.statusCode).toBe(404)
+
+    const host = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}/ics`,
+      headers: auth(token),
+    })
+    expect(host.statusCode).toBe(200)
+  })
+})
+
+describe("PATCH /cleanups/:id/members/:userId — the assignable roles", () => {
+  async function seededEvent(): Promise<{ h: Harness; id: string; memberId: string }> {
+    const h = await makeHarness()
+    const id = await createCleanup(h.app, h.token)
+    const memberId = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    h.repo.seedUser({ id: memberId, displayName: "Ada", handle: "ada" })
+    h.repo.members.push({ cleanupId: id, userId: memberId, role: "member" })
+    return { h, id, memberId }
+  }
+
+  it("accepts staff at the boundary — the contract enum carries it", async () => {
+    const { h, id, memberId } = await seededEvent()
+    const res = await h.app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${memberId}`,
+      headers: auth(h.token),
+      payload: { role: "staff" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(await h.repo.roleOf(id, memberId)).toBe("staff")
+  })
+
+  it("still refuses organizer — ownership moves by transfer, never by a role cell", async () => {
+    const { h, id, memberId } = await seededEvent()
+    const res = await h.app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}/members/${memberId}`,
+      headers: auth(h.token),
+      payload: { role: "organizer" },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(await h.repo.roleOf(id, memberId)).toBe("member")
+  })
+})

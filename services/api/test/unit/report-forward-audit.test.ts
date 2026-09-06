@@ -228,6 +228,7 @@ describe("makeCityForwardThrottle (F023: durable per-actor / per-geoid city-forw
   it("FAILS CLOSED when the counter store throws", async () => {
     const broken: CounterStore = {
       incr: () => Promise.reject(new Error("redis down")),
+      incrBy: () => Promise.reject(new Error("redis down")),
     }
     const gate = makeCityForwardThrottle(broken)
     await expect(gate(R2, GEO, ACTOR)).resolves.toBe(false)

@@ -124,6 +124,69 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
     expect(storage.get(servedKey(r2Key))).not.toBeNull()
   })
 
+  async function insertUser(name: string): Promise<string> {
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name) VALUES (${name}) RETURNING id
+    `
+    if (!row) throw new Error("failed to insert user fixture")
+    return row.id
+  }
+
+  async function insertCleanup(organizerId: string): Promise<string> {
+    const id = randomUUID()
+    await h.sql`
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
+      VALUES (
+        ${id}, ${organizerId}, 'site', 'Orphan sweep sweep',
+        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), now() + interval '7 days', 'upcoming'
+      )
+    `
+    return id
+  }
+
+  it("never reaps an event cover, a gallery image, an org logo or a page-block image", async () => {
+    const cutoff = new Date(Date.now() - limits.orphanTtlMs)
+    const organizer = await insertUser("Organizer")
+    const cleanupId = await insertCleanup(organizer)
+
+    const cover = await insertAsset({ ageMs: limits.orphanTtlMs + 60_000, status: "ready" })
+    const gallery = await insertAsset({ ageMs: limits.orphanTtlMs + 60_000, status: "ready" })
+    const logo = await insertAsset({ ageMs: limits.orphanTtlMs + 60_000, status: "ready" })
+    const block = await insertAsset({ ageMs: limits.orphanTtlMs + 60_000, status: "ready" })
+    const loose = await insertAsset({ ageMs: limits.orphanTtlMs + 60_000, status: "ready" })
+
+    await h.sql`
+      UPDATE cleanups
+         SET cover_media_id = ${cover.id}, gallery_media_ids = ARRAY[${gallery.id}]::uuid[]
+       WHERE id = ${cleanupId}
+    `
+    const [org] = await h.sql<{ id: string }[]>`
+      INSERT INTO organizations (name, slug, created_by, logo_media_id)
+      VALUES ('Sweepers', ${`sweepers-${randomUUID().slice(0, 8)}`}, ${organizer}, ${logo.id})
+      RETURNING id
+    `
+    expect(org).toBeDefined()
+    await h.sql`
+      INSERT INTO cleanup_page_media (cleanup_id, media_id) VALUES (${cleanupId}, ${block.id})
+    `
+
+    const found = (await repo.findOrphans(cutoff, 500)).map((o) => o.id)
+    expect(found).not.toContain(cover.id)
+    expect(found).not.toContain(gallery.id)
+    expect(found).not.toContain(logo.id)
+    expect(found).not.toContain(block.id)
+    expect(found).toContain(loose.id)
+
+    for (const bound of [cover, gallery, logo, block]) {
+      expect(await repo.deleteOrphan(bound.id, cutoff)).toBeNull()
+    }
+    const survivors = await h.sql<{ id: string }[]>`
+      SELECT id FROM media_assets
+       WHERE id = ANY(${[cover.id, gallery.id, logo.id, block.id]}::uuid[])
+    `
+    expect(survivors).toHaveLength(4)
+  })
+
   it("still reaps a row that stayed unbound, deleting upload + served + thumb objects", async () => {
     const { id, r2Key } = await insertAsset({ ageMs: limits.orphanTtlMs + 60_000, status: "ready" })
     for (const key of [r2Key, servedKey(r2Key), thumbnailKey(r2Key)]) {

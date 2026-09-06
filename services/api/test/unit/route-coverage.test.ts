@@ -26,6 +26,15 @@ import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import type { ReportOwner } from "../../src/services/report-service.js"
+import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
+import { InMemoryHostTeamRepository } from "../../src/services/host/host-team-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import {
+  OPEN_HOST_GUARDS,
+  ORGANIZER_STANDING,
+} from "../../src/services/host/registration-wiring.js"
+import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
+import { NO_HOST_STANDING } from "@civfix/shared/host"
 
 const SIGNING_KEY = "test-anon-signing-key"
 
@@ -107,6 +116,14 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     threadsRepo: new InMemoryThreadsRepository(),
   }
 
+  const orgRepo = new InMemoryOrganizationRepository()
+  const teamRepo = new InMemoryHostTeamRepository()
+  const hostRepo = new InMemoryHostRegistrationRepository()
+  const hostTokens = makeTicketTokenSigner("route-coverage-ticket-token-secret-value")
+  hostRepo.tokenHashResolver = (seatId) => hostTokens.hashFor(seatId)
+  hostRepo.seedEvent({ cleanupId: PARAM_VALUE })
+  hostRepo.seedTicketType({ cleanupId: PARAM_VALUE, capacity: 10, maxPartySize: 4 })
+
   const container = buildContainer(env)
 
   return buildServer({
@@ -119,9 +136,40 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     cleanupOverrides: { repo: cleanupRepo },
     guestRsvpOverrides: {
       repo: guestRepo,
-      roleOf: () => Promise.resolve(null),
+      requireGuestContact: () => Promise.resolve(),
       cache: cache,
       counters,
+    },
+    organizationOverrides: { repo: orgRepo, counters },
+    hostTeamOverrides: {
+      repo: teamRepo,
+      counters,
+      standing: () =>
+        Promise.resolve({
+          cleanupId: PARAM_VALUE,
+          standing: NO_HOST_STANDING,
+          organizerUserId: PARAM_VALUE,
+          organizationId: null,
+          visibility: "public" as const,
+        }),
+    },
+    hostPortfolioOverrides: {
+      repo: {
+        listHostedEvents: () => Promise.resolve({ items: [], nextCursor: null }),
+        kpisFor: () => Promise.resolve({ eventsHosted: 0, upcomingEvents: 0 }),
+      },
+    },
+    hostRegistrationOverrides: {
+      repo: hostRepo,
+      tokens: hostTokens,
+      guards: OPEN_HOST_GUARDS,
+      counters,
+    },
+    hostPageOverrides: {
+      repo: hostRepo,
+      guards: OPEN_HOST_GUARDS,
+      counters,
+      standingOf: () => Promise.resolve(ORGANIZER_STANDING),
     },
     socialOverrides: { repo: socialRepo },
     volunteerOverrides: { repo: new InMemoryVolunteerHoursRepository() },
@@ -179,8 +227,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 211 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(211)
+  it("covers ALL 322 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(322)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

@@ -22,7 +22,7 @@ beforeAll(async () => {
     container: buildContainer(env),
     guestRsvpOverrides: {
       repo,
-      roleOf: () => Promise.resolve(null),
+      requireGuestContact: () => Promise.resolve(),
       cache: new InMemoryCacheClient(),
       counters: new InMemoryCounterStore(),
       mailer: new FakeMailer(),

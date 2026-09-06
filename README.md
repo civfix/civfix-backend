@@ -301,7 +301,8 @@ header. `TRUST_PROXY` configures that trust:
   topology the API only receives connections from Caddy on the internal network, so a forged
   `X-Forwarded-For` from a public client is never honored, while the value Caddy sets for the real
   client IS. Safe in production and convenient in dev (loopback trusted) with no config.
-- a hop count (e.g. `TRUST_PROXY=1`): trust exactly N hops (use `1` when only Caddy fronts the API).
+- a bare number (e.g. `TRUST_PROXY=1`): IGNORED - Fastify 5.12.1 removed hop-count trust, so the value
+  falls back to the safe default above rather than silently trusting nothing.
 - a CIDR/IP comma list (e.g. `TRUST_PROXY=10.0.0.0/8,127.0.0.1`): trust `X-Forwarded-*` only from those
   source addresses.
 - `true` / `false`: trust all (UNSAFE; private networks only) / trust none (read the raw socket peer).
@@ -309,8 +310,8 @@ header. `TRUST_PROXY` configures that trust:
 This pairs with the Caddyfile in the civfix-infra repo (`edge/caddy/Caddyfile`), which SETS
 `X-Forwarded-For` fresh from Cloudflare's `Cf-Connecting-Ip`, so a client cannot pre-seed the header
 even for the trusted hop. The two must
-ship together: trusting a hop count helps only if Caddy reliably sets the value, and stripping at Caddy
-helps only if Fastify is told which hops to trust.
+ship together: trusting an upstream helps only if Caddy reliably sets the value, and stripping at Caddy
+helps only if Fastify is told which sources to trust.
 
 ### Building / running a single image by hand
 

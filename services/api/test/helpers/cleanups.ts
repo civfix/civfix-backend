@@ -4,6 +4,8 @@ import { AppError } from "@civfix/shared"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
+  CleanupOrganizationView,
+  CreateCleanupOutcome,
   ClaimSlotOutcome,
   CleanupBBox,
   CleanupPersonView,
@@ -29,7 +31,17 @@ import {
   MAX_EVENTS_PER_REPORT,
 } from "../../src/services/cleanup-repository.drizzle.js"
 import { MAX_LINKED_REPORTS } from "@civfix/shared"
-import type { CleanupMemberRole, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
+import type {
+  CleanupMemberRole,
+  EventKind,
+  EventVisibility,
+  OrganizationMemberRole,
+  OrgVerificationKind,
+  OrgVerificationStatus,
+  ReportCategory,
+  ReportStatus,
+} from "@civfix/shared"
+import { NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
 import { IN_PROGRESS_GRACE_HOURS } from "../../src/services/cleanup-sql.js"
 import {
@@ -56,9 +68,38 @@ interface StoredCleanup {
   status: CleanupRecord["status"]
   bring: string[] | null
   address: string | null
+  capacity: number | null
   jurisdictionGeoid: string | null
   referenceCode: string | null
   createdAt: Date
+  endsAt: Date | null
+  timezone: string | null
+  visibility: EventVisibility
+  coverMediaId: string | null
+  galleryMediaIds: string[]
+  donationUrl: string | null
+  pageSlug: string | null
+  registrationOpensAt: Date | null
+  registrationClosesAt: Date | null
+  organizationId: string | null
+  reminderOffsetsMin: number[] | null
+  hostReplyTo: string | null
+  hostReplyToVerifiedAt: Date | null
+}
+
+interface StoredOrganization {
+  id: string
+  slug: string
+  name: string
+  logoKey: string | null
+  verifiedStatus: OrgVerificationStatus
+  verifiedKind: OrgVerificationKind | null
+}
+
+interface StoredOrgMember {
+  organizationId: string
+  userId: string
+  role: OrganizationMemberRole
 }
 
 interface StoredMember {
@@ -134,6 +175,9 @@ export interface GuestCountSource {
 export class InMemoryCleanupRepository implements CleanupRepository {
   guestSource: GuestCountSource | null = null
   readonly cleanups = new Map<string, StoredCleanup>()
+  readonly organizations = new Map<string, StoredOrganization>()
+  readonly orgMembers: StoredOrgMember[] = []
+  private readonly idempotentCleanups = new Map<string, string>()
   readonly members: StoredMember[] = []
   readonly bans: StoredBan[] = []
   readonly users = new Map<string, StoredUser>()
@@ -230,9 +274,23 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: over.status ?? "upcoming",
       bring: over.bring ?? null,
       address: over.address ?? null,
+      capacity: over.capacity ?? null,
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
       referenceCode: over.referenceCode ?? null,
       createdAt: over.createdAt ?? new Date(),
+      endsAt: over.endsAt ?? null,
+      timezone: over.timezone ?? null,
+      visibility: over.visibility ?? "public",
+      coverMediaId: over.coverMediaId ?? null,
+      galleryMediaIds: over.galleryMediaIds ?? [],
+      donationUrl: over.donationUrl ?? null,
+      pageSlug: over.pageSlug ?? null,
+      registrationOpensAt: over.registrationOpensAt ?? null,
+      registrationClosesAt: over.registrationClosesAt ?? null,
+      organizationId: over.organizationId ?? null,
+      reminderOffsetsMin: over.reminderOffsetsMin ?? null,
+      hostReplyTo: over.hostReplyTo ?? null,
+      hostReplyToVerifiedAt: over.hostReplyToVerifiedAt ?? null,
     }
     this.cleanups.set(cleanup.id, cleanup)
     if (!this.users.has(cleanup.organizerUserId)) {
@@ -281,6 +339,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: c.status,
       bring: c.bring,
       address: c.address,
+      capacity: c.capacity,
       jurisdictionGeoid: c.jurisdictionGeoid,
       referenceCode: c.referenceCode,
       createdAt: c.createdAt,
@@ -288,10 +347,48 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       guestCount: this.guestCountOf(c.id),
       dist: near !== null ? haversineMeters(near, { lat: c.lat, lng: c.lng }) : null,
       organizer: this.personView(c.organizerUserId),
+      endsAt: c.endsAt,
+      timezone: c.timezone,
+      visibility: c.visibility,
+      coverMediaId: c.coverMediaId,
+      coverKey: c.coverMediaId === null ? null : `media/${c.coverMediaId}`,
+      galleryMediaIds: [...c.galleryMediaIds],
+      donationUrl: c.donationUrl,
+      pageSlug: c.pageSlug,
+      registrationOpensAt: c.registrationOpensAt,
+      registrationClosesAt: c.registrationClosesAt,
+      organizationId: c.organizationId,
+      organization: c.organizationId === null ? null : this.orgViewOf(c.organizationId),
+      reminderOffsetsMin: c.reminderOffsetsMin,
+      hostReplyTo: c.hostReplyTo,
+      hostReplyToVerifiedAt: c.hostReplyToVerifiedAt,
     }
   }
 
-  createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord> {
+  private orgViewOf(organizationId: string): CleanupOrganizationView | null {
+    const org = this.organizations.get(organizationId)
+    if (org === undefined) return null
+    return {
+      id: org.id,
+      slug: org.slug,
+      name: org.name,
+      logoKey: org.logoKey,
+      verifiedStatus: org.verifiedStatus,
+      verifiedKind: org.verifiedKind,
+    }
+  }
+
+  createCleanupTx(args: CreateCleanupTxArgs): Promise<CreateCleanupOutcome> {
+    const idem = args.idempotency
+    if (idem !== undefined) {
+      const replayId = this.idempotentCleanups.get(this.idempotencyKeyOf(idem))
+      if (replayId !== undefined) {
+        const existing = this.cleanups.get(replayId)
+        if (existing !== undefined) {
+          return Promise.resolve({ record: this.toRecord(existing, null), replayed: true })
+        }
+      }
+    }
     const referenceCode = this.allocateEventReferenceCode(args.jurCode)
     const cleanup: StoredCleanup = {
       id: args.cleanupId,
@@ -307,9 +404,23 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: args.status,
       bring: args.bring,
       address: args.address,
+      capacity: null,
       jurisdictionGeoid: args.jurisdictionGeoid,
       referenceCode,
       createdAt: this.now(),
+      endsAt: args.host.endsAt ?? null,
+      timezone: args.host.timezone ?? null,
+      visibility: args.host.visibility ?? "public",
+      coverMediaId: args.host.coverMediaId ?? null,
+      galleryMediaIds: [...(args.host.galleryMediaIds ?? [])],
+      donationUrl: args.host.donationUrl ?? null,
+      pageSlug: args.host.pageSlug ?? null,
+      registrationOpensAt: args.host.registrationOpensAt ?? null,
+      registrationClosesAt: args.host.registrationClosesAt ?? null,
+      organizationId: args.host.organizationId ?? null,
+      reminderOffsetsMin: args.host.reminderOffsetsMin ?? null,
+      hostReplyTo: args.host.hostReplyTo ?? null,
+      hostReplyToVerifiedAt: null,
     }
     this.cleanups.set(cleanup.id, cleanup)
     this.members.push({ cleanupId: cleanup.id, userId: cleanup.organizerUserId, role: "organizer" })
@@ -318,7 +429,12 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     this.linkInner(cleanup.id, args.linkedReportIds, args.organizerUserId)
     for (const slot of args.slots) this.insertSlot(cleanup.id, slot)
-    return Promise.resolve(this.toRecord(cleanup, null))
+    if (idem !== undefined) this.idempotentCleanups.set(this.idempotencyKeyOf(idem), cleanup.id)
+    return Promise.resolve({ record: this.toRecord(cleanup, null), replayed: false })
+  }
+
+  private idempotencyKeyOf(idem: { key: string; scope: string; userOrAnon: string }): string {
+    return `${idem.scope}|${idem.userOrAnon}|${idem.key}`
   }
 
   private insertSlot(cleanupId: string, slot: DesiredSlot): string {
@@ -357,6 +473,68 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? this.toRecord(c, null) : null)
   }
 
+  findCleanupByPageSlug(slug: string): Promise<CleanupRecord | null> {
+    const c = [...this.cleanups.values()].find((x) => x.pageSlug === slug)
+    return Promise.resolve(c ? this.toRecord(c, null) : null)
+  }
+
+  galleryKeysFor(cleanupId: string): Promise<string[]> {
+    const c = this.cleanups.get(cleanupId)
+    return Promise.resolve((c?.galleryMediaIds ?? []).map((id) => `media/${id}`))
+  }
+
+  loadOrganizationRef(organizationId: string): Promise<CleanupOrganizationView | null> {
+    return Promise.resolve(this.orgViewOf(organizationId))
+  }
+
+  orgRoleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null> {
+    const member = this.orgMembers.find(
+      (m) => m.organizationId === organizationId && m.userId === userId,
+    )
+    return Promise.resolve(member?.role ?? null)
+  }
+
+  async standingOf(cleanupId: string, userId: string): Promise<HostStanding> {
+    const cleanup = this.cleanups.get(cleanupId)
+    if (cleanup === undefined) return NO_HOST_STANDING
+    const eventRole = await this.roleOf(cleanupId, userId)
+    const orgRole =
+      cleanup.organizationId === null
+        ? null
+        : await this.orgRoleOf(cleanup.organizationId, userId)
+    if (eventRole === null && orgRole === null) return NO_HOST_STANDING
+    return { eventRole, orgRole }
+  }
+
+  async standingsOf(cleanupIds: string[], userId: string): Promise<Map<string, HostStanding>> {
+    const out = new Map<string, HostStanding>()
+    for (const cleanupId of cleanupIds) {
+      out.set(cleanupId, await this.standingOf(cleanupId, userId))
+    }
+    return out
+  }
+
+  seedOrganization(over: Partial<StoredOrganization> & { id?: string } = {}): StoredOrganization {
+    const org: StoredOrganization = {
+      id: over.id ?? randomUUID(),
+      slug: over.slug ?? `org-${this.organizations.size + 1}`,
+      name: over.name ?? "Ballona Creek Trust",
+      logoKey: over.logoKey ?? null,
+      verifiedStatus: over.verifiedStatus ?? "unverified",
+      verifiedKind: over.verifiedKind ?? null,
+    }
+    this.organizations.set(org.id, org)
+    return org
+  }
+
+  seedOrgMember(organizationId: string, userId: string, role: OrganizationMemberRole): void {
+    const existing = this.orgMembers.find(
+      (m) => m.organizationId === organizationId && m.userId === userId,
+    )
+    if (existing) existing.role = role
+    else this.orgMembers.push({ organizationId, userId, role })
+  }
+
   private linkInner(cleanupId: string, reportIds: string[], actorId: string | null): string[] {
     const overCap = reportIds.filter(
       (reportId) =>
@@ -393,6 +571,26 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     if (patch.address !== undefined) c.address = patch.address
     if (patch.bring !== undefined) c.bring = patch.bring
+    if (patch.jurisdictionGeoid !== undefined) c.jurisdictionGeoid = patch.jurisdictionGeoid
+    if (patch.endsAt !== undefined) c.endsAt = patch.endsAt
+    if (patch.timezone !== undefined) c.timezone = patch.timezone
+    if (patch.visibility !== undefined) c.visibility = patch.visibility
+    if (patch.coverMediaId !== undefined) c.coverMediaId = patch.coverMediaId
+    if (patch.galleryMediaIds !== undefined) c.galleryMediaIds = [...patch.galleryMediaIds]
+    if (patch.donationUrl !== undefined) c.donationUrl = patch.donationUrl
+    if (patch.pageSlug !== undefined) c.pageSlug = patch.pageSlug
+    if (patch.registrationOpensAt !== undefined) {
+      c.registrationOpensAt = patch.registrationOpensAt
+    }
+    if (patch.registrationClosesAt !== undefined) {
+      c.registrationClosesAt = patch.registrationClosesAt
+    }
+    if (patch.organizationId !== undefined) c.organizationId = patch.organizationId
+    if (patch.reminderOffsetsMin !== undefined) c.reminderOffsetsMin = patch.reminderOffsetsMin
+    if (patch.hostReplyTo !== undefined) {
+      c.hostReplyTo = patch.hostReplyTo
+      c.hostReplyToVerifiedAt = null
+    }
     return Promise.resolve(true)
   }
 
@@ -466,7 +664,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       .sort((a, b) => b.linkedAt.getTime() - a.linkedAt.getTime())
     for (const link of ordered) {
       const c = this.cleanups.get(link.cleanupId)
-      if (!c) continue
+      if (!c || c.visibility !== "public") continue
       if ((grouped.get(link.reportId)?.length ?? 0) >= LINKED_EVENTS_PER_REPORT_CAP) continue
       const view: LinkedEventView = {
         reportId: link.reportId,
@@ -495,6 +693,21 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(visible)
   }
 
+  private privateBlocksJoin(c: StoredCleanup, userId: string): boolean {
+    if (c.visibility !== "private") return false
+    return !this.visibleInFeed(c, userId)
+  }
+
+  private visibleInFeed(c: StoredCleanup, viewerId: string | null): boolean {
+    if (c.visibility === "public") return true
+    if (viewerId === null) return false
+    if (this.members.some((m) => m.cleanupId === c.id && m.userId === viewerId)) return true
+    return (
+      c.organizationId !== null &&
+      this.orgMembers.some((m) => m.organizationId === c.organizationId && m.userId === viewerId)
+    )
+  }
+
   listCleanups(
     filters: ListCleanupsFilters,
   ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }> {
@@ -521,6 +734,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
           return false
       }
       if (filters.bbox !== undefined && !inBox(c, filters.bbox)) return false
+      if (!this.visibleInFeed(c, filters.viewerId ?? null)) return false
       return true
     })
 
@@ -586,7 +800,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(roles)
   }
 
-  setMemberRole(cleanupId: string, userId: string, role: "cohost" | "member"): Promise<boolean> {
+  setMemberRole(
+    cleanupId: string,
+    userId: string,
+    role: "cohost" | "staff" | "member",
+  ): Promise<boolean> {
     const m = this.members.find((x) => x.cleanupId === cleanupId && x.userId === userId)
     if (!m || m.role === "organizer") return Promise.resolve(false)
     m.role = role
@@ -644,6 +862,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   ): Promise<"joined" | "not_found" | "banned" | "closed"> {
     const cleanup = this.cleanups.get(cleanupId)
     if (cleanup === undefined) return Promise.resolve("not_found")
+    if (this.privateBlocksJoin(cleanup, userId)) return Promise.resolve("not_found")
     if (isCleanupTerminal(cleanup.status)) return Promise.resolve("closed")
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
       return Promise.resolve("banned")
@@ -845,6 +1064,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (!cleanup) return Promise.resolve({ kind: "not_found" })
+    if (this.privateBlocksJoin(cleanup, userId)) return Promise.resolve({ kind: "not_found" })
     if (isCleanupTerminal(cleanup.status)) {
       return Promise.resolve({ kind: "closed" })
     }

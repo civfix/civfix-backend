@@ -1,28 +1,3 @@
-/**
- * P9 signup slots against a live PostGIS container (Docker-gated).
- *
- * This is the file that matters. Everything the unit suites assert runs against a single-threaded fake
- * that serializes by construction — so the ONE property that actually keeps two volunteers from taking
- * the same last seat, the `FOR UPDATE` on the slot row, is invisible there by definition. The same goes
- * for every constraint the schema (rather than the application) enforces:
- *
- *   - N CONCURRENT claims on a capacity-1 slot yield EXACTLY ONE winner, N−1 `full`, and exactly one
- *     row in cleanup_slot_claims (real parallel transactions on separate pooled connections);
- *   - moving A -> B frees A's seat in the same statement;
- *   - the (cleanup_id, user_id) PK makes a second slot for the same person impossible;
- *   - the composite FK (slot_id, cleanup_id) rejects a slotId from ANOTHER cleanup;
- *   - the lower(title) unique index rejects a duplicate title (the backstop behind the service's
- *     deterministic 422) — and, because that index is checked IMMEDIATELY rather than at commit, that a
- *     reconcile which swaps two titles, re-adds a removed title, or renames a kept slot onto a removed
- *     one still succeeds (the twin holds no index, so it cannot fail any of these);
- *   - a REFUSED claim (`slot_not_found`, `full`) commits no cleanup_members row — sql.begin commits on
- *     a normal return, and every refusal here is a normal return;
- *   - deleting a slot cascades its claims, and deleting the cleanup cascades both;
- *   - leaveCleanup and removeMember free the seat (B28d) in their existing transactions.
- *
- * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI (and
- * CIVFIX_REQUIRE_PG=1) turns that skip into a hard failure.
- */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -54,7 +29,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
   const FUTURE = new Date(Date.now() + 7 * 86_400_000)
 
-  /** Insert a cleanup (+ the organizer's membership) and return its id. */
   async function newCleanup(
     organizerId: string,
     over: { status?: string } = {},
@@ -98,7 +72,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     return rows[0]!.n
   }
 
-  /** Membership rows for one person on one event — 0 or 1, straight from the table. */
   async function membershipCount(cleanupId: string, userId: string): Promise<number> {
     const rows = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM cleanup_members
@@ -107,7 +80,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     return rows[0]!.n
   }
 
-  /** The board as (id, title) pairs in board order — the shape every reconcile assertion needs. */
   async function titlesOf(cleanupId: string): Promise<[string, string][]> {
     const board = await repo.listSlots(cleanupId, null)
     return board.map((s) => [s.id, s.title])
@@ -131,10 +103,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       Array.from({ length: 8 }, (_, i) => newUser(`Racer ${i}`)),
     )
 
-    // Every call opens its OWN sql.begin on its own pooled connection, so this is a genuine race. The
-    // FOR UPDATE on the slot row is what serializes them: the loser blocks on the lock and its
-    // subsequent count(*) sees the winner's committed row. WITHOUT that lock every racer's count would
-    // read 0 and all 8 would insert.
     const outcomes = await Promise.all(
       racers.map((userId) => repo.claimSlot(cleanupId, userId, slotId)),
     )
@@ -174,7 +142,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     expect(await claimCount(a)).toBe(0)
     expect(await claimCount(b)).toBe(1)
-    // The freed seat is immediately real, not merely logically vacated.
     expect(await repo.claimSlot(cleanupId, nextInLine, a)).toEqual({ kind: "claimed", slotId: a })
     expect(await repo.slotOf(cleanupId, user)).toBe(b)
   })
@@ -187,8 +154,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const user = await newUser("PK User")
     await repo.claimSlot(cleanupId, user, a)
 
-    // A raw INSERT (not the repo's ON CONFLICT DO UPDATE) is what proves the SCHEMA carries the
-    // one-slot-per-person rule, rather than the application merely being careful.
     await expect(
       h.sql`
         INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
@@ -205,9 +170,7 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const foreignSlot = await newSlot(theirs, { title: "Their grill" })
     const user = await newUser("FK User")
 
-    // The repo's own predicate answers first...
     expect(await repo.claimSlot(mine, user, foreignSlot)).toEqual({ kind: "slot_not_found" })
-    // ...and even if that predicate were ever dropped, the FK makes the write structurally impossible.
     await expect(
       h.sql`
         INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
@@ -221,11 +184,7 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const cleanupId = await newCleanup(org)
     await newSlot(cleanupId, { title: "Grill" })
 
-    // The service refuses this deterministically (a named 422); this index is the backstop for a direct
-    // or racing write, and asserting it here is what makes the service check a convenience rather than
-    // the only line of defense.
     await expect(newSlot(cleanupId, { title: "GRILL" })).rejects.toMatchObject({ code: "23505" })
-    // ...but the SAME title on a DIFFERENT event is fine (the index is per-cleanup).
     const other = await newCleanup(org)
     await expect(newSlot(other, { title: "Grill" })).resolves.toBeTypeOf("string")
   })
@@ -265,8 +224,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     await repo.leaveCleanup(cleanupId, leaver)
 
-    // Without the claim delete this seat stays occupied forever by someone who is not even on the
-    // roster — a phantom-full slot no host can attribute and no attendee can free.
     expect(await claimCount(slotId)).toBe(0)
     expect(await repo.slotOf(cleanupId, leaver)).toBeNull()
     expect(await repo.claimSlot(cleanupId, nextInLine, slotId)).toEqual({
@@ -286,7 +243,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     expect(outcome.kind).toBe("removed")
     expect(await claimCount(slotId)).toBe(0)
-    // ...and the ban keeps them from walking back in through the slot door.
     expect(await repo.claimSlot(cleanupId, target, slotId)).toEqual({ kind: "banned" })
   })
 
@@ -306,7 +262,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       const closedSlot = await newSlot(closed)
       const latecomer = await newUser(`Late ${status}`)
       expect(await repo.claimSlot(closed, latecomer, closedSlot)).toEqual({ kind: "closed" })
-      // The auto-RSVP must not have fired either — that is the credit-laundering path B28e closes.
       expect(await repo.isMember(closed, latecomer)).toBe(false)
       expect(await repo.releaseSlot(closed, latecomer)).toEqual({ kind: "closed" })
     }
@@ -356,9 +311,10 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       jurCode: 0,
       linkedReportIds: [],
       slots: [slot({ title: "Grill", capacity: 2, sortOrder: 0 }), slot({ title: "Sign-in", sortOrder: 1 })],
+      host: {},
     })
 
-    expect(record.id).toBe(cleanupId)
+    expect(record.record.id).toBe(cleanupId)
     const board = await repo.listSlots(cleanupId, org)
     expect(board.map((s) => [s.title, s.capacity, s.sortOrder, s.claimed, s.mine])).toEqual([
       ["Grill", 2, 0, 0, false],
@@ -373,7 +329,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const drop = await newSlot(cleanupId, { title: "Cleanup crew", sortOrder: 1 })
     const claimant = await newUser("Dropped claimant")
     await repo.claimSlot(cleanupId, claimant, drop)
-    // The ACTOR's own claim must be excluded from the bell list — a host does not ring themselves.
     await repo.claimSlot(cleanupId, org, drop)
 
     const result = await repo.reconcileSlots(
@@ -389,7 +344,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     ])
     const board = await repo.listSlots(cleanupId, null)
     expect(board.map((s) => s.title).sort()).toEqual(["Grill duty", "Sign-in"])
-    // The dropped slot's claims went with it (ON DELETE CASCADE on the composite FK).
     expect(await repo.slotOf(cleanupId, claimant)).toBeNull()
   })
 
@@ -408,7 +362,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       ),
     ).rejects.toMatchObject({ code: "VALIDATION" })
 
-    // All-or-nothing: the legal "Brand new" entry did NOT land, and the foreign row was not re-parented.
     const board = await repo.listSlots(mine, null)
     expect(board.map((s) => s.id)).toEqual([mySlot])
     const foreignRow = await h.sql<{ cleanup_id: string; title: string }[]>`
@@ -417,16 +370,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     expect(foreignRow[0]).toEqual({ cleanup_id: theirs, title: "Theirs" })
   })
 
-  // ---------------------------------------------------------------------------------------------
-  // The reconcile WRITE ORDER (cleanup_slots_cleanup_title_uidx is checked IMMEDIATELY).
-  //
-  // Postgres has no deferrable unique INDEX — only a deferrable unique CONSTRAINT — and 0063 declares
-  // an index, so every intermediate state inside the reconcile transaction has to satisfy
-  // (cleanup_id, lower(title)) on its own. These three saves are the ordinary host edits that a naive
-  // "update and insert, then delete" order breaks with a raw 23505 → 500, and none of them can be seen
-  // against the in-memory twin, which holds no index at all. They are exactly the cases that were
-  // reproduced against a live container before the write order was changed.
-  // ---------------------------------------------------------------------------------------------
 
   it("reconcileSlots SWAPS two slot titles in one save", async () => {
     const org = await newUser("Swap Host")
@@ -434,8 +377,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const reg = await newSlot(cleanupId, { title: "Registration", sortOrder: 0 })
     const grill = await newSlot(cleanupId, { title: "Grill", sortOrder: 1 })
 
-    // Naively this is `UPDATE ... SET title='Grill' WHERE id=reg` while `grill` still holds "Grill":
-    // duplicate key value violates unique constraint "cleanup_slots_cleanup_title_uidx".
     const result = await repo.reconcileSlots(
       cleanupId,
       [
@@ -447,7 +388,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     expect(result.updated.sort()).toEqual([reg, grill].sort())
     expect(result.removed).toEqual([])
-    // Both rows keep their IDENTITY through the swap, which is the whole reason slots carry a uuid.
     expect(await titlesOf(cleanupId)).toEqual([
       [reg, "Grill"],
       [grill, "Registration"],
@@ -461,7 +401,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const claimant = await newUser("Readd claimant")
     await repo.claimSlot(cleanupId, claimant, old)
 
-    // The insert has to wait for the delete: the old "Grill" row is still there until it lands.
     const result = await repo.reconcileSlots(
       cleanupId,
       [slot({ title: "Grill", capacity: 5 })],
@@ -474,8 +413,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     ])
     const board = await repo.listSlots(cleanupId, null)
     expect(board.map((s) => [s.title, s.capacity])).toEqual([["Grill", 5]])
-    // A genuinely NEW row: dropping the id is how a host resets a slot's claimants, and the dropped
-    // claim went with the old row rather than following the title.
     expect(board[0]!.id).not.toBe(old)
     expect(await repo.slotOf(cleanupId, claimant)).toBeNull()
   })
@@ -501,9 +438,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const cleanupId = await newCleanup(org)
     const existing = await newSlot(cleanupId, { title: "Grill" })
 
-    // The service refuses this deterministically before the repo is reached; this asserts the repo's
-    // own backstop, because a raw driver error reaches the client as an unactionable 500 and the
-    // ordering above cannot fix a set that is duplicated in itself.
     await expect(
       repo.reconcileSlots(
         cleanupId,
@@ -511,16 +445,9 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
         org,
       ),
     ).rejects.toMatchObject({ code: "VALIDATION", fields: { slots: "duplicate slot title" } })
-    // ...and the whole transaction rolled back, so the board is exactly as it was.
     expect(await titlesOf(cleanupId)).toEqual([[existing, "Grill"]])
   })
 
-  // ---------------------------------------------------------------------------------------------
-  // The auto-RSVP must not survive a REFUSED claim. sql.begin COMMITS on a normal return and every
-  // refusal below is a normal return, so a membership insert written before the slot lookup commits
-  // with the 404/409 — the caller sees an error while the user is silently on the roster, counted in
-  // `going`, and inside the private event group chat (cleanup_members.role is the chat gate).
-  // ---------------------------------------------------------------------------------------------
 
   it("a `slot_not_found` claim commits NO cleanup_members row", async () => {
     const org = await newUser("No-RSVP Host")
@@ -549,7 +476,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     expect(await membershipCount(cleanupId, loser)).toBe(0)
     expect(await repo.goingCount(cleanupId)).toBe(going)
-    // The winner's own auto-RSVP still happened — the fix is about WHICH outcomes write it.
     expect(await repo.isMember(cleanupId, winner)).toBe(true)
   })
 
@@ -578,7 +504,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     expect(await repo.claimSlot(cleanupId, mover, b)).toEqual({ kind: "full" })
 
-    // Deferring the auto-RSVP must not COST an existing member their membership either.
     expect(await membershipCount(cleanupId, mover)).toBe(1)
     expect(await repo.slotOf(cleanupId, mover)).toBe(a)
   })
@@ -599,13 +524,11 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     })
     const rows = roster.map((a) => [a.id, a.slot?.title ?? null])
     expect(rows).toContainEqual([attendee, "Grill"])
-    // The organizer RSVP'd without a slot: an explicit null, not a missing key.
     expect(rows).toContainEqual([org, null])
 
     const empty = await newCleanup(org)
     const counts = await repo.slotCountsFor([cleanupId, empty])
     expect(counts.get(cleanupId)).toBe(2)
-    // An event with no slots has no row in the aggregate at all — the caller defaults it to 0.
     expect(counts.get(empty)).toBeUndefined()
     expect(await repo.slotCountsFor([])).toEqual(new Map())
   })
@@ -625,13 +548,11 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       ["Grill", 2, true],
       ["Sign-in", 0, false],
     ])
-    // Anonymous: same public counts, `mine` false everywhere (the NULL comparison, not a special case).
     const anon = await repo.listSlots(cleanupId, null)
     expect(anon.map((s) => [s.claimed, s.mine])).toEqual([
       [2, false],
       [0, false],
     ])
-    // The batched form groups by cleanup id and skips a page with nothing in it.
     const grouped = await repo.loadSlotsForCleanups([cleanupId], a)
     expect(grouped.get(cleanupId)).toHaveLength(2)
     expect(await repo.loadSlotsForCleanups([], a)).toEqual(new Map())
@@ -648,8 +569,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     await repo.reconcileSlots(cleanupId, [slot({ id: slotId, title: "Grill", capacity: 1 })], org)
 
-    // There is no fair rule for choosing who loses their shift, so nobody does — the slot is simply
-    // over-subscribed until it drains, and the DTO renders "3/1" honestly.
     expect(await claimCount(slotId)).toBe(3)
     const latecomer = await newUser("Shrink latecomer")
     expect(await repo.claimSlot(cleanupId, latecomer, slotId)).toEqual({ kind: "full" })

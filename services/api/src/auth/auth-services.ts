@@ -84,6 +84,8 @@ export function buildAuthServicesFromContainer(
 ): AuthServices {
   const stores = new PgAuthStores(container.getDb().db, {
     certificateObjects: container.storage,
+    notifier: container.getNotificationService(),
+    jobs: container.jobs,
     ...(opts.logger ? { logger: opts.logger } : {}),
   })
   const cache = new RedisCacheClient(container.getRedis())

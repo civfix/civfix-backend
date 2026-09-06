@@ -3,12 +3,44 @@ import type {
   CleanupStatus,
   CleanupType,
   EventKind,
+  EventVisibility,
+  OrganizationMemberRole,
+  OrgVerificationKind,
+  OrgVerificationStatus,
   ReportCategory,
   ReportStatus,
   ReportType,
 } from "@civfix/shared"
+import type { HostStanding } from "@civfix/shared/host"
 
-export interface CleanupRecord {
+export interface CleanupOrganizationView {
+  id: string
+  slug: string
+  name: string
+  logoKey: string | null
+  verifiedStatus: OrgVerificationStatus
+  verifiedKind: OrgVerificationKind | null
+}
+
+export interface CleanupHostFields {
+  endsAt: Date | null
+  timezone: string | null
+  visibility: EventVisibility
+  coverMediaId: string | null
+  coverKey: string | null
+  galleryMediaIds: string[]
+  donationUrl: string | null
+  pageSlug: string | null
+  registrationOpensAt: Date | null
+  registrationClosesAt: Date | null
+  organizationId: string | null
+  organization: CleanupOrganizationView | null
+  reminderOffsetsMin: number[] | null
+  hostReplyTo: string | null
+  hostReplyToVerifiedAt: Date | null
+}
+
+export interface CleanupRecord extends CleanupHostFields {
   id: string
   organizerUserId: string
   type: CleanupType
@@ -21,6 +53,7 @@ export interface CleanupRecord {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
+  capacity: number | null
   jurisdictionGeoid: string | null
   referenceCode: string | null
   createdAt: Date
@@ -114,6 +147,27 @@ export interface ListAttendeesArgs {
   limit: number
 }
 
+export interface EventHostWrite {
+  endsAt?: Date | null
+  timezone?: string | null
+  visibility?: EventVisibility
+  coverMediaId?: string | null
+  galleryMediaIds?: string[]
+  donationUrl?: string | null
+  pageSlug?: string | null
+  registrationOpensAt?: Date | null
+  registrationClosesAt?: Date | null
+  organizationId?: string | null
+  reminderOffsetsMin?: number[] | null
+  hostReplyTo?: string | null
+}
+
+export interface CleanupIdempotency {
+  key: string
+  scope: string
+  userOrAnon: string
+}
+
 export interface CreateCleanupTxArgs {
   cleanupId: string
   organizerUserId: string
@@ -131,9 +185,16 @@ export interface CreateCleanupTxArgs {
   jurCode: number
   linkedReportIds: string[]
   slots: DesiredSlot[]
+  host: EventHostWrite
+  idempotency?: CleanupIdempotency
 }
 
-export interface UpdateCleanupPatch {
+export interface CreateCleanupOutcome {
+  record: CleanupRecord
+  replayed: boolean
+}
+
+export interface UpdateCleanupPatch extends EventHostWrite {
   title?: string
   description?: string | null
   eventKind?: EventKind
@@ -189,7 +250,7 @@ export interface ListCleanupsFilters {
 }
 
 export interface CleanupRepository {
-  createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord>
+  createCleanupTx(args: CreateCleanupTxArgs): Promise<CreateCleanupOutcome>
   updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean>
   linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]>
   unlinkReport(cleanupId: string, reportId: string, actorId: string | null): Promise<boolean>
@@ -206,13 +267,23 @@ export interface CleanupRepository {
   filterVisibleReportIds(reportIds: string[]): Promise<Set<string>>
   findCleanupById(id: string, near: NearPoint | null): Promise<CleanupRecord | null>
   findCleanupByReferenceCode(code: string): Promise<CleanupRecord | null>
+  findCleanupByPageSlug(slug: string): Promise<CleanupRecord | null>
+  galleryKeysFor(cleanupId: string): Promise<string[]>
+  loadOrganizationRef(organizationId: string): Promise<CleanupOrganizationView | null>
+  orgRoleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null>
+  standingOf(cleanupId: string, userId: string): Promise<HostStanding>
+  standingsOf(cleanupIds: string[], userId: string): Promise<Map<string, HostStanding>>
   listCleanups(
     filters: ListCleanupsFilters,
   ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }>
   isMember(cleanupId: string, userId: string): Promise<boolean>
   roleOf(cleanupId: string, userId: string): Promise<CleanupMemberRole | null>
   rolesOf(cleanupIds: string[], userId: string): Promise<Map<string, CleanupMemberRole>>
-  setMemberRole(cleanupId: string, userId: string, role: "cohost" | "member"): Promise<boolean>
+  setMemberRole(
+    cleanupId: string,
+    userId: string,
+    role: "cohost" | "staff" | "member",
+  ): Promise<boolean>
   removeMember(cleanupId: string, userId: string, actorId: string): Promise<RemoveMemberOutcome>
   isBanned(cleanupId: string, userId: string): Promise<boolean>
   unbanMember(cleanupId: string, userId: string): Promise<boolean>

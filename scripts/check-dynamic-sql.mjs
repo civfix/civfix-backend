@@ -1,44 +1,43 @@
 #!/usr/bin/env node
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 
 const ROOTS = ["services/api/src", "services/media-worker/src"]
 
-/**
- * Reviewed dynamic-SQL call sites, keyed `<file>:<method>` so blessing one method never silently blesses
- * another in the same file. Every entry's query text is a code-defined constant or a migration file the
- * deploy ships — never request data.
- *
- * `raw` / `identifier` are NOT allowlistable for SQL: dynamic identifiers go through postgres.js's
- * `${sql(name)}` helper over a closed TypeScript union instead (see message-mentions.drizzle.ts).
- */
 const ALLOW_DYNAMIC_SQL = new Set([
-  // The migration runner: each file's text is read from services/api/drizzle and applied in simple-query
-  // mode (multi-statement), on a reserved connection — hence `reserved.unsafe`, not `sql.unsafe`.
   "services/api/src/db/migrate.ts:unsafe",
-  // `ORDER BY ${sql.unsafe(...)}` over the JURISDICTION_RESOLVE_ORDER_BY module constant in
-  // db/sql/jurisdiction.ts, inside the offline backfill loops. No request data reaches it.
   "services/api/src/db/backfill-keyset.ts:unsafe",
-  // The canonical resolver SQL: a module-constant string with bound positional params.
   "services/api/src/db/sql/jurisdiction.ts:unsafe",
-  // Monthly partition DDL whose name + bounds are derived from a CLOCK, never from user input.
   "services/api/src/services/media-worker-repo.ts:unsafe",
 ])
 
-/**
- * Same-named methods that are NOT SQL, kept out of the allowlist above so that stays a list of SQL sites
- * only: sharp's `.raw()` raw-pixel decode in the media worker's perceptual-hash sandbox.
- */
 const NOT_SQL = new Set(["services/media-worker/src/sandbox/phash.ts:raw"])
 
-/**
- * Any receiver, not just an identifier literally named `sql`: the tag is aliased as `tx` / `reserved` /
- * `sqlTag` all over the codebase, so anchoring on the name would let `tx.unsafe(userInput)` ship unflagged.
- * Bracket access (`sql["unsafe"](…)`) is matched too. A destructured `const { unsafe } = sql` still evades
- * this scanner — the reason the gate is a tripwire, not a proof.
- */
 const DYNAMIC_SQL_CALL =
   /\.\s*(unsafe|raw|identifier)\s*\(|\[\s*["'`](unsafe|raw|identifier)["'`]\s*\]\s*\(/g
+
+const PARAM_NULL_TEST =
+  /\$\{([^{}]*)\}(\s*::\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*\[\s*\])?)?\s+IS\s+(?:NOT\s+)?NULL\b/gi
+
+const NULL_TEST_SKIP_PATH = /(^|[\\/])db[\\/]schema[\\/]/
+
+const IDENTIFIER_HELPER = /^[A-Za-z_$][A-Za-z0-9_$.]*\s*\(/
+
+const ALLOW_NULL_TEST = new Set([
+  "services/api/src/auth/pg-stores.ts:${users.email} is not null",
+])
+
+export function findParamNullTests(code) {
+  const found = []
+  for (const match of code.matchAll(PARAM_NULL_TEST)) {
+    if (match[2] !== undefined) continue
+    const expr = match[1].trim()
+    if (IDENTIFIER_HELPER.test(expr)) continue
+    found.push(match[0].replace(/\s+/g, " ").trim())
+  }
+  return found
+}
 
 const walk = (dir) =>
   readdirSync(dir).flatMap((name) => {
@@ -190,23 +189,36 @@ function stripComments(input) {
   return out
 }
 
-const violations = []
-for (const root of ROOTS) {
-  for (const file of walk(root)) {
-    const code = stripComments(readFileSync(file, "utf8"))
-    const reported = new Set()
-    for (const match of code.matchAll(DYNAMIC_SQL_CALL)) {
-      const method = match[1] ?? match[2]
-      const key = `${file}:${method}`
-      if (ALLOW_DYNAMIC_SQL.has(key) || NOT_SQL.has(key) || reported.has(key)) continue
-      reported.add(key)
-      violations.push(`${file}: .${method}() outside the reviewed allowlist`)
+function main() {
+  const violations = []
+  for (const root of ROOTS) {
+    for (const file of walk(root)) {
+      const code = stripComments(readFileSync(file, "utf8"))
+      const reported = new Set()
+      for (const match of code.matchAll(DYNAMIC_SQL_CALL)) {
+        const method = match[1] ?? match[2]
+        const key = `${file}:${method}`
+        if (ALLOW_DYNAMIC_SQL.has(key) || NOT_SQL.has(key) || reported.has(key)) continue
+        reported.add(key)
+        violations.push(`${file}: .${method}() outside the reviewed allowlist`)
+      }
+      if (NULL_TEST_SKIP_PATH.test(file)) continue
+      for (const nullTest of findParamNullTests(code)) {
+        if (ALLOW_NULL_TEST.has(`${file}:${nullTest}`)) continue
+        violations.push(
+          `${file}: uncast parameter in a NULL test — \`${nullTest}\` (add a ::type cast, or drop the redundant guard)`,
+        )
+      }
     }
   }
+
+  if (violations.length > 0) {
+    console.error("Dynamic-SQL guard failed:\n" + violations.map((v) => "  - " + v).join("\n"))
+    process.exit(1)
+  }
+  console.log("Dynamic-SQL guard: clean")
 }
 
-if (violations.length > 0) {
-  console.error("Dynamic-SQL guard failed:\n" + violations.map((v) => "  - " + v).join("\n"))
-  process.exit(1)
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main()
 }
-console.log("Dynamic-SQL guard: clean")

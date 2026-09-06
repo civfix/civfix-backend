@@ -13,6 +13,7 @@ export const DEFAULT_PREFS: NotificationPrefsRecord = {
   follows: true,
   mentions: true,
   postInteractions: true,
+  hostBroadcasts: true,
   quietStart: null,
   quietEnd: null,
   tz: null,
@@ -101,11 +102,26 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
     case "post_reply":
     case "post_quote":
       return prefs.postInteractions
+    case "event_broadcast":
+      return prefs.hostBroadcasts
     case "system":
       return true
     default:
       return true
   }
+}
+
+export type PushGateMode = "auto" | "never" | "always"
+
+export function pushGateAllows(
+  type: NotificationType,
+  prefs: NotificationPrefsRecord,
+  mode: PushGateMode = "auto",
+): boolean {
+  if (mode === "never") return false
+  if (!prefs.push) return false
+  if (mode === "always") return true
+  return typeAllowedByPrefs(type, prefs)
 }
 
 export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
@@ -117,6 +133,7 @@ export function toPrefsDTO(row: NotificationPrefsRecord): NotificationPrefsDTO {
     follows: row.follows,
     mentions: row.mentions,
     postInteractions: row.postInteractions,
+    hostBroadcasts: row.hostBroadcasts,
     ...(hasQuiet
       ? {
           quietHours: {

@@ -35,6 +35,7 @@ interface PrefsRowSelect {
   follows: boolean
   mentions: boolean
   post_interactions: boolean
+  host_broadcasts: boolean
   quiet_start: string | null
   quiet_end: string | null
   tz: string | null
@@ -61,6 +62,7 @@ function toPrefsRecord(r: PrefsRowSelect): NotificationPrefsRecord {
     follows: r.follows,
     mentions: r.mentions,
     postInteractions: r.post_interactions,
+    hostBroadcasts: r.host_broadcasts,
     quietStart: r.quiet_start,
     quietEnd: r.quiet_end,
     tz: r.tz,
@@ -153,7 +155,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
 
     async findPrefs(userId: string): Promise<NotificationPrefsRecord | null> {
       const rows = await sql<PrefsRowSelect[]>`
-        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
         FROM notification_prefs
         WHERE user_id = ${userId}
         LIMIT 1
@@ -165,7 +167,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       const out = new Map<string, NotificationPrefsRecord>()
       if (userIds.length === 0) return out
       const rows = await sql<(PrefsRowSelect & { user_id: string })[]>`
-        SELECT user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+        SELECT user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
         FROM notification_prefs
         WHERE user_id = ANY(${userIds}::uuid[])
       `
@@ -177,7 +179,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       const rows = await sql<PrefsRowSelect[]>`
         INSERT INTO notification_prefs (
           user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions,
-          quiet_start, quiet_end
+          host_broadcasts, quiet_start, quiet_end
         )
         VALUES (
           ${userId},
@@ -187,15 +189,16 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           ${DEFAULT_PREFS.follows},
           ${DEFAULT_PREFS.mentions},
           ${DEFAULT_PREFS.postInteractions},
+          ${DEFAULT_PREFS.hostBroadcasts},
           ${DEFAULT_PREFS.quietStart}::time,
           ${DEFAULT_PREFS.quietEnd}::time
         )
         ON CONFLICT (user_id) DO NOTHING
-        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
       `
       if (rows[0]) return toPrefsRecord(rows[0])
       const existing = await sql<PrefsRowSelect[]>`
-        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+        SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
         FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
       `
       return existing[0] ? toPrefsRecord(existing[0]) : DEFAULT_PREFS
@@ -209,11 +212,11 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         const inserted = await sql<PrefsRowSelect[]>`
           INSERT INTO notification_prefs (user_id) VALUES (${userId})
           ON CONFLICT (user_id) DO NOTHING
-          RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+          RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
         `
         if (inserted[0]) return toPrefsRecord(inserted[0])
         const existing = await sql<PrefsRowSelect[]>`
-          SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+          SELECT push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
           FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
         `
         return existing[0] ? toPrefsRecord(existing[0]) : DEFAULT_PREFS
@@ -228,6 +231,8 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       if (patch.mentions !== undefined) setFragments.push(sql`mentions = ${patch.mentions}`)
       if (patch.postInteractions !== undefined)
         setFragments.push(sql`post_interactions = ${patch.postInteractions}`)
+      if (patch.hostBroadcasts !== undefined)
+        setFragments.push(sql`host_broadcasts = ${patch.hostBroadcasts}`)
       if (patch.quietHours !== undefined) {
         const start = patch.quietHours === null ? null : patch.quietHours.start
         const end = patch.quietHours === null ? null : patch.quietHours.end
@@ -254,7 +259,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
 
       const rows = await sql<PrefsRowSelect[]>`
         INSERT INTO notification_prefs (
-          user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+          user_id, push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
         ) VALUES (
           ${userId},
           ${patch.push ?? DEFAULT_PREFS.push},
@@ -263,12 +268,13 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           ${patch.follows ?? DEFAULT_PREFS.follows},
           ${patch.mentions ?? DEFAULT_PREFS.mentions},
           ${patch.postInteractions ?? DEFAULT_PREFS.postInteractions},
+          ${patch.hostBroadcasts ?? DEFAULT_PREFS.hostBroadcasts},
           ${insStart}::time,
           ${insEnd}::time,
           ${insTz}
         )
         ON CONFLICT (user_id) DO UPDATE SET ${joinSet(sql, setFragments)}
-        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, quiet_start, quiet_end, tz
+        RETURNING push, cleanup_chat, report_updates, follows, mentions, post_interactions, host_broadcasts, quiet_start, quiet_end, tz
       `
       return toPrefsRecord(rows[0]!)
     },
@@ -411,6 +417,7 @@ function isEmptyPatch(patch: NotificationPrefsPatch): boolean {
     patch.follows === undefined &&
     patch.mentions === undefined &&
     patch.postInteractions === undefined &&
+    patch.hostBroadcasts === undefined &&
     patch.quietHours === undefined
   )
 }

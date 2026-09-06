@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../di.js"
 import { makeDrizzleCleanupRepository } from "./cleanup-repository.drizzle.js"
 import { makeRouteNotificationService } from "./route-notifier.js"
+import { makeCommsRuntime } from "./host/comms-wiring.js"
 import { makeContainerGuestRsvpService } from "./guest-rsvp-wiring.js"
 import {
   CLEANUP_CANCEL_FANOUT_JOB,
@@ -24,10 +25,14 @@ export async function registerCleanupCancelFanoutJob(
     const service = makeCleanupService({
       repo: makeDrizzleCleanupRepository(container.getDb().sql),
       notifier: makeRouteNotificationService(container, logger),
-      guestNotifier: makeContainerGuestRsvpService(container, undefined, logger),
+      attendeeNotifier: makeCommsRuntime(container, logger).lanes,
       ...(logger !== undefined ? { logger } : {}),
     })
     await service.runCancelFanout(data)
+    await makeContainerGuestRsvpService(container, undefined, logger).notifyGuestsBySms(
+      data.cleanupId,
+      "cancelled",
+    )
   })
 }
 

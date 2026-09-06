@@ -1,80 +1,29 @@
-/**
- * P3 Task 3.3: the chat-room POWERS resolver — the single source of truth for "who may pin" and
- * "who may delete other people's messages" in a chat room (consumed by the pin routes in Task 3.4
- * and the delete-others path in Task 3.5; later phases reuse it rather than re-deriving roles).
- * Factory-with-deps like chat-bells.ts: pure gate logic here, lookups injected, so the full matrix
- * is unit-testable offline and the pg wiring stays a 4-line adapter.
- *
- * THE MATRIX (spec §3.4):
- *
- *   room     | who                     | canPin | canDeleteOthers
- *   ---------+-------------------------+--------+----------------
- *   dm       | thread participant      |  yes   |  NO — always (your peer's words are theirs)
- *   cleanup  | organizer / cohost      |  yes   |  yes  (co-host = organizer-equivalent for chat)
- *   cleanup  | member                  |  no    |  no
- *   report   | owner                   |  yes   |  NO — a report room is a PUBLIC civic space;
- *            |                         |        |  the reporter curates pins but never erases
- *            |                         |        |  other residents' speech
- *   report   | member                  |  no    |  no
- *   report   | global operator         |  yes   |  yes — platform moderation applies in the
- *            |                         |        |  public rooms, membership row or not
- *   cleanup  | global operator         |  ——— NOTHING beyond their cleanup_members role ———
- *            |                         |  (§3.4 grants operators powers in REPORT rooms only;
- *            |                         |   a private cleanup crew moderates itself)
- *   group    | owner / admin (P4)      |  yes   |  yes — user-created rooms moderate themselves
- *   group    | member                  |  no    |  no  (no global-role lookup, same as cleanup)
- *   any      | non-member / unknown    |  no    |  no
- *
- * `isModerator` semantics (documented choice): TRUE iff the user holds ELEVATED STANDING in a
- * GROUP room — cleanup organizer, report owner, or operator-in-report — i.e. canPin||canDeleteOthers
- * for group rooms. A dm participant's canPin is a symmetric PEER power, not moderation, so dm rooms
- * never set isModerator. UI can badge/moderator-style on this bit without re-deriving roles.
- *
- * Lane isolation is deliberate: each kind consults ONLY its own lookup(s) — dm never loads roles,
- * cleanup never loads the global role (operators must get nothing extra there, so we don't even
- * look), report loads both in parallel. The unit suite pins this with throwing stubs.
- */
 
-import type { RoomKind } from "@civfix/shared"
+import type { CleanupMemberRole, RoomKind } from "@civfix/shared"
+import { can } from "@civfix/shared/host"
 import type {
   ROLE_VALUES,
-  CLEANUP_MEMBER_ROLE_VALUES,
   REPORT_CHAT_ROLE_VALUES,
   GROUP_MEMBER_ROLE_VALUES,
 } from "../db/schema/types.js"
 
 type GlobalRole = (typeof ROLE_VALUES)[number]
-type CleanupRole = (typeof CLEANUP_MEMBER_ROLE_VALUES)[number]
+type CleanupRole = CleanupMemberRole
 type ReportChatRole = (typeof REPORT_CHAT_ROLE_VALUES)[number]
 type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
 
-/** What the resolved user may do in the room. */
 export interface ChatPowers {
   canPin: boolean
   canDeleteOthers: boolean
-  /** Elevated standing in a GROUP room (organizer / owner / operator-in-report). Never true for dm. */
   isModerator: boolean
 }
 
 export interface ChatRoomRoleDeps {
-  /** dm lane: is `userId` one of the thread's two participants? */
   isDmParticipant(threadId: string, userId: string): Promise<boolean>
-  /**
-   * dm lane (L10): is `userId` blocked either way with the thread's OTHER participant?
-   *
-   * Every other DM surface — history, send, edit, react — re-checks blocks, but the powers resolver did
-   * not, so a blocked user kept `canPin` in a thread they are cut off from and could pin/unpin at will,
-   * firing a room broadcast at their ex-peer each time. Optional so offline harnesses without a blocks
-   * seam keep working (absent => never blocked); production wires it in chat-powers-wiring.
-   */
   isDmBlocked?(threadId: string, userId: string): Promise<boolean>
-  /** cleanup lane: the user's cleanup_members.role, or null when not a member. */
   cleanupRoleOf(cleanupId: string, userId: string): Promise<CleanupRole | null>
-  /** report lane: the user's report_chat_members.role, or null when not a member. */
   reportChatRoleOf(reportId: string, userId: string): Promise<ReportChatRole | null>
-  /** report lane: users.role, or null when the user row is missing. */
   globalRoleOf(userId: string): Promise<GlobalRole | null>
-  /** group lane (P4): the user's chat_group_members.role, or null when not a member. */
   groupRoleOf(groupId: string, userId: string): Promise<GroupMemberRole | null>
 }
 
@@ -92,26 +41,18 @@ const NO_POWERS: ChatPowers = Object.freeze({
   isModerator: false,
 })
 
-/** Build the resolver over the injected lookups. */
 export function makeChatPowersResolver(deps: ChatRoomRoleDeps): ResolveChatPowers {
   return async ({ roomKind, roomId, userId }) => {
     switch (roomKind) {
       case "dm": {
         const participant = await deps.isDmParticipant(roomId, userId)
         if (!participant) return NO_POWERS
-        // L10: a blocked pair holds NO powers over the shared thread — the block already removed every
-        // other capability in it (send, edit, react, read), and a pin is a write plus a broadcast at
-        // the peer. Checked only after participation so a stranger's probe costs one lookup, not two.
         if (deps.isDmBlocked && (await deps.isDmBlocked(roomId, userId))) return NO_POWERS
-        // Peer power, not moderation: pinning is symmetric, delete-others never exists in a dm.
         return { canPin: true, canDeleteOthers: false, isModerator: false }
       }
       case "cleanup": {
-        // ONLY the cleanup role decides — no global-role lookup on purpose (see banner).
-        // Co-host is organizer-equivalent for chat moderation: cleanup-service already lets a cohost
-        // edit the event + manage the roster, so a cohost holds the same pin/delete-others powers.
         const role = await deps.cleanupRoleOf(roomId, userId)
-        const host = role === "organizer" || role === "cohost"
+        const host = role !== null && can({ eventRole: role, orgRole: null }, "moderate_chat")
         return { canPin: host, canDeleteOthers: host, isModerator: host }
       }
       case "report": {
@@ -121,18 +62,15 @@ export function makeChatPowersResolver(deps: ChatRoomRoleDeps): ResolveChatPower
         ])
         const operator = globalRole === "operator"
         const canPin = role === "owner" || operator
-        const canDeleteOthers = operator // owners never delete others in the public room
+        const canDeleteOthers = operator
         return { canPin, canDeleteOthers, isModerator: canPin || canDeleteOthers }
       }
       case "group": {
-        // P4 group rooms: owner/admin hold both powers, members neither. ONLY the group role decides —
-        // no global-role lookup (a user-created group moderates itself, same stance as cleanup rooms).
         const role = await deps.groupRoleOf(roomId, userId)
         const moderator = role === "owner" || role === "admin"
         return { canPin: moderator, canDeleteOthers: moderator, isModerator: moderator }
       }
       default:
-        // RoomKind is exhaustive above; this guards any-typed / forged kinds at runtime.
         return NO_POWERS
     }
   }

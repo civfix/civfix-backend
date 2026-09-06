@@ -20,6 +20,36 @@ export const DATA_EXPORT_FREE_TEXT_MAX_ROWS = 5_000
 
 export const DATA_EXPORT_BYTE_BUDGET = 8_000_000
 
+export function exportMinor(value: string | number | null): number | null {
+  if (value === null) return null
+  return typeof value === "number" ? value : Number(value)
+}
+
+function toExportedDonation<
+  T extends {
+    amount_minor: string | number
+    fee_platform_minor: string | number
+    fee_stripe_minor: string | number | null
+    net_minor: string | number | null
+    refunded_total_minor: string | number
+  },
+>(row: T): Omit<T, "amount_minor" | "fee_platform_minor" | "fee_stripe_minor" | "net_minor" | "refunded_total_minor"> & {
+  amount_minor: number
+  fee_platform_minor: number
+  fee_stripe_minor: number | null
+  net_minor: number | null
+  refunded_total_minor: number
+} {
+  return {
+    ...row,
+    amount_minor: exportMinor(row.amount_minor) ?? 0,
+    fee_platform_minor: exportMinor(row.fee_platform_minor) ?? 0,
+    fee_stripe_minor: exportMinor(row.fee_stripe_minor),
+    net_minor: exportMinor(row.net_minor),
+    refunded_total_minor: exportMinor(row.refunded_total_minor) ?? 0,
+  }
+}
+
 export function makeDataExportService(deps: DataExportServiceDeps): DataExportService {
   const { sql, mailer, users, fromNoReply, supportEmail } = deps
 
@@ -179,9 +209,11 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
           quiet_start: string | null
           quiet_end: string | null
           mentions: boolean
+          host_broadcasts: boolean
         }[]
       >`
-        SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions
+        SELECT user_id, push, cleanup_chat, report_updates, follows, quiet_start, quiet_end, mentions,
+          host_broadcasts
         FROM notification_prefs WHERE user_id = ${userId} LIMIT 1
       `
 
@@ -222,6 +254,127 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
 
+      const donations = sql<
+        {
+          id: string
+          org_name: string
+          amount_minor: string | number
+          currency: string
+          fee_bps: number
+          fee_platform_minor: string | number
+          fee_stripe_minor: string | number | null
+          net_minor: string | number | null
+          status: string
+          dispute_state: string
+          refunded_total_minor: string | number
+          charged_at: Date | null
+          card_brand: string | null
+          card_last4: string | null
+          receipt_sent_at: Date | null
+          share_identity_with_org: boolean
+          stripe_payment_intent_id: string | null
+          created_at: Date
+        }[]
+      >`
+        SELECT d.id, o.name AS org_name, d.amount_minor, d.currency, d.fee_bps,
+               d.fee_platform_minor, d.fee_stripe_minor, d.net_minor, d.status,
+               d.dispute_state, d.refunded_total_minor, d.charged_at, d.card_brand,
+               d.card_last4, d.receipt_sent_at, d.share_identity_with_org,
+               d.stripe_payment_intent_id, d.created_at
+        FROM donations d
+        JOIN organizations o ON o.id = d.organization_id
+        WHERE d.user_id = ${userId}
+        ORDER BY d.charged_at DESC NULLS LAST, d.id DESC
+        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+      `
+
+      const organizations = sql<
+        { organization_id: string; slug: string; name: string; role: string; joined_at: Date }[]
+      >`
+        SELECT om.organization_id, o.slug, o.name, om.role, om.joined_at
+        FROM organization_members om
+        JOIN organizations o ON o.id = om.organization_id
+        WHERE om.user_id = ${userId}
+        ORDER BY om.joined_at DESC
+        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+      `
+
+      const eventTeamMemberships = sql<
+        { cleanup_id: string; role: string; joined_at: Date | null }[]
+      >`
+        SELECT cleanup_id, role, joined_at FROM cleanup_members
+        WHERE user_id = ${userId} AND role <> 'member'
+        ORDER BY joined_at DESC NULLS LAST
+        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+      `
+
+      const eventConsents = sql<
+        {
+          cleanup_id: string
+          terms_version: string
+          disclosure_version: string
+          host_contact_opt_in: boolean
+          sms_opt_in: boolean
+          accepted_at: Date
+        }[]
+      >`
+        SELECT cleanup_id, terms_version, disclosure_version, host_contact_opt_in, sms_opt_in,
+          accepted_at
+        FROM event_consents WHERE user_id = ${userId}
+        ORDER BY accepted_at DESC
+        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+      `
+
+      const eventRegistrations = sql<
+        {
+          id: string
+          cleanup_id: string
+          ticket_type_name: string | null
+          party_size: number
+          status: string
+          source: string
+          registered_at: Date
+          cancelled_at: Date | null
+        }[]
+      >`
+        SELECT r.id, r.cleanup_id, t.name AS ticket_type_name, r.party_size, r.status, r.source,
+               r.registered_at, r.cancelled_at
+        FROM cleanup_registrations r
+        LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id
+        WHERE r.user_id = ${userId}
+        ORDER BY r.registered_at DESC
+        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+      `
+
+      const eventAnswers = sql<
+        { cleanup_id: string; prompt: string; value: string | null }[]
+      >`
+        SELECT a.cleanup_id, q.prompt,
+               COALESCE(a.value_text, a.value_json::text) AS value
+        FROM cleanup_answers a
+        JOIN cleanup_questions q ON q.id = a.question_id
+        JOIN cleanup_registrations r ON r.id = a.registration_id
+        WHERE r.user_id = ${userId} AND a.scrubbed_at IS NULL
+        ORDER BY a.created_at DESC
+        LIMIT ${DATA_EXPORT_FREE_TEXT_MAX_ROWS + 1}
+      `
+
+      const eventCheckins = sql<
+        {
+          cleanup_id: string
+          seat_index: number
+          checked_in_at: Date
+          checkin_method: string | null
+        }[]
+      >`
+        SELECT s.cleanup_id, s.seat_index, s.checked_in_at, s.checkin_method
+        FROM cleanup_registration_seats s
+        JOIN cleanup_registrations r ON r.id = s.registration_id
+        WHERE r.user_id = ${userId} AND s.checked_in_at IS NOT NULL
+        ORDER BY s.checked_in_at DESC
+        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
+      `
+
       const [
         reportRows,
         postRows,
@@ -238,6 +391,13 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         pushTokenRows,
         verificationRows,
         certificateRows,
+        donationRows,
+        organizationRows,
+        eventTeamMembershipRows,
+        eventConsentRows,
+        eventRegistrationRows,
+        eventAnswerRows,
+        eventCheckinRows,
       ] = await Promise.all([
         reports,
         posts,
@@ -254,6 +414,13 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         pushTokenRowsQuery,
         verification,
         certificates,
+        donations,
+        organizations,
+        eventTeamMemberships,
+        eventConsents,
+        eventRegistrations,
+        eventAnswers,
+        eventCheckins,
       ])
 
       const profile = profileRows[0] ?? null
@@ -289,6 +456,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         format: "civfix-data-export@1",
         userId,
         profile,
+        donations: fit("donations", donationRows.map(toExportedDonation), DATA_EXPORT_MAX_ROWS),
         reports: fit("reports", reportRows, DATA_EXPORT_MAX_ROWS),
         posts: fit("posts", postRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
         comments: fit("comments", commentRows, DATA_EXPORT_MAX_ROWS),
@@ -314,6 +482,16 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         ),
         verification: verificationRows[0] ?? null,
         certificates: fit("certificates", certificateRows, DATA_EXPORT_MAX_ROWS),
+        organizations: fit("organizations", organizationRows, DATA_EXPORT_MAX_ROWS),
+        eventTeamMemberships: fit(
+          "eventTeamMemberships",
+          eventTeamMembershipRows,
+          DATA_EXPORT_MAX_ROWS,
+        ),
+        eventConsents: fit("eventConsents", eventConsentRows, DATA_EXPORT_MAX_ROWS),
+        eventRegistrations: fit("eventRegistrations", eventRegistrationRows, DATA_EXPORT_MAX_ROWS),
+        eventAnswers: fit("eventAnswers", eventAnswerRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
+        eventCheckins: fit("eventCheckins", eventCheckinRows, DATA_EXPORT_MAX_ROWS),
         truncated:
           truncatedSections.length > 0
             ? {
@@ -331,9 +509,10 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
       const text =
         "Attached is a copy of your civfix data (JSON). It includes your profile, reports, posts, " +
-        "comments, messages, events, volunteer hours, connections, and your issued service-hours " +
-        "transcripts. Secrets (login codes, session tokens, raw device tokens) are intentionally " +
-        "excluded." +
+        "comments, messages, events, registrations, organizations, donations, volunteer hours, " +
+        "connections, and your issued service-hours transcripts. Secrets (login codes, session " +
+        "tokens, raw device tokens, ticket tokens) and other people's material (host-private notes, " +
+        "another organization's verification evidence) are intentionally excluded." +
         (truncatedSections.length > 0
           ? `\n\nNote: some sections (${truncatedSections.join(", ")}) were very large and this export ` +
             `contains only part of them. Email ${supportEmail} to request a complete copy of those sections.`
