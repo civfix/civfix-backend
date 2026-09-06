@@ -1,18 +1,20 @@
 
 import { randomUUID } from "node:crypto"
 import { AppError, MAX_BRING_ITEMS, MAX_EVENT_SLOTS } from "@civfix/shared"
+import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../abuse/counter-store.js"
 import type {
   CleanupAttendeesResponse,
   CleanupDTO,
-  CleanupMemberRole,
   CleanupStatus,
   CreateCleanupRequest,
   EventKind,
   EventSlotDTO,
   EventSlotInput,
+  HostCapability,
+  OrganizationMemberRole,
   LinkedReportRef,
   ListCleanupsRequest,
   RemoveMemberResponse,
@@ -37,13 +39,25 @@ import {
   toLinkedReportRef,
 } from "./cleanup-dto.js"
 import type {
+  CleanupOrganizationView,
+  CleanupRecord,
   CleanupRepository,
   DesiredSlot,
+  EventHostWrite,
   LinkedReportView,
   ListCleanupsFilters,
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
+import { hasHostStanding, hostForbiddenCopy, isEventPubliclyVisible } from "./host/authz.js"
+import {
+  assertEventWindow,
+  assertGalleryWithinCap,
+  assertValidReminderOffsets,
+  assertValidTimezone,
+} from "./host/event-fields.js"
+import { assertSlugAllowed } from "./host/slugs.js"
+import { NULL_HOST_AUDIT_SINK, type HostAuditSink } from "./host/host-audit.js"
 import {
   MIN_EVENT_DURATION_MS,
   SCHEDULE_MAX_BACKDATE_MS,
@@ -51,7 +65,6 @@ import {
 } from "./cleanup-rules.js"
 import {
   CLEANUP_GUEST_UPDATE_FANOUT_JOB,
-  type GuestRsvpService,
   type GuestUpdateFanoutJob,
 } from "./guest-rsvp-service.js"
 
@@ -73,6 +86,47 @@ export {
 
 export interface CleanupViewer {
   userId: string | null
+}
+
+export type UpdateCleanupPatchRequest = Omit<UpdateCleanupRequest, "id">
+
+export type HostEventPatch = Pick<
+  UpdateCleanupRequest,
+  | "endsAt"
+  | "timezone"
+  | "visibility"
+  | "coverMediaId"
+  | "galleryMediaIds"
+  | "donationUrl"
+  | "pageSlug"
+  | "registrationOpensAt"
+  | "registrationClosesAt"
+  | "organizationId"
+  | "reminderOffsetsMinutes"
+  | "hostReplyTo"
+> & { scheduledAt?: string }
+
+function toDateOrNull(value: string | null | undefined): Date | null {
+  if (value === null || value === undefined) return null
+  return new Date(value)
+}
+
+function assertDonationsAllowed(
+  organization: CleanupOrganizationView | null,
+  orgRole: OrganizationMemberRole | null,
+): void {
+  if (
+    organization === null ||
+    organization.verifiedStatus !== "verified" ||
+    organization.verifiedKind !== "nonprofit"
+  ) {
+    throw AppError.validation({
+      donationUrl: "a donation link needs a verified nonprofit organization on the event",
+    })
+  }
+  if (!can({ eventRole: null, orgRole }, "manage_payments")) {
+    throw AppError.forbidden(hostForbiddenCopy("manage_payments"))
+  }
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -127,26 +181,43 @@ export interface CleanupCancelFanoutJob {
   actorId: string
 }
 
+export const HOST_EVENTS_PER_DAY = 10
+const HOST_EVENTS_WINDOW_SEC = 24 * 60 * 60
+
+export const HOST_ROSTER_READS_PER_HOUR = 200
+const HOST_ROSTER_READ_WINDOW_SEC = 60 * 60
+
+const ROSTER_AUDIT_DEDUPE_WINDOW_SEC = 60 * 60
+
+export const CLEANUP_CREATE_IDEMPOTENCY_SCOPE = "cleanup.create"
+
+export interface EventMediaPresigner {
+  (key: string, opts: { forceSigned: boolean }): Promise<string>
+}
+
 export interface CleanupServiceDeps {
   repo: CleanupRepository
+  audit?: HostAuditSink
+  presignEventMedia?: EventMediaPresigner
   presignThumb?: (thumbKey: string) => Promise<string>
   resolveJurisdictionGeoid?: (lat: number, lng: number) => Promise<string | null>
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   outboundMail?: OutboundMailService
   isVerified?: (userId: string) => Promise<boolean>
   notifier?: Pick<NotificationService, "createNotification">
-  guestNotifier?: Pick<GuestRsvpService, "notifyEventCancelled" | "notifyEventUpdated">
+  attendeeNotifier?: { eventCancelled(cleanupId: string, reason: string | null): Promise<unknown> }
   counters?: CounterStore
   jobs?: Jobs
   logger?: { warn(obj: unknown, msg?: string): void; error(obj: unknown, msg?: string): void }
   newId?: () => string
+  enrichDTOs?: (dtos: CleanupDTO[], viewerUserId: string | null) => Promise<CleanupDTO[]>
 }
 
 export interface CleanupService {
   createCleanup(input: CreateCleanupRequest, organizerUserId: string): Promise<CleanupDTO>
   updateCleanup(
     id: string,
-    patch: UpdateCleanupRequest,
+    patch: UpdateCleanupPatchRequest,
     requesterUserId: string,
   ): Promise<CleanupDTO>
   cancelCleanup(id: string, reason: string | null, requesterUserId: string): Promise<CleanupDTO>
@@ -163,7 +234,7 @@ export interface CleanupService {
     id: string,
     actorId: string,
     targetUserId: string,
-    role: "cohost" | "member",
+    role: "cohost" | "staff" | "member",
   ): Promise<SetMemberRoleResponse>
   removeMember(id: string, actorId: string, targetUserId: string): Promise<RemoveMemberResponse>
   claimEventSlot(id: string, userId: string, slotId: string | null): Promise<CleanupDTO>
@@ -179,6 +250,102 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const newId = deps.newId ?? (() => randomUUID())
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
   const counters = deps.counters ?? fallbackCounters
+  const audit = deps.audit ?? NULL_HOST_AUDIT_SINK
+
+  const enrichDTOs =
+    deps.enrichDTOs ?? ((dtos: CleanupDTO[]) => Promise.resolve(dtos))
+
+  async function enrichOne(dto: CleanupDTO, viewerUserId: string | null): Promise<CleanupDTO> {
+    const [enriched] = await enrichDTOs([dto], viewerUserId)
+    return enriched ?? dto
+  }
+
+  function standingOf(cleanupId: string, userId: string | null): Promise<HostStanding> {
+    if (userId === null) return Promise.resolve(NO_HOST_STANDING)
+    return deps.repo.standingOf(cleanupId, userId)
+  }
+
+  function standingsOf(
+    cleanupIds: string[],
+    userId: string | null,
+  ): Promise<Map<string, HostStanding>> {
+    if (userId === null || cleanupIds.length === 0) return Promise.resolve(new Map())
+    return deps.repo.standingsOf(cleanupIds, userId)
+  }
+
+  function assertVisible(record: { visibility: CleanupRecord["visibility"] }, standing: HostStanding): void {
+    if (!hasHostStanding(standing) && !isEventPubliclyVisible(record.visibility)) {
+      notFoundCleanup()
+    }
+  }
+
+  function assertCapability(
+    record: { visibility: CleanupRecord["visibility"] },
+    standing: HostStanding,
+    capability: HostCapability,
+  ): void {
+    assertVisible(record, standing)
+    if (!can(standing, capability)) throw AppError.forbidden(hostForbiddenCopy(capability))
+  }
+
+  async function requireCapabilityOn(
+    cleanupId: string,
+    userId: string,
+    capability: HostCapability,
+  ): Promise<{ record: CleanupRecord; standing: HostStanding }> {
+    const [record, standing] = await Promise.all([
+      deps.repo.findCleanupById(cleanupId, null),
+      standingOf(cleanupId, userId),
+    ])
+    if (record === null) notFoundCleanup()
+    assertCapability(record, standing, capability)
+    return { record, standing }
+  }
+
+  function capabilityList(standing: HostStanding): HostCapability[] {
+    return [...hostCapabilities(standing)]
+  }
+
+  async function eventMediaUrls(
+    record: CleanupRecord,
+    opts: { gallery: boolean },
+  ): Promise<{ coverUrl: string | null; galleryUrls: string[]; organizationLogoUrl: string | null }> {
+    const presign = deps.presignEventMedia
+    if (presign === undefined) {
+      return { coverUrl: null, galleryUrls: [], organizationLogoUrl: null }
+    }
+    const forceSigned = !isEventPubliclyVisible(record.visibility)
+    const [coverUrl, galleryUrls, organizationLogoUrl] = await Promise.all([
+      record.coverKey === null ? Promise.resolve(null) : presign(record.coverKey, { forceSigned }),
+      opts.gallery && record.galleryMediaIds.length > 0
+        ? deps.repo
+            .galleryKeysFor(record.id)
+            .then((keys) => mapWithLimit(keys, PRESIGN_CONCURRENCY, (key) => presign(key, { forceSigned })))
+        : Promise.resolve([]),
+      record.organization === null || record.organization.logoKey === null
+        ? Promise.resolve(null)
+        : presign(record.organization.logoKey, { forceSigned: false }),
+    ])
+    return { coverUrl, galleryUrls, organizationLogoUrl }
+  }
+
+  async function assertRosterReadBudget(userId: string): Promise<void> {
+    const reads = await counters.incr(`host:rosterReads:${userId}`, HOST_ROSTER_READ_WINDOW_SEC)
+    if (reads > HOST_ROSTER_READS_PER_HOUR) {
+      throw AppError.rateLimited(
+        "You've opened attendee lists too many times in the past hour. Please try again later.",
+      )
+    }
+  }
+
+  async function assertHostEventBudget(userId: string): Promise<void> {
+    const created = await counters.incr(`host:events:${userId}`, HOST_EVENTS_WINDOW_SEC)
+    if (created > HOST_EVENTS_PER_DAY) {
+      throw AppError.rateLimited(
+        "You've created the maximum number of events for today. Please try again tomorrow.",
+      )
+    }
+  }
 
   async function assertMembershipFlipBudget(cleanupId: string, userId: string): Promise<void> {
     const flips = await counters.incr(
@@ -190,6 +357,109 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         "You've joined and left this event too many times recently. Please try again later.",
       )
     }
+  }
+
+  async function organizationFor(
+    organizationId: string | null,
+    actorId: string,
+    opts: { linking: boolean },
+  ): Promise<{ organization: CleanupOrganizationView | null; orgRole: OrganizationMemberRole | null }> {
+    if (organizationId === null) return { organization: null, orgRole: null }
+    const [organization, orgRole] = await Promise.all([
+      deps.repo.loadOrganizationRef(organizationId),
+      deps.repo.orgRoleOf(organizationId, actorId),
+    ])
+    if (organization === null) {
+      throw AppError.validation({ organizationId: "that organization no longer exists" })
+    }
+    if (opts.linking && !can({ eventRole: null, orgRole }, "manage_event")) {
+      throw AppError.forbidden(
+        "Only an owner or admin of that organization can host events for it.",
+      )
+    }
+    return { organization, orgRole }
+  }
+
+  async function resolvePageSlug(slug: string, cleanupId: string | null): Promise<string> {
+    assertSlugAllowed(slug, "pageSlug")
+    const existing = await deps.repo.findCleanupByPageSlug(slug)
+    if (existing !== null && existing.id !== cleanupId) {
+      throw AppError.conflict("That page address is already taken.")
+    }
+    return slug
+  }
+
+  async function resolveHostWrite(input: {
+    patch: HostEventPatch
+    actorId: string
+    cleanupId: string | null
+    current: CleanupRecord | null
+  }): Promise<EventHostWrite> {
+    const { patch, current } = input
+    const write: EventHostWrite = {}
+
+    if (patch.timezone !== undefined) {
+      assertValidTimezone(patch.timezone)
+      write.timezone = patch.timezone ?? null
+    }
+    if (patch.visibility !== undefined) write.visibility = patch.visibility
+    if (patch.endsAt !== undefined) write.endsAt = toDateOrNull(patch.endsAt)
+    if (patch.registrationOpensAt !== undefined) {
+      write.registrationOpensAt = toDateOrNull(patch.registrationOpensAt)
+    }
+    if (patch.registrationClosesAt !== undefined) {
+      write.registrationClosesAt = toDateOrNull(patch.registrationClosesAt)
+    }
+    if (patch.reminderOffsetsMinutes !== undefined) {
+      assertValidReminderOffsets(patch.reminderOffsetsMinutes)
+      write.reminderOffsetsMin = patch.reminderOffsetsMinutes ?? null
+    }
+    if (patch.coverMediaId !== undefined) write.coverMediaId = patch.coverMediaId ?? null
+    if (patch.galleryMediaIds !== undefined) {
+      assertGalleryWithinCap(patch.galleryMediaIds)
+      write.galleryMediaIds = [...patch.galleryMediaIds]
+    }
+    if (patch.hostReplyTo !== undefined) write.hostReplyTo = patch.hostReplyTo ?? null
+    if (patch.pageSlug !== undefined) {
+      write.pageSlug =
+        patch.pageSlug === null ? null : await resolvePageSlug(patch.pageSlug, input.cleanupId)
+    }
+
+    const effectiveOrgId =
+      patch.organizationId !== undefined
+        ? (patch.organizationId ?? null)
+        : (current?.organizationId ?? null)
+    const orgChanged =
+      patch.organizationId !== undefined && (current?.organizationId ?? null) !== effectiveOrgId
+    if (patch.organizationId !== undefined) write.organizationId = effectiveOrgId
+    const { organization, orgRole } = await organizationFor(effectiveOrgId, input.actorId, {
+      linking: orgChanged || current === null,
+    })
+
+    if (patch.donationUrl !== undefined) {
+      const donationUrl = patch.donationUrl ?? null
+      if (donationUrl !== null) assertDonationsAllowed(organization, orgRole)
+      write.donationUrl = donationUrl
+    } else if (orgChanged && (current?.donationUrl ?? null) !== null) {
+      assertDonationsAllowed(organization, orgRole)
+    }
+
+    assertEventWindow({
+      scheduledAt:
+        patch.scheduledAt !== undefined
+          ? new Date(patch.scheduledAt)
+          : (current?.scheduledAt ?? new Date(0)),
+      endsAt: write.endsAt !== undefined ? write.endsAt : (current?.endsAt ?? null),
+      registrationOpensAt:
+        write.registrationOpensAt !== undefined
+          ? write.registrationOpensAt
+          : (current?.registrationOpensAt ?? null),
+      registrationClosesAt:
+        write.registrationClosesAt !== undefined
+          ? write.registrationClosesAt
+          : (current?.registrationClosesAt ?? null),
+    })
+    return write
   }
 
   function assertEventTextClean(input: {
@@ -213,14 +483,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
   function notFoundCleanup(): never {
     throw AppError.notFound("Cleanup not found")
-  }
-
-  async function viewerRole(
-    cleanupId: string,
-    viewer: CleanupViewer,
-  ): Promise<CleanupMemberRole | null> {
-    if (viewer.userId === null) return null
-    return deps.repo.roleOf(cleanupId, viewer.userId)
   }
 
   async function notifyRoleChange(
@@ -251,15 +513,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     actorId: string,
   ): Promise<void> {
     await notifyMembersOfCancellation(cleanup, reason, actorId)
-    await notifyGuestsOfCancellation(cleanup.id, reason)
+    await notifyAttendeesOfCancellation(cleanup.id, reason)
   }
 
-  async function notifyGuestsOfCancellation(
+  async function notifyAttendeesOfCancellation(
     cleanupId: string,
     reason: string | null,
   ): Promise<void> {
-    if (deps.guestNotifier === undefined) return
-    await deps.guestNotifier.notifyEventCancelled(cleanupId, reason)
+    if (deps.attendeeNotifier === undefined) return
+    await deps.attendeeNotifier.eventCancelled(cleanupId, reason)
   }
 
   async function dispatchGuestUpdateFanout(cleanupId: string): Promise<void> {
@@ -441,6 +703,21 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     }))
   }
 
+  async function hydrateCoverUrls(records: CleanupRecord[]): Promise<Map<string, string>> {
+    const presign = deps.presignEventMedia
+    const out = new Map<string, string>()
+    if (presign === undefined) return out
+    const withCover = records.filter((r) => r.coverKey !== null)
+    const urls = await mapWithLimit(withCover, PRESIGN_CONCURRENCY, (record) =>
+      presign(record.coverKey as string, { forceSigned: !isEventPubliclyVisible(record.visibility) }),
+    )
+    withCover.forEach((record, i) => {
+      const url = urls[i]
+      if (url !== undefined) out.set(record.id, url)
+    })
+    return out
+  }
+
   async function hydrateSlots(cleanupId: string, viewerId: string | null): Promise<EventSlotDTO[]> {
     const views = await deps.repo.listSlots(cleanupId, viewerId)
     return views.map(toEventSlotDTO)
@@ -491,6 +768,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       await assertReportsLinkable(linkedReportIds)
       const slots = toDesiredSlots(input.slots ?? [], null, { keepIds: false })
 
+      const host = await resolveHostWrite({
+        patch: { ...input, scheduledAt: input.scheduledAt },
+        actorId: organizerUserId,
+        cleanupId: null,
+        current: null,
+      })
+      await assertHostEventBudget(organizerUserId)
+
       const jurisdictionGeoid =
         deps.resolveJurisdictionGeoid !== undefined
           ? await deps.resolveJurisdictionGeoid(input.lat, input.lng)
@@ -501,7 +786,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           : UNKNOWN_JURCODE
 
       const cleanupId = newId()
-      const record = await deps.repo.createCleanupTx({
+      const outcome = await deps.repo.createCleanupTx({
         cleanupId,
         organizerUserId,
         type: input.type,
@@ -518,30 +803,49 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         jurCode,
         linkedReportIds,
         slots,
+        host,
+        ...(input.idempotencyKey !== undefined
+          ? {
+              idempotency: {
+                key: input.idempotencyKey,
+                scope: CLEANUP_CREATE_IDEMPOTENCY_SCOPE,
+                userOrAnon: `user:${organizerUserId}`,
+              },
+            }
+          : {}),
       })
-      const [linkedReports, slotBoard] = await Promise.all([
-        hydrateLinkedReports(cleanupId, record.eventKind),
-        hydrateSlots(cleanupId, organizerUserId),
+      const record = outcome.record
+      const standing = await standingOf(record.id, organizerUserId)
+      const [linkedReports, slotBoard, media] = await Promise.all([
+        hydrateLinkedReports(record.id, record.eventKind),
+        hydrateSlots(record.id, organizerUserId),
+        eventMediaUrls(record, { gallery: true }),
       ])
-      return toCleanupDTO(record, true, linkedReports, "organizer", { slots: slotBoard })
+      return enrichOne(
+        toCleanupDTO(record, standing.eventRole !== null, linkedReports, standing.eventRole, {
+          slots: slotBoard,
+          myCapabilities: capabilityList(standing),
+          ...media,
+        }),
+        organizerUserId,
+      )
     },
 
     async updateCleanup(
       id: string,
-      patch: UpdateCleanupRequest,
+      patch: UpdateCleanupPatchRequest,
       requesterUserId: string,
     ): Promise<CleanupDTO> {
       assertEventTextClean(patch)
       clampBring(patch.bring)
-      const organizerId = await deps.repo.organizerOf(id)
-      if (organizerId === null) notFoundCleanup()
-      const requesterRole = await deps.repo.roleOf(id, requesterUserId)
-      if (requesterRole !== "organizer" && requesterRole !== "cohost") {
-        throw AppError.forbidden("Only the event hosts can edit this event.")
-      }
-
+      const standing = await standingOf(id, requesterUserId)
       const current = await deps.repo.findCleanupById(id, null)
       if (!current) notFoundCleanup()
+      assertCapability(current, standing, "manage_event")
+      if (patch.organizationId !== undefined && patch.organizationId !== current.organizationId) {
+        assertCapability(current, standing, "manage_org_link")
+      }
+      const requesterRole = standing.eventRole
       if (current.status === "cancelled") {
         throw AppError.conflict("This event has been cancelled and can no longer be edited.")
       }
@@ -599,7 +903,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           ? await deps.resolveJurisdictionGeoid(movedTo.lat, movedTo.lng)
           : undefined
 
+      const host = await resolveHostWrite({
+        patch,
+        actorId: requesterUserId,
+        cleanupId: id,
+        current,
+      })
+
       const scalarPatch: UpdateCleanupPatch = {
+        ...host,
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
         ...(patch.eventKind !== undefined ? { eventKind: patch.eventKind } : {}),
@@ -630,11 +942,19 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (!isCleanupTerminal(record.status) && guestVisibleChange(current, patch)) {
         await dispatchGuestUpdateFanout(record.id)
       }
-      const [linkedReports, slotBoard] = await Promise.all([
+      const [linkedReports, slotBoard, media] = await Promise.all([
         hydrateLinkedReports(id, record.eventKind),
         hydrateSlots(id, requesterUserId),
+        eventMediaUrls(record, { gallery: true }),
       ])
-      return toCleanupDTO(record, true, linkedReports, requesterRole, { slots: slotBoard })
+      return enrichOne(
+        toCleanupDTO(record, standing.eventRole !== null, linkedReports, requesterRole, {
+          slots: slotBoard,
+          myCapabilities: capabilityList(standing),
+          ...media,
+        }),
+        requesterUserId,
+      )
     },
 
     async cancelCleanup(
@@ -642,11 +962,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       reason: string | null,
       requesterUserId: string,
     ): Promise<CleanupDTO> {
-      const organizerId = await deps.repo.organizerOf(id)
-      if (organizerId === null) notFoundCleanup()
-      if (organizerId !== requesterUserId) {
-        throw AppError.forbidden("Only the organizer can cancel this event.")
-      }
+      const { standing } = await requireCapabilityOn(id, requesterUserId, "cancel_event")
       const trimmed = reason?.trim()
       const cleanReason = trimmed && trimmed.length > 0 ? trimmed : null
       assertNoSlur(cleanReason, "reason")
@@ -668,11 +984,19 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
       if (outcome === "cancelled") await dispatchCancelFanout(record, cleanReason, requesterUserId)
-      const [linkedReports, slotBoard] = await Promise.all([
+      const [linkedReports, slotBoard, media] = await Promise.all([
         hydrateLinkedReports(id, record.eventKind),
         hydrateSlots(id, requesterUserId),
+        eventMediaUrls(record, { gallery: true }),
       ])
-      return toCleanupDTO(record, true, linkedReports, "organizer", { slots: slotBoard })
+      return enrichOne(
+        toCleanupDTO(record, true, linkedReports, standing.eventRole ?? "organizer", {
+          slots: slotBoard,
+          myCapabilities: capabilityList(standing),
+          ...media,
+        }),
+        requesterUserId,
+      )
     },
 
     async completeCleanup(
@@ -680,12 +1004,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       note: string | null,
       requesterUserId: string,
     ): Promise<CleanupDTO> {
-      const organizerId = await deps.repo.organizerOf(id)
-      if (organizerId === null) notFoundCleanup()
-      const requesterRole = await deps.repo.roleOf(id, requesterUserId)
-      if (requesterRole !== "organizer" && requesterRole !== "cohost") {
-        throw AppError.forbidden("Only the event hosts can complete this event.")
-      }
+      const { standing } = await requireCapabilityOn(id, requesterUserId, "manage_event")
+      const requesterRole = standing.eventRole
       const trimmed = note?.trim()
       const cleanNote = trimmed && trimmed.length > 0 ? trimmed : null
       assertNoSlur(cleanNote, "note")
@@ -708,11 +1028,19 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
-      const [linkedReports, slotBoard] = await Promise.all([
+      const [linkedReports, slotBoard, media] = await Promise.all([
         hydrateLinkedReports(id, record.eventKind),
         hydrateSlots(id, requesterUserId),
+        eventMediaUrls(record, { gallery: true }),
       ])
-      return toCleanupDTO(record, true, linkedReports, requesterRole, { slots: slotBoard })
+      return enrichOne(
+        toCleanupDTO(record, standing.eventRole !== null, linkedReports, requesterRole, {
+          slots: slotBoard,
+          myCapabilities: capabilityList(standing),
+          ...media,
+        }),
+        requesterUserId,
+      )
     },
 
     async listCleanups(
@@ -731,36 +1059,52 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         viewerId: viewer.userId,
       }
       const { records, nextCursor } = await deps.repo.listCleanups(filters)
+      const ids = records.map((r) => r.id)
 
-      const rolesById =
-        viewer.userId !== null
-          ? await deps.repo.rolesOf(records.map((r) => r.id), viewer.userId)
-          : new Map<string, CleanupMemberRole>()
-      const linkedByCleanup = await hydrateLinkedReportsForMany(records)
-      const slotCounts = await deps.repo.slotCountsFor(records.map((r) => r.id))
-      const items = records.map((record) =>
-        toCleanupDTO(
+      const [standingsById, linkedByCleanup, slotCounts, coverUrls] = await Promise.all([
+        standingsOf(ids, viewer.userId),
+        hydrateLinkedReportsForMany(records),
+        deps.repo.slotCountsFor(ids),
+        hydrateCoverUrls(records),
+      ])
+      const items = records.map((record) => {
+        const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
+        return toCleanupDTO(
           record,
-          rolesById.has(record.id),
+          hasHostStanding(standing),
           linkedByCleanup.get(record.id) ?? [],
-          rolesById.get(record.id) ?? null,
-          { slotCount: slotCounts.get(record.id) ?? 0 },
-        ),
-      )
-      return { items, nextCursor }
+          standing.eventRole,
+          {
+            slotCount: slotCounts.get(record.id) ?? 0,
+            myCapabilities: capabilityList(standing),
+            coverUrl: coverUrls.get(record.id) ?? null,
+          },
+        )
+      })
+      return { items: await enrichDTOs(items, viewer.userId), nextCursor }
     },
 
     async getCleanup(id: string, viewer: CleanupViewer): Promise<CleanupDTO> {
       const record = isUuid(id)
         ? await deps.repo.findCleanupById(id, null)
-        : await deps.repo.findCleanupByReferenceCode(id)
+        : ((await deps.repo.findCleanupByReferenceCode(id)) ??
+          (await deps.repo.findCleanupByPageSlug(id)))
       if (!record) notFoundCleanup()
-      const [role, linkedReports, slotBoard] = await Promise.all([
-        viewerRole(record.id, viewer),
+      const standing = await standingOf(record.id, viewer.userId)
+      assertVisible(record, standing)
+      const [linkedReports, slotBoard, media] = await Promise.all([
         hydrateLinkedReports(record.id, record.eventKind),
         hydrateSlots(record.id, viewer.userId),
+        eventMediaUrls(record, { gallery: true }),
       ])
-      return toCleanupDTO(record, role !== null, linkedReports, role, { slots: slotBoard })
+      return enrichOne(
+        toCleanupDTO(record, hasHostStanding(standing), linkedReports, standing.eventRole, {
+          slots: slotBoard,
+          myCapabilities: capabilityList(standing),
+          ...media,
+        }),
+        viewer.userId,
+      )
     },
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
@@ -793,17 +1137,33 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
 
-      const role = await viewerRole(id, viewer)
-      const joined = role !== null
+      const standing = await standingOf(id, viewer.userId)
+      assertVisible(record, standing)
+      const joined = viewer.userId !== null && (await deps.repo.isMember(id, viewer.userId))
       const scope: CleanupAttendeesResponse["scope"] = joined ? "all" : "following"
 
-      const actsAsHost = role === "organizer" || role === "cohost"
+      const actsAsHost = viewer.userId !== null && can(standing, "view_roster")
+      if (actsAsHost && viewer.userId !== null) await assertRosterReadBudget(viewer.userId)
       const views = await deps.repo.listAttendees({
         cleanupId: id,
         viewerId: viewer.userId,
         onlyFollowed: !joined,
         limit: actsAsHost ? EVENT_HOURS_MEMBER_CAP : ATTENDEES_DEFAULT_LIMIT,
       })
+      if (actsAsHost && viewer.userId !== null) {
+        const seen = await counters.incr(
+          `host:rosterAudit:${id}:${viewer.userId}`,
+          ROSTER_AUDIT_DEDUPE_WINDOW_SEC,
+        )
+        if (seen === 1) {
+          await audit.record({
+            actorId: viewer.userId,
+            action: "event.roster_viewed",
+            target: `cleanup:${id}`,
+            meta: { returned: views.length },
+          })
+        }
+      }
       const attendees = views.map((v) => toAttendeeDTO(v, v.isFollowing))
       return { attendees, going: record.going, scope }
     },
@@ -812,14 +1172,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       id: string,
       actorId: string,
       targetUserId: string,
-      role: "cohost" | "member",
+      role: "cohost" | "staff" | "member",
     ): Promise<SetMemberRoleResponse> {
-      const record = await deps.repo.findCleanupById(id, null)
-      if (!record) notFoundCleanup()
-
-      if (record.organizerUserId !== actorId) {
-        throw AppError.forbidden("Only the organizer can change member roles.")
-      }
+      const { record } = await requireCapabilityOn(id, actorId, "manage_team")
       if (targetUserId === record.organizerUserId) {
         throw AppError.forbidden("The organizer's role can't be changed.")
       }
@@ -846,9 +1201,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const flipped = await deps.repo.setMemberRole(id, targetUserId, role)
       if (!flipped) throw AppError.notFound("That person isn't attending this event.")
 
+      await audit.record({
+        actorId,
+        action: "event.team_role_changed",
+        target: `cleanup:${id}`,
+        meta: { targetUserId, from: targetRole, to: role },
+      })
       await notifyRoleChange(
         targetUserId,
-        role === "cohost" ? "promoted" : "demoted",
+        role === "member" ? "demoted" : "promoted",
         { id: record.id, title: record.title },
       )
       return { ok: true }
@@ -859,13 +1220,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       actorId: string,
       targetUserId: string,
     ): Promise<RemoveMemberResponse> {
-      const record = await deps.repo.findCleanupById(id, null)
-      if (!record) notFoundCleanup()
-
-      const actorRole = await deps.repo.roleOf(id, actorId)
-      if (actorRole !== "organizer" && actorRole !== "cohost") {
-        throw AppError.forbidden("Only the event hosts can remove attendees.")
-      }
+      const { record, standing } = await requireCapabilityOn(id, actorId, "manage_event")
       if (targetUserId === actorId) {
         throw AppError.conflict("You can't remove yourself — leave the event instead.")
       }
@@ -876,8 +1231,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (targetRole === null) {
         throw AppError.notFound("That person isn't attending this event.")
       }
-      if (targetRole === "cohost" && actorRole !== "organizer") {
-        throw AppError.forbidden("Only the organizer can remove a co-host.")
+      if ((targetRole === "cohost" || targetRole === "staff") && !can(standing, "manage_team")) {
+        throw AppError.forbidden(hostForbiddenCopy("manage_team"))
       }
 
       const outcome = await deps.repo.removeMember(id, targetUserId, actorId)
@@ -887,6 +1242,12 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.notFound("That person isn't attending this event.")
       }
 
+      await audit.record({
+        actorId,
+        action: "event.attendee_removed",
+        target: `cleanup:${id}`,
+        meta: { targetUserId, role: targetRole },
+      })
       await notifyRoleChange(targetUserId, "removed", { id: record.id, title: record.title })
       return { ok: true, going: outcome.going }
     },
@@ -903,6 +1264,13 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         )
       }
 
+      const [record, standing] = await Promise.all([
+        deps.repo.findCleanupById(id, null),
+        standingOf(id, userId),
+      ])
+      if (record === null) notFoundCleanup()
+      assertVisible(record, standing)
+
       const outcome =
         slotId === null
           ? await deps.repo.releaseSlot(id, userId)
@@ -918,14 +1286,22 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (outcome.kind === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       if (outcome.kind === "full") throw AppError.conflict("That slot is already full.")
 
-      const record = await deps.repo.findCleanupById(id, null)
-      if (!record) notFoundCleanup()
-      const role = await deps.repo.roleOf(id, userId)
-      const [linkedReports, slotBoard] = await Promise.all([
-        hydrateLinkedReports(id, record.eventKind),
+      const updated = await deps.repo.findCleanupById(id, null)
+      if (!updated) notFoundCleanup()
+      const nextStanding = await standingOf(id, userId)
+      const [linkedReports, slotBoard, media] = await Promise.all([
+        hydrateLinkedReports(id, updated.eventKind),
         hydrateSlots(id, userId),
+        eventMediaUrls(updated, { gallery: true }),
       ])
-      return toCleanupDTO(record, role !== null, linkedReports, role, { slots: slotBoard })
+      return enrichOne(
+        toCleanupDTO(updated, hasHostStanding(nextStanding), linkedReports, nextStanding.eventRole, {
+          slots: slotBoard,
+          myCapabilities: capabilityList(nextStanding),
+          ...media,
+        }),
+        userId,
+      )
     },
 
     async requestResources(input: {
@@ -936,12 +1312,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (deps.outboundMail === undefined || deps.isVerified === undefined) {
         throw AppError.internal("Event resource requests are not available")
       }
-      const record = await deps.repo.findCleanupById(input.cleanupId, null)
-      if (!record) notFoundCleanup()
-
-      if (record.organizerUserId !== input.actorId) {
-        throw AppError.forbidden("Only the event host can request resources.")
-      }
+      const { record } = await requireCapabilityOn(
+        input.cleanupId,
+        input.actorId,
+        "request_resources",
+      )
       const verified = await deps.isVerified(input.actorId)
       if (!verified) {
         throw AppError.forbidden("Only identity-verified hosts can request resources.")
@@ -1019,7 +1394,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
 function guestVisibleChange(
   current: { scheduledAt: Date; address: string | null; lat: number; lng: number },
-  patch: UpdateCleanupRequest,
+  patch: UpdateCleanupPatchRequest,
 ): boolean {
   if (patch.scheduledAt !== undefined) {
     const next = Date.parse(patch.scheduledAt)

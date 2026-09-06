@@ -5,7 +5,6 @@ import {
   GuestOtpErrorReason,
   MAX_GUEST_NAME,
   type CleanupGuestDTO,
-  type CleanupMemberRole,
   type CleanupStatus,
   type GetCleanupGuestsRequest,
   type GetCleanupGuestsResponse,
@@ -15,8 +14,11 @@ import {
   type GuestRsvpRequestResponse,
   type GuestRsvpVerifyRequest,
   type GuestRsvpVerifyResponse,
+  type RegisterForEventRequest,
+  type RegisterForEventResponse,
 } from "@civfix/shared"
-import type { AbuseChecks, Mailer, SmsSender } from "@civfix/shared/interfaces"
+import { GUEST_RSVP_TURNSTILE_ACTION } from "@civfix/shared/host"
+import type { AbuseChecks, Jobs, Mailer, SmsSender } from "@civfix/shared/interfaces"
 import {
   OTP_CODE_LENGTH,
   OTP_MAX_ATTEMPTS,
@@ -41,12 +43,13 @@ import { honeypotTripped } from "../abuse/honeypot.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { smsFailureKind } from "../errors/sms-failure.js"
+import { mapWithLimit } from "./media-presign.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import { isCleanupTerminal } from "./cleanup-rules.js"
-import { mapWithLimit } from "./media-presign.js"
-
-export const GUEST_TURNSTILE_ACTION = "guest-rsvp"
+import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
+import { formatEventWhen } from "./host/broadcast-render.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 
 export const MAX_GUESTS_PER_EVENT = 500
 
@@ -64,21 +67,13 @@ export const DAY_SECONDS = 24 * 60 * 60
 
 export const GUESTS_DEFAULT_LIMIT = 25
 
-export const GUEST_FANOUT_CONCURRENCY = 8
+type SmsPurpose = "otp" | "confirmation" | "notice"
 
-type GuestFanoutLane = "throttled" | "critical"
-
-type SmsPurpose = "otp" | "confirmation" | "fanout"
+export const GUEST_SMS_NOTICE_CONCURRENCY = 8
 
 export const SMS_BUDGET_KEY_PREFIX = "sms:day:"
 
-const GUEST_TIME_ZONE = "America/Los_Angeles"
-
 export const SMS_TITLE_MAX_CHARS = 20
-
-export const GUEST_FANOUT_PER_EVENT_PER_HOUR = 3
-
-export const GUEST_FANOUT_WINDOW_SECONDS = 60 * 60
 
 export const GUEST_RETENTION_MAX_PAGES = 20
 
@@ -87,6 +82,28 @@ export const GUEST_CONTACT_RETENTION_DAYS = 30
 export const GUEST_OTP_RETENTION_HOURS = 24
 
 export const GUEST_RETENTION_BATCH = 500
+
+export const GUEST_CONTACT_READ_COUNTER_KEY = "host:guestContactReads"
+
+export const GUEST_CONTACT_READS_PER_HOUR = 50
+
+export const GUEST_CONTACT_READ_WINDOW_SECONDS = 60 * 60
+
+export interface GuestRegistrationFields {
+  ticketTypeId?: string
+  partySize?: number
+  accessCode?: string
+  answers?: RegisterForEventRequest["answers"]
+  consent?: RegisterForEventRequest["consent"]
+}
+
+export interface GuestRegistrationBridge {
+  register(
+    input: RegisterForEventRequest,
+    subject: { kind: "guest"; guestId: string },
+  ): Promise<RegisterForEventResponse>
+  assertInputValid?(cleanupId: string, fields: GuestRegistrationFields): Promise<void>
+}
 
 export interface GuestOtpRecord {
   id: string
@@ -121,6 +138,7 @@ export interface GuestEventView {
   status: CleanupStatus
   scheduledAt: Date
   address: string | null
+  timezone: string | null
   lat: number
   lng: number
 }
@@ -169,7 +187,7 @@ export interface GuestRsvpRepository {
   findGuestByManageTokenHash(
     hash: string,
   ): Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
-  cancelGuest(guestId: string, now: Date): Promise<void>
+  cancelGuest(guestId: string, now: Date): Promise<string[]>
   listGuests(args: {
     cleanupId: string
     cursor: TimeCursor | null
@@ -193,7 +211,15 @@ export interface GuestRsvpServiceDeps {
   abuseChecks: AbuseChecks
   cache: CacheClient
   counters: CounterStore
-  roleOf: (cleanupId: string, userId: string) => Promise<CleanupMemberRole | null>
+  requireGuestContact: (cleanupId: string, userId: string) => Promise<void>
+  registrations?: GuestRegistrationBridge
+  jobs?: Jobs
+  audit?: (input: {
+    actorId: string | null
+    action: string
+    target: string
+    meta?: Record<string, unknown>
+  }) => Promise<void>
   smsGuestEnabled: boolean
   smsDailyCap: number
   manageLinkBase: string
@@ -230,9 +256,8 @@ export interface GuestRsvpService {
     query: GetCleanupGuestsRequest,
     viewerUserId: string,
   ): Promise<GetCleanupGuestsResponse>
-  notifyEventCancelled(cleanupId: string, reason: string | null): Promise<void>
-  notifyEventUpdated(job: GuestUpdateFanoutJob): Promise<void>
   runRetentionSweep(): Promise<GuestRetentionResult>
+  notifyGuestsBySms(cleanupId: string, kind: "cancelled" | "updated"): Promise<number>
 }
 
 export function smsUnavailableError(): AppError {
@@ -273,19 +298,6 @@ function verifyLockedOutError(): AppError {
   })
 }
 
-const GUEST_WHEN_FORMAT = new Intl.DateTimeFormat("en-US", {
-  timeZone: GUEST_TIME_ZONE,
-  weekday: "short",
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-})
-
-function formatGuestWhen(at: Date): string {
-  return `${GUEST_WHEN_FORMAT.format(at)} PT`
-}
-
 function utcDayKey(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10)
 }
@@ -303,6 +315,18 @@ export function guestContactOf(input: {
   const phone = (input.phone ?? "").trim()
   if (phone === "") throw AppError.validation({ phone: "required" })
   return phone
+}
+
+export function registrationFieldsOf(
+  input: GuestRsvpRequestRequest | GuestRsvpVerifyRequest,
+): GuestRegistrationFields {
+  return {
+    ...(input.ticketTypeId !== undefined ? { ticketTypeId: input.ticketTypeId } : {}),
+    ...(input.partySize !== undefined ? { partySize: input.partySize } : {}),
+    ...(input.accessCode !== undefined ? { accessCode: input.accessCode } : {}),
+    ...(input.answers !== undefined ? { answers: input.answers } : {}),
+    ...(input.consent !== undefined ? { consent: input.consent } : {}),
+  }
 }
 
 export function toCleanupGuestDTO(row: GuestRosterRow): CleanupGuestDTO {
@@ -467,6 +491,113 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     return event
   }
 
+  async function assertRegistrationInputValid(
+    cleanupId: string,
+    fields: GuestRegistrationFields,
+  ): Promise<void> {
+    const hasAnswers = (fields.answers?.length ?? 0) > 0
+    if (fields.consent === undefined && !hasAnswers) return
+    await deps.registrations?.assertInputValid?.(cleanupId, fields)
+  }
+
+  async function notifyGuestsBySms(
+    cleanupId: string,
+    kind: "cancelled" | "updated",
+  ): Promise<number> {
+    if (!deps.smsGuestEnabled) return 0
+    const event = await deps.repo.findEvent(cleanupId)
+    if (event === null) return 0
+    if (kind === "updated" && isCleanupTerminal(event.status)) return 0
+
+    let recipients: GuestRecipient[]
+    try {
+      recipients = await deps.repo.listContactableGuests(cleanupId, MAX_GUESTS_PER_EVENT)
+    } catch (err) {
+      if (kind === "cancelled") throw err
+      deps.logger?.warn({ err, cleanupId }, "guest sms: roster read failed (suppressed)")
+      return 0
+    }
+
+    const texts = recipients.filter(
+      (recipient) => recipient.channel === "sms" && recipient.phone !== null,
+    )
+    if (texts.length === 0) return 0
+
+    const body =
+      kind === "cancelled"
+        ? renderMessage("en", "sms.guest_cancelled.body", { title: smsTitle(event.title) })
+        : renderMessage("en", "sms.guest_updated.body", {
+            title: smsTitle(event.title),
+            when: formatEventWhen(event.scheduledAt, event.timezone ?? DEFAULT_EVENT_TIME_ZONE),
+            place: event.address ?? `${event.lat.toFixed(5)}, ${event.lng.toFixed(5)}`,
+          })
+
+    let sent = 0
+    await mapWithLimit(texts, GUEST_SMS_NOTICE_CONCURRENCY, async (recipient) => {
+      try {
+        if (!(await reserveSmsBudget("notice"))) {
+          const line = { cleanupId, guestId: recipient.id, kind }
+          const msg = "guest sms: budget refused this recipient's text"
+          if (kind === "cancelled") deps.logger?.error(line, msg)
+          else deps.logger?.warn(line, msg)
+          return
+        }
+        await deps.smsSender.send(recipient.phone as string, body)
+        sent += 1
+      } catch (err) {
+        if (smsFailureKind(err) === "opted_out" && recipient.phone !== null) {
+          await deps.repo.recordPhoneOptOut(recipient.phone).catch(() => {})
+        }
+        deps.logger?.warn({ err, cleanupId, guestId: recipient.id, kind }, "guest sms: send failed")
+      }
+    })
+    return sent
+  }
+
+  async function registerVerifiedGuest(
+    cleanupId: string,
+    guestId: string,
+    registration: GuestRegistrationFields,
+  ): Promise<
+    Pick<GuestRsvpVerifyResponse, "registration" | "registrationOutcome" | "ticketTokens">
+  > {
+    const bridge = deps.registrations
+    if (bridge === undefined) {
+      return { registration: null, registrationOutcome: null, ticketTokens: [] }
+    }
+    try {
+      const response = await bridge.register(
+        {
+          id: cleanupId,
+          idempotencyKey: `guest:${guestId}`,
+          partySize: registration.partySize ?? 1,
+          joinWaitlistIfFull: false,
+          ...(registration.ticketTypeId !== undefined
+            ? { ticketTypeId: registration.ticketTypeId }
+            : {}),
+          ...(registration.accessCode !== undefined
+            ? { accessCode: registration.accessCode }
+            : {}),
+          ...(registration.answers !== undefined ? { answers: registration.answers } : {}),
+          ...(registration.consent !== undefined ? { consent: registration.consent } : {}),
+        },
+        { kind: "guest", guestId },
+      )
+      return {
+        registration: response.registration,
+        registrationOutcome: response.outcome,
+        ticketTokens: response.ticketTokens,
+      }
+    } catch (err) {
+      if (err instanceof AppError && err.code === ErrorCode.VALIDATION) throw err
+      deps.logger?.warn(
+        { err, cleanupId },
+        "guest rsvp: registration failed (suppressed; the RSVP stands)",
+      )
+      return { registration: null, registrationOutcome: null, ticketTokens: [] }
+    }
+  }
+
   async function joinAsGuest(args: {
     cleanupId: string
     eventTitle: string
@@ -474,10 +605,11 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     channel: GuestContactChannel
     contact: string
     confirm: boolean
+    registration?: GuestRegistrationFields
   }): Promise<GuestRsvpVerifyResponse> {
     const rawToken = newToken()
     const manageTokenHash = await sha256Hex(rawToken)
-    await deps.repo.upsertVerifiedGuest({
+    const guest = await deps.repo.upsertVerifiedGuest({
       cleanupId: args.cleanupId,
       name: args.name,
       channel: args.channel,
@@ -487,6 +619,11 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       manageTokenHash,
       now: new Date(now()),
     })
+    const seat = await registerVerifiedGuest(
+      args.cleanupId,
+      guest.id,
+      args.registration ?? {},
+    )
     const going = await deps.repo.goingCount(args.cleanupId)
     if (args.confirm) {
       await sendConfirmation({ ...args, rawToken }).catch((err: unknown) => {
@@ -496,7 +633,14 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         )
       })
     }
-    return { joined: true, going, manageToken: rawToken }
+    return {
+      joined: true,
+      going,
+      manageToken: rawToken,
+      registration: seat.registration,
+      registrationOutcome: seat.registrationOutcome,
+      ticketTokens: seat.ticketTokens,
+    }
   }
 
   async function sendConfirmation(args: {
@@ -533,75 +677,23 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     )
   }
 
-  async function fanoutAllowed(cleanupId: string): Promise<boolean> {
-    let sends: number
+  async function reserveGuestContactBudget(viewerUserId: string): Promise<void> {
+    let used: number
     try {
-      sends = await deps.counters.incr(
-        `guest:fanout:${cleanupId}`,
-        GUEST_FANOUT_WINDOW_SECONDS,
+      used = await deps.counters.incr(
+        `${GUEST_CONTACT_READ_COUNTER_KEY}:${viewerUserId}`,
+        GUEST_CONTACT_READ_WINDOW_SECONDS,
       )
     } catch (err) {
       deps.logger?.warn(
-        { err, cleanupId },
-        "guest fanout: throttle counter unavailable; refusing the fanout (fail closed)",
+        { err },
+        "guest contact: harvest counter unavailable; refusing the read (fail closed)",
       )
-      return false
+      throw AppError.rateLimited("The guest list is temporarily unavailable.")
     }
-    if (sends > GUEST_FANOUT_PER_EVENT_PER_HOUR) {
-      deps.logger?.warn(
-        { cleanupId, sends },
-        "guest fanout: per-event hourly throttle reached; skipping",
-      )
-      return false
+    if (used > GUEST_CONTACT_READS_PER_HOUR) {
+      throw AppError.rateLimited("Too many guest list reads. Try again later.")
     }
-    return true
-  }
-
-  async function fanOutToGuests(
-    cleanupId: string,
-    lane: GuestFanoutLane,
-    build: (recipient: GuestRecipient) => { subject: string; message: string; sms: string },
-  ): Promise<void> {
-    const critical = lane === "critical"
-    let recipients: GuestRecipient[]
-    try {
-      recipients = await deps.repo.listContactableGuests(cleanupId, MAX_GUESTS_PER_EVENT)
-    } catch (err) {
-      if (critical) throw err
-      deps.logger?.warn({ err, cleanupId }, "guest fanout: roster read failed (suppressed)")
-      return
-    }
-    if (recipients.length === 0) return
-    if (!critical && !(await fanoutAllowed(cleanupId))) return
-
-    await mapWithLimit(recipients, GUEST_FANOUT_CONCURRENCY, async (recipient) => {
-      try {
-        const copy = build(recipient)
-        if (recipient.channel === "email" && recipient.email !== null) {
-          await sendGuestEmail(recipient.email, copy.subject, copy.message)
-          return
-        }
-        if (recipient.channel === "sms" && recipient.phone !== null) {
-          if (!deps.smsGuestEnabled) return
-          if (!(await reserveSmsBudget("fanout"))) {
-            const line = { cleanupId, guestId: recipient.id, lane }
-            const msg = "guest fanout: SMS budget refused this recipient's text"
-            if (critical) deps.logger?.error(line, msg)
-            else deps.logger?.warn(line, msg)
-            return
-          }
-          await deps.smsSender.send(recipient.phone, copy.sms)
-        }
-      } catch (err) {
-        if (smsFailureKind(err) === "opted_out" && recipient.phone !== null) {
-          await deps.repo.recordPhoneOptOut(recipient.phone).catch(() => {})
-        }
-        deps.logger?.warn(
-          { err, cleanupId, guestId: recipient.id, lane },
-          "guest fanout: message failed (suppressed)",
-        )
-      }
-    })
   }
 
   async function drainPages(
@@ -646,11 +738,12 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       }
 
       const human = await deps.abuseChecks.verifyTurnstile(input.turnstileToken, ctx.ip ?? "", {
-        action: GUEST_TURNSTILE_ACTION,
+        action: GUEST_RSVP_TURNSTILE_ACTION,
       })
       if (!human) throw AppError.turnstileFailed()
 
       const event = await loadOpenEvent(input.id)
+      await assertRegistrationInputValid(event.id, registrationFieldsOf(input))
 
       const name = input.name.trim()
       if (name.length === 0 || name.length > MAX_GUEST_NAME) {
@@ -732,6 +825,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       }
 
       const event = await loadOpenEvent(input.id)
+      await assertRegistrationInputValid(event.id, registrationFieldsOf(input))
       const contact = guestContactOf(input)
 
       if (isReviewerContact(input.channel, contact)) {
@@ -743,6 +837,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
             channel: input.channel,
             contact,
             confirm: false,
+            registration: registrationFieldsOf(input),
           })
         }
         await bumpVerifyFailure(null, bucket)
@@ -793,6 +888,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         channel: input.channel,
         contact,
         confirm: true,
+        registration: registrationFieldsOf(input),
       })
     },
 
@@ -803,7 +899,8 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         throw AppError.notFound("That RSVP link is no longer valid.")
       }
       if (guest.cancelledAt === null) {
-        await deps.repo.cancelGuest(guest.id, new Date(now()))
+        const released = await deps.repo.cancelGuest(guest.id, new Date(now()))
+        await enqueueWaitlistPromotion(deps.jobs, released, deps.logger)
       }
       return { ok: true }
     },
@@ -815,10 +912,8 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       const event = await deps.repo.findEvent(query.id)
       if (event === null) throw AppError.notFound("Event not found")
 
-      const role = await deps.roleOf(event.id, viewerUserId)
-      if (role !== "organizer" && role !== "cohost") {
-        throw AppError.forbidden("Only the event hosts can see the guest list.")
-      }
+      await deps.requireGuestContact(event.id, viewerUserId)
+      await reserveGuestContactBudget(viewerUserId)
 
       const limit = query.limit ?? GUESTS_DEFAULT_LIMIT
       const { rows, nextCursor } = await deps.repo.listGuests({
@@ -827,41 +922,15 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         limit,
       })
       const count = await deps.repo.countActiveGuests(event.id)
+      await deps.audit?.({
+        actorId: viewerUserId,
+        action: "event.guests_viewed",
+        target: `cleanup:${event.id}`,
+        meta: { rows: rows.length },
+      }).catch((err: unknown) => {
+        deps.logger?.warn({ err }, "guest contact: audit write failed (suppressed)")
+      })
       return { guests: rows.map(toCleanupGuestDTO), count, nextCursor }
-    },
-
-    async notifyEventCancelled(cleanupId: string, reason: string | null): Promise<void> {
-      const event = await deps.repo.findEvent(cleanupId)
-      if (event === null) return
-      const subject = renderMessage("en", "email.guest_cancelled.subject", { title: event.title })
-      const message =
-        reason !== null
-          ? renderMessage("en", "email.guest_cancelled.body_reason", {
-              title: event.title,
-              reason,
-            })
-          : renderMessage("en", "email.guest_cancelled.body", { title: event.title })
-      const sms = renderMessage("en", "sms.guest_cancelled.body", { title: smsTitle(event.title) })
-      await fanOutToGuests(cleanupId, "critical", () => ({ subject, message, sms }))
-    },
-
-    async notifyEventUpdated(job: GuestUpdateFanoutJob): Promise<void> {
-      const event = await deps.repo.findEvent(job.cleanupId)
-      if (event === null || isCleanupTerminal(event.status)) return
-      const when = formatGuestWhen(event.scheduledAt)
-      const place = event.address ?? `${event.lat.toFixed(5)}, ${event.lng.toFixed(5)}`
-      const subject = renderMessage("en", "email.guest_updated.subject", { title: event.title })
-      const message = renderMessage("en", "email.guest_updated.body", {
-        title: event.title,
-        when,
-        place,
-      })
-      const sms = renderMessage("en", "sms.guest_updated.body", {
-        title: smsTitle(event.title),
-        when,
-        place,
-      })
-      await fanOutToGuests(job.cleanupId, "throttled", () => ({ subject, message, sms }))
     },
 
     async runRetentionSweep(): Promise<GuestRetentionResult> {
@@ -876,5 +945,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       )
       return { scrubbedGuests, deletedOtps }
     },
+
+    notifyGuestsBySms,
   }
 }

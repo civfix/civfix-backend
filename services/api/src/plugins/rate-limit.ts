@@ -22,6 +22,7 @@ export const SENSITIVE_RATE_LIMIT_PREFIXES: readonly string[] = [
   "/v1/claim",
   "/v1/me/data-export",
   "/v1/me/volunteer-hours/certificates",
+  "/v1/donations",
   "/forms",
 ]
 

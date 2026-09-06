@@ -1,25 +1,8 @@
-/**
- * Host event completion (B12–B19), against the in-memory CleanupRepository.
- *
- * Until this endpoint existed only an OPERATOR could move an event to 'done' — and 'done' is exactly
- * what logEventHours hard-requires — so no host could credit a single attendee without asking support.
- * The tests below pin the four things that make the transition safe rather than merely possible:
- *
- *   - WHO may close an event (organizer OR cohost, B13 — deliberately wider than cancel's organizer-only);
- *   - WHEN (now >= scheduledAt, B14 — hours are a falsifiable public record, so a host may not date an
- *     event next year and credit hours for it today);
- *   - the full B15 status matrix, including the two 409s and the idempotent repeat;
- *   - what is WRITTEN (one 'status' timeline row carrying the service-composed note) and what is NOT
- *     (a second timeline row on a repeat, and any notification at all — B19).
- *
- * The Drizzle twin of the same matrix runs in test/integration/cleanup-complete-pg.test.ts; the two
- * suites deliberately assert the same observable contract, because a divergence between the fake and the
- * real repository is invisible to CI otherwise (unit tests run the twin, integration the real one).
- */
 
 import { describe, it, expect, beforeEach } from "vitest"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
+import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 
 const ORG = "11111111-1111-1111-1111-111111111111"
 const COHOST = "22222222-2222-2222-2222-222222222222"
@@ -35,7 +18,6 @@ const FUTURE = new Date(Date.now() + 7 * 86_400_000)
 let repo: InMemoryCleanupRepository
 let service: CleanupService
 
-/** Seed an event with the full host cast: organizer + cohost + a plain member. */
 function seedEvent(over: { scheduledAt?: Date; status?: "upcoming" | "active" | "done" | "cancelled" } = {}): string {
   repo.seedCleanup({
     id: CLEANUP_ID,
@@ -60,7 +42,7 @@ beforeEach(() => {
   repo.seedUser({ id: COHOST, displayName: "Casey Cohost", handle: "casey" })
   repo.seedUser({ id: MEMBER, displayName: "Mel Member", handle: "mel" })
   repo.seedUser({ id: STRANGER, displayName: "Sam Stranger", handle: "sam" })
-  service = makeCleanupService({ repo })
+  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
 })
 
 describe("completeCleanup — B15 status matrix", () => {
@@ -90,8 +72,6 @@ describe("completeCleanup — B15 status matrix", () => {
     await expect(service.completeCleanup(id, null, ORG)).rejects.toMatchObject({
       code: "CONFLICT",
     })
-    // Not applied-then-refused: an event dated next year stays exactly as it was, so a host can never
-    // credit hours for something that has not happened.
     expect(repo.cleanups.get(id)?.status).toBe("upcoming")
     expect(statusRows(id)).toEqual([])
   })
@@ -120,8 +100,6 @@ describe("completeCleanup — B15 status matrix", () => {
 
     expect(first.status).toBe("done")
     expect(second.status).toBe("done")
-    // The whole point of the repo reporting `already_completed` rather than a bare boolean: a retrying
-    // client (or a double-tapping host) must not litter the public event timeline.
     expect(statusRows(id)).toHaveLength(1)
   })
 })
@@ -140,8 +118,6 @@ describe("completeCleanup — authorization (B13: organizer OR cohost)", () => {
     const dto = await service.completeCleanup(id, null, COHOST)
 
     expect(dto.status).toBe("done")
-    // The cohost is exactly the person who then logs the hours (the hours gate sits on the ACTING host),
-    // so refusing them here would leave the credit path dependent on the organizer being reachable.
     expect(dto.myRole).toBe("cohost")
     expect(statusRows(id)).toEqual([{ note: "Event marked complete", actorId: COHOST }])
   })
@@ -193,14 +169,11 @@ describe("completeCleanup — the timeline note the service composes", () => {
 
   it("422s a slur in the note — it lands in the PUBLIC event timeline", async () => {
     const id = seedEvent()
-    // The canonical term the shared filter matches; see abuse/slur-filter.ts and the M19 block in
-    // cleanup-service.test.ts. Every host-authored free text gets the same gate.
     const SLUR = "nigger"
 
     await expect(service.completeCleanup(id, `great day ${SLUR}`, ORG)).rejects.toMatchObject({
       code: "VALIDATION",
     })
-    // Refused outright, not applied-then-sanitized: the status flip never happens either.
     expect(repo.cleanups.get(id)?.status).toBe("upcoming")
     expect(statusRows(id)).toEqual([])
   })
@@ -210,6 +183,7 @@ describe("completeCleanup — B19: completion rings nobody", () => {
   it("emits NO notification, on a fresh completion or a repeat", async () => {
     const bells: string[] = []
     const svc = makeCleanupService({
+      counters: new InMemoryCounterStore(),
       repo,
       notifier: {
         createNotification: (userId, input) => {
@@ -229,8 +203,6 @@ describe("completeCleanup — B19: completion rings nobody", () => {
     await svc.completeCleanup(id, null, ORG)
     await svc.completeCleanup(id, null, ORG)
 
-    // "The host marked the event complete" is not actionable for an attendee, and a 2000-wide fan-out on
-    // every completion is pure noise. The actionable moment is hours_logged, which fires elsewhere.
     expect(bells).toEqual([])
   })
 })

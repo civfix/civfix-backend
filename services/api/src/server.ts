@@ -27,6 +27,20 @@ import type { CertificateOverrides } from "./routes/service-hours-certificates.r
 import type { NotificationServiceOverrides } from "./routes/notifications.routes.js"
 import type { ConversationRoutesOverrides } from "./routes/conversations.routes.js"
 import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.js"
+import type { OrganizationOverrides } from "./routes/host/orgs.routes.js"
+import type { HostTeamOverrides } from "./routes/host/team.routes.js"
+import type { HostPortfolioOverrides } from "./routes/host/portfolio.routes.js"
+import type { HostRegistrationOverrides, HostPageOverrides } from "./services/host/registration-wiring.js"
+import type { BroadcastOverrides } from "./routes/host/broadcasts.routes.js"
+import type { HostAnalyticsOverrides } from "./routes/host/analytics.routes.js"
+import type { HostExportOverrides } from "./routes/host/exports.routes.js"
+import type { AdminEventPageOverrides } from "./routes/admin/pages.routes.js"
+import type { AdminMediaOverrides } from "./routes/admin/media.routes.js"
+import type { AdminBroadcastOverrides } from "./routes/admin/broadcasts.routes.js"
+import type { OrgPaymentsOverrides } from "./routes/org-payments.routes.js"
+import type { DonationOverrides } from "./routes/donations.routes.js"
+import type { AdminPaymentsOverrides } from "./routes/admin/payments.routes.js"
+import type { StripeWebhookOverrides } from "./routes/webhooks/stripe.routes.js"
 import type { ContentSubjectGate } from "./services/content-report-subject.js"
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
@@ -37,6 +51,9 @@ import { registerDataExportJobs } from "./services/data-export-jobs.js"
 import { registerChatRoomFanoutJob } from "./services/chat-fanout-jobs.js"
 import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
+import { registerRegistrationJobs } from "./services/host/registration-jobs.js"
+import { registerCommsJobs } from "./services/host/comms-jobs.js"
+import { registerPaymentsJobs } from "./services/payments/payments-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
@@ -57,6 +74,21 @@ export interface BuildServerOptions {
   claimOverride?: ClaimServiceOverride
   cleanupOverrides?: CleanupServiceOverrides
   guestRsvpOverrides?: GuestRsvpOverrides
+  hostRegistrationOverrides?: HostRegistrationOverrides
+  hostPageOverrides?: HostPageOverrides
+  organizationOverrides?: OrganizationOverrides
+  hostTeamOverrides?: HostTeamOverrides
+  hostPortfolioOverrides?: HostPortfolioOverrides
+  broadcastOverrides?: BroadcastOverrides
+  hostAnalyticsOverrides?: HostAnalyticsOverrides
+  hostExportOverrides?: HostExportOverrides
+  adminEventPageOverrides?: AdminEventPageOverrides
+  adminMediaOverrides?: AdminMediaOverrides
+  adminBroadcastOverrides?: AdminBroadcastOverrides
+  orgPaymentsOverrides?: OrgPaymentsOverrides
+  donationOverrides?: DonationOverrides
+  adminPaymentsOverrides?: AdminPaymentsOverrides
+  stripeWebhookOverrides?: StripeWebhookOverrides
   chatOverrides?: ChatGatewayOverrides
   discussionOverrides?: DiscussionServiceOverrides
   socialOverrides?: SocialServiceOverrides
@@ -76,6 +108,21 @@ const OVERRIDE_KEYS = [
   "claimOverride",
   "cleanupOverrides",
   "guestRsvpOverrides",
+  "hostRegistrationOverrides",
+  "hostPageOverrides",
+  "organizationOverrides",
+  "hostTeamOverrides",
+  "hostPortfolioOverrides",
+  "broadcastOverrides",
+  "hostAnalyticsOverrides",
+  "hostExportOverrides",
+  "adminEventPageOverrides",
+  "adminMediaOverrides",
+  "adminBroadcastOverrides",
+  "orgPaymentsOverrides",
+  "donationOverrides",
+  "adminPaymentsOverrides",
+  "stripeWebhookOverrides",
   "chatOverrides",
   "discussionOverrides",
   "socialOverrides",
@@ -86,6 +133,61 @@ const OVERRIDE_KEYS = [
   "moderationOverrides",
   "contentSubjectGate",
 ] as const satisfies readonly (keyof BuildServerOptions)[]
+
+export const LOG_REDACT_PATHS = [
+  "req.headers.authorization",
+  "req.headers.cookie",
+  "res.headers['set-cookie']",
+  "req.headers['x-csrf-token']",
+  "*.password",
+  "*.token",
+  "*.otp",
+  "*.email",
+  "*.phone",
+  "*.tokenHash",
+  "*.ticketToken",
+  "*.ticketTokens",
+  "*.manageToken",
+  "*.accessCode",
+  "*.attendeeName",
+  "*.attendeeNames",
+  "*.answer",
+  "*.answers",
+  "*.hostNote",
+  "*.note",
+  "*.einNumber",
+  "*.ein_number",
+  "*.invitedEmail",
+  "*.maskedEmail",
+  "*.recipientEmail",
+  "*.replyTo",
+  "*.to",
+  "*.clientSecret",
+  "*.client_secret",
+  "*.card",
+  "*.cvc",
+  "*.pan",
+  "*.last4",
+  "*.cardLast4",
+  "*.paymentMethod",
+  "*.payment_method",
+  "*.donorEmail",
+  "*.donorName",
+  "*.stripeSecretKey",
+  "*.webhookSecret",
+  "err.raw",
+  "err.raw.payment_method",
+  "err.raw.source",
+  "err.headers",
+  "*.smtp.response",
+  "smtp.response",
+  "err.smtp.response",
+  "req.headers['stripe-signature']",
+]
+
+export function loggedRequestUrl(url: string): string {
+  return url.split("?")[0] ?? url
+}
 
 export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
   const env = opts.env ?? opts.container?.env ?? loadEnv()
@@ -99,7 +201,6 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     forceCloseConnections: false,
     connectionTimeout: 30000,
     keepAliveTimeout: 5000,
-    disableRequestLogging: false,
     logger: {
       level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
       serializers: {
@@ -107,7 +208,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
           const acceptVersion = request.headers["accept-version"]
           return {
             method: request.method,
-            url: request.url.split("?")[0],
+            url: loggedRequestUrl(request.url),
             version: typeof acceptVersion === "string" ? acceptVersion : undefined,
             host: request.host,
             remoteAddress: request.ip,
@@ -116,16 +217,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
         },
       },
       redact: {
-        paths: [
-          "req.headers.authorization",
-          "req.headers.cookie",
-          "res.headers['set-cookie']",
-          "req.headers['x-csrf-token']",
-          "*.password",
-          "*.token",
-          "*.otp",
-          "*.email",
-        ],
+        paths: LOG_REDACT_PATHS,
         censor: "[REDACTED]",
       },
     },
@@ -217,6 +309,12 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerCleanupCancelFanoutJob(app.container, app.log)
     await registerGuestJobs(app.container, app.log)
     await registerChatRoomFanoutJob(app.container, app.log)
+    await registerRegistrationJobs(app.container, app.log)
+    await registerCommsJobs(app.container, app.log)
+    await registerPaymentsJobs(app.container, app.log)
+
+    const warmablePayments = app.container.payments as { warmup?: () => Promise<void> }
+    if (typeof warmablePayments.warmup === "function") await warmablePayments.warmup()
   }
 
   const shutdown = makeShutdown(app, {

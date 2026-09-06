@@ -8,6 +8,10 @@ export interface CacheClient {
   del(key: string): Promise<void>
   mget?(keys: string[]): Promise<(string | null)[]>
   incr(key: string, ttlSeconds: number): Promise<number>
+  sadd(key: string, ...members: string[]): Promise<number>
+  srem(key: string, ...members: string[]): Promise<number>
+  smembers(key: string): Promise<string[]>
+  expire(key: string, ttlSeconds: number): Promise<void>
 }
 
 export type Clock = () => number
@@ -17,8 +21,14 @@ interface Entry {
   expiresAtMs: number
 }
 
+interface SetEntry {
+  members: Set<string>
+  expiresAtMs: number
+}
+
 export class InMemoryCacheClient implements CacheClient {
   private readonly store = new Map<string, Entry>()
+  private readonly sets = new Map<string, SetEntry>()
   private readonly clock: Clock
 
   constructor(clock: Clock = () => Date.now()) {
@@ -65,6 +75,55 @@ export class InMemoryCacheClient implements CacheClient {
     return Promise.resolve(next)
   }
 
+  private liveSet(key: string): SetEntry | undefined {
+    const entry = this.sets.get(key)
+    if (!entry) return undefined
+    if (entry.expiresAtMs <= this.clock()) {
+      this.sets.delete(key)
+      return undefined
+    }
+    return entry
+  }
+
+  sadd(key: string, ...members: string[]): Promise<number> {
+    let entry = this.liveSet(key)
+    if (!entry) {
+      entry = { members: new Set<string>(), expiresAtMs: Number.POSITIVE_INFINITY }
+      this.sets.set(key, entry)
+    }
+    let added = 0
+    for (const member of members) {
+      if (!entry.members.has(member)) {
+        entry.members.add(member)
+        added += 1
+      }
+    }
+    return Promise.resolve(added)
+  }
+
+  srem(key: string, ...members: string[]): Promise<number> {
+    const entry = this.liveSet(key)
+    if (!entry) return Promise.resolve(0)
+    let removed = 0
+    for (const member of members) {
+      if (entry.members.delete(member)) removed += 1
+    }
+    return Promise.resolve(removed)
+  }
+
+  smembers(key: string): Promise<string[]> {
+    return Promise.resolve([...(this.liveSet(key)?.members ?? [])])
+  }
+
+  expire(key: string, ttlSeconds: number): Promise<void> {
+    const at = this.clock() + ttlSeconds * 1000
+    const setEntry = this.liveSet(key)
+    if (setEntry) setEntry.expiresAtMs = at
+    const entry = this.live(key)
+    if (entry) entry.expiresAtMs = at
+    return Promise.resolve()
+  }
+
   size(): number {
     return this.store.size
   }
@@ -103,5 +162,23 @@ export class RedisCacheClient implements CacheClient {
 
   incr(key: string, ttlSeconds: number): Promise<number> {
     return this.atomicIncr(key, ttlSeconds)
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    if (members.length === 0) return 0
+    return this.redis.sadd(key, ...members)
+  }
+
+  async srem(key: string, ...members: string[]): Promise<number> {
+    if (members.length === 0) return 0
+    return this.redis.srem(key, ...members)
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return this.redis.smembers(key)
+  }
+
+  async expire(key: string, ttlSeconds: number): Promise<void> {
+    await this.redis.expire(key, Math.max(1, Math.ceil(ttlSeconds)))
   }
 }

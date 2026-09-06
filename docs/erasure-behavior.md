@@ -25,8 +25,16 @@ response can be answered truthfully. It is the source of record for the
    - **Scrubs** the identity columns: `email = NULL`, `email_verified = false`,
      `display_name = 'Deleted User'`, `handle` → a generated placeholder,
      `bio`, `avatar_url`, `avatar_media_id`, `social_links` → `NULL`.
-   - **Unlists** the user's `public` reports (→ `hidden`) and **cancels** their
-     `upcoming`/`active` events.
+   - **Unlists** the user's `public` reports (→ `hidden`).
+   - **Transfers, then cancels** the events they organize — the host-transfer
+     ladder below. Only what nobody could take over is cancelled.
+   - **Releases the organizations they owned** and scrubs their pending team
+     invitations — see below.
+   - **Scrubs their own attendee free text** (event answers, attendee names,
+     host notes) and cancels their live waitlist entries, releasing any seats
+     those entries held.
+   - **Unlinks their donations from the profile** (`donations.user_id = NULL`,
+     `profile_unlinked_at` stamped). See the ⚖️ DECISION below.
    - **Revokes and scrubs their issued service-hours certificates** — see the
      dedicated section below.
    - Keeps every content foreign key intact (the rows survive; the author
@@ -53,9 +61,98 @@ response can be answered truthfully. It is the source of record for the
 | Device push tokens | **Deleted** (best-effort, step 4). |
 | Reports the user filed | **Kept** as rows; the user's `public` ones are flipped to `hidden` (see public rendering below). |
 | Discussion comments, chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
-| Cleanups organized / joined | **Kept**; the user's `upcoming`/`active` events are `cancelled`. |
+| Cleanups organized / joined | **Kept**; an `upcoming`/`active` event they organize is TRANSFERRED where anyone can take it over, and cancelled only when nobody can (ladder below). |
+| Organizations they belonged to | Membership rows **deleted**. An organization they OWNED promotes its earliest live admin; one left with nobody is **soft-deleted** and its events lose both `organization_id` and `donation_url`. |
+| Event team invitations they sent or received | Pending ones **revoked**, the invitee address **scrubbed**. |
+| `event_consents` | **Kept, untouched by every lane.** It carries no contact detail of its own (the subject is a foreign key) and it is the artifact THAT consent existed; the account row it points at is tombstoned rather than deleted. |
+| `cleanup_registrations`, `cleanup_registration_seats`, check-ins | **Kept** — they are the roster record of someone else's event. Only the departing person's own free text (`cleanup_answers` values, `attendee_name`, `host_note`) is scrubbed in the same transaction. |
+| `cleanup_waitlist` | Live entries (`waiting`/`offered`) **cancelled**, and the seats an `offered` entry reserved are released back to the ticket type. |
+| `broadcast_deliveries`, `cleanup_broadcast_mutes`, `broadcast_unsubscribes`, `host_exports` | **Kept, with the FK intact**, exactly like reports, posts and chat. These tables carry no contact detail of their own — only a reference — and the identity behind the reference is the tombstoned account. Their DDL declares `ON DELETE SET NULL` / `ON DELETE CASCADE`, but civfix erasure is a SOFT delete: the `users` row is never deleted, so **those FK actions never fire.** Do not describe the outcome as a cascade. A guest contact scrub separately NULLs the address the broadcast pipeline would have re-read at send time, so a delivery planned before the scrub is marked `suppressed(contact_scrubbed)` and never sent. |
+| `donations` | **Kept.** `user_id` NULLed and `profile_unlinked_at` stamped immediately. On a CHARGED donation `donor_email` / `donor_name` survive until `charged_at + 7 years`; on one that never charged they are NULLed at once. ⚖️ DECISION below. |
 | `cleanup_slot_claims` (which signup slot they took, P9) | **Kept**. The row is `(cleanup_id, user_id, slot_id, claimed_at)` — roster data with no free-text PII, held exactly like the `cleanup_members` row it accompanies, and with no `ON DELETE CASCADE` to `users` by design (`drizzle/0063_cleanup_slots.sql`). The attendee/roster read joins `users` with `deleted_at IS NULL`, so a tombstoned claimant disappears from the visible roster; the row still counts toward the slot's `claimed` total. |
 | `service_hours_certificates` (issued PDF transcripts, P5) | **Revoked + scrubbed**, rows kept, **R2 objects deleted**. See the next section. |
+
+### The host-transfer ladder
+
+An account closure must not cancel events other people are running, so
+`softDeleteAndAnonymize` walks a ladder before it cancels anything
+(`transferHostedEvents` / `releaseOrganizations` in `pg-stores.ts`, all inside the
+one erasure transaction):
+
+1. **The owning organization's owner** takes over any `upcoming`/`active` event
+   whose `organization_id` points at a live organization with a live owner. A
+   `cleanup_members` row with `role = 'organizer'` is upserted for them.
+2. Otherwise **the senior cohost** — the earliest `joined_at` cohost whose account
+   is still live — is promoted to organizer.
+3. An `event.host_transferred` audit row is written for every event that moved.
+4. The departing organizer keeps no `organizer` row on an event they no longer
+   own (demoted to `member`).
+5. **Only then** is what nobody could take over `cancelled`.
+6. After the transaction COMMITS, each new organizer gets a `cleanup_role`
+   notification ("you are now the organizer of …"), and every ticket type whose
+   reserved seats the erasure released gets a `waitlist.promote` job. Both are
+   post-commit and best-effort: a failure is logged, never rolled back.
+
+Organizations follow the same shape. The departing owner **steps down to admin
+first** and is only then replaced by the earliest live admin — the reverse order
+would violate `organization_members_owner_uidx`, the partial unique index that
+enforces one owner per organization. An organization left with no owner at all is
+soft-deleted, and its events' `organization_id` **and `donation_url`** are NULLed:
+a live donation link must never outlive the verification behind it.
+
+### The attendee side of the ladder
+
+`scrubAttendeeContributions` runs in the same transaction, immediately after the
+host transfer. Registrations, seats and check-ins are **kept** — they are the
+roster record of someone ELSE's event — and only the departing person's own free
+text goes: answer values (`cleanup_answers.value_text` / `value_json`, stamped
+`scrubbed_at`), seat `attendee_name`, and the host's private `host_note` about
+them.
+
+Two rungs of that scrub exist for a reason:
+
+- **A cancelled waitlist entry that held an OFFER gives its reserved seats back.**
+  An offer increments `cleanup_ticket_types.reserved_seats` up front (0117), so
+  cancelling the entry without the release leaves the type oversubscribed forever
+  against a person who no longer exists. The statement uses the same `releases`
+  shape as the guest-cancel CTE, so a type row is touched at most once, and the
+  released type ids are handed to a post-commit `waitlist.promote` job.
+- **A `cohost` or `staff` row on someone else's event is stepped down to
+  `member`.** The organizer rung already demotes the departing organizer; without
+  this one a tombstone stays on the team roster as "Deleted User — cohost" and
+  keeps receiving the realtime host-team signals (`hostTeamUserIds`). Each
+  step-down writes an `event.team_role_changed` audit row with a **null actor** —
+  nobody performed it; the erasure did.
+
+`event_consents` is deliberately untouched: it is the artifact THAT consent
+existed, it carries no contact detail of its own, and the account row it points at
+is tombstoned rather than deleted.
+
+### ⚖️ DECISION — a deleted account's donation record survives, and so does the donor's email, for seven years
+
+Erasure NULLs `donations.user_id` and stamps `profile_unlinked_at`, so the
+donation is no longer linked to a person's profile immediately. On a donation that actually
+CHARGED, `donor_email` and `donor_name` are **not** cleared until `charged_at + 7 years`.
+
+A donation that **never charged** is the opposite case and is scrubbed IMMEDIATELY: erasure NULLs its
+`donor_email` / `donor_name` in the same statement. There is no receipt to re-issue and no chargeback
+to defend for a payment that never happened, so none of the carve-outs below apply to it. (An
+abandoned checkout by someone who has NOT asked for erasure is handled separately: `markExpired`
+stamps `retention_until` at 30 days, so the retention sweep drains it on its own — without that
+stamp the sweep's `retention_until IS NOT NULL` predicate would never have reached those rows.)
+
+The alternative — clearing contact at erasure — destroys the ability to re-issue a
+receipt the donor may need for a tax filing, and destroys the counterparty record
+that defends a chargeback. Both are obligations civfix owes to the charity and to
+the donor themselves, and both are covered by the financial-record carve-outs
+(CCPA §1798.105(d)(1),(8); GDPR Art. 17(3)(b),(e)). The pseudonymous `donor_key`
+survives indefinitely and is not reversible to an identity.
+
+A **guest donor's email is the one place a non-account-holder's contact detail is
+kept for years** — every other guest contact is scrubbed at 30 days
+(`docs/retention-cleanup.md`). A guest contact scrub also NULLs the address the
+broadcast pipeline would have re-read at send time, so a delivery planned before
+the scrub is marked `suppressed(contact_scrubbed)` and never sent.
 
 This is a deliberate **soft delete of the content graph**, not of the identity:
 the rows survive so the public record and other people's conversations stay

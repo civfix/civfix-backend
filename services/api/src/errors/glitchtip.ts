@@ -1,5 +1,6 @@
 
 import type * as SentryNode from "@sentry/node"
+import { redactPans } from "./payment-failure.js"
 
 type SentryModule = typeof SentryNode
 
@@ -55,6 +56,28 @@ const SENSITIVE_KEY_PATTERNS: readonly string[] = [
   "api-key",
   "api_key",
   "bearer",
+  "einnumber",
+  "ein_number",
+  "tax_id",
+  "ssn",
+  "invitedemail",
+  "tokenhash",
+  "attendee",
+  "answer",
+  "prompt",
+  "note",
+  "accesscode",
+  "tickettoken",
+  "card",
+  "pan",
+  "cvc",
+  "last4",
+  "stripe",
+  "payment",
+  "client_secret",
+  "iban",
+  "routing",
+  "account_number",
 ]
 
 function isSensitiveKey(key: string): boolean {
@@ -82,10 +105,13 @@ const SECRET_ASSIGN_RE =
 const MAX_MESSAGE_LEN = 2000
 
 function scrubMessage(text: string): string {
-  const redacted = text
-    .replace(EMAIL_RE, REDACTED)
-    .replace(BEARER_RE, `Bearer ${REDACTED}`)
-    .replace(SECRET_ASSIGN_RE, (_m, key: string, sep: string) => `${key}${sep}${REDACTED}`)
+  const redacted = redactPans(
+    text
+      .replace(EMAIL_RE, REDACTED)
+      .replace(BEARER_RE, `Bearer ${REDACTED}`)
+      .replace(SECRET_ASSIGN_RE, (_m, key: string, sep: string) => `${key}${sep}${REDACTED}`),
+    REDACTED,
+  )
   return redacted.length > MAX_MESSAGE_LEN ? `${redacted.slice(0, MAX_MESSAGE_LEN)}...` : redacted
 }
 

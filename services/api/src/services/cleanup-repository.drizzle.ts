@@ -11,12 +11,22 @@ import {
 } from "../db/cursor-helpers.js"
 import { allocateEventReferenceCode } from "../db/reference-code.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
+import { hostStandingOf, hostStandingsOf, orgStandingOf } from "./host/host-standing.js"
+import { NO_HOST_STANDING } from "@civfix/shared/host"
+import { servableMediaFilter, servedKeyExpr } from "./media-served-key.js"
+import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
+import { mediaBoundElsewhere, mediaBoundToCleanup } from "./media-bindings.js"
+import { isUniqueViolationOn } from "./host/registration-sql.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
   ClaimSlotOutcome,
+  CleanupOrganizationView,
+  CleanupIdempotency,
   CleanupRecord,
   CleanupRepository,
+  CreateCleanupOutcome,
+  EventHostWrite,
   CompleteCleanupOutcome,
   CreateCleanupTxArgs,
   DesiredSlot,
@@ -37,7 +47,9 @@ import {
   buildBboxFilter,
   buildMembershipFilter,
   buildWhenFilter,
+  buildVisibilityFilter,
   cleanupColumns,
+  eventHostJoins,
   goingJoin,
   goingScalar,
   toRecord,
@@ -48,10 +60,15 @@ import type {
   CleanupMemberRole,
   CleanupStatus,
   EventKind,
+  EventVisibility,
+  OrganizationMemberRole,
+  OrgVerificationKind,
+  OrgVerificationStatus,
   ReportCategory,
   ReportStatus,
   ReportType,
 } from "@civfix/shared"
+import type { HostStanding } from "@civfix/shared/host"
 import { touchUserActivity } from "../db/sql/user-activity.js"
 import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
 
@@ -71,6 +88,88 @@ function isSlotTitleConflict(err: unknown): boolean {
   return constraint === SLOT_TITLE_INDEX || detail.includes("lower(title)")
 }
 
+async function claimEventMediaInTx(
+  tx: Queryable,
+  cleanupId: string,
+  host: EventHostWrite,
+): Promise<void> {
+  const cover = host.coverMediaId ?? null
+  const gallery = host.galleryMediaIds ?? []
+  const wanted = [...new Set([...(cover === null ? [] : [cover]), ...gallery])]
+  if (wanted.length === 0) return
+  const claimed = await tx<{ id: string }[]>`
+    UPDATE media_assets
+    SET purpose = CASE WHEN id = ${cover} THEN 'event_cover' ELSE 'event_gallery' END
+    WHERE id = ANY(${wanted}::uuid[])
+      AND purpose <> 'verification'
+      AND report_id IS NULL AND post_id IS NULL AND chat_message_id IS NULL
+      AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
+      AND NOT (${mediaBoundElsewhere(tx, cleanupId)})
+      AND (
+        (${mediaBoundToCleanup(tx, cleanupId)})
+        OR media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+      )
+    RETURNING id
+  `
+  if (claimed.length !== wanted.length) {
+    throw AppError.validation({ coverMediaId: "One or more images are unavailable." })
+  }
+}
+
+async function privateEventBlocksJoin(
+  tx: Queryable,
+  cleanupId: string,
+  visibility: EventVisibility,
+  organizationId: string | null,
+  userId: string,
+): Promise<boolean> {
+  if (visibility !== "private") return false
+  const standing = await tx<{ one: number }[]>`
+    SELECT 1 AS one
+    WHERE EXISTS (
+      SELECT 1 FROM cleanup_members m
+      WHERE m.cleanup_id = ${cleanupId} AND m.user_id = ${userId}
+    ) OR EXISTS (
+      SELECT 1 FROM organization_members om
+      JOIN organizations o ON o.id = om.organization_id AND o.deleted_at IS NULL
+      WHERE om.organization_id = ${organizationId} AND om.user_id = ${userId}
+    )
+    LIMIT 1
+  `
+  return standing.length === 0
+}
+
+function hostSetFragments(sql: Sql, patch: EventHostWrite): postgres.Fragment[] {
+  const sets: postgres.Fragment[] = []
+  if (patch.endsAt !== undefined) sets.push(sql`ends_at = ${patch.endsAt}`)
+  if (patch.timezone !== undefined) sets.push(sql`timezone = ${patch.timezone}`)
+  if (patch.visibility !== undefined) sets.push(sql`visibility = ${patch.visibility}`)
+  if (patch.coverMediaId !== undefined) sets.push(sql`cover_media_id = ${patch.coverMediaId}`)
+  if (patch.galleryMediaIds !== undefined) {
+    sets.push(sql`gallery_media_ids = ${patch.galleryMediaIds as unknown as string[]}`)
+  }
+  if (patch.donationUrl !== undefined) sets.push(sql`donation_url = ${patch.donationUrl}`)
+  if (patch.pageSlug !== undefined) sets.push(sql`page_slug = ${patch.pageSlug}`)
+  if (patch.registrationOpensAt !== undefined) {
+    sets.push(sql`registration_opens_at = ${patch.registrationOpensAt}`)
+  }
+  if (patch.registrationClosesAt !== undefined) {
+    sets.push(sql`registration_closes_at = ${patch.registrationClosesAt}`)
+  }
+  if (patch.organizationId !== undefined) {
+    sets.push(sql`organization_id = ${patch.organizationId}`)
+  }
+  if (patch.reminderOffsetsMin !== undefined) {
+    sets.push(
+      sql`reminder_offsets_min = ${patch.reminderOffsetsMin as unknown as number[] | null}`,
+    )
+  }
+  if (patch.hostReplyTo !== undefined) {
+    sets.push(sql`host_reply_to = ${patch.hostReplyTo}, host_reply_to_verified_at = NULL`)
+  }
+  return sets
+}
+
 export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
   async function readById(
     tag: Queryable,
@@ -82,59 +181,117 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       FROM cleanups c
       JOIN users u ON u.id = c.organizer_user_id
       ${goingJoin(tag)}
+      ${eventHostJoins(tag)}
       WHERE c.id = ${id}
       LIMIT 1
     `
     return rows[0] ? toRecord(rows[0]) : null
   }
 
+  async function readIdempotentCleanupId(idem: CleanupIdempotency): Promise<string | null> {
+    const rows = await sql<{ response_snapshot: { cleanupId?: string } }[]>`
+      SELECT response_snapshot
+      FROM idempotency_keys
+      WHERE key = ${idem.key}
+        AND scope = ${idem.scope}
+        AND user_or_anon IS NOT DISTINCT FROM ${idem.userOrAnon}
+      LIMIT 1
+    `
+    return rows[0]?.response_snapshot?.cleanupId ?? null
+  }
+
   return {
-    async createCleanupTx(args: CreateCleanupTxArgs): Promise<CleanupRecord> {
-      return sql.begin(async (tx) => {
-        const referenceCode = await allocateEventReferenceCode(tx, args.jurCode)
+    async createCleanupTx(args: CreateCleanupTxArgs): Promise<CreateCleanupOutcome> {
+      const idem = args.idempotency
+      try {
+        const record = await sql.begin(async (tx) => {
+          const referenceCode = await allocateEventReferenceCode(tx, args.jurCode)
 
-        await tx`
-          INSERT INTO cleanups (
-            id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at, status,
-            bring, address, jurisdiction_geoid, reference_code
-          ) VALUES (
-            ${args.cleanupId},
-            ${args.organizerUserId},
-            ${args.type},
-            ${args.eventKind},
-            ${args.title},
-            ${args.description},
-            ST_SetSRID(ST_MakePoint(${args.lng}, ${args.lat}), 4326),
-            ${args.scheduledAt},
-            ${args.status},
-            ${args.bring as unknown as string[] | null},
-            ${args.address},
-            ${args.jurisdictionGeoid},
-            ${referenceCode}
-          )
-        `
-        await tx`
-          INSERT INTO cleanup_members (cleanup_id, user_id, role)
-          VALUES (${args.cleanupId}, ${args.organizerUserId}, 'organizer')
-          ON CONFLICT (cleanup_id, user_id) DO NOTHING
-        `
-        await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
-        await insertSlotsInTx(tx, args.cleanupId, args.slots)
+          await tx`
+            INSERT INTO cleanups (
+              id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at,
+              status, bring, address, jurisdiction_geoid, reference_code,
+              ends_at, timezone, visibility, cover_media_id, gallery_media_ids, donation_url,
+              page_slug, registration_opens_at, registration_closes_at, organization_id,
+              reminder_offsets_min, host_reply_to
+            ) VALUES (
+              ${args.cleanupId},
+              ${args.organizerUserId},
+              ${args.type},
+              ${args.eventKind},
+              ${args.title},
+              ${args.description},
+              ST_SetSRID(ST_MakePoint(${args.lng}, ${args.lat}), 4326),
+              ${args.scheduledAt},
+              ${args.status},
+              ${args.bring as unknown as string[] | null},
+              ${args.address},
+              ${args.jurisdictionGeoid},
+              ${referenceCode},
+              ${args.host.endsAt ?? null},
+              ${args.host.timezone ?? null},
+              ${args.host.visibility ?? "public"},
+              ${args.host.coverMediaId ?? null},
+              ${(args.host.galleryMediaIds ?? []) as unknown as string[]},
+              ${args.host.donationUrl ?? null},
+              ${args.host.pageSlug ?? null},
+              ${args.host.registrationOpensAt ?? null},
+              ${args.host.registrationClosesAt ?? null},
+              ${args.host.organizationId ?? null},
+              ${(args.host.reminderOffsetsMin ?? null) as unknown as number[] | null},
+              ${args.host.hostReplyTo ?? null}
+            )
+          `
+          await tx`
+            INSERT INTO cleanup_members (cleanup_id, user_id, role)
+            VALUES (${args.cleanupId}, ${args.organizerUserId}, 'organizer')
+            ON CONFLICT (cleanup_id, user_id) DO NOTHING
+          `
+          await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
+          await insertSlotsInTx(tx, args.cleanupId, args.slots)
+          await claimEventMediaInTx(tx, args.cleanupId, args.host)
 
-        const created = await readById(tx, args.cleanupId, null)
-        if (!created) throw AppError.internal()
-        await touchUserActivity(tx, {
-          userId: args.organizerUserId,
-          lng: args.lng,
-          lat: args.lat,
-          at: created.createdAt,
+          const created = await readById(tx, args.cleanupId, null)
+          if (!created) throw AppError.internal()
+          await touchUserActivity(tx, {
+            userId: args.organizerUserId,
+            lng: args.lng,
+            lat: args.lat,
+            at: created.createdAt,
+          })
+          if (idem !== undefined) {
+            await tx`
+              INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot)
+              VALUES (
+                ${idem.key},
+                ${idem.scope},
+                ${idem.userOrAnon},
+                ${sql.json({ cleanupId: args.cleanupId })}
+              )
+            `
+          }
+          return created
         })
-        return created
-      })
+        return { record, replayed: false }
+      } catch (err) {
+        if (isUniqueViolationOn(err, "cleanups_page_slug_uidx")) {
+          throw AppError.validation({ pageSlug: "that address is already taken" })
+        }
+        if (idem === undefined || !isUniqueViolationOn(err, "idempotency_key_scope_owner_uk")) {
+          throw err
+        }
+        const existingId = await readIdempotentCleanupId(idem)
+        if (existingId === null) {
+          throw AppError.conflict("Event create is still settling; retry")
+        }
+        const record = await readById(sql, existingId, null)
+        if (record === null) throw AppError.conflict("Event create is still settling; retry")
+        return { record, replayed: true }
+      }
     },
 
     async updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean> {
-      const sets: postgres.Fragment[] = []
+      const sets: postgres.Fragment[] = hostSetFragments(sql, patch)
       if (patch.title !== undefined) sets.push(sql`title = ${patch.title}`)
       if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
       if (patch.eventKind !== undefined) sets.push(sql`event_kind = ${patch.eventKind}`)
@@ -156,10 +313,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         return rows.length > 0
       }
       const setList = sets.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
-      const updated = await sql<{ id: string }[]>`
-        UPDATE cleanups SET ${setList} WHERE id = ${id} RETURNING id
-      `
-      return updated.length > 0
+      return sql.begin(async (tx) => {
+        const updated = await tx<{ id: string }[]>`
+          UPDATE cleanups SET ${setList} WHERE id = ${id} RETURNING id
+        `
+        if (updated.length === 0) return false
+        await claimEventMediaInTx(tx, id, patch)
+        return true
+      })
     },
 
     async linkReports(
@@ -339,6 +500,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           JOIN cleanups c ON c.id = cr.cleanup_id
           JOIN users u ON u.id = c.organizer_user_id
           WHERE cr.report_id = ANY(${reportIds}::uuid[])
+            AND c.visibility = 'public'
         ) ranked
         WHERE rn <= ${LINKED_EVENTS_PER_REPORT_CAP}
         ORDER BY report_id, linked_at DESC, id
@@ -389,10 +551,85 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         FROM cleanups c
         JOIN users u ON u.id = c.organizer_user_id
         ${goingJoin(sql)}
+        ${eventHostJoins(sql)}
         WHERE c.reference_code = ${code}
         LIMIT 1
       `
       return rows[0] ? toRecord(rows[0]) : null
+    },
+
+    async findCleanupByPageSlug(slug: string): Promise<CleanupRecord | null> {
+      const rows = await sql<CleanupRowSelect[]>`
+        SELECT ${cleanupColumns(sql, null)}
+        FROM cleanups c
+        JOIN users u ON u.id = c.organizer_user_id
+        ${goingJoin(sql)}
+        ${eventHostJoins(sql)}
+        WHERE c.page_slug = ${slug}
+        LIMIT 1
+      `
+      return rows[0] ? toRecord(rows[0]) : null
+    },
+
+    async galleryKeysFor(cleanupId: string): Promise<string[]> {
+      const rows = await sql<{ served_key: string | null }[]>`
+        SELECT ${servedKeyExpr(sql, "ma")} AS served_key
+        FROM cleanups c
+        JOIN LATERAL unnest(c.gallery_media_ids) WITH ORDINALITY AS g(media_id, ord) ON true
+        JOIN media_assets ma ON ma.id = g.media_id
+        WHERE c.id = ${cleanupId}
+          AND ${servableMediaFilter(sql, "ma")}
+        ORDER BY g.ord
+      `
+      return rows.flatMap((r) => (r.served_key === null ? [] : [r.served_key]))
+    },
+
+    async loadOrganizationRef(organizationId: string): Promise<CleanupOrganizationView | null> {
+      const rows = await sql<
+        {
+          id: string
+          slug: string
+          name: string
+          logo_key: string | null
+          verified_status: OrgVerificationStatus
+          verified_kind: OrgVerificationKind | null
+        }[]
+      >`
+        SELECT o.id, o.slug, o.name,
+               ${servedKeyExpr(sql, "am")} AS logo_key,
+               o.verified_status, o.verified_kind
+        FROM organizations o
+        LEFT JOIN media_assets am ON am.id = o.logo_media_id
+        WHERE o.id = ${organizationId} AND o.deleted_at IS NULL
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (row === undefined) return null
+      return {
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        logoKey: row.logo_key,
+        verifiedStatus: row.verified_status,
+        verifiedKind: row.verified_kind,
+      }
+    },
+
+    orgRoleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null> {
+      return orgStandingOf(sql, organizationId, userId)
+    },
+
+    async standingOf(cleanupId: string, userId: string): Promise<HostStanding> {
+      const resolved = await hostStandingOf(sql, cleanupId, userId)
+      return resolved?.standing ?? NO_HOST_STANDING
+    },
+
+    standingsOf(cleanupIds: string[], userId: string): Promise<Map<string, HostStanding>> {
+      return hostStandingsOf(sql, cleanupIds, userId).then((resolved) => {
+        const out = new Map<string, HostStanding>()
+        for (const [id, resolution] of resolved) out.set(id, resolution.standing)
+        return out
+      })
     },
 
     async listCleanups(
@@ -402,6 +639,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       const whenFilter = buildWhenFilter(sql, filters.when)
       const bboxFilter = buildBboxFilter(sql, filters.bbox)
       const membershipFilter = buildMembershipFilter(sql, filters.when, filters.viewerId)
+      const visibilityFilter = buildVisibilityFilter(sql, filters.viewerId)
 
       if (near !== null) {
         const point = sql`ST_SetSRID(ST_MakePoint(${near.lng}, ${near.lat}), 4326)`
@@ -415,10 +653,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           FROM cleanups c
           JOIN users u ON u.id = c.organizer_user_id
           ${goingJoin(sql)}
+          ${eventHostJoins(sql)}
           WHERE TRUE
             ${whenFilter}
             ${membershipFilter}
             ${bboxFilter}
+            ${visibilityFilter}
             ${cursorFilter}
           ORDER BY c.geom <-> ${point} ASC, c.id ASC
           LIMIT ${filters.limit + 1}
@@ -446,10 +686,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         FROM cleanups c
         JOIN users u ON u.id = c.organizer_user_id
         ${goingJoin(sql)}
+        ${eventHostJoins(sql)}
         WHERE TRUE
           ${whenFilter}
           ${membershipFilter}
           ${bboxFilter}
+          ${visibilityFilter}
           ${cursorFilter}
         ${order}
         LIMIT ${filters.limit + 1}
@@ -489,7 +731,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     async setMemberRole(
       cleanupId: string,
       userId: string,
-      role: "cohost" | "member",
+      role: "cohost" | "staff" | "member",
     ): Promise<boolean> {
       const rows = await sql<{ user_id: string }[]>`
         UPDATE cleanup_members SET role = ${role}
@@ -592,11 +834,25 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       userId: string,
     ): Promise<"joined" | "not_found" | "banned" | "closed"> {
       return sql.begin(async (tx) => {
-        const locked = await tx<{ status: CleanupStatus }[]>`
-          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
+        const locked = await tx<
+          { status: CleanupStatus; visibility: EventVisibility; organization_id: string | null }[]
+        >`
+          SELECT status, visibility, organization_id FROM cleanups
+          WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return "not_found"
+        if (
+          await privateEventBlocksJoin(
+            tx,
+            cleanupId,
+            cleanup.visibility,
+            cleanup.organization_id,
+            userId,
+          )
+        ) {
+          return "not_found"
+        }
         if (isCleanupTerminal(cleanup.status)) return "closed"
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
@@ -873,11 +1129,25 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       slotId: string,
     ): Promise<ClaimSlotOutcome> {
       return sql.begin(async (tx) => {
-        const locked = await tx<{ status: CleanupStatus }[]>`
-          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
+        const locked = await tx<
+          { status: CleanupStatus; visibility: EventVisibility; organization_id: string | null }[]
+        >`
+          SELECT status, visibility, organization_id FROM cleanups
+          WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return { kind: "not_found" }
+        if (
+          await privateEventBlocksJoin(
+            tx,
+            cleanupId,
+            cleanup.visibility,
+            cleanup.organization_id,
+            userId,
+          )
+        ) {
+          return { kind: "not_found" }
+        }
         if (isCleanupTerminal(cleanup.status)) return { kind: "closed" }
 
         const banned = await tx<{ one: number }[]>`

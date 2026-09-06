@@ -1,14 +1,12 @@
-
-import { and, eq, inArray, isNotNull, isNull, lt, ne, notExists, sql } from "drizzle-orm"
+import { and, eq, inArray, isNotNull, isNull, lt, ne, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
+import { mediaBoundElsewhere } from "./media-bindings.js"
 import { mediaReapTombstones } from "../db/schema/media_reap_tombstones.js"
 import { abuseFlags } from "../db/schema/moderation.js"
 import { moderationItems } from "../db/schema/moderation_items.js"
 import { reports } from "../db/schema/reports.js"
 import { jurisdictions } from "../db/schema/jurisdictions.js"
-import { users } from "../db/schema/users.js"
-import { chatGroups } from "../db/schema/chat-groups.js"
-import type { Db } from "../db/client.js"
+import type { Db, Queryable } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
 export { normalizeEtag, readEtag } from "./media-etag.js"
@@ -208,14 +206,24 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
     },
 
     async findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {
-      return db.select(ORPHAN_COLUMNS).from(mediaAssets).where(orphanPredicate(db, olderThan)).limit(limit)
+      const tag = db.$client
+      const rows = await tag<OrphanRow[]>`
+        SELECT ${ORPHAN_COLUMNS_SQL(tag)}
+          FROM media_assets
+         WHERE ${orphanPredicate(tag, olderThan)}
+         LIMIT ${limit}
+      `
+      return [...rows]
     },
 
     async deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null> {
-      const rows = await db
-        .delete(mediaAssets)
-        .where(and(eq(mediaAssets.id, id), orphanPredicate(db, olderThan)))
-        .returning(ORPHAN_COLUMNS)
+      const tag = db.$client
+      const rows = await tag<OrphanRow[]>`
+        DELETE FROM media_assets
+         WHERE media_assets.id = ${id}::uuid
+           AND (${orphanPredicate(tag, olderThan)})
+        RETURNING ${ORPHAN_COLUMNS_SQL(tag)}
+      `
       return rows[0] ?? null
     },
 
@@ -380,30 +388,22 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
   }
 }
 
-const ORPHAN_COLUMNS = {
-  id: mediaAssets.id,
-  r2Key: mediaAssets.r2Key,
-  servedKey: mediaAssets.servedKey,
-  thumbKey: mediaAssets.thumbKey,
-}
+const ORPHAN_COLUMNS_SQL = (tag: Queryable) => tag`
+  media_assets.id AS "id",
+  media_assets.r2_key AS "r2Key",
+  media_assets.served_key AS "servedKey",
+  media_assets.thumb_key AS "thumbKey"
+`
 
-function orphanPredicate(db: Db, olderThan: Date) {
-  return and(
-    isNull(mediaAssets.reportId),
-    isNull(mediaAssets.chatMessageId),
-    isNull(mediaAssets.postId),
-    notExists(
-      db.select({ id: users.id }).from(users).where(eq(users.avatarMediaId, mediaAssets.id)),
-    ),
-    notExists(
-      db
-        .select({ id: chatGroups.id })
-        .from(chatGroups)
-        .where(eq(chatGroups.avatarMediaId, mediaAssets.id)),
-    ),
-    ne(mediaAssets.purpose, "verification"),
-    lt(mediaAssets.createdAt, olderThan),
-  )
+export function orphanPredicate(tag: Queryable, olderThan: Date) {
+  return tag`
+    media_assets.report_id IS NULL
+    AND media_assets.chat_message_id IS NULL
+    AND media_assets.post_id IS NULL
+    AND media_assets.purpose <> 'verification'
+    AND media_assets.created_at < ${olderThan}
+    AND NOT (${mediaBoundElsewhere(tag, null)})
+  `
 }
 
 type MessageParent = "chat_messages" | "dm_messages"

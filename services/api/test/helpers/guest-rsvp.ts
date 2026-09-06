@@ -10,6 +10,7 @@ import type {
   InsertGuestOtpArgs,
   UpsertGuestArgs,
 } from "../../src/services/guest-rsvp-service.js"
+import type { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
 import type { GuestCountSource } from "./cleanups.js"
 
 export interface StoredGuest {
@@ -51,6 +52,8 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
   readonly optOuts = new Set<string>()
   readonly memberCounts = new Map<string, number>()
 
+  registrations: InMemoryHostRegistrationRepository | null = null
+
   private readonly clock: () => number
   private seq = 0
 
@@ -70,6 +73,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
       status: event.status ?? "upcoming",
       scheduledAt: event.scheduledAt ?? new Date(this.clock() + 86_400_000),
       address: event.address ?? "123 Ocean Ave",
+      timezone: event.timezone ?? "America/Los_Angeles",
       lat: event.lat ?? 33.99,
       lng: event.lng ?? -118.47,
     }
@@ -208,15 +212,53 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
     return Promise.resolve({ id: row.id, cleanupId: row.cleanupId, cancelledAt: row.cancelledAt })
   }
 
-  cancelGuest(guestId: string, now: Date): Promise<void> {
+  releaseOnCancel: string[] = []
+
+  async cancelGuest(guestId: string, now: Date): Promise<string[]> {
     const row = this.guests.find((g) => g.id === guestId)
-    if (row === undefined || row.cancelledAt !== null) return Promise.resolve()
+    if (row === undefined || row.cancelledAt !== null) return []
     row.cancelledAt = now
     row.email = null
     row.phone = null
     row.contactKey = null
     row.contactScrubbedAt ??= now
-    return Promise.resolve()
+    const released = await this.cascadeGuestCancel(guestId, now)
+    return released.length > 0 ? released : [...this.releaseOnCancel]
+  }
+
+  private async cascadeGuestCancel(guestId: string, now: Date): Promise<string[]> {
+    const repo = this.registrations
+    if (repo === null) return []
+    const released: string[] = []
+    for (const registration of [...repo.registrations.values()]) {
+      if (registration.guestId !== guestId || registration.status !== "registered") continue
+      await repo.cancelRegistration({
+        cleanupId: registration.cleanupId,
+        registrationId: registration.id,
+        actorId: null,
+        now,
+      })
+      if (registration.ticketTypeId !== null) released.push(registration.ticketTypeId)
+      for (const seat of registration.seats) seat.attendeeName = null
+      for (const answer of registration.answers) {
+        answer.valueText = null
+        answer.valueJson = null
+        answer.scrubbedAt = now
+      }
+    }
+    for (const entry of repo.waitlist.values()) {
+      if (entry.guestId !== guestId) continue
+      if (entry.status !== "waiting" && entry.status !== "offered") continue
+      if (entry.status === "offered") {
+        const type = repo.ticketTypes.get(entry.ticketTypeId)
+        if (type !== undefined) {
+          type.reservedSeats = Math.max(type.reservedSeats - entry.partySize, 0)
+        }
+        released.push(entry.ticketTypeId)
+      }
+      entry.status = "cancelled"
+    }
+    return [...new Set(released)]
   }
 
   listGuests(args: {

@@ -243,6 +243,7 @@ describe("getPrefs + updatePrefs", () => {
       follows: true,
       mentions: true,
       postInteractions: true,
+      hostBroadcasts: true,
     })
     expect(repo.prefs.has(U)).toBe(true)
   })

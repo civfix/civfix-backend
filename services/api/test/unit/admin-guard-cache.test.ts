@@ -58,6 +58,18 @@ class SpyUserStore implements UserStore {
 
 class SpyCache implements CacheClient {
   readonly gets: string[] = []
+  sadd(key: string, ...members: string[]): Promise<number> {
+    return this.inner.sadd(key, ...members)
+  }
+  srem(key: string, ...members: string[]): Promise<number> {
+    return this.inner.srem(key, ...members)
+  }
+  smembers(key: string): Promise<string[]> {
+    return this.inner.smembers(key)
+  }
+  expire(key: string, ttlSeconds: number): Promise<void> {
+    return this.inner.expire(key, ttlSeconds)
+  }
   readonly sets: Array<{ key: string; value: string; ttlSeconds: number }> = []
   failGet = false
   failSet = false

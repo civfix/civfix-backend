@@ -1,0 +1,84 @@
+import { AppError, MAX_EVENT_QUESTIONS } from "@civfix/shared"
+import type {
+  ListEventQuestionsRequest,
+  ListEventQuestionsResponse,
+  SaveEventQuestionsRequest,
+  SaveEventQuestionsResponse,
+} from "@civfix/shared"
+import { assertNoSlur } from "../../abuse/slur-filter.js"
+import { toEventQuestionDTO } from "./registration-dto.js"
+import type {
+  DesiredQuestion,
+  HostRegistrationRepository,
+} from "./registration-repository.types.js"
+
+export interface QuestionServiceDeps {
+  repo: HostRegistrationRepository
+  now?: () => Date
+}
+
+export interface QuestionService {
+  list(query: ListEventQuestionsRequest): Promise<ListEventQuestionsResponse>
+  save(input: SaveEventQuestionsRequest): Promise<SaveEventQuestionsResponse>
+}
+
+export function makeQuestionService(deps: QuestionServiceDeps): QuestionService {
+  const now = deps.now ?? (() => new Date())
+
+  return {
+    async list(query): Promise<ListEventQuestionsResponse> {
+      const records = await deps.repo.listQuestions(query.id, {
+        ...(query.ticketTypeId !== undefined ? { ticketTypeId: query.ticketTypeId } : {}),
+      })
+      return { items: records.map(toEventQuestionDTO) }
+    },
+
+    async save(input): Promise<SaveEventQuestionsResponse> {
+      if (input.questions.length > MAX_EVENT_QUESTIONS) {
+        throw AppError.validation({
+          questions: `an event can ask at most ${MAX_EVENT_QUESTIONS} questions`,
+        })
+      }
+
+      const seen = new Set<string>()
+      const desired: DesiredQuestion[] = input.questions.map((question, index) => {
+        assertNoSlur(question.prompt, "prompt")
+        if (question.helpText != null) assertNoSlur(question.helpText, "helpText")
+        if (question.id !== undefined) {
+          if (seen.has(question.id)) {
+            throw AppError.validation({ questions: "the same question id appears twice" })
+          }
+          seen.add(question.id)
+        }
+        return {
+          id: question.id ?? null,
+          ticketTypeId: question.ticketTypeId ?? null,
+          kind: question.kind,
+          prompt: question.prompt,
+          helpText: question.helpText ?? null,
+          required: question.required,
+          options: "options" in question ? question.options : [],
+          maxSelections:
+            question.kind === "multi_select" ? (question.maxSelections ?? null) : null,
+          consentText: question.kind === "consent" ? question.consentText : null,
+          showIf: question.showIf ?? null,
+          sortOrder: question.sortOrder ?? index,
+        }
+      })
+
+      const conditionTargets = new Set(
+        desired.map((q) => q.id).filter((id): id is string => id !== null),
+      )
+      for (const question of desired) {
+        if (question.showIf !== null && !conditionTargets.has(question.showIf.questionId)) {
+          throw AppError.validation({
+            showIf: "must reference another question kept in this same save",
+          })
+        }
+      }
+
+      const records = await deps.repo.reconcileQuestions(input.id, desired, now())
+      return { items: records.map(toEventQuestionDTO) }
+    },
+  }
+}

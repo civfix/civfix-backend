@@ -9,6 +9,11 @@ import { registerReportRoutes } from "./reports.routes.js"
 import { registerAnonRoutes } from "./anon.routes.js"
 import { registerClaimRoutes } from "./claim.routes.js"
 import { registerCleanupRoutes } from "./cleanups.routes.js"
+import {
+  registerHostCommsRoutes,
+  registerHostSurface,
+  registerPublicHostCommsRoutes,
+} from "./host/index.js"
 import { registerGuestRsvpRoutes } from "./guest-rsvp.routes.js"
 import { registerChatRoutes } from "./chat.routes.js"
 import { registerChatGroupRoutes } from "./chat-groups.routes.js"
@@ -27,6 +32,10 @@ import { registerConversationRoutes } from "./conversations.routes.js"
 import { registerAdminRoutes } from "./admin/index.js"
 import { registerInboundMailWebhook } from "./webhooks/inbound-mail.routes.js"
 import { registerHomeTurfRoutes } from "./forms.routes.js"
+import { registerDonationRoutes } from "./donations.routes.js"
+import { registerOrgPaymentsRoutes } from "./org-payments.routes.js"
+import { registerLegalRoutes } from "./legal.routes.js"
+import { registerStripeWebhooks } from "./webhooks/stripe.routes.js"
 import { registerLocalStorageRoutes } from "./local-storage.routes.js"
 
 export interface RegisterRoutesOptions {
@@ -50,6 +59,7 @@ export async function registerRoutes(
   await registerAnonRoutes(app, container)
   await registerClaimRoutes(app, container)
   await registerCleanupRoutes(app, container)
+  await registerHostSurface(app, container)
   await registerGuestRsvpRoutes(app, container)
   await registerChatRoutes(app, container)
   await registerChatGroupRoutes(app, container)
@@ -61,16 +71,22 @@ export async function registerRoutes(
   await registerSocialRoutes(app, container)
   await registerPostRoutes(app, container)
   await registerVolunteerHoursRoutes(app, container)
-  // After the hours router: the certificate endpoints sit under the same /me/volunteer-hours prefix and
-  // read the same ledger, plus the one PUBLIC /service-hours/verify/:code lookup.
   await registerServiceHoursCertificateRoutes(app, container)
   await registerVerificationRoutes(app, container)
   await registerNotificationRoutes(app, container)
 
   await registerConversationRoutes(app, container)
 
-  // Public static-page form intake (raw route, outside the contract). Mounts UNCONDITIONALLY: it needs
-  // only the mailer + abuseChecks (always in the container), never the DB/Redis auth bundle.
+  await registerPublicHostCommsRoutes(app, container)
+
+  await registerLegalRoutes(app, container)
+
+  if (opts.authMounted) {
+    await registerHostCommsRoutes(app, container)
+    await registerDonationRoutes(app, container)
+    await registerOrgPaymentsRoutes(app, container)
+  }
+
   await registerHomeTurfRoutes(app, container)
 
   if (container.developmentOnlyLocalObjectStores !== undefined) {
@@ -82,4 +98,8 @@ export async function registerRoutes(
   }
 
   await registerInboundMailWebhook(app, container)
+
+  if (opts.authMounted) {
+    await registerStripeWebhooks(app, container)
+  }
 }

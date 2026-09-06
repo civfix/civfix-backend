@@ -1,0 +1,25 @@
+-- =============================================================================
+-- 0111_media_purpose_drop_old_check.sql
+-- -----------------------------------------------------------------------------
+-- EXPAND / CONTRACT, step 2 of 2 (see 0110). The superset constraint
+-- `media_assets_purpose_expanded` is in place, so the three-value
+-- `media_assets_purpose_check` from 0054 is now the only thing rejecting
+-- 'event_cover' / 'event_gallery' / 'org_logo'. Dropping it is catalog-only: no
+-- scan, no rewrite, and the superset CHECK keeps guarding every write.
+--
+-- Split from 0110 on purpose - one concern per file, and the two halves must land
+-- in this order or a write of a new purpose passes the old constraint's absence
+-- with nothing checking it at all.
+--
+-- STILL OUTSTANDING (a later release, out of band):
+--   ALTER TABLE media_assets VALIDATE CONSTRAINT media_assets_purpose_expanded;
+--
+-- CANONICAL DDL: hand-authored source of truth.
+--
+-- Conventions: DROP CONSTRAINT IF EXISTS (idempotent); one concern per file; one
+-- transaction per file. Forward-only, no down.
+--
+-- Ordering rules: requires 0110_media_purpose_event_expand.sql.
+-- =============================================================================
+
+ALTER TABLE media_assets DROP CONSTRAINT IF EXISTS media_assets_purpose_check;

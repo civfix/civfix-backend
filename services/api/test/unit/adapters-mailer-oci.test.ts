@@ -1,11 +1,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
 import {
   OciMailer,
   OCI_MAILER_DEFAULT_TIMEOUT_MS,
 } from "../../src/adapters/mailer.oci.js"
+import { mailFailure } from "../../src/adapters/mail-failure.js"
 
 interface SentMailArgs {
   from: string
@@ -114,12 +115,12 @@ describe("OciMailer.sendOutbound header handling", () => {
 })
 
 describe("OciMailer error classification", () => {
-  it("maps a permanent 5xx to CONFLICT with the approved-sender remediation", async () => {
+  it("maps a SENDER/relay 5xx to CONFLICT with the approved-sender remediation", async () => {
     sendMail.mockRejectedValue(
       Object.assign(new Error("rejected"), {
         responseCode: 550,
         code: "EENVELOPE",
-        response: "550 relay not permitted",
+        response: "550 5.7.1 relay access denied",
       }),
     )
     const mailer = new OciMailer(CONFIG)
@@ -127,10 +128,74 @@ describe("OciMailer error classification", () => {
       code: ErrorCode.CONFLICT,
     })
     await mailer.sendOutbound(outbound()).catch((err: AppError) => {
-      expect(err.message).toContain("approved sender")
-      expect(err.message).toContain("@civfix.org")
-      expect(err.message).toContain("550 relay not permitted")
+      expect(err.message).toBe(
+        "Email not sent: the sending address is not an approved sender. In OCI Email Delivery, " +
+          "add an Approved Sender for the whole domain (@civfix.org) once DKIM is active — this covers " +
+          "every per-thread reply address. (550 5.7.1 relay access denied)",
+      )
     })
+  })
+
+  it("keeps a relay refusal reported on RCPT TO on the sender side, not the recipient's", async () => {
+    sendMail.mockRejectedValue(
+      Object.assign(new Error("rejected"), {
+        responseCode: 550,
+        code: "EENVELOPE",
+        command: "RCPT TO",
+        response: "550 5.7.1 relay access denied",
+      }),
+    )
+    await new OciMailer(CONFIG).sendOutbound(outbound()).then(
+      () => expect.unreachable("send should reject"),
+      (err: AppError) => {
+        expect(err.code).toBe(ErrorCode.CONFLICT)
+        expect(err.message).toContain("Approved Sender")
+        expect(mailFailure(err).kind).toBe("auth")
+      },
+    )
+  })
+
+  it("keeps an approved-sender rejection reported on RCPT TO on the sender side", async () => {
+    sendMail.mockRejectedValue(
+      Object.assign(new Error("rejected"), {
+        responseCode: 550,
+        code: "EENVELOPE",
+        command: "RCPT TO",
+        response: "550 Sender address rejected: not an approved sender",
+      }),
+    )
+    await new OciMailer(CONFIG).sendOutbound(outbound()).then(
+      () => expect.unreachable("send should reject"),
+      (err: AppError) => {
+        expect(err.code).toBe(ErrorCode.CONFLICT)
+        expect(mailFailure(err).kind).toBe("auth")
+        expect(mailFailure(err).senderRejected).toBe(true)
+      },
+    )
+  })
+
+  it("maps a RECIPIENT 5xx to CONFLICT about the recipient, not the sending address", async () => {
+    sendMail.mockRejectedValue(
+      Object.assign(new Error("rejected"), {
+        responseCode: 550,
+        code: "EENVELOPE",
+        command: "RCPT TO",
+        response: "550 5.1.1 no such user here",
+      }),
+    )
+    const mailer = new OciMailer(CONFIG)
+    await mailer.sendOutbound(outbound()).then(
+      () => expect.unreachable("send should reject"),
+      (err: AppError) => {
+        expect(err.code).toBe(ErrorCode.CONFLICT)
+        expect(err.message).toContain("recipient address")
+        expect(err.message).not.toContain("Approved Sender")
+        expect(err.message).toBe(
+          "Email not sent: the recipient address was permanently rejected by its mail server. (SMTP 550)",
+        )
+        expect(err.message).not.toContain("no such user here")
+      },
+    )
   })
 
   it("maps a size rejection (552 / 'message too large') to CONFLICT about size, not approved-sender", async () => {
@@ -146,7 +211,7 @@ describe("OciMailer error classification", () => {
       (err: AppError) => {
         expect(err.code).toBe(ErrorCode.CONFLICT)
         expect(err.message).toContain("too large")
-        expect(err.message).not.toContain("approved sender")
+        expect(err.message).not.toContain("Approved Sender")
       },
     )
 
@@ -281,5 +346,60 @@ describe("OciMailer transport timeouts", () => {
       greetingTimeout: OCI_MAILER_DEFAULT_TIMEOUT_MS,
       socketTimeout: OCI_MAILER_DEFAULT_TIMEOUT_MS,
     })
+  })
+})
+
+describe("what the broadcast pipeline sees when OciMailer throws", () => {
+  async function thrownBy(smtpError: Record<string, unknown>): Promise<unknown> {
+    sendMail.mockRejectedValue(Object.assign(new Error("rejected"), smtpError))
+    return new OciMailer(CONFIG).sendOutbound(outbound()).then(
+      () => expect.unreachable("send should reject"),
+      (err: unknown) => err,
+    )
+  }
+
+  it("classifies a RCPT 550 hard bounce as permanent THROUGH the seam, so the address is suppressed", async () => {
+    const err = await thrownBy({
+      responseCode: 550,
+      code: "EENVELOPE",
+      command: "RCPT TO",
+      response: "550 5.1.1 no such user here",
+    })
+    expect(err).toBeInstanceOf(MailSendError)
+    const failure = mailFailure(err)
+    expect(failure.kind).toBe("permanent")
+    expect(failure.responseCode).toBe(550)
+    expect(failure.command).toBe("RCPT TO")
+    expect(failure.response).toBe("550 5.1.1 no such user here")
+  })
+
+  it("classifies EAUTH as auth THROUGH the seam, so the chunk aborts instead of failing row by row", async () => {
+    const err = await thrownBy({
+      responseCode: 535,
+      code: "EAUTH",
+      response: "535 Authentication credentials invalid",
+    })
+    const failure = mailFailure(err)
+    expect(failure.kind).toBe("auth")
+    expect(failure.code).toBe("EAUTH")
+    expect(failure.senderRejected).toBe(true)
+  })
+
+  it("classifies a 451 as transient THROUGH the seam, so the row is retried", async () => {
+    const err = await thrownBy({
+      responseCode: 451,
+      code: "EENVELOPE",
+      response: "451 4.3.0 temporary failure, try again later",
+    })
+    const failure = mailFailure(err)
+    expect(failure.kind).toBe("transient")
+    expect(failure.responseCode).toBe(451)
+  })
+
+  it("never reads the AppError's own code as an SMTP code", async () => {
+    const err = await thrownBy({ responseCode: 451, response: "451 try later" })
+    expect((err as MailSendError).code).toBe(ErrorCode.INTERNAL)
+    expect(mailFailure(err).code).toBeUndefined()
+    expect(mailFailure(err).kind).toBe("transient")
   })
 })

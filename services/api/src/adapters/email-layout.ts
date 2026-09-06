@@ -7,11 +7,6 @@ const BORDER = tokens.color.neutral.ink5
 const CARD = tokens.color.neutral.card
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
-/**
- * Dark-mode palette. The design tokens are a light theme only, so these are the warm inversions of the
- * neutrals the blocks inline (ink/ink2/ink3/ink5/paper2) plus a lightened link. Kept HERE, next to the
- * media query that applies them, so the light inline value and its dark counterpart are edited together.
- */
 const DARK_SURFACE = "#23201C"
 const DARK_PANEL = "#2E2A24"
 const DARK_BORDER = "#3A352E"
@@ -20,12 +15,6 @@ const DARK_INK2 = "#DCD5C6"
 const DARK_INK3 = "#A8A093"
 const DARK_LINK = "#8FBBE4"
 
-/**
- * Per-letter colors of the "civfix" rainbow wordmark, mirroring .cf-logo on civfix.org
- * (c coral, i gold, v green, f sky, i violet, x coral). The masthead renders the wordmark as
- * colored text on the card background — email clients can't load the brand webfont, so a heavy
- * system-font weight stands in for the logo's rounded face.
- */
 const WORDMARK: Array<[letter: string, color: string]> = [
   ["c", "#ff7a6b"],
   ["i", "#e5ae1c"],
@@ -47,6 +36,42 @@ export const CITY_FOOTER =
   "You're receiving this because a resident routed civic activity to your office through civfix, " +
   "a civic reporting platform. Reply to this email to respond. civfix.org"
 
+export interface EventFooterOptions {
+  eventTitle: string
+  unsubscribeUrl?: string
+  replyTo?: string | null
+  critical?: boolean
+  manageUrl?: string
+}
+
+export function eventFooter(opts: EventFooterOptions): string {
+  const lines: string[] = []
+  if (opts.critical === true) {
+    lines.push(
+      `This is a service message about "${opts.eventTitle}", an event you signed up for on civfix. ` +
+        `You receive these even if you have turned off updates from this organizer.`,
+    )
+  } else {
+    lines.push(
+      `You're receiving this because you signed up for "${opts.eventTitle}" on civfix. ` +
+        `The organizer wrote this message; civfix delivered it and never gave them your email address.`,
+    )
+  }
+  if (opts.replyTo !== undefined && opts.replyTo !== null && opts.replyTo.length > 0) {
+    lines.push(`Replies go to the organizer at ${opts.replyTo}.`)
+  } else {
+    lines.push("Replies to this address are not monitored.")
+  }
+  if (opts.critical !== true && opts.unsubscribeUrl !== undefined) {
+    lines.push(`Stop receiving messages about this event: ${opts.unsubscribeUrl}`)
+  }
+  if (opts.manageUrl !== undefined) {
+    lines.push(`Manage your signup: ${opts.manageUrl}`)
+  }
+  lines.push("civfix.org")
+  return lines.join(" ")
+}
+
 export interface RenderEmailOptions {
   preheader?: string
   footer?: string
@@ -67,12 +92,6 @@ export function renderEmailBody(opts: RenderEmailOptions): { text: string; html:
     `<meta name="color-scheme" content="light dark">` +
     `<meta name="supported-color-schemes" content="light dark">` +
     `<style>@media (max-width:600px){.cv-container{width:100%!important;}.cv-pad{padding-left:20px!important;padding-right:20px!important;}}` +
-    // Dark mode must recolor the INK as well as the surfaces. We declare color-scheme:light dark above,
-    // which tells clients like Apple Mail we handle dark ourselves and stops their auto-inversion — so
-    // flipping only the backgrounds rendered near-black inlined text on a near-black card (an unreadable
-    // OTP code). Every colored element therefore carries a cv-* class whose dark value is overridden here;
-    // the inline light colors stay as the fallback for clients that drop <style>. !important is required
-    // because inline styles otherwise win.
     `@media (prefers-color-scheme:dark){` +
     `.cv-body{background:${DARK_SURFACE}!important;}` +
     `.cv-card{background:${DARK_SURFACE}!important;border-color:${DARK_BORDER}!important;}` +
@@ -84,8 +103,6 @@ export function renderEmailBody(opts: RenderEmailOptions): { text: string; html:
     `.cv-panel{background:${DARK_PANEL}!important;border-color:${DARK_BORDER}!important;}` +
     `}</style>` +
     `</head>` +
-    // Body background matches the card exactly (a seamless single surface); the thin card border is
-    // the only framing, so no contrasting gutter shows around the content in any client.
     `<body class="cv-body" style="margin:0;padding:0;background:${CARD};">` +
     preheader +
     `<table role="presentation" class="cv-body" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${CARD};">` +

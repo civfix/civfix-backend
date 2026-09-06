@@ -14,8 +14,11 @@ import {
   users,
 } from "../db/schema/index.js"
 import { AppError, DELETED_USER_LABEL, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/shared"
+import type { Jobs } from "@civfix/shared/interfaces"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
+import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
+import type { NotificationService } from "../services/notification-service.js"
 import {
   generatePlaceholderHandle,
   generateTombstoneHandle,
@@ -35,6 +38,14 @@ import {
   type UserRecord,
   type UserStore,
 } from "./stores.js"
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0]
+
+interface TransferredEvent extends Record<string, unknown> {
+  cleanup_id: string
+  new_organizer: string
+  title: string
+}
 
 export class PgSessionStore implements SessionStore {
   constructor(private readonly db: Db) {}
@@ -112,16 +123,22 @@ export interface ErasureLogger {
   warn(obj: unknown, msg?: string): void
 }
 
+export type ErasureNotifier = Pick<NotificationService, "createNotification">
+
 export interface PgUserStoreOptions {
   now?: () => Date
   certificateObjects?: ErasureObjectStore
   logger?: ErasureLogger
+  notifier?: ErasureNotifier
+  jobs?: Jobs
 }
 
 export class PgUserStore implements UserStore {
   private readonly now: () => Date
   private readonly certificateObjects: ErasureObjectStore | undefined
   private readonly logger: ErasureLogger | undefined
+  private readonly notifier: ErasureNotifier | undefined
+  private readonly jobs: Jobs | undefined
 
   constructor(
     private readonly db: Db,
@@ -130,6 +147,8 @@ export class PgUserStore implements UserStore {
     this.now = opts.now ?? (() => new Date())
     this.certificateObjects = opts.certificateObjects
     this.logger = opts.logger
+    this.notifier = opts.notifier
+    this.jobs = opts.jobs
   }
 
   async findById(id: string): Promise<UserRecord | null> {
@@ -287,8 +306,202 @@ export class PgUserStore implements UserStore {
     }
   }
 
+  private async transferHostedEvents(tx: DbTransaction, id: string): Promise<TransferredEvent[]> {
+    const toOrgOwner = await tx.execute<TransferredEvent>(sql`
+      WITH candidate AS (
+        SELECT c.id AS cleanup_id, om.user_id AS new_organizer
+        FROM cleanups c
+        JOIN organization_members om
+          ON om.organization_id = c.organization_id AND om.role = 'owner'
+        JOIN organizations o ON o.id = om.organization_id AND o.deleted_at IS NULL
+        JOIN users u ON u.id = om.user_id AND u.deleted_at IS NULL
+        WHERE c.organizer_user_id = ${id}
+          AND c.status IN ('upcoming', 'active')
+          AND om.user_id <> ${id}
+      ), moved AS (
+        UPDATE cleanups c SET organizer_user_id = candidate.new_organizer
+        FROM candidate WHERE c.id = candidate.cleanup_id
+        RETURNING c.id AS cleanup_id, candidate.new_organizer
+      ), seated AS (
+        INSERT INTO cleanup_members (cleanup_id, user_id, role)
+        SELECT cleanup_id, new_organizer, 'organizer' FROM moved
+        ON CONFLICT (cleanup_id, user_id) DO UPDATE SET role = 'organizer'
+        RETURNING cleanup_id
+      )
+      SELECT m.cleanup_id, m.new_organizer, c.title
+      FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
+    `)
+
+    const toCohost = await tx.execute<TransferredEvent>(sql`
+      WITH candidate AS (
+        SELECT DISTINCT ON (c.id) c.id AS cleanup_id, m.user_id AS new_organizer
+        FROM cleanups c
+        JOIN cleanup_members m ON m.cleanup_id = c.id AND m.role = 'cohost'
+        JOIN users u ON u.id = m.user_id AND u.deleted_at IS NULL
+        WHERE c.organizer_user_id = ${id} AND c.status IN ('upcoming', 'active')
+        ORDER BY c.id, m.joined_at ASC NULLS LAST, m.user_id ASC
+      ), moved AS (
+        UPDATE cleanups c SET organizer_user_id = candidate.new_organizer
+        FROM candidate WHERE c.id = candidate.cleanup_id
+        RETURNING c.id AS cleanup_id, candidate.new_organizer
+      ), seated AS (
+        UPDATE cleanup_members m SET role = 'organizer'
+        FROM moved
+        WHERE m.cleanup_id = moved.cleanup_id AND m.user_id = moved.new_organizer
+        RETURNING m.cleanup_id
+      )
+      SELECT m.cleanup_id, m.new_organizer, c.title
+      FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
+    `)
+
+    const moved = [...toOrgOwner, ...toCohost]
+    for (const row of moved) {
+      await tx.execute(sql`
+        INSERT INTO audit_log (actor_id, action, target, meta)
+        VALUES (
+          ${id},
+          'event.host_transferred',
+          ${`cleanup:${row.cleanup_id}`},
+          jsonb_build_object('newOrganizerId', ${row.new_organizer}::text)
+        )
+      `)
+    }
+
+    await tx.execute(sql`
+      UPDATE cleanup_members SET role = 'member'
+      WHERE user_id = ${id} AND role = 'organizer'
+        AND cleanup_id IN (SELECT id FROM cleanups WHERE organizer_user_id <> ${id})
+    `)
+
+    await tx.execute(sql`
+      WITH held AS (
+        SELECT cleanup_id, role FROM cleanup_members
+        WHERE user_id = ${id} AND role IN ('cohost', 'staff')
+      ), demoted AS (
+        UPDATE cleanup_members m SET role = 'member'
+        FROM held h
+        WHERE m.cleanup_id = h.cleanup_id AND m.user_id = ${id}
+        RETURNING m.cleanup_id
+      )
+      INSERT INTO audit_log (actor_id, action, target, meta)
+      SELECT NULL::uuid,
+             'event.team_role_changed',
+             'cleanup:' || h.cleanup_id,
+             jsonb_build_object('targetUserId', ${id}::text, 'from', h.role, 'to', 'member')
+      FROM held h
+    `)
+    return moved
+  }
+
+  private async releaseOrganizations(tx: DbTransaction, id: string): Promise<void> {
+    const candidates = await tx.execute<{ organization_id: string }>(sql`
+      SELECT organization_id FROM organization_members
+      WHERE user_id = ${id} AND role = 'owner'
+      ORDER BY organization_id
+    `)
+    const candidateIds = candidates.map((row) => row.organization_id)
+    if (candidateIds.length > 0) {
+      await tx.execute(sql`
+        SELECT id FROM organizations
+        WHERE id = ANY(${candidateIds}::uuid[])
+        ORDER BY id
+        FOR UPDATE
+      `)
+    }
+    const owned = await tx.execute<{ organization_id: string }>(sql`
+      UPDATE organization_members SET role = 'admin'
+      WHERE user_id = ${id} AND role = 'owner'
+      RETURNING organization_id
+    `)
+    const ownedOrgIds = owned.map((row) => row.organization_id)
+    if (ownedOrgIds.length > 0) {
+      await tx.execute(sql`
+        UPDATE organization_members t SET role = 'owner'
+        FROM (
+          SELECT DISTINCT ON (om.organization_id) om.organization_id, om.user_id
+          FROM organization_members om
+          JOIN users u ON u.id = om.user_id AND u.deleted_at IS NULL
+          WHERE om.organization_id = ANY(${ownedOrgIds}::uuid[])
+            AND om.role = 'admin' AND om.user_id <> ${id}
+          ORDER BY om.organization_id, om.joined_at ASC, om.user_id ASC
+        ) pick
+        WHERE t.organization_id = pick.organization_id AND t.user_id = pick.user_id
+      `)
+    }
+    await tx.execute(sql`DELETE FROM organization_members WHERE user_id = ${id}`)
+    if (ownedOrgIds.length > 0) {
+      const orphaned = await tx.execute<{ id: string }>(sql`
+        UPDATE organizations SET deleted_at = now(), updated_at = now()
+        WHERE id = ANY(${ownedOrgIds}::uuid[]) AND deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members ow
+            WHERE ow.organization_id = organizations.id AND ow.role = 'owner'
+          )
+        RETURNING id
+      `)
+      const orphanedOrgIds = orphaned.map((row) => row.id)
+      if (orphanedOrgIds.length > 0) {
+        await tx.execute(sql`
+          UPDATE cleanups SET organization_id = NULL, donation_url = NULL
+          WHERE organization_id = ANY(${orphanedOrgIds}::uuid[])
+        `)
+      }
+    }
+    await tx.execute(sql`
+      UPDATE cleanup_team_invites
+      SET status = 'revoked', invited_email = NULL, email_scrubbed_at = now()
+      WHERE status = 'pending' AND (invited_user_id = ${id} OR invited_by = ${id})
+    `)
+  }
+
+  private async scrubAttendeeContributions(tx: DbTransaction, id: string): Promise<string[]> {
+    await tx.execute(sql`
+      UPDATE cleanup_registrations SET host_note = NULL
+       WHERE user_id = ${id} AND host_note IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_registration_seats s
+         SET attendee_name = NULL
+        FROM cleanup_registrations r
+       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_answers a
+         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
+        FROM cleanup_registrations r
+       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
+    `)
+    const released = await tx.execute<{ id: string }>(sql`
+      WITH cancelled_waitlist AS (
+        UPDATE cleanup_waitlist SET status = 'cancelled'
+         WHERE user_id = ${id} AND status IN ('waiting', 'offered')
+        RETURNING ticket_type_id, party_size, offered_at
+      ), releases AS (
+        SELECT ticket_type_id, sum(party_size)::int AS seats
+          FROM cancelled_waitlist
+         WHERE offered_at IS NOT NULL
+         GROUP BY ticket_type_id
+      )
+      UPDATE cleanup_ticket_types t
+         SET reserved_seats = GREATEST(t.reserved_seats - r.seats, 0),
+             updated_at = now()
+        FROM releases r
+       WHERE t.id = r.ticket_type_id
+      RETURNING t.id
+    `)
+    await tx.execute(sql`
+      UPDATE donations
+         SET user_id = NULL,
+             profile_unlinked_at = COALESCE(profile_unlinked_at, now()),
+             donor_email = CASE WHEN charged_at IS NULL THEN NULL ELSE donor_email END,
+             donor_name = CASE WHEN charged_at IS NULL THEN NULL ELSE donor_name END
+       WHERE user_id = ${id}
+    `)
+    return released.map((row) => row.id)
+  }
+
   private async runErasure(id: string): Promise<UserRecord> {
-    const { record, objectKeys } = await this.db.transaction(async (tx) => {
+    const erasure = await this.db.transaction(async (tx) => {
       const updated = await tx
         .update(users)
         .set({
@@ -313,10 +526,13 @@ export class PgUserStore implements UserStore {
         .update(reports)
         .set({ visibility: "hidden" })
         .where(and(eq(reports.reporterUserId, id), eq(reports.visibility, "public")))
+      await this.releaseOrganizations(tx, id)
+      const moved = await this.transferHostedEvents(tx, id)
       await tx
         .update(cleanups)
         .set({ status: "cancelled" })
         .where(and(eq(cleanups.organizerUserId, id), inArray(cleanups.status, ["upcoming", "active"])))
+      const releasedTicketTypeIds = await this.scrubAttendeeContributions(tx, id)
       await tx
         .update(posts)
         .set({ visibility: "hidden" })
@@ -380,10 +596,13 @@ export class PgUserStore implements UserStore {
           [m.r2_key, m.served_key, m.thumb_key].filter((k): k is string => k !== null),
         ),
       ]
-      return { record: toUserRecord(r), objectKeys }
+      return { record: toUserRecord(r), objectKeys, moved, releasedTicketTypeIds }
     })
 
-    for (const key of objectKeys) {
+    await this.notifyNewOrganizers(erasure.moved)
+    await enqueueWaitlistPromotion(this.jobs, erasure.releasedTicketTypeIds, this.logger)
+
+    for (const key of erasure.objectKeys) {
       if (this.certificateObjects === undefined) {
         this.logger?.warn(
           { userId: id, key },
@@ -397,7 +616,27 @@ export class PgUserStore implements UserStore {
         this.logger?.warn({ err, userId: id, key }, "erasure object delete failed")
       }
     }
-    return record
+    return erasure.record
+  }
+
+  private async notifyNewOrganizers(moved: readonly TransferredEvent[]): Promise<void> {
+    if (this.notifier === undefined) return
+    for (const row of moved) {
+      try {
+        await this.notifier.createNotification(row.new_organizer, {
+          type: "cleanup_role",
+          titleKey: "notification.cleanup_role.promoted.title",
+          bodyKey: "notification.cleanup_role.promoted.body",
+          vars: { title: row.title },
+          link: `/cleanups/${row.cleanup_id}`,
+        })
+      } catch (err) {
+        this.logger?.warn(
+          { err, cleanupId: row.cleanup_id, newOrganizerId: row.new_organizer },
+          "erasure host transfer notification failed (suppressed)",
+        )
+      }
+    }
   }
 }
 

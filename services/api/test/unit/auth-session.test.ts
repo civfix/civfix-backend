@@ -340,6 +340,18 @@ describe("SessionService absolute lifetime (M3)", () => {
 
 class FlakyDelCache implements CacheClient {
   failDel = false
+  sadd(key: string, ...members: string[]): Promise<number> {
+    return this.inner.sadd(key, ...members)
+  }
+  srem(key: string, ...members: string[]): Promise<number> {
+    return this.inner.srem(key, ...members)
+  }
+  smembers(key: string): Promise<string[]> {
+    return this.inner.smembers(key)
+  }
+  expire(key: string, ttlSeconds: number): Promise<void> {
+    return this.inner.expire(key, ttlSeconds)
+  }
   errors: unknown[] = []
   constructor(private readonly inner: InMemoryCacheClient) {}
   get(key: string): Promise<string | null> {

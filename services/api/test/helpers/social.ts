@@ -439,6 +439,7 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
     jurisdictionGeoid: over.jurisdictionGeoid ?? null,
     referenceCode: over.referenceCode ?? null,
     createdAt: over.createdAt ?? new Date("2024-12-01T10:00:00.000Z"),
+    capacity: over.capacity ?? null,
     going: over.going ?? 1,
     dist: over.dist ?? null,
     organizer: over.organizer ?? {
@@ -447,5 +448,20 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
       handle: null,
       bio: null,
     },
+    endsAt: over.endsAt ?? null,
+    timezone: over.timezone ?? null,
+    visibility: over.visibility ?? "public",
+    coverMediaId: over.coverMediaId ?? null,
+    coverKey: over.coverKey ?? null,
+    galleryMediaIds: over.galleryMediaIds ?? [],
+    donationUrl: over.donationUrl ?? null,
+    pageSlug: over.pageSlug ?? null,
+    registrationOpensAt: over.registrationOpensAt ?? null,
+    registrationClosesAt: over.registrationClosesAt ?? null,
+    organizationId: over.organizationId ?? null,
+    organization: over.organization ?? null,
+    reminderOffsetsMin: over.reminderOffsetsMin ?? null,
+    hostReplyTo: over.hostReplyTo ?? null,
+    hostReplyToVerifiedAt: over.hostReplyToVerifiedAt ?? null,
   }
 }

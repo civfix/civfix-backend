@@ -317,6 +317,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       FROM cleanups c
       JOIN users u ON u.id = c.organizer_user_id
       WHERE c.id = ANY(${ids}::uuid[])
+        AND c.visibility = 'public'
     `
     for (const r of rows) {
       const organizer: PersonDTO = {

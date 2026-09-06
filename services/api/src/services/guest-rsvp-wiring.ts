@@ -1,6 +1,8 @@
 import type { Container } from "../di.js"
 import { REVIEWER_OTP_EMAIL } from "../auth/otp.js"
-import { makeDrizzleCleanupRepository } from "./cleanup-repository.drizzle.js"
+import { writeAudit } from "./admin/audit.js"
+import { requireCapability } from "./host/authz.js"
+import { makeContainerRegistrationServices } from "./host/registration-wiring.js"
 import { makeDrizzleGuestRsvpRepository } from "./guest-rsvp-repository.drizzle.js"
 import {
   makeGuestRsvpService,
@@ -10,7 +12,9 @@ import {
 
 export interface GuestRsvpOverrides {
   repo: GuestRsvpServiceDeps["repo"]
-  roleOf?: GuestRsvpServiceDeps["roleOf"]
+  requireGuestContact?: GuestRsvpServiceDeps["requireGuestContact"]
+  registrations?: GuestRsvpServiceDeps["registrations"]
+  audit?: GuestRsvpServiceDeps["audit"]
   mailer?: GuestRsvpServiceDeps["mailer"]
   smsSender?: GuestRsvpServiceDeps["smsSender"]
   abuseChecks?: GuestRsvpServiceDeps["abuseChecks"]
@@ -42,13 +46,43 @@ export function makeContainerGuestRsvpService(
 ): GuestRsvpService {
   const reviewer = overrides?.reviewer ?? guestReviewerConfig(container)
   const repo = overrides?.repo ?? makeDrizzleGuestRsvpRepository(container.getDb().sql)
-  const roleOf =
-    overrides?.roleOf ??
-    ((cleanupId: string, userId: string) =>
-      makeDrizzleCleanupRepository(container.getDb().sql).roleOf(cleanupId, userId))
+  const requireGuestContact =
+    overrides?.requireGuestContact ??
+    (async (cleanupId: string, userId: string) => {
+      await requireCapability(container.getDb().sql, cleanupId, userId, "view_guest_contact")
+    })
+  const registrations: GuestRsvpServiceDeps["registrations"] = overrides?.registrations ?? {
+    register: (input, subject) =>
+      makeContainerRegistrationServices(container, undefined, logger).registrations.register(
+        input,
+        subject,
+      ),
+    assertInputValid: (cleanupId, fields) =>
+      makeContainerRegistrationServices(container, undefined, logger).registrations.assertInputValid(
+        {
+          id: cleanupId,
+          ...(fields.ticketTypeId !== undefined ? { ticketTypeId: fields.ticketTypeId } : {}),
+          ...(fields.answers !== undefined ? { answers: fields.answers } : {}),
+          ...(fields.consent !== undefined ? { consent: fields.consent } : {}),
+        },
+      ),
+  }
+  const audit: GuestRsvpServiceDeps["audit"] =
+    overrides?.audit ??
+    (async (input) => {
+      await writeAudit(container.getDb().sql, {
+        actorId: input.actorId,
+        action: input.action,
+        target: input.target,
+        meta: input.meta ?? null,
+      })
+    })
   return makeGuestRsvpService({
     repo,
-    roleOf,
+    requireGuestContact,
+    registrations,
+    audit,
+    jobs: container.jobs,
     mailer: overrides?.mailer ?? container.mailer,
     smsSender: overrides?.smsSender ?? container.smsSender,
     abuseChecks: overrides?.abuseChecks ?? container.abuseChecks,

@@ -363,7 +363,10 @@ describe("per-user push rate cap (H15)", () => {
       db: fakeDb(rateRows("u"), {}),
       config: {},
       dispatchers: { ios: ios.fn },
-      counters: { incr: () => Promise.reject(new Error("redis down")) },
+      counters: {
+        incr: () => Promise.reject(new Error("redis down")),
+        incrBy: () => Promise.reject(new Error("redis down")),
+      },
       logger: { warn: () => {}, error: () => {} },
     })
     await sender.send("u", PAYLOAD)

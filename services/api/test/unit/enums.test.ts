@@ -1,9 +1,3 @@
-/**
- * Drift guard: the enum value tuples in src/db/schema/types.ts MIRROR the @civfix/shared Zod enums
- * (the DB layer must not depend on Zod runtime objects). This test asserts they stay byte-for-byte
- * identical, so any change to the shared contract that is not reflected in the schema mirror fails CI
- * here instead of silently diverging. No database needed.
- */
 
 import { describe, expect, it } from "vitest"
 import {
@@ -40,13 +34,45 @@ import {
   RiskSchema,
   RoleSchema,
   UserStatusSchema,
+  EventVisibilitySchema,
+  OrganizationMemberRoleSchema,
+  OrgVerificationStatusSchema,
+  OrgVerificationKindSchema,
+  EventTeamRoleSchema,
+  EventTeamInviteStatusSchema,
+  TicketTypeVisibilitySchema,
+  RegistrationStatusSchema,
+  RegistrationSourceSchema,
+  SeatStatusSchema,
+  CheckinMethodSchema,
+  WaitlistStatusSchema,
+  EventQuestionKindSchema,
+  EventPageStatusSchema,
+  EventPageBlockKindSchema,
+  ThemeAccentSchema,
+  BroadcastKindSchema,
+  BroadcastStatusSchema,
+  BroadcastChannelSchema,
+  DeliveryStatusSchema,
+  DeliverySuppressionReasonSchema,
+  DeliveryFailureKindSchema,
+  PageViewSourceSchema,
+  HostExportKindSchema,
+  HostExportStatusSchema,
+  DonationStatusSchema,
+  DonationDisputeStateSchema,
+  OrgPaymentsStateSchema,
+  DonateStateSchema,
+  EligibilityVerdictSchema,
+  EligibilitySourceSchema,
+  LegalDocumentTypeSchema,
+  ConsentSurfaceSchema,
 } from "@civfix/shared"
 import {
   ABUSE_REASON_VALUES,
   ABUSE_SOURCE_VALUES,
   ABUSE_SUBJECT_TYPE_VALUES,
   CHAT_MESSAGE_KIND_VALUES,
-  CLEANUP_MEMBER_ROLE_VALUES,
   CLEANUP_STATUS_VALUES,
   CLEANUP_TYPE_VALUES,
   DISCOVERY_STATUS_VALUES,
@@ -58,7 +84,6 @@ import {
   MAIL_DIRECTION_VALUES,
   MAIL_THREAD_STATUS_VALUES,
   MEDIA_KIND_VALUES,
-  MEDIA_PURPOSE_VALUES,
   MEDIA_STATUS_VALUES,
   VERIFICATION_STATUS_VALUES,
   MODERATION_KIND_VALUES,
@@ -76,6 +101,49 @@ import {
   USER_ACCOUNT_STATUS_VALUES,
   USER_RISK_VALUES,
 } from "../../src/db/schema/types.js"
+import {
+  CLEANUP_MEMBER_ROLE_VALUES,
+  MEDIA_PURPOSE_VALUES,
+  EVENT_VISIBILITY_VALUES,
+  ORGANIZATION_MEMBER_ROLE_VALUES,
+  ORG_VERIFICATION_STATUS_VALUES,
+  ORG_VERIFICATION_KIND_VALUES,
+  EVENT_TEAM_ROLE_VALUES,
+  EVENT_TEAM_INVITE_STATUS_VALUES,
+} from "../../src/db/schema/types-host.js"
+import {
+  TICKET_TYPE_VISIBILITY_VALUES,
+  REGISTRATION_STATUS_VALUES,
+  REGISTRATION_SOURCE_VALUES,
+  SEAT_STATUS_VALUES,
+  CHECKIN_METHOD_VALUES,
+  WAITLIST_STATUS_VALUES,
+  EVENT_QUESTION_KIND_VALUES,
+  EVENT_PAGE_STATUS_VALUES,
+  EVENT_PAGE_BLOCK_KIND_VALUES,
+  THEME_ACCENT_VALUES,
+} from "../../src/db/schema/types-registration.js"
+import {
+  BROADCAST_KIND_VALUES,
+  BROADCAST_STATUS_VALUES,
+  BROADCAST_CHANNEL_VALUES,
+  DELIVERY_STATUS_VALUES,
+  DELIVERY_SUPPRESSION_REASON_VALUES,
+  DELIVERY_FAILURE_KIND_VALUES,
+  PAGE_VIEW_SOURCE_VALUES,
+  HOST_EXPORT_KIND_VALUES,
+  HOST_EXPORT_STATUS_VALUES,
+} from "../../src/db/schema/types-broadcast.js"
+import {
+  DONATION_STATUS_VALUES,
+  DONATION_DISPUTE_STATE_VALUES,
+  ORG_PAYMENTS_STATE_VALUES,
+  DONATE_STATE_VALUES,
+  ELIGIBILITY_VERDICT_VALUES,
+  ELIGIBILITY_SOURCE_VALUES,
+  LEGAL_DOCUMENT_TYPE_VALUES,
+  CONSENT_SURFACE_VALUES,
+} from "../../src/db/schema/types-payments.js"
 
 describe("schema enum tuples mirror @civfix/shared", () => {
   it.each([
@@ -97,7 +165,6 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["AbuseReason", ABUSE_REASON_VALUES, AbuseReasonSchema.options],
     ["AbuseSource", ABUSE_SOURCE_VALUES, AbuseSourceSchema.options],
     ["DiscoveryStatus", DISCOVERY_STATUS_VALUES, DiscoveryStatusSchema.options],
-    // Phase 2 (admin) tuples that mirror standalone shared enums.
     ["GovMethod", GOV_METHOD_VALUES, GovMethodSchema.options],
     ["GovClaimStatus", GOV_CLAIM_STATUS_VALUES, GovClaimStatusSchema.options],
     ["VerificationStatus", VERIFICATION_STATUS_VALUES, VerificationStatusSchema.options],
@@ -112,25 +179,54 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["Priority", MODERATION_PRIORITY_VALUES, PrioritySchema.options],
     ["MailStatus", MAIL_THREAD_STATUS_VALUES, MailStatusSchema.options],
     ["MailDirection", MAIL_DIRECTION_VALUES, MailDirectionSchema.options],
+    ["EventVisibility", EVENT_VISIBILITY_VALUES, EventVisibilitySchema.options],
+    ["OrganizationMemberRole", ORGANIZATION_MEMBER_ROLE_VALUES, OrganizationMemberRoleSchema.options],
+    ["OrgVerificationStatus", ORG_VERIFICATION_STATUS_VALUES, OrgVerificationStatusSchema.options],
+    ["OrgVerificationKind", ORG_VERIFICATION_KIND_VALUES, OrgVerificationKindSchema.options],
+    ["EventTeamRole", EVENT_TEAM_ROLE_VALUES, EventTeamRoleSchema.options],
+    ["EventTeamInviteStatus", EVENT_TEAM_INVITE_STATUS_VALUES, EventTeamInviteStatusSchema.options],
+    ["TicketTypeVisibility", TICKET_TYPE_VISIBILITY_VALUES, TicketTypeVisibilitySchema.options],
+    ["RegistrationStatus", REGISTRATION_STATUS_VALUES, RegistrationStatusSchema.options],
+    ["RegistrationSource", REGISTRATION_SOURCE_VALUES, RegistrationSourceSchema.options],
+    ["SeatStatus", SEAT_STATUS_VALUES, SeatStatusSchema.options],
+    ["CheckinMethod", CHECKIN_METHOD_VALUES, CheckinMethodSchema.options],
+    ["WaitlistStatus", WAITLIST_STATUS_VALUES, WaitlistStatusSchema.options],
+    ["EventQuestionKind", EVENT_QUESTION_KIND_VALUES, EventQuestionKindSchema.options],
+    ["EventPageStatus", EVENT_PAGE_STATUS_VALUES, EventPageStatusSchema.options],
+    ["EventPageBlockKind", EVENT_PAGE_BLOCK_KIND_VALUES, EventPageBlockKindSchema.options],
+    ["ThemeAccent", THEME_ACCENT_VALUES, ThemeAccentSchema.options],
+    ["BroadcastKind", BROADCAST_KIND_VALUES, BroadcastKindSchema.options],
+    ["BroadcastStatus", BROADCAST_STATUS_VALUES, BroadcastStatusSchema.options],
+    ["BroadcastChannel", BROADCAST_CHANNEL_VALUES, BroadcastChannelSchema.options],
+    ["DeliveryStatus", DELIVERY_STATUS_VALUES, DeliveryStatusSchema.options],
+    [
+      "DeliverySuppressionReason",
+      DELIVERY_SUPPRESSION_REASON_VALUES,
+      DeliverySuppressionReasonSchema.options,
+    ],
+    ["DeliveryFailureKind", DELIVERY_FAILURE_KIND_VALUES, DeliveryFailureKindSchema.options],
+    ["PageViewSource", PAGE_VIEW_SOURCE_VALUES, PageViewSourceSchema.options],
+    ["HostExportKind", HOST_EXPORT_KIND_VALUES, HostExportKindSchema.options],
+    ["HostExportStatus", HOST_EXPORT_STATUS_VALUES, HostExportStatusSchema.options],
+    ["DonationStatus", DONATION_STATUS_VALUES, DonationStatusSchema.options],
+    ["DonationDisputeState", DONATION_DISPUTE_STATE_VALUES, DonationDisputeStateSchema.options],
+    ["OrgPaymentsState", ORG_PAYMENTS_STATE_VALUES, OrgPaymentsStateSchema.options],
+    ["DonateState", DONATE_STATE_VALUES, DonateStateSchema.options],
+    ["EligibilityVerdict", ELIGIBILITY_VERDICT_VALUES, EligibilityVerdictSchema.options],
+    ["EligibilitySource", ELIGIBILITY_SOURCE_VALUES, EligibilitySourceSchema.options],
+    ["LegalDocumentType", LEGAL_DOCUMENT_TYPE_VALUES, LegalDocumentTypeSchema.options],
+    ["ConsentSurface", CONSENT_SURFACE_VALUES, ConsentSurfaceSchema.options],
   ])("%s matches the shared enum exactly", (_name, mirrored, shared) => {
     expect([...mirrored]).toEqual([...shared])
   })
 
   it("ChatMessageKind matches the shared enum (tolerating the P6 'poll' value shipping ahead)", () => {
-    // P6 Task 6.1 adds 'poll' to the backend mirror; the shared ChatMessageKindSchema gains it in the
-    // parallel Task 6.2 shared release. Until that bumped shared is installed here, the guard tolerates
-    // EXACTLY this one backend-ahead value (appended last); once shared includes 'poll', the
-    // expectation collapses back to byte-for-byte equality automatically.
     const shared: string[] = [...ChatMessageKindSchema.options]
     const expected = shared.includes("poll") ? shared : [...shared, "poll"]
     expect([...CHAT_MESSAGE_KIND_VALUES]).toEqual(expected)
   })
 
   it("NotificationType matches the shared enum (tolerating the P4 'group_chat' value shipping ahead)", () => {
-    // P4 Task 4.1 adds 'group_chat' to the backend mirror; the shared NotificationTypeSchema gains
-    // it in the parallel Task 4.2 shared release. Until that bumped shared is installed here, the
-    // guard tolerates EXACTLY this one backend-ahead value (appended last); once shared includes
-    // 'group_chat', the expectation collapses back to byte-for-byte equality automatically.
     const shared: string[] = [...NotificationTypeSchema.options]
     const expected = shared.includes("group_chat") ? shared : [...shared, "group_chat"]
     expect([...NOTIFICATION_TYPE_VALUES]).toEqual(expected)
@@ -142,39 +238,43 @@ describe("schema enum tuples mirror @civfix/shared", () => {
   })
 
   it("NotificationType carries the five social-feed post interaction values (in order)", () => {
-    // These used to be the LAST five; the service-hours pair below now sits after them, hence
-    // slice(-7, -2) rather than slice(-5). The positional assertion is the point — appending in a
-    // different order to either file is exactly the drift this guards.
-    expect(NOTIFICATION_TYPE_VALUES.slice(-7, -2)).toEqual([
+    expect(NOTIFICATION_TYPE_VALUES.slice(-8, -3)).toEqual([
       "post_like",
       "post_repost",
       "post_reply",
       "post_quote",
       "post_mention",
     ])
-    // Every one is also present in the shared enum (they are not backend-ahead).
     for (const t of ["post_like", "post_repost", "post_reply", "post_quote", "post_mention"]) {
       expect(NotificationTypeSchema.options).toContain(t)
     }
   })
 
   it("NotificationType carries the two service-hours values (LAST, in order)", () => {
-    // cleanup_slot = "a host changed / assigned your signup slot"; hours_logged = "a host credited you
-    // service hours". Appended in this order to BOTH src/db/schema/types.ts and the shared
-    // NotificationTypeSchema, so two implementers cannot diverge on the order.
-    expect(NOTIFICATION_TYPE_VALUES.slice(-2)).toEqual(["cleanup_slot", "hours_logged"])
+    expect(NOTIFICATION_TYPE_VALUES.slice(-3, -1)).toEqual(["cleanup_slot", "hours_logged"])
     for (const t of ["cleanup_slot", "hours_logged"]) {
       expect(NotificationTypeSchema.options).toContain(t)
     }
   })
 
+  it("NotificationType carries the host-broadcast value LAST", () => {
+    expect(NOTIFICATION_TYPE_VALUES.at(-1)).toBe("event_broadcast")
+    expect(NotificationTypeSchema.options.at(-1)).toBe("event_broadcast")
+  })
+
   it("MediaPurpose matches the shared enum exactly", () => {
     expect([...MEDIA_PURPOSE_VALUES]).toEqual([...MediaPurposeSchema.options])
-    expect([...MEDIA_PURPOSE_VALUES]).toEqual(["report", "verification", "post"])
+    expect([...MEDIA_PURPOSE_VALUES]).toEqual([
+      "report",
+      "verification",
+      "post",
+      "event_cover",
+      "event_gallery",
+      "org_logo",
+    ])
   })
 
   it("PushPlatform matches the shared register-push-token platform enum", () => {
-    // platform is an inline enum on the request schema rather than a standalone export.
     const shape = RegisterPushTokenRequestSchema.shape
     const platformOptions = (shape.platform as { options: readonly string[] }).options
     expect([...PUSH_PLATFORM_VALUES]).toEqual([...platformOptions])

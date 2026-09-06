@@ -120,6 +120,7 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       follows: patch.follows ?? current.follows,
       mentions: patch.mentions ?? current.mentions,
       postInteractions: patch.postInteractions ?? current.postInteractions,
+      hostBroadcasts: patch.hostBroadcasts ?? current.hostBroadcasts,
       quietStart:
         patch.quietHours === undefined
           ? current.quietStart

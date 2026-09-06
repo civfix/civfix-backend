@@ -15,12 +15,13 @@ import type {
 import type { PushPayload, PushSender, UserChannel } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import type { PersonView, SocialNotifier } from "./social-service.js"
+import type { PushGateMode } from "./notification-helpers.js"
 import {
   DEFAULT_PREFS,
   isWithinQuietHours,
+  pushGateAllows,
   toNotificationDTO,
   toPrefsDTO,
-  typeAllowedByPrefs,
 } from "./notification-helpers.js"
 import { mapWithLimit } from "./media-presign.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
@@ -33,10 +34,12 @@ export {
   isFeedVisibleType,
   isWithinQuietHours,
   parseTimeOfDayMinutes,
+  pushGateAllows,
   toNotificationDTO,
   toPrefsDTO,
   typeAllowedByPrefs,
 } from "./notification-helpers.js"
+export type { PushGateMode } from "./notification-helpers.js"
 
 export const NOTIFICATIONS_DEFAULT_LIMIT = 20
 
@@ -72,6 +75,7 @@ export interface NotificationPrefsRecord {
   follows: boolean
   mentions: boolean
   postInteractions: boolean
+  hostBroadcasts: boolean
   quietStart: string | null
   quietEnd: string | null
   tz: string | null
@@ -84,6 +88,7 @@ export interface NotificationPrefsPatch {
   follows?: boolean
   mentions?: boolean
   postInteractions?: boolean
+  hostBroadcasts?: boolean
   quietHours?: QuietHours | null
 }
 
@@ -171,6 +176,7 @@ export interface CreateNotificationInput {
   link?: string
   dedupeWindowMs?: number
   coalesceWindowMs?: number
+  push?: PushGateMode
 }
 
 export interface NotificationServiceDeps {
@@ -217,10 +223,15 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return deps.repo.createDefaultPrefs(userId)
   }
 
-  async function maybeSendPush(userId: string, record: NotificationRecord): Promise<void> {
+  async function maybeSendPush(
+    userId: string,
+    record: NotificationRecord,
+    mode: PushGateMode,
+  ): Promise<void> {
+    if (mode === "never") return
     try {
       const prefs = await resolvePrefs(userId)
-      if (!typeAllowedByPrefs(record.type, prefs)) return
+      if (!pushGateAllows(record.type, prefs, mode)) return
       if (isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd, prefs.tz)) return
 
       const payload: PushPayload = {
@@ -350,7 +361,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   ): Promise<NotificationDTO> {
     const { record, deduped } = await persistNotification(userId, input)
     if (deduped) return toNotificationDTO(record)
-    void maybeSendPush(userId, record).catch((err: unknown) => {
+    void maybeSendPush(userId, record, input.push ?? "auto").catch((err: unknown) => {
       deps.logger?.error({ err, userId }, "push dispatch failed (suppressed)")
     })
     void maybeSignalNotification(userId).catch((err: unknown) => {
@@ -392,14 +403,18 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return { byUser, unreadable }
   }
 
-  async function sendBatchedPush(created: Array<{ userId: string; record: NotificationRecord }>): Promise<void> {
+  async function sendBatchedPush(
+    created: Array<{ userId: string; record: NotificationRecord }>,
+    mode: PushGateMode,
+  ): Promise<void> {
+    if (mode === "never") return
     const { byUser, unreadable } = await prefsForMany(created.map((c) => c.userId))
     const at = now()
     const groups = new Map<string, { payload: PushPayload; userIds: string[] }>()
     for (const { userId, record } of created) {
       if (unreadable.has(userId)) continue
       const prefs = byUser.get(userId) ?? DEFAULT_PREFS
-      if (!typeAllowedByPrefs(record.type, prefs)) continue
+      if (!pushGateAllows(record.type, prefs, mode)) continue
       if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
       const key = JSON.stringify([record.title, record.body, record.link])
       const group = groups.get(key)
@@ -459,7 +474,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     })
     const created = persisted.filter((p): p is { userId: string; record: NotificationRecord } => p !== null)
     if (created.length === 0) return
-    void sendBatchedPush(created).catch((err: unknown) => {
+    void sendBatchedPush(created, input.push ?? "auto").catch((err: unknown) => {
       deps.logger?.error({ err, count: created.length }, "batched push dispatch failed (suppressed)")
     })
     void signalMany(created.map((c) => c.userId))
@@ -501,6 +516,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         ...(patch.postInteractions !== undefined
           ? { postInteractions: patch.postInteractions }
           : {}),
+        ...(patch.hostBroadcasts !== undefined ? { hostBroadcasts: patch.hostBroadcasts } : {}),
         ...("quietHours" in patch ? { quietHours: patch.quietHours ?? null } : {}),
       }
       return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))

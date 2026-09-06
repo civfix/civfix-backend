@@ -1,6 +1,9 @@
 import type { TrustProxyValue } from "./parsers.js"
+import type { CommsEnv } from "./comms-env.js"
+import type { PaymentsEnv } from "./payments-env.js"
+import type { RegistrationEnv } from "./registration-env.js"
 
-export interface Env {
+export interface Env extends CommsEnv, PaymentsEnv, RegistrationEnv {
   NODE_ENV: "development" | "test" | "production"
   PORT: number
   PUBLIC_API_URL: string
@@ -11,18 +14,8 @@ export interface Env {
   ANON_TOKEN_SIGNING_KEY: string
   TRUST_PROXY: TrustProxyValue
 
-  /**
-   * SIGTERM drain window in ms [OPT, default 0 = no drain, clamped to 0..10000]. When set, SIGTERM
-   * flips /healthz to 503 and the process keeps serving in-flight and newly-arrived requests for this
-   * long before it closes the server, so the blue/green load balancer's active health check pulls
-   * this api color out of the pool with no dropped request. It defaults OFF because a drain longer
-   * than the container's `stop_grace_period` is worse than no drain; the deployed value (8000) is set
-   * in the civfix-infra compose api service, alongside that grace period. See parsers.parseDrainMs.
-   */
   SHUTDOWN_DRAIN_MS: number
 
-  // R2 is MEDIA ONLY (report photos/videos), NOT map tiles (the map uses the CARTO Voyager raster
-  // basemap loaded directly by the clients). [BOOT] unless USE_FAKE_STORAGE.
   R2_ACCOUNT_ID: string
   R2_ACCESS_KEY_ID: string
   R2_SECRET_ACCESS_KEY: string
@@ -124,6 +117,8 @@ export interface Env {
   USE_FAKE_GEOCODER: boolean
 
   USE_FAKE_SMS: boolean
+
+  USE_FAKE_PAYMENTS: boolean
 
   USE_REAL_NSFW: boolean
 }

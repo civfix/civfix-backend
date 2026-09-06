@@ -1,6 +1,9 @@
 
 import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
+import { REGISTRATION_QUEUE_NAMES } from "../services/host/registration-queues.js"
+import { COMMS_QUEUE_NAMES } from "../services/host/broadcast-queues.js"
+import { PAYMENTS_QUEUE_NAMES } from "../services/payments/payments-queues.js"
 
 export interface PgBossJobsConfig {
   connectionString: string
@@ -19,6 +22,9 @@ export const API_QUEUE_NAMES = [
   "cleanup.guest.update.fanout",
   "guest.retention.sweep",
   "chat.room.fanout",
+  ...REGISTRATION_QUEUE_NAMES,
+  ...COMMS_QUEUE_NAMES,
+  ...PAYMENTS_QUEUE_NAMES,
 ] as const
 
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {

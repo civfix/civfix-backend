@@ -12,6 +12,7 @@ export const notificationPrefs = pgTable("notification_prefs", {
   follows: boolean("follows").notNull().default(true),
   mentions: boolean("mentions").notNull().default(true),
   postInteractions: boolean("post_interactions").notNull().default(true),
+  hostBroadcasts: boolean("host_broadcasts").notNull().default(true),
   quietStart: time("quiet_start"),
   quietEnd: time("quiet_end"),
   tz: text("tz"),

@@ -1,9 +1,10 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError, ErrorCode } from "@civfix/shared"
+import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
 import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import type { Transporter } from "nodemailer"
 import { domainOf, escapeHtml, sanitizeHeaderValue } from "./mail-text.js"
+import { mailFailure } from "./mail-failure.js"
 import { code, paragraph } from "./email-blocks.js"
 import { renderEmailBody } from "./email-layout.js"
 import { renderMessage } from "../i18n/renderMessage.js"
@@ -48,52 +49,53 @@ interface Rendered {
   html: string
 }
 
-interface SmtpError {
-  responseCode?: number
-  code?: string
-  response?: string
-}
-
-function classifyMailError(err: unknown, from: string): AppError {
-  const e = (err ?? {}) as SmtpError
-  const responseCode = typeof e.responseCode === "number" ? e.responseCode : undefined
-  const code = typeof e.code === "string" ? e.code : undefined
-  const response = typeof e.response === "string" ? e.response : undefined
-  const detail = response ? ` (${response})` : ""
-
-  if (code === "EAUTH") {
-    return new AppError(
-      ErrorCode.INTERNAL,
-      `Email not sent: the SMTP server rejected our credentials. Check ` +
-        `OCI_EMAIL_SMTP_USER / OCI_EMAIL_SMTP_PASS.${detail}`,
-      { cause: err },
-    )
+function classifyMailError(err: unknown, from: string): MailSendError {
+  const failure = mailFailure(err)
+  const detail = failure.response !== undefined ? ` (${failure.response})` : ""
+  const smtp = {
+    ...(failure.responseCode !== undefined ? { responseCode: failure.responseCode } : {}),
+    ...(failure.command !== undefined ? { command: failure.command } : {}),
+    ...(failure.response !== undefined ? { response: failure.response } : {}),
+    ...(failure.code !== undefined ? { code: failure.code } : {}),
   }
 
-  const oversize =
-    responseCode === 552 ||
-    responseCode === 523 ||
-    (response !== undefined && /message too large|size limit|exceed(?:s|ed)?\s+(?:the\s+)?(?:maximum\s+)?(?:message\s+)?size|too big/i.test(response))
-  if (oversize) {
-    return new AppError(
-      ErrorCode.CONFLICT,
-      `Email not sent: the message (with its attachments) is too large for the mail provider. ` +
-        `Send fewer or smaller photos — the rest remain available as links.${detail}`,
-      { cause: err },
-    )
+  switch (failure.kind) {
+    case "auth":
+      return failure.code === "EAUTH"
+        ? new MailSendError(
+            ErrorCode.INTERNAL,
+            `Email not sent: the SMTP server rejected our credentials. Check ` +
+              `OCI_EMAIL_SMTP_USER / OCI_EMAIL_SMTP_PASS.${detail}`,
+            smtp,
+            { cause: err },
+          )
+        : new MailSendError(
+            ErrorCode.CONFLICT,
+            `Email not sent: the sending address is not an approved sender. In OCI Email Delivery, ` +
+              `add an Approved Sender for the whole domain (@${domainOf(from)}) once DKIM is active — this covers ` +
+              `every per-thread reply address.${detail}`,
+            smtp,
+            { cause: err },
+          )
+    case "oversize":
+      return new MailSendError(
+        ErrorCode.CONFLICT,
+        `Email not sent: the message (with its attachments) is too large for the mail provider. ` +
+          `Send fewer or smaller photos — the rest remain available as links.${detail}`,
+        smtp,
+        { cause: err },
+      )
+    case "permanent":
+      return new MailSendError(
+        ErrorCode.CONFLICT,
+        `Email not sent: the recipient address was permanently rejected by its mail server.` +
+          (failure.responseCode !== undefined ? ` (SMTP ${failure.responseCode})` : ""),
+        smtp,
+        { cause: err },
+      )
+    default:
+      return new MailSendError(ErrorCode.INTERNAL, "Failed to send email.", smtp, { cause: err })
   }
-
-  if (responseCode !== undefined && responseCode >= 500 && responseCode < 600) {
-    const domain = domainOf(from)
-    return new AppError(
-      ErrorCode.CONFLICT,
-      `Email not sent: the sending address is not an approved sender. In OCI Email Delivery, ` +
-        `add an Approved Sender for the whole domain (@${domain}) once DKIM is active — this covers ` +
-        `every per-thread reply address.${detail}`,
-      { cause: err },
-    )
-  }
-  return new AppError(ErrorCode.INTERNAL, "Failed to send email.", { cause: err })
 }
 
 export class OciMailer implements Mailer {
