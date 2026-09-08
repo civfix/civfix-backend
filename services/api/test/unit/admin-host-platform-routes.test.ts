@@ -7,8 +7,10 @@ import { registerAdminEventPageRoutes } from "../../src/routes/admin/pages.route
 import { registerAdminMediaRoutes } from "../../src/routes/admin/media.routes.js"
 import { registerAdminLegalRoutes } from "../../src/routes/admin/legal.routes.js"
 import { registerAdminBroadcastRoutes } from "../../src/routes/admin/broadcasts.routes.js"
+import { registerAdminOrgRoutes } from "../../src/routes/admin/orgs.routes.js"
 import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.drizzle.js"
 import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
 import type { MediaAssetView, MediaRepository } from "../../src/services/media-intake-service.js"
 
 const OPERATOR = "11111111-1111-1111-1111-111111111111"
@@ -65,12 +67,18 @@ interface Harness {
   pages: AdminEventPageRow[]
   audits: { action: string; target?: string | null }[]
   broadcasts: InMemoryBroadcastRepository
+  orgs: InMemoryOrganizationRepository
+  mails: { to: string; vars: Record<string, unknown> }[]
+  notes: { userId: string; type: string }[]
 }
 
 async function harness(options: { media?: MediaAssetView | null } = {}): Promise<Harness> {
   const pages: AdminEventPageRow[] = [pageRow()]
   const audits: { action: string; target?: string | null }[] = []
   const broadcasts = new InMemoryBroadcastRepository()
+  const orgs = new InMemoryOrganizationRepository()
+  const mails: { to: string; vars: Record<string, unknown> }[] = []
+  const notes: { userId: string; type: string }[] = []
 
   const container = {
     env: {
@@ -139,14 +147,58 @@ async function harness(options: { media?: MediaAssetView | null } = {}): Promise
   })
   app.decorate("adminMediaOverrides", { repo: mediaRepo })
   app.decorate("adminBroadcastOverrides", { repo: broadcasts })
+  app.decorate("organizationOverrides", {
+    repo: orgs,
+    mailer: {
+      sendTransactional: (to: string, _template: string, vars: Record<string, unknown>) => {
+        mails.push({ to, vars })
+        return Promise.resolve()
+      },
+    },
+    notifier: {
+      createNotification: (userId: string, input: { type: string }) => {
+        notes.push({ userId, type: input.type })
+        return Promise.resolve()
+      },
+    },
+  })
 
   await registerAdminEventPageRoutes(app, container)
   await registerAdminMediaRoutes(app, container)
   await registerAdminLegalRoutes(app, container)
   await registerAdminBroadcastRoutes(app, container)
+  await registerAdminOrgRoutes(app, container)
   await app.ready()
 
-  return { app, pages, audits, broadcasts }
+  return { app, pages, audits, broadcasts, orgs, mails, notes }
+}
+
+/** Seed an org owned by HOST with one open (pending) verification application. */
+async function seedPendingOrg(orgs: InMemoryOrganizationRepository): Promise<string> {
+  orgs.seedUser({ id: HOST, displayName: "Ada", handle: "ada", email: "ada@example.org" })
+  const org = await orgs.createOrganizationTx({
+    organizationId: "88888888-8888-4888-8888-888888888888",
+    slug: "reach-out-la",
+    name: "Reach Out LA",
+    description: null,
+    websiteUrl: null,
+    logoMediaId: null,
+    socialLinks: null,
+    createdBy: HOST,
+    now: new Date("2026-08-01T00:00:00.000Z"),
+  })
+  if (typeof org === "string") throw new Error(org)
+  await orgs.applyVerificationTx({
+    verificationId: "99999999-9999-4999-8999-999999999999",
+    organizationId: org.id,
+    kind: "nonprofit",
+    einNumber: null,
+    documentMediaIds: [],
+    note: null,
+    submittedBy: HOST,
+    now: new Date("2026-08-02T00:00:00.000Z"),
+  })
+  return org.id
 }
 
 describe("admin signup-page moderation", () => {
@@ -241,6 +293,73 @@ describe("admin legal versions", () => {
       expect(doc.version.length).toBeGreaterThan(0)
       expect(doc.sha256).toMatch(/^[0-9a-f]{64}$/)
     }
+  })
+})
+
+describe("admin org verification decision", () => {
+  // The decision's operator audit is written INSIDE the repository transaction (decideVerificationTx ->
+  // writeHostAudit), not by the route like the sibling admin mutations. These tests pin that the row exists
+  // with the operator as actor, the org as target and the decision detail as meta, so the route's lack of a
+  // second writeAudit call is a deliberate no-double-write, not a gap.
+  it("approves, audits the operator + decision, and notifies the owner", async () => {
+    const h = await harness()
+    const id = await seedPendingOrg(h.orgs)
+    const res = await h.app.inject({
+      method: "POST",
+      url: `/v1/admin/orgs/${id}/verification`,
+      payload: { decision: "verified" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ id, verifiedStatus: "verified", verifiedKind: "nonprofit" })
+
+    const audit = h.orgs.audits.filter((a) => a.action === "org.verification_verified")
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({
+      actorId: OPERATOR,
+      target: `organization:${id}`,
+      meta: { kind: "nonprofit", reason: null },
+    })
+
+    expect(h.mails).toHaveLength(1)
+    expect(h.mails[0]?.to).toBe("ada@example.org")
+    expect(h.notes).toEqual([{ userId: HOST, type: "system" }])
+  })
+
+  it("rejects with a reason, audits it, and tells the owner why", async () => {
+    const h = await harness()
+    const id = await seedPendingOrg(h.orgs)
+    const res = await h.app.inject({
+      method: "POST",
+      url: `/v1/admin/orgs/${id}/verification`,
+      payload: { decision: "rejected", reason: "no determination letter" },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ id, verifiedStatus: "rejected", verifiedKind: null })
+
+    const audit = h.orgs.audits.filter((a) => a.action === "org.verification_rejected")
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({
+      actorId: OPERATOR,
+      target: `organization:${id}`,
+      meta: { reason: "no determination letter" },
+    })
+    expect(String(h.mails[0]?.vars.message)).toContain("no determination letter")
+    expect(h.notes).toEqual([{ userId: HOST, type: "system" }])
+  })
+
+  it("422s a rejection without a reason and writes no audit row or notification", async () => {
+    const h = await harness()
+    const id = await seedPendingOrg(h.orgs)
+    const res = await h.app.inject({
+      method: "POST",
+      url: `/v1/admin/orgs/${id}/verification`,
+      payload: { decision: "rejected" },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(h.orgs.audits.filter((a) => a.action.startsWith("org.verification_"))).toHaveLength(1)
+    expect(h.orgs.audits[0]?.action).toBe("org.verification_submitted")
+    expect(h.mails).toHaveLength(0)
+    expect(h.notes).toHaveLength(0)
   })
 })
 

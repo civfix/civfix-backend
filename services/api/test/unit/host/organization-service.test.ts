@@ -86,6 +86,28 @@ describe("createOrganization", () => {
     const dto = await service.createOrganization(base({ logoMediaId }), OWNER)
     expect(dto.logoUrl).toBe(`https://cdn.test/media/${logoMediaId}`)
   })
+
+  it("stores the slug trimmed + lowercased even when a caller bypasses the HTTP schema", async () => {
+    const dto = await service.createOrganization(base({ slug: "  Ballona-Creek-TRUST " }), OWNER)
+    expect(dto.slug).toBe("ballona-creek-trust")
+    expect([...repo.organizations.values()][0]?.slug).toBe("ballona-creek-trust")
+    const read = await service.getOrganizationBySlug("BALLONA-Creek-Trust", null)
+    expect(read.id).toBe(dto.id)
+  })
+
+  it("applies the reserved-word check to the NORMALIZED slug", async () => {
+    await expect(service.createOrganization(base({ slug: " ADMIN " }), OWNER)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
+    expect(repo.organizations.size).toBe(0)
+  })
+
+  it("409s a slug that differs from a live one only by case", async () => {
+    await service.createOrganization(base(), OWNER)
+    await expect(
+      service.createOrganization(base({ slug: "Ballona-Creek-Trust" }), ADMIN),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+  })
 })
 
 describe("membership", () => {
@@ -125,6 +147,28 @@ describe("membership", () => {
     expect(miss).toEqual({ ok: true, member: null, invited: true })
     expect(hit).toEqual(miss)
     expect(JSON.stringify(hit)).not.toContain("Mel Member")
+  })
+
+  it("returns the new member row for a handle invite (handles are public, so nothing leaks)", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    const result = await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "adam",
+      role: "admin",
+    })
+    expect(result.invited).toBe(true)
+    expect(result.member).toMatchObject({
+      person: { id: ADMIN, handle: "adam" },
+      role: "admin",
+      joinedAt: clock.toISOString(),
+      canRemove: true,
+    })
+    const unknown = await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "nobody",
+      role: "member",
+    })
+    expect(unknown).toEqual({ ok: true, member: null, invited: true })
   })
 
   it("lets a member leave an organization they were added to", async () => {
@@ -361,6 +405,146 @@ describe("verification", () => {
     await expect(
       service.adminDecideVerification(id, OPERATOR, { decision: "verified" }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
+  })
+
+  describe("owner notification", () => {
+    interface Sent {
+      to: string
+      template: string
+      vars: Record<string, unknown>
+    }
+    interface Notified {
+      userId: string
+      input: { type: string; title: string; body?: string; link?: string }
+    }
+
+    function notifying(
+      over: { mailer?: boolean; notifier?: boolean; failing?: boolean } = {},
+    ): { svc: OrganizationService; mails: Sent[]; notes: Notified[]; warnings: unknown[] } {
+      const mails: Sent[] = []
+      const notes: Notified[] = []
+      const warnings: unknown[] = []
+      const svc = makeOrganizationService({
+        repo,
+        counters: new InMemoryCounterStore(() => clock.getTime()),
+        now: () => clock,
+        newId: () => randomUUID(),
+        webOrigin: "https://web.test/",
+        ...(over.mailer === false
+          ? {}
+          : {
+              mailer: {
+                sendTransactional: (to, template, vars) => {
+                  if (over.failing) return Promise.reject(new Error("smtp down"))
+                  mails.push({ to, template, vars })
+                  return Promise.resolve()
+                },
+              },
+            }),
+        ...(over.notifier === false
+          ? {}
+          : {
+              notifier: {
+                createNotification: (userId, input) => {
+                  if (over.failing) return Promise.reject(new Error("notifications down"))
+                  notes.push({ userId, input })
+                  return Promise.resolve()
+                },
+              },
+            }),
+        logger: { error: () => undefined, warn: (obj) => warnings.push(obj) },
+      })
+      return { svc, mails, notes, warnings }
+    }
+
+    it("emails + notifies the OWNER (not the admin who applied) on approval", async () => {
+      const { svc, mails, notes } = notifying()
+      const id = await seeded()
+      await svc.applyVerification(id, OWNER, { kind: "nonprofit", documents: [] })
+      await svc.adminDecideVerification(id, OPERATOR, { decision: "verified" })
+
+      expect(mails).toHaveLength(1)
+      expect(mails[0]).toMatchObject({ to: "olive@x.org", template: "generic" })
+      expect(mails[0]?.vars.subject).toBe(
+        "Ballona Creek Trust is now verified as a nonprofit on civfix",
+      )
+      expect(String(mails[0]?.vars.message)).toContain("https://web.test/orgs/ballona-creek-trust")
+
+      expect(notes).toHaveLength(1)
+      expect(notes[0]).toMatchObject({
+        userId: OWNER,
+        input: { type: "system", title: "Ballona Creek Trust is now verified", link: "/orgs/ballona-creek-trust" },
+      })
+      expect(notes[0]?.userId).not.toBe(ADMIN)
+    })
+
+    it("names the granted kind, not the requested one, when the operator overrides it", async () => {
+      const { svc, mails } = notifying()
+      const id = await seeded()
+      await svc.applyVerification(id, OWNER, { kind: "nonprofit", documents: [] })
+      await svc.adminDecideVerification(id, OPERATOR, { decision: "verified", kind: "community" })
+      expect(mails[0]?.vars.subject).toBe(
+        "Ballona Creek Trust is now verified as a community organization on civfix",
+      )
+    })
+
+    it("includes the rejection reason and how to re-apply on a rejection", async () => {
+      const { svc, mails, notes } = notifying()
+      const id = await seeded()
+      await svc.applyVerification(id, OWNER, { kind: "nonprofit", documents: [] })
+      await svc.adminDecideVerification(id, OPERATOR, {
+        decision: "rejected",
+        reason: "no determination letter",
+      })
+
+      expect(mails).toHaveLength(1)
+      expect(mails[0]?.to).toBe("olive@x.org")
+      expect(mails[0]?.vars.subject).toBe(
+        "Your verification application for Ballona Creek Trust was not approved",
+      )
+      const message = String(mails[0]?.vars.message)
+      expect(message).toContain("Reason: no determination letter")
+      expect(message).toContain("re-apply")
+      expect(message).toContain(`https://web.test/manage/orgs/${id}/verification`)
+
+      expect(notes[0]).toMatchObject({
+        userId: OWNER,
+        input: { type: "system", link: `/manage/orgs/${id}/verification` },
+      })
+      expect(notes[0]?.input.body).toContain("no determination letter")
+    })
+
+    it("still notifies in-app when the owner has no email address", async () => {
+      const { svc, mails, notes } = notifying()
+      repo.seedUser({ id: OWNER, displayName: "Olive Owner", handle: "olive", email: null })
+      const id = await seeded()
+      await svc.applyVerification(id, OWNER, { kind: "community", documents: [] })
+      await svc.adminDecideVerification(id, OPERATOR, { decision: "verified" })
+      expect(mails).toHaveLength(0)
+      expect(notes).toHaveLength(1)
+    })
+
+    it("never fails the decision because the owner could not be notified", async () => {
+      const { svc, mails, notes, warnings } = notifying({ failing: true })
+      const id = await seeded()
+      await svc.applyVerification(id, OWNER, { kind: "nonprofit", documents: [] })
+      const dto = await svc.adminDecideVerification(id, OPERATOR, { decision: "verified" })
+      expect(dto.verifiedStatus).toBe("verified")
+      expect(mails).toHaveLength(0)
+      expect(notes).toHaveLength(0)
+      expect(warnings).toHaveLength(2)
+      expect(repo.audits.some((a) => a.action === "org.verification_verified")).toBe(true)
+    })
+
+    it("sends nothing for a decision that did not happen", async () => {
+      const { svc, mails, notes } = notifying()
+      const id = await seeded()
+      await expect(
+        svc.adminDecideVerification(id, OPERATOR, { decision: "verified" }),
+      ).rejects.toMatchObject({ code: "CONFLICT" })
+      expect(mails).toHaveLength(0)
+      expect(notes).toHaveLength(0)
+    })
   })
 
   it("scrubs the EIN 90 days after the decision, keeping the row", async () => {

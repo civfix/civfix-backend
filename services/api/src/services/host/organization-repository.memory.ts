@@ -11,6 +11,7 @@ import type {
   DecideOrgVerificationArgs,
   DecideOrgVerificationOutcome,
   OrganizationMemberRecord,
+  OrganizationOwnerRecord,
   OrganizationRecord,
   OrganizationRepository,
   OrgMemberIdentifier,
@@ -75,7 +76,12 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   eligibilityEinSink: ((input: SetEinInput) => void) | null = null
   readonly users = new Map<string, StoredPerson>()
   readonly eventCounts = new Map<string, number>()
-  readonly audits: { actorId: string; action: string; target: string }[] = []
+  readonly audits: {
+    actorId: string
+    action: string
+    target: string
+    meta?: Record<string, unknown>
+  }[] = []
 
   seedUser(over: Partial<StoredPerson> = {}): StoredPerson {
     const person: StoredPerson = {
@@ -230,6 +236,32 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
         }
       }),
       nextCursor: next === undefined ? null : `${next.joinedAt.toISOString()}|${next.userId}`,
+    })
+  }
+
+  findMember(organizationId: string, userId: string): Promise<OrganizationMemberRecord | null> {
+    const member = this.members.find(
+      (m) => m.organizationId === organizationId && m.userId === userId,
+    )
+    if (member === undefined) return Promise.resolve(null)
+    const person = this.personOf(member.userId)
+    return Promise.resolve({
+      person: { id: person.id, displayName: person.displayName, handle: person.handle, bio: person.bio },
+      role: member.role,
+      joinedAt: member.joinedAt,
+    })
+  }
+
+  findOwner(organizationId: string): Promise<OrganizationOwnerRecord | null> {
+    const owner = this.members.find(
+      (m) => m.organizationId === organizationId && m.role === "owner",
+    )
+    if (owner === undefined) return Promise.resolve(null)
+    const person = this.personOf(owner.userId)
+    return Promise.resolve({
+      userId: person.id,
+      displayName: person.displayName,
+      email: person.email,
     })
   }
 
@@ -476,6 +508,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       action:
         args.decision === "verified" ? "org.verification_verified" : "org.verification_rejected",
       target: `organization:${args.organizationId}`,
+      meta: { kind: grantedKind, reason: args.reason },
     })
     return Promise.resolve("decided")
   }

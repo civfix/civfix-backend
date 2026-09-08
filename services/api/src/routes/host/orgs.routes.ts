@@ -47,6 +47,8 @@ export interface OrganizationOverrides {
   now?: OrganizationServiceDeps["now"]
   newId?: OrganizationServiceDeps["newId"]
   onNonprofitVerified?: OrganizationServiceDeps["onNonprofitVerified"]
+  mailer?: OrganizationServiceDeps["mailer"]
+  notifier?: OrganizationServiceDeps["notifier"]
 }
 
 declare module "fastify" {
@@ -104,6 +106,9 @@ export function makeContainerOrganizationService(
       ...(overrides.onNonprofitVerified !== undefined
         ? { onNonprofitVerified: overrides.onNonprofitVerified }
         : {}),
+      ...(overrides.mailer !== undefined ? { mailer: overrides.mailer } : {}),
+      ...(overrides.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      logger: app.log,
     })
   }
   const sql = container.getDb().sql
@@ -122,6 +127,15 @@ export function makeContainerOrganizationService(
     counters: container.getCounterStore(),
     presignLogo: (key: string) => container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
     onNonprofitVerified: bootstrap.onNonprofitVerified,
+    mailer: container.mailer,
+    // Lazy so the notification service is only built on the admin decide path that needs it.
+    notifier: {
+      createNotification: (userId, input) =>
+        container.getNotificationService(app.log).createNotification(userId, input),
+    },
+    ...(container.env.WEB_ORIGINS[0] !== undefined
+      ? { webOrigin: container.env.WEB_ORIGINS[0] }
+      : {}),
     logger: app.log,
   })
 }

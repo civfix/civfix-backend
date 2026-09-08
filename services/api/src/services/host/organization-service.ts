@@ -8,6 +8,7 @@ import {
   type ApplyOrganizationVerificationRequest,
   type CreateOrganizationRequest,
   type InviteOrganizationMemberRequest,
+  type NotificationType,
   type OrganizationDTO,
   type OrganizationMemberDTO,
   type OrganizationVerificationDTO,
@@ -25,6 +26,7 @@ import type {
   AdminActorView,
   AdminOrgListQuery,
   AdminOrgVerificationRecord,
+  OrganizationOwnerRecord,
   OrganizationRecord,
   OrganizationRepository,
   OrgVerificationRecord,
@@ -55,6 +57,19 @@ export interface NonprofitVerifiedHook {
   (event: { organizationId: string; ein: string | null; operatorId: string }): Promise<void>
 }
 
+/** Transactional email seam (the same shape host-team-service uses for invites). */
+export interface OrganizationMailer {
+  sendTransactional(to: string, template: string, vars: Record<string, unknown>): Promise<void>
+}
+
+/** In-app notification seam: the container's NotificationService satisfies it structurally. */
+export interface OrganizationNotifier {
+  createNotification(
+    userId: string,
+    input: { type: NotificationType; title: string; body?: string; link?: string },
+  ): Promise<unknown>
+}
+
 export interface OrganizationServiceDeps {
   repo: OrganizationRepository
   counters?: CounterStore
@@ -62,7 +77,35 @@ export interface OrganizationServiceDeps {
   now?: () => Date
   newId?: () => string
   onNonprofitVerified?: NonprofitVerifiedHook
-  logger?: { error: (obj: unknown, msg?: string) => void }
+  mailer?: OrganizationMailer
+  notifier?: OrganizationNotifier
+  webOrigin?: string
+  logger?: {
+    error: (obj: unknown, msg?: string) => void
+    warn?: (obj: unknown, msg?: string) => void
+  }
+}
+
+/**
+ * The slug column is citext (unique case-insensitively) but stores whatever casing it is given. The shared
+ * OrgSlugSchema already trims + lowercases at the HTTP edge; this repeats it in the service so an internal
+ * caller (admin tooling, seeds, tests) cannot store "Ballona-Creek" next to a lookup for "ballona-creek".
+ */
+export function normalizeOrgSlug(slug: string): string {
+  return slug.trim().toLowerCase()
+}
+
+function verificationKindLabel(kind: OrgVerificationKind | null): string {
+  switch (kind) {
+    case "nonprofit":
+      return "nonprofit"
+    case "government":
+      return "government agency"
+    case "community":
+      return "community organization"
+    default:
+      return "verified organization"
+  }
 }
 
 export interface OrganizationService {
@@ -249,13 +292,78 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     }
   }
 
+  /**
+   * Tell the org OWNER how their verification application was decided: a transactional email (when the
+   * owner has an address) plus an in-app `system` notification. BEST-EFFORT like the eligibility hook —
+   * the decision is already committed and audited, so a mail/notification failure is logged, never raised.
+   */
+  async function notifyOwnerOfDecision(
+    org: AdminOrgDTO,
+    decision: "verified" | "rejected",
+    reason: string,
+  ): Promise<void> {
+    if (deps.mailer === undefined && deps.notifier === undefined) return
+    let owner: OrganizationOwnerRecord | null = null
+    try {
+      owner = await deps.repo.findOwner(org.id)
+    } catch (err) {
+      deps.logger?.warn?.(
+        { err, organizationId: org.id },
+        "org verification decision: owner lookup failed (notification suppressed)",
+      )
+      return
+    }
+    if (owner === null) return
+    const base = (deps.webOrigin ?? "https://civfix.org").replace(/\/+$/, "")
+    const orgPath = `/orgs/${org.slug}`
+    const verifyPath = `/manage/orgs/${org.id}/verification`
+    const kindLabel = verificationKindLabel(org.verifiedKind ?? null)
+    const approved = decision === "verified"
+    const subject = approved
+      ? `${org.name} is now verified as a ${kindLabel} on civfix`
+      : `Your verification application for ${org.name} was not approved`
+    const message = approved
+      ? `Good news: ${org.name} is now verified as a ${kindLabel} on civfix. Its profile shows the verified badge at ${base}${orgPath}.`
+      : `An operator reviewed the verification application for ${org.name} and did not approve it.\n\nReason: ${reason}\n\nYou can address the reason and re-apply at any time from the organization's verification page: ${base}${verifyPath}.`
+    if (deps.mailer !== undefined && owner.email !== null) {
+      try {
+        await deps.mailer.sendTransactional(owner.email, "generic", { subject, message })
+      } catch (err) {
+        deps.logger?.warn?.(
+          { err, organizationId: org.id, decision },
+          "org verification decision email failed (suppressed)",
+        )
+      }
+    }
+    if (deps.notifier !== undefined) {
+      try {
+        await deps.notifier.createNotification(owner.userId, {
+          type: "system",
+          title: approved
+            ? `${org.name} is now verified`
+            : `${org.name}'s verification wasn't approved`,
+          body: approved
+            ? `Verified as a ${kindLabel}.`
+            : `Reason: ${reason}. You can re-apply from the organization's verification page.`,
+          link: approved ? orgPath : verifyPath,
+        })
+      } catch (err) {
+        deps.logger?.warn?.(
+          { err, organizationId: org.id, decision },
+          "org verification decision notification failed (suppressed)",
+        )
+      }
+    }
+  }
+
   return {
     async createOrganization(
       input: CreateOrganizationRequest,
       actorId: string,
     ): Promise<OrganizationDTO> {
       assertOrgTextClean(input)
-      assertSlugAllowed(input.slug, "slug")
+      const slug = normalizeOrgSlug(input.slug)
+      assertSlugAllowed(slug, "slug")
       const created = await counters.incr(`org:create:${actorId}`, ORG_CREATE_WINDOW_SEC)
       if (created > ORGS_CREATED_PER_DAY) {
         throw AppError.rateLimited(
@@ -264,7 +372,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       }
       const outcome = await deps.repo.createOrganizationTx({
         organizationId: newId(),
-        slug: input.slug,
+        slug,
         name: input.name,
         description: input.description ?? null,
         websiteUrl: input.websiteUrl ?? null,
@@ -285,7 +393,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     },
 
     async getOrganizationBySlug(slug: string, viewerId: string | null): Promise<OrganizationDTO> {
-      const record = await deps.repo.findOrganizationBySlug(slug, viewerId)
+      const record = await deps.repo.findOrganizationBySlug(normalizeOrgSlug(slug), viewerId)
       if (record === null) notFoundOrganization()
       return dto(record)
     },
@@ -362,7 +470,26 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           now: now(),
         })
       }
-      return { ok: true, member: null, invited: true }
+      // Anti-enumeration: an EMAIL invite answers identically whether or not the address belongs to an
+      // account, so it never returns the member. A HANDLE is a public identifier, so a handle invite that
+      // landed returns the member row the contract allows (OrganizationMemberDTO | null).
+      if (input.identifierKind !== "handle" || userId === null) {
+        return { ok: true, member: null, invited: true }
+      }
+      const member = await deps.repo.findMember(id, userId)
+      return {
+        ok: true,
+        member:
+          member === null
+            ? null
+            : {
+                person: toAttendeePersonDTO(member.person, false),
+                role: member.role,
+                joinedAt: member.joinedAt.toISOString(),
+                canRemove: member.role !== "owner" && member.person.id !== actorId,
+              },
+        invited: true,
+      }
     },
 
     async setMemberRole(
@@ -510,6 +637,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           )
         }
       }
+      await notifyOwnerOfDecision(dto, input.decision, reason)
       return dto
     },
 

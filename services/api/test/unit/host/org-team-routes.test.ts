@@ -192,6 +192,23 @@ describe("organization routes", () => {
     expect(mine.json().items).toHaveLength(1)
   })
 
+  it("lowercases the slug at the edge and finds it by any casing", async () => {
+    const { app, token, orgs } = await makeHarness()
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/orgs",
+      headers: auth(token),
+      payload: { name: "Ballona Creek Trust", slug: "Ballona-Creek-Trust" },
+    })
+    expect(created.statusCode).toBe(201)
+    expect(created.json().slug).toBe("ballona-creek-trust")
+    expect([...orgs.organizations.values()][0]?.slug).toBe("ballona-creek-trust")
+
+    const bySlug = await app.inject({ method: "GET", url: "/v1/orgs/by-slug/BALLONA-creek-TRUST" })
+    expect(bySlug.statusCode).toBe(200)
+    expect(bySlug.json().slug).toBe("ballona-creek-trust")
+  })
+
   it("404s an unknown slug", async () => {
     const { app } = await makeHarness()
     const res = await app.inject({ method: "GET", url: "/v1/orgs/by-slug/nobody-here" })

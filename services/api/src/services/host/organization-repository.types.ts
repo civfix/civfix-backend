@@ -32,6 +32,13 @@ export interface OrganizationMemberRecord {
   joinedAt: Date
 }
 
+/** The organization's single owner (organization_members role='owner'), with the address to notify. */
+export interface OrganizationOwnerRecord {
+  userId: string
+  displayName: string
+  email: string | null
+}
+
 export interface OrgVerificationRecord {
   status: OrgVerificationStatus
   kind: OrgVerificationKind | null
@@ -132,6 +139,8 @@ export interface OrganizationRepository {
     cursor: string | null
     limit: number
   }): Promise<{ items: OrganizationMemberRecord[]; nextCursor: string | null }>
+  findMember(organizationId: string, userId: string): Promise<OrganizationMemberRecord | null>
+  findOwner(organizationId: string): Promise<OrganizationOwnerRecord | null>
   resolveUserByIdentifier(identifier: OrgMemberIdentifier): Promise<string | null>
   addMemberTx(args: {
     organizationId: string

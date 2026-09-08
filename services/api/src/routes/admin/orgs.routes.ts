@@ -56,6 +56,12 @@ export async function registerAdminOrgRoutes(
     reply.status(200).send(dto)
   })
 
+  // Operator audit: unlike the sibling admin mutations (broadcasts/pages), which call writeAudit in the
+  // route after the effect, this decision is audited INSIDE the repository transaction
+  // (organization-repository.drizzle.ts decideVerificationTx -> writeHostAudit "org.verification_verified" /
+  // "org.verification_rejected" with actorId=operator, target=organization:<id>, meta={kind, reason}), so
+  // the audit row and the state change commit or roll back together. A route-level writeAudit here would
+  // double-write the same row, so the route deliberately relies on the repo's entry.
   route(app, "adminDecideOrgVerification", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(DecideOrgVerificationRequestSchema, request)

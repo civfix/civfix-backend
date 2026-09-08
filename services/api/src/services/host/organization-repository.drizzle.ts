@@ -24,6 +24,7 @@ import type {
   DecideOrgVerificationArgs,
   DecideOrgVerificationOutcome,
   OrganizationMemberRecord,
+  OrganizationOwnerRecord,
   OrganizationRecord,
   OrganizationRepository,
   OrgMemberIdentifier,
@@ -397,6 +398,60 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         args.limit,
         (last) => encodeTimeCursor({ at: last.joinedAt, id: last.person.id }),
       )
+    },
+
+    async findMember(
+      organizationId: string,
+      userId: string,
+    ): Promise<OrganizationMemberRecord | null> {
+      const rows = await sql<
+        {
+          user_id: string
+          display_name: string
+          handle: string | null
+          bio: string | null
+          verified: boolean
+          role: OrganizationMemberRole
+          joined_at: Date
+        }[]
+      >`
+        SELECT m.user_id, u.display_name, u.handle, u.bio, m.role, m.joined_at,
+               EXISTS (
+                 SELECT 1 FROM user_verification v
+                 WHERE v.user_id = u.id AND v.status = 'verified'
+               ) AS verified
+        FROM organization_members m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.organization_id = ${organizationId} AND m.user_id = ${userId}
+        LIMIT 1
+      `
+      const r = rows[0]
+      if (r === undefined) return null
+      return {
+        person: {
+          id: r.user_id,
+          displayName: r.display_name,
+          handle: r.handle,
+          bio: r.bio,
+          verified: r.verified,
+        },
+        role: r.role,
+        joinedAt: r.joined_at,
+      }
+    },
+
+    async findOwner(organizationId: string): Promise<OrganizationOwnerRecord | null> {
+      const rows = await sql<{ user_id: string; display_name: string; email: string | null }[]>`
+        SELECT m.user_id, u.display_name, u.email
+        FROM organization_members m
+        JOIN users u ON u.id = m.user_id AND u.deleted_at IS NULL
+        WHERE m.organization_id = ${organizationId} AND m.role = 'owner'
+        LIMIT 1
+      `
+      const r = rows[0]
+      return r === undefined
+        ? null
+        : { userId: r.user_id, displayName: r.display_name, email: r.email }
     },
 
     async resolveUserByIdentifier(identifier: OrgMemberIdentifier): Promise<string | null> {
