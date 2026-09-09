@@ -209,6 +209,22 @@ export function makeOrgPaymentsService(deps: OrgPaymentsServiceDeps): OrgPayment
     return view
   }
 
+  /**
+   * The org-scoped write gate for an operator-suspended org (DECISIONS §32), same code + wording as
+   * the org service's own self-service gate: reads keep working, and the platform/operator paths
+   * (sync, deauthorization, operator disable) keep working, but the org cannot connect a payout
+   * account, mint an onboarding link, change its donation settings or accept the agreement.
+   */
+  async function loadWritableView(organizationId: string): Promise<OrgPaymentsView> {
+    const view = await loadView(organizationId)
+    if (view.org.suspended) {
+      throw AppError.forbidden(
+        "This organization has been suspended, so it can't be changed right now.",
+      )
+    }
+    return view
+  }
+
   async function clearDeauthorizedDisable(organizationId: string): Promise<void> {
     const refreshed = await loadView(organizationId)
     if (refreshed.settings?.disabledReason !== "deauthorized") return
@@ -320,7 +336,7 @@ export function makeOrgPaymentsService(deps: OrgPaymentsServiceDeps): OrgPayment
 
     async createAccount(organizationId, userId) {
       requirePaymentsEnabled()
-      const view = await loadView(organizationId)
+      const view = await loadWritableView(organizationId)
 
       const reconnecting = view.account !== null && view.account.deauthorizedAt !== null
       if (view.account !== null && !reconnecting) return statusDto(view)
@@ -413,7 +429,7 @@ export function makeOrgPaymentsService(deps: OrgPaymentsServiceDeps): OrgPayment
 
     async createAccountLink(organizationId, kind) {
       requirePaymentsEnabled()
-      const view = await loadView(organizationId)
+      const view = await loadWritableView(organizationId)
       if (view.account === null) {
         throw AppError.conflict("Connect a payout account before requesting an onboarding link.")
       }
@@ -432,7 +448,7 @@ export function makeOrgPaymentsService(deps: OrgPaymentsServiceDeps): OrgPayment
     },
 
     async updateSettings(input) {
-      const view = await loadView(input.organizationId)
+      const view = await loadWritableView(input.organizationId)
       const settings =
         view.settings ??
         (await deps.repo.ensureSettings(input.organizationId, deps.env.DONATION_PLATFORM_FEE_BPS))
@@ -519,7 +535,7 @@ export function makeOrgPaymentsService(deps: OrgPaymentsServiceDeps): OrgPayment
           "The agreement text shown to you has changed. Reload and review it before accepting.",
         )
       }
-      const view = await loadView(input.organizationId)
+      const view = await loadWritableView(input.organizationId)
       const settings =
         view.settings ??
         (await deps.repo.ensureSettings(input.organizationId, deps.env.DONATION_PLATFORM_FEE_BPS))

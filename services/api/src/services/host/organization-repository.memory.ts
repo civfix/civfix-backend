@@ -108,6 +108,8 @@ interface StoredPerson {
   displayName: string
   handle: string | null
   email: string | null
+  /** Mirrors users.email_verified: an email invite is only resolvable by / acceptable with a VERIFIED address. */
+  emailVerified: boolean
   bio: string | null
   createdAt: Date
   deletedAt: Date | null
@@ -137,6 +139,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       displayName: over.displayName ?? "Member",
       handle: over.handle ?? null,
       email: over.email ?? null,
+      emailVerified: over.emailVerified ?? true,
       bio: over.bio ?? null,
       createdAt: over.createdAt ?? new Date("2025-01-01T00:00:00.000Z"),
       deletedAt: over.deletedAt ?? null,
@@ -389,10 +392,15 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   }
 
   resolveUserByIdentifier(identifier: OrgMemberIdentifier): Promise<string | null> {
-    const match = [...this.users.values()].find((u) =>
-      identifier.identifierKind === "handle"
-        ? u.handle === identifier.identifier
-        : u.email === identifier.identifier,
+    // Same rules as the drizzle repo: live accounts only, and an email (citext) resolves only when verified.
+    const match = [...this.users.values()].find(
+      (u) =>
+        u.deletedAt === null &&
+        (identifier.identifierKind === "handle"
+          ? u.handle === identifier.identifier
+          : u.emailVerified &&
+            u.email !== null &&
+            u.email.toLowerCase() === identifier.identifier.toLowerCase()),
     )
     return Promise.resolve(match?.id ?? null)
   }
@@ -834,12 +842,14 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
         i.email !== null &&
         i.email.toLowerCase() === email,
     )
-    if (open !== undefined) return Promise.resolve({ kind: "already_invited" })
+    if (open !== undefined) {
+      return Promise.resolve({ kind: "already_invited", invite: this.toInviteRecord(open) })
+    }
     const invite: StoredInvite = {
       id: args.inviteId,
       organizationId: args.organizationId,
       email: args.email,
-      userId: null,
+      userId: args.userId,
       role: args.role,
       status: "pending",
       tokenHash: args.tokenHash,
@@ -911,21 +921,26 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       return Promise.resolve({ kind: "expired" })
     }
     if (invite.email !== null) {
+      // The drizzle rule verbatim: the session's account must hold the invited address AND have verified it.
       const user = this.users.get(args.userId)
       if (
         user === undefined ||
         user.deletedAt !== null ||
         user.email === null ||
+        !user.emailVerified ||
         user.email.toLowerCase() !== invite.email.toLowerCase()
       ) {
         return Promise.resolve({ kind: "wrong_recipient" })
       }
     }
     if (org.suspendedAt !== null) return Promise.resolve({ kind: "suspended" })
-    const alreadyMember = this.members.some(
+    const existing = this.members.find(
       (m) => m.organizationId === org.id && m.userId === args.userId,
     )
-    if (!alreadyMember) {
+    const alreadyMember = existing !== undefined
+    // An existing member keeps their seated role: accepting never upgrades (or downgrades) it.
+    const role: OrganizationMemberRole = existing?.role ?? invite.role
+    if (existing === undefined) {
       this.members.push({
         organizationId: org.id,
         userId: args.userId,
@@ -940,12 +955,12 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       actorId: args.userId,
       action: "org.invite_accepted",
       target: `organization:${org.id}`,
-      meta: { inviteId: invite.id, role: invite.role, alreadyMember },
+      meta: { inviteId: invite.id, role, alreadyMember },
     })
     return Promise.resolve({
       kind: "accepted",
       organizationId: org.id,
-      role: invite.role,
+      role,
       alreadyMember,
     })
   }

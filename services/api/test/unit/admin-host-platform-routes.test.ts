@@ -646,6 +646,33 @@ describe("admin org management (0.41.0)", () => {
     expect(badId.statusCode).toBe(422)
   })
 
+  it("adds an owner to an org that has lost its owner row, with no 'from' in the audit", async () => {
+    const h = await harness()
+    seedPeople(h.orgs)
+    const a = await createOrg(h)
+    const index = h.orgs.members.findIndex((m) => m.organizationId === a.id && m.role === "owner")
+    h.orgs.members.splice(index, 1)
+    const before = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}` })
+    expect((before.json() as { owner: unknown }).owner).toBeNull()
+    const add = await h.app.inject({
+      method: "POST",
+      url: `/v1/admin/orgs/${a.id}/members`,
+      payload: { userId: SECOND, role: "owner", reason: "repair" },
+    })
+    expect(add.statusCode).toBe(200)
+    expect(h.orgs.members.filter((m) => m.organizationId === a.id)).toEqual([
+      expect.objectContaining({ userId: SECOND, role: "owner" }),
+    ])
+    expect(h.orgs.audits.find((x) => x.action === "org.ownership_transferred")?.meta).toEqual({
+      from: null,
+      to: SECOND,
+      reason: "repair",
+    })
+    const after = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}` })
+    expect((after.json() as { owner: { id: string } }).owner).toMatchObject({ id: SECOND })
+    expect(h.notes).toEqual([{ userId: HOST, type: "system" }, { userId: SECOND, type: "system" }])
+  })
+
   it("lists an org's events as admin rows with the `when` facet, 404s an unknown org", async () => {
     const h = await harness()
     seedPeople(h.orgs)

@@ -148,6 +148,46 @@ describe("broadcast caps", () => {
   })
 })
 
+describe("org suspension gate (DECISIONS §32)", () => {
+  const body = {
+    id: EVENT,
+    subject: "Bring gloves",
+    bodyMd: "See you at the meeting point.",
+    segment: { kind: "all_registered" as const },
+    channels: ["email" as const],
+  }
+
+  it("refuses create, send and schedule for an event linked to a suspended org", async () => {
+    const { repo, service } = build()
+    const draft = await service.create(EVENT, HOST, body)
+    repo.setEventOrganizationSuspended(EVENT, true)
+    await expect(service.create(EVENT, HOST, body)).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(service.send(EVENT, HOST, draft.id)).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(
+      service.schedule(EVENT, HOST, draft.id, new Date(Date.now() + 3_600_000)),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    // Nothing moved: the draft is still a draft and no send slot was consumed.
+    expect((await repo.findById(draft.id))?.status).toBe("draft")
+    // Lifting the flag restores the lever.
+    repo.setEventOrganizationSuspended(EVENT, false)
+    const sent = await service.send(EVENT, HOST, draft.id)
+    expect(sent.status).toBe("sending")
+  })
+
+  it("is a different lever from the per-host messaging suspension", async () => {
+    const { repo, service } = build({ host: { suspended: true } })
+    repo.setEventOrganizationSuspended(EVENT, false)
+    expect(await capKind(() => service.create(EVENT, HOST, body))).toBe("suspended")
+  })
+
+  it("404s a broadcast for an event that does not exist", async () => {
+    const { service } = build()
+    await expect(
+      service.create("00000000-0000-0000-0000-0000000000ff", HOST, body),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+})
+
 describe("broadcast content gates", () => {
   it("refuses a body with a non-https link", async () => {
     const { service } = build()

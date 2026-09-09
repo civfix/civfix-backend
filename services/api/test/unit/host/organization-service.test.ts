@@ -119,20 +119,27 @@ describe("membership", () => {
       role: "admin",
     })
     await service.inviteMember(dto.id, OWNER, {
-      identifierKind: "email",
-      identifier: "mel@x.org",
+      identifierKind: "handle",
+      identifier: "mel",
       role: "member",
     })
     return dto.id
   }
 
-  it("adds by handle and by verified email, and reports whether it landed", async () => {
+  it("seats by handle directly; an email is a pending invite until the account accepts it", async () => {
     const id = await seeded()
     const page = await service.listMembers(id, OWNER, { cursor: null, limit: 25 })
     expect(page.items.map((m) => m.role)).toEqual(["owner", "admin", "member"])
+    await service.inviteMember(id, OWNER, {
+      identifierKind: "email",
+      identifier: "sam@x.org",
+      role: "member",
+    })
+    expect(repo.members.some((m) => m.userId === STRANGER)).toBe(false)
+    expect(repo.invites).toHaveLength(1)
   })
 
-  it("never names the account behind an email: a hit is added silently, a miss becomes a pending invite", async () => {
+  it("never names the account behind an email: a hit and a miss answer with the same shape", async () => {
     const dto = await service.createOrganization(base(), OWNER)
     const miss = await service.inviteMember(dto.id, OWNER, {
       identifierKind: "email",
@@ -144,19 +151,40 @@ describe("membership", () => {
       identifier: "mel@x.org",
       role: "member",
     })
-    expect(hit).toEqual({ ok: true, member: null, invited: true, invite: null })
+    for (const result of [miss, hit]) {
+      expect(result).toMatchObject({ ok: true, member: null, invited: true })
+      expect(result.invite).toMatchObject({
+        organizationId: dto.id,
+        user: null,
+        role: "member",
+        status: "pending",
+        invitedBy: { id: OWNER },
+      })
+    }
+    expect(Object.keys(hit).sort()).toEqual(Object.keys(miss).sort())
+    expect(Object.keys(hit.invite ?? {}).sort()).toEqual(Object.keys(miss.invite ?? {}).sort())
     expect(JSON.stringify(hit)).not.toContain("Mel Member")
-    expect(miss).toMatchObject({ ok: true, member: null, invited: true })
-    expect(miss.invite).toMatchObject({
-      organizationId: dto.id,
-      email: "nobody@example.com",
-      user: null,
+    expect(JSON.stringify(hit)).not.toContain(MEMBER)
+    // The hit is NOT seated: it is a pending row that remembers who it was for, and only accept seats.
+    expect(repo.members.some((m) => m.userId === MEMBER)).toBe(false)
+    expect(repo.invites).toHaveLength(2)
+    expect(repo.invites.find((i) => i.email === "mel@x.org")?.userId).toBe(MEMBER)
+    expect(repo.invites.find((i) => i.email === "nobody@example.com")?.userId).toBeNull()
+    // The list view masks the resolved account the same way.
+    const listed = await service.listInvites(dto.id, OWNER)
+    expect(listed.items.map((i) => i.user)).toEqual([null, null])
+  })
+
+  it("an email that already belongs to a member gets the same pending answer, and accept closes it as a no-op", async () => {
+    const id = await seeded()
+    const result = await service.inviteMember(id, OWNER, {
+      identifierKind: "email",
+      identifier: "adam@x.org",
       role: "member",
-      status: "pending",
-      invitedBy: { id: OWNER },
     })
-    expect(repo.members.some((m) => m.userId === MEMBER)).toBe(true)
-    expect(repo.invites).toHaveLength(1)
+    expect(result).toMatchObject({ ok: true, member: null, invited: true })
+    expect(result.invite).toMatchObject({ status: "pending", user: null })
+    expect(repo.members.find((m) => m.userId === ADMIN)?.role).toBe("admin")
   })
 
   it("returns the new member row for a handle invite (handles are public, so nothing leaks)", async () => {
@@ -579,15 +607,25 @@ describe("org invites (0.41.0)", () => {
   let mails: { to: string; vars: Record<string, unknown> }[]
   let notes: { userId: string; type: string; title: string }[]
 
+  /** The first minted token is OPERATOR_TOKEN; later ones are suffixed so two invites never share a hash. */
+  let minted: number
+  function tokenAt(n: number): string {
+    return n === 1 ? OPERATOR_TOKEN : `${OPERATOR_TOKEN}-${n}`
+  }
+
   beforeEach(() => {
     mails = []
     notes = []
+    minted = 0
     service = makeOrganizationService({
       repo,
       counters: new InMemoryCounterStore(() => clock.getTime()),
       now: () => clock,
       newId: () => randomUUID(),
-      newToken: () => OPERATOR_TOKEN,
+      newToken: () => {
+        minted += 1
+        return tokenAt(minted)
+      },
       webOrigin: "https://civfix.test/",
       mailer: {
         sendTransactional: (to, _template, vars) => {
@@ -624,24 +662,163 @@ describe("org invites (0.41.0)", () => {
     expect(mails).toHaveLength(1)
     expect(mails[0]?.to).toBe("newcomer@example.com")
     expect(String(mails[0]?.vars.subject)).toContain("Olive Owner invited you to join Ballona Creek Trust")
+    // The token rides the URL FRAGMENT, never the query string (DECISIONS §32).
     expect(String(mails[0]?.vars.message)).toContain(
-      `https://civfix.test/manage/org-invites/accept?token=${OPERATOR_TOKEN}`,
+      `https://civfix.test/manage/org-invites/accept#token=${OPERATOR_TOKEN}`,
     )
+    expect(String(mails[0]?.vars.message)).not.toContain("?token=")
     expect(repo.audits.filter((a) => a.action === "org.invite_created")).toHaveLength(1)
     const listed = await service.listInvites(orgId, OWNER)
     expect(listed.items).toHaveLength(1)
     expect(listed.items[0]?.status).toBe("pending")
   })
 
-  it("409s a second open invite to the same address", async () => {
+  it("a second invite to the same pending address returns the same invite (200), and sends no second email", async () => {
+    const { orgId, inviteId } = await invited()
+    const again = await service.inviteMember(orgId, OWNER, {
+      identifierKind: "email",
+      identifier: "newcomer@example.com",
+      role: "member",
+    })
+    expect(again).toMatchObject({ ok: true, member: null, invited: true })
+    expect(again.invite).toMatchObject({ id: inviteId, role: "admin", status: "pending", user: null })
+    expect(repo.invites).toHaveLength(1)
+    expect(mails).toHaveLength(1)
+  })
+
+  it("an email with an account and one without produce identical shapes and identical errors", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    const known = await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "mel@x.org",
+      role: "member",
+    })
+    const unknown = await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "nobody@example.com",
+      role: "member",
+    })
+    expect(Object.keys(known).sort()).toEqual(Object.keys(unknown).sort())
+    expect(Object.keys(known.invite ?? {}).sort()).toEqual(Object.keys(unknown.invite ?? {}).sort())
+    expect(known.invite?.user).toBeNull()
+    expect(unknown.invite?.user).toBeNull()
+    // Both got the email; the account additionally got a best-effort in-app note.
+    expect(mails.map((m) => m.to).sort()).toEqual(["mel@x.org", "nobody@example.com"])
+    expect(notes).toEqual([
+      { userId: MEMBER, type: "system", title: "You've been invited to join Ballona Creek Trust" },
+    ])
+    // Re-inviting either is the same silent success.
+    for (const identifier of ["mel@x.org", "nobody@example.com"]) {
+      const again = await service.inviteMember(dto.id, OWNER, { identifierKind: "email", identifier, role: "member" })
+      expect(again.invite?.status).toBe("pending")
+    }
+    // Once suspended, both are refused with the same code.
+    await service.adminSetSuspended(dto.id, OPERATOR, { suspended: true, reason: "spam" })
+    for (const identifier of ["olive@x.org", "other@example.com"]) {
+      await expect(
+        service.inviteMember(dto.id, OWNER, { identifierKind: "email", identifier, role: "member" }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    }
+  })
+
+  it("accept by the account the email resolved to seats them", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    const result = await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "Mel@X.org",
+      role: "admin",
+    })
+    expect(result.invite?.user).toBeNull()
+    expect(repo.invites[0]?.userId).toBe(MEMBER)
+    expect(repo.members.some((m) => m.userId === MEMBER)).toBe(false)
+    const accepted = await service.acceptInvite(MEMBER, OPERATOR_TOKEN)
+    expect(accepted).toMatchObject({ ok: true, role: "admin" })
+    expect(accepted.organization).toMatchObject({ id: dto.id, myRole: "admin" })
+    expect(repo.members.find((m) => m.userId === MEMBER)?.role).toBe("admin")
+    // Once accepted, the invite names the account.
+    const listed = await service.listInvites(dto.id, OWNER)
+    expect(listed.items[0]).toMatchObject({ status: "accepted", user: { id: MEMBER } })
+  })
+
+  it("an existing member who accepts keeps their seated role (no upgrade)", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    await service.inviteMember(dto.id, OWNER, { identifierKind: "handle", identifier: "mel", role: "member" })
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "mel@x.org",
+      role: "admin",
+    })
+    const accepted = await service.acceptInvite(MEMBER, OPERATOR_TOKEN)
+    expect(accepted.role).toBe("member")
+    expect(accepted.organization.myRole).toBe("member")
+    expect(repo.members.find((m) => m.userId === MEMBER)?.role).toBe("member")
+    expect(repo.invites[0]).toMatchObject({ status: "accepted", userId: MEMBER })
+    expect(repo.audits.find((a) => a.action === "org.invite_accepted")?.meta).toMatchObject({
+      role: "member",
+      alreadyMember: true,
+    })
+    // The owner accepting an invite to their own org: seated role owner, typed field clamps to admin.
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "olive@x.org",
+      role: "member",
+    })
+    const owner = await service.acceptInvite(OWNER, tokenAt(minted))
+    expect(owner.role).toBe("admin")
+    expect(owner.organization.myRole).toBe("owner")
+    expect(repo.members.find((m) => m.userId === OWNER)?.role).toBe("owner")
+  })
+
+  it("an unverified email cannot accept (404, non-probing)", async () => {
+    await invited()
+    const unverified = repo.seedUser({ email: "newcomer@example.com", emailVerified: false })
+    await expect(service.acceptInvite(unverified.id, OPERATOR_TOKEN)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    expect(repo.invites[0]?.status).toBe("pending")
+    expect(repo.members.some((m) => m.userId === unverified.id)).toBe(false)
+  })
+
+  it("an unverified email never resolves to an account at invite time either", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    repo.seedUser({ email: "shaky@example.com", emailVerified: false })
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "shaky@example.com",
+      role: "member",
+    })
+    expect(repo.invites[0]?.userId).toBeNull()
+    expect(notes).toEqual([])
+  })
+
+  it("accept on a suspended org is refused (409) and leaves the invite pending", async () => {
     const { orgId } = await invited()
-    await expect(
-      service.inviteMember(orgId, OWNER, {
-        identifierKind: "email",
-        identifier: "newcomer@example.com",
-        role: "member",
-      }),
-    ).rejects.toMatchObject({ code: "CONFLICT" })
+    const newcomer = repo.seedUser({ email: "newcomer@example.com" })
+    await service.adminSetSuspended(orgId, OPERATOR, { suspended: true, reason: "impersonation" })
+    await expect(service.acceptInvite(newcomer.id, OPERATOR_TOKEN)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(repo.invites[0]?.status).toBe("pending")
+    expect(repo.members.some((m) => m.userId === newcomer.id)).toBe(false)
+    await service.adminSetSuspended(orgId, OPERATOR, { suspended: false, reason: "resolved" })
+    await expect(service.acceptInvite(newcomer.id, OPERATOR_TOKEN)).resolves.toMatchObject({ role: "admin" })
+  })
+
+  it("still sends the invite with a generic inviter name when the inviter lookup fails", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    const original = repo.findMember.bind(repo)
+    repo.findMember = (organizationId: string, userId: string) =>
+      userId === OWNER ? Promise.reject(new Error("db hiccup")) : original(organizationId, userId)
+    const result = await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "newcomer@example.com",
+      role: "member",
+    })
+    expect(result.invite?.status).toBe("pending")
+    expect(mails).toHaveLength(1)
+    expect(String(mails[0]?.vars.subject)).toBe(
+      "A member of Ballona Creek Trust invited you to join Ballona Creek Trust on civfix",
+    )
   })
 
   it("accepts with the account that owns the invited email and seats the member", async () => {
@@ -940,6 +1117,37 @@ describe("admin org management (0.41.0)", () => {
     await expect(
       service.adminAddMember(dto.id, OPERATOR, { userId: randomUUID(), role: "member", reason: "x" }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
+  })
+
+  it("adding as owner when the org has no owner row seats the owner without a 'from'", async () => {
+    const dto = await created()
+    // An org can lose its owner row through a soft-deleted account; the operator repairs it.
+    const index = repo.members.findIndex((m) => m.organizationId === dto.id && m.role === "owner")
+    repo.members.splice(index, 1)
+    await expect(
+      service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "owner", reason: "repair" }),
+    ).resolves.toEqual({ ok: true })
+    const roles = repo.members.filter((m) => m.organizationId === dto.id).map((m) => [m.userId, m.role])
+    expect(roles).toEqual([[ADMIN, "owner"]])
+    expect(repo.audits.filter((a) => a.action === "org.ownership_transferred")[0]?.meta).toEqual({
+      from: null,
+      to: ADMIN,
+      reason: "repair",
+    })
+    expect((await service.adminGetOrganization(dto.id)).owner).toMatchObject({ id: ADMIN })
+  })
+
+  it("search treats LIKE metacharacters literally", async () => {
+    await created({ slug: "hundred-percent", name: "100% Fresh" })
+    await created({ slug: "hundred", name: "100 Fresh" })
+    await created({ slug: "under-score", name: "a_b Org" })
+    await created({ slug: "no-score", name: "axb Org" })
+    const percent = await service.adminListOrganizations({ q: "100%", cursor: null, limit: 25 })
+    expect(percent.items.map((o) => o.slug)).toEqual(["hundred-percent"])
+    const underscore = await service.adminListOrganizations({ q: "a_b", cursor: null, limit: 25 })
+    expect(underscore.items.map((o) => o.slug)).toEqual(["under-score"])
+    const bare = await service.adminListOrganizations({ q: "%", cursor: null, limit: 25 })
+    expect(bare.items.map((o) => o.slug)).toEqual(["hundred-percent"])
   })
 
   it("adding as owner transfers ownership: the previous owner becomes admin", async () => {

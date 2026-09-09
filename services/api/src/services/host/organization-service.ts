@@ -257,7 +257,13 @@ function toInviteDTO(record: OrganizationInviteRecord): OrganizationInviteDTO {
     id: record.id,
     organizationId: record.organizationId,
     email: record.email,
-    user: record.user === null ? null : toAttendeePersonDTO(record.user, false),
+    // `user` names the account only once it has ACCEPTED. While pending, the row may already carry
+    // the account the address resolved to, and revealing it would tell the inviter whether an
+    // address has a civfix account (the enumeration oracle DECISIONS §32 rules out).
+    user:
+      record.status === "accepted" && record.user !== null
+        ? toAttendeePersonDTO(record.user, false)
+        : null,
     role: record.role,
     status: record.status,
     invitedBy: record.invitedBy === null ? null : toAttendeePersonDTO(record.invitedBy, false),
@@ -439,15 +445,31 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     }
   }
 
+  /**
+   * BEST-EFFORT, like every other org mail: the invite row is already committed, so neither the inviter
+   * lookup nor the send may fail the request. The token rides the URL FRAGMENT (`#token=`), which
+   * browsers never send to the server, so it stays out of access logs, referrers and link-preview
+   * fetchers; the web app reads it client-side and POSTs it in the accept body (DECISIONS §32).
+   */
   async function sendInviteEmail(
     email: string,
-    org: { name: string },
-    inviterName: string,
+    org: { id: string; name: string },
+    inviterId: string,
     role: "admin" | "member",
     token: string,
   ): Promise<void> {
     if (deps.mailer === undefined) return
-    const link = `${webBase()}/manage/org-invites/accept?token=${encodeURIComponent(token)}`
+    const link = `${webBase()}/manage/org-invites/accept#token=${encodeURIComponent(token)}`
+    let inviterName = `A member of ${org.name}`
+    try {
+      const inviter = await deps.repo.findMember(org.id, inviterId)
+      if (inviter !== null) inviterName = inviter.person.displayName
+    } catch (err) {
+      deps.logger?.warn?.(
+        { err, organization: org.name },
+        "org invite: inviter lookup failed (generic name used)",
+      )
+    }
     try {
       await deps.mailer.sendTransactional(email, "generic", {
         subject: `${inviterName} invited you to join ${org.name} on civfix`,
@@ -455,6 +477,25 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       })
     } catch (err) {
       deps.logger?.warn?.({ err, organization: org.name }, "org invite email failed (suppressed)")
+    }
+  }
+
+  /** Best-effort in-app nudge to an account that was invited by its (verified) email address. */
+  async function notifyInvitedUser(
+    userId: string,
+    org: { name: string },
+    role: "admin" | "member",
+  ): Promise<void> {
+    if (deps.notifier === undefined) return
+    try {
+      await deps.notifier.createNotification(userId, {
+        type: "system",
+        title: `You've been invited to join ${org.name}`,
+        body: `Accept the invitation from the email we sent you to join as ${role === "admin" ? "an admin" : "a member"}. It expires in 14 days.`,
+        link: "/manage/org-invites/accept",
+      })
+    } catch (err) {
+      deps.logger?.warn?.({ err, userId, organization: org.name }, "org invite notification failed (suppressed)")
     }
   }
 
@@ -638,21 +679,15 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         identifierKind: input.identifierKind,
         identifier: input.identifier,
       })
-      if (userId !== null) {
-        const outcome = await deps.repo.addMemberTx({
-          organizationId: id,
-          userId,
-          role: input.role,
-          actorId,
-          now: now(),
-        })
-        if (outcome === "added") await notifyAddedMember(userId, org, input.role)
-      }
-      // An EMAIL with no account becomes a real pending invite (0.41.0, DECISIONS §32): a hashed
-      // single-use token, a 14-day expiry, and an email carrying the accept link. An email that DOES
-      // belong to an account is still added directly and answers with member: null, so the response
-      // never names the person behind an address.
-      if (input.identifierKind === "email" && userId === null) {
+      // Every EMAIL invite is a pending record (0.41.0, DECISIONS §32), whether or not the address
+      // has an account: a hashed single-use token, a 14-day expiry, an email carrying the accept
+      // link, and the same `{ member: null, invited: true, invite }` answer with `invite.user` null
+      // until accepted. The per-org cap is the only refusal, and it is address-independent, so the
+      // inviter learns nothing about who is behind an address - not from the shape, not from a 409,
+      // and not from a second call (an open invite is returned again, not rejected). An address
+      // that already belongs to a member gets the same pending row; accepting closes it as a no-op.
+      if (input.identifierKind === "email") {
+        const email = input.identifier.toLowerCase()
         const pending = await deps.repo.countPendingInvites(id, now())
         if (pending >= MAX_ORG_INVITES_PER_ORG) {
           throw AppError.conflict(
@@ -664,31 +699,34 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         const outcome = await deps.repo.createInviteTx({
           inviteId: newId(),
           organizationId: id,
-          email: input.identifier.toLowerCase(),
+          email,
+          userId,
           role: input.role,
           tokenHash: await sha256Hex(token),
           invitedBy: actorId,
           expiresAt: new Date(at.getTime() + ORG_INVITE_TTL_MS),
           now: at,
         })
-        if (outcome.kind === "already_invited") {
-          throw AppError.conflict("That address already has an open invitation.")
+        if (outcome.kind === "created") {
+          await sendInviteEmail(outcome.invite.email ?? email, org, actorId, input.role, token)
+          if (userId !== null) await notifyInvitedUser(userId, org, input.role)
         }
-        const inviter = await deps.repo.findMember(id, actorId)
-        await sendInviteEmail(
-          outcome.invite.email ?? input.identifier,
-          org,
-          inviter?.person.displayName ?? "A member",
-          input.role,
-          token,
-        )
         return { ok: true, member: null, invited: true, invite: toInviteDTO(outcome.invite) }
       }
-      // A HANDLE is a public identifier, so a handle invite that landed returns the member row the
-      // contract allows (OrganizationMemberDTO | null); an unknown handle stays a quiet no-op.
-      if (input.identifierKind !== "handle" || userId === null) {
+      // A HANDLE is a public identifier, so a handle invite seats the account directly and returns
+      // the member row the contract allows (OrganizationMemberDTO | null); an unknown handle stays a
+      // quiet no-op.
+      if (userId === null) {
         return { ok: true, member: null, invited: true, invite: null }
       }
+      const outcome = await deps.repo.addMemberTx({
+        organizationId: id,
+        userId,
+        role: input.role,
+        actorId,
+        now: now(),
+      })
+      if (outcome === "added") await notifyAddedMember(userId, org, input.role)
       const member = await deps.repo.findMember(id, userId)
       return {
         ok: true,
@@ -743,7 +781,14 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       }
       const record = await deps.repo.findOrganizationById(outcome.organizationId, userId)
       if (record === null) notFoundOrganization()
-      return { ok: true, organization: await dto(record), role: outcome.role }
+      // `role` is the SEATED role (an existing member keeps theirs). The contract types it as the
+      // invite-role enum (admin|member), so an owner who accepted an invite to their own org reads
+      // `admin` here and `owner` on `organization.myRole`, which is the field consumers key on.
+      return {
+        ok: true,
+        organization: await dto(record),
+        role: outcome.role === "owner" ? "admin" : outcome.role,
+      }
     },
 
     async setMemberRole(

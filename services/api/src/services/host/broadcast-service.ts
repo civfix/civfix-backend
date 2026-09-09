@@ -260,6 +260,22 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     return record
   }
 
+  /**
+   * The org-suspension gate (DECISIONS §32): an event linked to an operator-suspended organization
+   * cannot compose, send or schedule host broadcasts. Same code + wording as the org service's own
+   * self-service gate; the per-host messaging suspension in guardHost is a different lever.
+   */
+  async function requireEventOrgNotSuspended(cleanupId: string): Promise<EventBroadcastContext> {
+    const event = await repo.eventContext(cleanupId)
+    if (event === null) throw notFound()
+    if (event.organizationSuspended) {
+      throw AppError.forbidden(
+        "This organization has been suspended, so it can't message attendees right now.",
+      )
+    }
+    return event
+  }
+
   return {
     async list(cleanupId, query) {
       const limit = query.limit ?? BROADCAST_DEFAULT_LIMIT
@@ -285,6 +301,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
 
     async create(cleanupId, actorId, body) {
       await guardHost(actorId)
+      await requireEventOrgNotSuspended(cleanupId)
       assertContent(body.subject, body.bodyMd, body.ctaUrl)
       const record = await repo.create({
         cleanupId,
@@ -431,8 +448,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         throw AppError.conflict("That message has no content to send.")
       }
       assertContent(record.subject, record.bodyMd, record.ctaUrl)
-      const event = await repo.eventContext(cleanupId)
-      if (event === null) throw notFound()
+      const event = await requireEventOrgNotSuspended(cleanupId)
       const moved = await repo.transition(broadcastId, ["draft", "scheduled"], "sending", {
         startedAt: now(),
         replyTo: event.replyToVerified ? event.replyTo : null,
@@ -457,6 +473,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       if (scheduledAt.getTime() <= now().getTime()) {
         throw AppError.validation({ scheduledAt: "must be in the future" })
       }
+      await requireEventOrgNotSuspended(cleanupId)
       const moved = await repo.transition(broadcastId, ["draft", "scheduled"], "scheduled", {
         scheduledAt,
       })

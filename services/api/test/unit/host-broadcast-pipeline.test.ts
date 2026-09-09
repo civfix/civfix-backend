@@ -51,6 +51,7 @@ const EVENT_CONTEXT: EventBroadcastContext = {
   address: "Ocean Ave",
   status: "upcoming",
   organizerUserId: HOST,
+  organizationSuspended: false,
   replyTo: null,
   replyToVerified: false,
 }

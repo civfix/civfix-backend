@@ -223,6 +223,12 @@ export interface CreateOrganizationInviteArgs {
   inviteId: string
   organizationId: string
   email: string
+  /**
+   * The verified account the address resolved to at invite time, when there is one. Recorded so the
+   * accept/notification paths know who was meant, but the invite is STILL a pending record that this
+   * account must accept: every email invite looks the same to the inviter (no account-existence oracle).
+   */
+  userId: string | null
   role: OrganizationInviteRole
   tokenHash: string
   invitedBy: string
@@ -230,14 +236,16 @@ export interface CreateOrganizationInviteArgs {
   now: Date
 }
 
+/** `already_invited` carries the open invite so the caller can answer with it (idempotent re-invite). */
 export type CreateOrganizationInviteOutcome =
   | { kind: "created"; invite: OrganizationInviteRecord }
-  | { kind: "already_invited" }
+  | { kind: "already_invited"; invite: OrganizationInviteRecord }
 
 export type RevokeOrganizationInviteOutcome = "revoked" | "not_found"
 
+/** `role` is the SEATED role: for an existing member that is their current role, never an upgrade from the invite. */
 export type AcceptOrganizationInviteOutcome =
-  | { kind: "accepted"; organizationId: string; role: OrganizationInviteRole; alreadyMember: boolean }
+  | { kind: "accepted"; organizationId: string; role: OrganizationMemberRole; alreadyMember: boolean }
   | { kind: "invalid" }
   | { kind: "expired" }
   | { kind: "wrong_recipient" }

@@ -65,6 +65,20 @@ function isUniqueViolation(err: unknown): boolean {
   )
 }
 
+/** The citext unique index on organizations.slug (0105). */
+const ORG_SLUG_INDEX = "organizations_slug_uidx"
+
+/**
+ * A unique violation is only "slug taken" when it is THAT index. postgres.js surfaces the violated
+ * index/constraint on `constraint_name`; any other unique violation inside the transaction (the owner
+ * partial index, a media claim, ...) is a bug to surface, not a 409 to hand the caller.
+ */
+function isSlugTaken(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false
+  const e = err as { constraint_name?: unknown }
+  return typeof e.constraint_name === "string" && e.constraint_name === ORG_SLUG_INDEX
+}
+
 interface OrganizationRowSelect {
   id: string
   slug: string
@@ -468,7 +482,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           return "updated"
         })
       } catch (err) {
-        if (isUniqueViolation(err)) return "slug_taken"
+        if (isSlugTaken(err)) return "slug_taken"
         throw err
       }
     },
@@ -1143,16 +1157,32 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         await expireInvitesInTx(tx, args.organizationId, args.now)
         const inserted = await tx<{ id: string }[]>`
           INSERT INTO organization_invites (
-            id, organization_id, email, role, token_hash, status, invited_by, created_at, expires_at
+            id, organization_id, email, user_id, role, token_hash, status, invited_by, created_at,
+            expires_at
           ) VALUES (
-            ${args.inviteId}, ${args.organizationId}, ${args.email}, ${args.role},
+            ${args.inviteId}, ${args.organizationId}, ${args.email}, ${args.userId}, ${args.role},
             ${args.tokenHash}, 'pending', ${args.invitedBy}, ${args.now}, ${args.expiresAt}
           )
           ON CONFLICT (organization_id, email) WHERE status = 'pending' AND email IS NOT NULL
           DO NOTHING
           RETURNING id
         `
-        if (inserted.length === 0) return { kind: "already_invited" }
+        if (inserted.length === 0) {
+          // A re-invite of an address with an open invite answers with THAT invite (idempotent), so the
+          // inviter cannot tell an address apart by whether a second call 409s.
+          const open = await tx<{ id: string }[]>`
+            SELECT id FROM organization_invites
+            WHERE organization_id = ${args.organizationId}
+              AND email = ${args.email}
+              AND status = 'pending'
+            LIMIT 1
+          `
+          const openId = open[0]?.id
+          if (openId === undefined) throw AppError.internal()
+          const invite = await readInvite(tx, openId)
+          if (invite === null) throw AppError.internal()
+          return { kind: "already_invited", invite }
+        }
         await writeHostAudit(tx, {
           actorId: args.invitedBy,
           action: "org.invite_created",
@@ -1269,6 +1299,18 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           ON CONFLICT (organization_id, user_id) DO NOTHING
           RETURNING user_id
         `
+        const alreadyMember = inserted.length === 0
+        // An existing member keeps the role they already hold: accepting an invite never upgrades
+        // (or downgrades) a seat, it only closes the invite.
+        let role: OrganizationMemberRole = invite.role
+        if (alreadyMember) {
+          const seated = await tx<{ role: OrganizationMemberRole }[]>`
+            SELECT role FROM organization_members
+            WHERE organization_id = ${orgRow.id} AND user_id = ${args.userId}
+            LIMIT 1
+          `
+          role = seated[0]?.role ?? invite.role
+        }
         await tx`
           UPDATE organization_invites
           SET status = 'accepted', accepted_at = ${args.now}, user_id = ${args.userId}
@@ -1278,13 +1320,13 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           actorId: args.userId,
           action: "org.invite_accepted",
           target: `organization:${orgRow.id}`,
-          meta: { inviteId: invite.id, role: invite.role, alreadyMember: inserted.length === 0 },
+          meta: { inviteId: invite.id, role, alreadyMember },
         })
         return {
           kind: "accepted",
           organizationId: orgRow.id,
-          role: invite.role,
-          alreadyMember: inserted.length === 0,
+          role,
+          alreadyMember,
         }
       })
     },

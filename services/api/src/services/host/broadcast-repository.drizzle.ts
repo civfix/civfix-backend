@@ -771,14 +771,17 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           address: string | null
           status: string
           organizer_user_id: string
+          organization_suspended: boolean
           host_reply_to: string | null
           host_reply_to_verified_at: Date | null
         }[]
       >`
-        SELECT id, title, page_slug, scheduled_at, ends_at, timezone, address, status,
-               organizer_user_id, host_reply_to, host_reply_to_verified_at
-          FROM cleanups
-         WHERE id = ${cleanupId}
+        SELECT c.id, c.title, c.page_slug, c.scheduled_at, c.ends_at, c.timezone, c.address, c.status,
+               c.organizer_user_id, c.host_reply_to, c.host_reply_to_verified_at,
+               (o.suspended_at IS NOT NULL) AS organization_suspended
+          FROM cleanups c
+          LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL
+         WHERE c.id = ${cleanupId}
          LIMIT 1`
       const row = rows[0]
       if (row === undefined) return null
@@ -792,6 +795,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         address: row.address,
         status: row.status,
         organizerUserId: row.organizer_user_id,
+        organizationSuspended: row.organization_suspended,
         replyTo: row.host_reply_to,
         replyToVerified: row.host_reply_to_verified_at !== null,
       }

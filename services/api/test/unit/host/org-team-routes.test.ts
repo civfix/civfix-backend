@@ -400,7 +400,8 @@ describe("organization invites + suspension routes (0.41.0)", () => {
     expect(body.invite).toMatchObject({ status: "pending", role: "member", email: "newcomer@example.org" })
     const mail = h.mailer.sent.find((m) => m.to === "newcomer@example.org")
     expect(mail).toBeDefined()
-    expect(JSON.stringify(mail)).toContain(`/manage/org-invites/accept?token=${INVITE_TOKEN}`)
+    expect(JSON.stringify(mail)).toContain(`/manage/org-invites/accept#token=${INVITE_TOKEN}`)
+    expect(JSON.stringify(mail)).not.toContain("?token=")
 
     const listed = await h.app.inject({
       method: "GET",
@@ -427,6 +428,102 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
     })
     expect(again.statusCode).toBe(404)
+  })
+
+  it("answers an email with an account and one without in the same shape, with the account masked", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    // A real signed-in account holds this address (mirrored into the org repo by signIn).
+    await h.signIn("known@example.org")
+    const known = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "known@example.org", role: "member" },
+    })
+    const unknown = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "unknown@example.org", role: "member" },
+    })
+    expect(known.statusCode).toBe(200)
+    expect(unknown.statusCode).toBe(200)
+    const a = known.json() as { invite: Record<string, unknown> }
+    const b = unknown.json() as { invite: Record<string, unknown> }
+    expect(Object.keys(a).sort()).toEqual(Object.keys(b).sort())
+    expect(Object.keys(a.invite).sort()).toEqual(Object.keys(b.invite).sort())
+    expect(a.invite).toMatchObject({ user: null, status: "pending" })
+    expect(b.invite).toMatchObject({ user: null, status: "pending" })
+    // Neither is seated until accept.
+    expect(h.orgs.members.filter((m) => m.organizationId === id)).toHaveLength(1)
+    // A repeat is the same 200 for both, not a 409 for one of them.
+    for (const identifier of ["known@example.org", "unknown@example.org"]) {
+      const again = await h.app.inject({
+        method: "POST",
+        url: `/v1/orgs/${id}/members`,
+        headers: auth(h.token),
+        payload: { identifierKind: "email", identifier, role: "member" },
+      })
+      expect(again.statusCode, identifier).toBe(200)
+      expect((again.json() as { invite: { status: string } }).invite.status).toBe("pending")
+    }
+  })
+
+  it("404s a revoke whose inviteId belongs to a different org than :id", async () => {
+    const h = await makeHarness()
+    const first = await ownedOrg(h)
+    const other = await h.app.inject({
+      method: "POST",
+      url: "/v1/orgs",
+      headers: auth(h.token),
+      payload: { name: "Second Org", slug: "second-org" },
+    })
+    const second = (other.json() as { id: string }).id
+    const invited = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${first}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
+    })
+    const inviteId = (invited.json() as { invite: { id: string } }).invite.id
+    const mismatched = await h.app.inject({
+      method: "DELETE",
+      url: `/v1/orgs/${second}/invites/${inviteId}`,
+      headers: auth(h.token),
+    })
+    expect(mismatched.statusCode).toBe(404)
+    expect(h.orgs.invites.find((i) => i.id === inviteId)?.status).toBe("pending")
+    const matched = await h.app.inject({
+      method: "DELETE",
+      url: `/v1/orgs/${first}/invites/${inviteId}`,
+      headers: auth(h.token),
+    })
+    expect(matched.statusCode).toBe(200)
+  })
+
+  it("409s an accept while the org is suspended", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
+    })
+    const stored = h.orgs.organizations.get(id)
+    if (stored === undefined) throw new Error("org missing")
+    stored.suspendedAt = new Date()
+    stored.suspendedReason = "impersonation"
+    const right = await h.signIn("newcomer@example.org")
+    const refused = await h.app.inject({
+      method: "POST",
+      url: "/v1/org-invites/accept",
+      headers: auth(right),
+      payload: { token: INVITE_TOKEN },
+    })
+    expect(refused.statusCode).toBe(409)
+    expect(h.orgs.invites[0]?.status).toBe("pending")
   })
 
   it("accepts an invite with the matching account, rejects the wrong account and a bad token", async () => {
