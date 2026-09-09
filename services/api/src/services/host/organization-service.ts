@@ -781,14 +781,9 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       }
       const record = await deps.repo.findOrganizationById(outcome.organizationId, userId)
       if (record === null) notFoundOrganization()
-      // `role` is the SEATED role (an existing member keeps theirs). The contract types it as the
-      // invite-role enum (admin|member), so an owner who accepted an invite to their own org reads
-      // `admin` here and `owner` on `organization.myRole`, which is the field consumers key on.
-      return {
-        ok: true,
-        organization: await dto(record),
-        role: outcome.role === "owner" ? "admin" : outcome.role,
-      }
+      // `role` is the SEATED role (an existing member keeps theirs), so an owner who accepted an
+      // invite to their own org reads `owner` here, matching `organization.myRole`.
+      return { ok: true, organization: await dto(record), role: outcome.role }
     },
 
     async setMemberRole(

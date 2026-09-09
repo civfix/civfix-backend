@@ -757,14 +757,17 @@ describe("org invites (0.41.0)", () => {
       role: "member",
       alreadyMember: true,
     })
-    // The owner accepting an invite to their own org: seated role owner, typed field clamps to admin.
+  })
+
+  it("owner accepting an invite is reported as owner", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
     await service.inviteMember(dto.id, OWNER, {
       identifierKind: "email",
       identifier: "olive@x.org",
       role: "member",
     })
     const owner = await service.acceptInvite(OWNER, tokenAt(minted))
-    expect(owner.role).toBe("admin")
+    expect(owner.role).toBe("owner")
     expect(owner.organization.myRole).toBe("owner")
     expect(repo.members.find((m) => m.userId === OWNER)?.role).toBe("owner")
   })
