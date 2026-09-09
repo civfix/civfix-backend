@@ -1,35 +1,48 @@
 import { randomUUID } from "node:crypto"
 import {
   AppError,
+  MAX_ORG_INVITES_PER_ORG,
   MAX_ORG_VERIFICATION_DOCUMENTS,
+  type AcceptOrganizationInviteResponse,
   type AdminActorRef,
+  type AdminCreateOrgRequest,
+  type AdminOrgCounts,
   type AdminOrgDTO,
+  type AdminOrgMemberDTO,
   type AdminOrgVerificationListItemDTO,
+  type AdminUpdateOrgRequest,
   type ApplyOrganizationVerificationRequest,
   type CreateOrganizationRequest,
   type InviteOrganizationMemberRequest,
   type NotificationType,
   type OrganizationDTO,
+  type OrganizationInviteDTO,
   type OrganizationMemberDTO,
+  type OrganizationMemberRole,
   type OrganizationVerificationDTO,
   type OrgVerificationKind,
+  type OrgVerificationStatus,
   type UpdateOrganizationRequest,
 } from "@civfix/shared"
 import { can } from "@civfix/shared/host"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../../abuse/counter-store.js"
+import { generateToken, sha256Hex } from "../../auth/crypto.js"
 import { toAttendeePersonDTO } from "../cleanup-dto.js"
 import { hostForbiddenCopy } from "./authz.js"
 import { assertSlugAllowed } from "./slugs.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type {
   AdminActorView,
+  AdminOrganizationRecord,
   AdminOrgListQuery,
   AdminOrgVerificationRecord,
+  OrganizationInviteRecord,
   OrganizationOwnerRecord,
   OrganizationRecord,
   OrganizationRepository,
   OrgVerificationRecord,
+  UpdateOrganizationPatch,
 } from "./organization-repository.types.js"
 
 export const ORGS_CREATED_PER_DAY = 5
@@ -46,6 +59,15 @@ export const MY_ORGANIZATIONS_CAP = 50
 export const ORG_MEMBERS_DEFAULT_LIMIT = 25
 
 export const EIN_RETENTION_DAYS = 90
+
+/** Org invites expire after 14 days, like event team invites. */
+export const ORG_INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000
+
+export const ORG_INVITE_TOKEN_BYTES = 32
+
+export const ORG_INVITE_LIST_CAP = 100
+
+export const ADMIN_ORGS_DEFAULT_LIMIT = 25
 
 const fallbackCounters = new InMemoryCounterStore()
 
@@ -76,6 +98,7 @@ export interface OrganizationServiceDeps {
   presignLogo?: OrganizationLogoPresigner
   now?: () => Date
   newId?: () => string
+  newToken?: () => string
   onNonprofitVerified?: NonprofitVerifiedHook
   mailer?: OrganizationMailer
   notifier?: OrganizationNotifier
@@ -126,7 +149,15 @@ export interface OrganizationService {
     id: string,
     actorId: string,
     input: Omit<InviteOrganizationMemberRequest, "id">,
-  ): Promise<{ ok: true; member: OrganizationMemberDTO | null; invited: boolean }>
+  ): Promise<{
+    ok: true
+    member: OrganizationMemberDTO | null
+    invited: boolean
+    invite?: OrganizationInviteDTO | null
+  }>
+  listInvites(id: string, actorId: string): Promise<{ items: OrganizationInviteDTO[] }>
+  revokeInvite(id: string, actorId: string, inviteId: string): Promise<{ ok: true }>
+  acceptInvite(userId: string, token: string): Promise<AcceptOrganizationInviteResponse>
   setMemberRole(
     id: string,
     actorId: string,
@@ -146,6 +177,45 @@ export interface OrganizationService {
     pendingCount: number
   }>
   adminGetOrganization(id: string): Promise<AdminOrgDTO>
+  adminListOrganizations(query: {
+    q?: string
+    verified?: OrgVerificationStatus
+    kind?: OrgVerificationKind
+    suspended?: boolean
+    donationsEnabled?: boolean
+    cursor: string | null
+    limit: number
+  }): Promise<{ items: AdminOrgDTO[]; nextCursor: string | null; counts?: AdminOrgCounts }>
+  adminCreateOrganization(operatorId: string, input: AdminCreateOrgRequest): Promise<AdminOrgDTO>
+  adminUpdateOrganization(
+    id: string,
+    operatorId: string,
+    input: Omit<AdminUpdateOrgRequest, "id">,
+  ): Promise<AdminOrgDTO>
+  adminSetSuspended(
+    id: string,
+    operatorId: string,
+    input: { suspended: boolean; reason: string },
+  ): Promise<AdminOrgDTO>
+  adminListMembers(
+    id: string,
+    page: { cursor: string | null; limit: number },
+  ): Promise<{ items: AdminOrgMemberDTO[]; nextCursor: string | null }>
+  adminAddMember(
+    id: string,
+    operatorId: string,
+    input: { userId: string; role: OrganizationMemberRole; reason: string },
+  ): Promise<{ ok: true }>
+  adminSetMemberRole(
+    id: string,
+    operatorId: string,
+    input: { userId: string; role: OrganizationMemberRole; reason: string },
+  ): Promise<{ ok: true }>
+  adminRemoveMember(
+    id: string,
+    operatorId: string,
+    input: { userId: string; reason: string },
+  ): Promise<{ ok: true }>
   adminDecideVerification(
     id: string,
     operatorId: string,
@@ -178,7 +248,36 @@ export function toOrganizationDTO(
     memberCount: record.memberCount,
     eventCount: record.eventCount,
     myRole: record.myRole,
+    suspended: record.suspendedAt !== null,
   }
+}
+
+function toInviteDTO(record: OrganizationInviteRecord): OrganizationInviteDTO {
+  return {
+    id: record.id,
+    organizationId: record.organizationId,
+    email: record.email,
+    user: record.user === null ? null : toAttendeePersonDTO(record.user, false),
+    role: record.role,
+    status: record.status,
+    invitedBy: record.invitedBy === null ? null : toAttendeePersonDTO(record.invitedBy, false),
+    createdAt: record.createdAt.toISOString(),
+    expiresAt: record.expiresAt.toISOString(),
+  }
+}
+
+/**
+ * The org-scoped write gate for an operator-suspended org (DECISIONS §32): members keep reading, the
+ * admin plane keeps working, but self-service settings, team changes, verification applications and
+ * invite acceptance are refused until an operator lifts the flag.
+ */
+function assertNotSuspended(record: OrganizationRecord): void {
+  if (record.suspendedAt === null) return
+  throw AppError.forbidden(
+    record.suspendedReason === null || record.suspendedReason.length === 0
+      ? "This organization has been suspended, so it can't be changed right now."
+      : `This organization has been suspended (${record.suspendedReason}), so it can't be changed right now.`,
+  )
 }
 
 function toVerificationDTO(record: OrgVerificationRecord | null): OrganizationVerificationDTO {
@@ -226,6 +325,8 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   const counters = deps.counters ?? fallbackCounters
   const now = deps.now ?? (() => new Date())
   const newId = deps.newId ?? (() => randomUUID())
+  const newToken = deps.newToken ?? (() => generateToken(ORG_INVITE_TOKEN_BYTES))
+  const webBase = () => (deps.webOrigin ?? "https://civfix.org").replace(/\/+$/, "")
 
   async function logoUrlOf(record: OrganizationRecord): Promise<string | null> {
     if (record.logoKey === null || deps.presignLogo === undefined) return null
@@ -267,10 +368,10 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     assertNoSlur(input.description ?? null, "description")
   }
 
-  async function adminOrgDTO(organizationId: string): Promise<AdminOrgDTO> {
-    const record = await deps.repo.findOrganizationById(organizationId, null)
-    if (record === null) notFoundOrganization()
-    const verification = await deps.repo.adminGetVerification(organizationId)
+  async function toAdminOrgDTO(
+    record: AdminOrganizationRecord,
+    verification: AdminOrgVerificationRecord | null,
+  ): Promise<AdminOrgDTO> {
     return {
       id: record.id,
       slug: record.slug,
@@ -285,10 +386,75 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       deletedAt: record.deletedAt === null ? null : record.deletedAt.toISOString(),
       memberCount: record.memberCount,
       eventCount: record.eventCount,
-      owner: null,
+      owner: toActorRef(record.owner),
       verification: verification === null ? null : toAdminVerificationItem(verification),
-      donationsEnabled: false,
-      paymentsState: null,
+      donationsEnabled: record.donationsEnabled,
+      paymentsState: record.paymentsState,
+      suspendedAt: record.suspendedAt === null ? null : record.suspendedAt.toISOString(),
+      suspendedReason: record.suspendedReason,
+      updatedAt: record.updatedAt.toISOString(),
+      socialLinks: record.socialLinks,
+      logoMediaId: record.logoMediaId,
+    }
+  }
+
+  async function adminOrgDTO(organizationId: string): Promise<AdminOrgDTO> {
+    const record = await deps.repo.adminFindOrganization(organizationId)
+    if (record === null) notFoundOrganization()
+    const verification = await deps.repo.adminGetVerification(organizationId)
+    return toAdminOrgDTO(record, verification)
+  }
+
+  async function requireAdminOrg(organizationId: string): Promise<AdminOrganizationRecord> {
+    const record = await deps.repo.adminFindOrganization(organizationId)
+    if (record === null) notFoundOrganization()
+    return record
+  }
+
+  /** Best-effort in-app note to someone who was just seated on an org's team (by handle, by invite, by an operator). */
+  async function notifyAddedMember(
+    userId: string,
+    org: { name: string; slug: string },
+    role: OrganizationMemberRole,
+  ): Promise<void> {
+    if (deps.notifier === undefined) return
+    try {
+      await deps.notifier.createNotification(userId, {
+        type: "system",
+        title:
+          role === "owner"
+            ? `You're now the owner of ${org.name}`
+            : `You've been added to ${org.name}`,
+        body:
+          role === "owner"
+            ? "You can manage its profile, team and events on civfix."
+            : `You're ${role === "admin" ? "an admin" : "a member"} of the organization on civfix.`,
+        link: `/orgs/${org.slug}`,
+      })
+    } catch (err) {
+      deps.logger?.warn?.(
+        { err, userId, organization: org.slug },
+        "org member added notification failed (suppressed)",
+      )
+    }
+  }
+
+  async function sendInviteEmail(
+    email: string,
+    org: { name: string },
+    inviterName: string,
+    role: "admin" | "member",
+    token: string,
+  ): Promise<void> {
+    if (deps.mailer === undefined) return
+    const link = `${webBase()}/manage/org-invites/accept?token=${encodeURIComponent(token)}`
+    try {
+      await deps.mailer.sendTransactional(email, "generic", {
+        subject: `${inviterName} invited you to join ${org.name} on civfix`,
+        message: `${inviterName} invited you to join ${org.name} on civfix as ${role === "admin" ? "an admin" : "a member"}. Open ${link} to accept - sign in with this email address. The invitation expires in 14 days.`,
+      })
+    } catch (err) {
+      deps.logger?.warn?.({ err, organization: org.name }, "org invite email failed (suppressed)")
     }
   }
 
@@ -395,6 +561,9 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     async getOrganizationBySlug(slug: string, viewerId: string | null): Promise<OrganizationDTO> {
       const record = await deps.repo.findOrganizationBySlug(normalizeOrgSlug(slug), viewerId)
       if (record === null) notFoundOrganization()
+      // A suspended org's public page is gone for everyone but its own members, who still see it
+      // (with suspended: true) so they can read the notice and reach the operator.
+      if (record.suspendedAt !== null && record.myRole === null) notFoundOrganization()
       return dto(record)
     },
 
@@ -404,7 +573,8 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       actorId: string,
     ): Promise<OrganizationDTO> {
       assertOrgTextClean(patch)
-      await requireOrgCapability(id, actorId, "manage_event")
+      const current = await requireOrgCapability(id, actorId, "manage_event")
+      assertNotSuspended(current)
       const updated = await deps.repo.updateOrganizationTx(
         id,
         {
@@ -416,7 +586,8 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         },
         now(),
       )
-      if (!updated) notFoundOrganization()
+      if (updated === "not_found") notFoundOrganization()
+      if (updated === "slug_taken") throw AppError.conflict("That organization address is already taken.")
       const record = await deps.repo.findOrganizationById(id, actorId)
       if (record === null) notFoundOrganization()
       return dto(record)
@@ -449,8 +620,14 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       id: string,
       actorId: string,
       input: Omit<InviteOrganizationMemberRequest, "id">,
-    ): Promise<{ ok: true; member: OrganizationMemberDTO | null; invited: boolean }> {
-      await requireOrgCapability(id, actorId, "manage_team")
+    ): Promise<{
+      ok: true
+      member: OrganizationMemberDTO | null
+      invited: boolean
+      invite?: OrganizationInviteDTO | null
+    }> {
+      const org = await requireOrgCapability(id, actorId, "manage_team")
+      assertNotSuspended(org)
       const invites = await counters.incr(`org:invites:${id}`, ORG_INVITE_WINDOW_SEC)
       if (invites > ORG_INVITES_PER_HOUR) {
         throw AppError.rateLimited(
@@ -462,19 +639,55 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         identifier: input.identifier,
       })
       if (userId !== null) {
-        await deps.repo.addMemberTx({
+        const outcome = await deps.repo.addMemberTx({
           organizationId: id,
           userId,
           role: input.role,
           actorId,
           now: now(),
         })
+        if (outcome === "added") await notifyAddedMember(userId, org, input.role)
       }
-      // Anti-enumeration: an EMAIL invite answers identically whether or not the address belongs to an
-      // account, so it never returns the member. A HANDLE is a public identifier, so a handle invite that
-      // landed returns the member row the contract allows (OrganizationMemberDTO | null).
+      // An EMAIL with no account becomes a real pending invite (0.41.0, DECISIONS §32): a hashed
+      // single-use token, a 14-day expiry, and an email carrying the accept link. An email that DOES
+      // belong to an account is still added directly and answers with member: null, so the response
+      // never names the person behind an address.
+      if (input.identifierKind === "email" && userId === null) {
+        const pending = await deps.repo.countPendingInvites(id, now())
+        if (pending >= MAX_ORG_INVITES_PER_ORG) {
+          throw AppError.conflict(
+            "This organization already has the maximum number of open invitations.",
+          )
+        }
+        const token = newToken()
+        const at = now()
+        const outcome = await deps.repo.createInviteTx({
+          inviteId: newId(),
+          organizationId: id,
+          email: input.identifier.toLowerCase(),
+          role: input.role,
+          tokenHash: await sha256Hex(token),
+          invitedBy: actorId,
+          expiresAt: new Date(at.getTime() + ORG_INVITE_TTL_MS),
+          now: at,
+        })
+        if (outcome.kind === "already_invited") {
+          throw AppError.conflict("That address already has an open invitation.")
+        }
+        const inviter = await deps.repo.findMember(id, actorId)
+        await sendInviteEmail(
+          outcome.invite.email ?? input.identifier,
+          org,
+          inviter?.person.displayName ?? "A member",
+          input.role,
+          token,
+        )
+        return { ok: true, member: null, invited: true, invite: toInviteDTO(outcome.invite) }
+      }
+      // A HANDLE is a public identifier, so a handle invite that landed returns the member row the
+      // contract allows (OrganizationMemberDTO | null); an unknown handle stays a quiet no-op.
       if (input.identifierKind !== "handle" || userId === null) {
-        return { ok: true, member: null, invited: true }
+        return { ok: true, member: null, invited: true, invite: null }
       }
       const member = await deps.repo.findMember(id, userId)
       return {
@@ -492,13 +705,55 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       }
     },
 
+    async listInvites(id: string, actorId: string): Promise<{ items: OrganizationInviteDTO[] }> {
+      // Invites carry the typed email, so listing them is owner|admin (manage_event), not any member.
+      await requireOrgCapability(id, actorId, "manage_event")
+      const records = await deps.repo.listInvites(id, now(), ORG_INVITE_LIST_CAP)
+      return { items: records.map(toInviteDTO) }
+    },
+
+    async revokeInvite(id: string, actorId: string, inviteId: string): Promise<{ ok: true }> {
+      await requireOrgCapability(id, actorId, "manage_team")
+      const outcome = await deps.repo.revokeInviteTx({
+        organizationId: id,
+        inviteId,
+        actorId,
+        now: now(),
+      })
+      if (outcome === "not_found") throw AppError.notFound("That invitation no longer exists.")
+      return { ok: true }
+    },
+
+    async acceptInvite(userId: string, token: string): Promise<AcceptOrganizationInviteResponse> {
+      const outcome = await deps.repo.acceptInviteTx({
+        tokenHash: await sha256Hex(token),
+        userId,
+        now: now(),
+      })
+      // Same shape as event team invites: an unknown, revoked or already-used token and a token opened
+      // by the wrong account all read "no longer valid" (non-probing); only expiry is named.
+      if (outcome.kind === "invalid" || outcome.kind === "wrong_recipient") {
+        throw AppError.notFound("That invitation is no longer valid.")
+      }
+      if (outcome.kind === "expired") throw AppError.conflict("That invitation has expired.")
+      if (outcome.kind === "suspended") {
+        throw AppError.conflict(
+          "This organization is suspended, so it can't take on new members right now.",
+        )
+      }
+      const record = await deps.repo.findOrganizationById(outcome.organizationId, userId)
+      if (record === null) notFoundOrganization()
+      return { ok: true, organization: await dto(record), role: outcome.role }
+    },
+
     async setMemberRole(
       id: string,
       actorId: string,
       targetUserId: string,
       role: "admin" | "member",
     ): Promise<{ ok: true }> {
-      await requireOrgCapability(id, actorId, "manage_team")
+      const org = await requireOrgCapability(id, actorId, "manage_team")
+      assertNotSuspended(org)
       if (targetUserId === actorId) {
         throw AppError.conflict("You can't change your own role.")
       }
@@ -544,6 +799,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       input: Omit<ApplyOrganizationVerificationRequest, "id">,
     ): Promise<OrganizationVerificationDTO> {
       const record = await requireOrgCapability(id, actorId, "manage_org_link")
+      assertNotSuspended(record)
       assertNoSlur(input.note ?? null, "note")
       if (input.documents.length > MAX_ORG_VERIFICATION_DOCUMENTS) {
         throw AppError.validation({
@@ -595,6 +851,229 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
 
     adminGetOrganization(id: string): Promise<AdminOrgDTO> {
       return adminOrgDTO(id)
+    },
+
+    async adminListOrganizations(query: {
+      q?: string
+      verified?: OrgVerificationStatus
+      kind?: OrgVerificationKind
+      suspended?: boolean
+      donationsEnabled?: boolean
+      cursor: string | null
+      limit: number
+    }): Promise<{ items: AdminOrgDTO[]; nextCursor: string | null; counts?: AdminOrgCounts }> {
+      const page = await deps.repo.adminListOrganizations(query)
+      const verifications = await deps.repo.adminGetVerifications(page.items.map((o) => o.id))
+      const items = await mapWithLimit(page.items, PRESIGN_CONCURRENCY, (record) =>
+        toAdminOrgDTO(record, verifications.get(record.id) ?? null),
+      )
+      return {
+        items,
+        nextCursor: page.nextCursor,
+        ...(page.counts !== null ? { counts: page.counts } : {}),
+      }
+    },
+
+    async adminCreateOrganization(
+      operatorId: string,
+      input: AdminCreateOrgRequest,
+    ): Promise<AdminOrgDTO> {
+      assertOrgTextClean(input)
+      const slug = normalizeOrgSlug(input.slug)
+      assertSlugAllowed(slug, "slug")
+      const owner = await deps.repo.findUser(input.ownerUserId)
+      if (owner === null) {
+        throw AppError.validation({ ownerUserId: "no such account" })
+      }
+      // No ORGS_CREATED_PER_DAY counter here: that cap is a self-service abuse brake keyed to the host,
+      // and an operator onboarding a batch of partner orgs is exactly the case it must not throttle.
+      // The operator's identity + reason land in the org.created audit entry instead.
+      const outcome = await deps.repo.createOrganizationTx({
+        organizationId: newId(),
+        slug,
+        name: input.name,
+        description: input.description ?? null,
+        websiteUrl: input.websiteUrl ?? null,
+        logoMediaId: input.logoMediaId ?? null,
+        socialLinks: input.socialLinks ?? null,
+        createdBy: operatorId,
+        ownerUserId: owner.id,
+        verifiedKind: input.verifiedKind ?? null,
+        operatorReason: input.reason,
+        now: now(),
+      })
+      if (outcome === "slug_taken") {
+        throw AppError.conflict("That organization address is already taken.")
+      }
+      await notifyAddedMember(owner.id, outcome, "owner")
+      return adminOrgDTO(outcome.id)
+    },
+
+    async adminUpdateOrganization(
+      id: string,
+      operatorId: string,
+      input: Omit<AdminUpdateOrgRequest, "id">,
+    ): Promise<AdminOrgDTO> {
+      assertOrgTextClean(input)
+      const current = await requireAdminOrg(id)
+      const patch: UpdateOrganizationPatch = {}
+      const changed: string[] = []
+      if (input.name !== undefined && input.name !== current.name) {
+        patch.name = input.name
+        changed.push("name")
+      }
+      if (input.slug !== undefined) {
+        const slug = normalizeOrgSlug(input.slug)
+        if (slug !== current.slug) {
+          assertSlugAllowed(slug, "slug")
+          patch.slug = slug
+          changed.push("slug")
+        }
+      }
+      if (input.description !== undefined && input.description !== current.description) {
+        patch.description = input.description
+        changed.push("description")
+      }
+      if (input.websiteUrl !== undefined && input.websiteUrl !== current.websiteUrl) {
+        patch.websiteUrl = input.websiteUrl
+        changed.push("websiteUrl")
+      }
+      if (input.logoMediaId !== undefined && input.logoMediaId !== current.logoMediaId) {
+        patch.logoMediaId = input.logoMediaId
+        changed.push("logoMediaId")
+      }
+      if (input.socialLinks !== undefined) {
+        patch.socialLinks = input.socialLinks
+        changed.push("socialLinks")
+      }
+      if (changed.length === 0) return adminOrgDTO(id)
+      const outcome = await deps.repo.updateOrganizationTx(id, patch, now(), {
+        actorId: operatorId,
+        reason: input.reason,
+        changed,
+      })
+      if (outcome === "not_found") notFoundOrganization()
+      if (outcome === "slug_taken") {
+        throw AppError.conflict("That organization address is already taken.")
+      }
+      return adminOrgDTO(id)
+    },
+
+    async adminSetSuspended(
+      id: string,
+      operatorId: string,
+      input: { suspended: boolean; reason: string },
+    ): Promise<AdminOrgDTO> {
+      const outcome = await deps.repo.setSuspendedTx({
+        organizationId: id,
+        suspended: input.suspended,
+        reason: input.reason,
+        actorId: operatorId,
+        now: now(),
+      })
+      if (outcome === "not_found") notFoundOrganization()
+      return adminOrgDTO(id)
+    },
+
+    async adminListMembers(
+      id: string,
+      page: { cursor: string | null; limit: number },
+    ): Promise<{ items: AdminOrgMemberDTO[]; nextCursor: string | null }> {
+      await requireAdminOrg(id)
+      const { items, nextCursor } = await deps.repo.adminListMembers({
+        organizationId: id,
+        cursor: page.cursor,
+        limit: page.limit,
+      })
+      return {
+        items: items.map((member) => ({
+          user: {
+            id: member.user.id,
+            name: member.user.name,
+            handle: member.user.handle,
+            joined: member.user.joined.toISOString(),
+          },
+          role: member.role,
+          joinedAt: member.joinedAt.toISOString(),
+        })),
+        nextCursor,
+      }
+    },
+
+    async adminAddMember(
+      id: string,
+      operatorId: string,
+      input: { userId: string; role: OrganizationMemberRole; reason: string },
+    ): Promise<{ ok: true }> {
+      const org = await requireAdminOrg(id)
+      const outcome = await deps.repo.adminAddMemberTx({
+        organizationId: id,
+        userId: input.userId,
+        role: input.role,
+        actorId: operatorId,
+        reason: input.reason,
+        now: now(),
+      })
+      if (outcome === "not_found") notFoundOrganization()
+      if (outcome === "user_not_found") {
+        throw AppError.validation({ userId: "no such account" })
+      }
+      if (outcome === "already_member") {
+        throw AppError.conflict(
+          "That person is already a member of this organization. Change their role instead.",
+        )
+      }
+      await notifyAddedMember(input.userId, org, input.role)
+      return { ok: true }
+    },
+
+    async adminSetMemberRole(
+      id: string,
+      operatorId: string,
+      input: { userId: string; role: OrganizationMemberRole; reason: string },
+    ): Promise<{ ok: true }> {
+      const org = await requireAdminOrg(id)
+      const outcome = await deps.repo.adminSetMemberRoleTx({
+        organizationId: id,
+        userId: input.userId,
+        role: input.role,
+        actorId: operatorId,
+        reason: input.reason,
+        now: now(),
+      })
+      if (outcome === "not_member") {
+        throw AppError.notFound("That person isn't a member of this organization.")
+      }
+      if (outcome === "sole_owner") {
+        throw AppError.conflict(
+          "An organization always has exactly one owner. Assign the owner role to another member to transfer ownership first.",
+        )
+      }
+      if (input.role === "owner") await notifyAddedMember(input.userId, org, "owner")
+      return { ok: true }
+    },
+
+    async adminRemoveMember(
+      id: string,
+      operatorId: string,
+      input: { userId: string; reason: string },
+    ): Promise<{ ok: true }> {
+      await requireAdminOrg(id)
+      const outcome = await deps.repo.removeMemberTx({
+        organizationId: id,
+        userId: input.userId,
+        actorId: operatorId,
+        reason: input.reason,
+      })
+      if (outcome === "not_member") {
+        throw AppError.notFound("That person isn't a member of this organization.")
+      }
+      if (outcome === "owner") {
+        throw AppError.conflict(
+          "The owner can't be removed. Transfer ownership to another member first.",
+        )
+      }
+      return { ok: true }
     },
 
     async adminDecideVerification(

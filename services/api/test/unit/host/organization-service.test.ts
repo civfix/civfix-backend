@@ -132,7 +132,7 @@ describe("membership", () => {
     expect(page.items.map((m) => m.role)).toEqual(["owner", "admin", "member"])
   })
 
-  it("answers identically whether or not the address belongs to an account", async () => {
+  it("never names the account behind an email: a hit is added silently, a miss becomes a pending invite", async () => {
     const dto = await service.createOrganization(base(), OWNER)
     const miss = await service.inviteMember(dto.id, OWNER, {
       identifierKind: "email",
@@ -144,9 +144,19 @@ describe("membership", () => {
       identifier: "mel@x.org",
       role: "member",
     })
-    expect(miss).toEqual({ ok: true, member: null, invited: true })
-    expect(hit).toEqual(miss)
+    expect(hit).toEqual({ ok: true, member: null, invited: true, invite: null })
     expect(JSON.stringify(hit)).not.toContain("Mel Member")
+    expect(miss).toMatchObject({ ok: true, member: null, invited: true })
+    expect(miss.invite).toMatchObject({
+      organizationId: dto.id,
+      email: "nobody@example.com",
+      user: null,
+      role: "member",
+      status: "pending",
+      invitedBy: { id: OWNER },
+    })
+    expect(repo.members.some((m) => m.userId === MEMBER)).toBe(true)
+    expect(repo.invites).toHaveLength(1)
   })
 
   it("returns the new member row for a handle invite (handles are public, so nothing leaks)", async () => {
@@ -168,7 +178,8 @@ describe("membership", () => {
       identifier: "nobody",
       role: "member",
     })
-    expect(unknown).toEqual({ ok: true, member: null, invited: true })
+    expect(unknown).toEqual({ ok: true, member: null, invited: true, invite: null })
+    expect(repo.invites).toHaveLength(0)
   })
 
   it("lets a member leave an organization they were added to", async () => {
@@ -560,5 +571,429 @@ describe("verification", () => {
     expect(await service.scrubDecidedEins(100)).toBe(1)
     expect(repo.verifications[0]?.einNumber).toBeNull()
     expect(repo.verifications).toHaveLength(1)
+  })
+})
+
+describe("org invites (0.41.0)", () => {
+  const OPERATOR_TOKEN = "org-invite-token-0123456789abcdefghijklmnop"
+  let mails: { to: string; vars: Record<string, unknown> }[]
+  let notes: { userId: string; type: string; title: string }[]
+
+  beforeEach(() => {
+    mails = []
+    notes = []
+    service = makeOrganizationService({
+      repo,
+      counters: new InMemoryCounterStore(() => clock.getTime()),
+      now: () => clock,
+      newId: () => randomUUID(),
+      newToken: () => OPERATOR_TOKEN,
+      webOrigin: "https://civfix.test/",
+      mailer: {
+        sendTransactional: (to, _template, vars) => {
+          mails.push({ to, vars })
+          return Promise.resolve()
+        },
+      },
+      notifier: {
+        createNotification: (userId, input) => {
+          notes.push({ userId, type: input.type, title: input.title })
+          return Promise.resolve()
+        },
+      },
+    })
+  })
+
+  async function invited(): Promise<{ orgId: string; inviteId: string }> {
+    const dto = await service.createOrganization(base(), OWNER)
+    const result = await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "email",
+      identifier: "Newcomer@Example.com",
+      role: "admin",
+    })
+    return { orgId: dto.id, inviteId: result.invite?.id ?? "" }
+  }
+
+  it("creates a pending invite, stores only the token hash, and emails the accept link", async () => {
+    const { orgId } = await invited()
+    const stored = repo.invites[0]
+    expect(stored?.email).toBe("newcomer@example.com")
+    expect(stored?.tokenHash).not.toContain(OPERATOR_TOKEN)
+    expect(stored?.tokenHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(stored?.expiresAt.getTime()).toBe(clock.getTime() + 14 * 24 * 60 * 60 * 1000)
+    expect(mails).toHaveLength(1)
+    expect(mails[0]?.to).toBe("newcomer@example.com")
+    expect(String(mails[0]?.vars.subject)).toContain("Olive Owner invited you to join Ballona Creek Trust")
+    expect(String(mails[0]?.vars.message)).toContain(
+      `https://civfix.test/manage/org-invites/accept?token=${OPERATOR_TOKEN}`,
+    )
+    expect(repo.audits.filter((a) => a.action === "org.invite_created")).toHaveLength(1)
+    const listed = await service.listInvites(orgId, OWNER)
+    expect(listed.items).toHaveLength(1)
+    expect(listed.items[0]?.status).toBe("pending")
+  })
+
+  it("409s a second open invite to the same address", async () => {
+    const { orgId } = await invited()
+    await expect(
+      service.inviteMember(orgId, OWNER, {
+        identifierKind: "email",
+        identifier: "newcomer@example.com",
+        role: "member",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+  })
+
+  it("accepts with the account that owns the invited email and seats the member", async () => {
+    const { orgId } = await invited()
+    const newcomer = repo.seedUser({ displayName: "Nia New", email: "newcomer@example.com" })
+    const accepted = await service.acceptInvite(newcomer.id, OPERATOR_TOKEN)
+    expect(accepted).toMatchObject({ ok: true, role: "admin" })
+    expect(accepted.organization).toMatchObject({ id: orgId, myRole: "admin" })
+    expect(repo.invites[0]?.status).toBe("accepted")
+    expect(repo.invites[0]?.userId).toBe(newcomer.id)
+    expect(repo.audits.filter((a) => a.action === "org.invite_accepted")).toHaveLength(1)
+    // Single use.
+    await expect(service.acceptInvite(newcomer.id, OPERATOR_TOKEN)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+
+  it("404s (non-probing) an accept from an account whose email does not match", async () => {
+    await invited()
+    await expect(service.acceptInvite(STRANGER, OPERATOR_TOKEN)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    expect(repo.invites[0]?.status).toBe("pending")
+  })
+
+  it("409s an expired invite and marks it expired", async () => {
+    await invited()
+    const newcomer = repo.seedUser({ email: "newcomer@example.com" })
+    clock = new Date(clock.getTime() + 15 * 24 * 60 * 60 * 1000)
+    await expect(service.acceptInvite(newcomer.id, OPERATOR_TOKEN)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(repo.invites[0]?.status).toBe("expired")
+  })
+
+  it("lists lazily-expired invites as expired, pending first", async () => {
+    const { orgId } = await invited()
+    clock = new Date(clock.getTime() + 15 * 24 * 60 * 60 * 1000)
+    await service.inviteMember(orgId, OWNER, {
+      identifierKind: "email",
+      identifier: "second@example.com",
+      role: "member",
+    })
+    const listed = await service.listInvites(orgId, OWNER)
+    expect(listed.items.map((i) => i.status)).toEqual(["pending", "expired"])
+  })
+
+  it("revokes a pending invite so the token no longer accepts", async () => {
+    const { orgId, inviteId } = await invited()
+    await expect(service.revokeInvite(orgId, OWNER, inviteId)).resolves.toEqual({ ok: true })
+    await expect(service.revokeInvite(orgId, OWNER, inviteId)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    const newcomer = repo.seedUser({ email: "newcomer@example.com" })
+    await expect(service.acceptInvite(newcomer.id, OPERATOR_TOKEN)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+
+  it("listing invites is owner|admin; a plain member is refused", async () => {
+    const { orgId } = await invited()
+    await service.inviteMember(orgId, OWNER, { identifierKind: "handle", identifier: "mel", role: "member" })
+    await expect(service.listInvites(orgId, MEMBER)).rejects.toMatchObject({ code: "FORBIDDEN" })
+  })
+
+  it("caps pending invites per organization", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    for (let i = 0; i < 50; i += 1) {
+      repo.invites.push({
+        id: randomUUID(),
+        organizationId: dto.id,
+        email: `p${i}@example.com`,
+        userId: null,
+        role: "member",
+        status: "pending",
+        tokenHash: `h${i}`,
+        invitedBy: OWNER,
+        createdAt: clock,
+        expiresAt: new Date(clock.getTime() + 60_000),
+        acceptedAt: null,
+        revokedAt: null,
+      })
+    }
+    await expect(
+      service.inviteMember(dto.id, OWNER, {
+        identifierKind: "email",
+        identifier: "one-more@example.com",
+        role: "member",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+  })
+
+  it("notifies a member added by handle in-app", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    await service.inviteMember(dto.id, OWNER, { identifierKind: "handle", identifier: "adam", role: "admin" })
+    expect(notes).toEqual([
+      { userId: ADMIN, type: "system", title: "You've been added to Ballona Creek Trust" },
+    ])
+  })
+})
+
+describe("suspension (0.41.0)", () => {
+  async function suspended(): Promise<string> {
+    const dto = await service.createOrganization(base(), OWNER)
+    await service.inviteMember(dto.id, OWNER, { identifierKind: "handle", identifier: "mel", role: "member" })
+    await service.adminSetSuspended(dto.id, OPERATOR, { suspended: true, reason: "impersonation" })
+    return dto.id
+  }
+
+  it("hides the public page from non-members but shows members the flag", async () => {
+    await suspended()
+    await expect(service.getOrganizationBySlug("ballona-creek-trust", null)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(service.getOrganizationBySlug("ballona-creek-trust", STRANGER)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    const asMember = await service.getOrganizationBySlug("ballona-creek-trust", MEMBER)
+    expect(asMember.suspended).toBe(true)
+    const mine = await service.listMyOrganizations(OWNER)
+    expect(mine[0]?.suspended).toBe(true)
+  })
+
+  it("refuses self-service writes while suspended, and lifts cleanly", async () => {
+    const id = await suspended()
+    await expect(service.updateOrganization(id, { name: "New name" }, OWNER)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    await expect(
+      service.inviteMember(id, OWNER, { identifierKind: "handle", identifier: "adam", role: "admin" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(
+      service.applyVerification(id, OWNER, { kind: "nonprofit", documents: [] }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    // A member can still leave.
+    await expect(service.removeMember(id, MEMBER, MEMBER)).resolves.toEqual({ ok: true })
+
+    const lifted = await service.adminSetSuspended(id, OPERATOR, { suspended: false, reason: "resolved" })
+    expect(lifted.suspendedAt).toBeNull()
+    expect(lifted.verifiedStatus).toBe("unverified")
+    await expect(service.updateOrganization(id, { name: "New name" }, OWNER)).resolves.toMatchObject({
+      name: "New name",
+      suspended: false,
+    })
+    expect(repo.audits.map((a) => a.action)).toEqual(
+      expect.arrayContaining(["org.suspended", "org.unsuspended"]),
+    )
+  })
+
+  it("keeps the admin plane working and reports the flag on the admin DTO", async () => {
+    const id = await suspended()
+    const dto = await service.adminGetOrganization(id)
+    expect(dto.suspendedAt).toBe(clock.toISOString())
+    expect(dto.suspendedReason).toBe("impersonation")
+    await expect(
+      service.adminUpdateOrganization(id, OPERATOR, { name: "Renamed", reason: "cleanup" }),
+    ).resolves.toMatchObject({ name: "Renamed" })
+    const page = await service.adminListOrganizations({ suspended: true, cursor: null, limit: 25 })
+    expect(page.items.map((o) => o.id)).toEqual([id])
+    expect(page.counts).toEqual({ all: 1, verified: 0, pending: 0, suspended: 1 })
+  })
+})
+
+describe("admin org management (0.41.0)", () => {
+  async function created(over: Record<string, unknown> = {}) {
+    return service.adminCreateOrganization(OPERATOR, {
+      name: "City of Playa",
+      slug: "City-Of-Playa",
+      ownerUserId: OWNER,
+      reason: "onboarded at the partner summit",
+      ...over,
+    } as Parameters<OrganizationService["adminCreateOrganization"]>[1])
+  }
+
+  it("creates an org for an owner, already verified when a kind is given, with audit rows", async () => {
+    const dto = await created({ verifiedKind: "government" })
+    expect(dto).toMatchObject({
+      slug: "city-of-playa",
+      verifiedStatus: "verified",
+      verifiedKind: "government",
+      verifiedAt: clock.toISOString(),
+      owner: { id: OWNER, handle: "olive" },
+      memberCount: 1,
+      suspendedAt: null,
+      updatedAt: clock.toISOString(),
+    })
+    expect(dto.verification).toMatchObject({ status: "verified", kind: "government" })
+    expect(repo.organizations.get(dto.id)?.createdBy).toBe(OPERATOR)
+    expect(repo.members.find((m) => m.organizationId === dto.id)).toMatchObject({
+      userId: OWNER,
+      role: "owner",
+    })
+    expect(repo.audits.filter((a) => a.action === "org.created")[0]).toMatchObject({
+      actorId: OPERATOR,
+      target: `organization:${dto.id}`,
+      meta: { reason: "onboarded at the partner summit", ownerUserId: OWNER },
+    })
+    expect(repo.audits.filter((a) => a.action === "org.verification_verified")[0]).toMatchObject({
+      actorId: OPERATOR,
+      meta: { kind: "government", reason: "onboarded at the partner summit" },
+    })
+  })
+
+  it("creates unverified without a kind, and is not bound by the per-host daily cap", async () => {
+    for (let i = 0; i < ORGS_CREATED_PER_DAY + 1; i += 1) {
+      const dto = await created({ slug: `partner-${i}`, name: `Partner ${i}` })
+      expect(dto.verifiedStatus).toBe("unverified")
+    }
+  })
+
+  it("422s an unknown owner and 409s a taken or reserved slug", async () => {
+    await expect(created({ ownerUserId: randomUUID() })).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
+    await created()
+    await expect(created()).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(created({ slug: "admin" })).rejects.toMatchObject({ code: "VALIDATION" })
+  })
+
+  it("lists with search, facets and page-one counts", async () => {
+    await created({ verifiedKind: "nonprofit" })
+    const second = await created({ slug: "second", name: "Second Org", ownerUserId: ADMIN })
+    await service.applyVerification(second.id, ADMIN, { kind: "community", documents: [] })
+    const third = await created({ slug: "third", name: "Third Org", ownerUserId: MEMBER })
+    await service.adminSetSuspended(third.id, OPERATOR, { suspended: true, reason: "spam" })
+
+    const all = await service.adminListOrganizations({ cursor: null, limit: 25 })
+    expect(all.items).toHaveLength(3)
+    expect(all.counts).toEqual({ all: 3, verified: 1, pending: 1, suspended: 1 })
+
+    const verified = await service.adminListOrganizations({ verified: "verified", cursor: null, limit: 25 })
+    expect(verified.items.map((o) => o.slug)).toEqual(["city-of-playa"])
+    const kind = await service.adminListOrganizations({ kind: "nonprofit", cursor: null, limit: 25 })
+    expect(kind.items.map((o) => o.slug)).toEqual(["city-of-playa"])
+    const q = await service.adminListOrganizations({ q: "third", cursor: null, limit: 25 })
+    expect(q.items.map((o) => o.slug)).toEqual(["third"])
+    expect(q.counts).toEqual({ all: 1, verified: 0, pending: 0, suspended: 1 })
+    const notSuspended = await service.adminListOrganizations({ suspended: false, cursor: null, limit: 25 })
+    expect(notSuspended.items).toHaveLength(2)
+
+    const paged = await service.adminListOrganizations({ cursor: null, limit: 2 })
+    expect(paged.items).toHaveLength(2)
+    expect(paged.nextCursor).not.toBeNull()
+    const next = await service.adminListOrganizations({ cursor: paged.nextCursor, limit: 2 })
+    expect(next.items).toHaveLength(1)
+    expect(next.counts).toBeUndefined()
+  })
+
+  it("updates fields including the slug, audits the changed keys, and 409s a taken slug", async () => {
+    const a = await created()
+    await created({ slug: "other-org", name: "Other", ownerUserId: ADMIN })
+    const dto = await service.adminUpdateOrganization(a.id, OPERATOR, {
+      name: "City of Playa del Rey",
+      slug: "Playa-Del-Rey",
+      description: null,
+      reason: "renamed department",
+    })
+    expect(dto).toMatchObject({ name: "City of Playa del Rey", slug: "playa-del-rey" })
+    const audit = repo.audits.filter((x) => x.action === "org.updated")
+    expect(audit).toHaveLength(1)
+    expect(audit[0]?.meta).toEqual({ reason: "renamed department", changed: ["name", "slug"] })
+    await expect(
+      service.adminUpdateOrganization(a.id, OPERATOR, { slug: "other-org", reason: "x" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(
+      service.adminUpdateOrganization(a.id, OPERATOR, { slug: "admin", reason: "x" }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(
+      service.adminUpdateOrganization(randomUUID(), OPERATOR, { name: "x", reason: "x" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("lists members with operator actor refs", async () => {
+    const dto = await created()
+    await service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "admin", reason: "staff" })
+    const page = await service.adminListMembers(dto.id, { cursor: null, limit: 25 })
+    expect(page.items.map((m) => [m.user.handle, m.role])).toEqual([
+      ["olive", "owner"],
+      ["adam", "admin"],
+    ])
+    expect(page.items[0]?.user.joined).toBe("2025-01-01T00:00:00.000Z")
+  })
+
+  it("adds a member (audited), 409s a duplicate, 422s an unknown user", async () => {
+    const dto = await created()
+    await expect(
+      service.adminAddMember(dto.id, OPERATOR, { userId: MEMBER, role: "member", reason: "asked" }),
+    ).resolves.toEqual({ ok: true })
+    expect(repo.audits.filter((a) => a.action === "org.member_added")[0]).toMatchObject({
+      actorId: OPERATOR,
+      meta: { targetUserId: MEMBER, role: "member", reason: "asked" },
+    })
+    await expect(
+      service.adminAddMember(dto.id, OPERATOR, { userId: MEMBER, role: "admin", reason: "again" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(
+      service.adminAddMember(dto.id, OPERATOR, { userId: randomUUID(), role: "member", reason: "x" }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+  })
+
+  it("adding as owner transfers ownership: the previous owner becomes admin", async () => {
+    const dto = await created()
+    await service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "owner", reason: "handover" })
+    const roles = repo.members
+      .filter((m) => m.organizationId === dto.id)
+      .map((m) => [m.userId, m.role])
+    expect(roles).toEqual([
+      [OWNER, "admin"],
+      [ADMIN, "owner"],
+    ])
+    expect(repo.audits.filter((a) => a.action === "org.ownership_transferred")[0]?.meta).toEqual({
+      from: OWNER,
+      to: ADMIN,
+      reason: "handover",
+    })
+  })
+
+  it("setting a member's role to owner transfers; demoting the sole owner is refused", async () => {
+    const dto = await created()
+    await service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "member", reason: "x" })
+    await expect(
+      service.adminSetMemberRole(dto.id, OPERATOR, { userId: OWNER, role: "admin", reason: "x" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(
+      service.adminSetMemberRole(dto.id, OPERATOR, { userId: ADMIN, role: "owner", reason: "handover" }),
+    ).resolves.toEqual({ ok: true })
+    expect(repo.members.find((m) => m.userId === OWNER)?.role).toBe("admin")
+    expect(repo.members.find((m) => m.userId === ADMIN)?.role).toBe("owner")
+    // Now the old owner can be demoted further and even removed.
+    await expect(
+      service.adminSetMemberRole(dto.id, OPERATOR, { userId: OWNER, role: "member", reason: "x" }),
+    ).resolves.toEqual({ ok: true })
+    await expect(
+      service.adminSetMemberRole(dto.id, OPERATOR, { userId: STRANGER, role: "member", reason: "x" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("removes a member with the reason audited, but never the owner", async () => {
+    const dto = await created()
+    await service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "admin", reason: "x" })
+    await expect(
+      service.adminRemoveMember(dto.id, OPERATOR, { userId: OWNER, reason: "x" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(
+      service.adminRemoveMember(dto.id, OPERATOR, { userId: ADMIN, reason: "left the org" }),
+    ).resolves.toEqual({ ok: true })
+    expect(repo.audits.filter((a) => a.action === "org.member_removed")[0]?.meta).toMatchObject({
+      targetUserId: ADMIN,
+      reason: "left the org",
+    })
+    await expect(
+      service.adminRemoveMember(dto.id, OPERATOR, { userId: ADMIN, reason: "again" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 })

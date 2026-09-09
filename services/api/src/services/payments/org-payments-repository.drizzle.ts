@@ -14,6 +14,8 @@ export interface OrgIdentityRow {
   logoUrl: string | null
   verifiedStatus: string
   verifiedKind: string | null
+  /** Operator suspension flag (0162): a suspended org's donate page and checkout are refused. */
+  suspended: boolean
 }
 
 export interface StripeAccountRecord {
@@ -263,6 +265,7 @@ interface OrgRowSelect {
   logo_url: string | null
   verified_status: string
   verified_kind: string | null
+  suspended: boolean
 }
 
 export function toMinor(value: string | number): number {
@@ -351,6 +354,7 @@ function toOrg(row: OrgRowSelect): OrgIdentityRow {
     logoUrl: row.logo_url,
     verifiedStatus: row.verified_status,
     verifiedKind: row.verified_kind,
+    suspended: row.suspended,
   }
 }
 
@@ -371,7 +375,8 @@ export function makeDrizzleOrgPaymentsRepository(sql: Sql): OrgPaymentsRepositor
   return {
     async findOrgById(organizationId) {
       const rows = await sql<OrgRowSelect[]>`
-        SELECT o.id, o.slug, o.name, NULL::text AS logo_url, o.verified_status, o.verified_kind
+        SELECT o.id, o.slug, o.name, NULL::text AS logo_url, o.verified_status, o.verified_kind,
+               (o.suspended_at IS NOT NULL) AS suspended
           FROM organizations o
          WHERE o.id = ${organizationId} AND o.deleted_at IS NULL
          LIMIT 1`
@@ -380,7 +385,8 @@ export function makeDrizzleOrgPaymentsRepository(sql: Sql): OrgPaymentsRepositor
 
     async findOrgBySlug(slug) {
       const rows = await sql<OrgRowSelect[]>`
-        SELECT o.id, o.slug, o.name, NULL::text AS logo_url, o.verified_status, o.verified_kind
+        SELECT o.id, o.slug, o.name, NULL::text AS logo_url, o.verified_status, o.verified_kind,
+               (o.suspended_at IS NOT NULL) AS suspended
           FROM organizations o
          WHERE o.slug = ${slug} AND o.deleted_at IS NULL
          LIMIT 1`
@@ -389,7 +395,8 @@ export function makeDrizzleOrgPaymentsRepository(sql: Sql): OrgPaymentsRepositor
 
     async paymentsView(organizationId) {
       const orgRows = await sql<OrgRowSelect[]>`
-        SELECT o.id, o.slug, o.name, NULL::text AS logo_url, o.verified_status, o.verified_kind
+        SELECT o.id, o.slug, o.name, NULL::text AS logo_url, o.verified_status, o.verified_kind,
+               (o.suspended_at IS NOT NULL) AS suspended
           FROM organizations o
          WHERE o.id = ${organizationId} AND o.deleted_at IS NULL
          LIMIT 1`

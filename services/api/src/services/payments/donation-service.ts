@@ -262,6 +262,9 @@ export function makeDonationService(deps: DonationServiceDeps): DonationService 
   return {
     async publicPage(slug, eventId) {
       const view = await requireOrgView(slug)
+      // An operator-suspended org (DECISIONS §32) is treated like a BLOCKED donate state: the public
+      // donate page 404s exactly as it does for an org that cannot accept donations.
+      if (view.org.suspended) throw notFoundOrg()
       const settings = view.settings
       const account = view.account
       const eligibility = view.eligibility
@@ -364,6 +367,11 @@ export function makeDonationService(deps: DonationServiceDeps): DonationService 
       }
 
       const view = await requireOrgView(input.orgSlug)
+      if (view.org.suspended) {
+        throw AppError.paymentUnavailable(
+          "This organization cannot accept donations right now. Nothing was charged.",
+        )
+      }
       const settings = view.settings
       const account = view.account
       const eligibility = view.eligibility

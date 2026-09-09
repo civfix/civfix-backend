@@ -93,6 +93,10 @@ export interface ListEventsArgs {
   flaggedOnly: boolean
   cursor: string | null
   limit: number
+  /** Restrict to events linked to this organization (adminListOrgEvents). */
+  organizationId?: string
+  /** Time facet relative to `ref`: upcoming = scheduled_at >= ref, past = scheduled_at < ref. */
+  when?: { kind: "upcoming" | "past"; ref: Date }
 }
 
 export interface EventMemberRef {
@@ -151,6 +155,11 @@ export interface AdminEventServiceDeps {
 
 export interface AdminEventService {
   list(query: AdminEventListQuery): Promise<AdminEventListResponse>
+  /** An organization's events as admin list rows, for the org detail page (adminListOrgEvents). */
+  listForOrganization(
+    organizationId: string,
+    query: { when: "upcoming" | "past" | "all"; cursor: string | null; limit: number },
+  ): Promise<{ items: AdminEventListItemDTO[]; nextCursor: string | null }>
   get(id: string): Promise<AdminEventDTO>
   setStatus(id: string, input: { status: EventStatus; actorId: string | null }): Promise<void>
   setOutcome(id: string, input: { bags: number; actorId: string | null }): Promise<void>
@@ -233,6 +242,23 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
             }),
       ])
       return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
+    },
+
+    async listForOrganization(
+      organizationId: string,
+      query: { when: "upcoming" | "past" | "all"; cursor: string | null; limit: number },
+    ): Promise<{ items: AdminEventListItemDTO[]; nextCursor: string | null }> {
+      const ref = now()
+      const { records, nextCursor } = await deps.repo.listEvents({
+        q: null,
+        status: null,
+        flaggedOnly: false,
+        cursor: query.cursor,
+        limit: query.limit,
+        organizationId,
+        ...(query.when === "all" ? {} : { when: { kind: query.when, ref } }),
+      })
+      return { items: records.map((r) => toListItem(r, ref)), nextCursor }
     },
 
     async get(id: string): Promise<AdminEventDTO> {

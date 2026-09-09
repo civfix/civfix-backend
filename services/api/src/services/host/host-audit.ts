@@ -17,8 +17,20 @@ export type HostAuditAction =
   | "org.verification_rejected"
   | "org.member_role_changed"
   | "org.member_removed"
+  | "org.member_added"
+  | "org.ownership_transferred"
+  | "org.created"
+  | "org.updated"
+  | "org.suspended"
+  | "org.unsuspended"
+  | "org.invite_created"
+  | "org.invite_revoked"
+  | "org.invite_accepted"
   | "org.detail_viewed"
   | "org.verifications_viewed"
+  | "org.list_viewed"
+  | "org.members_viewed"
+  | "org.events_viewed"
 
 export interface HostAuditInput {
   actorId: string

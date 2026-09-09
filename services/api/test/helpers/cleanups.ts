@@ -94,6 +94,7 @@ interface StoredOrganization {
   logoKey: string | null
   verifiedStatus: OrgVerificationStatus
   verifiedKind: OrgVerificationKind | null
+  suspended: boolean
 }
 
 interface StoredOrgMember {
@@ -375,6 +376,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       logoKey: org.logoKey,
       verifiedStatus: org.verifiedStatus,
       verifiedKind: org.verifiedKind,
+      suspended: org.suspended,
     }
   }
 
@@ -522,6 +524,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       logoKey: over.logoKey ?? null,
       verifiedStatus: over.verifiedStatus ?? "unverified",
       verifiedKind: over.verifiedKind ?? null,
+      suspended: over.suspended ?? false,
     }
     this.organizations.set(org.id, org)
     return org

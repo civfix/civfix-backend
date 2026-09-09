@@ -72,6 +72,15 @@ describe("donation checkout refusals, cheapest first", () => {
     expect(await codeOf(() => h.service.createCheckout(checkoutInput()))).toBe(ErrorCode.NOT_FOUND)
   })
 
+  it("503s for an operator-suspended organization, and its donate page 404s", async () => {
+    const h = await readyHarness({ orgs: [orgRow({ suspended: true })] })
+    expect(await codeOf(() => h.service.createCheckout(checkoutInput()))).toBe(
+      ErrorCode.PAYMENT_UNAVAILABLE,
+    )
+    expect(await codeOf(() => h.service.publicPage(ORG_SLUG))).toBe(ErrorCode.NOT_FOUND)
+    expect(h.donations.rows).toHaveLength(0)
+  })
+
   it("503s when the connected account is blocked", async () => {
     const h = await readyHarness({
       accounts: [accountRow({ onboardingState: "blocked", chargesEnabled: false })],

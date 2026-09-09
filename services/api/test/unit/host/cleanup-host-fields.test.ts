@@ -135,6 +135,23 @@ describe("createCleanup with host fields", () => {
     expect(dto.organization).toMatchObject({ id: org.id, slug: "bct", verified: false })
   })
 
+  it("409s linking an operator-suspended organization, but leaves an existing link editable", async () => {
+    const org = repo.seedOrganization({ slug: "bct", suspended: true })
+    repo.seedOrgMember(org.id, ORG, "owner")
+    await expect(
+      service.createCleanup(base({ organizationId: org.id }), ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    org.suspended = false
+    const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
+    org.suspended = true
+    await expect(
+      service.updateCleanup(created.id, { title: "Still editable" }, ORG),
+    ).resolves.toMatchObject({ title: "Still editable" })
+    await expect(
+      service.updateCleanup(created.id, { organizationId: org.id, title: "Same org" }, ORG),
+    ).resolves.toMatchObject({ title: "Same org" })
+  })
+
   it("refuses to link an organization the host is only a plain member of", async () => {
     const org = repo.seedOrganization({ slug: "bct" })
     repo.seedOrgMember(org.id, ORG, "member")

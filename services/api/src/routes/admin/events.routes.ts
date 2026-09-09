@@ -36,6 +36,7 @@ import {
 import {
   makeAdminEventService,
   type AdminEventRepository,
+  type AdminEventService,
 } from "../../services/admin/admin-event-service.js"
 import { makeDrizzleAdminEventRepository } from "../../services/admin/admin-event-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
@@ -54,13 +55,12 @@ declare module "fastify" {
   }
 }
 
-export async function registerAdminEventsRoutes(
+/** The admin event service, from the test overrides when present, else from the container. Shared with the org routes (adminListOrgEvents). */
+export function makeContainerAdminEventService(
   app: FastifyInstance,
   container: Container,
-): Promise<void> {
-  const csrfProtect = container.csrf.protect
-
-  const service = overridableService(
+): () => AdminEventService {
+  return overridableService(
     app,
     "adminEventOverrides",
     (overrides) =>
@@ -77,6 +77,15 @@ export async function registerAdminEventsRoutes(
       })
     },
   )
+}
+
+export async function registerAdminEventsRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
+  const csrfProtect = container.csrf.protect
+
+  const service = makeContainerAdminEventService(app, container)
 
   route(app, "listAdminEvents", async (request, reply) => {
     const query = parse(AdminEventListQuerySchema, request.query)

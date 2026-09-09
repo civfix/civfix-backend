@@ -377,6 +377,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         "Only an owner or admin of that organization can host events for it.",
       )
     }
+    // An operator-suspended org (DECISIONS §32) keeps its existing events but cannot take on new ones:
+    // linking is refused, while an unchanged organizationId on an edit passes so the host can still
+    // manage what already exists.
+    if (opts.linking && organization.suspended) {
+      throw AppError.conflict(
+        "That organization is suspended and can't host events right now.",
+      )
+    }
     return { organization, orgRole }
   }
 

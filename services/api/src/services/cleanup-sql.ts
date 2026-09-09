@@ -62,6 +62,7 @@ export interface CleanupRowSelect {
   organization_logo_key: string | null
   organization_verified_status: OrgVerificationStatus | null
   organization_verified_kind: OrgVerificationKind | null
+  organization_suspended: boolean | null
 }
 
 export interface AttendeeRowSelect {
@@ -90,6 +91,7 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
           logoKey: r.organization_logo_key,
           verifiedStatus: r.organization_verified_status ?? "unverified",
           verifiedKind: r.organization_verified_kind,
+          suspended: r.organization_suspended === true,
         }
       : null
   return {
@@ -174,6 +176,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     ${servedKeyExpr(sql, "am")} AS organization_logo_key,
     o.verified_status AS organization_verified_status,
     o.verified_kind AS organization_verified_kind,
+    (o.suspended_at IS NOT NULL) AS organization_suspended,
     (COALESCE(g.member_count, 0) + COALESCE(g.guest_count, 0)) AS going,
     COALESCE(g.guest_count, 0) AS guest_count,
     ${distExpr} AS dist,

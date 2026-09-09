@@ -1,21 +1,27 @@
 import {
+  AcceptOrganizationInviteRequestSchema,
   ApplyOrganizationVerificationRequestSchema,
   CreateOrganizationRequestSchema,
   GetOrganizationRequestSchema,
   GetOrganizationVerificationRequestSchema,
   InviteOrganizationMemberRequestSchema,
   IdSchema,
+  ListOrganizationInvitesRequestSchema,
   ListOrganizationMembersRequestSchema,
   OrgSlugSchema,
   RemoveOrganizationMemberRequestSchema,
+  RevokeOrganizationInviteRequestSchema,
   SetOrganizationMemberRoleRequestSchema,
   UpdateOrganizationRequestSchema,
+  type AcceptOrganizationInviteResponse,
   type GetOrganizationResponse,
   type GetOrganizationVerificationResponse,
   type InviteOrganizationMemberResponse,
   type ListMyOrganizationsResponse,
+  type ListOrganizationInvitesResponse,
   type ListOrganizationMembersResponse,
   type RemoveOrganizationMemberResponse,
+  type RevokeOrganizationInviteResponse,
   type SetOrganizationMemberRoleResponse,
   type UpdateOrganizationResponse,
 } from "@civfix/shared"
@@ -46,6 +52,7 @@ export interface OrganizationOverrides {
   presignLogo?: OrganizationServiceDeps["presignLogo"]
   now?: OrganizationServiceDeps["now"]
   newId?: OrganizationServiceDeps["newId"]
+  newToken?: OrganizationServiceDeps["newToken"]
   onNonprofitVerified?: OrganizationServiceDeps["onNonprofitVerified"]
   mailer?: OrganizationServiceDeps["mailer"]
   notifier?: OrganizationServiceDeps["notifier"]
@@ -60,6 +67,8 @@ declare module "fastify" {
 const OrgIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 const OrgMemberParamsSchema = z.object({ id: IdSchema, userId: IdSchema }).strict()
+
+const OrgInviteParamsSchema = z.object({ id: IdSchema, inviteId: IdSchema }).strict()
 
 const OrgSlugParamsSchema = z.object({ slug: OrgSlugSchema }).strict()
 
@@ -103,6 +112,7 @@ export function makeContainerOrganizationService(
       ...(overrides.presignLogo !== undefined ? { presignLogo: overrides.presignLogo } : {}),
       ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
+      ...(overrides.newToken !== undefined ? { newToken: overrides.newToken } : {}),
       ...(overrides.onNonprofitVerified !== undefined
         ? { onNonprofitVerified: overrides.onNonprofitVerified }
         : {}),
@@ -226,6 +236,48 @@ export async function registerHostOrgRoutes(
         id,
       })
       const payload: InviteOrganizationMemberResponse = await service().inviteMember(id, userId, body)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(app, "listOrganizationInvites", async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(OrgIdParamsSchema, request.params)
+    parse(ListOrganizationInvitesRequestSchema, { id })
+    const payload: ListOrganizationInvitesResponse = await service().listInvites(id, userId)
+    reply.status(200).send(payload)
+  })
+
+  route(
+    app,
+    "revokeOrganizationInvite",
+    { preHandler: csrfProtect, config: { rateLimit: ORG_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id, inviteId } = parse(OrgInviteParamsSchema, request.params)
+      parse(RevokeOrganizationInviteRequestSchema, { id, inviteId })
+      const payload: RevokeOrganizationInviteResponse = await service().revokeInvite(
+        id,
+        userId,
+        inviteId,
+      )
+      reply.status(200).send(payload)
+    },
+  )
+
+  // Token-addressed (no :id): the token identifies the org (DECISIONS §32). Accepting needs a session
+  // whose verified email matches the invited address.
+  route(
+    app,
+    "acceptOrganizationInvite",
+    { preHandler: csrfProtect, config: { rateLimit: ORG_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(AcceptOrganizationInviteRequestSchema, request.body ?? {})
+      const payload: AcceptOrganizationInviteResponse = await service().acceptInvite(
+        userId,
+        body.token,
+      )
       reply.status(200).send(payload)
     },
   )

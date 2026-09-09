@@ -322,7 +322,7 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **144 files**, `0000_extensions.sql` … `0161_org_stripe_accounts_reconnect.sql`. The nine rows
+`drizzle/` holds **145 files**, `0000_extensions.sql` … `0162_org_suspension_and_invites.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
@@ -546,6 +546,7 @@ foreign key into `organizations` from `0105`.
 | `0159_host_exports_run_token.sql` | adds `host_exports.run_token`, stamped by every `claimForRun` and required by `markReady`. An export run that outlives its job visibility timeout is redelivered, the retry reclaims the stale row, and whichever run finished last used to overwrite `r2_key` - orphaning the other run's object in the bucket permanently, since reaping reads `r2_key` from the row. The losing run now writes nothing and deletes the object it uploaded. `ADD COLUMN IF NOT EXISTS`, no rewrite, table empty at this point in the change set | A slow export plus its retry leaves an unreferenced, never-reaped CSV in R2 |
 | `0160_donation_refunds_failed_after.sql` | rewrites `donation_refunds_app_fee_refund_state_check` to add `'failed_after'`: the terminal state for a refund whose proportional application fee civfix already returned and which Stripe then marked `failed`. Stripe cannot un-refund an application fee, so the row is flagged and alerted on rather than retried. Table is empty at this point in the change set | The refund sweep raises a CHECK violation whenever a pending refund later fails, and the fee discrepancy is never surfaced |
 | `0161_org_stripe_accounts_reconnect.sql` | adds `reconnect_attempts` and `previous_stripe_account_ids` to `org_stripe_accounts`: the attempt counter that gives each reconnect its own Stripe idempotency key (`acct:<org>:v2:<n>`) and the audit trail of accounts an organization has been relinked away from. `ADD COLUMN IF NOT EXISTS` with catalog defaults, no rewrite | Connecting a payout account after a deauthorization fails on an undefined column, so a deauthorized organization stays a dead end |
+| `0162_org_suspension_and_invites.sql` | adds `organizations.suspended_at` / `suspended_reason` / `suspended_by` (the reversible operator suspension flag behind `adminSetOrgSuspended`, independent of `verified_status` and `deleted_at`) and creates `organization_invites`: the pending record behind an email invite to an address with no account, storing only the SHA-256 of the single-use accept token, with a partial unique `(organization_id, email) WHERE status = 'pending'`. Three nullable column adds, no rewrite; brand-new empty table | Every `/admin/orgs` list/suspend read fails on an undefined column, and an email invite to a non-user is still the silent no-op it was in 0.40.0 |
 
 **Deferred to a later release, out of band** (record them in the expand/contract ledger): the six
 `NOT VALID` CHECKs `0107` adds on `cleanups` and `0110`'s `media_assets_purpose_expanded` still need

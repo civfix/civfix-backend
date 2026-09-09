@@ -45,6 +45,16 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       }
       if (args.flaggedOnly) conds.push(sql`AND ${flaggedEventExpr(sql)}`)
       if (args.q !== null) conds.push(searchEventsFragment(sql, args.q))
+      if (args.organizationId !== undefined) {
+        conds.push(sql`AND c.organization_id = ${args.organizationId}::uuid`)
+      }
+      if (args.when !== undefined) {
+        conds.push(
+          args.when.kind === "upcoming"
+            ? sql`AND c.scheduled_at >= ${args.when.ref}`
+            : sql`AND c.scheduled_at < ${args.when.ref}`,
+        )
+      }
       if (anchor !== null) {
         conds.push(sql`AND (c.scheduled_at, c.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
       }
