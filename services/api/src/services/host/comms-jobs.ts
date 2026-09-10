@@ -21,6 +21,8 @@ import {
 } from "./retention-lanes.js"
 import { makeDrizzleHostExportRepository } from "./export-repository.drizzle.js"
 import { makeDrizzleBroadcastRepository } from "./broadcast-repository.drizzle.js"
+import { makeDrizzleHostTeamRepository } from "./host-team-repository.drizzle.js"
+import { TEAM_INVITE_EMAIL_SCRUB_DELAY_MS } from "./host-team-service.js"
 import { runRegistrationRetentionLanes } from "./registration-retention.js"
 
 export const DELIVERY_RETENTION_DAYS = 180
@@ -115,6 +117,17 @@ export function registerHostRetentionLanes(): void {
     const repo = makeDrizzleHostExportRepository(sql)
     const cutoff = new Date(now.getTime() - EXPORT_ROW_RETENTION_DAYS * 86_400_000)
     return drainTable((batchSize) => repo.deleteOlderThan(cutoff, batchSize))
+  })
+
+  registerRetentionLane("team_invite_expiry", (sql, now) => {
+    const repo = makeDrizzleHostTeamRepository(sql)
+    return drainTable((batchSize) => repo.expireStaleInvites(now, batchSize))
+  })
+
+  registerRetentionLane("team_invite_emails", (sql, now) => {
+    const repo = makeDrizzleHostTeamRepository(sql)
+    const cutoff = new Date(now.getTime() - TEAM_INVITE_EMAIL_SCRUB_DELAY_MS)
+    return drainTable((batchSize) => repo.scrubInviteEmails(cutoff, batchSize))
   })
 
   registerRetentionLane("registrations", async (sql, now) => {

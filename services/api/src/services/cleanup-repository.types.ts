@@ -284,7 +284,7 @@ export interface CleanupRepository {
   setMemberRole(
     cleanupId: string,
     userId: string,
-    role: "cohost" | "staff" | "member",
+    role: "cohost" | "staff" | "coordinator" | "member",
   ): Promise<boolean>
   removeMember(cleanupId: string, userId: string, actorId: string): Promise<RemoveMemberOutcome>
   isBanned(cleanupId: string, userId: string): Promise<boolean>

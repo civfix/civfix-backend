@@ -35,6 +35,7 @@ import {
 } from "../../src/services/host/registration-wiring.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import { NO_HOST_STANDING } from "@civfix/shared/host"
+import { fakeCleanupReader } from "../helpers/host-team.js"
 
 const SIGNING_KEY = "test-anon-signing-key"
 
@@ -144,6 +145,7 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
     hostTeamOverrides: {
       repo: teamRepo,
       counters,
+      loadEvent: fakeCleanupReader(),
       standing: () =>
         Promise.resolve({
           cleanupId: PARAM_VALUE,
@@ -227,8 +229,8 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
     })
   }
 
-  it("covers ALL 334 endpoints in the registry (no endpoint skipped)", () => {
-    expect(Object.keys(endpoints).length).toBe(334)
+  it("covers ALL 337 endpoints in the registry (no endpoint skipped)", () => {
+    expect(Object.keys(endpoints).length).toBe(337)
   })
 
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {

@@ -10,6 +10,7 @@ export type HostAuditAction =
   | "event.attendee_registered_by_host"
   | "event.team_invited"
   | "event.team_invite_revoked"
+  | "event.team_invite_declined"
   | "event.team_role_changed"
   | "event.host_transferred"
   | "org.verification_submitted"

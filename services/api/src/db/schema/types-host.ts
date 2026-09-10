@@ -1,4 +1,10 @@
-export const CLEANUP_MEMBER_ROLE_VALUES = ["organizer", "cohost", "member", "staff"] as const
+export const CLEANUP_MEMBER_ROLE_VALUES = [
+  "organizer",
+  "cohost",
+  "member",
+  "staff",
+  "coordinator",
+] as const
 
 export const MEDIA_PURPOSE_VALUES = [
   "report",
@@ -22,13 +28,14 @@ export const ORG_VERIFICATION_STATUS_VALUES = [
 
 export const ORG_VERIFICATION_KIND_VALUES = ["nonprofit", "government", "community"] as const
 
-export const EVENT_TEAM_ROLE_VALUES = ["cohost", "staff"] as const
+export const EVENT_TEAM_ROLE_VALUES = ["cohost", "staff", "coordinator"] as const
 
 export const EVENT_TEAM_INVITE_STATUS_VALUES = [
   "pending",
   "accepted",
   "revoked",
   "expired",
+  "declined",
 ] as const
 
 export const ORGANIZATION_INVITE_ROLE_VALUES = ["admin", "member"] as const

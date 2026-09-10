@@ -173,6 +173,7 @@ export interface CreateNotificationInput {
   titleKey?: MessageKey
   bodyKey?: MessageKey
   vars?: MessageVars
+  varKeys?: Record<string, MessageKey>
   link?: string
   dedupeWindowMs?: number
   coalesceWindowMs?: number
@@ -262,6 +263,15 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return input.titleKey !== undefined || input.bodyKey !== undefined
   }
 
+  function varsIn(locale: string, input: CreateNotificationInput): MessageVars | undefined {
+    if (input.varKeys === undefined) return input.vars
+    const localized: MessageVars = { ...input.vars }
+    for (const [name, key] of Object.entries(input.varKeys)) {
+      localized[name] = renderMessage(locale, key)
+    }
+    return localized
+  }
+
   async function localeFor(
     userId: string,
     input: CreateNotificationInput,
@@ -301,13 +311,14 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     resolvedLocales?: Map<string, string>,
   ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const locale = await localeFor(userId, input, resolvedLocales)
+    const vars = varsIn(locale, input)
     const title =
       input.titleKey !== undefined
-        ? renderMessage(locale, input.titleKey, input.vars)
+        ? renderMessage(locale, input.titleKey, vars)
         : (input.title ?? "")
     const body =
       input.bodyKey !== undefined
-        ? renderMessage(locale, input.bodyKey, input.vars)
+        ? renderMessage(locale, input.bodyKey, vars)
         : (input.body ?? null)
     const link = input.link ?? null
     if (input.coalesceWindowMs !== undefined && link !== null) {

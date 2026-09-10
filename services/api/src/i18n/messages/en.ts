@@ -71,6 +71,14 @@ export const en = {
   "notification.cleanup_role.removed.title": "Removed from event",
   "notification.cleanup_role.removed.body": "You were removed from {{title}}.",
 
+  "notification.event_team_invite.title": "You've been invited to help run an event",
+  "notification.event_team_invite.body":
+    "You've been invited to join the team for {{title}} as {{role}}. Open the event to accept or decline.",
+
+  "role.cohost": "co-host",
+  "role.coordinator": "coordinator",
+  "role.staff": "staff",
+
   // Event-cancellation bell (L24, type 'cleanup_cancelled'): the host called the event off. Fanned out to
   // every OTHER member by cleanup-service.notifyCancellation. The reason is OPTIONAL on the wire, so there
   // are two bodies rather than one with an empty tail; {{reason}} is the host's own words (user content,

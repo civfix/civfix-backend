@@ -51,6 +51,14 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_role.removed.title": "이벤트에서 제외됨",
   "notification.cleanup_role.removed.body": "{{title}}에서 제외되었어요.",
 
+  "notification.event_team_invite.title": "이벤트 운영 팀에 초대되었습니다",
+  "notification.event_team_invite.body":
+    "{{title}}의 운영 팀에 {{role}} 역할로 초대되었어요. 이벤트를 열어 수락하거나 거절해 주세요.",
+
+  "role.cohost": "공동 주최자",
+  "role.coordinator": "코디네이터",
+  "role.staff": "스태프",
+
   "notification.cleanup_cancelled.title": "이벤트 취소됨",
   "notification.cleanup_cancelled.body": "주최자가 이 이벤트를 취소했어요.",
   "notification.cleanup_cancelled.body_reason": "주최자가 이 이벤트를 취소했어요. 사유: {{reason}}",

@@ -92,6 +92,7 @@ export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPr
     case "cleanup_slot":
     case "hours_logged":
     case "group_chat":
+    case "event_team_invite":
       return prefs.cleanupChat
     case "new_follower":
       return prefs.follows

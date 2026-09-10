@@ -322,7 +322,7 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **145 files**, `0000_extensions.sql` … `0162_org_suspension_and_invites.sql`. The nine rows
+`drizzle/` holds **146 files**, `0000_extensions.sql` … `0163_event_team_tiers.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
@@ -547,6 +547,7 @@ foreign key into `organizations` from `0105`.
 | `0160_donation_refunds_failed_after.sql` | rewrites `donation_refunds_app_fee_refund_state_check` to add `'failed_after'`: the terminal state for a refund whose proportional application fee civfix already returned and which Stripe then marked `failed`. Stripe cannot un-refund an application fee, so the row is flagged and alerted on rather than retried. Table is empty at this point in the change set | The refund sweep raises a CHECK violation whenever a pending refund later fails, and the fee discrepancy is never surfaced |
 | `0161_org_stripe_accounts_reconnect.sql` | adds `reconnect_attempts` and `previous_stripe_account_ids` to `org_stripe_accounts`: the attempt counter that gives each reconnect its own Stripe idempotency key (`acct:<org>:v2:<n>`) and the audit trail of accounts an organization has been relinked away from. `ADD COLUMN IF NOT EXISTS` with catalog defaults, no rewrite | Connecting a payout account after a deauthorization fails on an undefined column, so a deauthorized organization stays a dead end |
 | `0162_org_suspension_and_invites.sql` | adds `organizations.suspended_at` / `suspended_reason` / `suspended_by` (the reversible operator suspension flag behind `adminSetOrgSuspended`, independent of `verified_status` and `deleted_at`) and creates `organization_invites`: the pending record behind an email invite to an address with no account, storing only the SHA-256 of the single-use accept token, with a partial unique `(organization_id, email) WHERE status = 'pending'`. Three nullable column adds, no rewrite; brand-new empty table | Every `/admin/orgs` list/suspend read fails on an undefined column, and an email invite to a non-user is still the silent no-op it was in 0.40.0 |
+| `0163_event_team_tiers.sql` | widens the `cleanup_team_invites` role CHECK to `('cohost','staff','coordinator')` and the status CHECK to include `'declined'`, adds the partial index `cleanup_team_invites_invitee_pending_idx (invited_user_id, created_at DESC, id DESC) WHERE status = 'pending' AND invited_user_id IS NOT NULL` that backs `GET /me/event-invites`, and re-COMMENTs `cleanup_members.role` with the widened value set. Two named DROP/ADD constraint pairs plus one index on a small cold table; no rewrite, no backfill | Inviting a `coordinator` raises a CHECK violation, declining an invite raises another, and the invitee inbox seq-scans every invite in the table |
 
 **Deferred to a later release, out of band** (record them in the expand/contract ledger): the six
 `NOT VALID` CHECKs `0107` adds on `cleanups` and `0110`'s `media_assets_purpose_expanded` still need

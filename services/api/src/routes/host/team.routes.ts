@@ -1,12 +1,18 @@
 import {
   AcceptEventTeamInviteRequestSchema,
+  AcceptMyEventInviteRequestSchema,
+  DeclineMyEventInviteRequestSchema,
   IdSchema,
   InviteEventTeamMemberRequestSchema,
   ListEventTeamRequestSchema,
+  ListMyEventInvitesRequestSchema,
   RevokeEventTeamInviteRequestSchema,
   type AcceptEventTeamInviteResponse,
+  type AcceptMyEventInviteResponse,
+  type DeclineMyEventInviteResponse,
   type InviteEventTeamMemberResponse,
   type ListEventTeamResponse,
+  type ListMyEventInvitesResponse,
   type RevokeEventTeamInviteResponse,
 } from "@civfix/shared"
 import { z } from "zod"
@@ -19,17 +25,24 @@ import { route } from "../../versioning/route.js"
 import { requireCapability } from "../../services/host/authz.js"
 import {
   makeHostTeamService,
+  MY_EVENT_INVITES_DEFAULT_LIMIT,
   type HostTeamService,
   type HostTeamServiceDeps,
 } from "../../services/host/host-team-service.js"
 import { makeDrizzleHostTeamRepository } from "../../services/host/host-team-repository.drizzle.js"
 import type { HostTeamRepository } from "../../services/host/host-team-repository.types.js"
+import { makeEventMediaPresigner } from "../../services/host/event-media.js"
+import { makeRouteNotificationService } from "../../services/route-notifier.js"
+import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"
 
 export interface HostTeamOverrides {
   repo: HostTeamRepository
   standing: HostTeamServiceDeps["standing"]
+  loadEvent: HostTeamServiceDeps["loadEvent"]
   counters?: HostTeamServiceDeps["counters"]
   mailer?: HostTeamServiceDeps["mailer"]
+  notifier?: HostTeamServiceDeps["notifier"]
+  presignEventMedia?: HostTeamServiceDeps["presignEventMedia"]
   eventTitleOf?: HostTeamServiceDeps["eventTitleOf"]
   now?: HostTeamServiceDeps["now"]
   newId?: HostTeamServiceDeps["newId"]
@@ -46,9 +59,17 @@ const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 const InviteParamsSchema = z.object({ id: IdSchema, inviteId: IdSchema }).strict()
 
+const MyInviteParamsSchema = z.object({ inviteId: IdSchema }).strict()
+
+const MyInvitesQuerySchema = z
+  .object({ cursor: z.string().optional(), limit: z.string().optional() })
+  .strict()
+
 export const TEAM_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 hour" })
 
 export const TEAM_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+
+export const MY_EVENT_INVITES_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 export async function registerHostTeamRoutes(
   app: FastifyInstance,
@@ -62,8 +83,13 @@ export async function registerHostTeamRoutes(
       return makeHostTeamService({
         repo: overrides.repo,
         standing: overrides.standing,
+        loadEvent: overrides.loadEvent,
         ...(overrides.counters !== undefined ? { counters: overrides.counters } : {}),
         ...(overrides.mailer !== undefined ? { mailer: overrides.mailer } : {}),
+        ...(overrides.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+        ...(overrides.presignEventMedia !== undefined
+          ? { presignEventMedia: overrides.presignEventMedia }
+          : {}),
         ...(overrides.eventTitleOf !== undefined ? { eventTitleOf: overrides.eventTitleOf } : {}),
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
@@ -76,8 +102,11 @@ export async function registerHostTeamRoutes(
       repo: makeDrizzleHostTeamRepository(sql),
       standing: (cleanupId, userId, capability) =>
         requireCapability(sql, cleanupId, userId, capability),
+      loadEvent: makeRouteCleanupReader(container, app.log),
       counters: container.getCounterStore(),
       mailer: container.mailer,
+      notifier: makeRouteNotificationService(container, app.log),
+      presignEventMedia: makeEventMediaPresigner(container.storage),
       eventTitleOf: async (cleanupId: string) => {
         const rows = await sql<{ title: string }[]>`
           SELECT title FROM cleanups WHERE id = ${cleanupId} LIMIT 1
@@ -141,6 +170,57 @@ export async function registerHostTeamRoutes(
         id,
         userId,
         body.token,
+      )
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "listMyEventInvites",
+    { config: { rateLimit: MY_EVENT_INVITES_READ_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const q = parse(MyInvitesQuerySchema, request.query ?? {})
+      const validated = parse(ListMyEventInvitesRequestSchema, {
+        ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
+        ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      })
+      const payload: ListMyEventInvitesResponse = await service().listMyInvites(userId, {
+        ...(validated.cursor !== undefined ? { cursor: validated.cursor } : {}),
+        limit: validated.limit ?? MY_EVENT_INVITES_DEFAULT_LIMIT,
+      })
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "acceptMyEventInvite",
+    { preHandler: csrfProtect, config: { rateLimit: TEAM_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const params = parse(MyInviteParamsSchema, request.params)
+      const body = parse(AcceptMyEventInviteRequestSchema, { inviteId: params.inviteId })
+      const payload: AcceptMyEventInviteResponse = await service().acceptMyInvite(
+        userId,
+        body.inviteId,
+      )
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "declineMyEventInvite",
+    { preHandler: csrfProtect, config: { rateLimit: TEAM_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const params = parse(MyInviteParamsSchema, request.params)
+      const body = parse(DeclineMyEventInviteRequestSchema, { inviteId: params.inviteId })
+      const payload: DeclineMyEventInviteResponse = await service().declineMyInvite(
+        userId,
+        body.inviteId,
       )
       reply.status(200).send(payload)
     },

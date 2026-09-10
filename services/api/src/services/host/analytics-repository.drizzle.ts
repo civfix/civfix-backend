@@ -172,7 +172,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
                 OR EXISTS (
                   SELECT 1 FROM cleanup_members m
                    WHERE m.cleanup_id = c.id AND m.user_id = ${userId}
-                     AND m.role IN ('organizer','cohost'))
+                     AND m.role IN ('organizer','cohost','coordinator'))
                 OR EXISTS (
                   SELECT 1 FROM organization_members om
                    WHERE om.organization_id = c.organization_id AND om.user_id = ${userId}

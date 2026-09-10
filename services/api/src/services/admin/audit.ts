@@ -70,6 +70,7 @@ export type AdminAuditAction =
   | "event.host_transferred"
   | "event.team_invited"
   | "event.team_invite_revoked"
+  | "event.team_invite_declined"
   | "event.team_role_changed"
   | "event.attendee_removed"
   | "event.attendee_transferred"

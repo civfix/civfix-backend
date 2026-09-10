@@ -739,7 +739,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     async setMemberRole(
       cleanupId: string,
       userId: string,
-      role: "cohost" | "staff" | "member",
+      role: "cohost" | "staff" | "coordinator" | "member",
     ): Promise<boolean> {
       const rows = await sql<{ user_id: string }[]>`
         UPDATE cleanup_members SET role = ${role}
@@ -999,7 +999,13 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         WHERE m.cleanup_id = ${cleanupId}
           AND u.deleted_at IS NULL
           ${onlyFollowedFilter}
-        ORDER BY (m.role = 'organizer') DESC, (m.role = 'cohost') DESC, m.joined_at ASC, u.id ASC
+        ORDER BY
+          CASE m.role
+            WHEN 'organizer' THEN 0 WHEN 'cohost' THEN 1 WHEN 'coordinator' THEN 2
+            WHEN 'staff' THEN 3 ELSE 4
+          END,
+          m.joined_at ASC,
+          u.id ASC
         LIMIT ${limit}
       `
       return rows.map((r) => {

@@ -65,6 +65,21 @@ describe("renderMessage", () => {
     expect(renderMessage("ko", "notification.follower.title")).toBe("새 팔로워")
   })
 
+  it("names an event-team role in the reader's own language, never as the raw enum", () => {
+    for (const locale of ["en", "es", "de", "ko"] as const) {
+      for (const role of ["cohost", "coordinator", "staff"] as const) {
+        const label = renderMessage(locale, `role.${role}` as MessageKey)
+        expect(label).not.toBe(`role.${role}`)
+        const body = renderMessage(locale, "notification.event_team_invite.body", {
+          title: "Beach cleanup",
+          role: label,
+        })
+        expect(body).toContain(label)
+        if (locale !== "en") expect(body).not.toContain(role)
+      }
+    }
+  })
+
   it("falls back to English for a key the catalog does not translate", () => {
     // Pick a key present in en and absent from es; if es ever translates it, this asserts nothing false.
     const missing = (Object.keys(en) as MessageKey[]).find((k) => es[k] === undefined)

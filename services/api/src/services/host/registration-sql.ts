@@ -493,7 +493,7 @@ export async function hostTeamUserIds(
   const rows = await tag<{ user_id: string }[]>`
     SELECT user_id FROM cleanup_members
      WHERE cleanup_id = ${cleanupId}
-       AND role IN ('organizer', 'cohost', 'staff')
+       AND role IN ('organizer', 'cohost', 'coordinator', 'staff')
      ORDER BY joined_at
      LIMIT ${limit}
   `

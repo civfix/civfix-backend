@@ -51,6 +51,14 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_role.removed.title": "Aus dem Event entfernt",
   "notification.cleanup_role.removed.body": "Du wurdest aus {{title}} entfernt.",
 
+  "notification.event_team_invite.title": "Du wurdest eingeladen, ein Event mitzuorganisieren",
+  "notification.event_team_invite.body":
+    "Du wurdest eingeladen, dem Team von {{title}} als {{role}} beizutreten. Öffne das Event, um anzunehmen oder abzulehnen.",
+
+  "role.cohost": "Co-Host",
+  "role.coordinator": "Koordinator*in",
+  "role.staff": "Teammitglied",
+
   "notification.cleanup_cancelled.title": "Event abgesagt",
   "notification.cleanup_cancelled.body": "Dieses Event wurde vom Host abgesagt.",
   "notification.cleanup_cancelled.body_reason":

@@ -234,7 +234,7 @@ export interface CleanupService {
     id: string,
     actorId: string,
     targetUserId: string,
-    role: "cohost" | "staff" | "member",
+    role: "cohost" | "staff" | "coordinator" | "member",
   ): Promise<SetMemberRoleResponse>
   removeMember(id: string, actorId: string, targetUserId: string): Promise<RemoveMemberResponse>
   claimEventSlot(id: string, userId: string, slotId: string | null): Promise<CleanupDTO>
@@ -1180,7 +1180,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       id: string,
       actorId: string,
       targetUserId: string,
-      role: "cohost" | "staff" | "member",
+      role: "cohost" | "staff" | "coordinator" | "member",
     ): Promise<SetMemberRoleResponse> {
       const { record } = await requireCapabilityOn(id, actorId, "manage_team")
       if (targetUserId === record.organizerUserId) {
@@ -1239,7 +1239,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (targetRole === null) {
         throw AppError.notFound("That person isn't attending this event.")
       }
-      if ((targetRole === "cohost" || targetRole === "staff") && !can(standing, "manage_team")) {
+      if (targetRole !== "member" && !can(standing, "manage_team")) {
         throw AppError.forbidden(hostForbiddenCopy("manage_team"))
       }
 
