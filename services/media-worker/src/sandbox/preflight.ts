@@ -47,15 +47,20 @@ export function parseProcStatus(text: string): SandboxProof {
   return { uid: ids("Uid"), gid: ids("Gid"), caps }
 }
 
+export interface SandboxProofContext {
+  parentUid: number | undefined
+  parentGid: number | undefined
+  boundingMustBeZero?: boolean
+}
+
 export function sandboxProofFailure(
   text: string,
   identity: SandboxIdentity,
-  opts: { boundingMustBeZero?: boolean; parentUid?: number; parentGid?: number } = {},
+  context: SandboxProofContext,
 ): string | null {
   const proof = parseProcStatus(text)
 
-  const parentUid = opts.parentUid ?? process.getuid?.()
-  const parentGid = opts.parentGid ?? process.getgid?.()
+  const { parentUid, parentGid } = context
   if (parentUid !== undefined && proof.uid.some((v) => v === parentUid)) {
     return `child Uid [${proof.uid.join(" ")}] still contains the worker's own uid ${parentUid}`
   }
@@ -78,7 +83,7 @@ export function sandboxProofFailure(
 
   const bounding = proof.caps.CapBnd
   if (bounding === undefined) return "child /proc/self/status has no CapBnd line"
-  if (opts.boundingMustBeZero === true) {
+  if (context.boundingMustBeZero === true) {
     if (bounding !== 0n) return `child CapBnd is ${bounding.toString(16)}, expected 0`
   } else if ((bounding & ~ALLOWED_BOUNDING_MASK) !== 0n) {
     return (
@@ -211,6 +216,8 @@ async function assertUnprivilegedChild(identity: SandboxIdentity): Promise<void>
   }
 
   const failure = sandboxProofFailure(stdout, identity, {
+    parentUid: process.getuid?.(),
+    parentGid: process.getgid?.(),
     boundingMustBeZero: dropBoundingSet(),
   })
   if (failure !== null) {

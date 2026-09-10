@@ -33,7 +33,7 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
 
   beforeAll(() => {
     h = pg as WorkerPgHarness
-    repo = makeDrizzleMediaWorkerRepo(h.db)
+    repo = makeDrizzleMediaWorkerRepo(h.db, h.sql)
     storage = new FakeStorage()
   })
 

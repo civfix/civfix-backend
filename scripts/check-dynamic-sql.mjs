@@ -14,6 +14,14 @@ const ALLOW_DYNAMIC_SQL = new Set([
 
 const NOT_SQL = new Set(["services/media-worker/src/sandbox/phash.ts:raw"])
 
+const ALLOW_DRIZZLE_CLIENT = new Set(["services/api/src/auth/pg-stores.ts"])
+
+const DRIZZLE_CLIENT = /\.\s*\$client\b/g
+
+export function findDrizzleClientUses(code) {
+  return [...code.matchAll(DRIZZLE_CLIENT)].map((m) => m[0].replace(/\s+/g, ""))
+}
+
 const DYNAMIC_SQL_CALL =
   /\.\s*(unsafe|raw|identifier)\s*\(|\[\s*["'`](unsafe|raw|identifier)["'`]\s*\]\s*\(/g
 
@@ -201,6 +209,12 @@ function main() {
         if (ALLOW_DYNAMIC_SQL.has(key) || NOT_SQL.has(key) || reported.has(key)) continue
         reported.add(key)
         violations.push(`${file}: .${method}() outside the reviewed allowlist`)
+      }
+      if (!ALLOW_DRIZZLE_CLIENT.has(file) && findDrizzleClientUses(code).length > 0) {
+        violations.push(
+          `${file}: raw SQL on drizzle's own client (.$client) — its Date/array/jsonb serializers are ` +
+            "identity passthroughs, so a bound Date throws at Bind time. Take the DbHandle's `sql` tag instead",
+        )
       }
       if (NULL_TEST_SKIP_PATH.test(file)) continue
       for (const nullTest of findParamNullTests(code)) {
