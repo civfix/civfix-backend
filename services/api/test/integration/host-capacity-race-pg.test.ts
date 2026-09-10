@@ -195,10 +195,12 @@ describe.skipIf(!pg)("registration capacity (integration)", () => {
     `
     expect(members).toHaveLength(0)
 
-    const idempotency = await h.sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM idempotency_keys WHERE scope = 'event.register'
+    const idempotency = await h.sql<{ user_or_anon: string }[]>`
+      SELECT user_or_anon FROM idempotency_keys
+       WHERE scope = 'event.register'
+         AND user_or_anon IN (${`user:${winner}`}, ${`user:${loser}`})
     `
-    expect((idempotency[0] as { n: number }).n).toBe(1)
+    expect(idempotency.map((row) => row.user_or_anon)).toEqual([`user:${winner}`])
   })
 
   it("replays the same idempotency key instead of taking a second seat", async () => {

@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedMediaAsset } from "../helpers/media-pg.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -181,12 +182,17 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       const blockedId = await newUser("Create Blocked")
       // The BLOCKED user blocked the creator (either-way suppression).
       await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${blockedId}, ${ownerId})`
-      // A ready avatar upload for avatarUploadId -> avatar_media_id finalize.
+      // A published avatar upload for avatarUploadId -> avatar_media_id finalize. The worker's
+      // processed bytes live at served_key, which is what the group DTO hands out.
       const uploadId = randomUUID()
-      await h.sql`
-        INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose, width, height)
-        VALUES (${uploadId}, 'image', ${"avatars/" + uploadId}, 'ready', 'report', 64, 64)
-      `
+      const avatar = await seedMediaAsset(h.sql, {
+        uploadId,
+        r2Key: `avatars/${uploadId}`,
+        status: "ready",
+        purpose: "report",
+        width: 64,
+        height: 64,
+      })
 
       const dto = await inject(await token(ownerId), "POST", "/v1/groups", {
         name: "Block Party",
@@ -203,7 +209,7 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       expect(dto.myRole).toBe("owner")
       expect(dto.muted).toBe(false)
       expect(dto.memberCount).toBe(3) // owner + a + b (blocked/self/dupe skipped)
-      expect(dto.avatar).toMatchObject({ url: `memory://avatars/${uploadId}` })
+      expect(dto.avatar).toMatchObject({ url: `memory://${avatar.servedKey}` })
 
       const members = await inject(await token(ownerId), "GET", `/v1/groups/${dto.id}/members`)
       expect(members.statusCode).toBe(200)

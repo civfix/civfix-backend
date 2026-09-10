@@ -44,7 +44,7 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
-    "test": "turbo run test",
+    "test": "turbo run test --continue",
     "check:sql": "node scripts/check-dynamic-sql.mjs",
     "dev": "turbo run dev",
     "clean": "turbo run clean"

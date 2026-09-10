@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { ChatMessageDTO } from "@civfix/shared"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import { seedMediaAsset } from "../helpers/media-pg.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
@@ -53,11 +54,13 @@ describe.skipIf(!pg)("soft-deleted messages hydrate as tombstones (integration)"
 
   async function newReadyUpload(): Promise<string> {
     const uploadId = randomUUID()
-    await h.sql`
-      INSERT INTO media_assets (upload_id, kind, r2_key, status, byte_size)
-      VALUES (${uploadId}, 'image', ${`k/${uploadId}`}, 'ready', 1024)
-    `
-    return uploadId
+    const media = await seedMediaAsset(h.sql, {
+      uploadId,
+      r2Key: `k/${uploadId}`,
+      status: "ready",
+      byteSize: 1024,
+    })
+    return media.uploadId
   }
 
   async function newCleanup(organizerId: string): Promise<string> {

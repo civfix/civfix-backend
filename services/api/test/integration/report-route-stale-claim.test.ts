@@ -14,6 +14,7 @@ describe.skipIf(!pg)("report outreach: stranded route claims are recoverable", (
   let h: PgHarness
   let reports: ReturnType<typeof makeDrizzleAdminReportRepository>
   let mail: ReturnType<typeof makeDrizzleMailRepository>
+  const seededReportIds: string[] = []
 
   beforeAll(() => {
     h = pg as PgHarness
@@ -23,21 +24,26 @@ describe.skipIf(!pg)("report outreach: stranded route claims are recoverable", (
 
   beforeEach(async () => {
     await h.sql`TRUNCATE mail_events, mail_messages, mail_threads RESTART IDENTITY CASCADE`
-    await h.sql`DELETE FROM reports WHERE idempotency_key LIKE 'stale-claim-%'`
+    if (seededReportIds.length > 0) {
+      await h.sql`DELETE FROM reports WHERE id = ANY(${seededReportIds}::uuid[])`
+      seededReportIds.length = 0
+    }
   })
 
   afterAll(async () => {
     await h.teardown()
   })
 
-  async function seedReport(key: string): Promise<string> {
+  async function seedReport(scenario: string): Promise<string> {
     const rows = await h.sql<{ id: string }[]>`
-      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
-      VALUES (${key}, ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+      INSERT INTO reports (idempotency_key, title, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ${scenario}, ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
               'published', '8a2a1072b59ffff', ${LA_CITY.geoid})
       RETURNING id
     `
-    return rows[0]!.id
+    const id = rows[0]!.id
+    seededReportIds.push(id)
+    return id
   }
 
   async function claimRoute(reportId: string): Promise<{ threadId: string; messageId: string }> {

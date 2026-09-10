@@ -468,6 +468,15 @@ describe.skipIf(!pg)("host lock order (integration)", () => {
     const registrationIds = new Map<string, string>()
     const waitlistIds = new Map<string, string>()
     for (const [index, userId] of attendees.entries()) {
+      const joined = await repo.joinWaitlist({
+        cleanupId,
+        ticketTypeId: otherTypeId,
+        subject: { kind: "user", userId },
+        partySize: 1,
+        accessCodeHash: null,
+        now,
+      })
+      if (joined.kind === "joined") waitlistIds.set(userId, joined.entry.id)
       const outcome = await repo.registerTx({
         cleanupId,
         subject: { kind: "user", userId },
@@ -485,15 +494,6 @@ describe.skipIf(!pg)("host lock order (integration)", () => {
       if (outcome.kind !== "registered") continue
       registrationIds.set(userId, outcome.registration.id)
       await repo.setHostNote(cleanupId, outcome.registration.id, `Host note ${index}`)
-      const joined = await repo.joinWaitlist({
-        cleanupId,
-        ticketTypeId: otherTypeId,
-        subject: { kind: "user", userId },
-        partySize: 1,
-        accessCodeHash: null,
-        now,
-      })
-      if (joined.kind === "joined") waitlistIds.set(userId, joined.entry.id)
     }
     expect(registrationIds.size).toBe(attendees.length)
     expect(waitlistIds.size).toBe(attendees.length)

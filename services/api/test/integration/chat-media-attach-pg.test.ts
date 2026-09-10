@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedMediaAsset } from "../helpers/media-pg.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
@@ -35,11 +36,13 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
 
   async function newReadyUpload(): Promise<string> {
     const uploadId = randomUUID()
-    await h.sql`
-      INSERT INTO media_assets (upload_id, kind, r2_key, status, byte_size)
-      VALUES (${uploadId}, 'image', ${`k/${uploadId}`}, 'ready', 1024)
-    `
-    return uploadId
+    const media = await seedMediaAsset(h.sql, {
+      uploadId,
+      r2Key: `k/${uploadId}`,
+      status: "ready",
+      byteSize: 1024,
+    })
+    return media.uploadId
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
@@ -110,10 +113,12 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
     // Presigned but never finalized: no bytes, no media.checks job. Attaching it would bind the row
     // (hiding it from the orphan sweep) while its NULL watermark keeps it out of the stuck sweep too.
     const uploadId = randomUUID()
-    await h.sql`
-      INSERT INTO media_assets (upload_id, kind, r2_key, status, byte_size)
-      VALUES (${uploadId}, 'image', ${`k/${uploadId}`}, 'validating', 1024)
-    `
+    await seedMediaAsset(h.sql, {
+      uploadId,
+      r2Key: `k/${uploadId}`,
+      status: "validating",
+      byteSize: 1024,
+    })
 
     const chatRepo = makeDrizzleChatRepository(h.sql, fakePresign)
     const refused = await chatRepo.insertMessage(

@@ -394,20 +394,15 @@ export class PgUserStore implements UserStore {
   }
 
   private async releaseOrganizations(tx: DbTransaction, id: string): Promise<void> {
-    const candidates = await tx.execute<{ organization_id: string }>(sql`
-      SELECT organization_id FROM organization_members
-      WHERE user_id = ${id} AND role = 'owner'
-      ORDER BY organization_id
+    await tx.execute(sql`
+      SELECT o.id FROM organizations o
+      WHERE EXISTS (
+        SELECT 1 FROM organization_members om
+        WHERE om.organization_id = o.id AND om.user_id = ${id} AND om.role = 'owner'
+      )
+      ORDER BY o.id
+      FOR UPDATE
     `)
-    const candidateIds = candidates.map((row) => row.organization_id)
-    if (candidateIds.length > 0) {
-      await tx.execute(sql`
-        SELECT id FROM organizations
-        WHERE id = ANY(${candidateIds}::uuid[])
-        ORDER BY id
-        FOR UPDATE
-      `)
-    }
     const owned = await tx.execute<{ organization_id: string }>(sql`
       UPDATE organization_members SET role = 'admin'
       WHERE user_id = ${id} AND role = 'owner'
@@ -421,7 +416,7 @@ export class PgUserStore implements UserStore {
           SELECT DISTINCT ON (om.organization_id) om.organization_id, om.user_id
           FROM organization_members om
           JOIN users u ON u.id = om.user_id AND u.deleted_at IS NULL
-          WHERE om.organization_id = ANY(${ownedOrgIds}::uuid[])
+          WHERE ${inArray(sql`om.organization_id`, ownedOrgIds)}
             AND om.role = 'admin' AND om.user_id <> ${id}
           ORDER BY om.organization_id, om.joined_at ASC, om.user_id ASC
         ) pick
@@ -432,7 +427,7 @@ export class PgUserStore implements UserStore {
     if (ownedOrgIds.length > 0) {
       const orphaned = await tx.execute<{ id: string }>(sql`
         UPDATE organizations SET deleted_at = now(), updated_at = now()
-        WHERE id = ANY(${ownedOrgIds}::uuid[]) AND deleted_at IS NULL
+        WHERE ${inArray(sql`id`, ownedOrgIds)} AND deleted_at IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM organization_members ow
             WHERE ow.organization_id = organizations.id AND ow.role = 'owner'
@@ -443,7 +438,7 @@ export class PgUserStore implements UserStore {
       if (orphanedOrgIds.length > 0) {
         await tx.execute(sql`
           UPDATE cleanups SET organization_id = NULL, donation_url = NULL
-          WHERE organization_id = ANY(${orphanedOrgIds}::uuid[])
+          WHERE ${inArray(sql`organization_id`, orphanedOrgIds)}
         `)
       }
     }

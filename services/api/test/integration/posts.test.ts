@@ -13,6 +13,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import {
+  publishMediaAsReady,
+  seedMediaAsset,
+  type SeedMediaStatus,
+  type SeededMedia,
+} from "../helpers/media-pg.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
 import { makePostService, type PostService } from "../../src/services/post-service.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
@@ -63,18 +69,22 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
   }
 
   /**
-   * A finalized, unattached media_asset — what media-intake leaves behind once the upload validates.
-   * `ready` (not `validating`) because loadMedia only renders `ready` assets into the PostDTO.
+   * A finalized, unattached media_asset — what media-intake plus the media-checks worker leave behind
+   * once the upload validates. `ready` (not `validating`) because loadMedia only renders `ready`
+   * assets into the PostDTO, and a `ready` row carries the worker's published served_key, which is
+   * the key the DTO presigns (never the client-writable r2_key).
    */
-  async function seedMedia(status = "ready"): Promise<{ id: string; uploadId: string }> {
+  async function seedMedia(status: SeedMediaStatus = "ready"): Promise<SeededMedia> {
     const uploadId = randomUUID()
-    const [row] = await h.sql<{ id: string }[]>`
-      INSERT INTO media_assets (upload_id, kind, r2_key, thumb_key, status, byte_size, width, height)
-      VALUES (${uploadId}, 'image', ${`uploads/post/${uploadId}`}, ${`uploads/post/${uploadId}.thumb`},
-              ${status}, 2048, 800, 600)
-      RETURNING id
-    `
-    return { id: row!.id, uploadId }
+    return await seedMediaAsset(h.sql, {
+      uploadId,
+      r2Key: `uploads/post/${uploadId}`,
+      thumbKey: `uploads/post/${uploadId}.thumb`,
+      status,
+      byteSize: 2048,
+      width: 800,
+      height: 600,
+    })
   }
 
   it("F087c: a CONCURRENT double repost cannot double-count — the revival UPDATE carries the tombstone predicate itself", async () => {
@@ -348,8 +358,8 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(created.media[0]!.status).toBe("ready")
     // The repo hands the keys to the service to presign; the echo presigner in this file makes the
     // mapping visible, which also proves the thumb key round-tripped.
-    expect(created.media[0]!.url).toBe(`m://uploads/post/${media.uploadId}`)
-    expect(created.media[0]!.thumbUrl).toBe(`m://uploads/post/${media.uploadId}.thumb`)
+    expect(created.media[0]!.url).toBe(`m://${media.servedKey}`)
+    expect(created.media[0]!.thumbUrl).toBe(`m://${media.thumbKey}`)
 
     // The claim landed in the database: bound to THIS post, repurposed, and still unbound to any report.
     const [row] = await h.sql<{ post_id: string | null; purpose: string; report_id: string | null }[]>`
@@ -383,7 +393,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     expect(quote.repostOf?.id).toBe(target.id)
     expect(quote.repostOf?.media.map((m) => m.id)).toEqual([media.id])
-    expect(quote.repostOf?.media[0]!.url).toBe(`m://uploads/post/${media.uploadId}`)
+    expect(quote.repostOf?.media[0]!.url).toBe(`m://${media.servedKey}`)
     // The quote itself still has none of its own.
     expect(quote.media).toEqual([])
 
@@ -858,15 +868,19 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
   // test is the pin for that timing, so a client-side local-thumb overlay cannot be "optimized away".
 
   /** A report-bound media asset in the state finalizeMedia leaves behind: `validating`, not `ready`. */
-  async function attachReportMedia(reportId: string, status: string): Promise<string> {
+  async function attachReportMedia(reportId: string, status: SeedMediaStatus): Promise<SeededMedia> {
     const uploadId = randomUUID()
-    const [row] = await h.sql<{ id: string }[]>`
-      INSERT INTO media_assets (report_id, upload_id, kind, r2_key, thumb_key, status, purpose, byte_size, width, height)
-      VALUES (${reportId}, ${uploadId}, 'image', ${`uploads/report/${uploadId}`},
-              ${`uploads/report/${uploadId}.thumb`}, ${status}, 'report', 4096, 1200, 900)
-      RETURNING id
-    `
-    return row!.id
+    return await seedMediaAsset(h.sql, {
+      reportId,
+      uploadId,
+      r2Key: `uploads/report/${uploadId}`,
+      thumbKey: `uploads/report/${uploadId}.thumb`,
+      status,
+      purpose: "report",
+      byteSize: 4096,
+      width: 1200,
+      height: 900,
+    })
   }
 
   it("SHARE: a freshly filed report attaches and hydrates, but its still-VALIDATING photo yields NO thumbUrl until the worker lands", async () => {
@@ -876,7 +890,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const reportId = await insertReport(author, "published", "public", "Couch on the sidewalk")
     await h.sql`UPDATE reports SET addr = '123 Main St' WHERE id = ${reportId}`
     // Exactly what media-intake leaves behind when the wizard submits: finalized, checks still queued.
-    const assetId = await attachReportMedia(reportId, "validating")
+    const asset = await attachReportMedia(reportId, "validating")
 
     // The caption is optional on the wire: an attachment-only post is legal (PostComposeInputSchema's
     // superRefine is satisfied by hasAttachment), which is what a blank caption ships.
@@ -900,7 +914,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     // Once the media-checks worker flips the asset, the very next read presigns the real thumb, with no
     // write to the post and no cache bust on the server side.
-    await h.sql`UPDATE media_assets SET status = 'ready' WHERE id = ${assetId}`
+    await publishMediaAsReady(h.sql, asset.id)
     const afterWorker = await svc.getPost(post.id, reader)
     expect(afterWorker.report?.thumbUrl).toBeTruthy()
     expect(afterWorker.report?.thumbUrl).toContain(".thumb")

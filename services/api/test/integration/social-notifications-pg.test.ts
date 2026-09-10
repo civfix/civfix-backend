@@ -8,9 +8,12 @@ import { makeDrizzleNotificationRepository } from "../../src/services/notificati
 import { makeSocialService } from "../../src/services/social-service.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import { makeCleanupService } from "../../src/services/cleanup-service.js"
+import { HOST_EVENTS_WINDOW_SEC, makeCleanupService } from "../../src/services/cleanup-service.js"
+import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 
 const pg = await withPg()
+
+const HOST_EVENT_BUDGET_WINDOW_MS = HOST_EVENTS_WINDOW_SEC * 1000
 
 describe.skipIf(!pg)("social + notifications (integration)", () => {
   let h: PgHarness
@@ -180,11 +183,16 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
 
   it("profile events: the keyset cursor walks every past event exactly once and terminates", async () => {
     const socialRepo = makeDrizzleSocialRepository(h.sql)
-    const cleanupService = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+    let hostBudgetClockMs = Date.now()
+    const cleanupService = makeCleanupService({
+      repo: makeDrizzleCleanupRepository(h.sql),
+      counters: new InMemoryCounterStore(() => hostBudgetClockMs),
+    })
     const owner = await newUser("Cursor Owner", "curown")
 
     const total = 23
     for (let i = 0; i < total; i++) {
+      hostBudgetClockMs += HOST_EVENT_BUDGET_WINDOW_MS
       await cleanupService.createCleanup(
         {
           title: `Cursor Sweep ${i}`,
@@ -281,6 +289,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       follows: true,
       mentions: true,
       postInteractions: true,
+      hostBroadcasts: true,
       quietStart: null,
       quietEnd: null,
       tz: null,
@@ -382,7 +391,22 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(prefs.has(noRow)).toBe(false)
 
     const push = new FakePushSender()
-    await makeNotificationService({ repo, pushSender: push }).createNotifications(
+    let fanoutReadPrefs = (): void => undefined
+    const fanoutPrefsRead = new Promise<void>((resolve) => {
+      fanoutReadPrefs = () => resolve()
+    })
+    const observedRepo: typeof repo = {
+      ...repo,
+      async findPrefsMany(userIds: string[]) {
+        try {
+          return await repo.findPrefsMany!(userIds)
+        } finally {
+          fanoutReadPrefs()
+        }
+      },
+    }
+
+    await makeNotificationService({ repo: observedRepo, pushSender: push }).createNotifications(
       [optedIn, optedOut, noRow],
       {
         type: "group_chat",
@@ -392,6 +416,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       },
     )
 
+    await fanoutPrefsRead
     await flushNotificationDispatch()
     const pushed = new Set(push.sent.map((s) => s.userId))
     expect(pushed.has(optedIn)).toBe(true)

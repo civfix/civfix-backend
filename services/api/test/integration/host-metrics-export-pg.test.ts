@@ -78,6 +78,7 @@ describe.skipIf(!pg)("event metrics and host exports (integration)", () => {
       },
     })
     const objects = new Map<string, Buffer>()
+    let clock = new Date()
     const service = makeHostExportService({
       repo: exportsRepo,
       storage: {
@@ -92,7 +93,8 @@ describe.skipIf(!pg)("event metrics and host exports (integration)", () => {
           return Promise.resolve()
         },
       },
-      config: { maxRows: 100, maxBytes: 1_000_000, ttlHours: 0.0001 },
+      config: { maxRows: 100, maxBytes: 1_000_000, ttlHours: 1 },
+      now: () => clock,
     })
 
     const created = await service.request({
@@ -112,7 +114,9 @@ describe.skipIf(!pg)("event metrics and host exports (integration)", () => {
     expect(link.url).toContain("ttl=300")
     expect(link.url).toContain("signed=true")
 
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(await service.reap(10)).toEqual({ reaped: 0 })
+
+    clock = new Date(clock.getTime() + 2 * 3_600_000)
     expect(await service.reap(10)).toEqual({ reaped: 1 })
     expect(objects.size).toBe(0)
     const expired = await service.get(created.id)
