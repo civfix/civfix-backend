@@ -73,7 +73,7 @@
     "jose": "^5.9.6",
     "mailparser": "^3.9.22",
     "node-apn": "^3.0.0",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^9.1.1",
     "oslo": "^1.2.1",
     "pdfkit": "^0.19.1",
     "pg-boss": "^10.1.5",
